@@ -24,4 +24,4 @@ A extensão não guarda dados. O que foi importado fica no aplicativo Ponte, ond
 
 ## Contato
 
-Dúvidas sobre esta política: [informe aqui o e-mail institucional responsável].
+Dúvidas sobre esta política: carlo.demusis@gmail.com.
