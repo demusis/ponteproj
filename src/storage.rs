@@ -142,6 +142,7 @@ impl Store {
         store.ensure_trash()?;
         store.ensure_intranet()?;
         store.ensure_saiop()?;
+        store.ensure_ai_config()?;
         store.ensure_write_guards()?;
         // Lazy, idempotent: libraries imported before this feature gain the
         // juntada links too. Unreadable content never prevents opening.
@@ -173,6 +174,7 @@ impl Store {
             "offline_conflicts",
             "saiop_batches",
             "saiop_attendances",
+            "ai_config",
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());

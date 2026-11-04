@@ -1,6 +1,6 @@
 [package]
 name = "ponteproj"
-version = "0.9.3"
+version = "0.10.0"
 edition = "2021"
 description = "Assistente local SIGADOC com captura pelo navegador"
 

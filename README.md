@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.9.3 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_9_3.md) |
+| **Versão** | 0.10.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_10_0.md) |
 | **Licença** | MIT |
 
 ---
@@ -225,7 +225,15 @@ O Ponte funciona inteiro sem IA. Quando você quiser:
 - **Anotações e minutas ▸ Gerar sugestão com IA**: escreve uma minuta do tipo escolhido, com uma orientação opcional (*"solicitar a informação que falta, com tom objetivo"*). A sugestão abre para revisão e só vira versão quando você salvar.
 - Contexto de trabalho e notas não salvos são salvos antes; a linha ao lado do botão diz para onde os dados vão.
 
-**Menu ▾ → Configurar IA**: *Ollama neste computador* (padrão `http://127.0.0.1:11434`, modelo `qwen3:4b-instruct` — nada sai da máquina) ou *Servidor remoto HTTPS* compatível com a API `/api/chat` do Ollama, com token opcional (também pela variável `PONTEPROJ_AI_TOKEN`). Endpoint, modelo e token não são gravados em disco.
+**Menu ▾ → Configurar IA** oferece três lugares para a IA rodar:
+
+| Opção | Quando usar | O que informar |
+|---|---|---|
+| **Ollama neste computador** | padrão; nada sai da máquina | endereço (padrão `http://127.0.0.1:11434`); instale o Ollama e baixe um modelo (`ollama pull qwen3:4b-instruct`) |
+| **Ollama Cloud** | modelos grandes sem GPU local; conta em ollama.com (gratuita por uso ou plano mensal) | a chave de API criada em [ollama.com/settings/keys](https://ollama.com/settings/keys) |
+| **Outro servidor HTTPS** | servidor do órgão compatível com a API `/api/chat` do Ollama | endereço e token opcional |
+
+Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na caixa de seleção: o Ponte consulta o servidor (`/api/tags`) e mostra o que ele oferece. A configuração é salva no acervo, cifrada com a DPAPI da sua conta do Windows; desmarque **Guardar a chave neste computador** para manter a chave só na memória da sessão. A chave também pode vir da variável `PONTEPROJ_AI_TOKEN`. Com Ollama Cloud ou servidor remoto, o texto do documento sai do computador: avalie sigilo e LGPD antes de usar.
 
 ---
 

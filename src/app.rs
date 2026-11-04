@@ -1,5 +1,5 @@
 //! Native desktop workspace. Document content is only persisted through `Store`.
-use crate::ai::{self, AiSettings};
+use crate::ai::{self, AiConfig, AiProvider, AiSettings, ModelInfo};
 use crate::model::{Analysis, DocumentDetail, DocumentSummary};
 use crate::storage::Store;
 use anyhow::{Context, Result};
@@ -178,6 +178,7 @@ pub fn run(initial_document: Option<i64>) -> Result<()> {
     let store = Store::open(&db_path).context("Não foi possível abrir a biblioteca protegida")?;
     let mut app = PonteApp::new(store, db_path);
     app.intranet.initialize(&mut app.store, &app.db_path);
+    app.load_ai_config();
     app.refresh();
     if let Some(id) = initial_document {
         app.select(id);
@@ -456,6 +457,7 @@ enum PendingTarget {
     Tasks,
     Saiop,
     Suggestion,
+    Settings,
     None,
 }
 
@@ -484,11 +486,15 @@ struct PonteApp {
     last_refresh: Instant,
     tab: Tab,
     settings_open: bool,
-    remote: bool,
-    local_url: String,
-    remote_url: String,
-    model: String,
-    token: String,
+    /// AI configuration being edited (and used by AI actions).
+    ai: AiConfig,
+    /// What is saved in the library; differs from `ai` while unsaved.
+    ai_saved: AiConfig,
+    /// Models listed by the server, with the provider and endpoint they came from.
+    models: Vec<ModelInfo>,
+    models_for: Option<(AiProvider, String)>,
+    models_error: Option<String>,
+    model_fetch: Option<Receiver<std::result::Result<Vec<ModelInfo>, String>>>,
     worker: Option<Worker>,
     suggestion: Option<Suggestion>,
     suggestion_open: bool,
@@ -533,11 +539,12 @@ impl PonteApp {
             last_refresh: Instant::now(),
             tab: Tab::Overview,
             settings_open: false,
-            remote: false,
-            local_url: "http://127.0.0.1:11434".into(),
-            remote_url: "https://".into(),
-            model: "qwen3:4b-instruct".into(),
-            token: std::env::var("PONTEPROJ_AI_TOKEN").unwrap_or_default(),
+            ai: AiConfig::default(),
+            ai_saved: AiConfig::default(),
+            models: Vec::new(),
+            models_for: None,
+            models_error: None,
+            model_fetch: None,
             worker: None,
             suggestion: None,
             suggestion_open: false,
@@ -700,6 +707,12 @@ impl PonteApp {
                 go: PendingTarget::Suggestion,
             });
         }
+        if self.ai_config_dirty() {
+            out.push(Pending {
+                label: "Configuração de IA não salva".into(),
+                go: PendingTarget::Settings,
+            });
+        }
         if let Some(worker) = &self.worker {
             out.push(Pending {
                 label: format!("Operação em andamento: {}", worker.label),
@@ -730,6 +743,7 @@ impl PonteApp {
                 self.tasks_open = false;
             }
             PendingTarget::Suggestion => self.suggestion_open = true,
+            PendingTarget::Settings => self.settings_open = true,
             PendingTarget::None => {}
         }
     }
@@ -864,40 +878,112 @@ impl PonteApp {
 
     fn settings(&self) -> Result<AiSettings> {
         anyhow::ensure!(
-            !self.model.trim().is_empty(),
-            "Informe o modelo em Configurar IA."
+            !self.ai.model().trim().is_empty(),
+            "Escolha o modelo em Configurar IA."
         );
-        let base_url = if self.remote {
-            &self.remote_url
-        } else {
-            &self.local_url
-        };
-        let url = url::Url::parse(base_url.trim()).context("Endpoint de IA inválido")?;
-        anyhow::ensure!(
-            url.username().is_empty() && url.password().is_none(),
-            "O endpoint não pode conter usuário ou senha na URL."
-        );
-        anyhow::ensure!(
-            url.query().is_none() && url.fragment().is_none(),
-            "Use o endpoint base, sem parâmetros ou fragmentos."
-        );
-        if self.remote {
-            anyhow::ensure!(
-                url.scheme() == "https" && url.host_str().is_some(),
-                "O provedor remoto precisa usar HTTPS."
-            );
-        } else {
-            let local = matches!(
-                url.host_str(),
-                Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
-            );
-            anyhow::ensure!(local && matches!(url.scheme(), "http" | "https"), "O modo local aceita apenas localhost, 127.0.0.1 ou ::1. Para outro servidor, escolha HTTPS remoto.");
+        self.ai.chat_settings()
+    }
+
+    /// Reads the saved configuration once, at start. Unreadable content
+    /// (another Windows account) keeps the defaults and says so.
+    fn load_ai_config(&mut self) {
+        match self.store.load_ai_config() {
+            Ok(config) => {
+                self.ai = config.clone();
+                self.ai_saved = config;
+            }
+            Err(error) => self.error(format!("Configuração de IA não carregada: {error}")),
         }
-        Ok(AiSettings {
-            base_url: base_url.trim().trim_end_matches('/').into(),
-            model: self.model.trim().into(),
-            token: self.token.clone(),
-        })
+    }
+
+    fn ai_config_dirty(&self) -> bool {
+        self.ai != self.ai_saved
+    }
+
+    /// Persists the configuration being edited. Returns false (error shown)
+    /// when it is invalid or could not be written.
+    fn save_ai_config(&mut self) -> bool {
+        if let Err(error) = self.ai.validate() {
+            self.error(error.to_string());
+            return false;
+        }
+        match self.store.save_ai_config(&self.ai) {
+            Ok(()) => {
+                self.ai_saved = self.ai.clone();
+                true
+            }
+            Err(error) => {
+                self.error(format!("Configuração de IA não salva: {error}"));
+                false
+            }
+        }
+    }
+
+    /// Asks the configured server for its models, in the background.
+    fn fetch_models(&mut self, ctx: &egui::Context) {
+        if self.model_fetch.is_some() {
+            return;
+        }
+        let settings = match self.ai.settings() {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.models_error = Some(error.to_string());
+                return;
+            }
+        };
+        let key = (self.ai.provider, settings.base_url.clone());
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        match std::thread::Builder::new()
+            .name("ponte-models".into())
+            .spawn(move || {
+                let result = ai::list_models(&settings).map_err(|e| e.to_string());
+                let _ = sender.send(result);
+                repaint.request_repaint();
+            }) {
+            Ok(_) => {
+                self.model_fetch = Some(receiver);
+                self.models_for = Some(key);
+                self.models_error = None;
+            }
+            Err(error) => {
+                self.models_error = Some(format!("Não foi possível consultar os modelos: {error}"))
+            }
+        }
+    }
+
+    fn poll_models(&mut self) {
+        let received = self.model_fetch.as_ref().map(|r| r.try_recv());
+        match received {
+            Some(Ok(Ok(models))) => {
+                self.model_fetch = None;
+                if models.is_empty() {
+                    self.models_error = Some(match self.ai.provider {
+                        AiProvider::Local => "O Ollama deste computador não tem modelos instalados. No terminal, execute: ollama pull qwen3:4b-instruct".into(),
+                        _ => "O servidor não ofereceu nenhum modelo.".into(),
+                    });
+                }
+                // Keep a sensible model selected: the current one when offered,
+                // otherwise the first of the list.
+                let current = self.ai.model().trim().to_owned();
+                if !models.iter().any(|m| m.name == current) {
+                    if let Some(first) = models.first() {
+                        *self.ai.model_mut() = first.name.clone();
+                    }
+                }
+                self.models = models;
+            }
+            Some(Ok(Err(error))) => {
+                self.model_fetch = None;
+                self.models.clear();
+                self.models_error = Some(error);
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.model_fetch = None;
+                self.models_error = Some("A consulta de modelos terminou sem resposta.".into());
+            }
+            _ => {}
+        }
     }
 
     fn spawn(
@@ -967,7 +1053,7 @@ impl PonteApp {
             Ok(settings) => settings,
             Err(error) => {
                 self.error(error.to_string());
-                self.settings_open = true;
+                self.open_ai_settings(ctx);
                 return;
             }
         };
@@ -1033,7 +1119,7 @@ impl PonteApp {
             Ok(settings) => settings,
             Err(error) => {
                 self.error(error.to_string());
-                self.settings_open = true;
+                self.open_ai_settings(ctx);
                 return;
             }
         };
@@ -1283,7 +1369,7 @@ impl PonteApp {
                         ui.close();
                     }
                     if ui.button("Configurar IA…").clicked() {
-                        self.settings_open = true;
+                        self.open_ai_settings(ui.ctx());
                         ui.close();
                     }
                     if ui.button("Lixeira…").clicked() {
@@ -2495,17 +2581,12 @@ impl PonteApp {
     }
 
     fn ai_destination_text(&self) -> (String, String) {
-        let provider = if self.remote {
-            "servidor remoto"
-        } else {
-            "Ollama neste computador"
+        let provider = match self.ai.provider {
+            AiProvider::Local => "Ollama neste computador",
+            AiProvider::Cloud => "Ollama Cloud",
+            AiProvider::Remote => "servidor remoto",
         };
-        let endpoint = if self.remote {
-            &self.remote_url
-        } else {
-            &self.local_url
-        };
-        let destination = url::Url::parse(endpoint)
+        let destination = url::Url::parse(self.ai.base_url().trim())
             .map(|url| url.origin().ascii_serialization())
             .unwrap_or_else(|_| "endereço ainda não configurado".into());
         (provider.to_owned(), destination)
@@ -2515,10 +2596,10 @@ impl PonteApp {
     /// and in the configuration window).
     fn ai_disclosure_text(&self, with_instructions: bool) -> String {
         let (provider, destination) = self.ai_destination_text();
-        let model = if self.model.trim().is_empty() {
-            "não informado"
+        let model = if self.ai.model().trim().is_empty() {
+            "não escolhido"
         } else {
-            self.model.trim()
+            self.ai.model().trim()
         };
         let sent = if with_instructions {
             "o documento importado, o contexto, suas notas, a orientação e as fontes selecionadas"
@@ -2531,13 +2612,29 @@ impl PonteApp {
     /// One short, always-visible line saying where the AI runs.
     fn ai_destination(&self, ui: &mut egui::Ui) {
         let (provider, destination) = self.ai_destination_text();
-        let text = if self.remote {
-            format!("envia dados ao {provider}: {destination}")
-        } else {
-            format!("{provider}, sem envio externo")
+        let text = match self.ai.provider {
+            AiProvider::Local => format!("{provider}, sem envio externo"),
+            _ => format!("envia dados ao {provider}: {destination}"),
         };
         ui.small(text)
             .on_hover_text(self.ai_disclosure_text(false));
+    }
+
+    /// Opens "Configurar IA" and asks the server for its models.
+    fn open_ai_settings(&mut self, ctx: &egui::Context) {
+        self.settings_open = true;
+        if !self.models_match_current() {
+            self.fetch_models(ctx);
+        }
+    }
+
+    /// True when the listed models came from the provider and endpoint now
+    /// configured (otherwise the list is stale and is not shown).
+    fn models_match_current(&self) -> bool {
+        self.models_for.as_ref().is_some_and(|(provider, base)| {
+            *provider == self.ai.provider
+                && base.trim_end_matches('/') == self.ai.base_url().trim().trim_end_matches('/')
+        })
     }
 
     fn configuration(&mut self, ctx: &egui::Context) {
@@ -2545,33 +2642,129 @@ impl PonteApp {
             return;
         }
         let mut open = self.settings_open;
-        egui::Window::new("Configurar IA").open(&mut open).default_width(580.0).resizable(true).show(ctx, |ui| {
-            ui.label("Escolha um endpoint compatível com a API de chat do Ollama.");
+        let mut save = false;
+        let mut refresh = false;
+        let mut provider_changed = false;
+        egui::Window::new("Configurar IA").open(&mut open).default_width(600.0).resizable(true).show(ctx, |ui| {
+            ui.strong("Onde a IA roda");
             ui.horizontal_wrapped(|ui| {
-                ui.radio_value(&mut self.remote, false, "Ollama neste computador");
-                ui.radio_value(&mut self.remote, true, "Servidor remoto HTTPS");
+                let before = self.ai.provider;
+                ui.radio_value(&mut self.ai.provider, AiProvider::Local, "Ollama neste computador")
+                    .on_hover_text("Modelo instalado neste computador. Nada sai da máquina.");
+                ui.radio_value(&mut self.ai.provider, AiProvider::Cloud, "Ollama Cloud")
+                    .on_hover_text("Modelos grandes nos servidores da Ollama (ollama.com), com a chave da sua conta.");
+                ui.radio_value(&mut self.ai.provider, AiProvider::Remote, "Outro servidor HTTPS")
+                    .on_hover_text("Servidor do órgão compatível com a API de chat do Ollama.");
+                provider_changed = before != self.ai.provider;
             });
-            let label = ui.label("Endpoint base");
-            let endpoint = if self.remote { &mut self.remote_url } else { &mut self.local_url };
-            ui.add(egui::TextEdit::singleline(endpoint).desired_width(f32::INFINITY)).labelled_by(label.id);
-            let label = ui.label("Modelo disponível nesse servidor");
-            ui.add(egui::TextEdit::singleline(&mut self.model).hint_text("Nome do modelo instalado").desired_width(f32::INFINITY)).labelled_by(label.id);
-            let label = ui.label("Token (opcional; mantido somente na memória desta sessão)");
-            ui.add(egui::TextEdit::singleline(&mut self.token).password(true).desired_width(f32::INFINITY)).labelled_by(label.id);
+            ui.add_space(4.0);
+            match self.ai.provider {
+                AiProvider::Local => {
+                    let label = ui.label("Endereço do Ollama");
+                    ui.add(egui::TextEdit::singleline(&mut self.ai.local_url).desired_width(f32::INFINITY)).labelled_by(label.id);
+                    ui.small("Padrão: http://127.0.0.1:11434. Instale o Ollama em ollama.com/download e baixe um modelo (ex.: ollama pull qwen3:4b-instruct).");
+                }
+                AiProvider::Cloud => {
+                    ui.label(format!("Endereço: {} (fixo)", ai::CLOUD_URL));
+                    let label = ui.label("Chave de API da sua conta");
+                    ui.add(egui::TextEdit::singleline(&mut self.ai.cloud_key).password(true).hint_text("cole aqui a chave gerada em ollama.com").desired_width(f32::INFINITY)).labelled_by(label.id);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.small("Crie a chave em");
+                        ui.hyperlink_to(RichText::new("ollama.com/settings/keys").small(), "https://ollama.com/settings/keys");
+                        ui.small("(conta gratuita por uso ou plano mensal).");
+                    });
+                    ui.colored_label(WARNING, "Os textos enviados à IA saem deste computador para os servidores da Ollama (EUA, com possível roteamento pela Europa). A Ollama declara não registrar nem treinar com os dados.");
+                }
+                AiProvider::Remote => {
+                    let label = ui.label("Endereço do servidor (HTTPS)");
+                    ui.add(egui::TextEdit::singleline(&mut self.ai.remote_url).desired_width(f32::INFINITY)).labelled_by(label.id);
+                    let label = ui.label("Token (opcional)");
+                    ui.add(egui::TextEdit::singleline(&mut self.ai.remote_token).password(true).desired_width(f32::INFINITY)).labelled_by(label.id);
+                    ui.colored_label(WARNING, "Os textos enviados à IA saem deste computador para esse servidor.");
+                }
+            }
+            ui.add_space(6.0);
+            ui.strong("Modelo");
+            let listed = self.models_match_current() && !self.models.is_empty();
+            ui.horizontal_wrapped(|ui| {
+                if listed {
+                    let models = self.models.clone();
+                    let current = self.ai.model().trim().to_owned();
+                    let selected = models
+                        .iter()
+                        .find(|m| m.name == current)
+                        .map(ModelInfo::label)
+                        .unwrap_or_else(|| if current.is_empty() { "Escolha um modelo".into() } else { current.clone() });
+                    egui::ComboBox::from_id_salt("ai-model")
+                        .selected_text(selected)
+                        .width(320.0)
+                        .show_ui(ui, |ui| {
+                            let model = self.ai.model_mut();
+                            for info in &models {
+                                ui.selectable_value(model, info.name.clone(), info.label());
+                            }
+                        });
+                } else {
+                    let model = self.ai.model_mut();
+                    ui.add(egui::TextEdit::singleline(model).hint_text("nome do modelo").desired_width(320.0));
+                }
+                let fetching = self.model_fetch.is_some();
+                let button = egui::Button::new(if listed { "↻ Atualizar lista" } else { "Listar modelos do servidor" });
+                if ui.add_enabled(!fetching, button).on_hover_text("Consulta o servidor configurado e lista os modelos que ele oferece.").clicked() {
+                    refresh = true;
+                }
+                if fetching {
+                    ui.spinner();
+                    ui.small("consultando…");
+                }
+            });
+            if let Some(error) = &self.models_error {
+                ui.colored_label(WARNING, format!("⚠ {error}"));
+            } else if listed {
+                ui.small(format!("{} modelo(s) oferecido(s) por este servidor.", self.models.len()));
+            } else if self.model_fetch.is_none() {
+                ui.small("Clique em “Listar modelos do servidor” para escolher entre os disponíveis.");
+            }
+            ui.add_space(6.0);
+            ui.checkbox(&mut self.ai.remember_keys, "Guardar a chave neste computador")
+                .on_hover_text("A configuração fica no acervo, cifrada com a DPAPI da sua conta do Windows. Desmarcada, a chave vale só até fechar o Ponte.");
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("Limpar token").clicked() { self.token.clear(); }
-                if ui.button("Validar configuração").clicked() {
-                    match self.settings() {
-                        Ok(_) => self.message("Configuração válida. O servidor será acessado somente ao analisar ou gerar uma sugestão."),
-                        Err(error) => self.error(error.to_string()),
-                    }
+                let dirty = self.ai_config_dirty();
+                if ui.add_enabled(dirty, egui::Button::new("Salvar")).clicked() {
+                    save = true;
+                }
+                if dirty {
+                    ui.small("alterações não salvas (também são salvas ao fechar esta janela)");
+                } else {
+                    ui.small("configuração salva");
                 }
             });
             ui.separator();
-            ui.small("Endpoint, modelo e token não são gravados. O token também pode vir de PONTEPROJ_AI_TOKEN. O aplicativo não solicita sua senha do SIGADOC.");
-            if self.remote { ui.colored_label(WARNING, "Ao usar a IA remota, o conteúdo indicado na ação será enviado a esse servidor."); }
+            ui.small("O servidor só é acessado ao listar modelos, analisar ou gerar uma sugestão. A chave também pode vir da variável PONTEPROJ_AI_TOKEN. O aplicativo não solicita sua senha do SIGADOC.");
             ui.small("A análise é salva na biblioteca. A sugestão de minuta só é salva por sua ação explícita.");
         });
+        if provider_changed {
+            self.models_error = None;
+            if !self.models_match_current() {
+                self.fetch_models(ctx);
+            }
+        }
+        if refresh {
+            self.models_for = None;
+            self.fetch_models(ctx);
+        }
+        if save && self.save_ai_config() {
+            self.message("Configuração de IA salva.");
+        }
+        if !open && self.ai_config_dirty() {
+            // Closing saves; an invalid configuration keeps the window open.
+            if self.save_ai_config() {
+                self.message("Configuração de IA salva.");
+            } else {
+                open = true;
+            }
+        }
         self.settings_open = open;
     }
 
@@ -2780,6 +2973,7 @@ impl eframe::App for PonteApp {
         let ctx = ui.ctx().clone();
         self.intranet.attach_repaint(&ctx);
         self.poll_worker();
+        self.poll_models();
         let queued = self.store.take_offline_queued();
         if queued > 0 {
             self.message(if queued == 1 {
