@@ -70,10 +70,10 @@ pub fn purpose(value: &str) -> &str {
 
 pub fn reference_kind(kind: &str) -> &str {
     match kind {
-        "original" => "Documento original",
-        "attachment" => "Anexo",
+        "original" => "Original no SIGADOC",
+        "attachment" => "Anexo no SIGADOC",
         "antecedent" => "Documento anterior",
-        _ => "Referência",
+        _ => "Link",
     }
 }
 

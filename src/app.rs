@@ -1477,22 +1477,27 @@ impl PonteApp {
                             ui.label(RichText::new("↳").size(15.0).color(JOINED_FG))
                                 .on_hover_text(joined.clone().unwrap_or_default());
                         }
-                        // Barra vertical sinalizadora (vermelho = atrasada, âmbar/azul = no prazo, verde = concluída)
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(5.0, 66.0), egui::Sense::hover());
-                        ui.painter().rect_filled(rect, 2.5, stripe);
+                        // Barra vertical sinalizadora (vermelho = atrasada, âmbar/azul = no prazo, verde = concluída).
+                        // Painted after the card so it matches the card's height.
+                        let stripe_left = ui.cursor().min;
+                        ui.add_space(5.0);
 
+                        // The title wraps instead of being cut; the card grows with it.
                         let label = format!("{}\n{}", number, document.title);
-                        if ui
-                            .add_sized(
-                                [ui.available_width(), 66.0],
-                                egui::Button::new(RichText::new(label).size(14.0))
-                                    .selected(self.selected_id == Some(document.id)),
-                            )
-                            .clicked()
-                        {
+                        let response = ui.add(
+                            egui::Button::new(RichText::new(label).size(14.0))
+                                .wrap()
+                                .min_size(egui::vec2(ui.available_width(), 60.0))
+                                .selected(self.selected_id == Some(document.id)),
+                        );
+                        if response.clicked() {
                             selected = Some(document.id);
                         }
+                        let stripe_rect = egui::Rect::from_min_size(
+                            stripe_left,
+                            egui::vec2(5.0, response.rect.height()),
+                        );
+                        ui.painter().rect_filled(stripe_rect, 2.5, stripe);
                     });
 
                     ui.horizontal_wrapped(|ui| {
@@ -1579,7 +1584,7 @@ impl PonteApp {
                 }
             });
         });
-        ui.label(RichText::new(&detail.summary.title).size(18.0));
+        ui.add(egui::Label::new(RichText::new(&detail.summary.title).size(18.0)).wrap());
         let mut open_joined = None;
         if let Some(text) = joined_label(&detail.summary) {
             ui.horizontal_wrapped(|ui| {
@@ -1968,18 +1973,29 @@ impl PonteApp {
             }
             Ok(files) => {
                 ui.horizontal(|ui| {
-                    ui.small("Os PDFs ficam protegidos no acervo.");
-                    info(ui, "Exportar cria uma cópia legível na pasta local \"exportados\", para abrir no leitor de PDF.");
+                    ui.small("Cópias baixadas na importação, guardadas protegidas no acervo.");
+                    info(ui, "“Ler no Ponte” abre a cópia local, sem precisar do SIGADOC. “Abrir no SIGADOC” vai à versão oficial no navegador (exige login). “Exportar” cria uma cópia legível na pasta local \"exportados\".");
                 });
                 for file in files {
+                    let origin = detail
+                        .capture
+                        .references
+                        .iter()
+                        .find(|r| r.url == file.url);
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal_wrapped(|ui| {
                             ui.strong(&file.label);
+                            if let Some(reference) = origin {
+                                ui.small(reference_kind(&reference.kind));
+                            }
                             ui.small(format!("{} KB", file.size.div_ceil(1024)));
                             ui.small(&file.text_status);
                         });
                         ui.horizontal_wrapped(|ui| {
+                            if let Some(reference) = origin {
+                                safe_link(ui, "Abrir no SIGADOC", &reference.url);
+                            }
                             if ui.button("Ler no Ponte").clicked() {
                                 self.pdf_reader.open(
                                     &self.store,
@@ -2036,15 +2052,32 @@ impl PonteApp {
             }
         }
         ui.add_space(6.0);
-        ui.strong("Referências encontradas na página");
+        ui.horizontal(|ui| {
+            ui.strong("Links encontrados na página");
+            info(ui, "Abrem o SIGADOC no navegador e exigem login. Os PDFs que foram baixados na importação têm a cópia local em Documento ▸ Arquivos.");
+        });
         if detail.capture.references.is_empty() {
-            ui.small("Nenhuma referência foi identificada nesta página.");
+            ui.small("Nenhum link foi identificado nesta página.");
         }
+        let downloaded: Vec<String> = self
+            .store
+            .list_files(detail.summary.latest_capture_id)
+            .map(|files| files.into_iter().map(|f| f.url).collect())
+            .unwrap_or_default();
         for (index, reference) in detail.capture.references.iter().enumerate() {
             ui.push_id(("reference", index), |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.small(reference_kind(&reference.kind));
                     safe_link(ui, &reference.label, &reference.url);
+                    if downloaded.contains(&reference.url) {
+                        if ui
+                            .small_button("cópia baixada: ler no Ponte")
+                            .on_hover_text("Este PDF foi baixado na importação. Abre a cópia local em Documento ▸ Arquivos.")
+                            .clicked()
+                        {
+                            self.tab = Tab::Document;
+                        }
+                    }
                 });
             });
         }
@@ -2110,10 +2143,10 @@ impl PonteApp {
                 ui.separator();ui.label(format!("Data documental: {}",metadata.get("document_date").map(String::as_str).unwrap_or("não disponível na captura")));
                 if let Some(value)=metadata.get("medium"){ui.separator();ui.label(value);}
             });
-            if let Some(value)=metadata.get("document_model"){ui.label(format!("Modelo do SIGADOC: {value}"));}
-            if let Some(value)=metadata.get("via_status"){ui.label(format!("Situação no SIGADOC: {value}"));}
+            if let Some(value)=metadata.get("document_model"){ui.add(egui::Label::new(format!("Modelo do SIGADOC: {value}")).wrap());}
+            if let Some(value)=metadata.get("via_status"){ui.add(egui::Label::new(format!("Situação no SIGADOC: {value}")).wrap());}
             ui.label(format!("Finalidade local salva: {}",crate::work_context::purpose_label(&detail.work_context.purpose)));
-            if !detail.work_context.subjects.trim().is_empty(){ui.label(format!("Assuntos confirmados: {}",detail.work_context.subjects));}
+            if !detail.work_context.subjects.trim().is_empty(){ui.add(egui::Label::new(format!("Assuntos confirmados: {}",detail.work_context.subjects)).wrap());}
             if !detail.work_context.priority.is_empty(){ui.label(format!("Prioridade documental local: {}",crate::tasks::priority_label(&detail.work_context.priority)));}
             if let Some(value)=metadata.get("classification"){
                 let code=value.split(" - ").next().unwrap_or(value);
@@ -2130,7 +2163,7 @@ impl PonteApp {
                     }
                     let original=files.iter().find(|file|detail.capture.references.iter().any(|r|r.url==file.url&&r.kind=="original"));
                     ui.horizontal_wrapped(|ui|{
-                        if let Some(file)=original {if ui.button("Ler PDF original").clicked(){self.pdf_reader.open(&self.store,file.id,detail.summary.latest_capture_id,&file.label,ui.ctx());}}
+                        if let Some(file)=original {if ui.button("Ler PDF (cópia no Ponte)").on_hover_text("PDF do documento baixado na importação, aberto no leitor do Ponte sem precisar do SIGADOC. O mesmo arquivo está em Documento ▸ Arquivos, com a opção de abri-lo no SIGADOC.").clicked(){self.pdf_reader.open(&self.store,file.id,detail.summary.latest_capture_id,&file.label,ui.ctx());}}
                         if ui.button("Completar contexto").on_hover_text("Finalidade, assuntos, prioridade e orientações que só você sabe.").clicked(){self.work_context.reveal(detail.summary.id);}
                     });
                 },Err(error)=>{ui.label(format!("Não foi possível conferir os arquivos locais: {error}"));}
@@ -2801,10 +2834,13 @@ impl eframe::App for PonteApp {
                 }
             }
         });
+        // Wide limits so the divider visibly follows the drag; the
+        // central area keeps at least 40% of the window.
+        let max_library = (ui.max_rect().width() * 0.6).max(320.0);
         egui::Panel::left("library")
-            .default_size(300.0)
-            .min_size(250.0)
-            .max_size(440.0)
+            .default_size(320.0)
+            .min_size(180.0)
+            .max_size(max_library)
             .resizable(true)
             .show(ui, |ui| {
                 ui.add_enabled_ui(enabled, |ui| self.sidebar(ui));
@@ -2910,6 +2946,108 @@ mod tests {
             joined_to_id: parent.map(|(p, _)| p).filter(|p| *p > 0),
             joined_children_count: 0,
         }
+    }
+
+    /// Reproduces the window layout (top/bottom/left panels inside the root
+    /// Ui, then the central panel) with synthetic pointer input, and checks
+    /// that dragging the divider resizes the library and that the central
+    /// area never believes it is wider than the window.
+    #[test]
+    fn library_divider_drags_and_central_width_fits_the_window() {
+        use eframe::egui;
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let left_width = std::cell::Cell::new(0.0f32);
+        let central_width = std::cell::Cell::new(0.0f32);
+        let run = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                        egui::Panel::top("header").show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.heading("PONTE");
+                            });
+                        });
+                        egui::Panel::bottom("status").show(ui, |ui| {
+                            ui.small("status");
+                        });
+                        let left = egui::Panel::left("library")
+                            .default_size(300.0)
+                            .min_size(250.0)
+                            .max_size(440.0)
+                            .resizable(true)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut String::new())
+                                        .desired_width(f32::INFINITY),
+                                );
+                                egui::ScrollArea::vertical().id_salt("document-list").show(ui, |ui| {
+                                    for i in 0..5 {
+                                        ui.horizontal(|ui| {
+                                            ui.add_sized(
+                                                [ui.available_width(), 66.0],
+                                                egui::Button::new(format!("documento {i}")),
+                                            );
+                                        });
+                                    }
+                                });
+                            });
+                        left_width.set(left.response.rect.width());
+                        egui::CentralPanel::default().show(ui, |ui| {
+                            central_width.set(ui.available_width());
+                            egui::ScrollArea::vertical().id_salt("document-content").show(ui, |ui| {
+                                ui.group(|ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label("Tipo: DECLARAÇÃO");
+                                        ui.separator();
+                                        ui.label("Documento Eletrônico");
+                                    });
+                                });
+                            });
+                        });
+            });
+            output.drop_without_applying_deltas();
+        };
+        run(vec![]);
+        run(vec![]);
+        let initial = left_width.get();
+        assert!((initial - 300.0).abs() < 2.0, "largura inicial {initial}");
+        assert!(
+            central_width.get() <= screen.width() - initial + 1.0,
+            "painel central acha que tem {}px, janela {}px, lateral {initial}px",
+            central_width.get(),
+            screen.width()
+        );
+        // Press on the divider and drag 100 px to the left.
+        let divider = egui::pos2(initial, 400.0);
+        run(vec![egui::Event::PointerMoved(divider)]);
+        run(vec![egui::Event::PointerButton {
+            pos: divider,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        for step in 1..=10 {
+            let pos = egui::pos2(initial - 10.0 * step as f32, 400.0);
+            run(vec![egui::Event::PointerMoved(pos)]);
+        }
+        run(vec![egui::Event::PointerButton {
+            pos: egui::pos2(initial - 100.0, 400.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        run(vec![]);
+        // 100 px to the left of 300 is clamped by `min_size(250)`.
+        assert!(
+            (left_width.get() - 250.0).abs() < 2.0,
+            "a divisória não acompanhou o arrasto: {initial} -> {}",
+            left_width.get()
+        );
     }
 
     #[test]
