@@ -53,7 +53,7 @@ Enviar o documento aberto no SIGADOC ao aplicativo Ponte instalado no computador
 
 ## 4. Depois da publicação: autorizar o novo ID no Ponte
 
-> **Estado atual (2026-11-03):** item criado no painel com o ID **`hhppmkbmainkdfmcfeaanknlnfgihnah`** (conta `carlo.demusis@gmail.com`). O ID já está em `extension-store-id.txt` e o instalador autoriza os dois IDs. Falta a verificação do e-mail de contato do publisher e o envio para análise.
+> **Estado atual (2026-11-03):** item criado no painel com o ID **`hhppmkbmainkdfmcfeaanknlnfgihnah`** (conta `carlo.demusis@gmail.com`). O ID já está em `extension-store-id.txt` e o instalador autoriza os dois IDs. E-mail do publisher verificado e item **enviado para análise em 2026-11-03**. Link após a aprovação: <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah>.
 
 A loja atribui à extensão um ID próprio, diferente do ID da versão carregada da pasta (`ecllnakmppjinmednoikimbpnbgbimhg`). O Ponte só aceita mensagens dos IDs autorizados no manifesto do host nativo, por isso:
 
