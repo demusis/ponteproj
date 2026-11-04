@@ -900,6 +900,11 @@ fn explain(status: u16, code: &str, message: &str, param: &str) -> String {
             "O ChatGPT bloqueou a requisição (política ou região da conta){}.",
             if detail.is_empty() { String::new() } else { format!(": {detail}") }
         ),
+        (_, 0) => format!(
+            "O ChatGPT interrompeu a resposta{}{}.",
+            if code.is_empty() { String::new() } else { format!(" ({})", clean(code, 80)) },
+            if detail.is_empty() { String::new() } else { format!(": {detail}") }
+        ),
         _ => format!(
             "O ChatGPT respondeu HTTP {status}{}.",
             if detail.is_empty() { String::new() } else { format!(": {detail}") }
@@ -981,10 +986,35 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
             }
             "response.completed" => Ok(true),
             "response.failed" | "error" => {
-                let error = if event["type"] == "error" { event } else { &event["response"]["error"] };
-                let code = error["code"].as_str().unwrap_or("");
-                let message = error["message"].as_str().unwrap_or("");
-                bail!("{}", explain(0, code, message, error["param"].as_str().unwrap_or("")))
+                // The documented shapes put the fields at the top level
+                // (`error` event) or under `response.error` (`response.failed`);
+                // some gateways nest them under `error`. Look in all three and,
+                // failing that, show the event itself so it can be reported.
+                let places = [event, &event["error"], &event["response"]["error"]];
+                let pick = |key: &str| {
+                    places
+                        .iter()
+                        .find_map(|place| place[key].as_str().filter(|s| !s.trim().is_empty()))
+                        .unwrap_or("")
+                        .to_owned()
+                };
+                let code = {
+                    let code = pick("code");
+                    if code.is_empty() {
+                        places[1..]
+                            .iter()
+                            .find_map(|place| place["type"].as_str().filter(|s| !s.is_empty()))
+                            .unwrap_or("")
+                            .to_owned()
+                    } else {
+                        code
+                    }
+                };
+                let mut message = pick("message");
+                if message.is_empty() {
+                    message = format!("evento recebido: {}", clean(&event.to_string(), 400));
+                }
+                bail!("{}", explain(0, &code, &message, &pick("param")))
             }
             "response.incomplete" => bail!(
                 "A IA interrompeu a resposta antes do fim ({}); nada foi salvo.",
@@ -1180,7 +1210,14 @@ mod tests {
         assert!(read_stream(Cursor::new(cut), &silent).unwrap_err().to_string().contains("sem confirmação"));
         let failed = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\",\"message\":\"limit\"}}}\n\n";
         assert!(read_stream(Cursor::new(failed), &silent).unwrap_err().to_string().contains("cota"));
-        let only_final = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final\"}]}]}}\n\n";
+        // Nested error object, and an error event with nothing recognizable.
+        let nested = "data: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"campo recusado\"}}\n\n";
+        let error = read_stream(Cursor::new(nested), &silent).unwrap_err().to_string();
+        assert!(error.contains("interrompeu") && error.contains("invalid_request_error") && error.contains("campo recusado"), "{error}");
+        let bare = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"id\":\"r9\"}}\n\n";
+        let error = read_stream(Cursor::new(bare), &silent).unwrap_err().to_string();
+        assert!(error.contains("evento recebido") && error.contains("r9"), "{error}");
+        let only_final ="data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final\"}]}]}}\n\n";
         assert_eq!(read_stream(Cursor::new(only_final), &silent).unwrap(), "final");
         // Progress is reported and a cancellation stops the reading.
         let (sender, receiver) = std::sync::mpsc::channel();
