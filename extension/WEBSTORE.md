@@ -8,7 +8,7 @@ O envio exige uma conta Google de desenvolvedor da Chrome Web Store. Esse passo 
 
 | Item | Onde |
 |---|---|
-| Pacote `.zip` para envio (sem o campo `key`, como a loja exige) | `scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-0.1.8.zip` |
+| Pacote `.zip` para envio (sem o campo `key`, como a loja exige) | `scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-0.1.9.zip` |
 | Textos da ficha (abaixo) | esta página |
 | Política de privacidade (página pública) | <https://demusis.github.io/ponte-privacidade/> — fonte em `extension\PRIVACIDADE.md`; repositório `github.com/demusis/ponte-privacidade` |
 | Ícone 128×128 e imagens | `extension\icons\icon-128.png`; capturas de tela: tire 1 a 5 imagens de 1280×800 da página do SIGADOC com o botão "Importar para o assistente" (sem dados reais) |
@@ -17,7 +17,7 @@ O envio exige uma conta Google de desenvolvedor da Chrome Web Store. Esse passo 
 ## 2. Enviar (uma vez)
 
 1. Entre em <https://chrome.google.com/webstore/devconsole> com a conta Google que será a dona da extensão (de preferência uma conta institucional, não pessoal). Pague a taxa única de registro de desenvolvedor (US$ 5) e confirme o e-mail de contato.
-2. **Novo item** → envie `dist\ponte-extensao-webstore-0.1.8.zip`.
+2. **Novo item** → envie `dist\ponte-extensao-webstore-0.1.9.zip` (se a 0.1.8 ainda estiver em análise, espere a análise terminar ou cancele-a no painel antes de enviar a nova).
 3. **Ficha da loja** — copie os textos da seção 3. Categoria: *Produtividade*. Idioma: *Português (Brasil)*.
 4. **Práticas de privacidade** — respostas na seção 3.
 5. **Distribuição** → **Visibilidade: Não listada** (só quem tem o link instala). Regiões: Brasil.

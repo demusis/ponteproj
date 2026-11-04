@@ -9,8 +9,9 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.13.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_13_0.md) |
-| **Licença** | MIT |
+| **Versão** | 0.14.0 (extensão 0.1.9) — [notas de versão](ATUALIZACAO_0_14_0.md) |
+| **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
+| **Licença** | [MIT](LICENSE) |
 
 ---
 
@@ -26,6 +27,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 8. [Onde ficam os dados, backup e lixeira](#8-onde-ficam-os-dados-backup-e-lixeira)
 9. [Solução de problemas](#9-solução-de-problemas)
 10. [Para desenvolvedores](#10-para-desenvolvedores)
+11. [Autoria e licença](#11-autoria-e-licença)
 
 ---
 
@@ -39,7 +41,7 @@ Não precisa de administrador: tudo é instalado na sua conta do Windows.
 4. Instale a extensão **uma vez**, de um destes jeitos:
    - **Pela loja** (assim que a publicação for aprovada): abra o link da extensão e clique em **Adicionar ao Chrome**.
    - **Pela pasta instalada**: na tela inicial do Ponte, clique em **Copiar caminho**; no navegador abra `chrome://extensions` (ou `edge://extensions`), ative **Modo do desenvolvedor**, clique em **Carregar sem compactação** e cole o caminho na barra de endereço da janela que abre.
-5. Feche e abra o navegador de novo. Clique no ícone da extensão: deve mostrar *✓ Ligado ao Ponte 0.9.0*.
+5. Feche e abra o navegador de novo. Clique no ícone da extensão: deve mostrar *✓ Ligado ao Ponte X.Y.Z* (a versão instalada; ela também aparece em **Menu ▾ ▸ Sobre o Ponte**).
 
 O que o instalador faz, caso queira saber: copia o programa para `%LOCALAPPDATA%\Programs\PonteProj\vX.Y.Z` e a extensão para `…\PonteProj\extension`; registra a ligação navegador↔Ponte (chaves `HKCU` do Chrome e do Edge); cria o atalho **Ponte** no menu Iniciar; **faz uma cópia de segurança do acervo** antes de mudar qualquer coisa; remove versões antigas. Para atualizar, basta rodar o instalador novo. A desinstalação fica em *Aplicativos instalados* e **não apaga seus dados**.
 
@@ -119,7 +121,15 @@ Cada anexo tem uma **descrição** opcional e os botões **Ler no Ponte** (PDF) 
 
 ### Reimportar
 
-Importar de novo o mesmo documento não duplica nada: se a página não mudou, o Ponte avisa *Este documento já estava importado*; se mudou, guarda uma nova versão (as anteriores ficam em **Mais ▸ Versões importadas**, com comparação do que mudou) e marca análises e minutas antigas como feitas sobre uma importação anterior.
+Importar de novo o mesmo documento nunca duplica nada. O Ponte compara o conteúdo (texto da página, PDFs e dados) com o que já está no acervo:
+
+| A página do SIGADOC está… | O que acontece |
+|---|---|
+| **igual** à versão em uso no Ponte | **Nada é gravado.** O painel da extensão mostra, em laranja, *"Importação ignorada: o SIGADOC mostra o mesmo conteúdo já importado em 04/11/2026 12:38. Nada foi gravado. Se o documento mudou, atualize a página (F5) e importe de novo."* O Ponte não abre e o documento não muda de lugar na lista. |
+| **diferente** (despacho novo, anexo novo, texto alterado) | Guarda uma **nova versão**; as anteriores ficam em **Mais ▸ Versões importadas**, com comparação do que mudou, e análises e minutas antigas são marcadas como feitas sobre uma importação anterior. |
+| igual a uma **versão anterior** (voltou atrás) | Nada novo é gravado; essa versão volta a ser a atual e o painel avisa em laranja que a página corresponde a uma versão anterior. |
+
+Se a confirmação de uma importação se perder no caminho (o botão vira **Repetir importação**), repetir não duplica: o Ponte responde *Importação confirmada*.
 
 ---
 
@@ -260,6 +270,7 @@ Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo
 - **Backup**: Menu ▾ → **Fazer backup agora** cria uma cópia consistente em `…\PonteProj\backups\`. O instalador também faz uma antes de cada atualização. Um backup só abre na mesma conta do Windows que o criou.
 - **Lixeira**: excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a Lixeira (Menu ▾), de onde se restaura. Nada é apagado definitivamente.
 - **Ao fechar** com algo não salvo, a janela lista cada pendência com um botão **Ir para**.
+- **Menu ▾ ▸ Sobre o Ponte** mostra a versão do programa e da extensão, a autoria, a licença e o endereço do projeto.
 
 ---
 
@@ -309,7 +320,7 @@ Chrome/Edge ──(Native Messaging)──► ponteproj.exe --native-host ──
 | `scripts/` | `build.ps1`, `build-installer.ps1`, `build-webstore-package.ps1`, `install-app.ps1`, `install-native-host.ps1` |
 | `tests/` | Fluxo nativo (`native_flow.rs`), extensão (`node --test`, Playwright) e fixtures fictícias |
 
-Decisões que valem conhecer: a identidade de um documento é o número oficial validado por expressão regular (nunca um ID de DOM); toda gravação em SQLite passa por `protection::seal`; as capturas são imutáveis (reimportar cria versão); limites de 500 KiB de texto, 1 MiB por pacote, 8 MiB por PDF; a extensão só aceita `https://www.sigadoc.mt.gov.br` e remove segredos de URL.
+Decisões que valem conhecer: a identidade de um documento é o número oficial validado por expressão regular (nunca um ID de DOM); toda gravação em SQLite passa por `protection::seal`; as capturas são imutáveis (conteúdo novo cria versão; conteúdo idêntico é ignorado com aviso, sem gravar nada); limites de 500 KiB de texto, 1 MiB por pacote, 8 MiB por PDF; a extensão só aceita `https://www.sigadoc.mt.gov.br` e remove segredos de URL.
 
 ### Compilar e testar
 
@@ -325,7 +336,7 @@ Copy-Item .\target\release\ponteproj.exe .\dist\ponteproj.exe -Force
 .\scripts\build.ps1 -Action Test    # cargo test --all-targets --locked
 .\scripts\build.ps1 -Action Release # cargo build --release --locked
 
-# testes da extensão (30 testes; os de DOM usam o Chrome instalado)
+# testes da extensão (31 testes; os de DOM usam o Chrome instalado)
 $env:PONTEPROJ_PLAYWRIGHT_DIR = 'caminho\para\node_modules\playwright'
 node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tests\extension\files.test.cjs
 ```
@@ -365,6 +376,17 @@ A extensão publicada na loja tem ID próprio (`hhppmkbmainkdfmcfeaanknlnfgihnah
 
 - [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) — manual sem termos técnicos.
 - [`PLANO_OTIMIZACAO_UX.md`](PLANO_OTIMIZACAO_UX.md) — diagnóstico de usabilidade e plano em ondas (estado atual na seção 5).
-- [`ATUALIZACAO_0_9_0.md`](ATUALIZACAO_0_9_0.md) e anteriores — notas de cada versão.
+- [`ATUALIZACAO_0_14_0.md`](ATUALIZACAO_0_14_0.md) e anteriores (`ATUALIZACAO_X_Y_Z.md`) — notas de cada versão.
+- [`PLANO_TAREFAS_UX.md`](PLANO_TAREFAS_UX.md) e [`PLANO_ANEXOS.md`](PLANO_ANEXOS.md) — propostas que deram origem às versões 0.11 a 0.13.
 - [`PROPOSTA_CONTROLE_SAIOP.md`](PROPOSTA_CONTROLE_SAIOP.md), [`PLANO_JUNTADA_DOCUMENTOS.md`](PLANO_JUNTADA_DOCUMENTOS.md), [`notas_tecnicas.md`](notas_tecnicas.md), [`INTERFACES.md`](INTERFACES.md) — desenho das funcionalidades.
 - [`extension/WEBSTORE.md`](extension/WEBSTORE.md) e [`extension/PRIVACIDADE.md`](extension/PRIVACIDADE.md) — publicação na loja.
+
+---
+
+## 11. Autoria e licença
+
+O Ponte foi concebido e desenvolvido por **Carlo Ralph De Musis** e **João Gabriel Bezerra Estrela**. No programa, **Menu ▾ ▸ Sobre o Ponte** mostra estes créditos, a versão e o endereço do projeto.
+
+O código é distribuído sob a licença **MIT** (arquivo [`LICENSE`](LICENSE)): pode ser usado, copiado, modificado e redistribuído livremente, inclusive para fins comerciais, desde que o aviso de autoria e a licença sejam mantidos. O software é fornecido sem garantias.
+
+O Ponte não é um produto do SIGADOC nem da sua mantenedora; ele apenas lê, no navegador da pessoa, as páginas às quais ela já tem acesso. Assinaturas, tramitação e a versão oficial dos documentos continuam no SIGADOC.

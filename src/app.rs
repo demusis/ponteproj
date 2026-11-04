@@ -14,6 +14,10 @@ const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
 const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
 const SUCCESS: Color32 = Color32::from_rgb(20, 118, 72);
 const MUTED: Color32 = Color32::from_rgb(120, 130, 140);
+/// Public repository with the installer, the source and the release notes.
+const PROJECT_URL: &str = "https://github.com/demusis/ponteproj";
+/// Version of the browser extension shipped with this build (extension/manifest.json).
+const EXTENSION_VERSION: &str = "0.1.9";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DocTaskFilter {
@@ -526,6 +530,8 @@ struct PonteApp {
     leave_error: Option<String>,
     /// Read-only document window opened from the task form.
     consult: Option<Consult>,
+    /// "Sobre o Ponte" window (authors, version, licence).
+    about_open: bool,
     store: Store,
     db_path: PathBuf,
     documents: Vec<DocumentSummary>,
@@ -584,6 +590,7 @@ impl PonteApp {
             leave: None,
             leave_error: None,
             consult: None,
+            about_open: false,
             store,
             db_path,
             documents: Vec::new(),
@@ -893,6 +900,49 @@ impl PonteApp {
         match self.store.load_document(document_id) {
             Ok(detail) => self.consult = Some(Consult { detail }),
             Err(error) => self.error(format!("Não foi possível abrir o documento para consulta: {error}")),
+        }
+    }
+
+    /// Authors, version, licence and where to find the project.
+    fn about_window(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new("Sobre o Ponte")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(440.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.heading(RichText::new("PONTE").color(ACCENT).strong());
+                ui.label("Assistente documental para o SIGADOC");
+                ui.small(format!(
+                    "Versão {} • extensão do navegador {}",
+                    env!("CARGO_PKG_VERSION"),
+                    EXTENSION_VERSION
+                ));
+                ui.add_space(10.0);
+                ui.strong("Autoria");
+                ui.label("Carlo Ralph De Musis");
+                ui.label("João Gabriel Bezerra Estrela");
+                ui.add_space(10.0);
+                ui.strong("Licença");
+                ui.label("MIT. O código-fonte é aberto e pode ser usado, copiado e modificado livremente, mantendo o aviso de autoria.");
+                ui.add_space(10.0);
+                ui.strong("Código, instalador e notas de versão");
+                ui.hyperlink_to(PROJECT_URL, PROJECT_URL);
+                ui.add_space(6.0);
+                ui.small("O Ponte guarda os documentos no seu computador, protegidos pela sua conta do Windows. Nada é enviado ao SIGADOC nem à nuvem.");
+                ui.add_space(8.0);
+                if ui.button("Fechar").clicked() {
+                    close = true;
+                }
+            });
+        if !open || close {
+            self.about_open = false;
         }
     }
 
@@ -1604,7 +1654,13 @@ impl PonteApp {
                         ui.close();
                     }
                     ui.separator();
-                    ui.small(format!("Ponte {}", env!("CARGO_PKG_VERSION")));
+                    if ui
+                        .button(format!("Sobre o Ponte {}…", env!("CARGO_PKG_VERSION")))
+                        .clicked()
+                    {
+                        self.about_open = true;
+                        ui.close();
+                    }
                 });
                 if backup {
                     self.backup(ui.ctx());
@@ -3390,6 +3446,7 @@ impl eframe::App for PonteApp {
             });
         });
         if enabled {
+            self.about_window(&ctx);
             self.consult_window(&ctx);
             self.configuration(&ctx);
             self.suggestion_window(&ctx);

@@ -1,8 +1,11 @@
 [package]
 name = "ponteproj"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 description = "Assistente local SIGADOC com captura pelo navegador"
+authors = ["Carlo Ralph De Musis", "João Gabriel Bezerra Estrela"]
+license = "MIT"
+repository = "https://github.com/demusis/ponteproj"
 
 [dependencies]
 anyhow = "1"

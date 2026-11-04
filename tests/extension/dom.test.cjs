@@ -204,6 +204,31 @@ test("UI retry after lost acknowledgment reuses original UUID/text; no success b
   await page.close();
 });
 
+test("an unchanged import is shown as a warning with the host's explanation; older hosts' duplicates too", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page);
+  await page.evaluate(() => window.__testShadow.querySelector("button").click());
+  const hostMessage = "Importação ignorada: o SIGADOC mostra o mesmo conteúdo já importado em 04/11/2026 12:38. Nada foi gravado. Se o documento mudou, atualize a página (F5) e importe de novo.";
+  await page.evaluate(text => window.__callbacks.shift()({ protocol_version: 1, ok: true, request_id: window.__requests[0].request_id, document_id: 1, capture_id: 1, duplicate: true, outcome: "unchanged", message: text, ui_opened: false }), hostMessage);
+  await page.waitForTimeout(50);
+  let status = await page.evaluate(() => { const el = window.__testShadow.querySelector('[role="status"]'); return { text: el.textContent, className: el.className }; });
+  assert.equal(status.text, hostMessage);
+  assert.ok(status.className.includes("warning"), status.className);
+  assert.ok(!status.className.includes("success"), status.className);
+  // Next click is a fresh request (new UUID), never a retry of the ignored one.
+  await page.evaluate(() => window.__testShadow.querySelector("button").click());
+  const requests = await page.evaluate(() => window.__requests);
+  assert.equal(requests.length, 2);
+  assert.notEqual(requests[0].request_id, requests[1].request_id);
+  await page.evaluate(() => window.__callbacks.shift()({ protocol_version: 1, ok: true, request_id: window.__requests[1].request_id, document_id: 1, capture_id: 1, duplicate: true, message: "Salvo", ui_opened: false }));
+  await page.waitForTimeout(50);
+  status = await page.evaluate(() => { const el = window.__testShadow.querySelector('[role="status"]'); return { text: el.textContent, className: el.className }; });
+  assert.ok(status.text.includes("já estava importado"), status.text);
+  assert.ok(status.text.includes("Abra o Ponte"), status.text);
+  assert.ok(status.className.includes("warning"), status.className);
+  await page.close();
+});
+
 const historyFixture = `<h2>TESTE-OFI-2026/00042</h2><h3>1ª Via (Setor Competente)</h3><table class="mov"><thead><tr><th>Data</th><th>Evento</th><th>Cadastrante</th><th>Atendente</th><th>Descrição</th><th>Duração</th></tr></thead><tbody>
 <tr><td>22/10/26</td><td>Recebimento</td><td>UNIDADE</td><td>Destino fictício</td><td>UNIDADE</td><td>Pessoa fictícia</td><td>Ciência<button>NAO_IMPORTAR</button></td><td rowspan="2">3min</td></tr>
 <tr><td></td><td>Transferência</td><td>UNIDADE</td><td>Origem fictícia</td><td>UNIDADE</td><td>Pessoa fictícia</td><td></td></tr>

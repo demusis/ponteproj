@@ -61,6 +61,13 @@ test("receipt confirmation requires committed host receipt for the captured requ
   assert.equal(Core.validateReceipt(receipt(), UUID).ok, true);
   assert.throws(() => Core.validateReceipt(receipt(crypto.randomUUID()), UUID), error => error.code === "HOST_SCHEMA");
   assert.throws(() => Core.validateReceipt({ protocol_version: 1, ok: true }, UUID), error => error.code === "HOST_SCHEMA");
+  // Outcome: optional (older hosts), but only the three known values.
+  const unchanged = { ...receipt(), duplicate: true, outcome: "unchanged", message: "Importação ignorada: nada foi gravado." };
+  assert.equal(Core.validateReceipt(unchanged, UUID).outcome, "unchanged");
+  assert.equal(Core.importOutcome(unchanged), "unchanged");
+  assert.equal(Core.importOutcome(receipt()), "imported");
+  assert.equal(Core.importOutcome({ ...receipt(), duplicate: true }), "legacy_duplicate");
+  for (const outcome of ["x", 1, null]) assert.throws(() => Core.validateReceipt({ ...receipt(), outcome }, UUID), error => error.code === "HOST_SCHEMA");
   assert.equal(Core.nativeError("Specified native messaging host not found.").error.code, "HOST_MISSING");
   assert.equal(Core.nativeError("Access to the specified native messaging host is forbidden.").error.code, "HOST_FORBIDDEN");
 });

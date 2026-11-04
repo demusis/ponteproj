@@ -111,7 +111,9 @@ fn valid_framed_import_and_replay_commit_before_every_ui_callback() {
         assert_eq!(reply["capture_id"].as_i64().unwrap(), callbacks[0].1);
     }
     assert_eq!(replies[0]["duplicate"], false);
+    assert_eq!(replies[0]["outcome"], "imported");
     assert_eq!(replies[1]["duplicate"], true);
+    assert_eq!(replies[1]["outcome"], "confirmed");
     assert_eq!(count_rows(&path, "documents"), 1);
     assert_eq!(count_rows(&path, "captures"), 1);
     assert_eq!(count_rows(&path, "requests"), 1);
@@ -190,12 +192,63 @@ fn committed_import_survives_lost_ack_and_retry_is_idempotent() {
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0]["ok"], true);
     assert_eq!(replies[0]["duplicate"], true);
+    assert_eq!(replies[0]["outcome"], "confirmed");
     assert_eq!(replies[0]["document_id"].as_i64(), Some(id));
     assert_eq!(
         replies[0]["capture_id"].as_i64(),
         Some(persisted_capture_id)
     );
     assert_eq!(replies[0]["ui_opened"], false);
+    assert_eq!(count_rows(&path, "documents"), 1);
+    assert_eq!(count_rows(&path, "captures"), 1);
+    assert_eq!(count_rows(&path, "requests"), 1);
+}
+
+#[test]
+fn unchanged_import_warns_without_opening_the_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unchanged.sqlite3");
+    let mut store = Store::open(&path).unwrap();
+    let first = fixture();
+    let mut same = first.clone();
+    same.request_id = uuid::Uuid::new_v4().to_string();
+    same.captured_at = "2026-11-03T09:30:00Z".into();
+    let mut input = Vec::new();
+    append_json(&mut input, &request(&first));
+    append_json(&mut input, &request(&same));
+    let mut output = Vec::new();
+    let mut opened = Vec::new();
+    native::serve(&mut Cursor::new(input), &mut output, &mut store, |id| {
+        opened.push(id);
+        true
+    })
+    .unwrap();
+    let replies = responses(&output);
+    assert_eq!(replies.len(), 2);
+    assert_eq!(opened.len(), 1, "an ignored import never opens the Ponte");
+    assert_eq!(replies[0]["outcome"], "imported");
+    assert_eq!(replies[0]["ui_opened"], true);
+    let ignored = &replies[1];
+    assert_eq!(ignored["ok"], true);
+    assert_eq!(ignored["request_id"], same.request_id);
+    assert_eq!(ignored["duplicate"], true);
+    assert_eq!(ignored["outcome"], "unchanged");
+    assert_eq!(ignored["ui_opened"], false);
+    assert_eq!(ignored["capture_id"], replies[0]["capture_id"]);
+    let message = ignored["message"].as_str().unwrap();
+    assert!(message.starts_with("Importação ignorada"), "{message}");
+    assert!(message.contains("Nada foi gravado"), "{message}");
+    let stored_at: String = rusqlite::Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap()
+    .query_row("SELECT created_at FROM captures", [], |row| row.get(0))
+    .unwrap();
+    assert!(
+        message.contains(&ponteproj::labels::datetime(&stored_at)),
+        "{message}"
+    );
     assert_eq!(count_rows(&path, "documents"), 1);
     assert_eq!(count_rows(&path, "captures"), 1);
     assert_eq!(count_rows(&path, "requests"), 1);

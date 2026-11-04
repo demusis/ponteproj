@@ -1,4 +1,7 @@
-use crate::{model::Capture, storage::Store};
+use crate::{
+    model::{Capture, ImportOutcome},
+    storage::Store,
+};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -103,10 +106,37 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
                 store.import_capture(&capture)
             };
             match result {
-                Ok(receipt) => (
-                    json!({"protocol_version":1,"ok":true,"request_id":receipt.request_id,"document_id":receipt.document_id,"capture_id":receipt.capture_id,"duplicate":receipt.duplicate,"message":"Informações da página gravadas no acervo local."}),
-                    Some(receipt.document_id),
-                ),
+                Ok(receipt) => {
+                    let outcome = receipt.effective_outcome();
+                    let mut response = json!({"protocol_version":1,"ok":true,"request_id":receipt.request_id,"document_id":receipt.document_id,"capture_id":receipt.capture_id,"duplicate":receipt.duplicate,"outcome":outcome.as_str()});
+                    match outcome {
+                        ImportOutcome::Imported => {
+                            response["message"] = json!("Informações da página gravadas no acervo local.");
+                            (response, Some(receipt.document_id))
+                        }
+                        ImportOutcome::Confirmed => {
+                            response["message"] = json!("Importação confirmada: a confirmação anterior tinha se perdido. Nada foi gravado de novo.");
+                            (response, Some(receipt.document_id))
+                        }
+                        ImportOutcome::Unchanged => {
+                            // Nothing was stored, so the Ponte is not opened:
+                            // the page is where the person is, and the warning
+                            // is shown there.
+                            let when = receipt
+                                .existing_captured_at
+                                .as_deref()
+                                .map(crate::labels::datetime)
+                                .unwrap_or_else(|| "data desconhecida".to_owned());
+                            response["message"] = json!(if receipt.previous_version {
+                                format!("O SIGADOC mostra uma versão anterior deste documento, importada em {when}; ela voltou a ser a versão atual no Ponte. Nada novo foi gravado.")
+                            } else {
+                                format!("Importação ignorada: o SIGADOC mostra o mesmo conteúdo já importado em {when}. Nada foi gravado. Se o documento mudou, atualize a página (F5) e importe de novo.")
+                            });
+                            response["ui_opened"] = json!(false);
+                            (response, None)
+                        }
+                    }
+                }
                 Err(err) => (
                     error(
                         "import_failed",

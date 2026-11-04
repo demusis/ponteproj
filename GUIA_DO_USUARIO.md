@@ -29,10 +29,11 @@ Se aparecer um erro, a mensagem diz o que fazer. As mais comuns:
 |---|---|
 | "O Ponte não foi encontrado neste computador" | Abra o Ponte uma vez e reinicie o navegador. Se continuar, rode o Instalar.cmd. |
 | "Não recebemos a confirmação do Ponte" | Clique em **Repetir importação**. Nada é duplicado. |
+| "Importação ignorada: o SIGADOC mostra o mesmo conteúdo já importado em …" (em laranja) | Não é erro: o documento já está no Ponte exatamente assim, e nada foi gravado. Se ele mudou no SIGADOC, atualize a página (F5) e importe de novo; o Ponte guarda a nova versão. |
 | "A página ainda não terminou de carregar" | Espere a página abrir por completo e tente de novo. |
 | "Esta página não é a ficha de um documento" | Abra o documento, não a lista ou a busca. |
 
-Clicar no ícone da extensão mostra se ela está ligada ao Ponte e o que fazer se não estiver.
+Clicar no ícone da extensão mostra se ela está ligada ao Ponte e o que fazer se não estiver. No Ponte, **Menu ▾ ▸ Sobre o Ponte** mostra a versão instalada, quem fez o programa e onde baixar atualizações.
 
 ## 3. A ficha do documento
 

@@ -8,7 +8,7 @@
   host.setAttribute("data-ponteproj-ui", "true");
   const shadow = host.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
-  style.textContent = ":host{all:initial;position:fixed;right:18px;bottom:18px;z-index:2147483646;font:14px/1.45 system-ui,sans-serif;color:#172b45}section{width:min(340px,calc(100vw - 40px));padding:14px;border:1px solid #a9b8cb;border-radius:12px;background:#fff;box-shadow:0 6px 24px #10264033}section.idle{width:min(260px,calc(100vw - 40px));padding:10px 12px;opacity:.9}button{width:100%;border:0;border-radius:7px;background:#1257a6;color:#fff;padding:11px 12px;font:600 14px system-ui;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #d99500;outline-offset:3px}button:disabled{background:#667588;cursor:default}p{margin:9px 0 0;overflow-wrap:anywhere;font-size:12px}.identity{font-weight:600}.idle .identity{margin-top:0;font-weight:500;color:#4c5d72}.idle button,.idle p.status,.idle details{display:none}p.error{color:#9b2c2c}p.success{color:#1d6b3a}a{color:#1257a6}details{margin-top:7px;font-size:11px}summary{cursor:pointer}ul{padding-left:18px}li{margin-top:4px}";
+  style.textContent = ":host{all:initial;position:fixed;right:18px;bottom:18px;z-index:2147483646;font:14px/1.45 system-ui,sans-serif;color:#172b45}section{width:min(340px,calc(100vw - 40px));padding:14px;border:1px solid #a9b8cb;border-radius:12px;background:#fff;box-shadow:0 6px 24px #10264033}section.idle{width:min(260px,calc(100vw - 40px));padding:10px 12px;opacity:.9}button{width:100%;border:0;border-radius:7px;background:#1257a6;color:#fff;padding:11px 12px;font:600 14px system-ui;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #d99500;outline-offset:3px}button:disabled{background:#667588;cursor:default}p{margin:9px 0 0;overflow-wrap:anywhere;font-size:12px}.identity{font-weight:600}.idle .identity{margin-top:0;font-weight:500;color:#4c5d72}.idle button,.idle p.status,.idle details{display:none}p.error{color:#9b2c2c}p.success{color:#1d6b3a}p.warning{color:#8a5a00;font-weight:600}a{color:#1257a6}details{margin-top:7px;font-size:11px}summary{cursor:pointer}ul{padding-left:18px}li{margin-top:4px}";
   const panel = document.createElement("section");
   panel.setAttribute("aria-label", "Importação para o Ponte");
   const button = document.createElement("button");
@@ -59,10 +59,21 @@
     else if (notice) {
       const prefix = same ? "" : `${notice.capture.document_number}: `;
       if (notice.result.ok) {
-        message = prefix + (notice.result.duplicate ? "Este documento já estava importado; nada mudou." : "Importado.") + (notice.result.ui_opened === false ? " Abra o Ponte para ver o documento." : " O Ponte abriu o documento.");
-        const notes = Array.isArray(notice.result.file_notes) ? notice.result.file_notes : [];
-        if (notes.length) message += ` ${notes.length} arquivo(s) não baixado(s): ${notes.join("; ")}`;
-        tone = "success";
+        const outcome = Core.importOutcome(notice.result);
+        const opened = notice.result.ui_opened === false ? " Abra o Ponte para ver o documento." : " O Ponte abriu o documento.";
+        if (outcome === "unchanged") {
+          // Nothing was stored; the Ponte explains why and what to do.
+          message = prefix + notice.result.message;
+          tone = "warning";
+        } else if (outcome === "legacy_duplicate") {
+          message = prefix + "Este documento já estava importado; nada mudou." + opened;
+          tone = "warning";
+        } else {
+          message = prefix + (outcome === "confirmed" ? "Importação confirmada." : "Importado.") + opened;
+          const notes = Array.isArray(notice.result.file_notes) ? notice.result.file_notes : [];
+          if (notes.length) message += ` ${notes.length} arquivo(s) não baixado(s): ${notes.join("; ")}`;
+          tone = "success";
+        }
       } else { message = prefix + notice.result.error.message; tone = "error"; }
     }
     status.textContent = message;

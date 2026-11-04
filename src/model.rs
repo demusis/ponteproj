@@ -42,12 +42,60 @@ pub struct Coverage {
     pub pending: Vec<String>,
 }
 
+/// What an import did with the page it received.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportOutcome {
+    /// New content: a capture was stored (first import or a new version).
+    Imported,
+    /// The same request had already been stored; this is the lost
+    /// confirmation of that import. Nothing was written again.
+    Confirmed,
+    /// A new request whose content is identical to a capture already in the
+    /// library. Nothing new was stored; the person is warned instead.
+    Unchanged,
+}
+
+impl ImportOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImportOutcome::Imported => "imported",
+            ImportOutcome::Confirmed => "confirmed",
+            ImportOutcome::Unchanged => "unchanged",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportReceipt {
     pub request_id: String,
     pub document_id: i64,
     pub capture_id: i64,
+    /// True for `Confirmed` and `Unchanged`. Kept for the browser extension
+    /// and team hosts from before `outcome` existed.
     pub duplicate: bool,
+    /// Absent when the receipt comes from an older team host.
+    #[serde(default)]
+    pub outcome: Option<ImportOutcome>,
+    /// When `Unchanged`: when the identical capture was stored (RFC 3339).
+    #[serde(default)]
+    pub existing_captured_at: Option<String>,
+    /// When `Unchanged`: the identical capture is an older version that has
+    /// become the current one again.
+    #[serde(default)]
+    pub previous_version: bool,
+}
+
+impl ImportReceipt {
+    /// The outcome, also for receipts from hosts that only report `duplicate`:
+    /// those behave as before (the document opens, nothing is refused).
+    pub fn effective_outcome(&self) -> ImportOutcome {
+        match self.outcome {
+            Some(outcome) => outcome,
+            None if self.duplicate => ImportOutcome::Confirmed,
+            None => ImportOutcome::Imported,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

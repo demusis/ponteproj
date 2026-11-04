@@ -277,6 +277,9 @@ impl Store {
                 document_id,
                 capture_id,
                 duplicate: true,
+                outcome: Some(ImportOutcome::Confirmed),
+                existing_captured_at: None,
+                previous_version: false,
             });
         }
         let document_id: i64 = match tx
@@ -297,19 +300,45 @@ impl Store {
             }
         };
         crate::trash::require_active_document(&tx, document_id)?;
-        let existing: Option<i64> = tx
+        let existing: Option<(i64, String)> = tx
             .query_row(
-                "SELECT id FROM captures WHERE document_id=?1 AND content_hash=?2",
+                "SELECT id,created_at FROM captures WHERE document_id=?1 AND content_hash=?2",
                 params![document_id, content_hash],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if let Some(id) = existing {
-            crate::trash::require_active_capture(&tx, id)?;
+        if let Some((id, _)) = &existing {
+            crate::trash::require_active_capture(&tx, *id)?;
         }
+        let latest: Option<i64> = tx
+            .query_row(
+                "SELECT latest_capture_id FROM documents WHERE id=?1",
+                [document_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some((capture_id, created_at)) = &existing {
+            if latest == Some(*capture_id) {
+                // The page shows exactly what is already current: nothing to
+                // store, not even the request. The person is warned instead.
+                tx.commit()?;
+                return Ok(ImportReceipt {
+                    request_id: capture.request_id.clone(),
+                    document_id,
+                    capture_id: *capture_id,
+                    duplicate: true,
+                    outcome: Some(ImportOutcome::Unchanged),
+                    existing_captured_at: Some(created_at.clone()),
+                    previous_version: false,
+                });
+            }
+        }
+        // Identical to an older version: that version becomes current again,
+        // without storing anything new.
         let duplicate = existing.is_some();
-        let capture_id = match existing {
-            Some(id) => id,
+        let capture_id = match &existing {
+            Some((id, _)) => *id,
             None => {
                 tx.execute("INSERT INTO captures(document_id,content_hash,payload,created_at) VALUES(?1,?2,?3,?4)", params![document_id, content_hash, payload, seen])?;
                 tx.last_insert_rowid()
@@ -350,6 +379,13 @@ impl Store {
             document_id,
             capture_id,
             duplicate,
+            outcome: Some(if duplicate {
+                ImportOutcome::Unchanged
+            } else {
+                ImportOutcome::Imported
+            }),
+            existing_captured_at: existing.map(|(_, created_at)| created_at),
+            previous_version: duplicate,
         })
     }
 
@@ -1168,23 +1204,97 @@ mod tests {
         let mut c = sample_capture();
         let first = db.import_capture(&c).unwrap();
         assert!(!first.duplicate);
-        assert!(db.import_capture(&c).unwrap().duplicate);
+        assert_eq!(first.outcome, Some(ImportOutcome::Imported));
+        let retry = db.import_capture(&c).unwrap();
+        assert!(retry.duplicate);
+        assert_eq!(retry.outcome, Some(ImportOutcome::Confirmed));
+        let requests = |db: &Store| {
+            db.conn
+                .query_row("SELECT count(*) FROM requests", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        let seen_before = db.load_document(first.document_id).unwrap().summary.last_seen_at;
         c.request_id = uuid::Uuid::new_v4().to_string();
         c.captured_at = "2026-11-02T12:00:00Z".into();
         let repeat = db.import_capture(&c).unwrap();
+        // Same content, new request: refused as unchanged, nothing written.
         assert!(repeat.duplicate);
+        assert_eq!(repeat.outcome, Some(ImportOutcome::Unchanged));
+        assert!(!repeat.previous_version);
+        assert!(repeat.existing_captured_at.is_some());
         assert_eq!(first.capture_id, repeat.capture_id);
         assert_eq!(first.document_id, repeat.document_id);
-        assert_eq!(
-            db.load_document(first.document_id)
-                .unwrap()
-                .capture
-                .captured_at,
-            "2026-11-01T12:00:00Z"
-        );
+        assert_eq!(requests(&db), 1, "an ignored import leaves no trace");
+        let detail = db.load_document(first.document_id).unwrap();
+        assert_eq!(detail.capture.captured_at, "2026-11-01T12:00:00Z");
+        assert_eq!(detail.summary.last_seen_at, seen_before);
+        // The first request's UUID cannot be reused for other content.
+        c.request_id = first.request_id.clone();
         c.text.push_str(" Novo conteúdo com UUID repetido.");
         assert!(db.import_capture(&c).is_err());
         assert_eq!(db.list_documents("").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn identical_content_is_ignored_and_an_older_version_can_become_current_again() {
+        let (_dir, mut db) = store();
+        let mut a = sample_capture();
+        let first = db.import_capture(&a).unwrap();
+        let mut b = a.clone();
+        b.request_id = uuid::Uuid::new_v4().to_string();
+        b.text.push_str(" Despacho acrescentado.");
+        let second = db.import_capture(&b).unwrap();
+        assert_eq!(second.outcome, Some(ImportOutcome::Imported));
+        assert_ne!(second.capture_id, first.capture_id);
+        let requests = |db: &Store| {
+            db.conn
+                .query_row("SELECT count(*) FROM requests", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        let captures = |db: &Store| {
+            db.conn
+                .query_row("SELECT count(*) FROM captures", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        assert_eq!((captures(&db), requests(&db)), (2, 2));
+
+        // The page shows the older version again: it becomes current, nothing new stored.
+        a.request_id = uuid::Uuid::new_v4().to_string();
+        let back = db.import_capture(&a).unwrap();
+        assert_eq!(back.outcome, Some(ImportOutcome::Unchanged));
+        assert!(back.previous_version);
+        assert_eq!(back.capture_id, first.capture_id);
+        assert_eq!(
+            db.load_document(first.document_id).unwrap().summary.latest_capture_id,
+            first.capture_id
+        );
+        assert_eq!((captures(&db), requests(&db)), (2, 3));
+
+        // Once more, identical to what is now current: ignored outright.
+        let seen = db.load_document(first.document_id).unwrap().summary.last_seen_at;
+        a.request_id = uuid::Uuid::new_v4().to_string();
+        let again = db.import_capture(&a).unwrap();
+        assert_eq!(again.outcome, Some(ImportOutcome::Unchanged));
+        assert!(!again.previous_version);
+        let stored_at: String = db
+            .conn
+            .query_row(
+                "SELECT created_at FROM captures WHERE id=?1",
+                [first.capture_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(again.existing_captured_at.as_deref(), Some(stored_at.as_str()));
+        assert_eq!((captures(&db), requests(&db)), (2, 3));
+        assert_eq!(db.load_document(first.document_id).unwrap().summary.last_seen_at, seen);
+
+        // A receipt from an older team host (no outcome) still behaves as before.
+        let legacy: ImportReceipt = serde_json::from_str(
+            r#"{"request_id":"x","document_id":1,"capture_id":1,"duplicate":true}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.effective_outcome(), ImportOutcome::Confirmed);
+        assert!(!legacy.previous_version);
     }
 
     #[test]
@@ -1210,6 +1320,7 @@ mod tests {
         let changed = db.import_capture(&c).unwrap();
         assert_ne!(first.capture_id, changed.capture_id);
         assert!(!changed.duplicate);
+        assert_eq!(changed.outcome, Some(ImportOutcome::Imported));
         let detail = db.load_document(first.document_id).unwrap();
         assert_eq!(detail.note, "Correção humana preservada");
         assert!(detail.drafts[0].stale);
@@ -1232,7 +1343,10 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        db.import_capture(&original).unwrap();
+        assert_eq!(
+            db.import_capture(&original).unwrap().outcome,
+            Some(ImportOutcome::Confirmed)
+        );
         assert_eq!(
             db.load_document(first.document_id)
                 .unwrap()

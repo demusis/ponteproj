@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ponte • Assistente SIGADOC",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Importa documentos do SIGADOC para o Ponte, o assistente documental instalado neste computador.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA02EAV5PbolmSmh5Nyf1n9Il82AEPt3myMH3GwA9Gst5fBL7k4OzDdy1qLx8EKGPadVzBirWEcwJWiqBmP1sRW4Sb2zKXqUbCfrD6KHhwpcFgSgOEt7iukgzCWvPiUd9dxELmqEy7YiuSY/CiXq3yg2aXcCSJLXmTIW9Q3/9uXd8Wpo4ba74HAvft4AT6N43JOrDeY+nF9WyhtMwyjtFdMl8e1UdSnEabqgnfil6wmfSjkkix4IWdwIubH5KNxrzg4wopFyOUXWs6xZw8mJzL/5DJHzr5GCy/XvclhlFAgOlK3Q7TCNykW0J4/ohP0awGa0oyZYF+ANlBdxsW4XASBwIDAQAB",
   "permissions": [

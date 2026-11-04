@@ -362,8 +362,15 @@
       if (!plain(result.error) || !validString(result.error.code, 1, 100) || !validString(result.error.message, 1, 2000)) fail("HOST_SCHEMA", "O Ponte respondeu em um formato que esta extensão não reconhece. Atualize os dois pelo instalador do Ponte.");
       return result;
     }
-    if (result.request_id !== requestId || !Number.isSafeInteger(result.document_id) || result.document_id < 1 || !Number.isSafeInteger(result.capture_id) || result.capture_id < 1 || typeof result.duplicate !== "boolean" || !validString(result.message, 1, 2000) || (Object.hasOwn(result, "ui_opened") && typeof result.ui_opened !== "boolean")) fail("HOST_SCHEMA", "A confirmação recebida não corresponde a esta importação. Clique em Repetir: nada será duplicado.");
+    if (result.request_id !== requestId || !Number.isSafeInteger(result.document_id) || result.document_id < 1 || !Number.isSafeInteger(result.capture_id) || result.capture_id < 1 || typeof result.duplicate !== "boolean" || !validString(result.message, 1, 2000) || (Object.hasOwn(result, "ui_opened") && typeof result.ui_opened !== "boolean") || (Object.hasOwn(result, "outcome") && !OUTCOMES.includes(result.outcome))) fail("HOST_SCHEMA", "A confirmação recebida não corresponde a esta importação. Clique em Repetir: nada será duplicado.");
     return result;
+  }
+  // What the Ponte did with the page. Hosts from before 0.14 send only
+  // `duplicate`; "legacy_duplicate" stands for that case.
+  const OUTCOMES = ["imported", "confirmed", "unchanged"];
+  function importOutcome(result) {
+    if (OUTCOMES.includes(result.outcome)) return result.outcome;
+    return result.duplicate ? "legacy_duplicate" : "imported";
   }
   function nativeError(message) {
     if (/not found|não encontrado|nao encontrado/i.test(message)) return errorResult("HOST_MISSING", "O Ponte não foi encontrado neste computador. Abra o Ponte uma vez e reinicie o navegador. Se continuar, reinstale o Ponte com a sua conta do Windows.");
@@ -392,6 +399,6 @@
       return this.inFlight;
     }
   }
-  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, identity, errorResult, nativeError, ImportSession, bytes, exactKeys };
+  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, importOutcome, identity, errorResult, nativeError, ImportSession, bytes, exactKeys };
 });
 
