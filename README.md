@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.9.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_9_0.md) |
+| **Versão** | 0.9.1 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_9_1.md) |
 | **Licença** | MIT |
 
 ---
@@ -127,6 +127,7 @@ Campos da tarefa:
 
 Regras úteis:
 - **✓ Concluir** e **Reabrir** ficam na própria lista; concluir uma tarefa não registra nada no SIGADOC.
+- **Juntados seguem o principal:** concluir a última tarefa aberta de um documento principal conclui, em cascata, as tarefas abertas dos documentos juntados a ele (e dos juntados a estes), cada uma com a anotação *"Concluída automaticamente: o documento principal X foi concluído"*. A mensagem de confirmação lista o que foi concluído; tarefas com dependência pendente ficam abertas e são informadas. Reabrir o principal não reabre as peças.
 - Uma tarefa com **dependências** só pode ser concluída depois das tarefas de que depende; o Ponte recusa e explica.
 - Datas inválidas (ex.: `31/02/2026`) ficam marcadas em vermelho e o salvamento avisa.
 

@@ -2155,7 +2155,7 @@ impl PonteApp {
                             if !task.due_date.is_empty(){let date=chrono::NaiveDate::parse_from_str(&task.due_date,"%Y-%m-%d").map(|date|date.format("%d/%m/%Y").to_string()).unwrap_or_else(|_|task.due_date.clone());ui.label(format!("Prazo local: {date}"));}
                             if task.overdue(){ui.colored_label(ERROR,"Atrasada");}
                             if ui.add_enabled(!self.tasks.task_dirty(task.id),egui::Button::new("✓ Concluir").small()).on_hover_text("Marca a tarefa como concluída. Nada é enviado ao SIGADOC.").clicked(){
-                                match self.store.complete_task(task.id){Ok(done)=>{self.tasks.forget_task(task.id);self.message(format!("Tarefa concluída: {}",done.title));},Err(e)=>self.error(format!("Não foi possível concluir a tarefa: {e}"))}
+                                match self.store.complete_task(task.id){Ok(done)=>{self.tasks.forget_task(task.id);let mut text=format!("Tarefa concluída: {}",done.title);for note in self.store.take_cascade_notes(){text.push_str(" • ");text.push_str(&note);}self.message(text);},Err(e)=>self.error(format!("Não foi possível concluir a tarefa: {e}"))}
                             }
                             if ui.button("Editar").clicked(){if self.tasks.focus_task(&task){self.tasks_open=true;}else{self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel de tarefas.");}}
                         });

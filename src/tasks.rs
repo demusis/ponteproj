@@ -327,7 +327,113 @@ impl Store {
             &format!("Tarefa #{}: {} ({})", saved.id, saved.title, saved.status),
         )?;
         tx.commit()?;
+        if saved.status == "concluida" && !self.cascade_suppressed {
+            // A concluded main document implicitly concludes the pieces
+            // joined to it. The parent's own conclusion is already committed;
+            // a problem in the cascade is reported, never raised.
+            if let Err(error) = self.cascade_conclusion(task.document_id) {
+                self.cascade_notes.push(format!(
+                    "Não foi possível concluir as peças juntadas automaticamente: {error}"
+                ));
+            }
+        }
         Ok(saved.id)
+    }
+
+    /// When `document_id` has no open task left, concludes the open tasks of
+    /// every document joined to it (and of their joined documents), recording
+    /// the reason in each task. Tasks whose dependencies are still open are
+    /// retried after the others; what remains open is reported.
+    fn cascade_conclusion(&mut self, document_id: i64) -> Result<()> {
+        let open_here = self
+            .list_tasks()?
+            .iter()
+            .any(|t| t.document_id == document_id && t.status != "concluida");
+        if open_here {
+            return Ok(());
+        }
+        let documents = self.list_documents("")?;
+        let number_of = |id: i64| {
+            documents
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| d.document_number.clone())
+                .unwrap_or_else(|| format!("#{id}"))
+        };
+        // Breadth-first over the juntada tree, never visiting a document twice.
+        let mut visited = std::collections::BTreeSet::from([document_id]);
+        let mut queue = std::collections::VecDeque::from([document_id]);
+        let mut targets: Vec<(i64, i64)> = Vec::new(); // (child, parent)
+        while let Some(parent) = queue.pop_front() {
+            for child in documents.iter().filter(|d| d.joined_to_id == Some(parent)) {
+                if visited.insert(child.id) {
+                    targets.push((child.id, parent));
+                    queue.push_back(child.id);
+                }
+            }
+        }
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let today = crate::labels::date(&chrono::Local::now().format("%Y-%m-%d").to_string());
+        self.cascade_suppressed = true;
+        let result = (|| -> Result<()> {
+            let mut concluded: Vec<String> = Vec::new();
+            let mut left_open: Vec<String> = Vec::new();
+            // Dependencies between tasks may require several passes.
+            for _pass in 0..8 {
+                let mut progress = false;
+                let tasks = self.list_tasks()?;
+                for (child, parent) in &targets {
+                    for task in tasks
+                        .iter()
+                        .filter(|t| t.document_id == *child && t.status != "concluida")
+                    {
+                        let mut done = task.clone();
+                        done.status = "concluida".into();
+                        done.completed_at = None;
+                        done.notes.push_str(&format!(
+                            "\n\n[{today}] Concluída automaticamente: o documento principal {} foi concluído.",
+                            number_of(*parent)
+                        ));
+                        let version = self.item_version("task", task.id).ok().map(|v| v.version);
+                        match self.save_task_checked(&done, version) {
+                            Ok(_) => {
+                                progress = true;
+                                concluded.push(format!("{} — {}", number_of(*child), task.title));
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+                if !progress {
+                    break;
+                }
+            }
+            for task in self.list_tasks()? {
+                if targets.iter().any(|(child, _)| *child == task.document_id)
+                    && task.status != "concluida"
+                {
+                    left_open.push(format!("{} — {}", number_of(task.document_id), task.title));
+                }
+            }
+            if !concluded.is_empty() {
+                self.cascade_notes.push(format!(
+                    "{} tarefa(s) de documentos juntados concluída(s) automaticamente: {}",
+                    concluded.len(),
+                    concluded.join("; ")
+                ));
+            }
+            if !left_open.is_empty() {
+                self.cascade_notes.push(format!(
+                    "Ficaram abertas por dependências pendentes: {}",
+                    left_open.join("; ")
+                ));
+            }
+            Ok(())
+        })();
+        self.cascade_suppressed = false;
+        result
     }
 }
 
@@ -441,6 +547,93 @@ mod dependency_tests {
 #[cfg(test)]
 mod completion_tests {
     use super::*;
+
+    fn capture(number: &str, text: &str) -> crate::model::Capture {
+        let mut c = crate::model::sample_capture();
+        c.document_number = number.into();
+        c.source_url = format!(
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibir?sigla={}-A",
+            number.replace('/', "%2F")
+        );
+        c.title = format!("Documento {number}");
+        c.text = text.into();
+        c
+    }
+
+    #[test]
+    fn concluding_the_main_document_concludes_the_joined_pieces_in_cascade() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("cascade.sqlite3")).unwrap();
+        let parent = store
+            .import_capture(&capture("SESP-DIC-2026/97546", "Processo principal."))
+            .unwrap();
+        let child = store
+            .import_capture(&capture(
+                "SESP-DES-2026/39019",
+                "| Juntada | Juntado ao documento: SESP-DIC-2026/97546-A |",
+            ))
+            .unwrap();
+        let grandchild = store
+            .import_capture(&capture(
+                "SESP-OFI-2026/00500",
+                "| Juntada | Juntado ao documento: SESP-DES-2026/39019-A |",
+            ))
+            .unwrap();
+        let unrelated = store
+            .import_capture(&capture("SESP-OFI-2026/00999", "Outro documento."))
+            .unwrap();
+        // The child also has a task that depends on its triage task.
+        let child_triage = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.document_id == child.document_id)
+            .unwrap();
+        let mut dependent = Task::new(child.document_id);
+        dependent.title = "Arquivar após triagem".into();
+        dependent.dependencies = vec![child_triage.id];
+        store.save_task(&dependent).unwrap();
+
+        // Concluding the parent's only open task concludes the whole tree.
+        let parent_task = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.document_id == parent.document_id)
+            .unwrap();
+        store.complete_task(parent_task.id).unwrap();
+        let notes = store.take_cascade_notes();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].starts_with("3 tarefa(s)"), "{notes:?}");
+        let tasks = store.list_tasks().unwrap();
+        for id in [child.document_id, grandchild.document_id] {
+            for task in tasks.iter().filter(|t| t.document_id == id) {
+                assert_eq!(task.status, "concluida", "{}", task.title);
+                assert!(task.notes.contains("Concluída automaticamente"));
+                assert!(task.completed_at.is_some());
+            }
+        }
+        assert!(tasks
+            .iter()
+            .find(|t| t.document_id == grandchild.document_id)
+            .unwrap()
+            .notes
+            .contains("SESP-DES-2026/39019"));
+        // Unrelated documents are untouched; nothing cascades again.
+        assert_eq!(
+            tasks.iter().find(|t| t.document_id == unrelated.document_id).unwrap().status,
+            "pendente"
+        );
+        assert!(store.take_cascade_notes().is_empty());
+        // Reopening the parent does not reopen the pieces.
+        store.reopen_task(parent_task.id).unwrap();
+        assert!(store
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .filter(|t| t.document_id == child.document_id)
+            .all(|t| t.status == "concluida"));
+    }
     #[test]
     fn one_click_completion_and_reopening_keep_versions_and_dependency_rules() {
         let dir = tempfile::tempdir().unwrap();

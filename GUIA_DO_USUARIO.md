@@ -5,7 +5,7 @@ O Ponte é um programa do Windows que guarda, no seu computador, os documentos q
 ## 1. Instalar
 
 1. Feche o Ponte, se estiver aberto.
-2. Baixe o instalador em <https://github.com/demusis/ponteproj/releases/latest>, dê dois cliques em **Ponte-Setup-0.9.0.exe** e clique em **Avançar** até o fim. Não precisa de administrador.
+2. Baixe o instalador em <https://github.com/demusis/ponteproj/releases/latest>, dê dois cliques em **Ponte-Setup-X.Y.Z.exe** (a versão mais recente) e clique em **Avançar** até o fim. Não precisa de administrador.
 3. Feche e abra o navegador (Chrome ou Edge).
 4. Abra o Ponte pelo menu Iniciar. A tela inicial diz se o navegador está ligado ao Ponte.
 5. Instale a extensão no navegador, uma única vez — de um destes dois jeitos:
@@ -49,6 +49,7 @@ Documentos juntados aparecem abaixo do documento principal, com a marca ↳. O c
 
 - Em **Resumo ▸ Tarefas deste documento**, clique em **Nova tarefa**. Em **Tarefas** (no topo), veja todas.
 - Para concluir, clique em **✓ Concluir** na própria lista. Para voltar atrás, **Reabrir**.
+- **Documentos juntados seguem o principal:** quando a última tarefa aberta de um documento principal é concluída, as tarefas abertas das peças juntadas a ele (e das juntadas a estas) são concluídas automaticamente, com uma anotação dizendo o motivo. A mensagem de confirmação lista o que foi concluído. Tarefas que dependem de outra ainda aberta ficam como estão e são informadas. Reabrir o principal não reabre as peças.
 - Datas são digitadas como dd/mm/aaaa (há o botão **Hoje**).
 - Na lista de documentos, **Filtrar** mostra só os atrasados, os com tarefa aberta ou os concluídos.
 

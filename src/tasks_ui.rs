@@ -190,13 +190,20 @@ impl TaskPanel {
             .filter(|t| t.status != "concluida")
             .count();
         let overdue_count = tasks.iter().filter(belongs).filter(|t| t.overdue()).count();
+        // "Todas" counts what that view lists: pending tasks, plus the
+        // concluded ones when "Mostrar concluídas" is on.
+        let all_count = if self.show_done {
+            tasks.iter().filter(belongs).count()
+        } else {
+            pending_count
+        };
         ui.horizontal_wrapped(|ui| {
             for index in PRIMARY_VIEWS {
                 let label = match index {
                     4 if overdue_count > 0 => {
                         RichText::new(format!("{} ({overdue_count})", VIEWS[index])).color(ERROR)
                     }
-                    0 => RichText::new(format!("{} ({pending_count})", VIEWS[index])),
+                    0 => RichText::new(format!("{} ({all_count})", VIEWS[index])),
                     _ => RichText::new(VIEWS[index]),
                 };
                 ui.selectable_value(&mut self.view, index, label);
@@ -688,7 +695,12 @@ impl TaskPanel {
                             .item_version("task", id)
                             .ok()
                             .map(|v| v.version);
-                        self.notice("Tarefa salva.", false);
+                        let mut text = "Tarefa salva.".to_owned();
+                        for note in store.take_cascade_notes() {
+                            text.push_str(" • ");
+                            text.push_str(&note);
+                        }
+                        self.notice(text, false);
                     }
                     Err(e) => self.notice(format!("Tarefa não salva: {e}"), true),
                 }
@@ -720,11 +732,15 @@ impl TaskPanel {
                         .ok()
                         .map(|v| v.version);
                 }
-                let text = if complete {
+                let mut text = if complete {
                     format!("Tarefa concluída: {}", updated.title)
                 } else {
                     format!("Tarefa reaberta: {}", updated.title)
                 };
+                for note in store.take_cascade_notes() {
+                    text.push_str(" • ");
+                    text.push_str(&note);
+                }
                 self.notice(text, false);
             }
             Err(e) => {

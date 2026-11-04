@@ -24,6 +24,11 @@ pub struct Store {
     /// While it lasts, saves are queued at once instead of waiting for a
     /// connection timeout on the interface thread.
     pub(crate) host_unreachable_until: Option<std::time::Instant>,
+    /// True while concluding the tasks of joined documents, so the nested
+    /// saves do not start cascades of their own.
+    pub(crate) cascade_suppressed: bool,
+    /// Human-readable results of the last cascade, drained by the UI.
+    pub(crate) cascade_notes: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -125,6 +130,8 @@ impl Store {
             actor_override: String::new(),
             offline_queued: 0,
             host_unreachable_until: None,
+            cascade_suppressed: false,
+            cascade_notes: Vec::new(),
         };
         store.ensure_tasks()?;
         store.ensure_files()?;
@@ -774,6 +781,11 @@ impl Store {
     /// Number of saves queued for the host since the last call.
     pub fn take_offline_queued(&mut self) -> usize {
         std::mem::take(&mut self.offline_queued)
+    }
+
+    /// What the last conclusion cascaded to joined documents, if anything.
+    pub fn take_cascade_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.cascade_notes)
     }
 
     /// Latest result of the background synchronization. An unreachable host
