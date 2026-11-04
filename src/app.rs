@@ -570,6 +570,7 @@ enum PendingTarget {
     Saiop,
     Suggestion,
     Settings,
+    Network,
     None,
 }
 
@@ -934,6 +935,13 @@ impl PonteApp {
                 go: PendingTarget::None,
             });
         }
+        let unsent = self.intranet.unsent_folder_changes(&self.store);
+        if unsent > 0 {
+            out.push(Pending {
+                label: format!("{unsent} alteração(ões) ainda não enviada(s) à pasta compartilhada (Rede e equipe ▸ Sincronizar agora)"),
+                go: PendingTarget::Network,
+            });
+        }
         if let Some(worker) = &self.worker {
             out.push(Pending {
                 label: format!("Operação em andamento: {}", worker.label),
@@ -965,6 +973,7 @@ impl PonteApp {
             }
             PendingTarget::Suggestion => self.suggestion_open = true,
             PendingTarget::Settings => self.settings_open = true,
+            PendingTarget::Network => self.intranet.open = true,
             PendingTarget::None => {}
         }
     }
@@ -1165,6 +1174,33 @@ impl PonteApp {
                     (SUCCESS, "Computador principal ativo".into(), full)
                 } else {
                     (WARNING, "Computador principal parado".into(), full)
+                }
+            }
+            crate::intranet::IntranetMode::SharedFolder => {
+                if self.intranet.syncing() {
+                    (ACCENT, "Sincronizando com a pasta…".into(), full)
+                } else if self.intranet.offline {
+                    (
+                        WARNING,
+                        if outbox > 0 {
+                            format!("Pasta fora de alcance • {outbox} a enviar")
+                        } else {
+                            "Pasta fora de alcance".into()
+                        },
+                        full,
+                    )
+                } else if outbox > 0 {
+                    (WARNING, format!("Pasta compartilhada • {outbox} a enviar"), full)
+                } else if let Some((at, _)) = self.intranet.last_sync_finished {
+                    let secs = at.elapsed().as_secs();
+                    let when = if secs < 60 {
+                        "agora".to_owned()
+                    } else {
+                        format!("há {} min", secs / 60)
+                    };
+                    (SUCCESS, format!("Pasta compartilhada • em dia {when}"), full)
+                } else {
+                    (ACCENT, "Pasta compartilhada".into(), full)
                 }
             }
             crate::intranet::IntranetMode::Client => {
@@ -2000,6 +2036,23 @@ impl PonteApp {
                     if ui.button("Rede e equipe…").clicked() {
                         self.intranet.open = true;
                         ui.close();
+                    }
+                    if self.intranet.folder_mode(&self.store) {
+                        let unsent = self.intranet.unsent_folder_changes(&self.store);
+                        let label = if unsent > 0 {
+                            format!("Sincronizar com a pasta agora ({unsent} a enviar)")
+                        } else {
+                            "Sincronizar com a pasta agora".to_owned()
+                        };
+                        if ui
+                            .add_enabled(!self.intranet.syncing(), egui::Button::new(label))
+                            .on_hover_text("Lê as pastas, aplica o que mudou e grava o arquivo de sincronização. A barra de baixo mostra cada etapa.")
+                            .clicked()
+                        {
+                            self.intranet.request_full_sync();
+                            self.refresh();
+                            ui.close();
+                        }
                     }
                     if ui.button("Configurar IA…").clicked() {
                         self.open_ai_settings(ui.ctx());
@@ -3986,6 +4039,7 @@ impl eframe::App for PonteApp {
             || self.tasks.dirty()
             || self.saiop.dirty()
             || self.manual_form.dirty()
+            || self.intranet.unsent_folder_changes(&self.store) > 0
             || self.editors.values().any(Editor::dirty)
             || self.worker.is_some()
             || self.suggestion.is_some();
@@ -4032,7 +4086,17 @@ impl eframe::App for PonteApp {
             if self.intranet.syncing() {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.small("Sincronizando com o computador principal…");
+                    let step = self.intranet.sync_step();
+                    if self.intranet.folder_mode(&self.store) {
+                        ui.small(format!(
+                            "Sincronizando com a pasta compartilhada… {}",
+                            if step.is_empty() { "lendo as pastas…" } else { step }
+                        ));
+                    } else if step.is_empty() {
+                        ui.small("Sincronizando com o computador principal…");
+                    } else {
+                        ui.small(format!("Sincronizando com o computador principal… {step}"));
+                    }
                 });
             }
             if let Some(suggestion) = &self.suggestion {

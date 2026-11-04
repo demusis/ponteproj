@@ -80,6 +80,8 @@ Documentos juntados aparecem abaixo do documento principal, com a marca ↳. O c
 
 ## 7. Trabalhar em equipe (Menu ▸ Rede e equipe)
 
+**Você, em dois computadores (casa e trabalho):** escolha **Pasta compartilhada: eu, em mais de um computador**, clique em **Adicionar pasta…** e aponte para uma pasta do Google Drive, OneDrive ou um pendrive (pode ser mais de uma), crie uma senha de pelo menos 8 caracteres e clique em **Salvar e sincronizar agora**. No outro computador, as mesmas pastas e a mesma senha. O Ponte sincroniza ao abrir, a cada 5 minutos e quando você pedir; a barra de baixo mostra o que está fazendo. Nunca copie o acervo nem instale o Ponte dentro do Drive.
+
 Um computador do gabinete é o **principal**; os outros se conectam a ele pela rede interna. Nada vai para a internet.
 
 - **No computador principal**: escolha "Este é o computador principal do gabinete", clique em **Salvar e ficar disponível agora** e depois em **Copiar código de conexão**. Envie o código aos colegas.

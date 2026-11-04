@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.17.0 (extensão 0.1.9) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.18.0 (extensão 0.1.9) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -245,6 +245,18 @@ Pronto: importações, notas, minutas, tarefas e atendimentos de todos passam a 
 - **Usar só a minha versão…**; **Usar só a do computador principal…**.
 
 Todas pedem confirmação. Se os colegas não conseguirem conectar, peça à TI para liberar a porta **7878 (TCP)** no Firewall do Windows do principal (a janela traz o comando).
+
+---
+
+### Uma pessoa, dois computadores: pasta compartilhada
+
+Para usar o Ponte em casa e no trabalho sem rede entre eles, escolha em **Rede e equipe** o modo **Pasta compartilhada: eu, em mais de um computador**. Os computadores trocam o acervo por um arquivo `ponte-sync.ponte`, cifrado com uma senha sua (PBKDF2 + AES-256-GCM), guardado nas pastas que você indicar com **Adicionar pasta…**: Google Drive, OneDrive, pendrive, pasta da rede, uma ou várias. Não instale o Ponte nem copie o acervo para o Drive: o acervo é cifrado pela sua conta do Windows e um SQLite em pasta sincronizada se corrompe; o arquivo de transporte é a forma segura.
+
+- **Persistente:** a lista de pastas e a senha ficam guardadas no acervo de cada computador, cifradas pela conta do Windows (desmarque **Guardar a senha neste computador** para informá-la a cada sessão). No segundo computador, aponte para as mesmas pastas e informe a mesma senha; se ele já tiver documentos, o Ponte pede confirmação antes de substituí-los.
+- **Quando sincroniza:** ao abrir, a cada 5 minutos, em **Sincronizar agora** (ou Menu ▾ ▸ Sincronizar com a pasta agora) e com aviso ao fechar se houver alterações não enviadas. A barra de baixo mostra a etapa (lendo as pastas, conciliando, gravando em N pastas, atualizando o acervo) e, ao fim, o resumo do que entrou e saiu.
+- **Só o que mudou** entra; PDFs e anexos só são copiados quando faltam. Conflitos (o mesmo item alterado nos dois lados) vão para a tela de conflitos, com as duas versões campo a campo, e você decide; o arquivo recebe tudo o que não conflita e a decisão vai na sincronização seguinte.
+- **Várias pastas:** o Ponte usa a cópia mais recente e grava em todas as que alcançar; se duas pastas divergirem, as alterações que uma tem e a outra não são conciliadas pelo diário que cada cópia carrega.
+- **Trocar de modo** nunca apaga dados: dá para passar de pasta compartilhada para principal/conectado (mesma rede) e vice-versa; com alterações não enviadas, sincronize antes.
 
 ---
 

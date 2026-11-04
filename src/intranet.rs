@@ -45,6 +45,9 @@ pub enum IntranetMode {
     Local,
     Host,
     Client,
+    /// The same person on more than one computer, exchanging a passphrase-
+    /// encrypted transport file through synced folders (see `sharedfolder`).
+    SharedFolder,
 }
 
 impl IntranetMode {
@@ -53,8 +56,19 @@ impl IntranetMode {
             Self::Local => "Só neste computador",
             Self::Host => "Este é o computador principal do gabinete",
             Self::Client => "Conectar ao computador principal do gabinete",
+            Self::SharedFolder => "Pasta compartilhada: eu, em mais de um computador",
         }
     }
+
+    /// Modes where every change is queued for a later exchange (with the
+    /// host over HTTP, or with the transport file in the folders).
+    pub fn queues_changes(self) -> bool {
+        matches!(self, Self::Client | Self::SharedFolder)
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +83,41 @@ pub struct IntranetConfig {
     pub synced_revision: i64,
     #[serde(default)]
     pub last_sync_at: String,
+    /// Transport files of the shared-folder mode, one per folder
+    /// (`…\Google Drive\Ponte\ponte-sync.ponte`, a pen drive, a share…).
+    #[serde(default)]
+    pub folder_files: Vec<String>,
+    /// Passphrase of the transport files; empty when not kept.
+    #[serde(default)]
+    pub folder_key: String,
+    #[serde(default = "default_true")]
+    pub remember_folder_key: bool,
+    /// Stable identity of this computer in the folders (uuid).
+    #[serde(default)]
+    pub folder_writer: String,
+    /// Identity of the library lineage adopted from (or given to) the folders.
+    #[serde(default)]
+    pub folder_lineage: String,
+}
+
+impl IntranetConfig {
+    /// Copy to persist: the passphrase is dropped when the person chose not
+    /// to keep it (it then lives only in the window, for the session).
+    fn for_storage(&self) -> Self {
+        let mut copy = self.clone();
+        if !copy.remember_folder_key {
+            copy.folder_key.clear();
+        }
+        copy
+    }
+
+    pub fn folder_paths(&self) -> Vec<PathBuf> {
+        self.folder_files
+            .iter()
+            .map(|p| PathBuf::from(p.trim()))
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect()
+    }
 }
 
 impl Default for IntranetConfig {
@@ -94,6 +143,11 @@ impl Default for IntranetConfig {
             auto_start_host: false,
             synced_revision: 0,
             last_sync_at: String::new(),
+            folder_files: Vec::new(),
+            folder_key: String::new(),
+            remember_folder_key: true,
+            folder_writer: uuid::Uuid::new_v4().simple().to_string(),
+            folder_lineage: String::new(),
         }
     }
 }
@@ -125,6 +179,34 @@ impl IntranetConfig {
             IntranetMode::Client => {
                 validate_host_url(&self.host_url)?;
                 validate_token(&self.cabinet_token)?;
+                Ok(())
+            }
+            IntranetMode::SharedFolder => {
+                let paths = self.folder_paths();
+                ensure!(
+                    !paths.is_empty(),
+                    "Escolha pelo menos uma pasta (o arquivo ponte-sync.ponte dentro dela)."
+                );
+                ensure!(paths.len() <= 8, "Use no máximo 8 pastas.");
+                for path in &paths {
+                    let text = path.to_string_lossy();
+                    ensure!(
+                        text.len() <= 1024 && !text.chars().any(char::is_control),
+                        "Caminho de pasta inválido."
+                    );
+                    ensure!(
+                        path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ponte")),
+                        "O arquivo de sincronização precisa terminar em .ponte (ex.: ponte-sync.ponte)."
+                    );
+                }
+                ensure!(
+                    self.folder_key.len() <= 256 && !self.folder_key.chars().any(char::is_control),
+                    "Senha de sincronização inválida."
+                );
+                ensure!(
+                    !self.folder_writer.trim().is_empty() && self.folder_writer.len() <= 64,
+                    "Identificação deste computador inválida."
+                );
                 Ok(())
             }
         }
@@ -552,6 +634,10 @@ pub struct OutboxEntry {
     /// `mutation`). It is the common ancestor for a field-by-field merge.
     #[serde(default)]
     pub base: Option<IntranetMutation>,
+    /// Stable identity of the change, so a transport copy can say whether
+    /// it already incorporates it (shared-folder mode).
+    #[serde(default)]
+    pub uid: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -811,7 +897,7 @@ impl Store {
 
     pub fn save_intranet_config(&mut self, config: &IntranetConfig) -> Result<()> {
         config.validate()?;
-        let payload = seal(&serde_json::to_vec(config)?)?;
+        let payload = seal(&serde_json::to_vec(&config.for_storage())?)?;
         self.conn.execute(
             "INSERT INTO intranet_config(id,payload) VALUES(1,?1)
              ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
@@ -834,7 +920,7 @@ impl Store {
             return Ok(None);
         }
         let cfg = self.load_intranet_config()?;
-        if cfg.mode == IntranetMode::Client {
+        if cfg.mode.queues_changes() {
             Ok(Some(cfg))
         } else {
             Ok(None)
@@ -1767,6 +1853,383 @@ impl Store {
         }
     }
 
+    /// Exchange with the transport files of the shared-folder mode. Reads
+    /// every reachable folder, reconciles on a temporary library (newest
+    /// copy as base, then changes from other copies that it lacks, then this
+    /// computer's queue), writes the result to every reachable folder and
+    /// only then updates the local library. Conflicts go to the same screen
+    /// as in the connected mode. `allow_replace` confirms, on a computer
+    /// joining with its own documents, that they will be replaced.
+    pub fn sync_with_folders(
+        &mut self,
+        cfg: &IntranetConfig,
+        key: &str,
+        allow_replace: bool,
+        reporter: &crate::ai::Reporter,
+    ) -> Result<FolderSyncReport> {
+        use crate::sharedfolder::{self, JournalEntry};
+        ensure!(
+            cfg.mode == IntranetMode::SharedFolder,
+            "A pasta compartilhada não está ativa neste computador."
+        );
+        cfg.validate()?;
+        ensure!(!key.is_empty(), "Informe a senha de sincronização em Rede e equipe.");
+        let paths = cfg.folder_paths();
+        let mut report = FolderSyncReport::default();
+        reporter.step("Lendo as pastas…");
+        let mut copies = Vec::new();
+        let mut absent = Vec::new();
+        for path in &paths {
+            let folder = path.parent().context("Caminho de pasta inválido.")?;
+            if !folder.is_dir() {
+                report.unreachable.push(path.display().to_string());
+                continue;
+            }
+            match sharedfolder::read(path, key) {
+                Ok(Some(copy)) => copies.push(copy),
+                Ok(None) => absent.push(path.clone()),
+                Err(error) => bail!("{}: {error}", path.display()),
+            }
+        }
+        ensure!(
+            !(copies.is_empty() && absent.is_empty()),
+            "Nenhuma pasta está acessível agora ({}). Conecte o pendrive ou espere a nuvem ficar disponível.",
+            report.unreachable.join("; ")
+        );
+        let lineage = if !cfg.folder_lineage.trim().is_empty() {
+            cfg.folder_lineage.clone()
+        } else {
+            copies
+                .first()
+                .map(|c| c.header.lineage.clone())
+                .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string())
+        };
+        for copy in &copies {
+            ensure!(
+                copy.header.lineage == lineage,
+                "A pasta {} contém outro acervo, não o deste computador. Remova-a da lista ou aponte para outro arquivo.",
+                copy.path.display()
+            );
+            ensure!(
+                copy.header.schema_version <= crate::storage::SCHEMA_VERSION,
+                "A cópia em {} foi gravada por um Ponte mais novo; atualize o Ponte neste computador.",
+                copy.path.display()
+            );
+        }
+        copies.sort_by(|a, b| {
+            (b.header.revision, &b.header.written_at).cmp(&(a.header.revision, &a.header.written_at))
+        });
+        let outbox = self.list_offline_outbox()?;
+        let first_write = copies.is_empty();
+        if let Some(best) = copies.first() {
+            ensure!(
+                best.header.revision >= cfg.synced_revision,
+                "A pasta ainda não recebeu a versão mais recente (revisão {} na pasta, {} neste computador). Espere a nuvem terminar de sincronizar e tente de novo.",
+                best.header.revision,
+                cfg.synced_revision
+            );
+            if cfg.synced_revision == 0 && !allow_replace {
+                let local_documents = self.list_documents("")?.len();
+                ensure!(
+                    local_documents == 0,
+                    "[confirmar-substituicao] Este computador tem {local_documents} documento(s) que não estão na pasta. Ao sincronizar pela primeira vez, o acervo daqui será substituído pelo da pasta ({}). Faça um backup antes, se quiser guardá-los.",
+                    sharedfolder::describe(&best.header)
+                );
+            }
+        }
+        // Changes other copies carry that the newest one never received.
+        let best_applied: std::collections::BTreeSet<String> = copies
+            .first()
+            .map(|c| c.payload.applied.iter().cloned().collect())
+            .unwrap_or_default();
+        let mut foreign: Vec<(JournalEntry, String)> = Vec::new();
+        for copy in copies.iter().skip(1) {
+            let missing_from_journal = copy
+                .payload
+                .applied
+                .iter()
+                .filter(|uid| !best_applied.contains(*uid) && !copy.payload.journal.iter().any(|e| &e.uid == *uid))
+                .count();
+            if missing_from_journal > 0 {
+                report.notes.push(format!(
+                    "{}: {missing_from_journal} alteração(ões) antigas não puderam ser recuperadas (diário já compactado).",
+                    copy.path.display()
+                ));
+            }
+            for entry in &copy.payload.journal {
+                if !best_applied.contains(&entry.uid) && !foreign.iter().any(|(e, _)| e.uid == entry.uid) {
+                    foreign.push((entry.clone(), copy.path.display().to_string()));
+                }
+            }
+        }
+        foreign.sort_by(|a, b| (a.0.revision, &a.0.created_at).cmp(&(b.0.revision, &b.0.created_at)));
+        let lagging = copies
+            .iter()
+            .skip(1)
+            .any(|c| copies[0].header.revision > c.header.revision)
+            || !absent.is_empty();
+        if !first_write
+            && outbox.is_empty()
+            && foreign.is_empty()
+            && copies[0].header.revision == cfg.synced_revision
+            && !lagging
+        {
+            report.revision = cfg.synced_revision;
+            return Ok(report);
+        }
+
+        let temp_dir = crate::paths::data_dir()?.join("temp");
+        std::fs::create_dir_all(&temp_dir)?;
+        let temp_path = temp_dir.join(format!("sync-{}.sqlite3", uuid::Uuid::new_v4().simple()));
+        let result = self.reconcile_with_folders(
+            cfg,
+            key,
+            &lineage,
+            &copies,
+            &absent,
+            foreign,
+            outbox,
+            first_write,
+            &temp_path,
+            reporter,
+            report,
+        );
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", temp_path.display()));
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconcile_with_folders(
+        &mut self,
+        cfg: &IntranetConfig,
+        key: &str,
+        lineage: &str,
+        copies: &[crate::sharedfolder::Copy],
+        absent: &[PathBuf],
+        foreign: Vec<(crate::sharedfolder::JournalEntry, String)>,
+        outbox: Vec<OutboxEntry>,
+        first_write: bool,
+        temp_path: &std::path::Path,
+        reporter: &crate::ai::Reporter,
+        mut report: FolderSyncReport,
+    ) -> Result<FolderSyncReport> {
+        use crate::sharedfolder::{self, JournalEntry, Payload, WriteRequest};
+        let mut applied: std::collections::BTreeSet<String> = Default::default();
+        let mut journal: Vec<JournalEntry> = Vec::new();
+        let mut processed_outbox: Vec<i64> = Vec::new();
+        let mut temp: Option<Store> = None;
+        let base_snapshot = copies.first().map(|c| &c.payload.snapshot);
+        if first_write {
+            reporter.step("Preparando a primeira cópia a partir do acervo deste computador…");
+            for entry in &outbox {
+                applied.insert(entry.uid.clone());
+                journal.push(JournalEntry {
+                    uid: entry.uid.clone(),
+                    created_at: entry.created_at.clone(),
+                    actor: entry.actor.clone(),
+                    writer: cfg.folder_writer.clone(),
+                    label: entry.label.clone(),
+                    mutation: entry.mutation.clone(),
+                    base: entry.base.clone(),
+                    revision: 0,
+                });
+                processed_outbox.push(entry.id);
+            }
+            report.created = true;
+        } else {
+            let best = &copies[0];
+            reporter.step(format!("Carregando a cópia mais recente ({})…", sharedfolder::describe(&best.header)));
+            let mut store = Store::open(temp_path).context("Não foi possível preparar o acervo temporário da sincronização.")?;
+            store.apply_snapshot(
+                &best.payload.snapshot,
+                |file_id, _| best.blobs.pdfs.get(&file_id).cloned().context("PDF ausente no arquivo de sincronização."),
+                |id| best.blobs.attachments.get(&id).cloned().context("Anexo ausente no arquivo de sincronização."),
+            )?;
+            applied = best.payload.applied.iter().cloned().collect();
+            journal = best.payload.journal.clone();
+            if !foreign.is_empty() {
+                reporter.step(format!("Conciliando {} alteração(ões) vindas de outras pastas…", foreign.len()));
+            }
+            for (entry, from) in foreign {
+                if applied.contains(&entry.uid) {
+                    continue;
+                }
+                match store.execute_mutation(&entry.actor, entry.mutation.clone()) {
+                    Ok(_) => {
+                        report.merged_foreign += 1;
+                        let revision = store.cabinet_revision()?;
+                        applied.insert(entry.uid.clone());
+                        journal.push(JournalEntry { revision, ..entry });
+                    }
+                    Err(error) => {
+                        let as_entry = OutboxEntry {
+                            id: 0,
+                            created_at: entry.created_at.clone(),
+                            actor: entry.actor.clone(),
+                            label: format!("[da pasta {}] {}", from, entry.label),
+                            mutation: entry.mutation.clone(),
+                            base: entry.base.clone(),
+                            uid: entry.uid.clone(),
+                        };
+                        self.record_conflict(&as_entry, &format!("{error} (alteração vinda de {from})"), base_snapshot)?;
+                        applied.insert(entry.uid.clone());
+                        report.conflicts += 1;
+                    }
+                }
+            }
+            if !outbox.is_empty() {
+                reporter.step(format!("Aplicando {} alteração(ões) deste computador…", outbox.len()));
+            }
+            for entry in &outbox {
+                processed_outbox.push(entry.id);
+                if applied.contains(&entry.uid) {
+                    continue;
+                }
+                match store.execute_mutation(&entry.actor, entry.mutation.clone()) {
+                    Ok(_) => {
+                        report.pushed += 1;
+                        let revision = store.cabinet_revision()?;
+                        applied.insert(entry.uid.clone());
+                        journal.push(JournalEntry {
+                            uid: entry.uid.clone(),
+                            created_at: entry.created_at.clone(),
+                            actor: entry.actor.clone(),
+                            writer: cfg.folder_writer.clone(),
+                            label: entry.label.clone(),
+                            mutation: entry.mutation.clone(),
+                            base: entry.base.clone(),
+                            revision,
+                        });
+                    }
+                    Err(error) => {
+                        self.record_conflict(entry, &error.to_string(), base_snapshot)?;
+                        applied.insert(entry.uid.clone());
+                        report.conflicts += 1;
+                    }
+                }
+            }
+            temp = Some(store);
+        }
+
+        reporter.step("Reunindo PDFs e anexos…");
+        let (final_snapshot, blobs) = match &temp {
+            Some(store) => {
+                let snapshot = store.export_snapshot()?;
+                let blobs = collect_blobs(store, &snapshot)?;
+                (snapshot, blobs)
+            }
+            None => {
+                let snapshot = self.export_snapshot()?;
+                let blobs = collect_blobs(self, &snapshot)?;
+                (snapshot, blobs)
+            }
+        };
+        let revision = final_snapshot.revision;
+        sharedfolder::trim_journal(&mut journal);
+        let payload = Payload {
+            snapshot: final_snapshot.clone(),
+            applied: applied.into_iter().collect(),
+            journal,
+        };
+        let request = WriteRequest {
+            lineage,
+            revision,
+            writer: &cfg.folder_writer,
+            writer_name: cfg.member_name.trim(),
+            schema_version: crate::storage::SCHEMA_VERSION,
+        };
+        let changed_content = first_write || report.pushed > 0 || report.merged_foreign > 0;
+        let mut targets: Vec<PathBuf> = absent.to_vec();
+        for copy in copies {
+            // A copy already at this exact state is left alone.
+            if changed_content || copy.header.revision < revision {
+                targets.push(copy.path.clone());
+            }
+        }
+        if !targets.is_empty() {
+            reporter.step(format!("Gravando em {} pasta(s)…", targets.len()));
+        }
+        let mut failures = Vec::new();
+        for path in &targets {
+            match sharedfolder::write(path, key, &request, &payload, &blobs) {
+                Ok(_) => report.written_to.push(path.display().to_string()),
+                Err(error) => failures.push(error.to_string()),
+            }
+        }
+        if changed_content {
+            ensure!(
+                !report.written_to.is_empty(),
+                "Nenhuma pasta pôde ser gravada: {}. As alterações continuam guardadas neste computador.",
+                failures.join("; ")
+            );
+        }
+        report.notes.extend(failures);
+
+        if let Some(store) = &temp {
+            reporter.step("Atualizando o acervo deste computador…");
+            let before = self.version_map()?;
+            self.apply_snapshot(
+                &final_snapshot,
+                |file_id, capture_id| store.pdf_bytes(file_id, capture_id),
+                |id| store.attachment_bytes(id).map(|(_, bytes)| bytes),
+            )?;
+            for (kind, id, meta) in &final_snapshot.item_versions {
+                if kind == "cabinet" {
+                    continue;
+                }
+                match before.get(&(kind.clone(), *id)) {
+                    None => report.imported_new += 1,
+                    Some(version) if *version != meta.version => report.imported_changed += 1,
+                    _ => {}
+                }
+            }
+            report.changed = true;
+        }
+        for id in processed_outbox {
+            self.conn
+                .execute("DELETE FROM offline_outbox WHERE id=?1", params![id])?;
+        }
+        let mut updated = cfg.clone();
+        updated.synced_revision = revision;
+        updated.last_sync_at = now_iso();
+        updated.folder_lineage = lineage.to_owned();
+        self.save_intranet_config(&updated)?;
+        report.revision = revision;
+        Ok(report)
+    }
+
+    fn record_conflict(
+        &mut self,
+        entry: &OutboxEntry,
+        reason: &str,
+        host_snapshot: Option<&CabinetSnapshot>,
+    ) -> Result<()> {
+        let conflict = build_sync_conflict(entry, reason, host_snapshot);
+        let blob = seal(&serde_json::to_vec(&conflict)?)?;
+        self.conn.execute(
+            "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
+            params![conflict.created_at, blob],
+        )?;
+        Ok(())
+    }
+
+    fn version_map(&self) -> Result<BTreeMap<(String, i64), i64>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT kind,item_id,version FROM item_versions")?;
+        let rows = statement.query_map([], |r| {
+            Ok(((r.get::<_, String>(0)?, r.get::<_, i64>(1)?), r.get::<_, i64>(2)?))
+        })?;
+        let mut out = BTreeMap::new();
+        for row in rows {
+            let (key, version) = row?;
+            out.insert(key, version);
+        }
+        Ok(out)
+    }
+
     pub(crate) fn remote_mutate(
         &mut self,
         cfg: &IntranetConfig,
@@ -1774,6 +2237,11 @@ impl Store {
     ) -> Result<MutationReply> {
         cfg.validate()?;
         let actor = cfg.member_name.trim().to_owned();
+        if cfg.mode == IntranetMode::SharedFolder {
+            // There is no host to ask: every change is applied here and
+            // queued for the next exchange through the folders.
+            return self.queue_locally(&actor, mutation);
+        }
         let attempt = if self.host_known_unreachable() {
             Err(RpcError::Unreachable(
                 "Computador principal fora de alcance (verificado há instantes).".into(),
@@ -1807,16 +2275,20 @@ impl Store {
                 // O computador anfitrião está desligado ou inacessível:
                 // aplica a alteração localmente e enfileira na caixa de saída offline para sincronização mútua posterior!
                 self.note_host_reachability(false);
-                let queued_mutation = self.prepare_mutation_for_outbox(mutation.clone());
-                // The state before the local change is the common ancestor
-                // used to merge field by field if the host changed it too.
-                let base = self.snapshot_for_mutation(&queued_mutation);
-                let reply = self.execute_mutation(&actor, mutation)?;
-                self.enqueue_offline_mutation(&actor, queued_mutation, base)?;
-                self.offline_queued += 1;
-                Ok(reply)
+                self.queue_locally(&actor, mutation)
             }
         }
+    }
+
+    /// Applies the change here and queues it, keeping the state before the
+    /// change as the common ancestor for a field-by-field merge later.
+    fn queue_locally(&mut self, actor: &str, mutation: IntranetMutation) -> Result<MutationReply> {
+        let queued_mutation = self.prepare_mutation_for_outbox(mutation.clone());
+        let base = self.snapshot_for_mutation(&queued_mutation);
+        let reply = self.execute_mutation(actor, mutation)?;
+        self.enqueue_offline_mutation(actor, queued_mutation, base)?;
+        self.offline_queued += 1;
+        Ok(reply)
     }
 
     fn prepare_mutation_for_outbox(&self, mutation: IntranetMutation) -> IntranetMutation {
@@ -1963,6 +2435,9 @@ impl Store {
                     mutation: coalesced,
                     // The ancestor is the state before the FIRST offline edit.
                     base: prev.base.or(base),
+                    // A coalesced edit is a new change: a copy that had the
+                    // first version must take this one too.
+                    uid: uuid::Uuid::new_v4().simple().to_string(),
                 };
                 self.conn.execute(
                     "UPDATE offline_outbox SET created_at=?1, payload=?2 WHERE id=?3",
@@ -1982,6 +2457,7 @@ impl Store {
             label: mutation_label(&mutation),
             mutation,
             base,
+            uid: uuid::Uuid::new_v4().simple().to_string(),
         };
         self.conn.execute(
             "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
@@ -2007,6 +2483,10 @@ impl Store {
             let mut item: OutboxEntry = serde_json::from_slice(&unseal(&blob)?)?;
             item.id = id;
             item.created_at = created_at;
+            if item.uid.is_empty() {
+                // Queued by an older version: a stable stand-in identity.
+                item.uid = format!("legacy-{}-{}", item.created_at, id);
+            }
             out.push(item);
         }
         Ok(out)
@@ -2052,7 +2532,7 @@ impl Store {
             ConflictResolution::KeepLocal => {
                 let rebased = self.rebase_mutation_to_current(conflict.mutation)?;
                 let cfg = self.load_intranet_config()?;
-                if cfg.mode == IntranetMode::Client {
+                if cfg.mode.queues_changes() {
                     self.remote_mutate(&cfg, rebased)?;
                 } else {
                     self.execute_mutation(&conflict.actor, rebased)?;
@@ -2065,7 +2545,7 @@ impl Store {
                     conflict.base.as_ref(),
                 )?;
                 let cfg = self.load_intranet_config()?;
-                if cfg.mode == IntranetMode::Client {
+                if cfg.mode.queues_changes() {
                     self.remote_mutate(&cfg, merged)?;
                 } else {
                     self.execute_mutation(&conflict.actor, merged)?;
@@ -2703,6 +3183,70 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
     }
 }
 
+/// What one exchange with the folders did, for the window and the bar.
+#[derive(Clone, Debug, Default)]
+pub struct FolderSyncReport {
+    pub changed: bool,
+    pub created: bool,
+    pub revision: i64,
+    pub pushed: usize,
+    pub merged_foreign: usize,
+    pub conflicts: usize,
+    pub imported_new: usize,
+    pub imported_changed: usize,
+    pub written_to: Vec<String>,
+    pub unreachable: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+impl FolderSyncReport {
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.created {
+            parts.push("primeira cópia criada a partir deste computador".to_owned());
+        }
+        if self.imported_new > 0 || self.imported_changed > 0 {
+            parts.push(format!(
+                "{} item(ns) novo(s) e {} atualizado(s) recebidos",
+                self.imported_new, self.imported_changed
+            ));
+        }
+        if self.pushed > 0 {
+            parts.push(format!("{} alteração(ões) deste computador enviada(s)", self.pushed));
+        }
+        if self.merged_foreign > 0 {
+            parts.push(format!("{} alteração(ões) de outras pastas conciliada(s)", self.merged_foreign));
+        }
+        if self.conflicts > 0 {
+            parts.push(format!("⚠ {} conflito(s) para você decidir", self.conflicts));
+        }
+        if !self.written_to.is_empty() {
+            parts.push(format!("gravado em {} pasta(s)", self.written_to.len()));
+        }
+        if !self.unreachable.is_empty() {
+            parts.push(format!("{} pasta(s) fora de alcance", self.unreachable.len()));
+        }
+        if parts.is_empty() {
+            format!("em dia (revisão {})", self.revision)
+        } else {
+            format!("{} (revisão {})", parts.join(" • "), self.revision)
+        }
+    }
+}
+
+/// PDF and attachment bytes referenced by a snapshot, from the store that
+/// holds them.
+fn collect_blobs(store: &Store, snapshot: &CabinetSnapshot) -> Result<crate::sharedfolder::Blobs> {
+    let mut blobs = crate::sharedfolder::Blobs::default();
+    for meta in &snapshot.files_meta {
+        blobs.pdfs.insert(meta.id, store.pdf_bytes(meta.id, meta.capture_id)?);
+    }
+    for row in &snapshot.attachments {
+        blobs.attachments.insert(row.id, store.attachment_bytes(row.id)?.1);
+    }
+    Ok(blobs)
+}
+
 fn build_sync_conflict(
     entry: &OutboxEntry,
     reason: &str,
@@ -3178,34 +3722,57 @@ fn write_http_json(stream: &mut TcpStream, status: u16, body: &RpcResponse) -> R
 
 /// Result of one synchronization run on the background thread.
 struct SyncOutcome {
-    result: std::result::Result<bool, String>,
+    result: std::result::Result<SyncDone, String>,
     manual: bool,
 }
 
 /// Long-lived thread with its own database connection. The interface never
 /// waits for the network: it posts a request and reads the outcome later.
+/// One request to the background synchronization.
+struct SyncRequest {
+    force_full: bool,
+    manual: bool,
+    /// Passphrase kept only in the window (shared-folder mode, "not remembered").
+    folder_key: Option<String>,
+    /// The person confirmed that a library joining the folders is replaced.
+    allow_replace: bool,
+}
+
 struct SyncWorker {
-    requests: mpsc::Sender<(bool, bool)>,
+    requests: mpsc::Sender<SyncRequest>,
     outcomes: mpsc::Receiver<SyncOutcome>,
+    /// Steps reported while a synchronization runs.
+    progress: mpsc::Receiver<String>,
 }
 
 impl SyncWorker {
     fn start(db_path: PathBuf, repaint: Option<egui::Context>) -> Result<Self> {
-        let (request_tx, request_rx) = mpsc::channel::<(bool, bool)>();
+        let (request_tx, request_rx) = mpsc::channel::<SyncRequest>();
         let (outcome_tx, outcome_rx) = mpsc::channel::<SyncOutcome>();
+        let (progress_tx, progress_rx) = mpsc::channel::<String>();
         std::thread::Builder::new()
             .name("ponte-sync".into())
             .spawn(move || {
                 let mut store: Option<Store> = None;
-                for (force_full, manual) in request_rx {
+                for request in request_rx {
                     if store.is_none() {
                         store = Store::open(&db_path).ok();
                     }
+                    let reporter = crate::ai::Reporter::new(
+                        progress_tx.clone(),
+                        Arc::new(AtomicBool::new(false)),
+                    );
                     let result = match store.as_mut() {
-                        Some(store) => store.sync_from_host(force_full).map_err(|e| e.to_string()),
+                        Some(store) => run_sync(store, &request, &reporter).map_err(|e| e.to_string()),
                         None => Err("Não foi possível abrir o acervo para sincronizar.".into()),
                     };
-                    if outcome_tx.send(SyncOutcome { result, manual }).is_err() {
+                    if outcome_tx
+                        .send(SyncOutcome {
+                            result,
+                            manual: request.manual,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                     if let Some(ctx) = &repaint {
@@ -3217,7 +3784,41 @@ impl SyncWorker {
         Ok(Self {
             requests: request_tx,
             outcomes: outcome_rx,
+            progress: progress_rx,
         })
+    }
+}
+
+/// What a finished synchronization reports back to the window.
+pub struct SyncDone {
+    pub changed: bool,
+    pub summary: String,
+}
+
+fn run_sync(store: &mut Store, request: &SyncRequest, reporter: &crate::ai::Reporter) -> Result<SyncDone> {
+    let mut cfg = store.load_intranet_config()?;
+    match cfg.mode {
+        IntranetMode::SharedFolder => {
+            if let Some(key) = &request.folder_key {
+                if !key.is_empty() {
+                    cfg.folder_key = key.clone();
+                }
+            }
+            let key = cfg.folder_key.clone();
+            let report = store.sync_with_folders(&cfg, &key, request.allow_replace, reporter)?;
+            Ok(SyncDone {
+                changed: report.changed,
+                summary: report.summary(),
+            })
+        }
+        _ => {
+            reporter.step("Sincronizando com o computador principal…");
+            let changed = store.sync_from_host(request.force_full)?;
+            Ok(SyncDone {
+                changed,
+                summary: String::new(),
+            })
+        }
     }
 }
 
@@ -3237,6 +3838,16 @@ pub struct IntranetPanel {
     last_sync_request: Option<Instant>,
     /// When the last synchronization finished and whether it succeeded.
     pub last_sync_finished: Option<(Instant, bool)>,
+    /// Current step of the running synchronization, for the status bar.
+    sync_step: String,
+    /// Summary of the last folder exchange.
+    last_summary: String,
+    /// The folders already hold a library and this computer has its own:
+    /// the person must confirm the replacement.
+    replace_confirmation: Option<String>,
+    allow_replace_next: bool,
+    show_folder_key: bool,
+    folder_key_confirm: String,
     force_next_sync: bool,
     manual_sync: bool,
     pending_resolution: Option<(i64, ConflictResolution)>,
@@ -3245,6 +3856,10 @@ pub struct IntranetPanel {
 }
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(4);
+/// Shared folders are re-read every few minutes; the cloud client needs
+/// that long to carry a file anyway. Opening the Ponte and "Sincronizar
+/// agora" do not wait.
+const FOLDER_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 impl IntranetPanel {
     /// Lets the background thread wake the window when a sync finishes.
@@ -3285,10 +3900,173 @@ impl IntranetPanel {
                         self.message = format!("Não foi possível iniciar o anfitrião: {e}");
                     }
                 }
-            } else if cfg.mode == IntranetMode::Client {
+            } else if cfg.mode.queues_changes() {
                 self.refresh_client(store, db_path);
             }
         }
+    }
+
+    /// The "Pasta compartilhada" part of the window.
+    fn shared_folder_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &mut Store,
+        db_path: &PathBuf,
+        refresh_needed: &mut bool,
+    ) {
+        ui.strong("Eu, em mais de um computador");
+        ui.label("Os computadores trocam o acervo por um arquivo cifrado com a sua senha, guardado nas pastas que você escolher: Google Drive, OneDrive, pendrive, pasta da rede. Pode ser mais de uma pasta; o Ponte usa a cópia mais recente e grava em todas as que alcançar.");
+        ui.small("Espere a nuvem terminar de sincronizar antes de abrir o Ponte no outro computador. Sem a senha o arquivo não abre em lugar nenhum, nem para os autores do Ponte.");
+        ui.add_space(4.0);
+        ui.strong("Pastas (o arquivo ponte-sync.ponte dentro de cada uma)");
+        let mut remove: Option<usize> = None;
+        let saved_revision = store.load_intranet_config().map(|c| c.synced_revision).unwrap_or(0);
+        for (index, path) in self.draft.folder_files.clone().iter().enumerate() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("{}.", index + 1));
+                ui.add(egui::Label::new(path).wrap());
+                let state = match crate::sharedfolder::read_header(std::path::Path::new(path)) {
+                    Ok(Some(header)) => {
+                        if header.revision < saved_revision {
+                            format!("({}; atrás deste computador)", crate::sharedfolder::describe(&header))
+                        } else {
+                            format!("({})", crate::sharedfolder::describe(&header))
+                        }
+                    }
+                    Ok(None) => {
+                        if std::path::Path::new(path).parent().is_some_and(|p| p.is_dir()) {
+                            "(pasta acessível; arquivo ainda não criado)".to_owned()
+                        } else {
+                            "(pasta fora de alcance agora)".to_owned()
+                        }
+                    }
+                    Err(error) => format!("({error})"),
+                };
+                ui.small(state);
+                if ui.small_button("Remover").clicked() {
+                    remove = Some(index);
+                }
+            });
+        }
+        if let Some(index) = remove {
+            self.draft.folder_files.remove(index);
+        }
+        if self.draft.folder_files.len() < 8
+            && ui
+                .button("Adicionar pasta…")
+                .on_hover_text("Escolha a pasta (do Drive, do OneDrive, do pendrive…) e mantenha o nome ponte-sync.ponte.")
+                .clicked()
+        {
+            if let Some(path) = crate::windows_ui::save_file(
+                "Onde guardar o arquivo de sincronização",
+                "ponte-sync.ponte",
+                &[("Arquivo de sincronização do Ponte", "*.ponte")],
+            ) {
+                let text = path.display().to_string();
+                if !self.draft.folder_files.contains(&text) {
+                    self.draft.folder_files.push(text);
+                }
+            }
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Senha de sincronização:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.draft.folder_key)
+                    .password(!self.show_folder_key)
+                    .desired_width(240.0),
+            );
+            ui.checkbox(&mut self.show_folder_key, "Mostrar");
+        });
+        let first_time = saved_revision == 0;
+        if first_time {
+            ui.horizontal(|ui| {
+                ui.label("Repita a senha:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.folder_key_confirm)
+                        .password(!self.show_folder_key)
+                        .desired_width(240.0),
+                );
+            });
+            ui.small("Mínimo de 8 caracteres. A mesma senha vai ser pedida no outro computador. Anote-a em lugar seguro: sem ela, o arquivo é irrecuperável.");
+        }
+        ui.checkbox(&mut self.draft.remember_folder_key, "Guardar a senha neste computador")
+            .on_hover_text("Fica no acervo, cifrada pela sua conta do Windows. Desmarcada, vale só até fechar o Ponte.");
+        ui.add_space(4.0);
+        if let Some(text) = self.replace_confirmation.clone() {
+            ui.colored_label(egui::Color32::from_rgb(153, 88, 16), format!("⚠ {text}"));
+            ui.horizontal(|ui| {
+                if ui.button("Substituir o acervo deste computador e sincronizar").clicked() {
+                    self.allow_replace_next = true;
+                    self.replace_confirmation = None;
+                    self.request_full_sync();
+                    *refresh_needed = self.refresh_client(store, db_path);
+                }
+                if ui.button("Cancelar").clicked() {
+                    self.replace_confirmation = None;
+                }
+            });
+        }
+        ui.horizontal_wrapped(|ui| {
+            let can_sync = !self.sync_in_flight && !self.draft.folder_files.is_empty();
+            if ui
+                .add_enabled(can_sync, egui::Button::new("Salvar e sincronizar agora"))
+                .clicked()
+            {
+                let mut problem = None;
+                if first_time && self.draft.folder_key != self.folder_key_confirm {
+                    problem = Some("As duas senhas não coincidem.".to_owned());
+                }
+                if let Err(error) = crate::sharedfolder::validate_password(&self.draft.folder_key) {
+                    problem = Some(error.to_string());
+                }
+                match problem {
+                    Some(text) => {
+                        self.error = true;
+                        self.message = text;
+                    }
+                    None => match store.save_intranet_config(&self.draft) {
+                        Ok(()) => {
+                            self.error = false;
+                            self.message = "Sincronizando com as pastas…".into();
+                            self.request_full_sync();
+                            *refresh_needed = self.refresh_client(store, db_path);
+                        }
+                        Err(error) => {
+                            self.error = true;
+                            self.message = error.to_string();
+                        }
+                    },
+                }
+            }
+            if self.sync_in_flight {
+                ui.spinner();
+                ui.small(if self.sync_step.is_empty() { "sincronizando…" } else { self.sync_step.as_str() });
+            }
+        });
+        if !self.last_summary.is_empty() {
+            ui.small(format!("Última sincronização: {}.", self.last_summary));
+        }
+        ui.small("O que você importa ou edita fica salvo neste computador e vai para as pastas ao sincronizar: ao abrir o Ponte, a cada 5 minutos, e em “Sincronizar agora”. Ao fechar, o Ponte avisa se algo ainda não foi enviado.");
+    }
+
+    /// Text for the status bar while a synchronization runs.
+    pub fn sync_step(&self) -> &str {
+        &self.sync_step
+    }
+
+    pub fn folder_mode(&self, store: &Store) -> bool {
+        store
+            .load_intranet_config()
+            .is_ok_and(|cfg| cfg.mode == IntranetMode::SharedFolder)
+    }
+
+    /// Changes made here and not yet carried to the folders.
+    pub fn unsent_folder_changes(&self, store: &Store) -> usize {
+        if !self.folder_mode(store) {
+            return 0;
+        }
+        store.list_offline_outbox().map(|v| v.len()).unwrap_or(0)
     }
 
     pub fn host_running(&self) -> bool {
@@ -3301,13 +4079,17 @@ impl IntranetPanel {
         let Ok(cfg) = store.load_intranet_config() else {
             return false;
         };
-        if cfg.mode != IntranetMode::Client {
+        if !cfg.mode.queues_changes() {
             self.offline = false;
             self.sync_in_flight = false;
+            self.sync_step.clear();
             return false;
         }
         let mut changed = false;
         if let Some(worker) = &self.sync {
+            if let Some(step) = worker.progress.try_iter().last() {
+                self.sync_step = step;
+            }
             match worker.outcomes.try_recv() {
                 Ok(outcome) => {
                     self.sync_in_flight = false;
@@ -3321,9 +4103,20 @@ impl IntranetPanel {
                 }
             }
         }
+        // The folders are checked seldom (a cloud client has to carry the
+        // file anyway); the host over HTTP every few seconds, as before.
+        let interval = if cfg.mode == IntranetMode::SharedFolder {
+            FOLDER_SYNC_INTERVAL
+        } else {
+            SYNC_INTERVAL
+        };
         let due = self
             .last_sync_request
-            .is_none_or(|at| at.elapsed() >= SYNC_INTERVAL);
+            .is_none_or(|at| at.elapsed() >= interval);
+        if cfg.mode == IntranetMode::SharedFolder && self.replace_confirmation.is_some() && !self.manual_sync {
+            // Waiting for the person's decision: no automatic retries.
+            return changed;
+        }
         if !self.sync_in_flight && due {
             if self.sync.is_none() {
                 match SyncWorker::start(db_path.clone(), self.repaint.clone()) {
@@ -3338,8 +4131,15 @@ impl IntranetPanel {
             if let Some(worker) = &self.sync {
                 let force = std::mem::take(&mut self.force_next_sync);
                 let manual = std::mem::take(&mut self.manual_sync);
-                if worker.requests.send((force, manual)).is_ok() {
+                let request = SyncRequest {
+                    force_full: force,
+                    manual,
+                    folder_key: Some(self.draft.folder_key.clone()).filter(|k| !k.is_empty()),
+                    allow_replace: std::mem::take(&mut self.allow_replace_next),
+                };
+                if worker.requests.send(request).is_ok() {
                     self.sync_in_flight = true;
+                    self.sync_step = "Iniciando…".into();
                     self.last_sync_request = Some(Instant::now());
                 } else {
                     self.sync = None;
@@ -3352,8 +4152,49 @@ impl IntranetPanel {
     fn apply_sync_outcome(&mut self, store: &mut Store, cfg: &IntranetConfig, outcome: SyncOutcome) {
         let conflicts = store.list_sync_conflicts().map(|v| v.len()).unwrap_or(0);
         let outbox = store.list_offline_outbox().map(|v| v.len()).unwrap_or(0);
+        self.sync_step.clear();
+        if cfg.mode == IntranetMode::SharedFolder {
+            match outcome.result {
+                Ok(done) => {
+                    self.offline = false;
+                    self.replace_confirmation = None;
+                    self.last_sync_finished = Some((Instant::now(), done.changed));
+                    self.last_summary = done.summary.clone();
+                    let when = store
+                        .load_intranet_config()
+                        .map(|c| crate::labels::datetime(&c.last_sync_at))
+                        .unwrap_or_default();
+                    self.status_summary = format!("Pasta compartilhada • {} • {}", done.summary, when);
+                    if outcome.manual {
+                        self.error = false;
+                        self.message = format!("Sincronização concluída: {}.", done.summary);
+                    }
+                }
+                Err(error) => {
+                    self.offline = true;
+                    self.last_sync_finished = Some((Instant::now(), false));
+                    if let Some(rest) = error.strip_prefix("[confirmar-substituicao] ") {
+                        self.replace_confirmation = Some(rest.to_owned());
+                        self.status_summary = "Pasta compartilhada • aguardando sua confirmação (ver Rede e equipe)".into();
+                        self.error = false;
+                        self.message.clear();
+                    } else {
+                        let mut extras = format!(" • {outbox} alteração(ões) aguardando envio");
+                        if conflicts > 0 {
+                            extras.push_str(&format!(" • ⚠ {conflicts} conflito(s) de edição"));
+                        }
+                        self.status_summary = format!("Pasta compartilhada fora de alcance{extras}");
+                        if outcome.manual {
+                            self.error = true;
+                            self.message = format!("Não foi possível sincronizar agora: {error}");
+                        }
+                    }
+                }
+            }
+            return;
+        }
         match outcome.result {
-            Ok(changed) => {
+            Ok(SyncDone { changed, .. }) => {
                 self.offline = false;
                 store.note_host_reachability(true);
                 self.last_sync_finished = Some((Instant::now(), changed));
@@ -3410,6 +4251,22 @@ impl IntranetPanel {
             ));
         }
         match cfg.mode {
+            IntranetMode::SharedFolder => {
+                if !self.status_summary.is_empty() {
+                    format!("{}{badge}", self.status_summary)
+                } else {
+                    let pending = if outbox > 0 {
+                        format!(" • {outbox} alteração(ões) a enviar")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "Pasta compartilhada ({} pasta(s)) • revisão {}{pending}{badge}",
+                        cfg.folder_paths().len(),
+                        cfg.synced_revision
+                    )
+                }
+            }
             IntranetMode::Local => format!(
                 "Biblioteca local ({}) • conteúdo protegido para este usuário do Windows{badge}",
                 cfg.member_name
@@ -3479,12 +4336,20 @@ impl IntranetPanel {
 
                 ui.add_space(6.0);
                 ui.strong("Modo de operação deste computador");
-                for mode in [IntranetMode::Local, IntranetMode::Host, IntranetMode::Client] {
+                for mode in [
+                    IntranetMode::Local,
+                    IntranetMode::Host,
+                    IntranetMode::Client,
+                    IntranetMode::SharedFolder,
+                ] {
                     ui.radio_value(&mut self.draft.mode, mode, mode.label());
                 }
 
                 ui.separator();
                 match self.draft.mode {
+                    IntranetMode::SharedFolder => {
+                        self.shared_folder_section(ui, store, db_path, &mut refresh_needed);
+                    }
                     IntranetMode::Local => {
                         ui.label("Neste modo, o Ponte opera apenas no acervo deste computador.");
                         if self.server.is_some() && ui.button("Parar serviço de Anfitrião").clicked() {
@@ -3707,7 +4572,7 @@ impl IntranetPanel {
                                     self.server = None;
                                     self.message.push_str(" Este computador deixou de estar disponível para a equipe.");
                                 }
-                                if self.draft.mode == IntranetMode::Client {
+                                if self.draft.mode.queues_changes() {
                                     self.last_sync_request = None;
                                     refresh_needed = self.refresh_client(store, db_path);
                                 }
@@ -3946,6 +4811,7 @@ mod tests {
             auto_start_host: true,
             synced_revision: 0,
             last_sync_at: String::new(),
+            ..IntranetConfig::default()
         };
         host_store.save_intranet_config(&host_cfg).unwrap();
 
@@ -3964,6 +4830,7 @@ mod tests {
             auto_start_host: false,
             synced_revision: 0,
             last_sync_at: String::new(),
+            ..IntranetConfig::default()
         };
         client_store.save_intranet_config(&client_cfg).unwrap();
 
@@ -4198,6 +5065,152 @@ mod tests {
                     "Plaintext leaked on disk: {secret}"
                 );
             }
+        }
+    }
+
+    fn folder_config(member: &str, files: Vec<String>) -> IntranetConfig {
+        IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: member.into(),
+            folder_files: files,
+            folder_key: "senha-de-teste-123".into(),
+            ..IntranetConfig::default()
+        }
+    }
+
+    #[test]
+    fn two_computers_exchange_the_library_through_folders_and_reconcile_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = dir.path().join("Drive").join("ponte-sync.ponte");
+        let pen = dir.path().join("Pendrive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        let files = vec![drive.display().to_string(), pen.display().to_string()];
+        let reporter = crate::ai::Reporter::silent();
+        let key = "senha-de-teste-123";
+
+        // Computer A: a document with an attachment, then the first copy.
+        let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        a.save_intranet_config(&folder_config("Casa", files.clone())).unwrap();
+        let cfg_a = a.load_intranet_config().unwrap();
+        let receipt = a.import_capture(&crate::model::sample_capture()).unwrap();
+        a.add_attachment(
+            crate::attachments::Owner::Document(receipt.document_id),
+            "oficio.pdf",
+            "cópia",
+            b"%PDF-1.4 anexo sintetico",
+        )
+        .unwrap();
+        a.save_note(receipt.document_id, "Nota inicial").unwrap();
+        assert_eq!(a.list_offline_outbox().unwrap().len(), 3, "every change queued for the folders");
+        let report = a.sync_with_folders(&cfg_a, key, false, &reporter).unwrap();
+        assert!(report.created);
+        assert_eq!(report.written_to.len(), 1, "the pen drive folder does not exist yet");
+        assert_eq!(report.unreachable.len(), 1);
+        assert!(a.list_offline_outbox().unwrap().is_empty());
+        let header = crate::sharedfolder::read_header(&drive).unwrap().unwrap();
+        assert!(header.revision > 0);
+        let cfg_a = a.load_intranet_config().unwrap();
+        assert_eq!(cfg_a.synced_revision, header.revision);
+        assert!(!cfg_a.folder_lineage.is_empty());
+
+        // Computer B joins with an empty library: receives everything.
+        let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+        b.save_intranet_config(&folder_config("Trabalho", files.clone())).unwrap();
+        let cfg_b = b.load_intranet_config().unwrap();
+        let report = b.sync_with_folders(&cfg_b, key, false, &reporter).unwrap();
+        assert!(report.changed);
+        assert_eq!(b.list_documents("").unwrap().len(), 1);
+        let detail = b.load_document(receipt.document_id).unwrap();
+        assert_eq!(detail.note, "Nota inicial");
+        let attachments = b
+            .list_attachments(crate::attachments::Owner::Document(receipt.document_id))
+            .unwrap();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(b.attachment_bytes(attachments[0].id).unwrap().1, b"%PDF-1.4 anexo sintetico");
+        assert!(b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter).unwrap().written_to.is_empty(), "up to date: nothing rewritten");
+
+        // Wrong password and a copy of another library are refused.
+        assert!(b.sync_with_folders(&cfg_b, "outra-senha-999", false, &reporter).is_err());
+
+        // Both edit the same note; B also adds a task. B syncs first.
+        b.save_note(receipt.document_id, "Nota inicial\nAcréscimo do trabalho").unwrap();
+        let mut task = crate::tasks::Task::new(receipt.document_id);
+        task.title = "Tarefa criada no trabalho".into();
+        b.save_task(&task).unwrap();
+        a.save_note(receipt.document_id, "Nota inicial\nAcréscimo de casa").unwrap();
+        let cfg_b = b.load_intranet_config().unwrap();
+        let report = b.sync_with_folders(&cfg_b, key, false, &reporter).unwrap();
+        assert_eq!(report.pushed, 2);
+        let revision_after_b = crate::sharedfolder::read_header(&drive).unwrap().unwrap().revision;
+        assert!(revision_after_b > header.revision);
+
+        // A syncs: its note conflicts, the task arrives, the file is rewritten.
+        let cfg_a = a.load_intranet_config().unwrap();
+        let report = a.sync_with_folders(&cfg_a, key, false, &reporter).unwrap();
+        assert_eq!(report.conflicts, 1);
+        assert!(a.list_tasks().unwrap().iter().any(|t| t.title == "Tarefa criada no trabalho"));
+        assert_eq!(a.load_document(receipt.document_id).unwrap().note, "Nota inicial\nAcréscimo do trabalho");
+        let conflicts = a.list_sync_conflicts().unwrap();
+        assert_eq!(conflicts.len(), 1);
+        a.resolve_sync_conflict(conflicts[0].id, ConflictResolution::Merge).unwrap();
+        let merged = a.load_document(receipt.document_id).unwrap().note;
+        assert!(merged.contains("Acréscimo do trabalho") && merged.contains("Acréscimo de casa"), "{merged}");
+        let cfg_a = a.load_intranet_config().unwrap();
+        let report = a.sync_with_folders(&cfg_a, key, false, &reporter).unwrap();
+        assert_eq!(report.pushed, 1);
+        assert!(report.conflicts == 0);
+
+        // B receives the merged note; a second folder appears and catches up.
+        std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
+        let cfg_b = b.load_intranet_config().unwrap();
+        let report = b.sync_with_folders(&cfg_b, key, false, &reporter).unwrap();
+        assert_eq!(b.load_document(receipt.document_id).unwrap().note, merged);
+        assert!(report.written_to.iter().any(|p| p.contains("Pendrive")), "{:?}", report.written_to);
+        let drive_header = crate::sharedfolder::read_header(&drive).unwrap().unwrap();
+        let pen_header = crate::sharedfolder::read_header(&pen).unwrap().unwrap();
+        assert_eq!(drive_header.revision, pen_header.revision);
+
+        // Diverged copies: A writes only to the pen drive, B only to the drive;
+        // the next full sync reconciles both changes without losing either.
+        let mut a_pen_only = a.load_intranet_config().unwrap();
+        a_pen_only.folder_files = vec![pen.display().to_string()];
+        a.save_intranet_config(&a_pen_only).unwrap();
+        a.save_note(receipt.document_id, &format!("{merged}\nSó pelo pendrive")).unwrap();
+        a.sync_with_folders(&a_pen_only, key, false, &reporter).unwrap();
+        let mut b_drive_only = b.load_intranet_config().unwrap();
+        b_drive_only.folder_files = vec![drive.display().to_string()];
+        b.save_intranet_config(&b_drive_only).unwrap();
+        let mut other = crate::tasks::Task::new(receipt.document_id);
+        other.title = "Tarefa só pelo Drive".into();
+        b.save_task(&other).unwrap();
+        b.sync_with_folders(&b_drive_only, key, false, &reporter).unwrap();
+        let mut b_both = b.load_intranet_config().unwrap();
+        b_both.folder_files = files.clone();
+        b.save_intranet_config(&b_both).unwrap();
+        let report = b.sync_with_folders(&b_both, key, false, &reporter).unwrap();
+        assert_eq!(report.merged_foreign, 1, "the pen drive's note reaches B");
+        assert!(b.load_document(receipt.document_id).unwrap().note.ends_with("Só pelo pendrive"));
+        assert!(b.list_tasks().unwrap().iter().any(|t| t.title == "Tarefa só pelo Drive"));
+        assert_eq!(report.written_to.len(), 2);
+
+        // A joining computer with its own documents must confirm the replacement.
+        let mut c = Store::open(&dir.path().join("c.sqlite3")).unwrap();
+        let mut own = crate::model::sample_capture();
+        own.document_number = "SEFAZ-PRO-2026/00099".into();
+        own.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00099".into();
+        c.import_capture(&own).unwrap();
+        c.save_intranet_config(&folder_config("Notebook", files.clone())).unwrap();
+        let cfg_c = c.load_intranet_config().unwrap();
+        let error = c.sync_with_folders(&cfg_c, key, false, &reporter).unwrap_err().to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        c.sync_with_folders(&cfg_c, key, true, &reporter).unwrap();
+        assert_eq!(c.list_documents("").unwrap().len(), 1);
+
+        // Nothing readable in the transport files.
+        for path in [&drive, &pen] {
+            let raw = std::fs::read(path).unwrap();
+            assert!(!raw.windows(5).any(|w| w == b"Nota "));
+            assert!(!raw.windows(8).any(|w| w == b"sintetico"));
         }
     }
 
