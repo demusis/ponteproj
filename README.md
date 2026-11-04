@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.18.1 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.18.2 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 

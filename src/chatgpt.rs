@@ -818,14 +818,25 @@ fn list_models_at(base: &str, token: &str) -> Result<Vec<crate::ai::ModelInfo>> 
     parse_models(&body)
 }
 
+/// The catalogue comes in two shapes: the plan-sharing flow answers with a
+/// `models` array of `{slug, display_name, visibility}` (OpenAI's Sign in
+/// with ChatGPT documentation), the plain API with `data` of `{id}`.
 fn parse_models(bytes: &[u8]) -> Result<Vec<crate::ai::ModelInfo>> {
     let value: Value = serde_json::from_slice(bytes).context("Lista de modelos em formato inesperado.")?;
-    let models = value["data"]
+    let entries = value["models"]
         .as_array()
-        .context("Lista de modelos sem a lista `data`.")?
+        .or_else(|| value["data"].as_array())
+        .with_context(|| {
+            let keys = value
+                .as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            format!("Lista de modelos sem a lista `models` nem `data` (campos recebidos: {keys}).")
+        })?;
+    let models = entries
         .iter()
         .filter(|m| m["visibility"].as_str().is_none_or(|v| v == "list"))
-        .filter_map(|m| m["id"].as_str())
+        .filter_map(|m| m["slug"].as_str().or_else(|| m["id"].as_str()))
         .map(|id| clean(id, 128))
         .filter(|id| !id.is_empty())
         .map(|name| crate::ai::ModelInfo {
@@ -1143,7 +1154,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["gpt-a", "gpt-b"]);
-        assert!(parse_models(b"{}").is_err());
+        // Shape documented for the plan-sharing flow.
+        let models = parse_models(
+            json!({"object":"list","models":[
+                {"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","visibility":"list"},
+                {"slug":"gpt-internal","display_name":"Interno","visibility":"hidden"}
+            ]})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["gpt-6.1-sol"]);
+        let error = parse_models(br#"{"object":"list","items":[]}"#).err().unwrap().to_string();
+        assert!(error.contains("items") && error.contains("object"), "{error}");
     }
 
     #[test]

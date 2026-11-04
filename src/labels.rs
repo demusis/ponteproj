@@ -323,9 +323,14 @@ fn calendar_popup(
             let (mut year, mut month) = ui
                 .data(|d| d.get_temp::<(i32, u32)>(view_id))
                 .unwrap_or((base.year(), base.month()));
-            ui.set_min_width(230.0);
+            // Exactly seven columns wide: the popup must not stretch to the
+            // panel's width and leave a blank band beside the days.
+            const CELL: f32 = 28.0;
+            const WIDTH: f32 = CELL * 7.0 + 2.0 * 6.0;
+            ui.set_width(WIDTH);
             ui.horizontal(|ui| {
-                if ui.small_button("◀").on_hover_text("Mês anterior").clicked() {
+                let previous = ui.small_button("◀").on_hover_text("Mês anterior");
+                if previous.clicked() {
                     if month == 1 {
                         month = 12;
                         year -= 1;
@@ -333,26 +338,30 @@ fn calendar_popup(
                         month -= 1;
                     }
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("▶").on_hover_text("Mês seguinte").clicked() {
-                        if month == 12 {
-                            month = 1;
-                            year += 1;
-                        } else {
-                            month += 1;
-                        }
+                let arrows = previous.rect.width() + ui.spacing().item_spacing.x;
+                ui.add_sized(
+                    [WIDTH - 2.0 * arrows, previous.rect.height()],
+                    egui::Label::new(
+                        egui::RichText::new(format!("{} {year}", MONTHS[(month - 1) as usize]))
+                            .strong(),
+                    )
+                    .selectable(false),
+                );
+                if ui.small_button("▶").on_hover_text("Mês seguinte").clicked() {
+                    if month == 12 {
+                        month = 1;
+                        year += 1;
+                    } else {
+                        month += 1;
                     }
-                    ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
-                        ui.strong(format!("{} {year}", MONTHS[(month - 1) as usize]));
-                    });
-                });
+                }
             });
             egui::Grid::new(view_id.with("grid"))
                 .num_columns(7)
                 .spacing([2.0, 2.0])
                 .show(ui, |ui| {
                     for name in WEEKDAYS {
-                        ui.add_sized([28.0, 18.0], egui::Label::new(egui::RichText::new(name).small().color(egui::Color32::from_rgb(120, 130, 140))));
+                        ui.add_sized([CELL, 18.0], egui::Label::new(egui::RichText::new(name).small().color(egui::Color32::from_rgb(120, 130, 140))));
                     }
                     ui.end_row();
                     for week in month_grid(year, month) {
@@ -367,7 +376,7 @@ fn calendar_popup(
                                         text = text.strong().color(egui::Color32::from_rgb(24, 84, 97));
                                     }
                                     let response = ui.add_sized(
-                                        [28.0, 22.0],
+                                        [CELL, 22.0],
                                         egui::Button::selectable(is_selected, text),
                                     );
                                     if response.clicked() {
@@ -376,7 +385,7 @@ fn calendar_popup(
                                     }
                                 }
                                 None => {
-                                    ui.add_sized([28.0, 22.0], egui::Label::new(""));
+                                    ui.add_sized([CELL, 22.0], egui::Label::new(""));
                                 }
                             }
                         }
