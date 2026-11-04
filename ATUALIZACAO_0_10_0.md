@@ -3,6 +3,8 @@
 **Data:** 2026-11-04
 **Extensão:** 0.1.8 (sem mudanças; não precisa recarregar)
 
+> **Correção da 0.9.3:** o instalador `Ponte-Setup-0.9.3.exe` foi gerado com o programa da 0.9.2 (a pasta `v0.9.3` instalada responde "PonteProj 0.9.2"). As correções descritas em ATUALIZACAO_0_9_3.md chegam de fato nesta versão. Quem instalou a 0.9.3 deve instalar a 0.10.0.
+
 ## O que muda
 
 - **Configuração de IA salva.** Endereço, modelo e chave passam a ser gravados no acervo, cifrados com a DPAPI da conta do Windows (como o restante dos dados). Não é mais preciso reinformá-los a cada abertura. A opção **Guardar a chave neste computador** pode ser desmarcada para manter a chave só na memória da sessão.
