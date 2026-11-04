@@ -253,21 +253,34 @@ impl Store {
         let request_key = uuid::Uuid::parse_str(&capture.request_id)?
             .hyphenated()
             .to_string();
-        let identity_hash = identity_hash(capture);
-        let content_hash = content_hash(capture)?;
-        let payload = encode(capture)?;
         let seen = now();
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // A manual record created without a number (connected computer, or
+        // first creation here) gets the next one now, inside the transaction.
+        let pending_manual = capture.is_manual() && capture.document_number == MANUAL_PENDING;
+        let assigned;
+        let capture: &Capture = if pending_manual {
+            ensure!(files.is_empty(), "Registro manual não leva PDFs importados.");
+            assigned = with_manual_number(capture, &next_manual_number(&tx)?);
+            &assigned
+        } else {
+            capture
+        };
+        let identity_hash = identity_hash(capture);
+        let content_hash = content_hash(capture)?;
+        let payload = encode(capture)?;
         let prior: Option<(i64, i64, Vec<u8>, Vec<u8>)> = tx.query_row(
             "SELECT r.document_id,r.capture_id,d.identity_hash,c.content_hash FROM requests r
              JOIN documents d ON d.id=r.document_id JOIN captures c ON c.id=r.capture_id WHERE r.request_id=?1",
             [&request_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         ).optional()?;
         if let Some((document_id, capture_id, old_identity, old_content)) = prior {
+            // A replayed manual creation was numbered on its first arrival;
+            // the stored copy is the one that counts.
             ensure!(
-                old_identity == identity_hash && old_content == content_hash,
+                pending_manual || (old_identity == identity_hash && old_content == content_hash),
                 "request_id já utilizado para outra captura; gere um novo UUID."
             );
             crate::trash::require_active_capture(&tx, capture_id)?;
@@ -512,6 +525,7 @@ impl Store {
             joined_to_id,
             // Requires the whole library; filled by list_documents/joined_children.
             joined_children_count: 0,
+            manual: capture.is_manual(),
             id,
             document_number: capture.document_number.clone(),
             title: capture.title.clone(),
@@ -917,7 +931,43 @@ fn identity_hash(capture: &Capture) -> Vec<u8> {
 
 fn identity_hash_for_number(number: &str) -> Vec<u8> {
     let number = number.split_whitespace().collect::<String>().to_uppercase();
-    Sha256::digest(format!("https://www.sigadoc.mt.gov.br\n{number}").as_bytes()).to_vec()
+    // Manual records live under their own origin: the same digits in an
+    // official number name a different document.
+    let origin = if is_manual_number(&number) {
+        "ponte://manual"
+    } else {
+        "https://www.sigadoc.mt.gov.br"
+    };
+    Sha256::digest(format!("{origin}\n{number}").as_bytes()).to_vec()
+}
+
+/// Next free `MANUAL-AAAA/NNNN` for this year, looking at every document
+/// (trashed ones included, so a number is never reused). Runs inside the
+/// import transaction, so two creations cannot pick the same number.
+fn next_manual_number(tx: &rusqlite::Transaction<'_>) -> Result<String> {
+    let year = chrono::Local::now().format("%Y").to_string();
+    let prefix = format!("{MANUAL_PREFIX}{year}/");
+    let mut statement = tx.prepare(
+        "SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id",
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+    let mut highest = 0_u32;
+    for row in rows {
+        let capture: Capture = decode(&row?)?;
+        if let Some(rest) = capture.document_number.trim().to_uppercase().strip_prefix(&prefix) {
+            if let Ok(sequence) = rest.parse::<u32>() {
+                highest = highest.max(sequence);
+            }
+        }
+    }
+    Ok(format!("{prefix}{:04}", highest + 1))
+}
+
+fn with_manual_number(capture: &Capture, number: &str) -> Capture {
+    let mut assigned = capture.clone();
+    assigned.document_number = number.to_owned();
+    assigned.source_url = format!("{MANUAL_ORIGIN}{number}");
+    assigned
 }
 
 fn content_hash(capture: &Capture) -> Result<Vec<u8>> {
@@ -929,7 +979,10 @@ fn content_hash(capture: &Capture) -> Result<Vec<u8>> {
         .split_whitespace()
         .collect::<String>()
         .to_uppercase();
-    canonical.source_url = canonical_url(&canonical.source_url)?;
+    // Manual records carry their own origin, not a SIGADOC address.
+    if !canonical.is_manual() {
+        canonical.source_url = canonical_url(&canonical.source_url)?;
+    }
     for reference in &mut canonical.references {
         reference.url = canonical_url(&reference.url)?;
     }

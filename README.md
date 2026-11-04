@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.16.0 (extensão 0.1.9) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.17.0 (extensão 0.1.9) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -118,6 +118,10 @@ Em **Documento ▸ Anexos** e na ficha de cada tarefa, **Anexar arquivo…** abr
 Quando um arquivo é recusado, a mensagem diz o motivo e o que fazer (por exemplo: *"O arquivo tem 12,4 MB; o limite é 8 MB. Para reduzir: salve o PDF com compressão… ou divida o documento em partes"*). O tipo é conferido também pelo conteúdo, não só pela extensão.
 
 Cada anexo tem uma **descrição** opcional e os botões **Ler no Ponte** (PDF) ou **Abrir** (demais tipos, no programa padrão do Windows, a partir de uma cópia temporária apagada ao fechar o Ponte), **Salvar como…** e **Excluir…** (vai para a Lixeira). Na lista de tarefas, **📎 2** indica quantos anexos a tarefa tem.
+
+### Registros manuais (o que não está no SIGADOC)
+
+Uma ligação telefônica, um memorando interno, um e-mail ou um ofício em papel podem virar um **registro manual**: botão **＋ Registro manual** na lista da esquerda (ou **Criar registro manual…** na tela inicial), com tipo, título, origem, data do documento e texto. O registro recebe um número próprio, `MANUAL-2026/0007`, que nunca se confunde com um número do SIGADOC, e aparece com a pílula âmbar **Manual** na lista, na ficha e nas tarefas. Tarefas, notas, minutas, anexos, análise por IA, Lixeira e compartilhamento com a equipe funcionam como em qualquer documento; a ficha mostra "Dados do registro" no lugar dos dados do SIGADOC e não tem "Abrir no SIGADOC". **Editar registro…** salva uma nova versão (as anteriores ficam em Mais ▸ Versões). Em equipe, o número é dado pelo computador principal; se ele estiver fora de alcance, o registro fica como "pendente" até a próxima sincronização. O filtro **Origem** separa SIGADOC e manuais; na exportação CSV, a coluna "Origem" vale "Manual".
 
 ### Reimportar
 

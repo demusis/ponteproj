@@ -32,6 +32,68 @@ enum DocTaskFilter {
     Completed,
 }
 
+/// Where the documents in the list came from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DocOriginFilter {
+    #[default]
+    All,
+    Sigadoc,
+    Manual,
+}
+
+impl DocOriginFilter {
+    fn matches(self, manual: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::Sigadoc => !manual,
+            Self::Manual => manual,
+        }
+    }
+}
+
+/// "Registro manual" window: creates a record or saves a new version of one.
+#[derive(Default)]
+struct ManualForm {
+    open: bool,
+    /// Document being edited; `None` when creating.
+    id: Option<i64>,
+    number: String,
+    fields: crate::manual::ManualFields,
+    original: crate::manual::ManualFields,
+    message: String,
+}
+
+impl ManualForm {
+    fn open_new(&mut self) {
+        let fields = crate::manual::ManualFields {
+            kind: "memorando".into(),
+            ..Default::default()
+        };
+        *self = Self {
+            open: true,
+            original: fields.clone(),
+            fields,
+            ..Default::default()
+        };
+    }
+
+    fn open_edit(&mut self, detail: &DocumentDetail) {
+        let fields = crate::manual::ManualFields::from_capture(&detail.capture);
+        *self = Self {
+            open: true,
+            id: Some(detail.summary.id),
+            number: detail.summary.document_number.clone(),
+            original: fields.clone(),
+            fields,
+            message: String::new(),
+        };
+    }
+
+    fn dirty(&self) -> bool {
+        self.open && self.fields != self.original
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DocPriorityFilter {
     #[default]
@@ -249,6 +311,9 @@ fn install_symbol_fallback(ctx: &egui::Context) {
 
 const JOINED_FG: Color32 = Color32::from_rgb(88, 64, 138);
 const JOINED_BG: Color32 = Color32::from_rgb(237, 232, 248);
+/// "Manual" pill: amber, unlike the purple of juntada and the task badges.
+const MANUAL_FG: Color32 = Color32::from_rgb(122, 78, 10);
+const MANUAL_BG: Color32 = Color32::from_rgb(252, 240, 214);
 
 fn pill(ui: &mut egui::Ui, text: impl Into<String>, fg: Color32, bg: Color32, size: f32) {
     egui::Frame::new()
@@ -620,6 +685,8 @@ struct PonteApp {
     backup_path: Option<PathBuf>,
     doc_task_filter: DocTaskFilter,
     doc_priority_filter: DocPriorityFilter,
+    doc_origin_filter: DocOriginFilter,
+    manual_form: ManualForm,
     filters_open: bool,
     /// Browser-bridge installation check, refreshed every few seconds while
     /// the welcome screen is visible.
@@ -679,6 +746,8 @@ impl PonteApp {
             backup_path: None,
             doc_task_filter: DocTaskFilter::All,
             doc_priority_filter: DocPriorityFilter::All,
+            doc_origin_filter: DocOriginFilter::All,
+            manual_form: ManualForm::default(),
             filters_open: false,
             install_status: None,
         }
@@ -708,6 +777,14 @@ impl PonteApp {
         ui.label("1. Abra o documento no SIGADOC, no Chrome ou no Edge.");
         ui.label("2. Clique em “Importar para o assistente”, no canto da página.");
         ui.label("3. O documento aparece aqui com o texto, os PDFs e o histórico.");
+        ui.add_space(12.0);
+        ui.strong("Algo que não está no SIGADOC?");
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Uma ligação, um memorando, um e-mail ou um papel podem virar um registro manual, marcado como tal e com tarefas, notas e anexos como qualquer documento.");
+        });
+        if ui.button("＋ Criar registro manual…").clicked() {
+            self.manual_form.open_new();
+        }
         ui.add_space(16.0);
         let status = self.install_status();
         ui.group(|ui| {
@@ -849,6 +926,12 @@ impl PonteApp {
             out.push(Pending {
                 label: "Descrição de anexo não salva na tarefa aberta".into(),
                 go: PendingTarget::Tasks,
+            });
+        }
+        if self.manual_form.dirty() {
+            out.push(Pending {
+                label: "Registro manual em edição (janela aberta)".into(),
+                go: PendingTarget::None,
             });
         }
         if let Some(worker) = &self.worker {
@@ -2021,7 +2104,8 @@ impl PonteApp {
         }
 
         let filters_active = self.doc_task_filter != DocTaskFilter::All
-            || self.doc_priority_filter != DocPriorityFilter::All;
+            || self.doc_priority_filter != DocPriorityFilter::All
+            || self.doc_origin_filter != DocOriginFilter::All;
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let label = if self.filters_open { "Filtrar ▴" } else { "Filtrar ▾" };
@@ -2030,6 +2114,13 @@ impl PonteApp {
                 .clicked()
             {
                 self.filters_open = !self.filters_open;
+            }
+            if ui
+                .add(egui::Button::new("＋ Registro manual").small())
+                .on_hover_text("Cria um documento que não existe no SIGADOC: ligação, memorando, e-mail, papel. Fica marcado como manual e é compartilhado com a equipe como os demais.")
+                .clicked()
+            {
+                self.manual_form.open_new();
             }
             if count_overdue > 0 && !self.filters_open {
                 if ui
@@ -2044,6 +2135,7 @@ impl PonteApp {
             if (filters_active || !self.query.is_empty()) && ui.small_button("Limpar").clicked() {
                 self.doc_task_filter = DocTaskFilter::All;
                 self.doc_priority_filter = DocPriorityFilter::All;
+                self.doc_origin_filter = DocOriginFilter::All;
                 if !self.query.is_empty() {
                     self.query.clear();
                     self.search_changed = Some(Instant::now());
@@ -2094,6 +2186,20 @@ impl PonteApp {
                         ui.selectable_value(&mut self.doc_priority_filter, pf, pf.label());
                     }
                 });
+            let manual_count = self.documents.iter().filter(|d| d.manual).count();
+            if manual_count > 0 || self.doc_origin_filter != DocOriginFilter::All {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
+                    ui.small("Origem:");
+                    ui.selectable_value(&mut self.doc_origin_filter, DocOriginFilter::All, "Todos");
+                    ui.selectable_value(&mut self.doc_origin_filter, DocOriginFilter::Sigadoc, "SIGADOC");
+                    ui.selectable_value(
+                        &mut self.doc_origin_filter,
+                        DocOriginFilter::Manual,
+                        format!("Manuais ({manual_count})"),
+                    );
+                });
+            }
         }
 
         let filtered_docs: Vec<&DocumentSummary> = self
@@ -2104,7 +2210,8 @@ impl PonteApp {
                     .get(&doc.id)
                     .is_none_or(|s| s.matches(self.doc_task_filter));
                 let prio_ok = self.doc_priority_filter.matches(&doc.priority);
-                task_ok && prio_ok
+                let origin_ok = self.doc_origin_filter.matches(doc.manual);
+                task_ok && prio_ok && origin_ok
             })
             .collect();
 
@@ -2176,6 +2283,9 @@ impl PonteApp {
                             ui.add_space(indent + 11.0);
                         }
                         pill(ui, badge_text, badge_fg, badge_bg, 11.5);
+                        if document.manual {
+                            pill(ui, "Manual", MANUAL_FG, MANUAL_BG, 11.5);
+                        }
                         if let Some(text) = &joined {
                             pill(ui, text, JOINED_FG, JOINED_BG, 11.5);
                         }
@@ -2214,6 +2324,7 @@ impl PonteApp {
                     if ui.button("Limpar busca e filtros").clicked() {
                         self.doc_task_filter = DocTaskFilter::All;
                         self.doc_priority_filter = DocPriorityFilter::All;
+                        self.doc_origin_filter = DocOriginFilter::All;
                         if !self.query.is_empty() {
                             self.query.clear();
                             self.search_changed = Some(Instant::now());
@@ -2243,6 +2354,9 @@ impl PonteApp {
                 .show(ui, |ui| {
                     ui.label(RichText::new(badge_text).size(12.5).color(badge_fg).strong());
                 });
+            if detail.summary.manual {
+                pill(ui, "Registro manual", MANUAL_FG, MANUAL_BG, 12.5);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_enabled(self.worker.is_none(), egui::Button::new("Excluir…"))
@@ -2252,6 +2366,14 @@ impl PonteApp {
                         kind: crate::trash::Kind::Document,
                         id,
                     });
+                }
+                if detail.summary.manual
+                    && ui
+                        .button("Editar registro…")
+                        .on_hover_text("Altera tipo, título, origem, data ou texto. Cada edição fica guardada como uma versão.")
+                        .clicked()
+                {
+                    self.manual_form.open_edit(detail);
                 }
             });
         });
@@ -2310,14 +2432,33 @@ impl PonteApp {
             self.select(target);
             return;
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.small(format!(
-                "Captura #{} • {}",
-                detail.summary.latest_capture_id,
-                display_date(&detail.capture.captured_at)
-            ));
-            safe_link(ui, "Abrir documento no SIGADOC", &detail.capture.source_url);
-        });
+        if detail.summary.manual {
+            let versions = self.store.capture_versions(id).map(|v| v.len()).unwrap_or(1);
+            let by = detail
+                .capture
+                .metadata
+                .get("registered_by")
+                .cloned()
+                .unwrap_or_else(|| "esta equipe".into());
+            ui.horizontal_wrapped(|ui| {
+                ui.small(format!(
+                    "Registro criado no Ponte por {by} • versão {versions}, salva em {} • sem página no SIGADOC",
+                    display_date(&detail.capture.captured_at)
+                ));
+                if detail.summary.document_number == crate::model::MANUAL_PENDING {
+                    ui.colored_label(WARNING, "Número definitivo será dado pelo computador principal na próxima sincronização.");
+                }
+            });
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                ui.small(format!(
+                    "Captura #{} • {}",
+                    detail.summary.latest_capture_id,
+                    display_date(&detail.capture.captured_at)
+                ));
+                safe_link(ui, "Abrir documento no SIGADOC", &detail.capture.source_url);
+            });
+        }
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.tab, Tab::Overview, "Resumo");
@@ -2364,13 +2505,23 @@ impl PonteApp {
     /// Everything imported from the SIGADOC page, in reading order.
     fn document_tab(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         let id = detail.summary.id;
-        Self::section(ui, id, "Texto importado", true, |ui| {
+        let manual = detail.summary.manual;
+        let text_title = if manual { "Texto do registro" } else { "Texto importado" };
+        Self::section(ui, id, text_title, true, |ui| {
             ui.horizontal(|ui| {
-                ui.small("Texto da página e dos PDFs lidos.");
-                info(ui, "Parágrafos, listas e tabelas mantêm a organização da página. Para a aparência original, abra o PDF na seção Arquivos.");
+                if manual {
+                    ui.small("Texto digitado por quem criou o registro. Para alterá-lo, use “Editar registro…” no topo.");
+                } else {
+                    ui.small("Texto da página e dos PDFs lidos.");
+                    info(ui, "Parágrafos, listas e tabelas mantêm a organização da página. Para a aparência original, abra o PDF na seção Arquivos.");
+                }
             });
             if detail.capture.text.is_empty() {
-                ui.colored_label(WARNING, "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
+                if manual {
+                    ui.small("Registro sem texto. Use “Editar registro…” para acrescentar, ou anexe o arquivo original abaixo.");
+                } else {
+                    ui.colored_label(WARNING, "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
+                }
             } else {
                 let mut text = detail.capture.text.as_str();
                 egui::ScrollArea::horizontal().show(ui, |ui| {
@@ -2383,7 +2534,9 @@ impl PonteApp {
             .list_files(detail.summary.latest_capture_id)
             .map(|f| !f.is_empty())
             .unwrap_or(false);
-        Self::section(ui, id, "Arquivos (PDF)", has_files, |ui| self.files_list(ui, detail));
+        if !manual {
+            Self::section(ui, id, "Arquivos (PDF)", has_files, |ui| self.files_list(ui, detail));
+        }
         let has_attachments = self
             .store
             .list_attachments(crate::attachments::Owner::Document(id))
@@ -2405,12 +2558,119 @@ impl PonteApp {
         if let Some(target) = self.attachments.take_trash_request() {
             self.request_trash(target);
         }
-        Self::section(ui, id, "Dados do SIGADOC", false, |ui| {
-            crate::work_context::provenance(ui, detail);
-        });
-        Self::section(ui, id, "Histórico de tramitação", false, |ui| {
-            crate::dossier::show_history(ui, &detail.capture, id);
-        });
+        if manual {
+            Self::section(ui, id, "Dados do registro", true, |ui| manual_facts(ui, detail));
+        } else {
+            Self::section(ui, id, "Dados do SIGADOC", false, |ui| {
+                crate::work_context::provenance(ui, detail);
+            });
+            Self::section(ui, id, "Histórico de tramitação", false, |ui| {
+                crate::dossier::show_history(ui, &detail.capture, id);
+            });
+        }
+    }
+
+    /// The "Registro manual" window.
+    fn manual_window(&mut self, ctx: &egui::Context) {
+        if !self.manual_form.open {
+            return;
+        }
+        let mut open = true;
+        let mut save = false;
+        let mut cancel = false;
+        let editing = self.manual_form.id.is_some();
+        let title = if editing {
+            format!("Editar registro manual {}", self.manual_form.number)
+        } else {
+            "Novo registro manual".to_owned()
+        };
+        egui::Window::new(title)
+            .open(&mut open)
+            .default_width(640.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let form = &mut self.manual_form;
+                ui.colored_label(WARNING, "Registro criado por você, fora do SIGADOC. Ele fica marcado como manual em todo o Ponte e é compartilhado com a equipe como os demais documentos.");
+                if !editing {
+                    ui.small("Recebe um número próprio (MANUAL-ano/sequência) ao salvar. Anexe o arquivo original em Documento ▸ Anexos depois de salvar; aqui, resuma o que importa.");
+                }
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Tipo:");
+                    egui::ComboBox::from_id_salt("manual-kind")
+                        .selected_text(crate::manual::kind_label(&form.fields.kind))
+                        .width(260.0)
+                        .show_ui(ui, |ui| {
+                            for (key, label) in crate::manual::KINDS {
+                                ui.selectable_value(&mut form.fields.kind, (*key).to_string(), *label);
+                            }
+                        });
+                });
+                ui.label("Título");
+                ui.add(egui::TextEdit::singleline(&mut form.fields.title).hint_text("ex.: Ligação do gabinete sobre a reforma").desired_width(f32::INFINITY));
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Origem (de quem, de onde):");
+                    ui.add(egui::TextEdit::singleline(&mut form.fields.origin).hint_text("órgão, setor ou pessoa").desired_width(300.0));
+                    ui.label("Data do documento:");
+                    crate::labels::date_field(ui, "manual-document-date", &mut form.fields.document_date);
+                });
+                ui.label("Texto (o que foi pedido, decidido ou recebido)");
+                ui.add(
+                    egui::TextEdit::multiline(&mut form.fields.text)
+                        .desired_rows(12)
+                        .desired_width(f32::INFINITY),
+                );
+                if !form.message.is_empty() {
+                    ui.colored_label(ERROR, format!("✗ {}", form.message));
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let can_save = !editing || form.dirty();
+                    save = ui.add_enabled(can_save, egui::Button::new(if editing { "Salvar nova versão" } else { "Criar registro" })).clicked();
+                    cancel = ui.button("Cancelar").clicked();
+                    if editing && !form.dirty() {
+                        ui.small("sem alterações");
+                    }
+                });
+            });
+        if save {
+            let fields = self.manual_form.fields.clone();
+            let result = match self.manual_form.id {
+                None => self.store.create_manual_document(&fields).map(|r| (r, true)),
+                Some(id) => self.store.update_manual_document(id, &fields).map(|r| (r, false)),
+            };
+            match result {
+                Ok((receipt, created)) => {
+                    self.manual_form = ManualForm::default();
+                    self.refresh();
+                    self.select(receipt.document_id);
+                    self.tab = Tab::Document;
+                    let number = self
+                        .documents
+                        .iter()
+                        .find(|d| d.id == receipt.document_id)
+                        .map(|d| d.document_number.clone())
+                        .unwrap_or_default();
+                    if created {
+                        self.message(format!("Registro manual {number} criado. Anexe o arquivo original em Documento ▸ Anexos, se houver."));
+                    } else if crate::manual::unchanged(&receipt) {
+                        self.message("Nada mudou no registro; nenhuma versão nova foi salva.");
+                    } else {
+                        self.message(format!("Nova versão do registro {number} salva. As anteriores ficam em Mais ▸ Versões."));
+                    }
+                }
+                Err(error) => self.manual_form.message = error.to_string(),
+            }
+        } else if cancel {
+            self.manual_form = ManualForm::default();
+        } else if !open {
+            if self.manual_form.dirty() {
+                // The X never discards silently.
+                self.manual_form.message = "Há alterações não salvas: clique em Salvar ou em Cancelar para descartar.".into();
+            } else {
+                self.manual_form = ManualForm::default();
+            }
+        }
     }
 
     /// Local relations, versions and technical details.
@@ -2424,9 +2684,11 @@ impl PonteApp {
                 self.request_trash(target);
             }
         });
-        Self::section(ui, id, "O que foi importado e referências", false, |ui| {
-            self.coverage_and_references(ui, detail);
-        });
+        if !detail.summary.manual {
+            Self::section(ui, id, "O que foi importado e referências", false, |ui| {
+                self.coverage_and_references(ui, detail);
+            });
+        }
         Self::section(ui, id, "Dados técnicos", false, |ui| {
             self.technical_data(ui, detail);
         });
@@ -3723,6 +3985,7 @@ impl eframe::App for PonteApp {
             || self.work_context.dirty()
             || self.tasks.dirty()
             || self.saiop.dirty()
+            || self.manual_form.dirty()
             || self.editors.values().any(Editor::dirty)
             || self.worker.is_some()
             || self.suggestion.is_some();
@@ -3835,6 +4098,7 @@ impl eframe::App for PonteApp {
         });
         if enabled {
             self.about_window(&ctx);
+            self.manual_window(&ctx);
             self.consult_window(&ctx);
             self.configuration(&ctx);
             self.suggestion_window(&ctx);
@@ -3863,6 +4127,37 @@ impl eframe::App for PonteApp {
 
 fn display_date(value: &str) -> String {
     crate::labels::datetime(value)
+}
+
+/// "Dados do registro" of a manual record.
+fn manual_facts(ui: &mut egui::Ui, detail: &DocumentDetail) {
+    let metadata = &detail.capture.metadata;
+    let value = |key: &str| metadata.get(key).cloned().unwrap_or_else(|| "não informado".into());
+    ui.small("Informado por quem criou o registro; nada disto vem do SIGADOC.");
+    egui::Grid::new(("manual-facts", detail.summary.id))
+        .num_columns(2)
+        .striped(true)
+        .max_col_width(600.0)
+        .show(ui, |ui| {
+            ui.label("Número no Ponte");
+            ui.label(&detail.summary.document_number);
+            ui.end_row();
+            ui.label("Tipo");
+            ui.label(value("document_type"));
+            ui.end_row();
+            ui.label("Origem");
+            ui.add(egui::Label::new(value("origin")).wrap());
+            ui.end_row();
+            ui.label("Data do documento");
+            ui.label(metadata.get("document_date").map(|d| crate::labels::date(d)).unwrap_or_else(|| "não informada".into()));
+            ui.end_row();
+            ui.label("Registrado por");
+            ui.label(value("registered_by"));
+            ui.end_row();
+            ui.label("Última versão");
+            ui.label(display_date(&detail.capture.captured_at));
+            ui.end_row();
+        });
 }
 
 fn kind_label(kind: &str) -> &str {
@@ -3914,6 +4209,7 @@ mod tests {
             subjects: vec![],
             priority: "normal".into(),
             analysis_stale: false,
+            manual: false,
             is_joined: parent.is_some(),
             joined_to_number: parent.map(|(_, n)| n.to_owned()),
             joined_to_id: parent.map(|(p, _)| p).filter(|p| *p > 0),

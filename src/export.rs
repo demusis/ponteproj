@@ -164,7 +164,7 @@ fn documents_table(store: &Store) -> Result<Table> {
             summary.id.to_string(),
             summary.document_number.clone(),
             summary.title.clone(),
-            "SIGADOC".into(),
+            if summary.manual { "Manual" } else { "SIGADOC" }.into(),
             pick(&context.document_type, "document_type"),
             iso_date(&meta("document_date")),
             imported.clone(),

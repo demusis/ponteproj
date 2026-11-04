@@ -148,6 +148,11 @@ fn juntada_target(text: &str) -> Option<(String, String)> {
 /// Sources, most specific first: imported event history, structured references,
 /// rendered event table text and the via heading ("- Juntado"/"- Apensado").
 pub fn detect_juntada(capture: &Capture) -> Option<JuntadaInfo> {
+    // A manual record is free text typed by a person: "juntado ao processo X"
+    // there is a note, not an official juntada. Links are made explicitly.
+    if capture.is_manual() {
+        return None;
+    }
     struct Candidate {
         number: String,
         raw: String,

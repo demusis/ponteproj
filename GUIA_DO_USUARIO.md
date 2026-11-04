@@ -46,6 +46,8 @@ Ao escolher um documento na lista à esquerda, a ficha abre em quatro abas:
 
 Documentos juntados aparecem abaixo do documento principal, com a marca ↳. O cabeçalho da ficha tem o botão **Abrir documento principal**.
 
+**Algo que não está no SIGADOC** (ligação, memorando, e-mail, papel): clique em **＋ Registro manual** na lista da esquerda, preencha tipo, título, origem, data e texto, e salve. O registro ganha um número `MANUAL-ano/número`, a marca **Manual** em todo lugar e funciona como qualquer documento (tarefas, notas, anexos, IA, equipe). Para alterar, **Editar registro…** na ficha: cada edição vira uma versão.
+
 **Anexos:** em Documento ▸ Anexos (e na ficha de cada tarefa), **Anexar arquivo…** junta um arquivo do seu computador: até 20 por documento ou tarefa, de até 8 MB cada, nos tipos PDF, Word, Excel, PowerPoint, OpenDocument, texto, imagens e e-mails. Programas, scripts, atalhos e arquivos .zip são recusados. Se um arquivo for recusado, a mensagem explica o motivo e o que fazer. Cada anexo pode ter uma descrição; **Ler no Ponte** abre PDFs no leitor do Ponte, **Abrir** usa o programa padrão do Windows, **Salvar como…** grava uma cópia e **Excluir…** manda para a Lixeira. Os anexos ficam no acervo protegido e aparecem para a equipe.
 
 ## 4. Tarefas e prazos

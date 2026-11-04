@@ -551,6 +551,10 @@ impl TaskPanel {
                                 }
                                 ui.horizontal_wrapped(|ui| {
                                     ui.small(document.map(|d| d.document_number.as_str()).unwrap_or("documento"));
+                                    if document.is_some_and(|d| d.manual) {
+                                        ui.small(RichText::new("Manual").color(WARNING))
+                                            .on_hover_text("Registro criado no Ponte, fora do SIGADOC.");
+                                    }
                                     ui.small("•");
                                     ui.small(crate::tasks::status_label(&task.status));
                                     if level > 4 {

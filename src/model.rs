@@ -8,6 +8,30 @@ use url::Url;
 pub const MAX_CAPTURE_TEXT_BYTES: usize = 500 * 1024;
 pub const MAX_CAPTURE_PACKET_BYTES: usize = 1024 * 1024;
 
+/// Documents created by hand in the Ponte (no SIGADOC page). Their number
+/// starts with this prefix, which no official number uses, and their source
+/// is `ponte://manual/<number>`; the identity hash uses that origin, so a
+/// manual record can never merge with a real document.
+pub const MANUAL_PREFIX: &str = "MANUAL-";
+pub const MANUAL_ORIGIN: &str = "ponte://manual/";
+/// Number of a manual record created on a connected computer while the main
+/// one is out of reach; the main computer assigns the final number.
+pub const MANUAL_PENDING: &str = "MANUAL-PENDENTE";
+pub const MANUAL_ADAPTER: &str = "manual-v1";
+
+pub fn is_manual_number(number: &str) -> bool {
+    number.trim().to_uppercase().starts_with(MANUAL_PREFIX)
+}
+
+/// `MANUAL-AAAA/NNNN`.
+pub fn valid_manual_number(number: &str) -> bool {
+    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        regex::Regex::new(r"^MANUAL-(?:19|20)[0-9]{2}/[0-9]{1,8}$").expect("constant manual pattern")
+    });
+    pattern.is_match(&number.trim().to_uppercase())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Capture {
@@ -120,6 +144,9 @@ pub struct DocumentSummary {
     /// Active documents in this library that are juntados to this one.
     #[serde(default)]
     pub joined_children_count: usize,
+    /// Created by hand in the Ponte, not imported from the SIGADOC.
+    #[serde(default)]
+    pub manual: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -177,9 +204,66 @@ pub struct ActionSuggestion {
 
 /// Validate again at the native host boundary; browser data is untrusted.
 impl Capture {
+    pub fn is_manual(&self) -> bool {
+        self.source_url.starts_with(MANUAL_ORIGIN)
+    }
+
+    /// Rules of a manual record: its own number and origin, no SIGADOC
+    /// links, no movement history; the rest as any capture.
+    fn validate_manual(&self) -> Result<()> {
+        let number = self.document_number.trim();
+        ensure!(
+            number == MANUAL_PENDING || valid_manual_number(number),
+            "Número de registro manual inválido."
+        );
+        ensure!(
+            self.source_url == format!("{MANUAL_ORIGIN}{number}"),
+            "Origem do registro manual não corresponde ao número."
+        );
+        let title = self.title.trim();
+        ensure!(
+            (3..=1000).contains(&title.len()) && !title.chars().any(char::is_control),
+            "Informe um título com pelo menos 3 caracteres."
+        );
+        let date = DateTime::parse_from_rfc3339(&self.captured_at)
+            .context("Data do registro inválida.")?;
+        ensure!(date.offset().local_minus_utc() == 0, "Data do registro deve usar UTC.");
+        ensure!(
+            self.text.len() <= MAX_CAPTURE_TEXT_BYTES,
+            "O texto do registro excede 500 KiB; reduza-o ou anexe o arquivo."
+        );
+        ensure!(self.references.is_empty(), "Registro manual não leva referências do SIGADOC.");
+        ensure!(
+            !self.metadata.contains_key("movement_history")
+                && !self.metadata.contains_key("movement_source"),
+            "Registro manual não tem histórico de tramitação."
+        );
+        ensure!(self.metadata.len() <= 256, "Quantidade de campos excedida.");
+        for (key, value) in &self.metadata {
+            ensure!(
+                !key.is_empty() && key.len() <= 256 && value.len() <= 64 * 1024,
+                "Campo do registro inválido ou grande demais."
+            );
+        }
+        ensure!(
+            self.coverage.adapter == MANUAL_ADAPTER
+                && self.coverage.recognized.len() <= 256
+                && self.coverage.pending.len() <= 256,
+            "Cobertura do registro manual inválida."
+        );
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_CAPTURE_PACKET_BYTES,
+            "Registro excede 1 MiB."
+        );
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(self.schema_version == 1, "Versão de captura não suportada.");
         uuid::Uuid::parse_str(&self.request_id).context("request_id deve ser um UUID válido.")?;
+        if self.is_manual() {
+            return self.validate_manual();
+        }
         let source = validate_sigadoc_url(&self.source_url)?;
         let number = self.document_number.trim();
         ensure!(
@@ -187,7 +271,7 @@ impl Capture {
             "Número documental ausente ou grande demais."
         );
         ensure!(
-            valid_document_number(number),
+            valid_document_number(number) && !is_manual_number(number),
             "Número documental inválido; importe uma ficha com identidade oficial reconhecida."
         );
         for (key, value) in source.query_pairs() {
@@ -378,6 +462,67 @@ pub(crate) fn sample_capture() -> Capture {
             recognized: vec!["texto".into()],
             pending: vec!["anexos: apenas referências".into()],
         },
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn sample_manual_capture() -> Capture {
+    Capture {
+        schema_version: 1,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        source_url: format!("{MANUAL_ORIGIN}{MANUAL_PENDING}"),
+        document_number: MANUAL_PENDING.into(),
+        title: "Ligação do gabinete sobre a reforma".into(),
+        captured_at: "2026-11-04T12:00:00Z".into(),
+        text: "Registro da ligação: pedem posição até sexta.".into(),
+        metadata: BTreeMap::from([
+            ("document_type".to_string(), "Ligação telefônica".to_string()),
+            ("manual_kind".to_string(), "ligacao".to_string()),
+            ("origin".to_string(), "Gabinete do Secretário".to_string()),
+        ]),
+        references: vec![],
+        coverage: Coverage {
+            adapter: MANUAL_ADAPTER.into(),
+            recognized: vec!["registro manual".into()],
+            pending: vec![],
+        },
+    }
+}
+
+#[cfg(test)]
+mod manual_tests {
+    use super::*;
+
+    #[test]
+    fn manual_records_have_their_own_number_and_origin_and_never_pass_as_official() {
+        let manual = sample_manual_capture();
+        manual.validate().unwrap();
+        assert!(manual.is_manual());
+        assert!(valid_manual_number("MANUAL-2026/0007") && !valid_manual_number("MANUAL-26/7"));
+        assert!(valid_document_number("MANUAL-2026/0007"), "the official grammar would accept it…");
+        // …so a SIGADOC capture carrying a manual number is refused.
+        let mut fake = sample_capture();
+        fake.document_number = "MANUAL-2026/0007".into();
+        fake.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=MANUAL-2026%2F0007".into();
+        assert!(fake.validate().is_err());
+        // And a manual record cannot borrow an official number or SIGADOC links.
+        let mut wrong = sample_manual_capture();
+        wrong.document_number = "SEFAZ-PRO-2026/00001".into();
+        wrong.source_url = format!("{MANUAL_ORIGIN}SEFAZ-PRO-2026/00001");
+        assert!(wrong.validate().is_err());
+        let mut with_link = sample_manual_capture();
+        with_link.references.push(DocumentReference {
+            label: "x".into(),
+            url: "https://www.sigadoc.mt.gov.br/doc".into(),
+            kind: "reference".into(),
+        });
+        assert!(with_link.validate().is_err());
+        let mut mismatch = sample_manual_capture();
+        mismatch.document_number = "MANUAL-2026/0001".into();
+        assert!(mismatch.validate().is_err(), "origin must carry the same number");
+        let mut short = sample_manual_capture();
+        short.title = "ab".into();
+        assert!(short.validate().is_err());
     }
 }
 

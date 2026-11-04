@@ -2624,6 +2624,13 @@ fn preserve_original_base_version(
 
 fn mutation_label(mutation: &IntranetMutation) -> String {
     match mutation {
+        IntranetMutation::ImportCapture { capture } if capture.is_manual() => {
+            if capture.document_number == crate::model::MANUAL_PENDING {
+                "Registro manual novo".to_owned()
+            } else {
+                format!("Registro manual {}", capture.document_number)
+            }
+        }
         IntranetMutation::ImportCapture { capture } => {
             format!("Captura de {}", capture.document_number)
         }
