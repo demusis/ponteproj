@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.12.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_12_0.md) |
+| **Versão** | 0.13.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_13_0.md) |
 | **Licença** | MIT |
 
 ---
@@ -127,7 +127,7 @@ Importar de novo o mesmo documento não duplica nada: se a página não mudou, o
 
 Cada documento importado recebe uma tarefa de triagem. Você cria outras no Resumo (**Nova tarefa**) ou no painel **Tarefas** (topo da janela).
 
-O painel tem a **lista à esquerda** e a **ficha à direita**. Visões: *Hoje*, *Esta semana*, *Atrasadas*, *Todas* e, em **Mais ▾**, *A triar*, *Aguardando terceiros*, *Lembretes* e *Sem prazo*.
+O painel tem a **lista à esquerda** e a **ficha à direita**. Visões: *Hoje*, *Esta semana*, *Atrasadas*, *Todas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem dependência aberta), *A triar*, *Aguardando terceiros*, *Lembretes* e *Sem prazo*.
 
 Campos da tarefa:
 
@@ -145,7 +145,7 @@ Regras úteis:
 - **Nada se perde ao trocar de tela.** Com uma tarefa não salva, clicar em **Documento**, **Processos e demandas**, num documento da lista, em outra tarefa ou em **Nova tarefa** abre a pergunta *"A tarefa ‘…’ tem alterações não salvas"* com **Salvar e continuar**, **Descartar alterações** e **Voltar à tarefa**. Enquanto isso, o rótulo **Tarefas ●** fica laranja no topo. Na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só leitura, sem sair da tarefa; **Ir para o documento** abre a ficha completa.
 - **✓ Concluir** e **Reabrir** ficam na própria lista; concluir uma tarefa não registra nada no SIGADOC.
 - **Juntados seguem o principal:** concluir a última tarefa aberta de um documento principal conclui, em cascata, as tarefas abertas dos documentos juntados a ele (e dos juntados a estes), cada uma com a anotação *"Concluída automaticamente: o documento principal X foi concluído"*. A mensagem de confirmação lista o que foi concluído; tarefas com dependência pendente ficam abertas e são informadas. Reabrir o principal não reabre as peças.
-- Uma tarefa com **dependências** só pode ser concluída depois das tarefas de que depende; o Ponte recusa e explica.
+- **Dependências aparecem na lista.** Uma tarefa que depende de outras fica recuada à direita (um degrau por nível, como os documentos juntados), com a linha *↳ depende de: A, B* (concluída riscada ✓, atrasada em vermelho), e é listada depois delas. Enquanto houver dependência aberta, o cartão mostra ⛓ e **✓ Concluir** fica desabilitado com *"Conclua antes: A, B"*. Na ficha, o bloco **Cadeia de dependências** lista o que vem antes e o que espera por ela, em qualquer nível, com **Abrir**. Ao marcar dependências, as que formariam ciclo aparecem desabilitadas e explicadas; o salvamento continua recusando ciclos.
 - Datas inválidas (ex.: `31/02/2026`) ficam marcadas em vermelho e o salvamento avisa.
 
 ---

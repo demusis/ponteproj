@@ -7,7 +7,7 @@ const MUTED: Color32 = Color32::from_rgb(120, 130, 140);
 
 /// Views over the task list. The first four are the everyday ones; the rest
 /// live under "Mais".
-const VIEWS: [&str; 8] = [
+const VIEWS: [&str; 9] = [
     "Todas",
     "A triar",
     "Hoje",
@@ -16,9 +16,42 @@ const VIEWS: [&str; 8] = [
     "Aguardando terceiros",
     "Lembretes",
     "Sem prazo",
+    "Prontas para fazer",
 ];
 const PRIMARY_VIEWS: [usize; 4] = [2, 3, 4, 0];
-const SECONDARY_VIEWS: [usize; 4] = [1, 5, 6, 7];
+const SECONDARY_VIEWS: [usize; 5] = [8, 1, 5, 6, 7];
+
+/// Names of tasks for a tooltip: "A, B e C".
+fn titles(tasks: &[&Task]) -> String {
+    let names: Vec<&str> = tasks.iter().map(|t| t.title.as_str()).collect();
+    match names.len() {
+        0 => String::new(),
+        1 => names[0].to_owned(),
+        n => format!("{} e {}", names[..n - 1].join(", "), names[n - 1]),
+    }
+}
+
+/// One line of the "Cadeia de dependências" block: state, title, "Abrir".
+fn chain_row(ui: &mut egui::Ui, task: &Task, open: &mut Option<Task>) {
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(12.0);
+        if task.status == "concluida" {
+            ui.small(RichText::new("✓").color(MUTED));
+        } else if task.overdue() {
+            ui.small(RichText::new("⚠").color(ERROR));
+        } else {
+            ui.small(RichText::new("○").color(WARNING));
+        }
+        ui.small(&task.title);
+        ui.small(RichText::new(format!("• {}", crate::tasks::status_label(&task.status))).color(MUTED));
+        if !task.due_date.is_empty() {
+            ui.small(RichText::new(format!("• prazo {}", crate::labels::date(&task.due_date))).color(MUTED));
+        }
+        if ui.small_button("Abrir").clicked() {
+            *open = Some(task.clone());
+        }
+    });
+}
 
 /// Something the person asked for while another task edit was still unsaved.
 /// The panel never honours it by itself: the app asks what to do with the
@@ -49,6 +82,8 @@ pub struct TaskPanel {
     blocked: Option<Intent>,
     /// Document the person wants to read without leaving the form.
     consult_requested: Option<i64>,
+    /// "Abrir" clicked in the dependency chain of the form.
+    open_task_requested: Option<Task>,
 }
 impl TaskPanel {
     pub fn take_trash_request(&mut self) -> Option<crate::trash::Target> {
@@ -370,6 +405,7 @@ impl TaskPanel {
         let week_text = (today + chrono::Duration::days(7))
             .format("%Y-%m-%d")
             .to_string();
+        let deps = crate::tasks::Dependencies::new(&tasks);
         let visible: Vec<&Task> = tasks
             .iter()
             .filter(|task| {
@@ -398,6 +434,7 @@ impl TaskPanel {
                             && task.reminder_date <= today_text
                     }
                     7 => pending && task.due_date.is_empty(),
+                    8 => pending && !deps.is_blocked(task.id),
                     _ => true,
                 };
                 if !matches {
@@ -429,6 +466,8 @@ impl TaskPanel {
                 .contains(&self.query.to_lowercase())
             })
             .collect();
+        // Each task after the ones it depends on; ties keep the usual order.
+        let visible = deps.order(&visible);
 
         let mut complete_request: Option<i64> = None;
         let mut reopen_request: Option<i64> = None;
@@ -455,21 +494,70 @@ impl TaskPanel {
                             let editing_this = self.draft.as_ref().is_some_and(|t| t.id == task.id);
                             let pending = task.status != "concluida";
                             let document = documents.iter().find(|d| d.id == task.document_id);
+                            // Depth in the dependency chain, shown as indent like
+                            // the joined documents in the library list.
+                            let level = deps.level(task.id);
+                            let indent = 18.0 * level.min(4) as f32;
+                            let direct = deps.direct(task.id);
+                            let blockers = deps.open_blockers(task.id);
+                            let blocked = pending && !blockers.is_empty();
+                            ui.horizontal(|ui| {
+                            if indent > 0.0 {
+                                ui.add_space(indent);
+                            }
+                            ui.vertical(|ui| {
                             ui.group(|ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal_wrapped(|ui| {
                                     if task.overdue() {
                                         ui.colored_label(ERROR, "ATRASADA");
                                     }
+                                    if blocked {
+                                        ui.label(RichText::new("⛓").color(WARNING))
+                                            .on_hover_text(format!("Aguardando: {}", titles(&blockers)));
+                                    }
                                     let title = RichText::new(&task.title).strong();
                                     if ui.selectable_label(editing_this, title).clicked() {
                                         select_request = Some((*task).clone());
                                     }
                                 });
+                                if !direct.is_empty() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.small(RichText::new("↳ depende de:").color(MUTED));
+                                        for (index, dependency) in direct.iter().enumerate() {
+                                            let text = if index + 1 < direct.len() {
+                                                format!("{},", dependency.title)
+                                            } else {
+                                                dependency.title.clone()
+                                            };
+                                            let rich = if dependency.status == "concluida" {
+                                                RichText::new(format!("✓ {text}")).strikethrough().color(MUTED)
+                                            } else if dependency.overdue() {
+                                                RichText::new(text).color(ERROR)
+                                            } else {
+                                                RichText::new(text)
+                                            };
+                                            ui.small(rich).on_hover_text(format!(
+                                                "{}{}",
+                                                crate::tasks::status_label(&dependency.status),
+                                                if dependency.due_date.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    format!(" • prazo {}", crate::labels::date(&dependency.due_date))
+                                                }
+                                            ));
+                                        }
+                                    });
+                                }
                                 ui.horizontal_wrapped(|ui| {
                                     ui.small(document.map(|d| d.document_number.as_str()).unwrap_or("documento"));
                                     ui.small("•");
                                     ui.small(crate::tasks::status_label(&task.status));
+                                    if level > 4 {
+                                        ui.small("•");
+                                        ui.small(format!("·· nível {level}"))
+                                            .on_hover_text("Profundidade na cadeia de dependências; o recuo para em 4 níveis.");
+                                    }
                                     if matches!(task.priority.as_str(), "alta" | "urgente") {
                                         ui.small("•");
                                         ui.small(crate::labels::priority(&task.priority));
@@ -488,13 +576,18 @@ impl TaskPanel {
                                             .on_hover_text(format!("{count} anexo(s) nesta tarefa"));
                                     }
                                     if pending {
+                                        let disabled_hint = if blocked {
+                                            format!("Conclua antes: {}", titles(&blockers))
+                                        } else {
+                                            "Salve ou cancele a edição desta tarefa antes de concluí-la.".to_owned()
+                                        };
                                         if ui
                                             .add_enabled(
-                                                !(editing_this && self.dirty()),
+                                                !(editing_this && self.dirty()) && !blocked,
                                                 egui::Button::new("✓ Concluir").small(),
                                             )
                                             .on_hover_text("Marca como concluída. Nada é enviado ao SIGADOC.")
-                                            .on_disabled_hover_text("Salve ou cancele a edição desta tarefa antes de concluí-la.")
+                                            .on_disabled_hover_text(disabled_hint)
                                             .clicked()
                                         {
                                             complete_request = Some(task.id);
@@ -509,6 +602,8 @@ impl TaskPanel {
                                         reopen_request = Some(task.id);
                                     }
                                 });
+                            });
+                            });
                             });
                         }
                     });
@@ -529,7 +624,7 @@ impl TaskPanel {
             }
         });
 
-        if let Some(task) = select_request {
+        if let Some(task) = select_request.or_else(|| self.open_task_requested.take()) {
             if !self.open_task(&task, store) {
                 self.blocked = Some(Intent::Open(task));
             }
@@ -560,9 +655,11 @@ impl TaskPanel {
             }
         }
         let current_actor = store.active_actor();
+        let deps = crate::tasks::Dependencies::new(tasks);
         let mut save = false;
         let mut cancel = false;
         let mut conclude = false;
+        let mut open_task: Option<Task> = None;
         let dirty = self.dirty();
         let Some(task) = &mut self.draft else {
             return None;
@@ -686,6 +783,31 @@ impl TaskPanel {
         } else {
             ui.small("Salve a tarefa para poder anexar arquivos a ela.");
         }
+        if task_id > 0 {
+            let before = deps.ancestors(task_id);
+            let after = deps.descendants(task_id);
+            if !before.is_empty() || !after.is_empty() {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong("Cadeia de dependências");
+                    ui.label(RichText::new("ⓘ").color(MUTED)).on_hover_text(
+                        "Tudo o que vem antes desta tarefa (em qualquer nível) e tudo o que espera por ela. Para mudar as dependências diretas, use “Mais detalhes ▸ Depende de outras tarefas”.",
+                    );
+                });
+                if !before.is_empty() {
+                    ui.small("Antes desta (precisam ser concluídas primeiro):");
+                    for previous in &before {
+                        chain_row(ui, previous, &mut open_task);
+                    }
+                }
+                if !after.is_empty() {
+                    ui.small("Depois desta (esperam por ela):");
+                    for next in &after {
+                        chain_row(ui, next, &mut open_task);
+                    }
+                }
+            }
+        }
         egui::CollapsingHeader::new("Mais detalhes")
             .id_salt(("task-more", task_id))
             .show(ui, |ui| {
@@ -783,27 +905,48 @@ impl TaskPanel {
                     });
                 }
                 ui.collapsing("Depende de outras tarefas", |ui| {
-                    ui.small("Uma tarefa só pode ser concluída depois das que ela depende.");
+                    ui.small("Uma tarefa só pode ser concluída depois das que ela depende. Tarefas que já dependem desta ficam desabilitadas: marcá-las formaria um ciclo.");
+                    // Marking a task that already waits for this one would
+                    // close a loop; saving would refuse it anyway.
+                    let cycle_makers: std::collections::BTreeSet<i64> = if task_id > 0 {
+                        deps.descendants(task_id).iter().map(|t| t.id).collect()
+                    } else {
+                        Default::default()
+                    };
+                    let mut options: Vec<&Task> = tasks.iter().filter(|t| t.id != task_id).collect();
+                    // Concluded tasks last, greyed, so the live ones stand out.
+                    options.sort_by_key(|t| t.status == "concluida");
                     egui::ScrollArea::vertical().id_salt("dependency-options").max_height(180.0).show(ui, |ui| {
-                        for previous in tasks {
-                            if previous.id != task_id {
-                                let mut checked = task.dependencies.contains(&previous.id);
-                                if ui
-                                    .checkbox(
-                                        &mut checked,
-                                        format!(
-                                            "{} — {}",
-                                            previous.title,
-                                            crate::tasks::status_label(&previous.status)
-                                        ),
-                                    )
-                                    .changed()
-                                {
-                                    if checked {
-                                        task.dependencies.push(previous.id);
-                                    } else {
-                                        task.dependencies.retain(|id| *id != previous.id);
-                                    }
+                        for previous in options {
+                            let mut checked = task.dependencies.contains(&previous.id);
+                            let would_cycle = cycle_makers.contains(&previous.id);
+                            let label = format!(
+                                "{} — {}",
+                                previous.title,
+                                crate::tasks::status_label(&previous.status)
+                            );
+                            let text = if previous.status == "concluida" {
+                                RichText::new(label).color(MUTED)
+                            } else {
+                                RichText::new(label)
+                            };
+                            let response = ui.add_enabled(
+                                !would_cycle || checked,
+                                egui::Checkbox::new(&mut checked, text),
+                            );
+                            let response = if would_cycle {
+                                response.on_disabled_hover_text(format!(
+                                    "“{}” já depende desta tarefa (direta ou indiretamente); marcar formaria um ciclo.",
+                                    previous.title
+                                ))
+                            } else {
+                                response
+                            };
+                            if response.changed() {
+                                if checked {
+                                    task.dependencies.push(previous.id);
+                                } else {
+                                    task.dependencies.retain(|id| *id != previous.id);
                                 }
                             }
                         }
@@ -819,6 +962,9 @@ impl TaskPanel {
                     }
                 });
             });
+        if open_task.is_some() {
+            self.open_task_requested = open_task;
+        }
         if save {
             // The panel already shows the reason when saving fails.
             let _ = self.save_draft(store);

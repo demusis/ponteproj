@@ -13,6 +13,7 @@ const ACCENT: Color32 = Color32::from_rgb(24, 84, 97);
 const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
 const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
 const SUCCESS: Color32 = Color32::from_rgb(20, 118, 72);
+const MUTED: Color32 = Color32::from_rgb(120, 130, 140);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DocTaskFilter {
@@ -2528,13 +2529,25 @@ impl PonteApp {
                     if tasks.is_empty(){ui.small("Nenhuma tarefa ainda.");}
                     else{ui.small(format!("{} pendente(s) • {} concluída(s)",pending,tasks.len()-pending));}
                     if pending>5{ui.small("As cinco mais urgentes estão abaixo; \"Ver todas\" mostra o restante.");}
-                    for task in tasks.into_iter().filter(|task|task.status!="concluida").take(5){
+                    // Same order and signals as the Tarefas panel: a task after
+                    // what it depends on, ⛓ while something before it is open.
+                    let deps=crate::tasks::Dependencies::new(&tasks);
+                    let open:Vec<&crate::tasks::Task>=tasks.iter().filter(|task|task.status!="concluida").collect();
+                    let open=deps.order(&open);
+                    for task in open.into_iter().take(5){
+                        let blockers=deps.open_blockers(task.id);
+                        let blocked=!blockers.is_empty();
+                        let names=blockers.iter().map(|t|t.title.as_str()).collect::<Vec<_>>().join(", ");
+                        let indent=18.0*deps.level(task.id).min(4) as f32;
                         ui.horizontal_wrapped(|ui|{
+                            if indent>0.0{ui.add_space(indent);}
+                            if blocked{ui.label(RichText::new("⛓").color(WARNING)).on_hover_text(format!("Aguardando: {names}"));}
                             ui.label(&task.title);ui.label(crate::tasks::status_label(&task.status));
                             ui.label(format!("Prioridade da tarefa: {}",crate::tasks::priority_label(&task.priority)));
                             if !task.due_date.is_empty(){let date=chrono::NaiveDate::parse_from_str(&task.due_date,"%Y-%m-%d").map(|date|date.format("%d/%m/%Y").to_string()).unwrap_or_else(|_|task.due_date.clone());ui.label(format!("Prazo local: {date}"));}
                             if task.overdue(){ui.colored_label(ERROR,"Atrasada");}
-                            if ui.add_enabled(!self.tasks.task_dirty(task.id),egui::Button::new("✓ Concluir").small()).on_hover_text("Marca a tarefa como concluída. Nada é enviado ao SIGADOC.").clicked(){
+                            if blocked{ui.small(RichText::new(format!("↳ depende de: {names}")).color(MUTED));}
+                            if ui.add_enabled(!self.tasks.task_dirty(task.id)&&!blocked,egui::Button::new("✓ Concluir").small()).on_hover_text("Marca a tarefa como concluída. Nada é enviado ao SIGADOC.").on_disabled_hover_text(if blocked{format!("Conclua antes: {names}")}else{"Salve ou cancele a edição desta tarefa antes de concluí-la.".to_owned()}).clicked(){
                                 match self.store.complete_task(task.id){Ok(done)=>{self.tasks.forget_task(task.id);let mut text=format!("Tarefa concluída: {}",done.title);for note in self.store.take_cascade_notes(){text.push_str(" • ");text.push_str(&note);}self.message(text);},Err(e)=>self.error(format!("Não foi possível concluir a tarefa: {e}"))}
                             }
                             if ui.button("Editar").clicked(){self.navigate(Leave::EditTask(task.clone()));}

@@ -505,6 +505,256 @@ mod tests {
     }
 }
 
+/// Read-only view over the dependency graph of a task list, for the
+/// interface: depth of each task, what blocks it, what waits for it, and a
+/// stable order in which every task comes after the ones it depends on.
+///
+/// Saving refuses cycles, so the graph is acyclic; every method still
+/// tolerates one (a library edited by hand, or a sync in progress) so the
+/// screen never hangs.
+pub struct Dependencies<'a> {
+    by_id: std::collections::BTreeMap<i64, &'a Task>,
+    /// Reverse edges: who depends on each task.
+    dependents: std::collections::BTreeMap<i64, Vec<i64>>,
+    levels: std::collections::BTreeMap<i64, usize>,
+}
+
+impl<'a> Dependencies<'a> {
+    pub fn new(tasks: &'a [Task]) -> Self {
+        use std::collections::BTreeMap;
+        let by_id: BTreeMap<i64, &Task> = tasks.iter().map(|t| (t.id, t)).collect();
+        let mut dependents: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+        for task in tasks {
+            for &dependency in &task.dependencies {
+                if by_id.contains_key(&dependency) {
+                    dependents.entry(dependency).or_default().push(task.id);
+                }
+            }
+        }
+        let mut levels = BTreeMap::new();
+        let mut visiting = std::collections::BTreeSet::new();
+        for task in tasks {
+            Self::level_of(task.id, &by_id, &mut levels, &mut visiting);
+        }
+        Self {
+            by_id,
+            dependents,
+            levels,
+        }
+    }
+
+    /// 0 for a task that depends on nothing (or only on tasks not in the
+    /// list); 1 + the deepest dependency otherwise. A cycle counts as 0.
+    fn level_of(
+        id: i64,
+        by_id: &std::collections::BTreeMap<i64, &Task>,
+        levels: &mut std::collections::BTreeMap<i64, usize>,
+        visiting: &mut std::collections::BTreeSet<i64>,
+    ) -> usize {
+        if let Some(level) = levels.get(&id) {
+            return *level;
+        }
+        if !visiting.insert(id) {
+            return 0;
+        }
+        let level = by_id
+            .get(&id)
+            .map(|task| {
+                task.dependencies
+                    .iter()
+                    .filter(|d| by_id.contains_key(d))
+                    .map(|&d| Self::level_of(d, by_id, levels, visiting) + 1)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        visiting.remove(&id);
+        levels.insert(id, level);
+        level
+    }
+
+    pub fn level(&self, id: i64) -> usize {
+        self.levels.get(&id).copied().unwrap_or(0)
+    }
+
+    /// Direct dependencies that exist, in the order the task lists them.
+    pub fn direct(&self, id: i64) -> Vec<&'a Task> {
+        self.by_id
+            .get(&id)
+            .map(|task| {
+                task.dependencies
+                    .iter()
+                    .filter_map(|d| self.by_id.get(d).copied())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Direct dependencies still open: what must be concluded first.
+    pub fn open_blockers(&self, id: i64) -> Vec<&'a Task> {
+        self.direct(id)
+            .into_iter()
+            .filter(|t| t.status != "concluida")
+            .collect()
+    }
+
+    pub fn is_blocked(&self, id: i64) -> bool {
+        !self.open_blockers(id).is_empty()
+    }
+
+    /// Everything that must be concluded before this task, at any depth,
+    /// nearest first. Each task appears once.
+    pub fn ancestors(&self, id: i64) -> Vec<&'a Task> {
+        self.walk(id, |t| t.dependencies.iter().copied().collect())
+    }
+
+    /// Everything waiting for this task, at any depth, nearest first.
+    pub fn descendants(&self, id: i64) -> Vec<&'a Task> {
+        self.walk(id, |t| self.dependents.get(&t.id).cloned().unwrap_or_default())
+    }
+
+    fn walk(&self, start: i64, next: impl Fn(&Task) -> Vec<i64>) -> Vec<&'a Task> {
+        let mut seen = std::collections::BTreeSet::new();
+        seen.insert(start);
+        let mut queue = std::collections::VecDeque::new();
+        let mut out = Vec::new();
+        if let Some(task) = self.by_id.get(&start) {
+            queue.extend(next(task));
+        }
+        while let Some(id) = queue.pop_front() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let Some(task) = self.by_id.get(&id) {
+                out.push(*task);
+                queue.extend(next(task));
+            }
+        }
+        out
+    }
+
+    /// The same tasks, each listed after the ones it depends on (within the
+    /// slice), otherwise keeping the given order. A task in a cycle keeps
+    /// its place at the end.
+    pub fn order<'b>(&self, tasks: &[&'b Task]) -> Vec<&'b Task> {
+        use std::cmp::Reverse;
+        use std::collections::{BTreeMap, BinaryHeap};
+        let index: BTreeMap<i64, usize> = tasks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+        let mut remaining: Vec<usize> = tasks
+            .iter()
+            .map(|t| t.dependencies.iter().filter(|d| index.contains_key(d)).count())
+            .collect();
+        let mut ready: BinaryHeap<Reverse<usize>> = remaining
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n == 0)
+            .map(|(i, _)| Reverse(i))
+            .collect();
+        let mut done = vec![false; tasks.len()];
+        let mut out = Vec::with_capacity(tasks.len());
+        while let Some(Reverse(i)) = ready.pop() {
+            done[i] = true;
+            out.push(tasks[i]);
+            for &dependent in self.dependents.get(&tasks[i].id).map(Vec::as_slice).unwrap_or(&[]) {
+                if let Some(&j) = index.get(&dependent) {
+                    remaining[j] = remaining[j].saturating_sub(1);
+                    if remaining[j] == 0 && !done[j] {
+                        ready.push(Reverse(j));
+                    }
+                }
+            }
+        }
+        for (i, task) in tasks.iter().enumerate() {
+            if !done[i] {
+                out.push(*task);
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+
+    fn task(id: i64, title: &str, deps: &[i64], status: &str) -> Task {
+        let mut t = Task::new(1);
+        t.id = id;
+        t.title = title.into();
+        t.dependencies = deps.to_vec();
+        t.status = status.into();
+        t
+    }
+
+    #[test]
+    fn levels_order_blockers_and_chains_follow_a_diamond_and_survive_a_cycle() {
+        // D depends on B and C, both depend on A; E is independent.
+        let tasks = vec![
+            task(4, "D", &[2, 3], "pendente"),
+            task(5, "E", &[], "pendente"),
+            task(2, "B", &[1], "concluida"),
+            task(3, "C", &[1], "pendente"),
+            task(1, "A", &[], "concluida"),
+        ];
+        let deps = Dependencies::new(&tasks);
+        assert_eq!(deps.level(1), 0);
+        assert_eq!(deps.level(2), 1);
+        assert_eq!(deps.level(3), 1);
+        assert_eq!(deps.level(4), 2);
+        assert_eq!(deps.level(5), 0);
+
+        fn titles(v: Vec<&Task>) -> Vec<String> {
+            v.iter().map(|t| t.title.clone()).collect()
+        }
+        assert_eq!(titles(deps.direct(4)), ["B", "C"]);
+        assert_eq!(titles(deps.open_blockers(4)), ["C"], "B is concluded, only C blocks D");
+        assert!(deps.is_blocked(4));
+        assert!(!deps.is_blocked(3), "A is concluded, C may go");
+        assert_eq!(titles(deps.ancestors(4)), ["B", "C", "A"], "nearest first, A once");
+        assert_eq!(titles(deps.descendants(1)), ["B", "C", "D"]);
+        assert!(deps.descendants(5).is_empty());
+
+        // Order: each after its dependencies, otherwise the given order;
+        // D appears once, after the last of B and C.
+        let refs: Vec<&Task> = tasks.iter().collect();
+        let ordered = titles(deps.order(&refs));
+        let pos = |name: &str| ordered.iter().position(|t| *t == name).unwrap();
+        assert!(pos("A") < pos("B") && pos("A") < pos("C") && pos("B") < pos("D") && pos("C") < pos("D"));
+        assert_eq!(ordered.iter().filter(|t| **t == "D").count(), 1);
+        assert_eq!(ordered[0], "E", "independent tasks keep their place");
+
+        // A subset without the dependency keeps the given order.
+        let subset: Vec<&Task> = tasks.iter().filter(|t| t.id == 4 || t.id == 5).collect();
+        assert_eq!(titles(deps.order(&subset)), ["D", "E"]);
+
+        // A long chain climbs one level per step.
+        let chain: Vec<Task> = (1..=12)
+            .map(|i| {
+                let deps: Vec<i64> = if i > 1 { vec![i - 1] } else { Vec::new() };
+                task(i, &format!("T{i}"), &deps, "pendente")
+            })
+            .collect();
+        let chain_deps = Dependencies::new(&chain);
+        assert_eq!(chain_deps.level(12), 11);
+        assert_eq!(chain_deps.ancestors(12).len(), 11);
+        let reversed: Vec<&Task> = chain.iter().rev().collect();
+        assert_eq!(
+            titles(chain_deps.order(&reversed)),
+            (1..=12).map(|i| format!("T{i}")).collect::<Vec<_>>()
+        );
+
+        // A cycle (never produced by saving) neither hangs nor hides tasks.
+        let looped = vec![task(1, "X", &[2], "pendente"), task(2, "Y", &[1], "pendente"), task(3, "Z", &[], "pendente")];
+        let loop_deps = Dependencies::new(&looped);
+        let refs: Vec<&Task> = looped.iter().collect();
+        assert_eq!(loop_deps.order(&refs).len(), 3);
+        assert_eq!(loop_deps.ancestors(1).len(), 1);
+        // The loop is cut on the second visit: levels stay small and finite.
+        assert!(loop_deps.level(1) <= 2 && loop_deps.level(2) <= 2);
+        assert_eq!(loop_deps.level(3), 0);
+    }
+}
+
 #[cfg(test)]
 mod dependency_tests {
     use super::*;
