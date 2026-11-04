@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
     let settings = ponteproj::ai::AiSettings {
         base_url: "http://127.0.0.1:11434".into(),
         model: "qwen3:4b-instruct".into(),
-        token: String::new(),
+        ..Default::default()
     };
     let analysis = ponteproj::ai::analyze_with_sources(
         &settings,

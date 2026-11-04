@@ -16,12 +16,26 @@ const MAX_CONTEXT_BYTES: usize = 500 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_GENERATED_BYTES: usize = 128 * 1024;
 
+/// Which API the settings speak.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ApiKind {
+    /// Ollama chat API (`/api/chat`, `/api/tags`).
+    #[default]
+    Ollama,
+    /// OpenAI Responses API with the person's ChatGPT plan (see `chatgpt`).
+    ChatGpt,
+}
+
 // Deliberately no Serialize or Debug: credentials should not reach files or logs.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AiSettings {
     pub base_url: String,
     pub model: String,
     pub token: String,
+    pub kind: ApiKind,
+    /// ChatGPT session shared with the window, so a token refreshed during a
+    /// call is the one saved afterwards. `None` for the Ollama providers.
+    pub chatgpt: Option<crate::chatgpt::SharedSession>,
 }
 
 /// Where the model runs. Chosen in "Configurar IA".
@@ -35,6 +49,8 @@ pub enum AiProvider {
     Cloud,
     /// Any other HTTPS server speaking the Ollama chat API.
     Remote,
+    /// The person's own ChatGPT plan (Plus or Pro), via "Entrar com o ChatGPT".
+    ChatGpt,
 }
 
 pub const LOCAL_URL: &str = "http://127.0.0.1:11434";
@@ -59,6 +75,12 @@ pub struct AiConfig {
     pub remote_token: String,
     /// When false, keys are kept only in memory for the session.
     pub remember_keys: bool,
+    /// Model chosen for the ChatGPT plan (from the account's own list).
+    pub chatgpt_model: String,
+    /// Stable identity of this installation for OpenAI (`urn:uuid:…`).
+    pub chatgpt_host_id: String,
+    /// Account and tokens of "Entrar com o ChatGPT".
+    pub chatgpt: crate::chatgpt::ChatGptSession,
 }
 
 impl Default for AiConfig {
@@ -73,6 +95,9 @@ impl Default for AiConfig {
             cloud_key: String::new(),
             remote_token: String::new(),
             remember_keys: true,
+            chatgpt_model: String::new(),
+            chatgpt_host_id: String::new(),
+            chatgpt: Default::default(),
         }
     }
 }
@@ -83,6 +108,7 @@ impl AiConfig {
             AiProvider::Local => &self.local_url,
             AiProvider::Cloud => CLOUD_URL,
             AiProvider::Remote => &self.remote_url,
+            AiProvider::ChatGpt => crate::chatgpt::API_BASE,
         }
     }
 
@@ -91,6 +117,7 @@ impl AiConfig {
             AiProvider::Local => &self.local_model,
             AiProvider::Cloud => &self.cloud_model,
             AiProvider::Remote => &self.remote_model,
+            AiProvider::ChatGpt => &self.chatgpt_model,
         }
     }
 
@@ -99,13 +126,15 @@ impl AiConfig {
             AiProvider::Local => &mut self.local_model,
             AiProvider::Cloud => &mut self.cloud_model,
             AiProvider::Remote => &mut self.remote_model,
+            AiProvider::ChatGpt => &mut self.chatgpt_model,
         }
     }
 
-    /// Key or token used by the current provider (none for local Ollama).
+    /// Key or token used by the current provider (none for local Ollama;
+    /// the ChatGPT access token is read from the shared session instead).
     pub fn token(&self) -> &str {
         match self.provider {
-            AiProvider::Local => "",
+            AiProvider::Local | AiProvider::ChatGpt => "",
             AiProvider::Cloud => &self.cloud_key,
             AiProvider::Remote => &self.remote_token,
         }
@@ -113,22 +142,34 @@ impl AiConfig {
 
     pub fn token_mut(&mut self) -> Option<&mut String> {
         match self.provider {
-            AiProvider::Local => None,
+            AiProvider::Local | AiProvider::ChatGpt => None,
             AiProvider::Cloud => Some(&mut self.cloud_key),
             AiProvider::Remote => Some(&mut self.remote_token),
         }
     }
 
     /// Settings for analysis or drafting: besides `settings`, Ollama Cloud
-    /// needs the account key (listing models works without it).
+    /// needs the account key (listing models works without it) and ChatGPT
+    /// needs a signed-in account that allowed plan usage.
     pub fn chat_settings(&self) -> Result<AiSettings> {
         let settings = self.settings()?;
-        if self.provider == AiProvider::Cloud {
-            ensure!(
+        match self.provider {
+            AiProvider::Cloud => ensure!(
                 !settings.token.is_empty()
                     || std::env::var("PONTEPROJ_AI_TOKEN").is_ok_and(|v| !v.trim().is_empty()),
                 "Informe a chave de API da sua conta do Ollama Cloud em Configurar IA."
-            );
+            ),
+            AiProvider::ChatGpt => {
+                ensure!(
+                    self.chatgpt.signed_in(),
+                    "Entre com a sua conta do ChatGPT em Configurar IA."
+                );
+                ensure!(
+                    self.chatgpt.sharing(),
+                    "Sua conta do ChatGPT entrou, mas não liberou o uso do plano para o Ponte. Em Configurar IA, clique em “Entrar de novo…” e marque a permissão de uso do plano."
+                );
+            }
+            _ => {}
         }
         Ok(settings)
     }
@@ -138,6 +179,16 @@ impl AiConfig {
     /// caller with a user-facing message).
     pub fn settings(&self) -> Result<AiSettings> {
         self.validate()?;
+        if self.provider == AiProvider::ChatGpt {
+            // Fixed public endpoint; the token comes from the shared session.
+            return Ok(AiSettings {
+                base_url: crate::chatgpt::API_BASE.into(),
+                model: self.chatgpt_model.trim().into(),
+                token: String::new(),
+                kind: ApiKind::ChatGpt,
+                chatgpt: None,
+            });
+        }
         let base_url = self.base_url();
         let url = Url::parse(base_url.trim()).context("Endpoint de IA inválido")?;
         ensure!(
@@ -156,7 +207,7 @@ impl AiConfig {
                 );
                 ensure!(local && matches!(url.scheme(), "http" | "https"), "O modo local aceita apenas localhost, 127.0.0.1 ou ::1. Para outro servidor, escolha HTTPS remoto.");
             }
-            AiProvider::Cloud => {}
+            AiProvider::Cloud | AiProvider::ChatGpt => {}
             AiProvider::Remote => ensure!(
                 url.scheme() == "https" && url.host_str().is_some(),
                 "O provedor remoto precisa usar HTTPS."
@@ -166,6 +217,8 @@ impl AiConfig {
             base_url: base_url.trim().trim_end_matches('/').into(),
             model: self.model().trim().into(),
             token: self.token().trim().into(),
+            kind: ApiKind::Ollama,
+            chatgpt: None,
         })
     }
 
@@ -179,21 +232,26 @@ impl AiConfig {
             ("Modelo remoto", &self.remote_model, 512),
             ("Chave do Ollama Cloud", &self.cloud_key, 16 * 1024),
             ("Token remoto", &self.remote_token, 16 * 1024),
+            ("Modelo do ChatGPT", &self.chatgpt_model, 128),
+            ("Identificação deste computador", &self.chatgpt_host_id, 128),
         ] {
             ensure!(
                 value.len() <= max && !value.chars().any(char::is_control),
                 "{label}: valor inválido (muito longo ou com caracteres de controle)."
             );
         }
-        Ok(())
+        self.chatgpt.validate()
     }
 
-    /// Copy to persist: keys are dropped when the person chose not to keep them.
+    /// Copy to persist: keys and the ChatGPT tokens are dropped when the
+    /// person chose not to keep them (the account and client id stay, so
+    /// the next sign-in is a re-authorization, not a new registration).
     fn for_storage(&self) -> Self {
         let mut copy = self.clone();
         if !copy.remember_keys {
             copy.cloud_key.clear();
             copy.remote_token.clear();
+            copy.chatgpt = copy.chatgpt.without_tokens();
         }
         copy
     }
@@ -265,6 +323,13 @@ impl ModelInfo {
 /// installed; Ollama Cloud lists its hosted models. The call is explicit
 /// (button or opening the configuration window), never automatic on import.
 pub fn list_models(settings: &AiSettings) -> Result<Vec<ModelInfo>> {
+    if settings.kind == ApiKind::ChatGpt {
+        let shared = settings
+            .chatgpt
+            .as_ref()
+            .context("Entre com a sua conta do ChatGPT em Configurar IA.")?;
+        return crate::chatgpt::list_models(shared);
+    }
     let (url, local) = endpoint(settings, "/api/tags")?;
     let mut builder = Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -594,6 +659,13 @@ fn endpoint(settings: &AiSettings, route: &str) -> Result<(Url, bool)> {
 }
 
 fn chat(settings: &AiSettings, system: &str, data: &str, schema: Option<Value>) -> Result<String> {
+    if settings.kind == ApiKind::ChatGpt {
+        let shared = settings
+            .chatgpt
+            .as_ref()
+            .context("Entre com a sua conta do ChatGPT em Configurar IA.")?;
+        return crate::chatgpt::respond(shared, &settings.model, system, data, schema);
+    }
     let (url, local) = endpoint(settings, "/api/chat")?;
     let mut builder = Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -794,7 +866,7 @@ mod tests {
             &AiSettings {
                 base_url: "http://127.0.0.1:11434".into(),
                 model: "qwen3:4b-instruct".into(),
-                token: String::new(),
+                ..Default::default()
             },
             &capture,
             1,
@@ -815,8 +887,54 @@ mod tests {
         AiSettings {
             base_url: url.into(),
             model: "synthetic-test".into(),
-            token: String::new(),
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn chatgpt_provider_needs_a_signed_in_account_with_plan_usage_and_hides_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::storage::Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut config = AiConfig {
+            provider: AiProvider::ChatGpt,
+            chatgpt_model: "gpt-test".into(),
+            chatgpt_host_id: crate::chatgpt::new_host_id(),
+            ..AiConfig::default()
+        };
+        // Listing is allowed to be attempted (it fails later with guidance);
+        // analysing needs the account.
+        assert!(config.settings().is_ok());
+        assert_eq!(config.settings().unwrap().kind, ApiKind::ChatGpt);
+        assert!(config.chat_settings().err().unwrap().to_string().contains("Entre com a sua conta"));
+        config.chatgpt = crate::chatgpt::ChatGptSession {
+            client_id: "cid".into(),
+            account_label: "p@example.org".into(),
+            subject: "s".into(),
+            access_token: "ACESSO_SECRETO".into(),
+            refresh_token: "RENOVACAO_SECRETA".into(),
+            id_token: "a.b.c".into(),
+            expires_at: "2030-01-01T00:00:00Z".into(),
+            scopes: vec!["openid".into()],
+        };
+        assert!(config.chat_settings().err().unwrap().to_string().contains("uso do plano"));
+        config.chatgpt.scopes.push(crate::chatgpt::SHARING_SCOPE.into());
+        assert!(config.chat_settings().is_ok());
+
+        store.save_ai_config(&config).unwrap();
+        let blob: Vec<u8> = store
+            .conn
+            .query_row("SELECT payload FROM ai_config WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        assert!(!blob.windows(7).any(|w| w == b"SECRETO" || w == b"SECRETA"));
+        assert!(store.load_ai_config().unwrap() == config);
+
+        config.remember_keys = false;
+        store.save_ai_config(&config).unwrap();
+        let loaded = store.load_ai_config().unwrap();
+        assert!(!loaded.chatgpt.signed_in());
+        assert_eq!(loaded.chatgpt.client_id, "cid");
+        assert_eq!(loaded.chatgpt.account_label, "p@example.org");
+        assert_eq!(loaded.chatgpt_model, "gpt-test");
     }
 
     #[test]

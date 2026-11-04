@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.14.0 (extensão 0.1.9) — [notas de versão](ATUALIZACAO_0_14_0.md) |
+| **Versão** | 0.15.0 (extensão 0.1.9) — [notas de versão](ATUALIZACAO_0_15_0.md) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -252,15 +252,18 @@ O Ponte funciona inteiro sem IA. Quando você quiser:
 - **Anotações e minutas ▸ Gerar sugestão com IA**: escreve uma minuta do tipo escolhido, com uma orientação opcional (*"solicitar a informação que falta, com tom objetivo"*). A sugestão abre para revisão e só vira versão quando você salvar.
 - Contexto de trabalho e notas não salvos são salvos antes; a linha ao lado do botão diz para onde os dados vão.
 
-**Menu ▾ → Configurar IA** oferece três lugares para a IA rodar:
+**Menu ▾ → Configurar IA** oferece quatro lugares para a IA rodar:
 
 | Opção | Quando usar | O que informar |
 |---|---|---|
 | **Ollama neste computador** | padrão; nada sai da máquina | endereço (padrão `http://127.0.0.1:11434`); instale o Ollama e baixe um modelo (`ollama pull qwen3:4b-instruct`) |
 | **Ollama Cloud** | modelos grandes sem GPU local; conta em ollama.com (gratuita por uso ou plano mensal) | a chave de API criada em [ollama.com/settings/keys](https://ollama.com/settings/keys) |
 | **Outro servidor HTTPS** | servidor do órgão compatível com a API `/api/chat` do Ollama | endereço e token opcional |
+| **ChatGPT (assinatura)** | quem já paga ChatGPT Plus ou Pro e quer usar essa cota, sem chave de API | clique em **Entrar com o ChatGPT…**, autorize o Ponte no navegador (inclusive o **uso do plano**) e escolha o modelo na lista da sua conta |
 
-Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na caixa de seleção: o Ponte consulta o servidor (`/api/tags`) e mostra o que ele oferece. A configuração é salva no acervo, cifrada com a DPAPI da sua conta do Windows; desmarque **Guardar a chave neste computador** para manter a chave só na memória da sessão. A chave também pode vir da variável `PONTEPROJ_AI_TOKEN`. Com Ollama Cloud ou servidor remoto, o texto do documento sai do computador: avalie sigilo e LGPD antes de usar.
+Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na caixa de seleção: o Ponte consulta o servidor (`/api/tags` no Ollama, `/v1/models` na OpenAI) e mostra o que ele oferece. A configuração é salva no acervo, cifrada com a DPAPI da sua conta do Windows; desmarque **Guardar a chave neste computador** para manter a chave (ou a sessão do ChatGPT) só na memória da sessão. A chave também pode vir da variável `PONTEPROJ_AI_TOKEN`. Com Ollama Cloud, servidor remoto ou ChatGPT, o texto do documento sai do computador: avalie sigilo e LGPD antes de usar.
+
+**ChatGPT (assinatura), em detalhe.** É o programa oficial "Sign in with ChatGPT" da OpenAI para aplicativos de código aberto que rodam localmente, como o Ponte. O login abre o navegador em `auth.openai.com` e volta ao Ponte por uma porta local (127.0.0.1); o Ponte não vê a sua senha e não recebe acesso às conversas, à memória nem à cobrança do ChatGPT. As chamadas vão para a API pública da OpenAI e são descontadas da cota da assinatura (Plus ou Pro; conta gratuita entra, mas não libera uso). O limite por aplicativo é ajustado em **ChatGPT ▸ Configurações ▸ Uso**; quando acaba, o Ponte avisa e **não** usa outro provedor por conta própria. A tela de configuração mostra o aviso: a cada clique em Analisar ou Gerar sugestão, documento, notas, contexto e fontes vão para os servidores da OpenAI, nos EUA, sob os termos da OpenAI; nada é enviado ao importar. **Sair** apaga a sessão deste computador e pede à OpenAI que a encerre (confira em ChatGPT ▸ Configurações ▸ Aplicativos conectados).
 
 ---
 

@@ -105,6 +105,16 @@ pub fn open_with_default_app(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Opens an HTTPS address in the default browser (sign-in pages).
+pub fn open_url(url: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        url.starts_with("https://") && !url.chars().any(|c| c.is_control() || c.is_whitespace()),
+        "Endereço inválido para abrir no navegador."
+    );
+    open_with_default_app(Path::new(url))
+        .map_err(|_| anyhow::anyhow!("O Windows não conseguiu abrir o navegador. Copie o endereço e abra-o manualmente."))
+}
+
 /// Default string value of a key under HKEY_CURRENT_USER, if present.
 fn user_registry_default(subkey: &str) -> Option<String> {
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};

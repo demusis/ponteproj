@@ -12,7 +12,7 @@ fn main() -> Result<()> {
     let settings = AiSettings {
         base_url: "http://127.0.0.1:11434".into(),
         model,
-        token: String::new(),
+        ..Default::default()
     };
     let capture = Capture {
         schema_version: 1,

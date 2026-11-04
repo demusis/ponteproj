@@ -63,7 +63,8 @@ Documentos juntados aparecem abaixo do documento principal, com a marca ↳. O c
 - **Notas**: escreva e clique em **Salvar notas**. O ponto laranja na aba indica algo não salvo.
 - **Minuta**: escolha o tipo, escreva ou comece por um modelo. **Salvar nova versão** guarda o texto; **Exportar (RTF)** cria um arquivo para o Word; **Comparar com versão** mostra as diferenças.
 - **IA** (opcional): **Analisar e sugerir providências** no Resumo, ou **Gerar sugestão com IA** na minuta. A linha ao lado do botão diz para onde os dados vão. Contexto e notas não salvos são salvos antes. A sugestão aparece para revisão e só vira versão quando você salvar.
-- **Menu ▸ Configurar IA** define onde a IA roda: neste computador (Ollama, nada sai da máquina), no **Ollama Cloud** (conta em ollama.com; cole a chave de API) ou num servidor do órgão. Clique em **Listar modelos do servidor** e escolha o modelo na caixa de seleção. A configuração fica salva e protegida pela sua conta do Windows.
+- **Menu ▸ Configurar IA** define onde a IA roda: neste computador (Ollama, nada sai da máquina), no **Ollama Cloud** (conta em ollama.com; cole a chave de API), num servidor do órgão, ou no **ChatGPT (assinatura)**, usando a cota do seu plano Plus ou Pro: clique em **Entrar com o ChatGPT…**, autorize no navegador e marque o uso do plano. Clique em **Listar modelos do servidor** e escolha o modelo na caixa de seleção. A configuração fica salva e protegida pela sua conta do Windows.
+- **Atenção com a nuvem:** com Ollama Cloud, servidor remoto ou ChatGPT, o texto do documento, as notas e o contexto saem do computador a cada clique em Analisar ou Gerar sugestão (nunca ao importar). Use só com documentos que podem sair do órgão. Com o ChatGPT, quando a cota do plano acaba o Ponte avisa e espera; o limite por aplicativo fica em ChatGPT ▸ Configurações ▸ Uso.
 
 ## 6. Processos e demandas (controle do gabinete)
 

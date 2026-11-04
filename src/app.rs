@@ -1,12 +1,15 @@
 //! Native desktop workspace. Document content is only persisted through `Store`.
-use crate::ai::{self, AiConfig, AiProvider, AiSettings, ModelInfo};
+use crate::ai::{self, AiConfig, AiProvider, AiSettings, ApiKind, ModelInfo};
+use crate::chatgpt::{self, ChatGptSession, SharedSession};
 use crate::model::{Analysis, DocumentDetail, DocumentSummary};
 use crate::storage::Store;
 use anyhow::{Context, Result};
 use eframe::egui::{self, Color32, RichText};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const ACCENT: Color32 = Color32::from_rgb(24, 84, 97);
@@ -511,6 +514,14 @@ struct Consult {
     detail: DocumentDetail,
 }
 
+/// "Entrar com o ChatGPT" in progress: the browser is open and a thread
+/// waits for the callback.
+struct ChatGptLogin {
+    receiver: Receiver<std::result::Result<ChatGptSession, String>>,
+    cancel: Arc<AtomicBool>,
+    authorize_url: String,
+}
+
 struct PonteApp {
     draft_tools: crate::draft_tools::DraftTools,
     /// "Anexos" block of the open document.
@@ -555,6 +566,12 @@ struct PonteApp {
     models_for: Option<(AiProvider, String)>,
     models_error: Option<String>,
     model_fetch: Option<Receiver<std::result::Result<Vec<ModelInfo>, String>>>,
+    /// ChatGPT session shared with worker threads (token refresh happens there).
+    chatgpt_shared: SharedSession,
+    chatgpt_login: Option<ChatGptLogin>,
+    chatgpt_login_error: Option<String>,
+    /// A worker used the ChatGPT session: copy it back and save when done.
+    chatgpt_sync_pending: bool,
     worker: Option<Worker>,
     suggestion: Option<Suggestion>,
     suggestion_open: bool,
@@ -610,6 +627,10 @@ impl PonteApp {
             models_for: None,
             models_error: None,
             model_fetch: None,
+            chatgpt_shared: Arc::new(Mutex::new(ChatGptSession::default())),
+            chatgpt_login: None,
+            chatgpt_login_error: None,
+            chatgpt_sync_pending: false,
             worker: None,
             suggestion: None,
             suggestion_open: false,
@@ -1133,7 +1154,45 @@ impl PonteApp {
             !self.ai.model().trim().is_empty(),
             "Escolha o modelo em Configurar IA."
         );
-        self.ai.chat_settings()
+        Ok(self.with_chatgpt_session(self.ai.chat_settings()?))
+    }
+
+    /// Hands the shared ChatGPT session to settings that will use it.
+    fn with_chatgpt_session(&self, mut settings: AiSettings) -> AiSettings {
+        if settings.kind == ApiKind::ChatGpt {
+            settings.chatgpt = Some(self.chatgpt_shared.clone());
+        }
+        settings
+    }
+
+    /// Replaces the ChatGPT session everywhere it lives.
+    fn set_chatgpt_session(&mut self, session: ChatGptSession) {
+        if let Ok(mut shared) = self.chatgpt_shared.lock() {
+            *shared = session.clone();
+        }
+        self.ai.chatgpt = session;
+    }
+
+    /// After a worker used the session: a refreshed token (rotating refresh
+    /// token included) must be the one saved, without touching other edits
+    /// the person may have pending in the configuration window.
+    fn sync_chatgpt_session(&mut self) {
+        let Ok(shared) = self.chatgpt_shared.lock().map(|s| s.clone()) else {
+            return;
+        };
+        if shared == self.ai.chatgpt {
+            return;
+        }
+        let was_signed_in = self.ai.chatgpt.signed_in();
+        self.ai.chatgpt = shared.clone();
+        let mut to_save = self.ai_saved.clone();
+        to_save.chatgpt = shared.clone();
+        if self.store.save_ai_config(&to_save).is_ok() {
+            self.ai_saved = to_save;
+        }
+        if was_signed_in && !shared.signed_in() {
+            self.error("A sessão do ChatGPT foi encerrada. Entre de novo em Menu ▾ ▸ Configurar IA.");
+        }
     }
 
     /// Reads the saved configuration once, at start. Unreadable content
@@ -1143,8 +1202,118 @@ impl PonteApp {
             Ok(config) => {
                 self.ai = config.clone();
                 self.ai_saved = config;
+                let session = self.ai.chatgpt.clone();
+                self.set_chatgpt_session(session);
             }
             Err(error) => self.error(format!("Configuração de IA não carregada: {error}")),
+        }
+    }
+
+    /// Opens the browser on OpenAI's sign-in page and waits, in the
+    /// background, for the authorization to come back to the local port.
+    fn start_chatgpt_login(&mut self, ctx: &egui::Context) {
+        if self.chatgpt_login.is_some() {
+            return;
+        }
+        self.chatgpt_login_error = None;
+        if self.ai.chatgpt_host_id.trim().is_empty() {
+            self.ai.chatgpt_host_id = chatgpt::new_host_id();
+        }
+        let login = match chatgpt::Login::start(&self.ai.chatgpt_host_id, Some(&self.ai.chatgpt)) {
+            Ok(login) => login,
+            Err(error) => {
+                self.chatgpt_login_error = Some(error.to_string());
+                return;
+            }
+        };
+        let authorize_url = login.authorize_url.clone();
+        if let Err(error) = crate::windows_ui::open_url(&authorize_url) {
+            self.chatgpt_login_error = Some(error.to_string());
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        match std::thread::Builder::new()
+            .name("ponte-chatgpt-login".into())
+            .spawn(move || {
+                let result = login
+                    .wait(&flag, chatgpt::LOGIN_TIMEOUT)
+                    .map_err(|e| e.to_string());
+                let _ = sender.send(result);
+                repaint.request_repaint();
+            }) {
+            Ok(_) => {
+                self.chatgpt_login = Some(ChatGptLogin {
+                    receiver,
+                    cancel,
+                    authorize_url,
+                });
+            }
+            Err(error) => {
+                self.chatgpt_login_error = Some(format!("Não foi possível iniciar o login: {error}"));
+            }
+        }
+    }
+
+    fn poll_chatgpt_login(&mut self, ctx: &egui::Context) {
+        let received = self
+            .chatgpt_login
+            .as_ref()
+            .map(|login| login.receiver.try_recv());
+        match received {
+            Some(Ok(Ok(session))) => {
+                self.chatgpt_login = None;
+                let label = session.account_label.clone();
+                let sharing = session.sharing();
+                self.set_chatgpt_session(session);
+                self.ai.provider = AiProvider::ChatGpt;
+                // The session is saved at once: the refresh token rotates and
+                // must not be lost with an unsaved window.
+                if self.save_ai_config() {
+                    self.message(if sharing {
+                        format!("Conectado ao ChatGPT como {label}. Escolha o modelo e salve.")
+                    } else {
+                        format!("Conectado ao ChatGPT como {label}, mas sem permissão de uso do plano. Clique em “Entrar de novo…” e marque a permissão.")
+                    });
+                }
+                self.models_for = None;
+                self.fetch_models(ctx);
+            }
+            Some(Ok(Err(error))) => {
+                self.chatgpt_login = None;
+                self.chatgpt_login_error = Some(error);
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.chatgpt_login = None;
+                self.chatgpt_login_error = Some("O login terminou sem resposta.".into());
+            }
+            _ => {}
+        }
+    }
+
+    fn cancel_chatgpt_login(&mut self) {
+        if let Some(login) = self.chatgpt_login.take() {
+            login.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Forgets the tokens here and asks OpenAI to revoke them (in the
+    /// background; the local part never waits for the network).
+    fn chatgpt_sign_out(&mut self) {
+        let session = self.ai.chatgpt.clone();
+        self.set_chatgpt_session(session.without_tokens());
+        self.models_for = None;
+        self.models.clear();
+        if self.save_ai_config() {
+            self.message("Sessão do ChatGPT encerrada neste computador. Se quiser, confira em ChatGPT ▸ Configurações ▸ Aplicativos conectados.");
+        }
+        if session.signed_in() {
+            let _ = std::thread::Builder::new()
+                .name("ponte-chatgpt-signout".into())
+                .spawn(move || {
+                    let _ = chatgpt::sign_out(&session);
+                });
         }
     }
 
@@ -1177,12 +1346,15 @@ impl PonteApp {
             return;
         }
         let settings = match self.ai.settings() {
-            Ok(settings) => settings,
+            Ok(settings) => self.with_chatgpt_session(settings),
             Err(error) => {
                 self.models_error = Some(error.to_string());
                 return;
             }
         };
+        if settings.kind == ApiKind::ChatGpt {
+            self.chatgpt_sync_pending = true;
+        }
         let key = (self.ai.provider, settings.base_url.clone());
         let (sender, receiver) = mpsc::channel();
         let repaint = ctx.clone();
@@ -1212,6 +1384,7 @@ impl PonteApp {
                 if models.is_empty() {
                     self.models_error = Some(match self.ai.provider {
                         AiProvider::Local => "O Ollama deste computador não tem modelos instalados. No terminal, execute: ollama pull qwen3:4b-instruct".into(),
+                        AiProvider::ChatGpt => "Sua conta do ChatGPT não ofereceu nenhum modelo para uso por aplicativos.".into(),
                         _ => "O servidor não ofereceu nenhum modelo.".into(),
                     });
                 }
@@ -1246,6 +1419,9 @@ impl PonteApp {
     ) {
         if self.worker.is_some() {
             return;
+        }
+        if self.ai.provider == AiProvider::ChatGpt {
+            self.chatgpt_sync_pending = true;
         }
         let (sender, receiver) = mpsc::channel();
         let repaint = ctx.clone();
@@ -2877,6 +3053,7 @@ impl PonteApp {
             AiProvider::Local => "Ollama neste computador",
             AiProvider::Cloud => "Ollama Cloud",
             AiProvider::Remote => "servidor remoto",
+            AiProvider::ChatGpt => "ChatGPT (OpenAI)",
         };
         let destination = url::Url::parse(self.ai.base_url().trim())
             .map(|url| url.origin().ascii_serialization())
@@ -2947,10 +3124,67 @@ impl PonteApp {
                     .on_hover_text("Modelos grandes nos servidores da Ollama (ollama.com), com a chave da sua conta.");
                 ui.radio_value(&mut self.ai.provider, AiProvider::Remote, "Outro servidor HTTPS")
                     .on_hover_text("Servidor do órgão compatível com a API de chat do Ollama.");
+                ui.radio_value(&mut self.ai.provider, AiProvider::ChatGpt, "ChatGPT (assinatura)")
+                    .on_hover_text("Usa a cota da sua assinatura ChatGPT Plus ou Pro, entrando com a sua conta. Os textos vão para os servidores da OpenAI.");
                 provider_changed = before != self.ai.provider;
             });
             ui.add_space(4.0);
             match self.ai.provider {
+                AiProvider::ChatGpt => {
+                    ui.group(|ui| {
+                        ui.set_width(ui.available_width());
+                        ui.colored_label(WARNING, "⚠ Nesta opção, os dados saem do seu computador e do órgão.");
+                        ui.label("A cada clique em “Analisar” ou “Gerar sugestão”, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados aos servidores da OpenAI, nos Estados Unidos, sob os termos e a política de privacidade da OpenAI. Nada é enviado ao importar, só quando você clica. Use apenas com documentos que podem sair do órgão; avalie sigilo e LGPD antes.");
+                        ui.small("O Ponte não recebe acesso às suas conversas, à memória nem à cobrança do ChatGPT. O uso é descontado da cota da sua assinatura (Plus ou Pro); o limite por aplicativo pode ser ajustado em ChatGPT ▸ Configurações ▸ Uso. Quando a cota acaba, o Ponte avisa e não usa outro provedor por conta própria.");
+                    });
+                    ui.add_space(4.0);
+                    let signed_in = self.ai.chatgpt.signed_in();
+                    let sharing = self.ai.chatgpt.sharing();
+                    let account = self.ai.chatgpt.account_label.clone();
+                    let in_progress = self.chatgpt_login.is_some();
+                    ui.horizontal_wrapped(|ui| {
+                        if in_progress {
+                            ui.spinner();
+                            ui.label("Aguardando a autorização no navegador…");
+                            if ui.button("Cancelar").clicked() {
+                                self.cancel_chatgpt_login();
+                            }
+                        } else if signed_in {
+                            ui.label(format!("Conectado: {account}"));
+                            if sharing {
+                                ui.colored_label(SUCCESS, "✓ uso do plano liberado");
+                            } else {
+                                ui.colored_label(WARNING, "⚠ sem permissão de uso do plano");
+                            }
+                            if ui.button("Entrar de novo…").on_hover_text("Abre o navegador para renovar a autorização ou liberar o uso do plano.").clicked() {
+                                self.start_chatgpt_login(ctx);
+                            }
+                            if ui.button("Sair").on_hover_text("Apaga a sessão deste computador e pede à OpenAI que a encerre.").clicked() {
+                                self.chatgpt_sign_out();
+                            }
+                        } else {
+                            if ui.button("Entrar com o ChatGPT…").on_hover_text("Abre o navegador na página da OpenAI. Entre com a conta da sua assinatura e autorize o Ponte, inclusive o uso do plano.").clicked() {
+                                self.start_chatgpt_login(ctx);
+                            }
+                            if !account.is_empty() {
+                                ui.small(format!("última conta: {account}"));
+                            }
+                        }
+                    });
+                    if let Some(login) = &self.chatgpt_login {
+                        let url = login.authorize_url.clone();
+                        ui.horizontal_wrapped(|ui| {
+                            ui.small("Se o navegador não abriu, copie o endereço e cole nele:");
+                            if ui.small_button("Copiar endereço").clicked() {
+                                ctx.copy_text(url);
+                            }
+                        });
+                    }
+                    if let Some(error) = &self.chatgpt_login_error {
+                        ui.colored_label(ERROR, format!("✗ {error}"));
+                    }
+                    ui.small("Requer assinatura ChatGPT Plus ou Pro (conta gratuita entra, mas não libera o uso do plano). O login abre o navegador em auth.openai.com e volta para o Ponte por uma porta local deste computador.");
+                }
                 AiProvider::Local => {
                     let label = ui.label("Endereço do Ollama");
                     ui.add(egui::TextEdit::singleline(&mut self.ai.local_url).desired_width(f32::INFINITY)).labelled_by(label.id);
@@ -3018,8 +3252,13 @@ impl PonteApp {
                 ui.small("Clique em “Listar modelos do servidor” para escolher entre os disponíveis.");
             }
             ui.add_space(6.0);
-            ui.checkbox(&mut self.ai.remember_keys, "Guardar a chave neste computador")
-                .on_hover_text("A configuração fica no acervo, cifrada com a DPAPI da sua conta do Windows. Desmarcada, a chave vale só até fechar o Ponte.");
+            let remember_label = if self.ai.provider == AiProvider::ChatGpt {
+                "Guardar a sessão do ChatGPT neste computador"
+            } else {
+                "Guardar a chave neste computador"
+            };
+            ui.checkbox(&mut self.ai.remember_keys, remember_label)
+                .on_hover_text("A configuração fica no acervo, cifrada com a DPAPI da sua conta do Windows. Desmarcada, a chave (ou a sessão do ChatGPT) vale só até fechar o Ponte.");
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let dirty = self.ai_config_dirty();
@@ -3327,6 +3566,11 @@ impl eframe::App for PonteApp {
         self.intranet.attach_repaint(&ctx);
         self.poll_worker();
         self.poll_models();
+        self.poll_chatgpt_login(&ctx);
+        if self.chatgpt_sync_pending && self.worker.is_none() && self.model_fetch.is_none() {
+            self.chatgpt_sync_pending = false;
+            self.sync_chatgpt_session();
+        }
         let queued = self.store.take_offline_queued();
         if queued > 0 {
             self.message(if queued == 1 {

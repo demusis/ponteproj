@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod app;
+pub mod chatgpt;
 pub mod attachments;
 pub mod files;
 pub mod model;
