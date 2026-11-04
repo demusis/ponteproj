@@ -2,6 +2,8 @@
 
 Duas observações do uso (2026-11-04), com diagnóstico do comportamento atual e a proposta para a **0.12.0**.
 
+> **Situação (2026-11-04):** item 1 implementado na **0.12.0** (ver `ATUALIZACAO_0_12_0.md`). Diferenças em relação ao proposto: o botão da ficha virou dois (**Consultar documento**, janela só leitura; **Ir para o documento**, com a pergunta); clicar em outra tarefa da lista e **Preparar tarefa** da IA também passam pela pergunta; uma tarefa nova intocada não conta como edição. Item 2 aguarda decisão.
+
 ## 1. Sair da tarefa em edição sem perceber
 
 ### O que acontece hoje

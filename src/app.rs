@@ -463,6 +463,49 @@ enum PendingTarget {
     None,
 }
 
+/// Where the person wants to go while a task edit is unsaved. Held until
+/// they decide whether to save, discard or stay.
+#[derive(Clone)]
+enum Leave {
+    /// The "Processos e demandas" screen.
+    Saiop,
+    /// The "Documento" screen with whatever document is selected.
+    Documents,
+    /// Open this document (sidebar, "Ir para o documento").
+    Select(i64),
+    /// Start a blank task for this document.
+    NewTask(i64),
+    /// Open this task in the form, keeping the panel's view and filter.
+    OpenTask(crate::tasks::Task),
+    /// Open this task from its document's Resumo, filtering the panel to it.
+    EditTask(crate::tasks::Task),
+    /// Prepare a task from an AI suggestion of this document.
+    Suggestion {
+        document_id: i64,
+        suggestion: crate::model::ActionSuggestion,
+        priority: String,
+    },
+}
+
+impl Leave {
+    /// Intents that replace the task being edited, wherever they come from.
+    fn replaces_task(&self) -> bool {
+        matches!(
+            self,
+            Leave::NewTask(_)
+                | Leave::OpenTask(_)
+                | Leave::EditTask(_)
+                | Leave::Suggestion { .. }
+        )
+    }
+}
+
+/// A document shown read-only over the Tarefas panel, so the person can
+/// read it while writing the task.
+struct Consult {
+    detail: DocumentDetail,
+}
+
 struct PonteApp {
     draft_tools: crate::draft_tools::DraftTools,
     /// "Anexos" block of the open document.
@@ -476,6 +519,12 @@ struct PonteApp {
     intranet: crate::intranet::IntranetPanel,
     tasks_open: bool,
     saiop_open: bool,
+    /// Navigation waiting for a decision about the unsaved task.
+    leave: Option<Leave>,
+    /// Why "Salvar e continuar" failed, shown inside the question.
+    leave_error: Option<String>,
+    /// Read-only document window opened from the task form.
+    consult: Option<Consult>,
     store: Store,
     db_path: PathBuf,
     documents: Vec<DocumentSummary>,
@@ -531,6 +580,9 @@ impl PonteApp {
             // The welcome screen (or the opened document) is the first thing seen.
             tasks_open: false,
             saiop_open: false,
+            leave: None,
+            leave_error: None,
+            consult: None,
             store,
             db_path,
             documents: Vec::new(),
@@ -765,6 +817,135 @@ impl PonteApp {
             PendingTarget::Suggestion => self.suggestion_open = true,
             PendingTarget::Settings => self.settings_open = true,
             PendingTarget::None => {}
+        }
+    }
+
+    /// Goes somewhere, unless that would hide or replace an unsaved task:
+    /// then the question "save, discard or stay?" is shown first and the
+    /// move happens after the answer.
+    fn navigate(&mut self, leave: Leave) {
+        let hides_visible_edit = self.tasks_open && self.tasks.dirty();
+        let replaces_edit = leave.replaces_task() && self.tasks.dirty();
+        if hides_visible_edit || replaces_edit {
+            self.leave_error = None;
+            self.leave = Some(leave);
+        } else {
+            self.perform_leave(leave);
+        }
+    }
+
+    fn perform_leave(&mut self, leave: Leave) {
+        match leave {
+            Leave::Saiop => {
+                self.saiop_open = true;
+                self.tasks_open = false;
+            }
+            Leave::Documents => {
+                self.tasks_open = false;
+                self.saiop_open = false;
+            }
+            Leave::Select(id) => self.select(id),
+            Leave::NewTask(document_id) => {
+                if self.tasks.start_new(document_id) {
+                    self.tasks_open = true;
+                    self.saiop_open = false;
+                } else {
+                    self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");
+                }
+            }
+            Leave::OpenTask(task) => {
+                if self.tasks.open_task(&task, &self.store) {
+                    self.tasks_open = true;
+                    self.saiop_open = false;
+                } else {
+                    self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");
+                }
+            }
+            Leave::EditTask(task) => {
+                if self.tasks.focus_task(&task) {
+                    self.tasks_open = true;
+                    self.saiop_open = false;
+                } else {
+                    self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");
+                }
+            }
+            Leave::Suggestion {
+                document_id,
+                suggestion,
+                priority,
+            } => {
+                if self
+                    .tasks
+                    .prepare_suggestion(document_id, &suggestion, &priority)
+                {
+                    self.tasks_open = true;
+                    self.saiop_open = false;
+                } else {
+                    self.error("Salve ou cancele a tarefa em edição antes de preparar outra.");
+                }
+            }
+        }
+    }
+
+    /// Opens the read-only window with this document's text and PDFs.
+    fn open_consult(&mut self, document_id: i64) {
+        match self.store.load_document(document_id) {
+            Ok(detail) => self.consult = Some(Consult { detail }),
+            Err(error) => self.error(format!("Não foi possível abrir o documento para consulta: {error}")),
+        }
+    }
+
+    fn consult_window(&mut self, ctx: &egui::Context) {
+        let Some(consult) = self.consult.take() else {
+            return;
+        };
+        let detail = &consult.detail;
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new(format!("Consulta • {}", detail.summary.document_number))
+            .open(&mut open)
+            .default_size([680.0, 560.0])
+            .min_size([360.0, 240.0])
+            .resizable(true)
+            .collapsible(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(&detail.summary.title);
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.small("Só leitura: a tarefa continua aberta atrás desta janela. Para editar notas ou minutas, use “Ir para o documento”.");
+                    if ui.small_button("Fechar").clicked() {
+                        close = true;
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("consult-scroll")
+                    .show(ui, |ui| {
+                        ui.strong("Texto importado");
+                        if detail.capture.text.is_empty() {
+                            ui.colored_label(WARNING, "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
+                        } else {
+                            let mut text = detail.capture.text.as_str();
+                            egui::ScrollArea::horizontal()
+                                .id_salt("consult-text")
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut text)
+                                            .font(egui::TextStyle::Monospace)
+                                            .desired_width(f32::INFINITY)
+                                            .desired_rows(18)
+                                            .code_editor(),
+                                    );
+                                });
+                        }
+                        ui.add_space(8.0);
+                        ui.strong("Arquivos (PDF)");
+                        self.files_list(ui, detail);
+                    });
+            });
+        if open && !close {
+            self.consult = Some(consult);
         }
     }
 
@@ -1363,13 +1544,22 @@ impl PonteApp {
                 .selectable_label(self.saiop_open, "Processos e demandas")
                 .clicked()
             {
-                self.saiop_open = true;
-                self.tasks_open = false;
+                self.navigate(Leave::Saiop);
             }
-            if ui
-                .selectable_label(self.tasks_open && !self.saiop_open, "Tarefas")
-                .clicked()
-            {
+            // The orange dot follows the unsaved task wherever the person is,
+            // like the "Anotações e minutas ●" tab does for notes.
+            let tasks_label = if self.tasks.dirty() {
+                RichText::new("Tarefas ●").color(WARNING)
+            } else {
+                RichText::new("Tarefas")
+            };
+            let tasks_response = ui.selectable_label(self.tasks_open && !self.saiop_open, tasks_label);
+            let tasks_response = if self.tasks.dirty() {
+                tasks_response.on_hover_text("Há uma tarefa com alterações não salvas.")
+            } else {
+                tasks_response
+            };
+            if tasks_response.clicked() {
                 self.tasks_open = true;
                 self.saiop_open = false;
             }
@@ -1377,8 +1567,7 @@ impl PonteApp {
                 .selectable_label(!self.tasks_open && !self.saiop_open, "Documento")
                 .clicked()
             {
-                self.tasks_open = false;
-                self.saiop_open = false;
+                self.navigate(Leave::Documents);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut backup = false;
@@ -1676,7 +1865,7 @@ impl PonteApp {
             }
         });
         if let Some(id) = selected {
-            self.select(id);
+            self.navigate(Leave::Select(id));
         }
     }
 
@@ -2038,17 +2227,11 @@ impl PonteApp {
                             )
                             .clicked()
                         {
-                            if self.tasks.prepare_suggestion(
-                                detail.summary.id,
-                                suggestion,
-                                &analysis.priority,
-                            ) {
-                                self.tasks_open = true;
-                            } else {
-                                self.error(
-                                    "Salve ou cancele a tarefa em edição antes de preparar outra.",
-                                );
-                            }
+                            self.navigate(Leave::Suggestion {
+                                document_id: detail.summary.id,
+                                suggestion: suggestion.clone(),
+                                priority: analysis.priority.clone(),
+                            });
                         }
                     });
                 }
@@ -2334,8 +2517,7 @@ impl PonteApp {
             ui.horizontal_wrapped(|ui|{
                 ui.strong("Tarefas deste documento");
                 if ui.button("Nova tarefa").clicked(){
-                    if self.tasks.start_new(detail.summary.id){self.tasks_open=true;self.saiop_open=false;}
-                    else{self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel de tarefas.");}
+                    self.navigate(Leave::NewTask(detail.summary.id));
                 }
                 if ui.button("Ver todas").clicked(){self.tasks.focus_document(detail.summary.id);self.tasks_open=true;self.saiop_open=false;}
             });
@@ -2355,7 +2537,7 @@ impl PonteApp {
                             if ui.add_enabled(!self.tasks.task_dirty(task.id),egui::Button::new("✓ Concluir").small()).on_hover_text("Marca a tarefa como concluída. Nada é enviado ao SIGADOC.").clicked(){
                                 match self.store.complete_task(task.id){Ok(done)=>{self.tasks.forget_task(task.id);let mut text=format!("Tarefa concluída: {}",done.title);for note in self.store.take_cascade_notes(){text.push_str(" • ");text.push_str(&note);}self.message(text);},Err(e)=>self.error(format!("Não foi possível concluir a tarefa: {e}"))}
                             }
-                            if ui.button("Editar").clicked(){if self.tasks.focus_task(&task){self.tasks_open=true;}else{self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel de tarefas.");}}
+                            if ui.button("Editar").clicked(){self.navigate(Leave::EditTask(task.clone()));}
                         });
                     }
                 },Err(error)=>{ui.label(format!("Não foi possível ler as tarefas: {error}"));}
@@ -2972,6 +3154,59 @@ impl PonteApp {
                 }
             }
         }
+        if self.leave.is_some() {
+            let title = self
+                .tasks
+                .editing_title()
+                .unwrap_or_else(|| "tarefa".to_owned());
+            let mut save = false;
+            let mut discard = false;
+            let mut stay = false;
+            egui::Window::new("Tarefa com alterações não salvas")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(520.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("A tarefa “{title}” tem alterações não salvas."));
+                    ui.small("Salvar e continuar grava a tarefa e segue para onde você clicou. Descartar alterações volta a tarefa ao que estava salvo (uma tarefa nova é apagada). Voltar à tarefa deixa tudo como está.");
+                    if let Some(error) = &self.leave_error {
+                        ui.add_space(4.0);
+                        ui.colored_label(ERROR, error);
+                        ui.small("Corrija na ficha da tarefa (Voltar à tarefa) ou descarte as alterações.");
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        save = ui.button("Salvar e continuar").clicked();
+                        discard = ui.button("Descartar alterações").clicked();
+                        stay = ui.button("Voltar à tarefa").clicked();
+                    });
+                });
+            if stay {
+                self.leave = None;
+                self.leave_error = None;
+                self.tasks_open = true;
+                self.saiop_open = false;
+            }
+            if save {
+                match self.tasks.save_draft(&mut self.store) {
+                    Ok(()) => {
+                        if let Some(leave) = self.leave.take() {
+                            self.leave_error = None;
+                            self.perform_leave(leave);
+                        }
+                    }
+                    Err(error) => self.leave_error = Some(error),
+                }
+            }
+            if discard {
+                self.tasks.discard_draft();
+                if let Some(leave) = self.leave.take() {
+                    self.leave_error = None;
+                    self.perform_leave(leave);
+                }
+            }
+        }
         if self.exit_confirm {
             let mut close = false;
             let mut cancel = false;
@@ -3056,8 +3291,10 @@ impl eframe::App for PonteApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_confirm = true;
         }
-        let enabled =
-            self.replacement.is_none() && self.trash.pending.is_none() && !self.exit_confirm;
+        let enabled = self.replacement.is_none()
+            && self.trash.pending.is_none()
+            && !self.exit_confirm
+            && self.leave.is_none();
         egui::Panel::top("header").show(ui, |ui| {
             ui.add_enabled_ui(enabled, |ui| self.header(ui));
         });
@@ -3118,7 +3355,14 @@ impl eframe::App for PonteApp {
                         self.select(id);
                     }
                 } else if self.tasks_open {
-                    if let Some(id) = self.tasks.show(ui, &mut self.store, self.selected_id) { self.select(id); }
+                    if let Some(id) = self.tasks.show(ui, &mut self.store, self.selected_id) { self.navigate(Leave::Select(id)); }
+                    if let Some(intent) = self.tasks.take_blocked() {
+                        self.navigate(match intent {
+                            crate::tasks_ui::Intent::Open(task) => Leave::OpenTask(task),
+                            crate::tasks_ui::Intent::New(document_id) => Leave::NewTask(document_id),
+                        });
+                    }
+                    if let Some(document_id) = self.tasks.take_consult_request() { self.open_consult(document_id); }
                     if let Some(target)=self.tasks.take_trash_request(){self.request_trash(target);}
                     if let Some((attachment, label)) = self.tasks.take_attachment_pdf_request() {
                         self.pdf_reader.open_attachment(&self.store, attachment, &label, &ctx);
@@ -3133,6 +3377,7 @@ impl eframe::App for PonteApp {
             });
         });
         if enabled {
+            self.consult_window(&ctx);
             self.configuration(&ctx);
             self.suggestion_window(&ctx);
             if self.intranet.show(&ctx, &mut self.store, &self.db_path) {

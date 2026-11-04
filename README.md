@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.11.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_11_0.md) |
+| **Versão** | 0.12.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_12_0.md) |
 | **Licença** | MIT |
 
 ---
@@ -142,6 +142,7 @@ Campos da tarefa:
 | **Mais detalhes** | origem do prazo (ex.: *art. 5º do ofício*), lembrete, resultado, checklist de etapas, dependências |
 
 Regras úteis:
+- **Nada se perde ao trocar de tela.** Com uma tarefa não salva, clicar em **Documento**, **Processos e demandas**, num documento da lista, em outra tarefa ou em **Nova tarefa** abre a pergunta *"A tarefa ‘…’ tem alterações não salvas"* com **Salvar e continuar**, **Descartar alterações** e **Voltar à tarefa**. Enquanto isso, o rótulo **Tarefas ●** fica laranja no topo. Na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só leitura, sem sair da tarefa; **Ir para o documento** abre a ficha completa.
 - **✓ Concluir** e **Reabrir** ficam na própria lista; concluir uma tarefa não registra nada no SIGADOC.
 - **Juntados seguem o principal:** concluir a última tarefa aberta de um documento principal conclui, em cascata, as tarefas abertas dos documentos juntados a ele (e dos juntados a estes), cada uma com a anotação *"Concluída automaticamente: o documento principal X foi concluído"*. A mensagem de confirmação lista o que foi concluído; tarefas com dependência pendente ficam abertas e são informadas. Reabrir o principal não reabre as peças.
 - Uma tarefa com **dependências** só pode ser concluída depois das tarefas de que depende; o Ponte recusa e explica.

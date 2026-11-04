@@ -51,6 +51,7 @@ Documentos juntados aparecem abaixo do documento principal, com a marca ↳. O c
 
 - Em **Resumo ▸ Tarefas deste documento**, clique em **Nova tarefa**. Em **Tarefas** (no topo), veja todas.
 - Para concluir, clique em **✓ Concluir** na própria lista. Para voltar atrás, **Reabrir**.
+- Enquanto uma tarefa estiver em edição, o rótulo **Tarefas ●** fica laranja no topo. Se você clicar em outra tela ou em outra tarefa, o Ponte pergunta: **Salvar e continuar**, **Descartar alterações** ou **Voltar à tarefa**. Para ler o documento sem sair da tarefa, use **Consultar documento** na ficha.
 - **Documentos juntados seguem o principal:** quando a última tarefa aberta de um documento principal é concluída, as tarefas abertas das peças juntadas a ele (e das juntadas a estas) são concluídas automaticamente, com uma anotação dizendo o motivo. A mensagem de confirmação lista o que foi concluído. Tarefas que dependem de outra ainda aberta ficam como estão e são informadas. Reabrir o principal não reabre as peças.
 - Datas são digitadas como dd/mm/aaaa (há o botão **Hoje**).
 - Na lista de documentos, **Filtrar** mostra só os atrasados, os com tarefa aberta ou os concluídos.

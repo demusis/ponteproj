@@ -20,6 +20,17 @@ const VIEWS: [&str; 8] = [
 const PRIMARY_VIEWS: [usize; 4] = [2, 3, 4, 0];
 const SECONDARY_VIEWS: [usize; 4] = [1, 5, 6, 7];
 
+/// Something the person asked for while another task edit was still unsaved.
+/// The panel never honours it by itself: the app asks what to do with the
+/// pending edit first and then calls `focus_task` / `start_new`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Intent {
+    /// Open this task in the form.
+    Open(Task),
+    /// Start a blank task for this document.
+    New(i64),
+}
+
 #[derive(Default)]
 pub struct TaskPanel {
     draft: Option<Task>,
@@ -34,12 +45,83 @@ pub struct TaskPanel {
     trash_requested: Option<crate::trash::Target>,
     /// "Anexos" block of the task being edited.
     attachments: crate::attachments::AttachmentsPanel,
+    /// Action refused because of the unsaved edit; the app resolves it.
+    blocked: Option<Intent>,
+    /// Document the person wants to read without leaving the form.
+    consult_requested: Option<i64>,
 }
 impl TaskPanel {
     pub fn take_trash_request(&mut self) -> Option<crate::trash::Target> {
         self.trash_requested
             .take()
             .or_else(|| self.attachments.take_trash_request())
+    }
+    /// What the person tried to do while the current edit was unsaved.
+    pub fn take_blocked(&mut self) -> Option<Intent> {
+        self.blocked.take()
+    }
+    /// Document to show in the read-only consultation window.
+    pub fn take_consult_request(&mut self) -> Option<i64> {
+        self.consult_requested.take()
+    }
+    /// Title of the unsaved task, for the "leave the edit?" question.
+    pub fn editing_title(&self) -> Option<String> {
+        if !self.dirty() {
+            return None;
+        }
+        let draft = self.draft.as_ref()?;
+        let title = draft.title.trim();
+        Some(if title.is_empty() {
+            if draft.id > 0 {
+                format!("tarefa #{}", draft.id)
+            } else {
+                "nova tarefa (sem título)".to_owned()
+            }
+        } else {
+            title.to_owned()
+        })
+    }
+    /// Saves the task being edited. On failure the reason is returned and
+    /// also shown in the panel; the edit stays as it was.
+    pub fn save_draft(&mut self, store: &mut Store) -> Result<(), String> {
+        let Some(task) = &self.draft else {
+            return Ok(());
+        };
+        match store.save_task_checked(task, self.base_version) {
+            Ok(id) => {
+                self.draft = store
+                    .list_tasks()
+                    .ok()
+                    .and_then(|tasks| tasks.into_iter().find(|t| t.id == id));
+                self.original = self.draft.clone();
+                self.base_version = store
+                    .item_version("task", id)
+                    .ok()
+                    .map(|v| v.version);
+                let mut text = "Tarefa salva.".to_owned();
+                for note in store.take_cascade_notes() {
+                    text.push_str(" • ");
+                    text.push_str(&note);
+                }
+                self.notice(text, false);
+                Ok(())
+            }
+            Err(e) => {
+                let text = format!("Tarefa não salva: {e}");
+                self.notice(text.clone(), true);
+                Err(text)
+            }
+        }
+    }
+    /// Drops the unsaved changes: an existing task goes back to what is
+    /// saved, a new one disappears.
+    pub fn discard_draft(&mut self) {
+        self.draft = self.original.clone();
+        self.message.clear();
+        if self.draft.is_none() {
+            self.base_version = None;
+            self.attachments.forget();
+        }
     }
     /// PDF attachment to open in the Ponte reader: (attachment id, label).
     pub fn take_attachment_pdf_request(&mut self) -> Option<(i64, String)> {
@@ -104,6 +186,25 @@ impl TaskPanel {
         true
     }
 
+    /// Opens a task from the list, keeping the current view and filter.
+    /// Refused (false) while a different task has unsaved changes.
+    pub fn open_task(&mut self, task: &Task, store: &Store) -> bool {
+        if self.draft.as_ref().is_some_and(|t| t.id == task.id) {
+            return true;
+        }
+        if self.dirty() {
+            return false;
+        }
+        self.original = Some(task.clone());
+        self.draft = Some(task.clone());
+        self.base_version = store
+            .item_version("task", task.id)
+            .ok()
+            .map(|v| v.version);
+        self.message.clear();
+        true
+    }
+
     pub fn forget_document(&mut self, id: i64) {
         if self.document_filter == Some(id) {
             self.document_filter = None;
@@ -137,8 +238,14 @@ impl TaskPanel {
         self.notice("Revise e salve para criar a tarefa. Nada foi enviado ao SIGADOC.", false);
         true
     }
+    /// True while the form holds something that would be lost. A new task
+    /// nobody has touched yet (still exactly what "Nova tarefa" proposes)
+    /// has nothing to lose and does not count.
     pub fn dirty(&self) -> bool {
-        self.draft != self.original
+        match (&self.draft, &self.original) {
+            (Some(draft), None) => *draft != Task::new(draft.document_id),
+            (draft, original) => draft != original,
+        }
     }
 
     fn notice(&mut self, text: impl Into<String>, error: bool) {
@@ -185,7 +292,7 @@ impl TaskPanel {
             {
                 if let Some(id) = selected_document {
                     if !self.start_new(id) {
-                        self.notice("Salve ou cancele a edição atual antes de criar outra tarefa.", true);
+                        self.blocked = Some(Intent::New(id));
                     }
                 }
             }
@@ -423,16 +530,8 @@ impl TaskPanel {
         });
 
         if let Some(task) = select_request {
-            if self.dirty() && !self.draft.as_ref().is_some_and(|t| t.id == task.id) {
-                self.notice("Salve ou cancele a edição atual antes de trocar de tarefa.", true);
-            } else if !self.draft.as_ref().is_some_and(|t| t.id == task.id) {
-                self.original = Some(task.clone());
-                self.draft = Some(task.clone());
-                self.base_version = store
-                    .item_version("task", task.id)
-                    .ok()
-                    .map(|v| v.version);
-                self.message.clear();
+            if !self.open_task(&task, store) {
+                self.blocked = Some(Intent::Open(task));
             }
         }
         if let Some(id) = complete_request {
@@ -483,13 +582,24 @@ impl TaskPanel {
                     .map(|d| d.document_number.as_str())
                     .unwrap_or("não disponível")
             ));
-            if ui.small_button("Abrir documento").clicked() {
+            if ui
+                .small_button("Consultar documento")
+                .on_hover_text("Mostra o texto e os PDFs do documento numa janela por cima desta ficha, para copiar um prazo ou conferir um trecho sem sair da tarefa.")
+                .clicked()
+            {
+                self.consult_requested = Some(task.document_id);
+            }
+            if ui
+                .small_button("Ir para o documento")
+                .on_hover_text("Abre a ficha completa do documento. Se a tarefa tiver alterações não salvas, o Ponte pergunta antes o que fazer com elas.")
+                .clicked()
+            {
                 open = Some(task.document_id);
             }
         });
         ui.horizontal_wrapped(|ui| {
             save = ui
-                .add_enabled(dirty, egui::Button::new("Salvar"))
+                .add_enabled(dirty || task.id == 0, egui::Button::new("Salvar"))
                 .clicked();
             cancel = ui
                 .add_enabled(dirty || task.id == 0, egui::Button::new("Cancelar"))
@@ -710,32 +820,11 @@ impl TaskPanel {
                 });
             });
         if save {
-            if let Some(task) = &self.draft {
-                match store.save_task_checked(task, self.base_version) {
-                    Ok(id) => {
-                        self.draft = store
-                            .list_tasks()
-                            .ok()
-                            .and_then(|tasks| tasks.into_iter().find(|t| t.id == id));
-                        self.original = self.draft.clone();
-                        self.base_version = store
-                            .item_version("task", id)
-                            .ok()
-                            .map(|v| v.version);
-                        let mut text = "Tarefa salva.".to_owned();
-                        for note in store.take_cascade_notes() {
-                            text.push_str(" • ");
-                            text.push_str(&note);
-                        }
-                        self.notice(text, false);
-                    }
-                    Err(e) => self.notice(format!("Tarefa não salva: {e}"), true),
-                }
-            }
+            // The panel already shows the reason when saving fails.
+            let _ = self.save_draft(store);
         }
         if cancel {
-            self.draft = self.original.clone();
-            self.message.clear();
+            self.discard_draft();
         }
         if conclude {
             self.apply_status_change(store, task_id, true);
@@ -802,5 +891,55 @@ mod navigation_tests {
         assert!(panel.focus_task(&first));
         assert!(panel.dirty());
         assert!(!panel.start_new(3), "a pending edit is never discarded");
+    }
+
+    #[test]
+    fn leaving_an_unsaved_task_is_a_question_not_a_silent_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("tasks-ui.sqlite3")).unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let mut panel = TaskPanel::default();
+
+        // A new task with text typed in: the question names it.
+        assert!(panel.start_new(document));
+        assert_eq!(panel.editing_title().as_deref(), None, "a blank new task has nothing to lose");
+        panel.draft.as_mut().unwrap().title = "Responder ao ofício".into();
+        assert_eq!(panel.editing_title().as_deref(), Some("Responder ao ofício"));
+
+        // "Salvar e continuar" saves and leaves nothing pending.
+        panel.save_draft(&mut store).unwrap();
+        assert!(!panel.dirty());
+        let saved = store.list_tasks().unwrap();
+        assert!(saved.iter().any(|t| t.title == "Responder ao ofício"));
+
+        // A refused save keeps the edit and explains.
+        panel.draft.as_mut().unwrap().title = "   ".into();
+        let error = panel.save_draft(&mut store).unwrap_err();
+        assert!(error.starts_with("Tarefa não salva:"), "{error}");
+        assert!(panel.dirty());
+
+        // "Descartar alterações" on an existing task goes back to what is saved.
+        panel.discard_draft();
+        assert!(!panel.dirty());
+        assert_eq!(panel.draft.as_ref().unwrap().title, "Responder ao ofício");
+
+        // Discarding a brand-new task closes the form.
+        let mut other = TaskPanel::default();
+        assert!(other.start_new(document));
+        other.draft.as_mut().unwrap().notes = "x".into();
+        other.discard_draft();
+        assert!(other.draft.is_none());
+
+        // Blocked intents are handed to the app instead of being refused with a message.
+        panel.draft.as_mut().unwrap().notes = "ainda escrevendo".into();
+        assert!(panel.editing_title().is_some());
+        assert!(!panel.start_new(document));
+        assert!(panel.take_blocked().is_none(), "start_new itself does not queue; the panel's button does");
+        panel.blocked = Some(Intent::New(document));
+        assert_eq!(panel.take_blocked(), Some(Intent::New(document)));
+        assert!(panel.take_blocked().is_none());
     }
 }
