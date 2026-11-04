@@ -78,7 +78,7 @@ pub fn validate(sources: &[Source], citations: &[Citation]) -> Result<()> {
         );
         ensure!(
             normalized(&source.text).contains(&quote),
-            "O trecho citado pela IA não foi encontrado na fonte indicada; análise não salva."
+            "O trecho citado pela IA não foi encontrado literalmente na fonte indicada; a resposta não foi aceita."
         );
     }
     Ok(())

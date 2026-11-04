@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.15.0 (extensão 0.1.9) — [notas de versão](ATUALIZACAO_0_15_0.md) |
+| **Versão** | 0.16.0 (extensão 0.1.9) — [notas de versão](ATUALIZACAO_0_16_0.md) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -263,6 +263,8 @@ O Ponte funciona inteiro sem IA. Quando você quiser:
 
 Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na caixa de seleção: o Ponte consulta o servidor (`/api/tags` no Ollama, `/v1/models` na OpenAI) e mostra o que ele oferece. A configuração é salva no acervo, cifrada com a DPAPI da sua conta do Windows; desmarque **Guardar a chave neste computador** para manter a chave (ou a sessão do ChatGPT) só na memória da sessão. A chave também pode vir da variável `PONTEPROJ_AI_TOKEN`. Com Ollama Cloud, servidor remoto ou ChatGPT, o texto do documento sai do computador: avalie sigilo e LGPD antes de usar.
 
+**Correção automática e progresso.** Toda resposta da IA passa pela conferência do programa (JSON completo, prioridade e providências válidas, trechos citados existentes literalmente nas fontes, prazo transcrito). Se a resposta é recusada, o Ponte devolve ao modelo a resposta anterior e o motivo exato e pede a versão corrigida, até três respostas no total; a conferência continua sendo a última barreira, e nada é salvo sem passar por ela. Enquanto a IA trabalha, a barra de baixo mostra a etapa ("Preparando os dados", "Recebendo a resposta… (N caracteres)", "Conferindo", "Tentativa 2 de 3: …") e o botão **Cancelar**, que interrompe na próxima etapa sem salvar nada. Falhas de rede ou de servidor não são repetidas. Não há agentes autônomos com ferramentas: o texto do documento é tratado como dado, nunca como instrução.
+
 **ChatGPT (assinatura), em detalhe.** É o programa oficial "Sign in with ChatGPT" da OpenAI para aplicativos de código aberto que rodam localmente, como o Ponte. O login abre o navegador em `auth.openai.com` e volta ao Ponte por uma porta local (127.0.0.1); o Ponte não vê a sua senha e não recebe acesso às conversas, à memória nem à cobrança do ChatGPT. As chamadas vão para a API pública da OpenAI e são descontadas da cota da assinatura (Plus ou Pro; conta gratuita entra, mas não libera uso). O limite por aplicativo é ajustado em **ChatGPT ▸ Configurações ▸ Uso**; quando acaba, o Ponte avisa e **não** usa outro provedor por conta própria. A tela de configuração mostra o aviso: a cada clique em Analisar ou Gerar sugestão, documento, notas, contexto e fontes vão para os servidores da OpenAI, nos EUA, sob os termos da OpenAI; nada é enviado ao importar. **Sair** apaga a sessão deste computador e pede à OpenAI que a encerre (confira em ChatGPT ▸ Configurações ▸ Aplicativos conectados).
 
 ---
@@ -273,6 +275,7 @@ Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo
 - **Backup**: Menu ▾ → **Fazer backup agora** cria uma cópia consistente em `…\PonteProj\backups\`. O instalador também faz uma antes de cada atualização. Um backup só abre na mesma conta do Windows que o criou.
 - **Lixeira**: excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a Lixeira (Menu ▾), de onde se restaura. Nada é apagado definitivamente.
 - **Ao fechar** com algo não salvo, a janela lista cada pendência com um botão **Ir para**.
+- **Exportar dados (CSV)**: Menu ▾ → **Exportar dados para CSV…** grava, numa pasta nova em `…\PonteProj\exportados\csv-AAAAMMDD-HHMMSS\`, três arquivos: `documentos.csv` (número, título, tipo, datas, processo, remetente, finalidade, assuntos, prioridade, juntada, contagem de tarefas e anexos), `tarefas.csv` (tarefa, ação, situação, prioridade, responsável, prazo, atraso, conclusão) e `atendimentos.csv` (Processos e demandas). Formato: UTF-8 com BOM, separador `;`, datas `AAAA-MM-DD` e coluna "Mês" (`AAAA-MM-01`) para séries mensais. Não saem textos de documentos, notas, minutas, observações nem anexos. Os arquivos abrem no Excel e entram no **CERES** (painéis do gabinete) como conjuntos: envie cada `.csv` no setor, marque a coluna `ID` como identificador para reimportar sem duplicar, e use "Mês" ou a data como coluna de período.
 - **Menu ▾ ▸ Sobre o Ponte** mostra a versão do programa e da extensão, a autoria, a licença e o endereço do projeto.
 
 ---

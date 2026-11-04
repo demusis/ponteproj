@@ -438,12 +438,49 @@ enum WorkResult {
         result: std::result::Result<String, String>,
     },
     Backup(std::result::Result<PathBuf, String>),
+    Export(std::result::Result<crate::export::ExportReport, String>),
+}
+
+/// What the background worker is doing; the screen adapts buttons to it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkKind {
+    Sources,
+    Analysis,
+    Draft,
+    Backup,
+    Export,
 }
 
 struct Worker {
     receiver: Receiver<WorkResult>,
     label: String,
+    kind: WorkKind,
     started: Instant,
+    /// Steps reported by the task ("Recebendo a resposta… (1.200 caracteres)").
+    progress: Receiver<String>,
+    latest: String,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Worker {
+    fn cancelling(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Short text for a button: the current step without counts.
+    fn short_step(&self) -> String {
+        if self.cancelling() {
+            return "cancelando…".into();
+        }
+        let step = self.latest.split(" (").next().unwrap_or("").trim_end_matches('…');
+        if step.is_empty() {
+            format!("{} s", self.started.elapsed().as_secs())
+        } else if let Some(attempt) = step.strip_prefix("Tentativa ") {
+            format!("tentativa {}", attempt.split(':').next().unwrap_or("").trim())
+        } else {
+            format!("{}, {} s", step.to_lowercase(), self.started.elapsed().as_secs())
+        }
+    }
 }
 
 struct Notice {
@@ -1414,7 +1451,8 @@ impl PonteApp {
     fn spawn(
         &mut self,
         label: String,
-        task: impl FnOnce() -> WorkResult + Send + 'static,
+        kind: WorkKind,
+        task: impl FnOnce(ai::Reporter) -> WorkResult + Send + 'static,
         ctx: &egui::Context,
     ) {
         if self.worker.is_some() {
@@ -1424,11 +1462,14 @@ impl PonteApp {
             self.chatgpt_sync_pending = true;
         }
         let (sender, receiver) = mpsc::channel();
+        let (progress_sender, progress) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let reporter = ai::Reporter::new(progress_sender, cancel.clone());
         let repaint = ctx.clone();
         match std::thread::Builder::new()
             .name("ponte-worker".into())
             .spawn(move || {
-                let result = task();
+                let result = task(reporter);
                 let _ = sender.send(result);
                 repaint.request_repaint();
             }) {
@@ -1436,10 +1477,22 @@ impl PonteApp {
                 self.worker = Some(Worker {
                     receiver,
                     label,
+                    kind,
                     started: Instant::now(),
+                    progress,
+                    latest: String::new(),
+                    cancel,
                 })
             }
             Err(error) => self.error(format!("Não foi possível iniciar a operação: {error}")),
+        }
+    }
+
+    /// Asks the running AI action to stop at its next check; the thread
+    /// ends by itself and the result is reported as cancelled.
+    fn cancel_worker(&mut self) {
+        if let Some(worker) = &self.worker {
+            worker.cancel.store(true, Ordering::Relaxed);
         }
     }
 
@@ -1447,7 +1500,8 @@ impl PonteApp {
         let path = self.db_path.clone();
         self.spawn(
             "Preparando fontes localmente".into(),
-            move || WorkResult::Sources {
+            WorkKind::Sources,
+            move |_| WorkResult::Sources {
                 document_id,
                 result: Store::open(&path)
                     .and_then(|store| store.prepare_sources(&documents))
@@ -1490,7 +1544,8 @@ impl PonteApp {
         let capture = detail.capture.clone();
         self.spawn(
             format!("Analisando {}", detail.summary.document_number),
-            move || WorkResult::Analysis {
+            WorkKind::Analysis,
+            move |reporter| WorkResult::Analysis {
                 document_id,
                 result: ai::analyze_with_sources(
                     &settings,
@@ -1498,6 +1553,7 @@ impl PonteApp {
                     capture_id,
                     &human_context,
                     &sources,
+                    &reporter,
                 )
                 .map_err(|e| e.to_string()),
             },
@@ -1567,10 +1623,12 @@ impl PonteApp {
         let number = detail.summary.document_number.clone();
         self.spawn(
             format!("Gerando minuta de {}", number),
-            move || {
-                let result =
-                    ai::generate_reply_with_sources(&settings, &capture, &kind, &context, &sources)
-                        .map_err(|e| e.to_string());
+            WorkKind::Draft,
+            move |reporter| {
+                let result = ai::generate_reply_with_sources(
+                    &settings, &capture, &kind, &context, &sources, &reporter,
+                )
+                .map_err(|e| e.to_string());
                 WorkResult::Draft {
                     materials: sources,
                     document_id,
@@ -1588,7 +1646,8 @@ impl PonteApp {
         let db_path = self.db_path.clone();
         self.spawn(
             "Criando backup protegido".into(),
-            move || {
+            WorkKind::Backup,
+            move |_| {
                 let result = (|| -> Result<PathBuf> {
                     let directory = crate::paths::data_dir()?.join("backups");
                     std::fs::create_dir_all(&directory)?;
@@ -1606,7 +1665,29 @@ impl PonteApp {
         );
     }
 
+    /// Writes the CSV files in the background and opens the folder.
+    fn export_csv(&mut self, ctx: &egui::Context) {
+        let db_path = self.db_path.clone();
+        self.spawn(
+            "Exportando dados para CSV".into(),
+            WorkKind::Export,
+            move |_| {
+                let result = Store::open(&db_path)
+                    .and_then(|store| crate::export::export_all(&store))
+                    .map_err(|e| e.to_string());
+                WorkResult::Export(result)
+            },
+            ctx,
+        );
+    }
+
     fn poll_worker(&mut self) {
+        if let Some(worker) = &mut self.worker {
+            // Keep only the latest step; the channel may hold several.
+            if let Some(step) = worker.progress.try_iter().last() {
+                worker.latest = step;
+            }
+        }
         let received = self
             .worker
             .as_ref()
@@ -1620,7 +1701,26 @@ impl PonteApp {
             }
             _ => return,
         };
+        let cancelled = self.worker.as_ref().is_some_and(Worker::cancelling);
         self.worker = None;
+        if cancelled {
+            // The task stopped at the person's request: a plain notice, not an error.
+            let what = match &result {
+                WorkResult::Analysis { .. } => "Análise cancelada; nada foi salvo.",
+                WorkResult::Draft { .. } => "Geração da minuta cancelada; nada foi alterado.",
+                _ => "Operação cancelada.",
+            };
+            let finished_anyway = match &result {
+                WorkResult::Analysis { result, .. } => result.is_ok(),
+                WorkResult::Draft { result, .. } => result.is_ok(),
+                _ => false,
+            };
+            if !finished_anyway {
+                self.message(what);
+                return;
+            }
+            // It completed before noticing the cancellation: keep the result.
+        }
         match result {
             WorkResult::Sources {
                 document_id,
@@ -1671,6 +1771,19 @@ impl PonteApp {
                     self.backup_path = Some(path);
                 }
                 Err(error) => self.error(format!("Backup não concluído: {error}")),
+            },
+            WorkResult::Export(result) => match result {
+                Ok(report) => {
+                    self.message(format!(
+                        "Exportados {} documento(s), {} tarefa(s) e {} atendimento(s) em {}. No CERES, envie cada arquivo .csv como um conjunto.",
+                        report.documents,
+                        report.tasks,
+                        report.attendances,
+                        report.folder.display()
+                    ));
+                    crate::windows_ui::reveal_in_explorer(&report.folder);
+                }
+                Err(error) => self.error(format!("Exportação não concluída: {error}")),
             },
         }
     }
@@ -1798,6 +1911,7 @@ impl PonteApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut backup = false;
+                let mut export = false;
                 ui.menu_button("Menu ▾", |ui| {
                     ui.set_min_width(230.0);
                     if ui.button("Rede e equipe…").clicked() {
@@ -1822,6 +1936,14 @@ impl PonteApp {
                         ui.close();
                     }
                     if ui
+                        .add_enabled(self.worker.is_none(), egui::Button::new("Exportar dados para CSV…"))
+                        .on_hover_text("Grava documentos, tarefas e atendimentos em três arquivos .csv (sem textos, notas ou anexos), prontos para os painéis do CERES ou para o Excel.")
+                        .clicked()
+                    {
+                        export = true;
+                        ui.close();
+                    }
+                    if ui
                         .button("Atualizar lista")
                         .on_hover_text("A lista já se atualiza sozinha a cada poucos segundos.")
                         .clicked()
@@ -1840,6 +1962,9 @@ impl PonteApp {
                 });
                 if backup {
                     self.backup(ui.ctx());
+                }
+                if export {
+                    self.export_csv(ui.ctx());
                 }
                 let (color, short, full) = self.network_status();
                 let response = ui
@@ -2410,10 +2535,11 @@ impl PonteApp {
         ui.horizontal_wrapped(|ui| {
             ui.strong("Análise assistida por IA");
             let busy = self.worker.is_some();
-            let label = if busy && self.worker.as_ref().is_some_and(|w| w.label.starts_with("Analisando")) {
-                format!("Analisando… {} s", self.worker.as_ref().map(|w| w.started.elapsed().as_secs()).unwrap_or(0))
-            } else {
-                "Analisar e sugerir providências".to_owned()
+            let label = match &self.worker {
+                Some(worker) if worker.kind == WorkKind::Analysis => {
+                    format!("Analisando… {}", worker.short_step())
+                }
+                _ => "Analisar e sugerir providências".to_owned(),
             };
             if ui
                 .add_enabled(!busy, egui::Button::new(label))
@@ -2873,12 +2999,12 @@ impl PonteApp {
         let busy_generating = self
             .worker
             .as_ref()
-            .is_some_and(|w| w.label.starts_with("Gerando"));
+            .is_some_and(|w| w.kind == WorkKind::Draft);
         let generating_label = self
             .worker
             .as_ref()
-            .filter(|w| w.label.starts_with("Gerando"))
-            .map(|w| format!("Gerando… {} s", w.started.elapsed().as_secs()));
+            .filter(|w| w.kind == WorkKind::Draft)
+            .map(|w| format!("Gerando… {}", w.short_step()));
         let disclosure = self.ai_disclosure_text(true);
         let suggestion_pending = self.suggestion.is_some();
         {
@@ -3612,15 +3738,33 @@ impl eframe::App for PonteApp {
             ui.add_enabled_ui(enabled, |ui| self.header(ui));
         });
         egui::Panel::bottom("status").show(ui, |ui| {
+            let mut cancel = false;
             if let Some(worker) = &self.worker {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.spinner();
+                    let step = if worker.cancelling() {
+                        "cancelando ao fim da etapa atual…".to_owned()
+                    } else if worker.latest.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{} • ", worker.latest)
+                    };
                     ui.label(format!(
-                        "{} • {} s",
+                        "{} • {}{} s",
                         worker.label,
+                        step,
                         worker.started.elapsed().as_secs()
                     ));
+                    if matches!(worker.kind, WorkKind::Analysis | WorkKind::Draft) {
+                        cancel = ui
+                            .add_enabled(!worker.cancelling(), egui::Button::new("Cancelar").small())
+                            .on_hover_text("Interrompe a IA na próxima etapa. Nada é salvo.")
+                            .clicked();
+                    }
                 });
+            }
+            if cancel {
+                self.cancel_worker();
             }
             if self.intranet.syncing() {
                 ui.horizontal(|ui| {

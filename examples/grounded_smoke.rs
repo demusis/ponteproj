@@ -23,10 +23,11 @@ fn main() -> anyhow::Result<()> {
         1,
         "Finalidade confirmada: somente ciência e download.",
         &[source.clone()],
+        &ponteproj::ai::Reporter::silent(),
     )?;
     assert!(!analysis.citations.is_empty());
     assert!(analysis.deadline_candidate.is_none());
-    let body=ponteproj::ai::generate_reply_with_sources(&settings,&capture,"resposta","Prepare somente um registro local de ciência e download para revisão, sem inventar atos no SIGADOC.",&[source])?;
+    let body=ponteproj::ai::generate_reply_with_sources(&settings,&capture,"resposta","Prepare somente um registro local de ciência e download para revisão, sem inventar atos no SIGADOC.",&[source],&ponteproj::ai::Reporter::silent())?;
     assert!(body.contains("BASES PARA REVISÃO"));
     println!(
         "Minuta fictícia com bases conferidas: {} bytes.",

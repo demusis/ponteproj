@@ -816,9 +816,10 @@ pub fn respond(
     instructions: &str,
     input: &str,
     schema: Option<Value>,
+    reporter: &crate::ai::Reporter,
 ) -> Result<String> {
     let token = access_token(shared)?;
-    respond_at(API_BASE, &token, model, instructions, input, schema)
+    respond_at(API_BASE, &token, model, instructions, input, schema, reporter)
 }
 
 fn respond_at(
@@ -828,6 +829,7 @@ fn respond_at(
     instructions: &str,
     input: &str,
     schema: Option<Value>,
+    reporter: &crate::ai::Reporter,
 ) -> Result<String> {
     ensure!(
         !model.trim().is_empty() && model.len() <= 128 && !model.chars().any(char::is_control),
@@ -844,6 +846,7 @@ fn respond_at(
         body["text"] = json!({"format": {"type": "json_schema", "name": "ponte", "schema": schema, "strict": false}});
     }
     let client = http(Duration::from_secs(180))?;
+    reporter.step("Enviando ao ChatGPT e aguardando o início da resposta…");
     let response = client
         .post(format!("{}/responses", base.trim_end_matches('/')))
         .bearer_auth(token)
@@ -856,16 +859,17 @@ fn respond_at(
         let body = read_limited(response, MAX_ERROR_BYTES)?;
         return Err(api_error(status, &body));
     }
-    read_stream(BufReader::new(response.take(MAX_RESPONSE_BYTES + 1)))
+    read_stream(BufReader::new(response.take(MAX_RESPONSE_BYTES + 1)), reporter)
 }
 
 /// Collects the text of a server-sent-events stream; success only on
 /// `response.completed`, as documented.
-fn read_stream(reader: impl BufRead) -> Result<String> {
+fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<String> {
     let mut text = String::new();
     let mut data = String::new();
     let mut completed: Option<Value> = None;
     let mut total = 0_u64;
+    let mut last_report = (Instant::now(), 0_usize);
     let handle_event = |event: &Value, text: &mut String| -> Result<bool> {
         match event["type"].as_str().unwrap_or("") {
             "response.output_text.delta" => {
@@ -896,11 +900,20 @@ fn read_stream(reader: impl BufRead) -> Result<String> {
             continue;
         }
         if line.is_empty() && !data.is_empty() {
+            reporter.check()?;
             let event: Value = serde_json::from_str(&data).context("Evento do ChatGPT em formato inesperado.")?;
             data.clear();
             if handle_event(&event, &mut text)? {
                 completed = Some(event);
                 break;
+            }
+            let now = Instant::now();
+            if (!text.is_empty() && last_report.1 == 0)
+                || text.len() >= last_report.1 + 2048
+                || now.duration_since(last_report.0) >= Duration::from_millis(500)
+            {
+                last_report = (now, text.len());
+                reporter.step(format!("Recebendo a resposta… ({} caracteres)", text.chars().count()));
             }
         }
     }
@@ -1047,13 +1060,23 @@ mod tests {
     #[test]
     fn stream_text_is_collected_only_until_completion_and_limits_are_explained() {
         let stream = "event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"a\\\":\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"1}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}\n\n";
-        assert_eq!(read_stream(Cursor::new(stream)).unwrap(), "{\"a\":1}");
+        let silent = crate::ai::Reporter::silent();
+        assert_eq!(read_stream(Cursor::new(stream), &silent).unwrap(), "{\"a\":1}");
         let cut = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
-        assert!(read_stream(Cursor::new(cut)).unwrap_err().to_string().contains("sem confirmação"));
+        assert!(read_stream(Cursor::new(cut), &silent).unwrap_err().to_string().contains("sem confirmação"));
         let failed = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\",\"message\":\"limit\"}}}\n\n";
-        assert!(read_stream(Cursor::new(failed)).unwrap_err().to_string().contains("cota"));
+        assert!(read_stream(Cursor::new(failed), &silent).unwrap_err().to_string().contains("cota"));
         let only_final = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final\"}]}]}}\n\n";
-        assert_eq!(read_stream(Cursor::new(only_final)).unwrap(), "final");
+        assert_eq!(read_stream(Cursor::new(only_final), &silent).unwrap(), "final");
+        // Progress is reported and a cancellation stops the reading.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let reporter = crate::ai::Reporter::new(sender, cancel.clone());
+        assert_eq!(read_stream(Cursor::new(stream), &reporter).unwrap(), "{\"a\":1}");
+        let steps: Vec<String> = receiver.try_iter().collect();
+        assert!(steps.iter().any(|s| s.contains("Recebendo a resposta")), "{steps:?}");
+        cancel.store(true, Ordering::Relaxed);
+        assert!(read_stream(Cursor::new(stream), &reporter).unwrap_err().to_string().contains("Cancelado"));
         assert!(explain(401, "", "", "").contains("Entre de novo"));
         assert!(explain(403, "subscription_sharing_user_not_eligible", "", "").contains("Plus ou Pro"));
         assert!(explain(503, "", "", "").contains("Tente de novo"));
@@ -1106,9 +1129,10 @@ mod tests {
             }
         });
         let base = format!("http://{address}");
-        let text = respond_at(&base, "tok", "gpt-x", "instru\u{e7}\u{f5}es", "{\"dado\":1}", Some(json!({"type":"object"}))).unwrap();
+        let silent = crate::ai::Reporter::silent();
+        let text = respond_at(&base, "tok", "gpt-x", "instru\u{e7}\u{f5}es", "{\"dado\":1}", Some(json!({"type":"object"})), &silent).unwrap();
         assert_eq!(text, "ol\u{e1}");
-        let error = respond_at(&base, "tok", "limited", "i", "d", None).unwrap_err();
+        let error = respond_at(&base, "tok", "limited", "i", "d", None, &silent).unwrap_err();
         assert!(error.to_string().contains("cota"), "{error}");
         server.join().unwrap();
         let (head, body) = received.recv().unwrap();
