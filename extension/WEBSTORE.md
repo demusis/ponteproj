@@ -30,20 +30,41 @@ Leva o documento aberto no SIGADOC para o Ponte, o assistente documental do seu 
 
 **Descrição (campo "Descrição" da ficha; texto puro, sem formatação):**
 ```
-O Ponte é um assistente documental que roda no seu próprio computador. Esta extensão é a ponte entre ele e o SIGADOC.
+Ponte é um assistente documental para quem trabalha com o SIGADOC. Ele roda no seu próprio computador, e esta extensão é a ligação entre os dois: traz para o Ponte o documento que você está lendo no SIGADOC, com um clique.
 
-O QUE ELA FAZ
-Em cada documento aberto no SIGADOC (www.sigadoc.mt.gov.br) aparece o botão "Importar para o assistente". Um clique leva para o Ponte o texto do documento, os PDFs e o histórico de tramitação. No Ponte você anota, prepara minutas, acompanha prazos e tarefas e, se o gabinete quiser, trabalha em equipe pela rede interna ou por uma pasta compartilhada.
+O QUE A EXTENSÃO FAZ
 
-COMO USAR
-1. Instale o Ponte (programa para Windows): github.com/demusis/ponteproj/releases
+Em cada documento aberto no SIGADOC (www.sigadoc.mt.gov.br) aparece o botão "Importar para o assistente". Ao clicar, o Ponte recebe o texto do documento, os PDFs anexos e o histórico de tramitação. Se o mesmo documento for importado de novo mais tarde, o Ponte guarda a nova versão e mostra o que mudou; se nada mudou, avisa e não duplica.
+
+O QUE VOCÊ FAZ NO PONTE
+
+• Anota cada documento, marca prioridade e situação, e encontra tudo numa biblioteca com busca.
+• Prepara minutas de resposta, despacho ou parecer a partir do próprio documento, com apoio de IA opcional: no seu computador (Ollama) ou pela sua assinatura do ChatGPT.
+• Cria tarefas com prazo, responsável e lembrete; vê o que vence hoje, esta semana ou já atrasou, e quais tarefas dependem de outras.
+• Acompanha atendimentos e documentos que aguardam retorno de terceiros.
+• Registra também documentos que não passam pelo SIGADOC, com marca própria.
+• Trabalha sozinho, em dois computadores seus (por uma pasta compartilhada, como Google Drive ou OneDrive) ou em equipe, com um computador principal na rede interna do gabinete.
+• Exporta os dados principais em CSV.
+
+COMO COMEÇAR
+
+1. Instale o Ponte (programa para Windows, sem precisar de administrador): github.com/demusis/ponteproj/releases
 2. Adicione esta extensão ao Chrome ou ao Edge.
 3. Abra um documento no SIGADOC e clique em "Importar para o assistente".
 
-PRIVACIDADE
-A extensão só lê a ficha do documento aberto e só conversa com o Ponte instalado neste computador. Nada é enviado para a internet nem para os autores. Ela não lê a sua senha nem outras páginas, e não altera, assina nem tramita documentos no SIGADOC.
+A extensão só funciona com o Ponte instalado. Sem ele, o ícone da extensão avisa que o assistente não foi encontrado e explica o que fazer.
 
-Requer o Ponte instalado. Sem ele, a extensão avisa que o assistente não foi encontrado e explica o que fazer.
+PRIVACIDADE
+
+• A extensão lê apenas a ficha do documento que está aberto no SIGADOC. Não lê a sua senha, nem outras páginas, nem o restante da navegação.
+• Ela conversa só com o Ponte instalado neste computador, por mensagens nativas do navegador. Nada é enviado para a internet, para os autores ou para terceiros.
+• Ela não altera, não assina e não tramita documentos no SIGADOC. Tudo o que você faz no Ponte fica no Ponte.
+• No Ponte, os dados ficam cifrados no seu computador. O uso de IA na nuvem (ChatGPT) é opcional, avisado e desligado por padrão.
+
+Política de privacidade: demusis.github.io/ponte-privacidade
+
+Código aberto (MIT): github.com/demusis/ponteproj
+Autores: Carlo Ralph De Musis e João Gabriel Bezerra Estrela.
 ```
 
 **Categoria:** Produtividade. **Idioma:** Português (Brasil). **Visibilidade:** Não listada. **Regiões:** Brasil.
