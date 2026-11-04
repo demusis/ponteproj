@@ -159,11 +159,59 @@ pub struct Login {
     listener: TcpListener,
     pub authorize_url: String,
     redirect_uri: String,
+    host_id: String,
     state: String,
     nonce: String,
     verifier: String,
     /// Issued client id when re-authorizing; `None` on first registration.
     expected_client: Option<String>,
+    /// Hints for a returning account (ID token, e-mail).
+    hints: Option<(String, String)>,
+}
+
+/// Query of the authorization request, as documented for the open-source
+/// flow: dynamic registration on the first sign-in, the issued client id
+/// afterwards.
+fn authorize_url(
+    client_id: Option<&str>,
+    host_id: &str,
+    redirect_uri: &str,
+    state: &str,
+    nonce: &str,
+    verifier: &str,
+    hints: Option<&(String, String)>,
+) -> Result<String> {
+    let mut url = url::Url::parse(AUTHORIZE_URL)?;
+    {
+        let mut query = url.query_pairs_mut();
+        match client_id {
+            Some(client_id) => {
+                query.append_pair("client_id", client_id);
+            }
+            None => {
+                query.append_pair("client_id", DYNAMIC_CLIENT);
+                query.append_pair("agent_name_hint", AGENT_NAME);
+            }
+        }
+        query.append_pair("ext_agent_host_id", host_id);
+        query.append_pair("response_type", "code");
+        query.append_pair("redirect_uri", redirect_uri);
+        query.append_pair("scope", SCOPES);
+        query.append_pair("resource", RESOURCE);
+        query.append_pair("state", state);
+        query.append_pair("nonce", nonce);
+        query.append_pair("code_challenge_method", "S256");
+        query.append_pair("code_challenge", &pkce_challenge(verifier));
+        if let Some((id_token, email)) = hints.filter(|_| client_id.is_some()) {
+            if !id_token.is_empty() {
+                query.append_pair("id_token_hint", id_token);
+            }
+            if email.contains('@') {
+                query.append_pair("login_hint", email);
+            }
+        }
+    }
+    Ok(url.to_string())
 }
 
 impl Login {
@@ -181,58 +229,97 @@ impl Login {
         let redirect_uri = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
         let state = random_token(32)?;
         let nonce = random_token(32)?;
-        let verifier = random_token(48)?;
+        let verifier = random_token(32)?;
         let issued = previous
             .map(|s| s.client_id.trim())
             .filter(|id| !id.is_empty())
             .map(str::to_owned);
-        let mut url = url::Url::parse(AUTHORIZE_URL)?;
-        {
-            let mut query = url.query_pairs_mut();
-            match &issued {
-                Some(client_id) => {
-                    query.append_pair("client_id", client_id);
-                }
-                None => {
-                    query.append_pair("client_id", DYNAMIC_CLIENT);
-                    query.append_pair("agent_name_hint", AGENT_NAME);
-                }
-            }
-            query.append_pair("ext_agent_host_id", host_id);
-            query.append_pair("response_type", "code");
-            query.append_pair("redirect_uri", &redirect_uri);
-            query.append_pair("scope", SCOPES);
-            query.append_pair("resource", RESOURCE);
-            query.append_pair("state", &state);
-            query.append_pair("nonce", &nonce);
-            query.append_pair("code_challenge_method", "S256");
-            query.append_pair("code_challenge", &pkce_challenge(&verifier));
-            if let Some(previous) = previous.filter(|_| issued.is_some()) {
-                if !previous.id_token.is_empty() {
-                    query.append_pair("id_token_hint", &previous.id_token);
-                }
-                if previous.account_label.contains('@') {
-                    query.append_pair("login_hint", &previous.account_label);
-                }
-            }
-        }
+        let hints = previous.map(|p| (p.id_token.clone(), p.account_label.clone()));
+        let url = authorize_url(
+            issued.as_deref(),
+            host_id,
+            &redirect_uri,
+            &state,
+            &nonce,
+            &verifier,
+            hints.as_ref(),
+        )?;
         Ok(Self {
             listener,
-            authorize_url: url.to_string(),
+            authorize_url: url,
             redirect_uri,
+            host_id: host_id.to_owned(),
             state,
             nonce,
             verifier,
             expected_client: issued,
+            hints,
         })
     }
 
     /// Waits for the browser to come back, then exchanges the code and checks
     /// the identity. Blocks: run it on its own thread. `cancel` stops the wait.
-    pub fn wait(self, cancel: &AtomicBool, timeout: Duration) -> Result<ChatGptSession> {
+    /// `open_browser` is used when a second authorization is needed: a code
+    /// issued together with the dynamic registration may be refused
+    /// (`invalid_grant`), and the documented recovery is to authorize again
+    /// with the client id just issued.
+    pub fn wait(
+        mut self,
+        cancel: &AtomicBool,
+        timeout: Duration,
+        open_browser: fn(&str) -> Result<()>,
+    ) -> Result<ChatGptSession> {
         self.listener.set_nonblocking(true)?;
+        let mut callback = self.receive_callback(cancel, timeout)?;
+        let client = http(Duration::from_secs(30))?;
+        let mut tokens = exchange_code(
+            &client,
+            &callback.client_id,
+            &callback.code,
+            &self.verifier,
+            &self.redirect_uri,
+        );
+        if let Err(error) = &tokens {
+            let refused_registration_code = self.expected_client.is_none()
+                && error
+                    .downcast_ref::<TokenError>()
+                    .is_some_and(|t| t.code == "invalid_grant");
+            if refused_registration_code {
+                // Registration done; authorize once more with the issued id
+                // (fresh state, nonce and verifier, same local port).
+                self.expected_client = Some(callback.client_id.clone());
+                self.state = random_token(32)?;
+                self.nonce = random_token(32)?;
+                self.verifier = random_token(32)?;
+                self.authorize_url = authorize_url(
+                    self.expected_client.as_deref(),
+                    &self.host_id,
+                    &self.redirect_uri,
+                    &self.state,
+                    &self.nonce,
+                    &self.verifier,
+                    self.hints.as_ref(),
+                )?;
+                open_browser(&self.authorize_url)?;
+                callback = self.receive_callback(cancel, timeout)?;
+                tokens = exchange_code(
+                    &client,
+                    &callback.client_id,
+                    &callback.code,
+                    &self.verifier,
+                    &self.redirect_uri,
+                );
+            }
+        }
+        let tokens = tokens.map_err(|error| {
+            anyhow::anyhow!("{error} Clique em “Entrar com o ChatGPT…” para tentar de novo; o registro deste computador na OpenAI foi mantido.")
+        })?;
+        self.finish(callback, tokens, &client)
+    }
+
+    fn receive_callback(&self, cancel: &AtomicBool, timeout: Duration) -> Result<Callback> {
         let started = Instant::now();
-        let callback = loop {
+        loop {
             ensure!(!cancel.load(Ordering::Relaxed), "Login cancelado.");
             ensure!(
                 started.elapsed() < timeout,
@@ -263,7 +350,7 @@ impl Login {
                         Ok(_) => reply_http(&mut stream, 200, "Pronto. A autorização chegou ao Ponte; você já pode fechar esta aba e voltar ao programa."),
                         Err(error) => reply_http(&mut stream, 400, &format!("A autorização não foi concluída: {error} Volte ao Ponte e tente de novo.")),
                     }
-                    break parsed?;
+                    return parsed;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(150));
@@ -272,15 +359,16 @@ impl Login {
                     return Err(error).context("Falha ao receber a autorização do navegador.")
                 }
             }
-        };
-        let client = http(Duration::from_secs(30))?;
-        let tokens = exchange_code(&client, &callback.client_id, &callback.code, &self.verifier, &self.redirect_uri)?;
+        }
+    }
+
+    fn finish(self, callback: Callback, tokens: TokenResponse, client: &Client) -> Result<ChatGptSession> {
         let id_token = tokens
             .id_token
             .clone()
             .filter(|t| !t.is_empty())
             .context("A OpenAI não devolveu a identidade da conta.")?;
-        let claims = verify_id_token(&client, &id_token, &callback.client_id, &self.nonce)?;
+        let claims = verify_id_token(client, &id_token, &callback.client_id, &self.nonce)?;
         let scopes = if tokens.scope.as_deref().is_some_and(|s| !s.trim().is_empty()) {
             split_scopes(tokens.scope.as_deref().unwrap_or(""))
         } else {
@@ -431,6 +519,7 @@ struct TokenResponse {
 fn token_request(client: &Client, form: &[(&str, &str)]) -> Result<TokenResponse> {
     let response = client
         .post(TOKEN_URL)
+        .header("Accept", "application/json")
         .form(form)
         .send()
         .map_err(|error| {

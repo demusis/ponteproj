@@ -21,6 +21,38 @@ const VIEWS: [&str; 9] = [
 const PRIMARY_VIEWS: [usize; 4] = [2, 3, 4, 0];
 const SECONDARY_VIEWS: [usize; 5] = [8, 1, 5, 6, 7];
 
+/// Bar colour of a task that depends on the one open in the form.
+const RELATED: Color32 = Color32::from_rgb(24, 84, 97);
+const SUCCESS: Color32 = Color32::from_rgb(20, 118, 72);
+
+/// A clickable chip naming a related task with its state; returns the task
+/// when clicked, so the list can open it.
+fn dependency_chip(ui: &mut egui::Ui, task: &Task) -> Option<Task> {
+    let (mark, color) = if task.status == "concluida" {
+        ("✓", MUTED)
+    } else if task.overdue() {
+        ("⚠", ERROR)
+    } else {
+        ("○", WARNING)
+    };
+    let mut text = RichText::new(format!("{mark} {}", task.title)).small().color(color);
+    if task.status == "concluida" {
+        text = text.strikethrough();
+    }
+    let response = ui
+        .add(egui::Button::new(text).small().frame(false))
+        .on_hover_text(format!(
+            "{}{} • clique para abrir",
+            crate::tasks::status_label(&task.status),
+            if task.due_date.is_empty() {
+                String::new()
+            } else {
+                format!(" • prazo {}", crate::labels::date(&task.due_date))
+            }
+        ));
+    response.clicked().then(|| task.clone())
+}
+
 /// Names of tasks for a tooltip: "A, B e C".
 fn titles(tasks: &[&Task]) -> String {
     let names: Vec<&str> = tasks.iter().map(|t| t.title.as_str()).collect();
@@ -75,6 +107,9 @@ pub struct TaskPanel {
     message_is_error: bool,
     view: usize,
     document_filter: Option<i64>,
+    /// The list follows the document open in the library (default) until
+    /// the person asks for every document.
+    show_all_documents: bool,
     trash_requested: Option<crate::trash::Target>,
     /// "Anexos" block of the task being edited.
     attachments: crate::attachments::AttachmentsPanel,
@@ -188,6 +223,7 @@ impl TaskPanel {
 
     pub fn focus_document(&mut self, id: i64) {
         self.document_filter = Some(id);
+        self.show_all_documents = false;
         self.view = 0;
         self.query.clear();
     }
@@ -197,6 +233,7 @@ impl TaskPanel {
             return false;
         }
         self.document_filter = Some(document_id);
+        self.show_all_documents = false;
         self.view = 0;
         self.query.clear();
         self.draft = Some(Task::new(document_id));
@@ -213,6 +250,7 @@ impl TaskPanel {
                 .is_some_and(|draft| draft.id == task.id && draft.document_id == task.document_id);
         }
         self.document_filter = Some(task.document_id);
+        self.show_all_documents = false;
         self.view = 0;
         self.query.clear();
         self.draft = Some(task.clone());
@@ -295,6 +333,14 @@ impl TaskPanel {
         selected_document: Option<i64>,
     ) -> Option<i64> {
         let mut open = None;
+        // By default the list is the open document's; the person can widen it.
+        if !self.show_all_documents {
+            if let Some(id) = selected_document {
+                if self.document_filter != Some(id) {
+                    self.document_filter = Some(id);
+                }
+            }
+        }
         let tasks = match store.list_tasks() {
             Ok(t) => t,
             Err(e) => {
@@ -375,11 +421,25 @@ impl TaskPanel {
                     }
                 }
             });
+            ui.separator();
             if let Some(id) = self.document_filter {
-                ui.separator();
-                ui.label(format!("Só {}", number_of(id)));
+                ui.label(format!("Só {}", number_of(id)))
+                    .on_hover_text("A lista segue o documento aberto na biblioteca.");
                 if ui.small_button("Todos os documentos").clicked() {
                     self.document_filter = None;
+                    self.show_all_documents = true;
+                }
+            } else {
+                ui.label("Todos os documentos");
+                if let Some(id) = selected_document {
+                    if ui
+                        .small_button(format!("Só {}", number_of(id)))
+                        .on_hover_text("Volta a mostrar apenas as tarefas do documento aberto.")
+                        .clicked()
+                    {
+                        self.document_filter = Some(id);
+                        self.show_all_documents = false;
+                    }
                 }
             }
         });
@@ -490,6 +550,22 @@ impl TaskPanel {
                         if visible.is_empty() {
                             ui.label("Nenhuma tarefa nesta visão.");
                         }
+                        // The task open in the form: its predecessors and
+                        // successors get a coloured bar so the chain is
+                        // visible even when the list is long.
+                        let focus = self.draft.as_ref().map(|t| t.id).filter(|id| *id > 0);
+                        let focus_before: Vec<i64> = focus
+                            .map(|id| deps.direct(id).iter().map(|t| t.id).collect())
+                            .unwrap_or_default();
+                        let focus_after: Vec<i64> = focus
+                            .map(|id| {
+                                tasks
+                                    .iter()
+                                    .filter(|t| t.dependencies.contains(&id))
+                                    .map(|t| t.id)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         for task in &visible {
                             let editing_this = self.draft.as_ref().is_some_and(|t| t.id == task.id);
                             let pending = task.status != "concluida";
@@ -501,20 +577,46 @@ impl TaskPanel {
                             let direct = deps.direct(task.id);
                             let blockers = deps.open_blockers(task.id);
                             let blocked = pending && !blockers.is_empty();
+                            let releases: Vec<&Task> = tasks
+                                .iter()
+                                .filter(|t| t.dependencies.contains(&task.id))
+                                .collect();
+                            let relation = if focus_before.contains(&task.id) {
+                                Some((WARNING, "Esta tarefa vem ANTES da tarefa aberta na ficha."))
+                            } else if focus_after.contains(&task.id) {
+                                Some((RELATED, "Esta tarefa vem DEPOIS da tarefa aberta na ficha (depende dela)."))
+                            } else {
+                                None
+                            };
                             ui.horizontal(|ui| {
                             if indent > 0.0 {
                                 ui.add_space(indent);
                             }
                             ui.vertical(|ui| {
-                            ui.group(|ui| {
+                            let card = ui.group(|ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal_wrapped(|ui| {
                                     if task.overdue() {
                                         ui.colored_label(ERROR, "ATRASADA");
                                     }
-                                    if blocked {
-                                        ui.label(RichText::new("⛓").color(WARNING))
-                                            .on_hover_text(format!("Aguardando: {}", titles(&blockers)));
+                                    if !direct.is_empty() {
+                                        let (color, text) = if blocked {
+                                            (WARNING, format!("⛓ {} de {} anterior(es) em aberto", blockers.len(), direct.len()))
+                                        } else if pending {
+                                            (SUCCESS, format!("⛓ {} anterior(es) concluída(s)", direct.len()))
+                                        } else {
+                                            (MUTED, format!("⛓ {} anterior(es)", direct.len()))
+                                        };
+                                        let detail = direct
+                                            .iter()
+                                            .map(|d| format!("{} {}", if d.status == "concluida" { "✓" } else if d.overdue() { "⚠" } else { "○" }, d.title))
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        ui.small(RichText::new(text).color(color)).on_hover_text(if blocked {
+                                            format!("Só pode ser concluída depois de:\n{detail}")
+                                        } else {
+                                            format!("Depende de:\n{detail}")
+                                        });
                                     }
                                     let title = RichText::new(&task.title).strong();
                                     if ui.selectable_label(editing_this, title).clicked() {
@@ -524,28 +626,21 @@ impl TaskPanel {
                                 if !direct.is_empty() {
                                     ui.horizontal_wrapped(|ui| {
                                         ui.small(RichText::new("↳ depende de:").color(MUTED));
-                                        for (index, dependency) in direct.iter().enumerate() {
-                                            let text = if index + 1 < direct.len() {
-                                                format!("{},", dependency.title)
-                                            } else {
-                                                dependency.title.clone()
-                                            };
-                                            let rich = if dependency.status == "concluida" {
-                                                RichText::new(format!("✓ {text}")).strikethrough().color(MUTED)
-                                            } else if dependency.overdue() {
-                                                RichText::new(text).color(ERROR)
-                                            } else {
-                                                RichText::new(text)
-                                            };
-                                            ui.small(rich).on_hover_text(format!(
-                                                "{}{}",
-                                                crate::tasks::status_label(&dependency.status),
-                                                if dependency.due_date.is_empty() {
-                                                    String::new()
-                                                } else {
-                                                    format!(" • prazo {}", crate::labels::date(&dependency.due_date))
-                                                }
-                                            ));
+                                        for dependency in &direct {
+                                            if let Some(clicked) = dependency_chip(ui, dependency) {
+                                                select_request = Some(clicked);
+                                            }
+                                        }
+                                    });
+                                }
+                                if !releases.is_empty() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.small(RichText::new("↱ libera:").color(MUTED))
+                                            .on_hover_text("Tarefas que só podem ser concluídas depois desta.");
+                                        for next in &releases {
+                                            if let Some(clicked) = dependency_chip(ui, next) {
+                                                select_request = Some(clicked);
+                                            }
                                         }
                                     });
                                 }
@@ -607,6 +702,12 @@ impl TaskPanel {
                                     }
                                 });
                             });
+                            if let Some((color, hint)) = relation {
+                                let rect = card.response.rect;
+                                let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(4.0, rect.height()));
+                                ui.painter().rect_filled(bar, 2.0, color);
+                                card.response.on_hover_text(hint);
+                            }
                             });
                             });
                         }

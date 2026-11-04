@@ -1928,7 +1928,9 @@ impl Store {
                 best.header.revision,
                 cfg.synced_revision
             );
-            if cfg.synced_revision == 0 && !allow_replace {
+            // Joining: this computer never exchanged with this lineage.
+            let joining = cfg.synced_revision == 0 && cfg.folder_lineage.trim().is_empty();
+            if joining && !allow_replace {
                 let local_documents = self.list_documents("")?.len();
                 ensure!(
                     local_documents == 0,
@@ -3906,6 +3908,31 @@ impl IntranetPanel {
         }
     }
 
+    /// Saves what the person edited in the window without clobbering what
+    /// the background synchronization recorded meanwhile (revision, last
+    /// sync, lineage): the window's copy of the configuration may be older
+    /// than the stored one.
+    fn save_draft(&mut self, store: &mut Store) -> Result<()> {
+        if let Ok(stored) = store.load_intranet_config() {
+            self.draft.synced_revision = stored.synced_revision;
+            self.draft.last_sync_at = stored.last_sync_at;
+            self.draft.folder_lineage = stored.folder_lineage;
+            if self.draft.folder_writer.trim().is_empty() {
+                self.draft.folder_writer = stored.folder_writer;
+            }
+        }
+        store.save_intranet_config(&self.draft)
+    }
+
+    /// Brings the window's copy up to date after a synchronization.
+    fn refresh_draft_bookkeeping(&mut self, store: &Store) {
+        if let Ok(stored) = store.load_intranet_config() {
+            self.draft.synced_revision = stored.synced_revision;
+            self.draft.last_sync_at = stored.last_sync_at;
+            self.draft.folder_lineage = stored.folder_lineage;
+        }
+    }
+
     /// The "Pasta compartilhada" part of the window.
     fn shared_folder_section(
         &mut self,
@@ -4025,7 +4052,7 @@ impl IntranetPanel {
                         self.error = true;
                         self.message = text;
                     }
-                    None => match store.save_intranet_config(&self.draft) {
+                    None => match self.save_draft(store) {
                         Ok(()) => {
                             self.error = false;
                             self.message = "Sincronizando com as pastas…".into();
@@ -4153,6 +4180,7 @@ impl IntranetPanel {
         let conflicts = store.list_sync_conflicts().map(|v| v.len()).unwrap_or(0);
         let outbox = store.list_offline_outbox().map(|v| v.len()).unwrap_or(0);
         self.sync_step.clear();
+        self.refresh_draft_bookkeeping(store);
         if cfg.mode == IntranetMode::SharedFolder {
             match outcome.result {
                 Ok(done) => {
@@ -4387,7 +4415,7 @@ impl IntranetPanel {
                                     self.error = false;
                                 }
                             } else if ui.button("Salvar e ficar disponível agora").clicked() {
-                                match store.save_intranet_config(&self.draft) {
+                                match self.save_draft(store) {
                                     Ok(()) => match HostServer::start(db_path.clone(), &self.draft.bind_addr) {
                                         Ok(srv) => {
                                             self.message = format!(
@@ -4539,7 +4567,7 @@ impl IntranetPanel {
                                 .add_enabled(!self.sync_in_flight, egui::Button::new("Salvar e sincronizar acervo agora"))
                                 .clicked()
                             {
-                                match store.save_intranet_config(&self.draft) {
+                                match self.save_draft(store) {
                                     Ok(()) => {
                                         self.error = false;
                                         self.message = "Sincronizando com o computador principal…".into();
@@ -4564,7 +4592,7 @@ impl IntranetPanel {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Salvar configuração").clicked() {
-                        match store.save_intranet_config(&self.draft) {
+                        match self.save_draft(store) {
                             Ok(()) => {
                                 self.error = false;
                                 self.message = "Configuração salva.".into();

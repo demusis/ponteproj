@@ -1394,7 +1394,7 @@ impl PonteApp {
             .name("ponte-chatgpt-login".into())
             .spawn(move || {
                 let result = login
-                    .wait(&flag, chatgpt::LOGIN_TIMEOUT)
+                    .wait(&flag, chatgpt::LOGIN_TIMEOUT, crate::windows_ui::open_url)
                     .map_err(|e| e.to_string());
                 let _ = sender.send(result);
                 repaint.request_repaint();

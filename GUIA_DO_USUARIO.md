@@ -58,7 +58,7 @@ Documentos juntados aparecem abaixo do documento principal, com a marca ↳. O c
 - Enquanto uma tarefa estiver em edição, o rótulo **Tarefas ●** fica laranja no topo. Se você clicar em outra tela ou em outra tarefa, o Ponte pergunta: **Salvar e continuar**, **Descartar alterações** ou **Voltar à tarefa**. Para ler o documento sem sair da tarefa, use **Consultar documento** na ficha.
 - **Documentos juntados seguem o principal:** quando a última tarefa aberta de um documento principal é concluída, as tarefas abertas das peças juntadas a ele (e das juntadas a estas) são concluídas automaticamente, com uma anotação dizendo o motivo. A mensagem de confirmação lista o que foi concluído. Tarefas que dependem de outra ainda aberta ficam como estão e são informadas. Reabrir o principal não reabre as peças.
 - **Tarefa que depende de outra** aparece recuada à direita, abaixo da linha *↳ depende de: …*, e depois das tarefas de que depende. Com ⛓ no cartão, ainda há tarefa anterior aberta: **✓ Concluir** só libera depois dela (a dica diz qual). **Mais ▾ ▸ Prontas para fazer** lista o que pode ser feito agora. Na ficha, **Cadeia de dependências** mostra o que vem antes e o que espera por ela.
-- Datas são digitadas como dd/mm/aaaa (há o botão **Hoje**).
+- Datas são digitadas como dd/mm/aaaa ou escolhidas no calendário 📅 (mês com os dias da semana; há também o botão **Hoje**).
 - Na lista de documentos, **Filtrar** mostra só os atrasados, os com tarefa aberta ou os concluídos.
 
 ## 5. Notas, minutas e IA

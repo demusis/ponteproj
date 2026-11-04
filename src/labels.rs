@@ -230,6 +230,13 @@ pub fn date_field(
                 };
                 state.1 = value.clone();
             }
+            let picker = ui
+                .small_button("📅")
+                .on_hover_text("Escolher a data num calendário");
+            if let Some(chosen) = calendar_popup(id, &picker, value) {
+                *value = chosen;
+                state = (date(value), value.clone());
+            }
             if ui
                 .small_button("Hoje")
                 .on_hover_text("Preenche com a data de hoje")
@@ -249,9 +256,166 @@ pub fn date_field(
     response
 }
 
+const MONTHS: [&str; 12] = [
+    "Janeiro",
+    "Fevereiro",
+    "Março",
+    "Abril",
+    "Maio",
+    "Junho",
+    "Julho",
+    "Agosto",
+    "Setembro",
+    "Outubro",
+    "Novembro",
+    "Dezembro",
+];
+const WEEKDAYS: [&str; 7] = ["D", "S", "T", "Q", "Q", "S", "S"];
+
+/// The weeks of a month as rows of seven cells, Sunday first, `None` where
+/// the cell belongs to another month.
+pub fn month_grid(year: i32, month: u32) -> Vec<[Option<u32>; 7]> {
+    use chrono::Datelike;
+    let Some(first) = chrono::NaiveDate::from_ymd_opt(year, month, 1) else {
+        return Vec::new();
+    };
+    let days = (1..=31)
+        .filter(|d| chrono::NaiveDate::from_ymd_opt(year, month, *d).is_some())
+        .count() as u32;
+    let offset = first.weekday().num_days_from_sunday() as usize;
+    let mut rows = Vec::new();
+    let mut row = [None; 7];
+    let mut column = offset;
+    for day in 1..=days {
+        row[column] = Some(day);
+        column += 1;
+        if column == 7 {
+            rows.push(row);
+            row = [None; 7];
+            column = 0;
+        }
+    }
+    if column > 0 {
+        rows.push(row);
+    }
+    rows
+}
+
+/// Calendar shown under the 📅 button: month and year to browse, weekday
+/// headings, one button per day; today and the chosen date stand out.
+/// Returns the ISO date when a day is clicked.
+fn calendar_popup(
+    field_id: eframe::egui::Id,
+    button: &eframe::egui::Response,
+    value: &str,
+) -> Option<String> {
+    use chrono::Datelike;
+    use eframe::egui;
+    let today = chrono::Local::now().date_naive();
+    let selected = parse_typed_date(value)
+        .and_then(|iso| chrono::NaiveDate::parse_from_str(&iso, "%Y-%m-%d").ok());
+    let view_id = field_id.with("calendar-view");
+    let mut chosen = None;
+    egui::Popup::from_toggle_button_response(button)
+        .id(field_id.with("calendar"))
+        .show(|ui| {
+            let base = selected.unwrap_or(today);
+            let (mut year, mut month) = ui
+                .data(|d| d.get_temp::<(i32, u32)>(view_id))
+                .unwrap_or((base.year(), base.month()));
+            ui.set_min_width(230.0);
+            ui.horizontal(|ui| {
+                if ui.small_button("◀").on_hover_text("Mês anterior").clicked() {
+                    if month == 1 {
+                        month = 12;
+                        year -= 1;
+                    } else {
+                        month -= 1;
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("▶").on_hover_text("Mês seguinte").clicked() {
+                        if month == 12 {
+                            month = 1;
+                            year += 1;
+                        } else {
+                            month += 1;
+                        }
+                    }
+                    ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                        ui.strong(format!("{} {year}", MONTHS[(month - 1) as usize]));
+                    });
+                });
+            });
+            egui::Grid::new(view_id.with("grid"))
+                .num_columns(7)
+                .spacing([2.0, 2.0])
+                .show(ui, |ui| {
+                    for name in WEEKDAYS {
+                        ui.add_sized([28.0, 18.0], egui::Label::new(egui::RichText::new(name).small().color(egui::Color32::from_rgb(120, 130, 140))));
+                    }
+                    ui.end_row();
+                    for week in month_grid(year, month) {
+                        for cell in week {
+                            match cell {
+                                Some(day) => {
+                                    let date = chrono::NaiveDate::from_ymd_opt(year, month, day).expect("valid day");
+                                    let is_selected = selected == Some(date);
+                                    let is_today = date == today;
+                                    let mut text = egui::RichText::new(day.to_string());
+                                    if is_today {
+                                        text = text.strong().color(egui::Color32::from_rgb(24, 84, 97));
+                                    }
+                                    let response = ui.add_sized(
+                                        [28.0, 22.0],
+                                        egui::Button::selectable(is_selected, text),
+                                    );
+                                    if response.clicked() {
+                                        chosen = Some(date.format("%Y-%m-%d").to_string());
+                                        ui.close();
+                                    }
+                                }
+                                None => {
+                                    ui.add_sized([28.0, 22.0], egui::Label::new(""));
+                                }
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+            ui.horizontal(|ui| {
+                if ui.small_button("Hoje").clicked() {
+                    chosen = Some(today.format("%Y-%m-%d").to_string());
+                    ui.close();
+                }
+                if !value.trim().is_empty() && ui.small_button("Limpar").clicked() {
+                    chosen = Some(String::new());
+                    ui.close();
+                }
+                ui.small(format!("Hoje: {}", today.format("%d/%m/%Y")));
+            });
+            ui.data_mut(|d| d.insert_temp(view_id, (year, month)));
+        });
+    chosen
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn month_grid_starts_on_sunday_and_knows_leap_years() {
+        // 1 November 2026 is a Sunday; the month has 30 days.
+        let november = month_grid(2026, 11);
+        assert_eq!(november[0][0], Some(1));
+        assert_eq!(november.last().unwrap().iter().flatten().last(), Some(&30));
+        assert_eq!(november.len(), 5);
+        // February 2024 (leap year): 29 days, starting on a Thursday.
+        let february = month_grid(2024, 2);
+        assert_eq!(february[0], [None, None, None, None, Some(1), Some(2), Some(3)]);
+        assert_eq!(february.iter().flatten().flatten().count(), 29);
+        assert!(month_grid(2026, 13).is_empty());
+    }
 
     #[test]
     fn typed_dates_are_normalized_to_iso() {

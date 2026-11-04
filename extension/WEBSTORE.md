@@ -1,42 +1,52 @@
-# Publicar a extensão na Chrome Web Store (não listada)
+# A extensão na Chrome Web Store (item não listado)
 
-Publicar na loja elimina o "Modo do desenvolvedor" e o "Carregar sem compactação": o servidor abre um link, clica em **Adicionar ao Chrome** e a extensão se atualiza sozinha. O Edge instala extensões da Chrome Web Store sem passo extra (basta permitir "extensões de outras lojas" na primeira vez).
+A extensão está publicada como item **não listado**: só quem tem o link instala, e o navegador a atualiza sozinho.
 
-O envio exige uma conta Google de desenvolvedor da Chrome Web Store. Esse passo é seu (ou da TI do órgão); o restante está pronto.
+- Link para instalar: <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah>
+- ID na loja: `hhppmkbmainkdfmcfeaanknlnfgihnah` (gravado em `extension-store-id.txt`; o instalador do Ponte autoriza este ID e o da extensão carregada da pasta, `ecllnakmppjinmednoikimbpnbgbimhg`).
+- Painel do desenvolvedor: <https://chrome.google.com/webstore/devconsole> (conta `carlo.demusis@gmail.com`).
+- Política de privacidade (página pública exigida pela loja): <https://demusis.github.io/ponte-privacidade/> — fonte em `extension\PRIVACIDADE.md`, repositório `demusis/ponte-privacidade`.
 
-## 1. O que já está pronto
+O Edge instala extensões da Chrome Web Store sem passo extra (basta permitir "extensões de outras lojas" na primeira vez).
 
-| Item | Onde |
-|---|---|
-| Pacote `.zip` para envio (sem o campo `key`, como a loja exige) | `scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-0.1.9.zip` |
-| Textos da ficha (abaixo) | esta página |
-| Política de privacidade (página pública) | <https://demusis.github.io/ponte-privacidade/> — fonte em `extension\PRIVACIDADE.md`; repositório `github.com/demusis/ponte-privacidade` |
-| Ícone 128×128 e imagens | `extension\icons\icon-128.png`; capturas de tela: tire 1 a 5 imagens de 1280×800 da página do SIGADOC com o botão "Importar para o assistente" (sem dados reais) |
-| Autorização do novo ID no Ponte | `extension-store-id.txt` + `scripts\build-installer.ps1` (ver seção 4) |
+## 1. Publicar uma nova versão da extensão
 
-## 2. Enviar (uma vez)
+1. Aumente `"version"` em `extension\manifest.json` e em `extension\package.json` (a loja exige número maior que o publicado; hoje: 0.1.10).
+2. Gere o pacote: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-X.Y.Z.zip` (sem o campo `key`, como a loja exige).
+3. No painel, abra o item **Ponte • Assistente SIGADOC** → aba **Pacote** (*Package*) → **Enviar novo pacote** (*Upload new package*) → escolha o `.zip`.
+4. Se mudou algum texto da ficha, ajuste nas abas **Ficha da loja** (*Store listing*), **Práticas de privacidade** e **Distribuição**. O **Resumo** vem do campo `description` do manifesto e não é editável no painel: para mudá-lo, mude o manifesto e envie um pacote novo.
+5. **Enviar para análise** (*Submit for review*). Deixe marcada a publicação automática após a análise (ou publique à mão em até 30 dias). Enquanto a análise não termina, a versão publicada continua no ar.
+6. A análise de uma atualização é como a de um item novo: em geral de algumas horas a 3 dias úteis; `nativeMessaging` às vezes gera perguntas, respondidas com a justificativa da seção 2.
+7. Depois de publicada, o Chrome e o Edge atualizam a extensão sozinhos em algumas horas (ou na hora, em `chrome://extensions` → **Atualizar**). O ID não muda; nada precisa ser refeito no Ponte.
 
-1. Entre em <https://chrome.google.com/webstore/devconsole> com a conta Google que será a dona da extensão (de preferência uma conta institucional, não pessoal). Pague a taxa única de registro de desenvolvedor (US$ 5) e confirme o e-mail de contato.
-2. **Novo item** → envie `dist\ponte-extensao-webstore-0.1.9.zip` (se a 0.1.8 ainda estiver em análise, espere a análise terminar ou cancele-a no painel antes de enviar a nova).
-3. **Ficha da loja** — copie os textos da seção 3. Categoria: *Produtividade*. Idioma: *Português (Brasil)*.
-4. **Práticas de privacidade** — respostas na seção 3.
-5. **Distribuição** → **Visibilidade: Não listada** (só quem tem o link instala). Regiões: Brasil.
-6. **Enviar para análise**. A análise costuma levar de 1 a 3 dias úteis; itens com `nativeMessaging` às vezes recebem perguntas, respondidas pela justificativa abaixo.
-7. Depois de publicada, abra a página do item: o endereço termina com o **ID de 32 letras**. Copie-o.
+Só mudar textos da ficha (descrição, capturas de tela) também passa pela análise, mas não exige pacote novo.
 
-## 3. Textos da ficha e respostas de privacidade
+## 2. Textos da ficha e respostas de privacidade
 
 **Nome:** Ponte • Assistente SIGADOC
 
-**Resumo (até 132 caracteres):**
-Importa documentos do SIGADOC para o Ponte, o assistente documental instalado no seu computador.
+**Resumo (vem do manifesto; até 132 caracteres):**
+Leva o documento aberto no SIGADOC para o Ponte, o assistente documental do seu computador: notas, minutas, prazos e equipe.
 
-**Descrição:**
+**Descrição (campo "Descrição" da ficha; texto puro, sem formatação):**
 ```
-A extensão Ponte adiciona, em cada documento aberto no SIGADOC (www.sigadoc.mt.gov.br), o botão "Importar para o assistente". Ao clicar, o texto, os PDFs e o histórico de tramitação daquele documento são enviados ao Ponte, um programa instalado no próprio computador, onde o servidor anota, prepara minutas, acompanha prazos e, se o gabinete quiser, trabalha em equipe na rede interna.
+O Ponte é um assistente documental que roda no seu próprio computador. Esta extensão é a ponte entre ele e o SIGADOC.
 
-A extensão só funciona com o Ponte instalado. Ela não envia nada para a internet, não lê a sua senha nem outras páginas, e não altera, assina nem tramita documentos no SIGADOC.
+O QUE ELA FAZ
+Em cada documento aberto no SIGADOC (www.sigadoc.mt.gov.br) aparece o botão "Importar para o assistente". Um clique leva para o Ponte o texto do documento, os PDFs e o histórico de tramitação. No Ponte você anota, prepara minutas, acompanha prazos e tarefas e, se o gabinete quiser, trabalha em equipe pela rede interna ou por uma pasta compartilhada.
+
+COMO USAR
+1. Instale o Ponte (programa para Windows): github.com/demusis/ponteproj/releases
+2. Adicione esta extensão ao Chrome ou ao Edge.
+3. Abra um documento no SIGADOC e clique em "Importar para o assistente".
+
+PRIVACIDADE
+A extensão só lê a ficha do documento aberto e só conversa com o Ponte instalado neste computador. Nada é enviado para a internet nem para os autores. Ela não lê a sua senha nem outras páginas, e não altera, assina nem tramita documentos no SIGADOC.
+
+Requer o Ponte instalado. Sem ele, a extensão avisa que o assistente não foi encontrado e explica o que fazer.
 ```
+
+**Categoria:** Produtividade. **Idioma:** Português (Brasil). **Visibilidade:** Não listada. **Regiões:** Brasil.
 
 **Finalidade única (single purpose):**
 Enviar o documento aberto no SIGADOC ao aplicativo Ponte instalado no computador do usuário.
@@ -49,23 +59,14 @@ Enviar o documento aberto no SIGADOC ao aplicativo Ponte instalado no computador
 **Uso de dados (formulário "Práticas de privacidade"):**
 - Coleta: *Conteúdo do site* (o texto e os arquivos do documento aberto, lidos para a importação) e *Informações de identificação pessoal* presentes no documento oficial (nomes, matrículas). Nada é coletado fora da página do documento.
 - Os dados são transmitidos somente ao aplicativo Ponte no computador do usuário, por mensagens nativas; não são enviados a servidores do desenvolvedor nem a terceiros; não são usados para publicidade, nem vendidos, nem usados para fins alheios à finalidade única; não são usados para avaliar crédito ou empréstimo.
-- URL da política de privacidade: `https://demusis.github.io/ponte-privacidade/` (GitHub Pages; para alterar o texto, edite `index.html` no repositório `demusis/ponte-privacidade`).
+- URL da política de privacidade: `https://demusis.github.io/ponte-privacidade/` (para alterar o texto, edite `index.html` no repositório `demusis/ponte-privacidade`).
 
-## 4. Depois da publicação: autorizar o novo ID no Ponte
+**Imagens:** ícone 128×128 em `extension\icons\icon-128.png`; de 1 a 5 capturas de tela de 1280×800 da página do SIGADOC com o botão "Importar para o assistente" e do Ponte, sem dados reais (`dist\loja\`).
 
-> **Estado atual (2026-11-03):** item criado no painel com o ID **`hhppmkbmainkdfmcfeaanknlnfgihnah`** (conta `carlo.demusis@gmail.com`). O ID já está em `extension-store-id.txt` e o instalador autoriza os dois IDs. E-mail do publisher verificado e item **enviado para análise em 2026-11-03**. Link após a aprovação: <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah>.
+## 3. Histórico
 
-A loja atribui à extensão um ID próprio, diferente do ID da versão carregada da pasta (`ecllnakmppjinmednoikimbpnbgbimhg`). O Ponte só aceita mensagens dos IDs autorizados no manifesto do host nativo, por isso:
-
-1. Crie o arquivo `extension-store-id.txt` na raiz do projeto com o ID copiado no passo 2.7 (32 letras, nada mais).
-2. Gere o instalador de novo: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1`. O instalador passa a autorizar os dois IDs (pasta e loja).
-3. Distribua o novo `dist\Ponte-Setup-X.Y.Z.exe` e o link da loja. Quem já tinha a extensão carregada da pasta deve removê-la para não ficar com duas.
-
-Enquanto o `extension-store-id.txt` não existir, o instalador autoriza apenas a extensão carregada da pasta — o comportamento atual.
-
-## 5. Atualizações seguintes
-
-A cada nova versão da extensão: aumente `"version"` em `extension\manifest.json`, rode `scripts\build-webstore-package.ps1`, envie o novo `.zip` no painel e publique. Os navegadores atualizam sozinhos em algumas horas. O ID não muda.
+- 2026-11-03: item criado e enviado para análise com a 0.1.8. Publicado como não listado.
+- Próximo envio: 0.1.10 (`dist\ponte-extensao-webstore-0.1.10.zip`) — só muda o texto da descrição.
 
 ## Alternativa: política do órgão (sem loja)
 

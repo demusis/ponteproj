@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.18.0 (extensão 0.1.9) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.18.1 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -74,7 +74,7 @@ Clique no botão. Em alguns segundos aparece *Importado. O Ponte abriu o documen
 
 Clique em **Salvar notas**. O ponto laranja na aba some quando tudo está salvo.
 
-**Criar a tarefa com prazo.** No Resumo, em *Tarefas deste documento*, clique em **Nova tarefa**: título *Responder ao ofício*, responsável **Eu**, prazo `13/11/2026` (há o botão **Hoje**), salve. A partir daí o cartão do documento na lista da esquerda mostra `● 1 em aberto (no prazo) • Prazo: 13/11/2026`; quando o prazo passar, vira vermelho `⚠ 1 tarefa atrasada`.
+**Criar a tarefa com prazo.** No Resumo, em *Tarefas deste documento*, clique em **Nova tarefa**: título *Responder ao ofício*, responsável **Eu**, prazo `13/11/2026` (digite ou escolha no calendário 📅; há também o botão **Hoje**), salve. A partir daí o cartão do documento na lista da esquerda mostra `● 1 em aberto (no prazo) • Prazo: 13/11/2026`; quando o prazo passar, vira vermelho `⚠ 1 tarefa atrasada`.
 
 **Responder.** Ainda em *Anotações e minutas*, na seção **Minuta**: tipo *Resposta*, clique em **Começar por um modelo** (texto-base sem IA) ou em **Gerar sugestão com IA**; edite; **Salvar nova versão**; **Exportar (RTF)** abre a pasta com o arquivo para o Word. O texto final você cola no SIGADOC — o Ponte não tramita nem assina.
 
@@ -150,7 +150,7 @@ Campos da tarefa:
 | Título | `Responder ao ofício` |
 | Responsável | `MARIA` (ou botão **Eu**) |
 | Ação / Situação / Prioridade | *Responder* / *Pendente* / *Alta* |
-| Prazo | `13/11/2026` — digite dd/mm/aaaa ou clique em **Hoje** |
+| Prazo | `13/11/2026` — digite dd/mm/aaaa, escolha no calendário 📅 (mês com os dias da semana) ou clique em **Hoje** |
 | Observações | texto livre |
 | **Anexos** | arquivos do seu computador ligados à tarefa (depois de salvá-la); ver [Anexos](#anexos-arquivos-seus-no-documento-ou-na-tarefa) |
 | **Mais detalhes** | origem do prazo (ex.: *art. 5º do ofício*), lembrete, resultado, checklist de etapas, dependências |
@@ -328,7 +328,7 @@ Chrome/Edge ──(Native Messaging)──► ponteproj.exe --native-host ──
 | Pasta / arquivo | Papel |
 |---|---|
 | `src/app.rs` | Janela principal: lista, ficha em 4 abas, menu, indicadores |
-| `src/labels.rs` | Rótulos e datas exibidos; campo de data `dd/mm/aaaa` |
+| `src/labels.rs` | Rótulos e datas exibidos; campo de data `dd/mm/aaaa` com calendário |
 | `src/storage.rs`, `src/protection.rs` | SQLite + DPAPI; `Store` é a única porta de entrada aos dados |
 | `src/model.rs` | `Capture` (o que a extensão envia) e sua validação |
 | `src/dossier.rs` | Vínculos entre documentos, versões importadas, detecção de juntada |
