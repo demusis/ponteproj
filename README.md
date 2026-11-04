@@ -1,248 +1,344 @@
-# Ponte • Assistente Documental SIGADOC e Controle de Gabinete (SAIOP)
+# Ponte — Assistente documental SIGADOC
 
-Aplicativo desktop nativo para Windows (escrito em Rust com `eframe`/`egui` e SQLite embarcado) acompanhado de extensão para Google Chrome e Microsoft Edge. O **Ponte** permite capturar fichas e PDFs do SIGADOC por ação explícita do usuário, gerenciar o fluxo operacional do gabinete na área **Processos e demandas (SAIOP)**, controlar tarefas e prazos, ler PDFs com OCR local, elaborar minutas e trabalhar em equipe na **mesma intranet Windows** usando um dos computadores dos próprios usuários como anfitrião — sem depender de nuvem, máquina virtual (VM) ou banco de dados externo.
+O **Ponte** é um programa do Windows que guarda, no seu computador, os documentos que você importa do SIGADOC — com texto, PDFs e histórico de tramitação — para que você anote, prepare minutas, acompanhe prazos, controle as demandas do gabinete e, se quiser, trabalhe em equipe na rede interna. Ele é formado por um aplicativo (Rust + egui + SQLite) e por uma extensão para Chrome/Edge que coloca o botão **Importar para o assistente** nas páginas do SIGADOC.
+
+O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam lá. Nada vai para a nuvem; os dados ficam protegidos na sua conta do Windows.
+
+| | |
+|---|---|
+| **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
+| **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
+| **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
+| **Versão** | 0.9.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_9_0.md) |
+| **Licença** | MIT |
 
 ---
 
 ## Sumário
 
-1. [Principais Funcionalidades](#principais-funcionalidades)
-2. [Instalação no Windows](#instalação-no-windows)
-3. [Guia de Uso no Dia a Dia](#guia-de-uso-no-dia-a-dia)
-   - [1. Processos e Demandas (Controle SAIOP e Planilha `.xlsx`)](#1-processos-e-demandas-controle-saiop-e-planilha-xlsx)
-   - [2. Uso Compartilhado na Intranet (Anfitrião e Clientes)](#2-uso-compartilhado-na-intranet-anfitrião-e-clientes)
-   - [3. Captura Documental no SIGADOC, PDFs, Notas e Minutas](#3-captura-documental-no-sigadoc-pdfs-notas-e-minutas)
-   - [4. Tarefas, Prazos e Dependências](#4-tarefas-prazos-e-dependências)
-   - [5. Inteligência Artificial Opcional (Local ou HTTPS)](#5-inteligência-artificial-opcional-local-ou-https)
-4. [Segurança, Dados Locais (DPAPI) e Backup](#segurança-dados-locais-dpapi-e-backup)
-5. [Linha de Comando (CLI)](#linha-de-comando-cli)
-6. [Compilação e Execução de Testes](#compilação-e-execução-de-testes)
-7. [Solução de Problemas](#solução-de-problemas)
+1. [Instalar em 5 minutos](#1-instalar-em-5-minutos)
+2. [Um passeio pelo Ponte com um documento de exemplo](#2-um-passeio-pelo-ponte-com-um-documento-de-exemplo)
+3. [Documentos: ficha, notas e minutas](#3-documentos-ficha-notas-e-minutas)
+4. [Tarefas e prazos](#4-tarefas-e-prazos)
+5. [Processos e demandas (controle do gabinete)](#5-processos-e-demandas-controle-do-gabinete)
+6. [Trabalhar em equipe (Rede e equipe)](#6-trabalhar-em-equipe-rede-e-equipe)
+7. [IA opcional](#7-ia-opcional)
+8. [Onde ficam os dados, backup e lixeira](#8-onde-ficam-os-dados-backup-e-lixeira)
+9. [Solução de problemas](#9-solução-de-problemas)
+10. [Para desenvolvedores](#10-para-desenvolvedores)
 
 ---
 
-## Principais Funcionalidades
+## 1. Instalar em 5 minutos
 
-- **Processos e demandas (Controle do gabinete SAIOP):**
-  - Registro e acompanhamento de entradas e reentradas (passagens pelo gabinete) independentes de captura prévia no SIGADOC.
-  - Classificação separada em **quatro dimensões**: *Situação do atendimento* (`A distribuir`, `Em análise`, `Em elaboração`, `Aguardando deliberação`, `Aguardando resposta`, `Suspenso`, `Encerrado`, `Cancelado`), *Prioridade justificada* (`Baixa`, `Normal`, `Alta`, `Urgente`), *Condições/Relações* (`Retorno para UAS`, `Assinado`, `Agendado`, `Documento sensível`, `Apensado/Juntado`) e *Resultado da etapa* (`Encaminhado`, `Arquivado no controle local`, `Respondido`, `Ciência registrada`).
-  - **Indicadores calculados por eventos** (sem depender de fórmulas `DATEDIF` em cache na planilha): idade do atendimento, tempo na etapa atual, espera externa e atraso em relação ao prazo.
-  - **Importador `.xlsx` nativo (aba `PROCESSOS`):** leitura direta em Rust (sem precisar do Excel instalado), com prévia antes de gravar, descarte de linhas vazias que só contenham fórmulas preparadas, preservação de múltiplas passagens do mesmo número, sinalização de datas atípicas ou prazos textuais para revisão humana, bloqueio idempotente contra duplicação do mesmo arquivo (SHA-256) e **reversão segura de lote** (preservando registros já editados manualmente).
-- **Trabalho em equipe na Intranet (sem nuvem, sem VM e sem SGBD externo):**
-  - O próprio executável `ponteproj.exe` opera em três modos: **Somente neste computador**, **Anfitrião na Intranet** (hospeda o acervo do gabinete via HTTP/JSON na rede local) e **Cliente na Intranet** (conecta-se ao computador anfitrião).
-  - Nenhum arquivo SQLite é colocado em pasta compartilhada SMB (`\\servidor\pasta`), Google Drive ou OneDrive, evitando corrupção de banco.
-  - **Identificação por integrante:** mesmo que a equipe utilize uma conta compartilhada no SIGADOC, cada usuário informa seu nome/identificador no Ponte, registrando quem importou, distribuiu, alterou ou concluiu cada item.
-  - **Controle de concorrência otimista e resolução de choques com mesclagem:** impede que duas pessoas sobrescrevam silenciosamente a mesma tarefa, nota, contexto ou atendimento ao mesmo tempo, e permite mesclar edições concorrentes feitas enquanto o Anfitrião estava inacessível.
-  - **Trabalho contínuo offline, sincronização mútua automática e contingência (failover):** cada estação cliente mantém uma réplica local criptografada (DPAPI) e uma fila offline (`offline_outbox`). Se o computador anfitrião desligar ou quebrar por horas, os clientes continuam trabalhando normalmente (criando/editando tarefas, notas, minutas, capturas e atendimentos SAIOP). Quando o anfitrião volta à rede, todas as estações sincronizam mutuamente de forma automática; caso o mesmo item tenha sido alterado em dois lugares durante a queda, o aplicativo notifica o choque na barra superior e oferece 3 opções em 1 clique: **Mesclar as duas versões (Recomendado)**, **Manter minha versão** ou **Manter versão do Anfitrião**. Qualquer cliente também pode assumir imediatamente como novo Anfitrião.
-- **Captura e Biblioteca Documental SIGADOC:**
-  - Extensão para Chrome/Edge que reconhece fichas individuais do SIGADOC (`sigadoc.mt.gov.br`), captura metadados, texto e histórico, baixa PDFs originais e anexos reconhecidos e entrega tudo ao aplicativo via *Native Messaging*.
-  - Leitor de PDF integrado com **OCR local do Windows** por página e pesquisa textual em todo o acervo.
-  - Gestão de **Vínculos e Dossiê** entre documentos relacionados, **Contexto de trabalho**, **Notas** e editor de **Minutas** com modelos editáveis, histórico de versões, comparador lado a lado e exportação `.rtf`.
-- **Tarefas Operacionais e Lixeira Reversível:**
-  - Criação de tarefas vinculadas a documentos ou atendimentos, com atribuição de responsável (`assignee`), checklist, lembretes, fonte do prazo e dependências entre tarefas.
-  - Exclusão reversível de documentos, capturas e tarefas através da **Lixeira** local, com validação de integridade de vínculos e fontes.
+Não precisa de administrador: tudo é instalado na sua conta do Windows.
+
+1. Baixe `Ponte-Setup-X.Y.Z.exe` em <https://github.com/demusis/ponteproj/releases/latest> e dê dois cliques. Avance até o fim; pode deixar marcado **Abrir o Ponte agora**.
+2. Feche e abra o navegador (Chrome ou Edge).
+3. Na tela inicial do Ponte, o quadro **Ligação com o navegador** deve dizer *✓ O Ponte está registrado para o Chrome e Edge*.
+4. Instale a extensão **uma vez**, de um destes jeitos:
+   - **Pela loja** (assim que a publicação for aprovada): abra o link da extensão e clique em **Adicionar ao Chrome**.
+   - **Pela pasta instalada**: na tela inicial do Ponte, clique em **Copiar caminho**; no navegador abra `chrome://extensions` (ou `edge://extensions`), ative **Modo do desenvolvedor**, clique em **Carregar sem compactação** e cole o caminho na barra de endereço da janela que abre.
+5. Feche e abra o navegador de novo. Clique no ícone da extensão: deve mostrar *✓ Ligado ao Ponte 0.9.0*.
+
+O que o instalador faz, caso queira saber: copia o programa para `%LOCALAPPDATA%\Programs\PonteProj\vX.Y.Z` e a extensão para `…\PonteProj\extension`; registra a ligação navegador↔Ponte (chaves `HKCU` do Chrome e do Edge); cria o atalho **Ponte** no menu Iniciar; **faz uma cópia de segurança do acervo** antes de mudar qualquer coisa; remove versões antigas. Para atualizar, basta rodar o instalador novo. A desinstalação fica em *Aplicativos instalados* e **não apaga seus dados**.
 
 ---
 
-## Instalação no Windows
+## 2. Um passeio pelo Ponte com um documento de exemplo
 
-**Para quem vai usar o Ponte:** baixe o instalador em <https://github.com/demusis/ponteproj/releases/latest> (`Ponte-Setup-X.Y.Z.exe`), dê dois cliques e siga o `GUIA_DO_USUARIO.md`. Não precisa de administrador. O instalador copia o programa e a extensão para a conta do Windows atual, faz uma cópia de segurança do acervo, registra a ligação com Chrome e Edge, cria o atalho e remove versões antigas; a desinstalação fica em "Aplicativos instalados" e nunca apaga os dados. A tela inicial do Ponte confirma se o navegador está ligado e tem o botão **Copiar caminho** da pasta da extensão.
+Suponha que chegou ao gabinete o ofício fictício **SESP-OFI-2026/00042 — Pedido de revisão de materiais de treinamento**, com prazo de resposta em 10 dias.
 
-Para gerar o instalador: `scripts\build-installer.ps1` (requer Inno Setup 6: `winget install JRSoftware.InnoSetup`). O script `installer\Ponte.iss` descreve tudo o que o instalador faz. `Instalar.cmd` continua como alternativa por script.
+**Importar.** No SIGADOC, abra o documento (a ficha, não a lista). No canto inferior direito da página aparece o painel da extensão com o documento identificado:
 
-**Extensão pela Chrome Web Store:** `scripts\build-webstore-package.ps1` gera o `.zip` de envio e `extension\WEBSTORE.md` traz a ficha, as respostas de privacidade e o passo a passo; depois de publicada, o ID da loja entra em `extension-store-id.txt` e o instalador passa a autorizá-lo.
-
-### 1. Instalar pela linha de comando (alternativa ao instalador)
-
-Com o pacote compilado (`dist/ponteproj.exe` atualizado), em um PowerShell normal do Windows, na raiz do projeto:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-app.ps1 -VersionSubdirectory v0.9.0
+```
+┌──────────────────────────────────────────────┐
+│          Importar para o assistente          │
+│ SESP-OFI-2026/00042 — Pedido de revisão de   │
+│ materiais de treinamento                     │
+│ Importa o texto, os PDFs e o histórico deste │
+│ documento para o Ponte.                      │
+│ ▸ O que será importado                       │
+└──────────────────────────────────────────────┘
 ```
 
-O instalador realiza automaticamente:
-1. Uma cópia de segurança de `%LOCALAPPDATA%\PonteProj\acervo.sqlite3` em `…\PonteProj\backups\antes-de-instalar-vX.Y.Z-<data>.sqlite3` (recusa rodar com o Ponte aberto).
-2. A cópia de `dist/ponteproj.exe` e dos arquivos de runtime da extensão para `%LOCALAPPDATA%\Programs\PonteProj`.
-3. A criação do atalho **PonteProj** no Menu Iniciar do usuário.
-4. O registro do host de comunicação nativa (`com.ponteproj.assistente`) no registro do usuário (`HKCU`) para Google Chrome e Microsoft Edge.
-5. A remoção das subpastas de versões anteriores (`vX.Y.Z`).
+Clique no botão. Em alguns segundos aparece *Importado. O Ponte abriu o documento.* — e a janela do Ponte abre com a ficha. Se um PDF não puder ser baixado (sessão expirada, arquivo muito grande), a própria mensagem diz qual.
 
-> **Dica:** Para apenas simular e inspecionar o que será copiado sem gravar nada no disco, adicione `-WhatIf` ao comando acima.
+**Ler.** A ficha abre na aba **Resumo**: tipo, data, situação no SIGADOC, tarefas e, mais abaixo, a análise por IA (se você quiser usá-la). A aba **Documento** traz o texto importado, os PDFs (com leitor e OCR local), os dados do SIGADOC e o histórico de tramitação.
 
-### 2. Carregar a extensão no navegador (Chrome ou Edge)
+**Anotar.** Em **Anotações e minutas**, escreva nas notas, por exemplo:
 
-Por segurança, o instalador não modifica políticas nem perfis do navegador automaticamente. Siga estes passos uma única vez:
+> Falar com a Coordenação de Capacitação antes de responder. Planilha anexa tem valores desatualizados (ver p. 3 do PDF).
 
-1. Abra o Ponte e, na tela inicial, clique em **Copiar caminho** (ao lado de "Extensão do navegador"). A pasta é `%LOCALAPPDATA%\Programs\PonteProj\extension`.
-2. No Google Chrome, acesse `chrome://extensions` (ou no Microsoft Edge, `edge://extensions`).
-3. Ative **Modo do desenvolvedor**.
-4. Clique em **Carregar sem compactação** (*Load unpacked*) e cole o caminho copiado na barra de endereço da janela de seleção.
-5. Reabra o navegador. O ícone da extensão **Ponte** mostra "✓ Ligado ao Ponte"; se não, abre os passos para resolver. O ID esperado é `ecllnakmppjinmednoikimbpnbgbimhg`.
+Clique em **Salvar notas**. O ponto laranja na aba some quando tudo está salvo.
 
-> Para eliminar o Modo do desenvolvedor, a extensão pode ser publicada na Chrome Web Store como *não listada* (mantendo a chave atual) ou distribuída por política do órgão (`ExtensionInstallForcelist`). Veja `PLANO_OTIMIZACAO_UX.md`, Onda 3.
+**Criar a tarefa com prazo.** No Resumo, em *Tarefas deste documento*, clique em **Nova tarefa**: título *Responder ao ofício*, responsável **Eu**, prazo `13/11/2026` (há o botão **Hoje**), salve. A partir daí o cartão do documento na lista da esquerda mostra `● 1 em aberto (no prazo) • Prazo: 13/11/2026`; quando o prazo passar, vira vermelho `⚠ 1 tarefa atrasada`.
 
-### Registro rápido apenas da ponte (ambiente de desenvolvimento)
+**Responder.** Ainda em *Anotações e minutas*, na seção **Minuta**: tipo *Resposta*, clique em **Começar por um modelo** (texto-base sem IA) ou em **Gerar sugestão com IA**; edite; **Salvar nova versão**; **Exportar (RTF)** abre a pasta com o arquivo para o Word. O texto final você cola no SIGADOC — o Ponte não tramita nem assina.
 
-Se estiver desenvolvendo e quiser apontar o Chrome/Edge diretamente para o binário recém-compilado sem copiar arquivos para `%LOCALAPPDATA%\Programs`:
+**Concluir.** Com a resposta enviada, clique em **✓ Concluir** ao lado da tarefa. O cartão passa a `✓ 1 tarefa concluída`.
+
+Tudo isso fica só no seu computador (ou no acervo do gabinete, se a equipe estiver conectada — seção 6).
+
+---
+
+## 3. Documentos: ficha, notas e minutas
+
+### A lista da esquerda
+
+- **Buscar** procura em número, assunto, texto, notas, minutas e nos PDFs lidos.
+- **Filtrar ▾** abre os filtros por situação das tarefas (*Com tarefa aberta*, *No prazo*, *Atrasados*, *Concluídos*) e por prioridade. Quando há atrasados, um atalho `⚠ N atrasado(s)` aparece ao lado.
+- Cada cartão tem uma barra colorida e uma etiqueta: vermelho = tarefa atrasada; âmbar = vence hoje; azul-petróleo = em aberto no prazo; verde = tudo concluído; cinza = sem tarefas.
+- **Documentos juntados** (quando a ficha do SIGADOC diz *Juntado ao documento: …*) aparecem logo abaixo do documento principal, com a marca ↳ e a etiqueta `↳ Juntado a SESP-DIC-2026/97546`. O principal mostra `📎 N juntado(s)`. O vínculo entre os dois é criado automaticamente quando ambos estão importados, em qualquer ordem.
+
+### As quatro abas da ficha
+
+| Aba | O que tem |
+|---|---|
+| **Resumo** | Dados principais; tarefas do documento; atendimentos do controle do gabinete ligados a ele; análise por IA; contexto de trabalho e fontes extras (recolhidos); documentos parecidos. |
+| **Documento** | Texto importado (aberto); Arquivos (PDF) com **Ler no Ponte** e **Exportar**; Dados do SIGADOC; Histórico de tramitação. |
+| **Anotações e minutas** | Notas no alto; editor de minuta embaixo com tipo, modelo, IA, **Salvar nova versão**, **Copiar**, **Exportar (RTF)**, **Comparar com versão** e as versões salvas. |
+| **Mais** | Vínculos entre documentos (manuais ou automáticos) e versões importadas; o que foi importado e referências; dados técnicos. |
+
+O cabeçalho da ficha mostra o número, a etiqueta de tarefas, a situação de juntada (com **Abrir documento principal** em 1 clique) e o botão **Excluir…** (vai para a lixeira, reversível).
+
+### Reimportar
+
+Importar de novo o mesmo documento não duplica nada: se a página não mudou, o Ponte avisa *Este documento já estava importado*; se mudou, guarda uma nova versão (as anteriores ficam em **Mais ▸ Versões importadas**, com comparação do que mudou) e marca análises e minutas antigas como feitas sobre uma importação anterior.
+
+---
+
+## 4. Tarefas e prazos
+
+Cada documento importado recebe uma tarefa de triagem. Você cria outras no Resumo (**Nova tarefa**) ou no painel **Tarefas** (topo da janela).
+
+O painel tem a **lista à esquerda** e a **ficha à direita**. Visões: *Hoje*, *Esta semana*, *Atrasadas*, *Todas* e, em **Mais ▾**, *A triar*, *Aguardando terceiros*, *Lembretes* e *Sem prazo*.
+
+Campos da tarefa:
+
+| Campo | Exemplo |
+|---|---|
+| Título | `Responder ao ofício` |
+| Responsável | `MARIA` (ou botão **Eu**) |
+| Ação / Situação / Prioridade | *Responder* / *Pendente* / *Alta* |
+| Prazo | `13/11/2026` — digite dd/mm/aaaa ou clique em **Hoje** |
+| Observações | texto livre |
+| **Mais detalhes** | origem do prazo (ex.: *art. 5º do ofício*), lembrete, resultado, checklist de etapas, dependências |
+
+Regras úteis:
+- **✓ Concluir** e **Reabrir** ficam na própria lista; concluir uma tarefa não registra nada no SIGADOC.
+- Uma tarefa com **dependências** só pode ser concluída depois das tarefas de que depende; o Ponte recusa e explica.
+- Datas inválidas (ex.: `31/02/2026`) ficam marcadas em vermelho e o salvamento avisa.
+
+---
+
+## 5. Processos e demandas (controle do gabinete)
+
+Área para o controle operacional que muitos gabinetes mantêm numa planilha: cada **atendimento** é uma passagem de um processo ou documento pelo gabinete, com situação, prioridade, prazo e resultado — mesmo que o documento nunca tenha sido importado do SIGADOC.
+
+### Registrar uma entrada à mão
+
+Clique em **Registrar nova entrada**. A ficha abre **ao lado** da grade, com **Salvar / Descartar / Encerrar / Fechar** sempre visíveis no alto. Exemplo:
+
+| Seção | Campo | Exemplo |
+|---|---|---|
+| Identificação | Referência | `SESP-PRO-2026/01234` (ou um código provisório, ex.: `DEMANDA-17`) |
+| | Entrada | `03/11/2026` |
+| | Responsável / Recebido de | `MARIA` / `Gabinete do Secretário` |
+| Situação e prioridade | Situação | *Em análise* (depois: *Aguardando deliberação*, *Aguardando resposta*, *Encerrado*…) |
+| | Prioridade / motivo | *Alta* / `prazo legal de 15 dias` |
+| Prazo | Prazo / tipo | `18/11/2026` / *Prazo oficial* (ou *Meta interna*, *Cobrança de retorno*) |
+| Condições e relações | Retorno para UAS?, Assinado?, Agendado, Documento sensível, Apensado/juntado | *Sim* / *Não informado* / ☐ / ☑ / `apensado ao SESP-PRO-2026/01200` |
+| Resultado | Entrega prevista / Resultado da etapa / Saída / Enviado para | *Parecer* / *Encaminhado* / `20/11/2026` / `Procuradoria` |
+| | Assunto / Observações | texto livre |
+
+Só a **referência ou o assunto** é obrigatório. Cada mudança de situação ou de responsável vira um evento na **Linha do tempo**; você também registra eventos à mão (*"cobrado retorno por telefone"*).
+
+**Ligar a documento**: se o documento já foi importado do SIGADOC, informe o número e clique em **Ligar a documento**. O Resumo do documento passa a mostrar o atendimento, e **Criar tarefa** na ficha cria uma tarefa no painel Tarefas ligada a ele.
+
+### Importar a planilha do controle (.xlsx, aba PROCESSOS)
+
+1. **Importar planilha…** → **Escolher planilha…** (seletor de arquivo) → **Ler a planilha**.
+2. A **prévia** lista cada linha com referência, assunto, responsável, entrada, situação, prazo, alertas e se **já está registrada** no controle (mesma referência e mesma data de entrada). Nada é gravado ainda.
+3. Clique em **Importar só as N novas** (ou em importar todas). A planilha original nunca é alterada.
+
+Como as colunas da planilha viram campos:
+
+| Coluna | Vira |
+|---|---|
+| B | Entrada (datas do Excel e textos como `22/10/26` são entendidos) |
+| C | Responsável |
+| D | Referência (define se a linha já existe) |
+| I | Recebido de |
+| J | Retorno para UAS? (`Sim`/`Não`; outro valor gera alerta) |
+| K | Prazo (data) — texto como `PRAZO DIA 18` fica como *a confirmar*, com alerta |
+| L | Observações |
+| M | Verificação → situação, prioridade e resultado (ex.: `Tramitado` → *Encaminhado*; com retorno da UAS fica *Aguardando resposta*; `Urgente` → prioridade urgente) |
+| N | Assinado? (vazio = *não informado*, nunca "não") |
+| O, P, Q, R | Saída, Entrega prevista, Enviado para, Assunto |
+
+Linhas só com fórmulas são ignoradas; a mesma referência com datas de entrada diferentes vira **duas passagens**. Cada linha guarda a **linha original da planilha**, visível na ficha. Uma importação pode ser desfeita em **Importações anteriores ▸ Desfazer importação…** (pede confirmação e preserva o que você já editou ou ligou a tarefa).
+
+### Filas e filtros
+
+**Fila ▾** mostra quantos atendimentos há em cada uma: *Minhas pendências*, *Sem responsável*, *Prazo vencido*, *Vence hoje*, *Vence nos próximos dias* (ajuste os dias), *Aguardando resposta*, *Retorno para UAS*, *Aguardando assinatura*, *Sem atualização no período*, *Com alerta de revisão*. **Filtros ▾** abre responsável, origem, destino e situação. Clique no título de uma coluna para ordenar. A coluna *Idade / Espera* mostra dias desde a entrada e dias aguardando retorno externo.
+
+---
+
+## 6. Trabalhar em equipe (Rede e equipe)
+
+Um computador do gabinete é o **principal**; os outros se conectam a ele pela rede interna. Nada vai para a internet e nenhum arquivo de banco fica em pasta compartilhada (o que corromperia o SQLite). Cada computador guarda sua cópia completa e protegida.
+
+**No computador principal** (Menu ▾ → Rede e equipe):
+1. *Seu nome na equipe*: `CARLOS`.
+2. Marque **Este é o computador principal do gabinete** e **Salvar e ficar disponível agora**.
+3. **Copiar código de conexão** e envie o texto aos colegas. É algo como:
+   ```
+   Código de conexão do Ponte (gabinete):
+   ponte://conectar?host=http%3A%2F%2F192.168.1.10%3A7878&chave=ponte-3f9c…
+   ```
+   Marque *Ficar disponível para a equipe sempre que o Ponte abrir* para não precisar repetir o passo 2.
+
+**Nos outros computadores**:
+1. Nome na equipe: `MARIA`.
+2. Marque **Conectar ao computador principal do gabinete**, cole o código em *Código de conexão* e clique em **Usar código** — o Ponte testa a conexão na hora.
+3. **Salvar e sincronizar acervo agora**.
+
+Pronto: importações, notas, minutas, tarefas e atendimentos de todos passam a ir para o mesmo acervo, com o nome de quem fez cada coisa. O indicador no canto superior direito mostra o estado: `● Conectado • atualizado agora`, `● Sem conexão • 2 a enviar`, `● Computador principal ativo` ou `⚠ N conflito(s) de edição`. Clique nele para abrir a janela.
+
+**Se o principal desligar**, nada para: cada computador continua salvando localmente (a mensagem avisa *Salvo neste computador… será enviado ao reconectar*) e tudo é enviado quando a conexão volta. Se o principal quebrar de vez, qualquer colega pode marcar o próprio computador como principal e distribuir um novo código: o acervo dele já está completo.
+
+**Conflito de edição** acontece só quando o *mesmo item* foi alterado nos dois lados enquanto estavam desconectados. A janela mostra, campo a campo, o valor no principal, o seu e **quem alterou** (*só por você*, *só no computador principal*, *pelos dois lados*), e oferece:
+- **Combinar as duas versões…** — cada campo fica com o lado que o alterou; textos alterados dos dois lados são juntados; nos demais campos alterados dos dois lados, a sua versão prevalece e o valor do principal fica anotado no próprio item (nada se perde em silêncio);
+- **Usar só a minha versão…**; **Usar só a do computador principal…**.
+
+Todas pedem confirmação. Se os colegas não conseguirem conectar, peça à TI para liberar a porta **7878 (TCP)** no Firewall do Windows do principal (a janela traz o comando).
+
+---
+
+## 7. IA opcional
+
+O Ponte funciona inteiro sem IA. Quando você quiser:
+
+- **Resumo ▸ Analisar e sugerir providências**: resume o documento, sugere prioridade, prazo mencionado e providências (cada uma vira tarefa com um clique). Trechos citados são conferidos literalmente contra as fontes.
+- **Anotações e minutas ▸ Gerar sugestão com IA**: escreve uma minuta do tipo escolhido, com uma orientação opcional (*"solicitar a informação que falta, com tom objetivo"*). A sugestão abre para revisão e só vira versão quando você salvar.
+- Contexto de trabalho e notas não salvos são salvos antes; a linha ao lado do botão diz para onde os dados vão.
+
+**Menu ▾ → Configurar IA**: *Ollama neste computador* (padrão `http://127.0.0.1:11434`, modelo `qwen3:4b-instruct` — nada sai da máquina) ou *Servidor remoto HTTPS* compatível com a API `/api/chat` do Ollama, com token opcional (também pela variável `PONTEPROJ_AI_TOKEN`). Endpoint, modelo e token não são gravados em disco.
+
+---
+
+## 8. Onde ficam os dados, backup e lixeira
+
+- **Acervo**: `%LOCALAPPDATA%\PonteProj\acervo.sqlite3` (outra pasta via variável `PONTEPROJ_DATA_DIR`, sempre em disco local). Todo conteúdo — texto, PDFs, OCR, notas, minutas, tarefas, atendimentos, configuração de rede — é gravado cifrado com a **DPAPI** da sua conta do Windows: outra conta no mesmo PC, ou outro PC, não consegue ler.
+- **Backup**: Menu ▾ → **Fazer backup agora** cria uma cópia consistente em `…\PonteProj\backups\`. O instalador também faz uma antes de cada atualização. Um backup só abre na mesma conta do Windows que o criou.
+- **Lixeira**: excluir documento, tarefa ou versão importada pede confirmação e manda para a Lixeira (Menu ▾), de onde se restaura. Nada é apagado definitivamente.
+- **Ao fechar** com algo não salvo, a janela lista cada pendência com um botão **Ir para**.
+
+---
+
+## 9. Solução de problemas
+
+| Sintoma | O que fazer |
+|---|---|
+| O botão **Importar para o assistente** não aparece no SIGADOC | A extensão não está carregada ou a página não é a ficha de um documento. Clique no ícone da extensão: se disser *✗ Não ligado*, siga os passos que ele mostra. |
+| *"O Ponte não foi encontrado neste computador"* | Abra o Ponte uma vez e reinicie o navegador. Se continuar, rode o instalador de novo **com a mesma conta do Windows**. |
+| *"Não recebemos a confirmação do Ponte"* | Clique em **Repetir importação**. A repetição usa o mesmo identificador: nada é duplicado. |
+| *"A página ainda não terminou de carregar"* | Espere a página abrir por completo e clique de novo. |
+| Tela inicial diz *✗ O navegador ainda não foi ligado ao Ponte* | O registro não existe para esta conta do Windows. Rode o instalador. |
+| Dois botões "Importar" na página | Há duas extensões (a da pasta e a da loja). Remova a da pasta em `chrome://extensions`. |
+| Colega não consegue conectar ao principal | O principal precisa estar com o Ponte aberto e *disponível*; os dois na mesma rede; porta 7878 liberada no firewall do principal; código de conexão atual (gerar nova chave invalida os códigos antigos). |
+| *"Conflito de edição simultânea"* ao salvar | Outra pessoa salvou o mesmo item antes de você. Copie o que escreveu, clique em **Descartar**, abra o item de novo e aplique sua alteração. |
+| *"Não foi possível proteger/abrir os dados deste perfil Windows"* | O acervo pertence a outra conta do Windows. Entre com a conta que fez a instalação. |
+
+---
+
+## 10. Para desenvolvedores
+
+### Arquitetura em uma olhada
+
+```
+Chrome/Edge ──(Native Messaging)──► ponteproj.exe --native-host ──► acervo.sqlite3 (DPAPI)
+   extension/                              src/native.rs                 src/storage.rs
+                                                │
+   ponteproj.exe (egui) ◄── src/app.rs ─────────┘
+        │
+        └── Rede e equipe: HTTP/JSON na intranet (src/intranet.rs), fila offline e conflitos
+```
+
+| Pasta / arquivo | Papel |
+|---|---|
+| `src/app.rs` | Janela principal: lista, ficha em 4 abas, menu, indicadores |
+| `src/labels.rs` | Rótulos e datas exibidos; campo de data `dd/mm/aaaa` |
+| `src/storage.rs`, `src/protection.rs` | SQLite + DPAPI; `Store` é a única porta de entrada aos dados |
+| `src/model.rs` | `Capture` (o que a extensão envia) e sua validação |
+| `src/dossier.rs` | Vínculos entre documentos, versões importadas, detecção de juntada |
+| `src/tasks.rs`, `src/tasks_ui.rs` | Tarefas, dependências, painel |
+| `src/saiop.rs` | Processos e demandas: modelo, importador `.xlsx` (leitor ZIP/XML próprio), painel |
+| `src/intranet.rs` | Modos principal/conectado, sincronização em thread própria, fila offline, mesclagem em três vias |
+| `src/pdf_reader.rs`, `src/evidence.rs`, `src/ai.rs` | Leitor de PDF + OCR do Windows, fontes para a IA, cliente Ollama |
+| `src/windows_ui.rs` | Seletor de arquivo e verificação do registro do host (crate `windows`) |
+| `extension/` | Extensão MV3: `capture-core.js` (leitura da página e validação), `content.js` (painel), `background.js` (host nativo e PDFs), `popup.*` |
+| `installer/Ponte.iss` | Instalador Inno Setup |
+| `scripts/` | `build.ps1`, `build-installer.ps1`, `build-webstore-package.ps1`, `install-app.ps1`, `install-native-host.ps1` |
+| `tests/` | Fluxo nativo (`native_flow.rs`), extensão (`node --test`, Playwright) e fixtures fictícias |
+
+Decisões que valem conhecer: a identidade de um documento é o número oficial validado por expressão regular (nunca um ID de DOM); toda gravação em SQLite passa por `protection::seal`; as capturas são imutáveis (reimportar cria versão); limites de 500 KiB de texto, 1 MiB por pacote, 8 MiB por PDF; a extensão só aceita `https://www.sigadoc.mt.gov.br` e remove segredos de URL.
+
+### Compilar e testar
+
+Toolchain: Rust estável para `x86_64-pc-windows-gnu` (pode ser o conjunto portátil com MinGW) e, para a extensão, Node.js 18+ com Playwright 1.62.
+
+```powershell
+# check + testes + release, sempre com --locked
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Action All -ToolsDirectory "$env:LOCALAPPDATA\Programs\PonteProj\devtools"
+Copy-Item .\target\release\ponteproj.exe .\dist\ponteproj.exe -Force
+
+# só uma etapa
+.\scripts\build.ps1 -Action Check   # cargo check --all-targets --locked
+.\scripts\build.ps1 -Action Test    # cargo test --all-targets --locked
+.\scripts\build.ps1 -Action Release # cargo build --release --locked
+
+# testes da extensão (30 testes; os de DOM usam o Chrome instalado)
+$env:PONTEPROJ_PLAYWRIGHT_DIR = 'caminho\para\node_modules\playwright'
+node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tests\extension\files.test.cjs
+```
+
+Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
+
+### Registrar o host para um binário de desenvolvimento
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-native-host.ps1 -Executable .\target\release\ponteproj.exe
 ```
 
----
-
-## Guia de Uso no Dia a Dia
-
-Abra o aplicativo pelo atalho **PonteProj** no Menu Iniciar. No topo da janela principal você encontrará os seletores de área (**Processos e demandas**, **Tarefas** e **Documento**) e os botões de ação (**Atualizar**, **Lixeira**, **Backup protegido**, **Rede / Intranet** e **Configurar IA**).
-
-### 1. Processos e Demandas (Controle SAIOP e Planilha `.xlsx`)
-
-Clique em **Processos e demandas** na barra superior para abrir a área operacional do gabinete:
-
-- **Registrar nova entrada manualmente:** clique em **Registrar nova entrada**, preencha a referência (processo, ofício, comunicação ou código provisório), data de entrada, responsável, origem (*Recebido de*), assunto, situação, prioridade, prazo e se há retorno para UAS. Clique em **Salvar atendimento**.
-- **Importar planilha Excel (`.xlsx` — aba `PROCESSOS`):**
-  1. Expanda a seção **Importar planilha Excel (.xlsx — aba PROCESSOS) e lotes**.
-  2. Informe o caminho completo do arquivo `.xlsx` e marque se registros marcados como *Tramitado* com retorno para UAS devem permanecer abertos em *Aguardando resposta*.
-  3. Clique em **Gerar prévia da aba PROCESSOS**. O aplicativo exibirá a quantidade de atendimentos encontrados, quantas linhas contendo apenas fórmulas foram ignoradas, quantas referências possuem múltiplas passagens pelo gabinete, quantos itens foram associados automaticamente a documentos já capturados e quantos possuem alertas de revisão (como datas futuras/atípicas, prazos em texto livre do tipo `"PRAZO DIA 18"` ou datas na coluna Sim/Não).
-  4. Clique em **Confirmar e importar lote**. A planilha original nunca é modificada.
-  5. Caso precise desfazer a importação de um lote, clique em **Reverter lote** na lista de lotes importados: o Ponte remove os registros intocados daquele lote e preserva automaticamente qualquer atendimento que já tenha recebido edição humana ou tarefa vinculada.
-- **Filas de trabalho e filtros:** filtre rapidamente por *Todos*, *Minhas pendências*, *Sem responsável*, *Prazo vencido*, *Vence hoje*, *Vence nos próximos dias*, *Aguardando resposta*, *Retorno para UAS*, *Aguardando assinatura*, *Sem atualização no período* ou *Com alerta de revisão*.
-- **Ficha do atendimento:** selecione qualquer linha na grade para editar seus campos, consultar o endereço composto do SIGADOC (ou abrir o documento capturado correspondente), criar uma **Tarefa vinculada** ou registrar novos eventos datados na linha do tempo.
-
-### 2. Uso Compartilhado na Intranet (Anfitrião e Clientes)
-
-Para que vários computadores Windows na mesma rede local trabalhem sobre o mesmo acervo sem nuvem e sem VM:
-
-#### No computador escolhido como Anfitrião do Gabinete:
-1. Clique no botão **Rede / Intranet** no topo da janela.
-2. Informe seu nome no campo **Seu nome / identificação na equipe**.
-3. Selecione o modo **Anfitrião na Intranet (este PC hospeda o gabinete)**.
-4. Mantenha o endereço padrão `0.0.0.0:7842` (ou escolha outra porta livre), gere ou confira o **Token do gabinete** e clique em **Salvar e iniciar Anfitrião**.
-5. Clique em **Copiar dados de conexão para a equipe** e envie o endereço sugerido (`http://<IP-DO-ANFITRIAO>:7842`) e o token para os colegas.
-   - *Nota:* Na primeira execução, o Firewall do Windows poderá perguntar se deseja permitir a comunicação do `ponteproj.exe` em redes privadas/corporativas; marque **Redes privadas** e permita o acesso.
-
-#### Nos computadores dos demais integrantes (Clientes):
-1. Clique em **Rede / Intranet** no topo da janela.
-2. Informe seu nome individual no campo **Seu nome / identificação na equipe** (ex.: `MARIA`, `JOAO`).
-3. Selecione o modo **Cliente na Intranet (conectar ao PC anfitrião)**.
-4. Cole o **Endereço do anfitrião** (`http://<IP>:7842`) e o **Token do gabinete**.
-5. Clique em **Testar conexão** e depois em **Salvar e sincronizar agora**.
-6. A partir desse momento, todas as capturas da extensão do navegador, edições de tarefas, notas, minutas e atendimentos SAIOP feitas na estação cliente são gravadas de forma transacional no computador anfitrião e sincronizadas automaticamente a cada 4 segundos (ou ao clicar em **Atualizar**).
-
-#### Trabalho Offline, Sincronização Mútua e Contingência (se o Anfitrião desligar ou quebrar):
-- **Continuar trabalhando sem interrupção (Fila Offline):** se o computador anfitrião desligar ou ficar inacessível por horas, as estações clientes **continuam funcionando normalmente para leitura e gravação**. Todas as novas capturas, notas, minutas, tarefas e atendimentos SAIOP criados ou editados pelo cliente são salvos imediatamente no banco local protegido por DPAPI e registrados na **Fila Offline** (`offline_outbox`).
-- **Sincronização mútua automática na reconexão:** assim que o computador anfitrião volta à rede (ou a cada ciclo automático de sincronização / botão **Atualizar**), o cliente envia automaticamente sua fila offline para o anfitrião e, em seguida, baixa todas as novidades que o anfitrião e outros colegas produziram no período.
-- **Notificação de choques e opção de Mesclar:** se um mesmo registro (uma mesma nota, contexto, tarefa ou atendimento SAIOP) tiver sido editado no cliente offline e também alterado no anfitrião durante a desconexão:
-  1. As alterações sem choque são sincronizadas normalmente.
-  2. O item conflitante é preservado com segurança na lista de **Choques de Edição** (`offline_conflicts`), e o botão **⚠ Rede / Intranet (N choque)** fica destacado no topo da janela.
-  3. Ao abrir **Rede / Intranet**, o usuário vê lado a lado **Sua versão local** e a **Versão atual no Anfitrião**, podendo resolver com 1 clique:
-     - **Mesclar as duas versões (Recomendado):** une textos, notas, checklists, dependências, etiquetas e histórico de eventos de ambas as versões sem perder nenhuma informação e já sincroniza o resultado com o anfitrião.
-     - **Manter minha versão (sobrescrever Anfitrião):** aplica a versão local sobre a revisão atual do anfitrião.
-     - **Manter versão do Anfitrião (descartar minha edição):** descarta a edição local daquele item e adota a versão do anfitrião.
-- **Assumir como novo Anfitrião (Failover imediato):** se o computador anfitrião principal quebrar definitivamente, qualquer estação cliente sincronizada pode abrir **Rede / Intranet**, mudar o modo para **Anfitrião na Intranet** e clicar em **Salvar e iniciar Anfitrião**, passando a atender o restante da equipe a partir do acervo já sincronizado.
-
-### 3. Captura Documental no SIGADOC, PDFs, Notas e Minutas
-
-1. No navegador (Chrome ou Edge), acesse sua conta no SIGADOC (`https://www.sigadoc.mt.gov.br/`) e abra a ficha de um documento.
-2. Clique no botão **Importar para o assistente** injetado na página (ou pelo popup da extensão).
-3. Na barra lateral esquerda (**Documentos**), além da busca por texto/número, você conta com **filtros rápidos com contadores em tempo real** (*Todos*, *Em aberto*, *● No prazo*, *⚠ Atrasados*, *✓ Concluídos* e filtro por *Prioridade*) e **sinalizadores visuais** em cada cartão (barra lateral colorida + etiqueta):
-   - **Vermelho (`⚠ N tarefa atrasada`):** documento possui tarefa em aberto com prazo vencido.
-   - **Âmbar (`⏰ N em aberto (vence hoje)`):** documento possui tarefa em aberto que vence na data de hoje.
-   - **Azul-petróleo (`● N em aberto (no prazo)`):** documento possui tarefa(s) em aberto dentro do prazo ou sem prazo vencido.
-   - **Verde-esmeralda (`✓ N tarefa concluída`):** todas as tarefas vinculadas ao documento foram concluídas.
-4. Selecione o item na barra lateral esquerda para navegar pelas abas:
-   - **Resumo:** visão geral da captura, tarefas do documento, contexto local de trabalho (finalidade, decisão, pendências), seleção de fontes e análise assistida.
-   - **Dados SIGADOC:** todos os metadados oficiais capturados da página.
-   - **Histórico:** eventos e movimentações capturados da tabela oficial do SIGADOC.
-   - **Arquivos:** lista de PDFs baixados junto com a captura; clique em **Abrir no leitor** para visualizar as páginas do PDF dentro do próprio Ponte e executar **OCR local do Windows** quando o PDF for digitalizado como imagem.
-   - **Vínculos e versões:** associação explícita com outros documentos do acervo (anexos, antecedentes, respostas) e histórico de capturas.
-   - **Texto:** íntegra do texto extraído da página e dos PDFs.
-   - **Notas:** anotações operacionais preservadas entre reimportações.
-   - **Minutas:** criação de minutas de *Resposta*, *Encaminhamento* ou *Pedido de complementação*, com aplicação de modelos próprios sem IA, geração opcional com IA, histórico imutável de versões, comparação entre versões e exportação para arquivo `.rtf` (compatível com Microsoft Word e LibreOffice).
-
-### 4. Tarefas, Prazos e Dependências
-
-Na área **Tarefas**, você acompanha todas as ações pendentes dos documentos e atendimentos:
-- Filtre por situação, prioridade, responsável, vencimento ou documento selecionado.
-- Defina **Responsável** (ou clique em *Atribuir a mim*), **Prazo (AAAA-MM-DD)**, **Lembrete**, **Checklist** de passos e **Dependências** (tarefas anteriores que precisam ser concluídas antes da atual).
-- O sistema impede ciclos de dependência e avisa quando se tenta concluir uma tarefa que ainda possui etapa anterior pendente.
-
-### 5. Inteligência Artificial Opcional (Local ou HTTPS)
-
-O Ponte funciona integralmente sem IA. Caso deseje utilizar análise assistida ou geração de rascunhos de minuta, clique em **Configurar IA**:
-- **Modo Local (padrão):** conecta-se ao [Ollama](https://ollama.com/) rodando na própria máquina (`http://127.0.0.1:11434`, modelo padrão `qwen3:4b-instruct`). Nenhum dado sai do computador.
-- **Modo Remoto (HTTPS):** conecta-se a um servidor HTTPS compatível com a API `/api/chat` do Ollama, permitindo informar token Bearer (ou via variável de ambiente `PONTEPROJ_AI_TOKEN`).
-- As citações retornadas pela IA são verificadas literalmente contra o texto das fontes selecionadas, e nenhuma sugestão altera tarefas ou assina/tramita documentos automaticamente.
-
----
-
-## Segurança, Dados Locais (DPAPI) e Backup
-
-- **Armazenamento local:** por padrão, o banco fica em `%LOCALAPPDATA%\PonteProj\acervo.sqlite3` (pode ser alterado via variável de ambiente `PONTEPROJ_DATA_DIR`, sempre em disco local).
-- **Criptografia DPAPI:** todo conteúdo documental (capturas, PDFs, textos extraídos por OCR, notas, contexto, minutas, análises, tarefas, atendimentos SAIOP, configurações de intranet e histórico de equipe) é gravado criptografado como BLOB usando a **Data Protection API (DPAPI)** do usuário do Windows.
-- **Backup protegido:** clique em **Backup protegido** no topo da janela para gerar uma cópia consistente e criptografada em `%LOCALAPPDATA%\PonteProj\backups\`.
-
----
-
-## Linha de Comando (CLI)
-
-O executável aceita os seguintes argumentos:
+### Linha de comando
 
 ```powershell
-# Abrir a interface gráfica normal
-.\target\release\ponteproj.exe
-
-# Abrir diretamente um documento pelo ID local
-.\target\release\ponteproj.exe --open-document 1
-
-# Executar como servidor Anfitrião na Intranet em segundo plano/terminal
-.\target\release\ponteproj.exe --serve 0.0.0.0:7842
-
-# Importar um arquivo JSON de captura (formato Capture)
-.\target\debug\ponteproj.exe --import-json .\tests\fixtures\capture.json
-
-# Listar documentos como JSON no terminal (buscar termo opcional)
-.\target\debug\ponteproj.exe --list "termo"
-
-# Exibir versão e ajuda
-.\target\debug\ponteproj.exe --version
-.\target\debug\ponteproj.exe --help
+ponteproj.exe                                  # abre a janela
+ponteproj.exe --open-document 12               # abre a ficha do documento local 12
+ponteproj.exe --import-json .\tests\fixtures\capture.json   # importa uma captura em JSON
+ponteproj.exe --list "treinamento"             # lista documentos (JSON) que casam com o termo
+ponteproj.exe --serve 0.0.0.0:7878             # computador principal sem janela (imprime a chave)
+ponteproj.exe --version | --help
 ```
 
-*(Nota: como a compilação `release` utiliza o subsistema gráfico do Windows para não abrir janela de console ao clicar no atalho, utilize `target\debug\ponteproj.exe` caso queira inspecionar a saída de `--list`, `--version` ou `--help` diretamente no console interativo.)*
+O binário `release` não abre console (subsistema gráfico); para ver a saída de `--list`, `--version` e `--help` use `target\debug\ponteproj.exe`.
 
----
+### Publicar uma versão
 
-## Compilação e Execução de Testes
+1. Atualize `version` em `Cargo.toml` **e** em `Cargo.lock` (entrada `ponteproj`), e `"version"` em `extension/manifest.json` + `extension/package.json` se a extensão mudou. Nunca altere `manifest.key`, `extension-id.txt` ou `extension-key.txt`.
+2. `build.ps1 -Action All`, copie o exe para `dist\`, escreva `ATUALIZACAO_X_Y_Z.md`.
+3. `scripts\build-installer.ps1` → `dist\Ponte-Setup-X.Y.Z.exe` (Inno Setup 6: `winget install JRSoftware.InnoSetup`).
+4. `scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-A.B.C.zip`; envie no painel da Chrome Web Store (ficha e privacidade em [`extension/WEBSTORE.md`](extension/WEBSTORE.md)).
+5. `gh release create vX.Y.Z dist\Ponte-Setup-X.Y.Z.exe dist\ponte-extensao-webstore-A.B.C.zip --notes-file ATUALIZACAO_X_Y_Z.md`.
 
-O projeto utiliza o script [`scripts/build.ps1`](file:///h:/Meu%20Drive/projetos/ponteproj/scripts/build.ps1), que suporta tanto o Rust instalado no `PATH` quanto o conjunto portátil de ferramentas (`cargo`, `rustup` e `mingw/w64devkit`):
+A extensão publicada na loja tem ID próprio (`hhppmkbmainkdfmcfeaanknlnfgihnah`), registrado em `extension-store-id.txt`; o instalador e o `install-native-host.ps1` autorizam esse ID e o da versão carregada da pasta (`ecllnakmppjinmednoikimbpnbgbimhg`). A chave privada `extension.pem` **não está no repositório** e deve ficar em local seguro.
 
-```powershell
-# Verificar compilação, rodar toda a suíte de testes e gerar o binário release (--locked)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Action All -ToolsDirectory "$env:LOCALAPPDATA\Programs\PonteProj\devtools"
+### Documentos do projeto
 
-# Copiar o executável otimizado para a pasta de distribuição
-Copy-Item -LiteralPath .\target\release\ponteproj.exe -Destination .\dist\ponteproj.exe -Force
-```
-
-Também é possível executar apenas etapas específicas:
-- `-Action Check`: executa `cargo check --all-targets --locked`
-- `-Action Test`: executa `cargo test --all-targets --locked` (testes de criptografia DPAPI, migração de schema v9, sincronização Anfitrião/Cliente na intranet, controle de concorrência, importador `.xlsx` da aba `PROCESSOS`, reversão de lote, PDF/OCR e lixeira)
-- `-Action Release`: executa `cargo build --release --locked`
-
-Para rodar os testes unitários da extensão do navegador (Node.js):
-
-```powershell
-node --test .\tests\extension\core.test.cjs
-```
-
----
-
-## Solução de Problemas
-
-- **Extensão informa "Host não encontrado":** execute novamente `.\scripts\install-app.ps1 -VersionSubdirectory v0.8.0` no terminal do mesmo usuário do Windows, confirme se o ID da extensão em `chrome://extensions` ou `edge://extensions` é `ecllnakmppjinmednoikimbpnbgbimhg` e reinicie o navegador.
-- **Cliente na intranet não consegue conectar ao computador Anfitrião:**
-  1. Confirme se o `ponteproj.exe` está aberto no computador Anfitrião com o modo **Anfitrião na Intranet** ativo (ou rodando com `--serve`).
-  2. Verifique se ambos os computadores estão na mesma rede local/intranet e se o Firewall do Windows no computador Anfitrião permite conexões de entrada para `ponteproj.exe` na porta configurada (padrão `7842`).
-  3. Confira se o **Token do gabinete** colado no Cliente é idêntico ao exibido no Anfitrião.
-- **Conflito de edição simultânea:** se outro integrante salvar alterações no mesmo registro enquanto você o editava, o Ponte exibirá um aviso preservando o que está na tela; descarte ou copie seu rascunho, clique em **Atualizar** para carregar a versão mais recente do colega e aplique sua complementação.
+- [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) — manual sem termos técnicos.
+- [`PLANO_OTIMIZACAO_UX.md`](PLANO_OTIMIZACAO_UX.md) — diagnóstico de usabilidade e plano em ondas (estado atual na seção 5).
+- [`ATUALIZACAO_0_9_0.md`](ATUALIZACAO_0_9_0.md) e anteriores — notas de cada versão.
+- [`PROPOSTA_CONTROLE_SAIOP.md`](PROPOSTA_CONTROLE_SAIOP.md), [`PLANO_JUNTADA_DOCUMENTOS.md`](PLANO_JUNTADA_DOCUMENTOS.md), [`notas_tecnicas.md`](notas_tecnicas.md), [`INTERFACES.md`](INTERFACES.md) — desenho das funcionalidades.
+- [`extension/WEBSTORE.md`](extension/WEBSTORE.md) e [`extension/PRIVACIDADE.md`](extension/PRIVACIDADE.md) — publicação na loja.
