@@ -46,7 +46,7 @@ Aplicativo desktop nativo para Windows (escrito em Rust com `eframe`/`egui` e SQ
 
 ## Instalação no Windows
 
-**Para quem vai usar o Ponte:** dê dois cliques em **`dist\Ponte-Setup-X.Y.Z.exe`** e siga o `GUIA_DO_USUARIO.md`. Não precisa de administrador. O instalador copia o programa e a extensão para a conta do Windows atual, faz uma cópia de segurança do acervo, registra a ligação com Chrome e Edge, cria o atalho e remove versões antigas; a desinstalação fica em "Aplicativos instalados" e nunca apaga os dados. A tela inicial do Ponte confirma se o navegador está ligado e tem o botão **Copiar caminho** da pasta da extensão.
+**Para quem vai usar o Ponte:** baixe o instalador em <https://github.com/demusis/ponteproj/releases/latest> (`Ponte-Setup-X.Y.Z.exe`), dê dois cliques e siga o `GUIA_DO_USUARIO.md`. Não precisa de administrador. O instalador copia o programa e a extensão para a conta do Windows atual, faz uma cópia de segurança do acervo, registra a ligação com Chrome e Edge, cria o atalho e remove versões antigas; a desinstalação fica em "Aplicativos instalados" e nunca apaga os dados. A tela inicial do Ponte confirma se o navegador está ligado e tem o botão **Copiar caminho** da pasta da extensão.
 
 Para gerar o instalador: `scripts\build-installer.ps1` (requer Inno Setup 6: `winget install JRSoftware.InnoSetup`). O script `installer\Ponte.iss` descreve tudo o que o instalador faz. `Instalar.cmd` continua como alternativa por script.
 
