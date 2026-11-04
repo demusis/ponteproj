@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.16.0 (extensão 0.1.9) — [notas de versão](ATUALIZACAO_0_16_0.md) |
+| **Versão** | 0.16.0 (extensão 0.1.9) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -371,21 +371,16 @@ O binário `release` não abre console (subsistema gráfico); para ver a saída 
 ### Publicar uma versão
 
 1. Atualize `version` em `Cargo.toml` **e** em `Cargo.lock` (entrada `ponteproj`), e `"version"` em `extension/manifest.json` + `extension/package.json` se a extensão mudou. Nunca altere `manifest.key`, `extension-id.txt` ou `extension-key.txt`.
-2. `build.ps1 -Action All`, copie `target\release\ponteproj.exe` para `dist\ponteproj.exe` (o instalador empacota o que estiver em `dist\`; confira com `dist\ponteproj.exe --version`), escreva `ATUALIZACAO_X_Y_Z.md`.
+2. `build.ps1 -Action All`, copie `target\release\ponteproj.exe` para `dist\ponteproj.exe` (o instalador empacota o que estiver em `dist\`; confira com `dist\ponteproj.exe --version`), escreva as notas em `ATUALIZACAO_X_Y_Z.md` (arquivo local, fora do repositório: vira o texto da Release).
 3. `scripts\build-installer.ps1` → `dist\Ponte-Setup-X.Y.Z.exe` (Inno Setup 6: `winget install JRSoftware.InnoSetup`).
 4. `scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-A.B.C.zip`; envie no painel da Chrome Web Store (ficha e privacidade em [`extension/WEBSTORE.md`](extension/WEBSTORE.md)).
 5. `gh release create vX.Y.Z dist\Ponte-Setup-X.Y.Z.exe dist\ponte-extensao-webstore-A.B.C.zip --notes-file ATUALIZACAO_X_Y_Z.md`.
 
 A extensão publicada na loja tem ID próprio (`hhppmkbmainkdfmcfeaanknlnfgihnah`), registrado em `extension-store-id.txt`; o instalador e o `install-native-host.ps1` autorizam esse ID e o da versão carregada da pasta (`ecllnakmppjinmednoikimbpnbgbimhg`). A chave privada `extension.pem` **não está no repositório** e deve ficar em local seguro.
 
-### Documentos do projeto
+### O que está no repositório
 
-- [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) — manual sem termos técnicos.
-- [`PLANO_OTIMIZACAO_UX.md`](PLANO_OTIMIZACAO_UX.md) — diagnóstico de usabilidade e plano em ondas (estado atual na seção 5).
-- [`ATUALIZACAO_0_14_0.md`](ATUALIZACAO_0_14_0.md) e anteriores (`ATUALIZACAO_X_Y_Z.md`) — notas de cada versão.
-- [`PLANO_TAREFAS_UX.md`](PLANO_TAREFAS_UX.md) e [`PLANO_ANEXOS.md`](PLANO_ANEXOS.md) — propostas que deram origem às versões 0.11 a 0.13.
-- [`PROPOSTA_CONTROLE_SAIOP.md`](PROPOSTA_CONTROLE_SAIOP.md), [`PLANO_JUNTADA_DOCUMENTOS.md`](PLANO_JUNTADA_DOCUMENTOS.md), [`notas_tecnicas.md`](notas_tecnicas.md), [`INTERFACES.md`](INTERFACES.md) — desenho das funcionalidades.
-- [`extension/WEBSTORE.md`](extension/WEBSTORE.md) e [`extension/PRIVACIDADE.md`](extension/PRIVACIDADE.md) — publicação na loja.
+Só o necessário para compilar, instalar e publicar o aplicativo e a extensão: `src/` e `Cargo.*` (aplicativo), `extension/` (extensão), `assets/` e `build.rs` (ícone), `installer/` e `scripts/` (instalador, host nativo, pacote da loja), `tests/` (fluxo nativo e extensão, com fixtures fictícias), `extension-id.txt`, `extension-key.txt` e `extension-store-id.txt` (identidades públicas da extensão), além deste README, do [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), da [`LICENSE`](LICENSE) e de [`extension/WEBSTORE.md`](extension/WEBSTORE.md) e [`extension/PRIVACIDADE.md`](extension/PRIVACIDADE.md) (publicação na loja). As notas de cada versão estão nas [Releases](https://github.com/demusis/ponteproj/releases); documentos de planejamento e a chave privada da extensão ficam fora do repositório.
 
 ---
 

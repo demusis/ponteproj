@@ -33,3 +33,13 @@
 /zoom_out_report.md
 /implementation_transition.md
 /concepts_brief.md
+
+# Documentos de planejamento, contratos internos e notas de versão ficam só
+# neste computador: as notas viram o texto de cada Release no GitHub.
+/PLANO_*.md
+/PROPOSTA_*.md
+/ATUALIZACAO_*.md
+/CORRECAO_*.md
+/notas_tecnicas.md
+/INTERFACES.md
+/botao_sigadoc.md
