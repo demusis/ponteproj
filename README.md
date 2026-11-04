@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.18.2 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.18.3 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -89,7 +89,7 @@ Tudo isso fica só no seu computador (ou no acervo do gabinete, se a equipe esti
 ### A lista da esquerda
 
 - **Buscar** procura em número, assunto, texto, notas, minutas e nos PDFs lidos.
-- **Filtrar ▾** abre os filtros por situação das tarefas (*Com tarefa aberta*, *No prazo*, *Atrasados*, *Concluídos*) e por prioridade. Quando há atrasados, um atalho `⚠ N atrasado(s)` aparece ao lado.
+- **Filtrar ▾** abre os filtros por situação das tarefas (*Com tarefa aberta*, *No prazo*, *Atrasados*, *Concluídos*), por prioridade e por origem (SIGADOC ou manuais), e a **Ordem** da lista: mais recentes, prazo mais próximo, prioridade, número ou assunto. Quando há atrasados, um atalho `⚠ N atrasado(s)` aparece ao lado.
 - Cada cartão tem uma barra colorida e uma etiqueta: vermelho = tarefa atrasada; âmbar = vence hoje; azul-petróleo = em aberto no prazo; verde = tudo concluído; cinza = sem tarefas.
 - **Documentos juntados** (quando a ficha do SIGADOC diz *Juntado ao documento: …*) aparecem logo abaixo do documento principal, com a marca ↳ e a etiqueta `↳ Juntado a SESP-DIC-2026/97546`. O principal mostra `📎 N juntado(s)`. O vínculo entre os dois é criado automaticamente quando ambos estão importados, em qualquer ordem.
 

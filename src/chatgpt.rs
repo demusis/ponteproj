@@ -935,10 +935,12 @@ fn respond_at(
         !model.trim().is_empty() && model.len() <= 128 && !model.chars().any(char::is_control),
         "Escolha o modelo do ChatGPT em Configurar IA."
     );
+    // With a plan token the gateway insists on `input` being a list of
+    // messages ("Input must be a list"), as in OpenAI's examples.
     let mut body = json!({
         "model": model.trim(),
         "instructions": instructions,
-        "input": input,
+        "input": [{"role": "user", "content": input}],
         "store": false,
         "stream": true,
     });
@@ -1253,7 +1255,9 @@ mod tests {
         assert_eq!(body["store"], false);
         assert_eq!(body["stream"], true);
         assert_eq!(body["instructions"], "instru\u{e7}\u{f5}es");
-        assert_eq!(body["input"], "{\"dado\":1}");
+        assert!(body["input"].is_array(), "input must be a list: {body}");
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"], "{\"dado\":1}");
         assert_eq!(body["text"]["format"]["type"], "json_schema");
         assert!(body.get("temperature").is_none() && body.get("max_output_tokens").is_none());
         let (_, second) = received.recv().unwrap();

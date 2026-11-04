@@ -1928,13 +1928,16 @@ impl Store {
                 best.header.revision,
                 cfg.synced_revision
             );
-            // Joining: this computer never exchanged with this lineage.
-            let joining = cfg.synced_revision == 0 && cfg.folder_lineage.trim().is_empty();
+            // Joining: this computer never exchanged with this lineage. A copy
+            // this very computer wrote proves otherwise, even when the local
+            // bookkeeping was lost (a window of 0.18.0 overwrote it).
+            let wrote_a_copy = copies.iter().any(|c| c.header.writer == cfg.folder_writer);
+            let joining = cfg.synced_revision == 0 && cfg.folder_lineage.trim().is_empty() && !wrote_a_copy;
             if joining && !allow_replace {
                 let local_documents = self.list_documents("")?.len();
                 ensure!(
                     local_documents == 0,
-                    "[confirmar-substituicao] Este computador tem {local_documents} documento(s) que não estão na pasta. Ao sincronizar pela primeira vez, o acervo daqui será substituído pelo da pasta ({}). Faça um backup antes, se quiser guardá-los.",
+                    "[confirmar-substituicao] Este computador nunca trocou com esta pasta e tem {local_documents} documento(s) no acervo. Ao sincronizar pela primeira vez, o acervo daqui será substituído pelo da pasta ({}). Faça um backup antes, se quiser guardá-los.",
                     sharedfolder::describe(&best.header)
                 );
             }
@@ -5233,6 +5236,20 @@ mod tests {
         assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
         c.sync_with_folders(&cfg_c, key, true, &reporter).unwrap();
         assert_eq!(c.list_documents("").unwrap().len(), 1);
+
+        // A computer whose bookkeeping was lost, but which wrote a copy
+        // itself, is not joining: it reconciles without the question.
+        c.save_note(receipt.document_id, "Nota gravada por C").unwrap();
+        let cfg_c = c.load_intranet_config().unwrap();
+        c.sync_with_folders(&cfg_c, key, false, &reporter).unwrap();
+        let mut forgotten = c.load_intranet_config().unwrap();
+        forgotten.synced_revision = 0;
+        forgotten.folder_lineage.clear();
+        c.save_intranet_config(&forgotten).unwrap();
+        c.save_note(receipt.document_id, "Nota depois do esquecimento").unwrap();
+        c.sync_with_folders(&forgotten, key, false, &reporter).unwrap();
+        assert!(c.load_intranet_config().unwrap().synced_revision > 0);
+        assert!(c.load_document(receipt.document_id).unwrap().note.ends_with("esquecimento"));
 
         // Nothing readable in the transport files.
         for path in [&drive, &pen] {

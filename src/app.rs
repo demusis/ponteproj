@@ -51,6 +51,61 @@ impl DocOriginFilter {
     }
 }
 
+/// Order of the document list. `Recent` is the library's own order (last
+/// seen first); the others reorder the filtered list before grouping.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DocSort {
+    #[default]
+    Recent,
+    Deadline,
+    Priority,
+    Number,
+    Title,
+}
+
+impl DocSort {
+    const ALL: [DocSort; 5] = [
+        DocSort::Recent,
+        DocSort::Deadline,
+        DocSort::Priority,
+        DocSort::Number,
+        DocSort::Title,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Recent => "Mais recentes primeiro",
+            Self::Deadline => "Prazo mais próximo primeiro",
+            Self::Priority => "Prioridade (urgente primeiro)",
+            Self::Number => "Número do documento",
+            Self::Title => "Assunto (A–Z)",
+        }
+    }
+
+    /// Stable sort: ties keep the "most recent first" order of the library.
+    fn apply(self, docs: &mut [&DocumentSummary], nearest_due: impl Fn(i64) -> Option<String>) {
+        fn priority_rank(priority: &str) -> u8 {
+            match priority {
+                "urgente" => 0,
+                "alta" => 1,
+                "normal" => 2,
+                "baixa" => 3,
+                _ => 4,
+            }
+        }
+        match self {
+            Self::Recent => {}
+            Self::Deadline => docs.sort_by_cached_key(|d| match nearest_due(d.id) {
+                Some(due) => (0u8, due),
+                None => (1, String::new()),
+            }),
+            Self::Priority => docs.sort_by_key(|d| priority_rank(&d.priority)),
+            Self::Number => docs.sort_by_cached_key(|d| d.document_number.to_uppercase()),
+            Self::Title => docs.sort_by_cached_key(|d| d.title.trim().to_lowercase()),
+        }
+    }
+}
+
 /// "Registro manual" window: creates a record or saves a new version of one.
 #[derive(Default)]
 struct ManualForm {
@@ -687,6 +742,7 @@ struct PonteApp {
     doc_task_filter: DocTaskFilter,
     doc_priority_filter: DocPriorityFilter,
     doc_origin_filter: DocOriginFilter,
+    doc_sort: DocSort,
     manual_form: ManualForm,
     filters_open: bool,
     /// Browser-bridge installation check, refreshed every few seconds while
@@ -748,6 +804,7 @@ impl PonteApp {
             doc_task_filter: DocTaskFilter::All,
             doc_priority_filter: DocPriorityFilter::All,
             doc_origin_filter: DocOriginFilter::All,
+            doc_sort: DocSort::Recent,
             manual_form: ManualForm::default(),
             filters_open: false,
             install_status: None,
@@ -783,7 +840,7 @@ impl PonteApp {
         ui.horizontal_wrapped(|ui| {
             ui.label("Uma ligação, um memorando, um e-mail ou um papel podem virar um registro manual, marcado como tal e com tarefas, notas e anexos como qualquer documento.");
         });
-        if ui.button("＋ Criar registro manual…").clicked() {
+        if ui.button("+ Criar registro manual…").clicked() {
             self.manual_form.open_new();
         }
         ui.add_space(16.0);
@@ -2169,7 +2226,7 @@ impl PonteApp {
                 self.filters_open = !self.filters_open;
             }
             if ui
-                .add(egui::Button::new("＋ Registro manual").small())
+                .add(egui::Button::new("+ Registro manual").small())
                 .on_hover_text("Cria um documento que não existe no SIGADOC: ligação, memorando, e-mail, papel. Fica marcado como manual e é compartilhado com a equipe como os demais.")
                 .clicked()
             {
@@ -2224,21 +2281,35 @@ impl PonteApp {
                     RichText::new(format!("✓ Concluídos ({count_completed})")).color(SUCCESS),
                 );
             });
-            egui::ComboBox::from_id_salt("doc_priority_filter_combo")
-                .selected_text(self.doc_priority_filter.label())
-                .width(175.0)
-                .show_ui(ui, |ui| {
-                    for pf in [
-                        DocPriorityFilter::All,
-                        DocPriorityFilter::Urgent,
-                        DocPriorityFilter::High,
-                        DocPriorityFilter::Normal,
-                        DocPriorityFilter::Low,
-                        DocPriorityFilter::Unclassified,
-                    ] {
-                        ui.selectable_value(&mut self.doc_priority_filter, pf, pf.label());
-                    }
-                });
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
+                egui::ComboBox::from_id_salt("doc_priority_filter_combo")
+                    .selected_text(self.doc_priority_filter.label())
+                    .width(175.0)
+                    .show_ui(ui, |ui| {
+                        for pf in [
+                            DocPriorityFilter::All,
+                            DocPriorityFilter::Urgent,
+                            DocPriorityFilter::High,
+                            DocPriorityFilter::Normal,
+                            DocPriorityFilter::Low,
+                            DocPriorityFilter::Unclassified,
+                        ] {
+                            ui.selectable_value(&mut self.doc_priority_filter, pf, pf.label());
+                        }
+                    });
+                ui.small("Ordem:");
+                egui::ComboBox::from_id_salt("doc_sort_combo")
+                    .selected_text(self.doc_sort.label())
+                    .width(215.0)
+                    .show_ui(ui, |ui| {
+                        for sort in DocSort::ALL {
+                            ui.selectable_value(&mut self.doc_sort, sort, sort.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("Ordena a lista; documentos juntados continuam abaixo do principal.");
+            });
             let manual_count = self.documents.iter().filter(|d| d.manual).count();
             if manual_count > 0 || self.doc_origin_filter != DocOriginFilter::All {
                 ui.horizontal_wrapped(|ui| {
@@ -2255,7 +2326,7 @@ impl PonteApp {
             }
         }
 
-        let filtered_docs: Vec<&DocumentSummary> = self
+        let mut filtered_docs: Vec<&DocumentSummary> = self
             .documents
             .iter()
             .filter(|doc| {
@@ -2267,6 +2338,8 @@ impl PonteApp {
                 task_ok && prio_ok && origin_ok
             })
             .collect();
+        self.doc_sort
+            .apply(&mut filtered_docs, |id| summaries.get(&id).and_then(|s| s.nearest_due.clone()));
 
         if filtered_docs.len() != self.documents.len() {
             ui.small(format!(
@@ -2315,8 +2388,10 @@ impl PonteApp {
 
                         // The title wraps instead of being cut; the card grows with it.
                         let label = format!("{}\n{}", number, document.title);
+                        // The trailing grow atom keeps a short title (a manual
+                        // record, say) at the left instead of centred.
                         let response = ui.add(
-                            egui::Button::new(RichText::new(label).size(14.0))
+                            egui::Button::new((RichText::new(label).size(14.0), egui::Atom::grow()))
                                 .wrap()
                                 .min_size(egui::vec2(ui.available_width(), 60.0))
                                 .selected(self.selected_id == Some(document.id)),
@@ -4257,11 +4332,44 @@ fn allowed_sigadoc_url(raw_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        allowed_sigadoc_url, library_panel, DocPriorityFilter, DocTaskFilter,
+        allowed_sigadoc_url, library_panel, DocPriorityFilter, DocSort, DocTaskFilter,
         DocTaskStatusSummary, ACCENT, ERROR, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION,
         LIBRARY_MIN_WIDTH, SUCCESS, WARNING,
     };
     use crate::tasks::Task;
+
+    #[test]
+    fn document_sort_orders_by_deadline_priority_number_and_title() {
+        let mut a = summary(1, "SEFAZ-PRO-2026/00002", None);
+        a.title = "zebra".into();
+        a.priority = "normal".into();
+        let mut b = summary(2, "SEFAZ-PRO-2026/00001", None);
+        b.title = "Ágil".into();
+        b.priority = "urgente".into();
+        let mut c = summary(3, "MANUAL-2026/0001", None);
+        c.title = "manual".into();
+        let due = |id: i64| match id {
+            1 => Some("2026-12-01".to_owned()),
+            3 => Some("2026-11-05".to_owned()),
+            _ => None,
+        };
+        let ids = |docs: &[&crate::model::DocumentSummary]| docs.iter().map(|d| d.id).collect::<Vec<_>>();
+
+        let mut docs = vec![&a, &b, &c];
+        DocSort::Recent.apply(&mut docs, due);
+        assert_eq!(ids(&docs), [1, 2, 3], "library order untouched");
+        DocSort::Deadline.apply(&mut docs, due);
+        assert_eq!(ids(&docs), [3, 1, 2], "no deadline goes last");
+        let mut docs = vec![&a, &b, &c];
+        DocSort::Priority.apply(&mut docs, due);
+        assert_eq!(ids(&docs), [2, 1, 3], "unclassified after normal");
+        let mut docs = vec![&a, &b, &c];
+        DocSort::Number.apply(&mut docs, due);
+        assert_eq!(ids(&docs), [3, 2, 1]);
+        let mut docs = vec![&a, &b, &c];
+        DocSort::Title.apply(&mut docs, due);
+        assert_eq!(ids(&docs), [3, 1, 2], "plain lowercase compare: accents sort after z");
+    }
 
     fn summary(id: i64, number: &str, parent: Option<(i64, &str)>) -> crate::model::DocumentSummary {
         crate::model::DocumentSummary {
