@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ponte • Assistente documental</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <header class="brand-header">
+    <img src="icons/icon-48.png" width="36" height="36" alt="">
+    <div>
+      <h1>Ponte • SIGADOC</h1>
+      <div class="subtitle">Assistente documental e de gabinete</div>
+    </div>
+  </header>
+  <p id="status" class="status" role="status" aria-live="polite">Verificando a ligação com o Ponte…</p>
+  <p id="hint"></p>
+  <button id="check" type="button">Verificar de novo</button>
+  <details id="help">
+    <summary>Se não estiver ligado</summary>
+    <ol>
+      <li>Abra o Ponte uma vez neste computador e feche e abra o navegador.</li>
+      <li>Se continuar, execute o instalador do Ponte com a sua conta do Windows.</li>
+      <li>Na página de extensões do navegador, confira se esta extensão tem o código <code id="extension-id"></code> <button id="copy-id" type="button" class="link">copiar</button>. Se for outro, remova-a e carregue a pasta <em>extension</em> instalada junto com o Ponte.</li>
+    </ol>
+  </details>
+  <p class="small">A extensão só lê a ficha do documento aberto e nunca a sua senha. Nada vai para a internet: tudo fica no Ponte deste computador.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

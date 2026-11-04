@@ -1,0 +1,35 @@
+# Compilação e pacotes gerados (os instaladores vão para as Releases do GitHub)
+/target/
+/dist/
+/node_modules/
+/extension/node_modules/
+*.log
+
+# Dados locais: nunca versionar acervo, backups ou bancos de teste
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+/.tools/
+/.test-data/
+
+# Chave PRIVADA da extensão e pacote assinado: ficam só no computador que publica
+/extension.pem
+/extension.crx
+/*.pem
+
+# Específico desta máquina
+/INSTALACAO_LOCAL.md
+
+# Artefatos de processo de revisão assistida (não fazem parte do aplicativo)
+/egm_reference/
+/review_botao/
+/review_stage7/
+/goldfish_*.md
+/review_*.md
+/review_state.json
+/design_draft*.md
+/comprehension_report.md
+/critic_report.md
+/zoom_out_report.md
+/implementation_transition.md
+/concepts_brief.md

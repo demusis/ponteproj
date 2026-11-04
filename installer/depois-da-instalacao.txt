@@ -1,0 +1,14 @@
+﻿O Ponte foi instalado para a sua conta do Windows.
+
+Falta só ligar a extensão do navegador, uma única vez:
+
+1. Feche e abra o Chrome (ou o Edge).
+2. Abra o Ponte pelo menu Iniciar. A tela inicial mostra "Ligação com o navegador" e o botão "Copiar caminho" ao lado de "Extensão do navegador".
+3. No navegador, abra chrome://extensions (ou edge://extensions), ative "Modo do desenvolvedor", clique em "Carregar sem compactação" e cole o caminho copiado na barra de endereço da janela que abre.
+4. Feche e abra o navegador de novo.
+
+Se a extensão do Ponte já estiver instalada pela loja do navegador, pule o passo 3.
+
+Depois disso, em qualquer documento do SIGADOC aparece o botão "Importar para o assistente".
+
+Seus dados ficam em %LOCALAPPDATA%\PonteProj (acervo e backups) e não são apagados ao desinstalar. Uma cópia de segurança do acervo foi feita antes desta instalação, na pasta backups.

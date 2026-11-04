@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="pt-BR"><head><style>.concealed{display:none}</style><title>Fixture sintética — não é o DOM real do SIGADOC</title></head><body>
+<nav><a href="/menu?token=menu-secret">Menu fora da ficha</a></nav>
+<main id="document-detail" data-document-detail>
+  <h1>Ficha de documento</h1>
+  <dl>
+    <dt>Número do documento</dt><dd id="official-number">SEPLAG-PRO-2026/01234</dd>
+    <dt>Assunto</dt><dd id="official-title">Aquisição de material de expediente</dd>
+    <dt>Tipo do documento</dt><dd>Processo administrativo</dd>
+    <dt>Origem</dt><dd>Unidade de exemplo</dd>
+    <dt>Token</dt><dd>metadata-secret</dd>
+  </dl>
+  <div class="document-text">
+    <p>Solicita-se a análise dos materiais descritos.</p>
+    <div class="document-content"><p>Justificativa de exemplo.</p></div>
+    <p>Endereço citado: https://www.sigadoc.mt.gov.br/citado?token=inline-secret#fragmento</p>
+    <input type="hidden" value="hidden-secret"><input value="editable-secret">
+    <span hidden>hidden-span-secret</span><span aria-hidden="true">aria-secret</span>
+    <span class="concealed">css-secret</span><span class="csrf_token">token-secret</span>
+    <textarea>textarea-secret</textarea><select><option>option-secret</option></select>
+    <nav>menu-secret-inside-text</nav><button>button-secret</button>
+    <script type="application/json">{"value":"script-secret"}</script>
+  </div>
+  <section><h2>Original</h2><a href="/original?sigla=SEPLAG-PRO-2026%2F01234&amp;token=reference-secret">Documento original PDF</a></section>
+  <section><h2>Anexos</h2><a href="/anexo/1?session=session-secret">Memorial de material</a></section>
+  <section><h2>Antecedentes</h2><a href="/documento?sigla=SEPLAG-OFI-2026%2F00900&amp;PHPSESSID=session-secret">SEPLAG-OFI-2026/00900</a></section>
+  <section><h2>Referências</h2><a href="https://outside.test/doc?token=external-secret">Documento externo</a></section>
+  <iframe src="about:blank" title="Original incorporado"></iframe>
+</main>
+</body></html>

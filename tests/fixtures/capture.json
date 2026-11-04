@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "source_url": "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibir?sigla=TESTE-OFI-2026%2F00001",
+  "document_number": "TESTE-OFI-2026/00001",
+  "title": "Solicitação de informações — dados fictícios",
+  "captured_at": "2026-11-01T12:00:00Z",
+  "text": "Solicitamos informações sobre o andamento da demanda. Favor apresentar resposta até 05/11/2026. Documento fictício para teste.",
+  "metadata": {"remetente":"Unidade de Exemplo"},
+  "references": [{"label":"Relatório de exemplo","url":"https://www.sigadoc.mt.gov.br/sigaex/arquivo/exemplo.pdf","kind":"attachment"}],
+  "coverage": {"adapter":"fixture-v1","recognized":["document_number","title","text"],"pending":["original_file","attachments"]}
+}
