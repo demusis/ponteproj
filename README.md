@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.10.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_10_0.md) |
+| **Versão** | 0.11.0 (extensão 0.1.8) — [notas de versão](ATUALIZACAO_0_11_0.md) |
 | **Licença** | MIT |
 
 ---
@@ -96,11 +96,26 @@ Tudo isso fica só no seu computador (ou no acervo do gabinete, se a equipe esti
 | Aba | O que tem |
 |---|---|
 | **Resumo** | Dados principais; tarefas do documento; atendimentos do controle do gabinete ligados a ele; análise por IA; contexto de trabalho e fontes extras (recolhidos); documentos parecidos. |
-| **Documento** | Texto importado (aberto); Arquivos (PDF) com **Ler no Ponte** e **Exportar**; Dados do SIGADOC; Histórico de tramitação. |
+| **Documento** | Texto importado (aberto); Arquivos (PDF) com **Ler no Ponte** e **Exportar**; **Anexos** (arquivos do seu computador juntados ao documento); Dados do SIGADOC; Histórico de tramitação. |
 | **Anotações e minutas** | Notas no alto; editor de minuta embaixo com tipo, modelo, IA, **Salvar nova versão**, **Copiar**, **Exportar (RTF)**, **Comparar com versão** e as versões salvas. |
 | **Mais** | Vínculos entre documentos (manuais ou automáticos) e versões importadas; o que foi importado e referências; dados técnicos. |
 
 O cabeçalho da ficha mostra o número, a etiqueta de tarefas, a situação de juntada (com **Abrir documento principal** em 1 clique) e o botão **Excluir…** (vai para a lixeira, reversível).
+
+### Anexos (arquivos seus, no documento ou na tarefa)
+
+Em **Documento ▸ Anexos** e na ficha de cada tarefa, **Anexar arquivo…** abre a janela de escolha do Windows. O arquivo passa a fazer parte do acervo (cifrado, como tudo o mais) e aparece para toda a equipe. Exemplos: o ofício em Word que originou o documento, a foto de um despacho, o e-mail com a orientação recebida.
+
+| Regra | Valor |
+|---|---|
+| Tamanho | até 8 MB por arquivo |
+| Quantidade | até 20 por documento ou tarefa |
+| Tipos | PDF, Word, Excel, PowerPoint, OpenDocument, texto (.txt, .rtf, .csv), imagens (.png, .jpg, .gif, .bmp, .tif) e e-mails (.eml, .msg) |
+| Recusados | programas, scripts, atalhos, arquivos compactados (.zip, .rar) e Office com macros (.docm, .xlsm) |
+
+Quando um arquivo é recusado, a mensagem diz o motivo e o que fazer (por exemplo: *"O arquivo tem 12,4 MB; o limite é 8 MB. Para reduzir: salve o PDF com compressão… ou divida o documento em partes"*). O tipo é conferido também pelo conteúdo, não só pela extensão.
+
+Cada anexo tem uma **descrição** opcional e os botões **Ler no Ponte** (PDF) ou **Abrir** (demais tipos, no programa padrão do Windows, a partir de uma cópia temporária apagada ao fechar o Ponte), **Salvar como…** e **Excluir…** (vai para a Lixeira). Na lista de tarefas, **📎 2** indica quantos anexos a tarefa tem.
 
 ### Reimportar
 
@@ -123,6 +138,7 @@ Campos da tarefa:
 | Ação / Situação / Prioridade | *Responder* / *Pendente* / *Alta* |
 | Prazo | `13/11/2026` — digite dd/mm/aaaa ou clique em **Hoje** |
 | Observações | texto livre |
+| **Anexos** | arquivos do seu computador ligados à tarefa (depois de salvá-la); ver [Anexos](#anexos-arquivos-seus-no-documento-ou-na-tarefa) |
 | **Mais detalhes** | origem do prazo (ex.: *art. 5º do ofício*), lembrete, resultado, checklist de etapas, dependências |
 
 Regras úteis:
@@ -239,9 +255,9 @@ Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo
 
 ## 8. Onde ficam os dados, backup e lixeira
 
-- **Acervo**: `%LOCALAPPDATA%\PonteProj\acervo.sqlite3` (outra pasta via variável `PONTEPROJ_DATA_DIR`, sempre em disco local). Todo conteúdo — texto, PDFs, OCR, notas, minutas, tarefas, atendimentos, configuração de rede — é gravado cifrado com a **DPAPI** da sua conta do Windows: outra conta no mesmo PC, ou outro PC, não consegue ler.
+- **Acervo**: `%LOCALAPPDATA%\PonteProj\acervo.sqlite3` (outra pasta via variável `PONTEPROJ_DATA_DIR`, sempre em disco local). Todo conteúdo — texto, PDFs, anexos, OCR, notas, minutas, tarefas, atendimentos, configuração de rede e de IA — é gravado cifrado com a **DPAPI** da sua conta do Windows: outra conta no mesmo PC, ou outro PC, não consegue ler. Cópias temporárias de anexos abertos em outros programas ficam em `…\PonteProj\temp\` e são apagadas ao abrir e ao fechar o Ponte.
 - **Backup**: Menu ▾ → **Fazer backup agora** cria uma cópia consistente em `…\PonteProj\backups\`. O instalador também faz uma antes de cada atualização. Um backup só abre na mesma conta do Windows que o criou.
-- **Lixeira**: excluir documento, tarefa ou versão importada pede confirmação e manda para a Lixeira (Menu ▾), de onde se restaura. Nada é apagado definitivamente.
+- **Lixeira**: excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a Lixeira (Menu ▾), de onde se restaura. Nada é apagado definitivamente.
 - **Ao fechar** com algo não salvo, a janela lista cada pendência com um botão **Ir para**.
 
 ---
@@ -337,7 +353,7 @@ O binário `release` não abre console (subsistema gráfico); para ver a saída 
 ### Publicar uma versão
 
 1. Atualize `version` em `Cargo.toml` **e** em `Cargo.lock` (entrada `ponteproj`), e `"version"` em `extension/manifest.json` + `extension/package.json` se a extensão mudou. Nunca altere `manifest.key`, `extension-id.txt` ou `extension-key.txt`.
-2. `build.ps1 -Action All`, copie o exe para `dist\`, escreva `ATUALIZACAO_X_Y_Z.md`.
+2. `build.ps1 -Action All`, copie `target\release\ponteproj.exe` para `dist\ponteproj.exe` (o instalador empacota o que estiver em `dist\`; confira com `dist\ponteproj.exe --version`), escreva `ATUALIZACAO_X_Y_Z.md`.
 3. `scripts\build-installer.ps1` → `dist\Ponte-Setup-X.Y.Z.exe` (Inno Setup 6: `winget install JRSoftware.InnoSetup`).
 4. `scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-A.B.C.zip`; envie no painel da Chrome Web Store (ficha e privacidade em [`extension/WEBSTORE.md`](extension/WEBSTORE.md)).
 5. `gh release create vX.Y.Z dist\Ponte-Setup-X.Y.Z.exe dist\ponte-extensao-webstore-A.B.C.zip --notes-file ATUALIZACAO_X_Y_Z.md`.

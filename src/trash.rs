@@ -8,6 +8,7 @@ pub enum Kind {
     Document,
     Capture,
     Task,
+    Attachment,
 }
 impl Kind {
     pub fn key(self) -> &'static str {
@@ -15,6 +16,7 @@ impl Kind {
             Self::Document => "document",
             Self::Capture => "capture",
             Self::Task => "task",
+            Self::Attachment => "attachment",
         }
     }
     pub fn label(self) -> &'static str {
@@ -22,13 +24,15 @@ impl Kind {
             Self::Document => "Documento",
             Self::Capture => "Captura",
             Self::Task => "Tarefa",
+            Self::Attachment => "Anexo",
         }
     }
-    fn parse(value: &str) -> Result<Self> {
+    pub fn parse(value: &str) -> Result<Self> {
         match value {
             "document" => Ok(Self::Document),
             "capture" => Ok(Self::Capture),
             "task" => Ok(Self::Task),
+            "attachment" => Ok(Self::Attachment),
             _ => anyhow::bail!("Tipo de item inválido na lixeira."),
         }
     }
@@ -199,6 +203,25 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
             let task: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
             Ok((doc, format!("Tarefa #{id} — {}", task.title)))
         }
+        Kind::Attachment => {
+            let (owner_kind, owner_id, doc, bytes): (String, i64, i64, Vec<u8>) = conn
+                .query_row(
+                    "SELECT owner_kind,owner_id,document_id,metadata FROM attachments WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?
+                .context("Anexo não encontrado.")?;
+            let meta: crate::attachments::AttachmentMeta =
+                serde_json::from_slice(&protection::unseal(&bytes)?)?;
+            let owner = match owner_kind.as_str() {
+                "task" => format!("da tarefa #{owner_id}"),
+                _ => label(conn, Kind::Document, doc)
+                    .map(|(_, text)| format!("do documento {text}"))
+                    .unwrap_or_else(|_| format!("do documento #{doc}")),
+            };
+            Ok((doc, format!("Anexo “{}” {owner}", meta.name)))
+        }
     }
 }
 fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
@@ -264,7 +287,10 @@ fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
             if dependents > 0 {
                 plan.blocker=Some(format!("Há {dependents} tarefa(s) ativa(s) que dependem deste item. Revise as dependências antes de excluir."));
             }
-            plan.explanation=if target.kind==Kind::Document{"O documento sairá da biblioteca e suas tarefas ficarão ocultas. Capturas, PDFs, minutas, notas, OCR e vínculos serão preservados para restauração. Itens já excluídos individualmente continuarão na lixeira."}else{"A tarefa sairá do painel. Seus campos, checklist e resultado serão preservados na lixeira."}.into();
+            plan.explanation=if target.kind==Kind::Document{"O documento sairá da biblioteca e suas tarefas e anexos ficarão ocultos. Capturas, PDFs, anexos, minutas, notas, OCR e vínculos serão preservados para restauração. Itens já excluídos individualmente continuarão na lixeira."}else{"A tarefa sairá do painel. Seus campos, checklist, resultado e anexos serão preservados na lixeira."}.into();
+        }
+        Kind::Attachment => {
+            plan.explanation = "O anexo sairá da lista. O arquivo fica preservado na lixeira e pode ser restaurado a qualquer momento.".into();
         }
     }
     Ok(plan)
@@ -275,7 +301,34 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS trash(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task')),item_id INTEGER NOT NULL,document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id)); CREATE INDEX IF NOT EXISTS trash_document ON trash(document_id); CREATE TABLE IF NOT EXISTS capture_refs(capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('draft','analysis')),owner_id INTEGER NOT NULL,owner_document INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,PRIMARY KEY(capture_id,owner_kind,owner_id));")?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS trash(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task','attachment')),item_id INTEGER NOT NULL,document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id)); CREATE INDEX IF NOT EXISTS trash_document ON trash(document_id); CREATE TABLE IF NOT EXISTS capture_refs(capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('draft','analysis')),owner_id INTEGER NOT NULL,owner_document INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,PRIMARY KEY(capture_id,owner_kind,owner_id));")?;
+        // Libraries created before 0.11.0 have a trash table whose CHECK does
+        // not know 'attachment'. SQLite cannot alter a CHECK, so the table is
+        // rebuilt once, keeping every row.
+        let definition: String = tx.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='trash'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !definition.contains("'attachment'") {
+            // Triggers of other tables mention `trash`; SQLite refuses to
+            // rename a table while any trigger points at a missing one, so
+            // they go first. `ensure_write_guards` recreates all of them.
+            let triggers = tx
+                .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_%'")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for name in triggers {
+                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))?;
+            }
+            tx.execute_batch(
+                "CREATE TABLE trash_v10(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task','attachment')),item_id INTEGER NOT NULL,document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id));
+                 INSERT INTO trash_v10(kind,item_id,document_id,deleted_at) SELECT kind,item_id,document_id,deleted_at FROM trash;
+                 DROP TABLE trash;
+                 ALTER TABLE trash_v10 RENAME TO trash;
+                 CREATE INDEX IF NOT EXISTS trash_document ON trash(document_id);",
+            )?;
+        }
         if previous < 8 {
             for (table, kind) in [("drafts", "draft"), ("analyses", "analysis")] {
                 let mut statement = tx.prepare(&format!(
@@ -417,7 +470,7 @@ impl Store {
         if target.kind != Kind::Document {
             require_active_document(&tx, document)?;
         }
-        if target.kind != Kind::Capture {
+        if !matches!(target.kind, Kind::Capture | Kind::Attachment) {
             let all = all_tasks(&tx)?;
             let mut restoring = BTreeSet::new();
             for task in &all {
@@ -525,6 +578,7 @@ impl Panel {
                         ui.strong(format!("{} • {}",entry.target.kind.label(),entry.label));ui.small(format!("Excluído localmente em {}",chrono::DateTime::parse_from_rfc3339(&entry.deleted_at).map(|date|date.with_timezone(&chrono::Local).format("%d/%m/%Y %H:%M").to_string()).unwrap_or_else(|_|entry.deleted_at.clone())));
                         if entry.parent_trashed{ui.label("Restaure o documento primeiro para recuperar este item individualmente.");}
                         if entry.target.kind==Kind::Capture{ui.small("Restaurar devolve a captura ao histórico; não troca a captura em uso.");}
+                        if entry.target.kind==Kind::Attachment{ui.small("Restaurar devolve o arquivo à lista de anexos do documento ou da tarefa.");}
                         if ui.add_enabled(!busy&&!entry.parent_trashed&&!confirming,egui::Button::new("Restaurar")).clicked(){match store.restore_item(entry.target.clone()){Ok(document)=>{self.message="Item restaurado. A biblioteca e o painel foram atualizados.".into();change=Some(Change{target:entry.target,document,restored:true});},Err(error)=>self.message=error.to_string()}}
                     });}});
                 },Err(error)=>{ui.label(format!("Não foi possível ler a lixeira: {error}"));}}

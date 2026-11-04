@@ -233,9 +233,16 @@ pub fn render(bytes: &[u8], index: u32, width: u32, ocr: bool) -> Result<Rendere
         ocr: result,
     })
 }
+/// Where the PDF bytes come from.
+#[derive(Clone, Copy)]
+enum Source {
+    /// A PDF downloaded with an import (`files` table). OCR is saved per page.
+    File { file: i64, capture: i64 },
+    /// A file attached by a person. OCR is shown but not saved.
+    Attachment(i64),
+}
 struct Selection {
-    file: i64,
-    capture: i64,
+    source: Source,
     label: String,
     page: u32,
     width: u32,
@@ -262,14 +269,20 @@ impl PdfPanel {
         label: &str,
         ctx: &egui::Context,
     ) {
+        self.open_source(store, Source::File { file, capture }, label, ctx);
+    }
+    /// Opens a PDF attached by a person (Documento ▸ Anexos or a task).
+    pub fn open_attachment(&mut self, store: &Store, id: i64, label: &str, ctx: &egui::Context) {
+        self.open_source(store, Source::Attachment(id), label, ctx);
+    }
+    fn open_source(&mut self, store: &Store, source: Source, label: &str, ctx: &egui::Context) {
         if self.job.is_some() {
             self.open = true;
             self.message = "Aguarde a leitura em andamento antes de abrir outro arquivo.".into();
             return;
         }
         self.selection = Some(Selection {
-            file,
-            capture,
+            source,
             label: label.into(),
             page: 0,
             width: 1400,
@@ -289,7 +302,11 @@ impl PdfPanel {
         };
         selection.texture = None;
         selection.text = None;
-        let bytes = match store.pdf_bytes(selection.file, selection.capture) {
+        let bytes = match selection.source {
+            Source::File { file, capture } => store.pdf_bytes(file, capture),
+            Source::Attachment(id) => store.attachment_bytes(id).map(|(_, bytes)| bytes),
+        };
+        let bytes = match bytes {
             Ok(b) => b,
             Err(e) => {
                 self.message = e.to_string();
@@ -299,7 +316,10 @@ impl PdfPanel {
         let page = selection.page;
         let width = selection.width;
         selection.texture = None;
-        selection.text = store.load_page_text(selection.file, page).ok().flatten();
+        selection.text = match selection.source {
+            Source::File { file, .. } => store.load_page_text(file, page).ok().flatten(),
+            Source::Attachment(_) => None,
+        };
         let (send, receive) = mpsc::channel();
         let repaint = ctx.clone();
         self.job = Some(receive);
@@ -329,21 +349,23 @@ impl PdfPanel {
                                 self.message.clear();
                                 if let Some(result) = rendered.ocr {
                                     match result {
-                                        Ok(text) => {
-                                            match store.save_page_text(
-                                                selection.file,
-                                                selection.page,
-                                                &text,
-                                            ) {
-                                                Ok(()) => {
-                                                    self.message="OCR local salvo; confira o texto com a página original.".into();
-                                                    selection.text = Some(text);
-                                                }
-                                                Err(e) => {
-                                                    self.message = format!("OCR não salvo: {e}")
+                                        Ok(text) => match selection.source {
+                                            Source::File { file, .. } => {
+                                                match store.save_page_text(file, selection.page, &text) {
+                                                    Ok(()) => {
+                                                        self.message="OCR local salvo; confira o texto com a página original.".into();
+                                                        selection.text = Some(text);
+                                                    }
+                                                    Err(e) => {
+                                                        self.message = format!("OCR não salvo: {e}")
+                                                    }
                                                 }
                                             }
-                                        }
+                                            Source::Attachment(_) => {
+                                                self.message = "OCR de anexo é mostrado apenas nesta janela; não é gravado no acervo.".into();
+                                                selection.text = Some(text);
+                                            }
+                                        },
                                         Err(e) => self.message = format!("OCR indisponível: {e}"),
                                     }
                                 }
@@ -368,7 +390,11 @@ impl PdfPanel {
         let mut request = None;
         egui::Window::new("Leitor PDF local").open(&mut open).default_size([900.0,700.0]).resizable(true).show(ctx,|ui|{
             if let Some(selection)=&mut self.selection{
-                ui.strong(&selection.label);ui.small(format!("Arquivo local #{} • captura #{} • original preservado",selection.file,selection.capture));
+                ui.strong(&selection.label);
+                ui.small(match selection.source {
+                    Source::File { file, capture } => format!("Arquivo local #{file} • captura #{capture} • original preservado"),
+                    Source::Attachment(id) => format!("Anexo #{id} • cópia protegida no acervo"),
+                });
                 ui.horizontal_wrapped(|ui|{
                     let busy=self.job.is_some();
                     if ui.add_enabled(!busy&&selection.page>0,egui::Button::new("Anterior")).clicked(){selection.page-=1;request=Some(false);}

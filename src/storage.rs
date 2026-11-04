@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -143,6 +143,7 @@ impl Store {
         store.ensure_intranet()?;
         store.ensure_saiop()?;
         store.ensure_ai_config()?;
+        store.ensure_attachments()?;
         store.ensure_write_guards()?;
         // Lazy, idempotent: libraries imported before this feature gain the
         // juntada links too. Unreadable content never prevents opening.
@@ -175,6 +176,7 @@ impl Store {
             "saiop_batches",
             "saiop_attendances",
             "ai_config",
+            "attachments",
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());
@@ -190,6 +192,7 @@ impl Store {
             ("tasks", "document_id"),
             ("work_context", "document_id"),
             ("capture_refs", "owner_document"),
+            ("attachments", "document_id"),
         ] {
             for operation in ["INSERT", "UPDATE"] {
                 let name = format!("ponte_active_{table}_{}", operation.to_lowercase());

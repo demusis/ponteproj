@@ -133,9 +133,30 @@ pub fn spreadsheet_column(column: &str) -> &str {
     }
 }
 
+/// Tamanho de arquivo em linguagem corrente: "830 KB", "12,4 MB".
+pub fn file_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let value = bytes as f64;
+    if value >= MB {
+        // One decimal unless it is a whole number ("8 MB", "12,4 MB").
+        let mb = (value / MB * 10.0).round() / 10.0;
+        if mb.fract() == 0.0 {
+            format!("{} MB", mb as u64)
+        } else {
+            format!("{mb:.1} MB").replace('.', ",")
+        }
+    } else if value >= KB {
+        format!("{} KB", (value / KB).round() as u64)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 /// Tipo de item como aparece nas filas e históricos da rede.
 pub fn item_kind(kind: &str) -> &str {
     match kind {
+        "attachment" => "anexo",
         "document" => "documento",
         "capture" => "importação",
         "task" => "tarefa",
@@ -256,6 +277,12 @@ mod tests {
         assert_eq!(draft_kind("complementacao"), "Pedido de complementação");
         assert_eq!(saiop_event_kind("importacao_planilha"), "Importação de planilha");
         assert_eq!(spreadsheet_column("D"), "Referência");
+        assert_eq!(file_size(512), "512 bytes");
+        assert_eq!(file_size(850_000), "830 KB");
+        assert_eq!(file_size(8 * 1024 * 1024), "8 MB");
+        assert_eq!(file_size(13_000_000), "12,4 MB");
+        assert_eq!(file_size(25 * 1024 * 1024), "25 MB");
+        assert_eq!(file_size(9 * 1024 * 1024 + 512 * 1024), "9,5 MB");
         assert_eq!(elapsed("1990-01-01T00:00:00Z").unwrap().contains("dias"), true);
     }
 }

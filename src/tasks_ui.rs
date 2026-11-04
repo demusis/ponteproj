@@ -32,10 +32,22 @@ pub struct TaskPanel {
     view: usize,
     document_filter: Option<i64>,
     trash_requested: Option<crate::trash::Target>,
+    /// "Anexos" block of the task being edited.
+    attachments: crate::attachments::AttachmentsPanel,
 }
 impl TaskPanel {
     pub fn take_trash_request(&mut self) -> Option<crate::trash::Target> {
-        self.trash_requested.take()
+        self.trash_requested
+            .take()
+            .or_else(|| self.attachments.take_trash_request())
+    }
+    /// PDF attachment to open in the Ponte reader: (attachment id, label).
+    pub fn take_attachment_pdf_request(&mut self) -> Option<(i64, String)> {
+        self.attachments.take_pdf_request()
+    }
+    /// True while an attachment description of the open task is not saved.
+    pub fn attachments_dirty(&self) -> bool {
+        self.attachments.dirty()
     }
     pub fn document_dirty(&self, id: i64) -> bool {
         self.dirty()
@@ -53,6 +65,7 @@ impl TaskPanel {
             self.original = None;
             self.base_version = None;
             self.message.clear();
+            self.attachments.forget();
         }
     }
 
@@ -313,6 +326,7 @@ impl TaskPanel {
         let mut complete_request: Option<i64> = None;
         let mut reopen_request: Option<i64> = None;
         let mut select_request: Option<Task> = None;
+        let attachment_counts = store.attachment_counts("task").unwrap_or_default();
         let form_open = self.draft.is_some();
         let total_width = ui.available_width();
         let height = ui.available_height();
@@ -360,6 +374,11 @@ impl TaskPanel {
                                     if !task.assignee.trim().is_empty() {
                                         ui.small("•");
                                         ui.small(task.assignee.trim());
+                                    }
+                                    if let Some(count) = attachment_counts.get(&task.id) {
+                                        ui.small("•");
+                                        ui.small(format!("📎 {count}"))
+                                            .on_hover_text(format!("{count} anexo(s) nesta tarefa"));
                                     }
                                     if pending {
                                         if ui
@@ -549,6 +568,14 @@ impl TaskPanel {
         }
         let task_id = task.id;
         let document_id = task.document_id;
+        ui.add_space(4.0);
+        ui.strong("Anexos");
+        if task_id > 0 {
+            self.attachments
+                .show(ui, store, crate::attachments::Owner::Task(task_id), false);
+        } else {
+            ui.small("Salve a tarefa para poder anexar arquivos a ela.");
+        }
         egui::CollapsingHeader::new("Mais detalhes")
             .id_salt(("task-more", task_id))
             .show(ui, |ui| {

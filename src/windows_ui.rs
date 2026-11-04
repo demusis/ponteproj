@@ -43,6 +43,68 @@ pub fn pick_file(title: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Standard Windows dialog to choose where to save a file. `suggested` is
+/// the initial file name; the person may change it. Asks before overwriting.
+pub fn save_file(title: &str, suggested: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
+    use windows::Win32::UI::Controls::Dialogs::{
+        GetSaveFileNameW, OFN_EXPLORER, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST,
+        OPENFILENAMEW,
+    };
+    let mut filter = String::new();
+    for (description, pattern) in filters {
+        filter.push_str(&format!("{description} ({pattern})\0{pattern}\0"));
+    }
+    filter.push('\0');
+    let filter: Vec<u16> = filter.encode_utf16().collect();
+    let title = wide(title);
+    let mut buffer = vec![0u16; 32 * 1024];
+    let initial: Vec<u16> = suggested.encode_utf16().take(buffer.len() - 1).collect();
+    buffer[..initial.len()].copy_from_slice(&initial);
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        lpstrFilter: PCWSTR(filter.as_ptr()),
+        lpstrFile: PWSTR(buffer.as_mut_ptr()),
+        nMaxFile: buffer.len() as u32,
+        lpstrTitle: PCWSTR(title.as_ptr()),
+        Flags: OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
+    // SAFETY: every pointer in `dialog` refers to a buffer that outlives the call.
+    let chosen = unsafe { GetSaveFileNameW(&mut dialog) }.as_bool();
+    if !chosen {
+        return None;
+    }
+    let length = buffer.iter().position(|c| *c == 0).unwrap_or(0);
+    let path = PathBuf::from(String::from_utf16_lossy(&buffer[..length]));
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+/// Opens a file with the program Windows associates to its type (the "open"
+/// verb of the shell), without running the file itself.
+pub fn open_with_default_app(path: &Path) -> anyhow::Result<()> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let verb = wide("open");
+    let target = wide(&path.to_string_lossy());
+    // SAFETY: the wide strings outlive the call; a null window and parameters are allowed.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Per the Win32 contract, values above 32 mean success.
+    anyhow::ensure!(
+        result.0 as usize > 32,
+        "o Windows não tem um programa associado a este tipo de arquivo, ou recusou a abertura. Use “Salvar como…” e abra a cópia manualmente."
+    );
+    Ok(())
+}
+
 /// Default string value of a key under HKEY_CURRENT_USER, if present.
 fn user_registry_default(subkey: &str) -> Option<String> {
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};

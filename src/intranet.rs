@@ -372,6 +372,15 @@ pub struct FileMetaRow {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AttachmentRow {
+    pub id: i64,
+    pub owner_kind: String,
+    pub owner_id: i64,
+    pub document_id: i64,
+    pub meta: crate::attachments::AttachmentMeta,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PageTextRow {
     pub file_id: i64,
     pub page: u32,
@@ -433,6 +442,8 @@ pub struct CabinetSnapshot {
     pub saiop_batches: Vec<crate::saiop::SaiopImportBatch>,
     #[serde(default)]
     pub saiop_attendances: Vec<SaiopAttendanceRow>,
+    #[serde(default)]
+    pub attachments: Vec<AttachmentRow>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -507,6 +518,17 @@ pub enum IntranetMutation {
     },
     UndoSaiopBatch {
         batch_id: i64,
+    },
+    AddAttachment {
+        owner_kind: String,
+        owner_id: i64,
+        name: String,
+        description: String,
+        data_base64: String,
+    },
+    UpdateAttachment {
+        id: i64,
+        description: String,
     },
 }
 
@@ -589,6 +611,9 @@ pub enum RpcRequest {
     FetchFileBytes {
         file_id: i64,
         capture_id: i64,
+    },
+    FetchAttachmentBytes {
+        id: i64,
     },
     Mutate {
         actor: String,
@@ -1112,6 +1137,33 @@ impl Store {
             item_versions.push((kind, item_id, meta));
         }
 
+        let raw_attachments = self
+            .conn
+            .prepare("SELECT id,owner_kind,owner_id,document_id,metadata FROM attachments ORDER BY id")?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut attachments = Vec::with_capacity(raw_attachments.len());
+        for (id, owner_kind, owner_id, document_id, blob) in raw_attachments {
+            let mut meta: crate::attachments::AttachmentMeta =
+                serde_json::from_slice(&unseal(&blob)?)?;
+            meta.id = id;
+            attachments.push(AttachmentRow {
+                id,
+                owner_kind,
+                owner_id,
+                document_id,
+                meta,
+            });
+        }
+
         let team_events = self.list_team_events(MAX_TEAM_EVENTS as usize)?;
         let saiop_batches = self.list_saiop_batches()?;
         let mut saiop_attendances = Vec::new();
@@ -1144,13 +1196,60 @@ impl Store {
             team_events,
             saiop_batches,
             saiop_attendances,
+            attachments,
         })
     }
 
-    pub fn apply_snapshot<F>(&mut self, snapshot: &CabinetSnapshot, fetch_pdf: F) -> Result<()>
+    pub fn apply_snapshot<F, G>(
+        &mut self,
+        snapshot: &CabinetSnapshot,
+        fetch_pdf: F,
+        fetch_attachment: G,
+    ) -> Result<()>
     where
         F: Fn(i64, i64) -> Result<Vec<u8>>,
+        G: Fn(i64) -> Result<Vec<u8>>,
     {
+        // Attachments already here with the same content are kept; the rest
+        // are transferred from the main computer and checked by hash.
+        let existing_attachments = self
+            .conn
+            .prepare("SELECT id,metadata,payload FROM attachments")?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut attachment_blobs = BTreeMap::<i64, (String, Vec<u8>)>::new();
+        for (id, meta_blob, payload_blob) in existing_attachments {
+            if let Ok(plain) = unseal(&meta_blob) {
+                if let Ok(meta) = serde_json::from_slice::<crate::attachments::AttachmentMeta>(&plain) {
+                    attachment_blobs.insert(id, (meta.sha256, payload_blob));
+                }
+            }
+        }
+        let mut prepared_attachment_blobs = BTreeMap::<i64, Vec<u8>>::new();
+        for row in &snapshot.attachments {
+            if let Some((sha, blob)) = attachment_blobs.get(&row.id) {
+                if *sha == row.meta.sha256 {
+                    prepared_attachment_blobs.insert(row.id, blob.clone());
+                    continue;
+                }
+            }
+            let bytes = fetch_attachment(row.id)?;
+            ensure!(
+                !bytes.is_empty() && bytes.len() <= crate::attachments::MAX_ATTACHMENT_BYTES,
+                "Anexo recebido do computador principal é inválido ou excede o limite."
+            );
+            ensure!(
+                format!("{:x}", Sha256::digest(&bytes)) == row.meta.sha256,
+                "Integridade SHA-256 do anexo recebido não confere com o registro do computador principal."
+            );
+            prepared_attachment_blobs.insert(row.id, seal(&bytes)?);
+        }
         let existing_files = self
             .conn
             .prepare("SELECT id,metadata,payload FROM files")?
@@ -1197,6 +1296,7 @@ impl Store {
         // Clear `trash` first so active-record triggers never block re-inserting archived items.
         tx.execute_batch(
             "DELETE FROM trash;
+             DELETE FROM attachments;
              DELETE FROM saiop_attendances;
              DELETE FROM saiop_batches;
              DELETE FROM capture_refs;
@@ -1396,6 +1496,22 @@ impl Store {
                 ],
             )?;
         }
+        for row in &snapshot.attachments {
+            let payload_blob = prepared_attachment_blobs
+                .get(&row.id)
+                .context("Conteúdo de anexo ausente ao aplicar sincronização.")?;
+            tx.execute(
+                "INSERT INTO attachments(id,owner_kind,owner_id,document_id,metadata,payload) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    row.id,
+                    row.owner_kind,
+                    row.owner_id,
+                    row.document_id,
+                    seal(&serde_json::to_vec(&row.meta)?)?,
+                    payload_blob
+                ],
+            )?;
+        }
         // Populate `trash` last so active-item triggers remain satisfied throughout the batch.
         for t in &snapshot.trash {
             tx.execute(
@@ -1496,25 +1612,37 @@ impl Store {
                 .set_link_active(id, active)
                 .map(|()| MutationReply::Unit),
             IntranetMutation::TrashItem { kind, id } => {
-                let parsed = match kind.as_str() {
-                    "document" => TrashKind::Document,
-                    "capture" => TrashKind::Capture,
-                    "task" => TrashKind::Task,
-                    _ => bail!("Tipo de item inválido para lixeira."),
-                };
+                let parsed = TrashKind::parse(&kind)?;
                 self.trash_item(TrashTarget { kind: parsed, id })
                     .map(MutationReply::Id)
             }
             IntranetMutation::RestoreItem { kind, id } => {
-                let parsed = match kind.as_str() {
-                    "document" => TrashKind::Document,
-                    "capture" => TrashKind::Capture,
-                    "task" => TrashKind::Task,
-                    _ => bail!("Tipo de item inválido para restauração."),
-                };
+                let parsed = TrashKind::parse(&kind)?;
                 self.restore_item(TrashTarget { kind: parsed, id })
                     .map(MutationReply::Id)
             }
+            IntranetMutation::AddAttachment {
+                owner_kind,
+                owner_id,
+                name,
+                description,
+                data_base64,
+            } => {
+                let owner = crate::attachments::Owner::parse(&owner_kind, owner_id)?;
+                ensure!(
+                    data_base64.len() <= crate::attachments::MAX_ATTACHMENT_BYTES.div_ceil(3) * 4,
+                    "{}",
+                    crate::attachments::size_message(&name, data_base64.len() / 4 * 3)
+                );
+                let data = STANDARD
+                    .decode(data_base64.trim())
+                    .context("Anexo recebido com codificação inválida.")?;
+                self.add_attachment(owner, &name, &description, &data)
+                    .map(MutationReply::Id)
+            }
+            IntranetMutation::UpdateAttachment { id, description } => self
+                .update_attachment_description(id, &description)
+                .map(|()| MutationReply::Unit),
             IntranetMutation::DeleteDocument { id } => {
                 self.delete_document(id).map(|()| MutationReply::Unit)
             }
@@ -1627,9 +1755,11 @@ impl Store {
             RpcResponse::UpToDate { .. } => Ok(pushed_offline),
             RpcResponse::Snapshot(snapshot) => {
                 let cfg_clone = cfg.clone();
-                self.apply_snapshot(&snapshot, |file_id, capture_id| {
-                    fetch_remote_pdf(&cfg_clone, file_id, capture_id)
-                })?;
+                self.apply_snapshot(
+                    &snapshot,
+                    |file_id, capture_id| fetch_remote_pdf(&cfg_clone, file_id, capture_id),
+                    |id| fetch_remote_attachment(&cfg_clone, id),
+                )?;
                 Ok(true)
             }
             RpcResponse::Error { message } => bail!("{message}"),
@@ -1662,9 +1792,11 @@ impl Store {
                 reply, snapshot, ..
             }) => {
                 let cfg_clone = cfg.clone();
-                self.apply_snapshot(&snapshot, |file_id, capture_id| {
-                    fetch_remote_pdf(&cfg_clone, file_id, capture_id)
-                })?;
+                self.apply_snapshot(
+                    &snapshot,
+                    |file_id, capture_id| fetch_remote_pdf(&cfg_clone, file_id, capture_id),
+                    |id| fetch_remote_attachment(&cfg_clone, id),
+                )?;
                 Ok(reply)
             }
             Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
@@ -2551,6 +2683,16 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
         IntranetMutation::UndoSaiopBatch { batch_id } => {
             format!("Reversão do lote SAIOP #{batch_id}")
         }
+        IntranetMutation::AddAttachment {
+            owner_kind,
+            owner_id,
+            name,
+            ..
+        } => format!(
+            "Anexo “{name}” em {} #{owner_id}",
+            crate::labels::item_kind(owner_kind)
+        ),
+        IntranetMutation::UpdateAttachment { id, .. } => format!("Descrição do anexo #{id}"),
     }
 }
 
@@ -2685,6 +2827,16 @@ fn fetch_remote_pdf(cfg: &IntranetConfig, file_id: i64, capture_id: i64) -> Resu
             .context("PDF transferido pelo anfitrião está com codificação inválida."),
         RpcResponse::Error { message } => bail!("{message}"),
         _ => bail!("Resposta inesperada ao transferir PDF do anfitrião."),
+    }
+}
+
+fn fetch_remote_attachment(cfg: &IntranetConfig, id: i64) -> Result<Vec<u8>> {
+    match send_rpc(cfg, &RpcRequest::FetchAttachmentBytes { id })? {
+        RpcResponse::FileBytes { data_base64 } => STANDARD
+            .decode(data_base64.trim())
+            .context("Anexo transferido pelo computador principal está com codificação inválida."),
+        RpcResponse::Error { message } => bail!("{message}"),
+        _ => bail!("Resposta inesperada ao transferir anexo do computador principal."),
     }
 }
 
@@ -2969,6 +3121,12 @@ fn process_rpc(
             capture_id,
         } => {
             let bytes = store.pdf_bytes(file_id, capture_id)?;
+            Ok(RpcResponse::FileBytes {
+                data_base64: STANDARD.encode(&bytes),
+            })
+        }
+        RpcRequest::FetchAttachmentBytes { id } => {
+            let (_, bytes) = store.attachment_bytes(id)?;
             Ok(RpcResponse::FileBytes {
                 data_base64: STANDARD.encode(&bytes),
             })
@@ -3828,6 +3986,45 @@ mod tests {
             .pdf_bytes(files[0].id, receipt.capture_id)
             .unwrap()
             .starts_with(b"%PDF-"));
+
+        // 1b. Client attaches a file through the Host; both keep it sealed and
+        // the client receives the bytes with the snapshot (hash-checked).
+        let owner = crate::attachments::Owner::Document(receipt.document_id);
+        let attachment_id = client_store
+            .add_attachment(owner, "despacho.txt", "foto do despacho", b"texto do despacho\n")
+            .unwrap();
+        let host_list = host_store.list_attachments(owner).unwrap();
+        assert_eq!(host_list.len(), 1);
+        assert_eq!(host_list[0].id, attachment_id);
+        assert_eq!(host_list[0].added_by, "MARIA_CLIENTE");
+        let client_list = client_store.list_attachments(owner).unwrap();
+        assert_eq!(client_list.len(), 1);
+        assert_eq!(client_list[0].description, "foto do despacho");
+        assert_eq!(
+            client_store.attachment_bytes(attachment_id).unwrap().1,
+            b"texto do despacho\n"
+        );
+        client_store
+            .update_attachment_description(attachment_id, "despacho assinado")
+            .unwrap();
+        assert_eq!(
+            host_store.list_attachments(owner).unwrap()[0].description,
+            "despacho assinado"
+        );
+        // Trash through the host hides it on both sides; restore brings it back.
+        let target = TrashTarget { kind: TrashKind::Attachment, id: attachment_id };
+        client_store.trash_item(target.clone()).unwrap();
+        assert!(host_store.list_attachments(owner).unwrap().is_empty());
+        assert!(client_store.list_attachments(owner).unwrap().is_empty());
+        client_store.restore_item(target).unwrap();
+        assert_eq!(client_store.list_attachments(owner).unwrap().len(), 1);
+        // Limits are enforced by the host with the same guidance.
+        let big = vec![b'a'; crate::attachments::MAX_ATTACHMENT_BYTES + 1];
+        let refused = client_store
+            .add_attachment(owner, "grande.txt", "", &big)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("8 MB"), "{refused}");
 
         // 2. Optimistic Concurrency Control on Task (while online):
         // Both Host and Client load Task #1 at version 0.

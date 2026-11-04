@@ -176,6 +176,8 @@ impl DocTaskStatusSummary {
 pub fn run(initial_document: Option<i64>) -> Result<()> {
     let db_path = crate::paths::db_path()?;
     let store = Store::open(&db_path).context("Não foi possível abrir a biblioteca protegida")?;
+    // Temporary copies of attachments opened in other programs do not outlive a session.
+    crate::attachments::clear_temp_dir();
     let mut app = PonteApp::new(store, db_path);
     app.intranet.initialize(&mut app.store, &app.db_path);
     app.load_ai_config();
@@ -463,6 +465,8 @@ enum PendingTarget {
 
 struct PonteApp {
     draft_tools: crate::draft_tools::DraftTools,
+    /// "Anexos" block of the open document.
+    attachments: crate::attachments::AttachmentsPanel,
     sources: crate::evidence::SourcesPanel,
     pdf_reader: crate::pdf_reader::PdfPanel,
     dossier: crate::dossier::DossierPanel,
@@ -516,6 +520,7 @@ impl PonteApp {
     fn new(store: Store, db_path: PathBuf) -> Self {
         Self {
             draft_tools: Default::default(),
+            attachments: Default::default(),
             sources: Default::default(),
             pdf_reader: Default::default(),
             dossier: Default::default(),
@@ -711,6 +716,21 @@ impl PonteApp {
             out.push(Pending {
                 label: "Configuração de IA não salva".into(),
                 go: PendingTarget::Settings,
+            });
+        }
+        if self.attachments.dirty() {
+            out.push(Pending {
+                label: "Descrição de anexo não salva (Documento ▸ Anexos)".into(),
+                go: self
+                    .selected_id
+                    .map(|id| PendingTarget::Document(id, Tab::Document))
+                    .unwrap_or(PendingTarget::None),
+            });
+        }
+        if self.tasks.attachments_dirty() {
+            out.push(Pending {
+                label: "Descrição de anexo não salva na tarefa aberta".into(),
+                go: PendingTarget::Tasks,
             });
         }
         if let Some(worker) = &self.worker {
@@ -1817,6 +1837,27 @@ impl PonteApp {
             .map(|f| !f.is_empty())
             .unwrap_or(false);
         Self::section(ui, id, "Arquivos (PDF)", has_files, |ui| self.files_list(ui, detail));
+        let has_attachments = self
+            .store
+            .list_attachments(crate::attachments::Owner::Document(id))
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        let busy = self.worker.is_some();
+        Self::section(ui, id, "Anexos", has_attachments, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                info(ui, "Arquivos do seu computador juntados a este documento (ofício em Word, foto de um despacho, e-mail). Ficam guardados protegidos no acervo e visíveis para a equipe. Nada é enviado ao SIGADOC.");
+                ui.small("Arquivos anexados por pessoas; os PDFs do SIGADOC ficam na seção acima.");
+            });
+            self.attachments
+                .show(ui, &mut self.store, crate::attachments::Owner::Document(id), busy);
+        });
+        if let Some((attachment, label)) = self.attachments.take_pdf_request() {
+            self.pdf_reader
+                .open_attachment(&self.store, attachment, &label, ui.ctx());
+        }
+        if let Some(target) = self.attachments.take_trash_request() {
+            self.request_trash(target);
+        }
         Self::section(ui, id, "Dados do SIGADOC", false, |ui| {
             crate::work_context::provenance(ui, detail);
         });
@@ -2863,6 +2904,7 @@ impl PonteApp {
                         || e.materials.iter().any(|s| s.capture_id == target.id))
             }),
             Kind::Task => self.tasks.task_dirty(target.id),
+            Kind::Attachment => false,
         };
         if blocked {
             self.error("Há alterações ou sugestão ainda não salvas relacionadas a este item. Salve ou cancele essa edição antes de excluir.");
@@ -2893,10 +2935,13 @@ impl PonteApp {
                     }
                 }
                 Kind::Task => self.tasks.forget_task(change.target.id),
+                Kind::Attachment => {}
             }
-            self.message(
-                "Item movido para a lixeira local. É possível restaurá-lo pelo botão Lixeira.",
-            );
+            self.message(if change.target.kind == Kind::Attachment {
+                "Anexo movido para a Lixeira. É possível restaurá-lo em Menu ▾ ▸ Lixeira."
+            } else {
+                "Item movido para a lixeira local. É possível restaurá-lo pelo botão Lixeira."
+            });
         } else {
             if self.selected_id == Some(change.document) {
                 self.reload(change.document);
@@ -2969,6 +3014,10 @@ impl PonteApp {
 }
 
 impl eframe::App for PonteApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        crate::attachments::clear_temp_dir();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.intranet.attach_repaint(&ctx);
@@ -3071,6 +3120,9 @@ impl eframe::App for PonteApp {
                 } else if self.tasks_open {
                     if let Some(id) = self.tasks.show(ui, &mut self.store, self.selected_id) { self.select(id); }
                     if let Some(target)=self.tasks.take_trash_request(){self.request_trash(target);}
+                    if let Some((attachment, label)) = self.tasks.take_attachment_pdf_request() {
+                        self.pdf_reader.open_attachment(&self.store, attachment, &label, &ctx);
+                    }
                 } else if let Some(detail) = self.detail.take() {
                     let id = detail.summary.id;
                     self.document(ui, &detail);

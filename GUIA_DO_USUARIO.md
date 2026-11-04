@@ -39,11 +39,13 @@ Clicar no ícone da extensão mostra se ela está ligada ao Ponte e o que fazer 
 Ao escolher um documento na lista à esquerda, a ficha abre em quatro abas:
 
 - **Resumo** — dados principais, tarefas, análise por IA (opcional) e documentos parecidos.
-- **Documento** — texto importado, PDFs, dados do SIGADOC e histórico de tramitação.
+- **Documento** — texto importado, PDFs, **Anexos**, dados do SIGADOC e histórico de tramitação.
 - **Anotações e minutas** — suas notas e o editor de minutas, com versões salvas, exportação (RTF) e comparação.
 - **Mais** — vínculos entre documentos, versões importadas e detalhes técnicos.
 
 Documentos juntados aparecem abaixo do documento principal, com a marca ↳. O cabeçalho da ficha tem o botão **Abrir documento principal**.
+
+**Anexos:** em Documento ▸ Anexos (e na ficha de cada tarefa), **Anexar arquivo…** junta um arquivo do seu computador: até 20 por documento ou tarefa, de até 8 MB cada, nos tipos PDF, Word, Excel, PowerPoint, OpenDocument, texto, imagens e e-mails. Programas, scripts, atalhos e arquivos .zip são recusados. Se um arquivo for recusado, a mensagem explica o motivo e o que fazer. Cada anexo pode ter uma descrição; **Ler no Ponte** abre PDFs no leitor do Ponte, **Abrir** usa o programa padrão do Windows, **Salvar como…** grava uma cópia e **Excluir…** manda para a Lixeira. Os anexos ficam no acervo protegido e aparecem para a equipe.
 
 ## 4. Tarefas e prazos
 
@@ -83,5 +85,5 @@ Se os colegas não conseguirem conectar, peça à TI para liberar a porta 7878 (
 ## 8. Backup e lixeira
 
 - **Menu ▸ Fazer backup agora** cria uma cópia protegida do acervo na pasta de backups. Ela só abre na mesma conta do Windows.
-- Excluir um documento, tarefa ou importação pede confirmação e manda para a **Lixeira** (Menu ▸ Lixeira…), de onde pode ser restaurado.
+- Excluir um documento, tarefa, anexo ou importação pede confirmação e manda para a **Lixeira** (Menu ▸ Lixeira…), de onde pode ser restaurado.
 - Ao fechar o Ponte com algo não salvo, a janela lista o que está pendente, com um botão **Ir para** em cada item.
