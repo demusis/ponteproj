@@ -3612,6 +3612,7 @@ impl IntranetPanel {
                                     let differences = store.conflict_differences(conflict);
                                     let both_sides = differences.iter().filter(|d| d.changed_by() == "pelos dois lados").count();
                                     ui.group(|ui| {
+                                        ui.set_width(ui.available_width());
                                         ui.strong(format!("Conflito: {}", conflict.item_label));
                                         ui.small(format!(
                                             "Sua alteração de {} ({})",

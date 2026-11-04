@@ -348,6 +348,7 @@ pub fn provenance(ui: &mut eframe::egui::Ui, detail: &crate::model::DocumentDeta
     use eframe::egui;
     let metadata = &detail.capture.metadata;
     ui.group(|ui| {
+        ui.set_width(ui.available_width());
         ui.strong("Dados do documento no SIGADOC");
         ui.small("Informações efetivamente importadas. Situação e datas correspondem à captura, não a uma consulta em tempo real.");
         egui::Grid::new(("document-facts",detail.summary.id)).num_columns(2).striped(true).max_col_width(600.0).show(ui,|ui| {
@@ -359,6 +360,7 @@ pub fn provenance(ui: &mut eframe::egui::Ui, detail: &crate::model::DocumentDeta
         ui.small("A classificação documental oficial é distinta dos assuntos e da prioridade definidos no aplicativo.");
     });
     ui.group(|ui| {
+        ui.set_width(ui.available_width());
         ui.strong("Pessoas, situação e acesso no SIGADOC");
         egui::Grid::new(("source-facts",detail.summary.id)).num_columns(2).striped(true).max_col_width(600.0).show(ui,|ui| {
             for key in ["origin","registered_by","recipient","current_holder","via_status","signature_status","signature_person","access_level","access_people"] {

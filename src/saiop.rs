@@ -2405,6 +2405,7 @@ impl SaiopPanel {
 
             if let Some(prev) = self.import_preview.clone() {
                 ui.group(|ui| {
+                    ui.set_width(ui.available_width());
                     ui.strong(format!(
                         "Prévia: {} (aba {})",
                         prev.file_name, prev.sheet_name
@@ -2535,6 +2536,7 @@ impl SaiopPanel {
                         if let Some((pending, removed, kept)) = self.pending_undo.clone() {
                             if pending.id == b.id {
                                 ui.group(|ui| {
+                                    ui.set_width(ui.available_width());
                                     ui.colored_label(WARNING, format!(
                                         "Desfazer a importação de {}? {} atendimento(s) serão removidos. {} serão mantidos porque foram editados ou têm tarefa.",
                                         pending.file_name, removed, kept
@@ -2971,6 +2973,7 @@ impl SaiopPanel {
 
                     if !ed.review_flags.is_empty() {
                         ui.group(|ui| {
+                            ui.set_width(ui.available_width());
                             ui.horizontal_wrapped(|ui| {
                                 ui.colored_label(
                                     WARNING,

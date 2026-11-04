@@ -564,6 +564,7 @@ impl PonteApp {
         ui.add_space(16.0);
         let status = self.install_status();
         ui.group(|ui| {
+            ui.set_width(ui.available_width());
             ui.strong("Ligação com o navegador");
             let ok = status.browser_bridge_ok();
             let browsers = match (status.chrome_registered, status.edge_registered) {
@@ -1795,6 +1796,7 @@ impl PonteApp {
         }
         let today = chrono::Local::now().date_naive();
         ui.group(|ui| {
+            ui.set_width(ui.available_width());
             ui.strong(format!(
                 "Processos e demandas • {} atendimento(s) deste documento",
                 mine.len()
@@ -1872,6 +1874,7 @@ impl PonteApp {
                 ui.strong("Providências sugeridas — revisão necessária");
                 for suggestion in &analysis.suggested_actions {
                     ui.group(|ui| {
+                        ui.set_width(ui.available_width());
                         ui.strong(&suggestion.action);
                         ui.label(&suggestion.reason);
                         ui.label(format!("Base indicada: {}", suggestion.evidence));
@@ -1910,6 +1913,7 @@ impl PonteApp {
                         .find(|s| s.id == citation.source_id)
                     {
                         ui.group(|ui| {
+                            ui.set_width(ui.available_width());
                             ui.label(&citation.claim);
                             ui.strong(&source.label);
                             ui.label(format!("Trecho: {}", citation.quote));
@@ -1969,6 +1973,7 @@ impl PonteApp {
                 });
                 for file in files {
                     ui.group(|ui| {
+                        ui.set_width(ui.available_width());
                         ui.horizontal_wrapped(|ui| {
                             ui.strong(&file.label);
                             ui.small(format!("{} KB", file.size.div_ceil(1024)));
@@ -2095,6 +2100,7 @@ impl PonteApp {
     fn document_summary(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         let metadata = &detail.capture.metadata;
         ui.group(|ui|{
+            ui.set_width(ui.available_width());
             ui.horizontal(|ui|{
                 ui.strong("Resumo do documento");
                 info(ui,"Os dados oficiais são um retrato do momento da importação. Finalidade, assuntos e prioridade locais não alteram o SIGADOC.");
@@ -2133,6 +2139,7 @@ impl PonteApp {
     }
     fn document_tasks(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         ui.group(|ui|{
+            ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui|{
                 ui.strong("Tarefas deste documento");
                 if ui.button("Nova tarefa").clicked(){

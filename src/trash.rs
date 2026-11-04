@@ -521,6 +521,7 @@ impl Panel {
                 match store.trash_entries(){Ok(entries)=>{
                     if entries.is_empty(){ui.label("A lixeira está vazia.");}
                     egui::ScrollArea::vertical().max_height(420.0).show(ui,|ui|{for entry in entries{ui.group(|ui|{
+                        ui.set_width(ui.available_width());
                         ui.strong(format!("{} • {}",entry.target.kind.label(),entry.label));ui.small(format!("Excluído localmente em {}",chrono::DateTime::parse_from_rfc3339(&entry.deleted_at).map(|date|date.with_timezone(&chrono::Local).format("%d/%m/%Y %H:%M").to_string()).unwrap_or_else(|_|entry.deleted_at.clone())));
                         if entry.parent_trashed{ui.label("Restaure o documento primeiro para recuperar este item individualmente.");}
                         if entry.target.kind==Kind::Capture{ui.small("Restaurar devolve a captura ao histórico; não troca a captura em uso.");}

@@ -220,6 +220,7 @@ pub fn detect_juntada(capture: &Capture) -> Option<JuntadaInfo> {
 pub fn show_history(ui: &mut eframe::egui::Ui, capture: &Capture, document: i64) {
     use eframe::egui;
     ui.group(|ui|{
+        ui.set_width(ui.available_width());
         match movements(capture){
             Ok(events)=>{
                 ui.strong(format!("Histórico importado do SIGADOC • {} evento(s)",events.len()));
@@ -661,6 +662,7 @@ impl DossierPanel {
                 .map(|d| format!("{} — {}", d.document_number, d.title))
                 .unwrap_or_else(|| "Documento não disponível".into());
             ui.group(|ui| {
+                ui.set_width(ui.available_width());
                 ui.strong(format!(
                     "{}{}",
                     match (link.payload.kind.as_str(), link.source == document) {
