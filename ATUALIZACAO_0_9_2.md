@@ -6,7 +6,7 @@
 ## O que muda
 
 - **Quadros ocupam toda a largura** e acompanham o redimensionamento da janela (Resumo, Tarefas, atendimentos ligados, instalação na tela inicial, sugestões da IA, arquivos, dados do SIGADOC, histórico, vínculos, lixeira, conflitos, prévia e alertas do SAIOP).
-- **Textos quebram linha** em vez de serem cortados: título da ficha, rótulos longos do Resumo e os cartões da lista de documentos (o cartão cresce com o título; a barra colorida acompanha).
+- **Cartões da lista de documentos quebram o título** em vez de cortá-lo (o cartão cresce com o texto; a barra colorida acompanha). Os rótulos da ficha já quebravam linha em layout vertical; o que parecia corte eram os quadros estreitos, corrigidos acima.
 - **Divisória da lista de documentos** com limites mais amplos (de 180 px até 60% da janela) para o arrasto ser perceptível; teste automatizado garante que o arrasto redimensiona o painel.
 - **PDF original sem redundância confusa:** o botão do Resumo passa a ser **"Ler PDF (cópia no Ponte)"**, com explicação; em **Documento ▸ Arquivos**, cada PDF baixado mostra sua origem e ganha **"Abrir no SIGADOC"** ao lado de "Ler no Ponte"; em **Mais ▸ Links encontrados na página**, os tipos viraram "Original no SIGADOC" / "Anexo no SIGADOC" e, quando o PDF foi baixado, aparece o atalho "cópia baixada: ler no Ponte". A dica ⓘ explica que os links exigem login no SIGADOC e que as cópias locais ficam em Documento ▸ Arquivos.
 

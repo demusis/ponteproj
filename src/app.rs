@@ -310,6 +310,23 @@ enum Tab {
     More,
 }
 
+/// Size limits of the document list: wide enough for the divider to visibly
+/// follow the drag, while the central area keeps at least 40% of the window.
+const LIBRARY_DEFAULT_WIDTH: f32 = 320.0;
+const LIBRARY_MIN_WIDTH: f32 = 180.0;
+const LIBRARY_MAX_FRACTION: f32 = 0.6;
+
+/// The resizable left panel with the document list, shared by the window and
+/// by the layout test so both use the same limits.
+fn library_panel(window_width: f32) -> egui::Panel {
+    let max = (window_width * LIBRARY_MAX_FRACTION).max(LIBRARY_MIN_WIDTH);
+    egui::Panel::left("library")
+        .default_size(LIBRARY_DEFAULT_WIDTH)
+        .min_size(LIBRARY_MIN_WIDTH)
+        .max_size(max)
+        .resizable(true)
+}
+
 /// Small "ⓘ" that explains on hover, instead of a permanent paragraph.
 fn info(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new("ⓘ").color(Color32::from_rgb(120, 130, 140)))
@@ -1480,7 +1497,8 @@ impl PonteApp {
                         // Barra vertical sinalizadora (vermelho = atrasada, âmbar/azul = no prazo, verde = concluída).
                         // Painted after the card so it matches the card's height.
                         let stripe_left = ui.cursor().min;
-                        ui.add_space(5.0);
+                        // The stripe's own width plus the usual gap before the card.
+                        ui.add_space(5.0 + ui.spacing().item_spacing.x);
 
                         // The title wraps instead of being cut; the card grows with it.
                         let label = format!("{}\n{}", number, document.title);
@@ -1972,9 +1990,9 @@ impl PonteApp {
                 ui.small("Se o documento tem PDF no SIGADOC, importe de novo pela extensão para tentar baixá-lo.");
             }
             Ok(files) => {
-                ui.horizontal(|ui| {
-                    ui.small("Cópias baixadas na importação, guardadas protegidas no acervo.");
+                ui.horizontal_wrapped(|ui| {
                     info(ui, "“Ler no Ponte” abre a cópia local, sem precisar do SIGADOC. “Abrir no SIGADOC” vai à versão oficial no navegador (exige login). “Exportar” cria uma cópia legível na pasta local \"exportados\".");
+                    ui.small("Cópias baixadas na importação, guardadas protegidas no acervo.");
                 });
                 for file in files {
                     let origin = detail
@@ -1987,7 +2005,7 @@ impl PonteApp {
                         ui.horizontal_wrapped(|ui| {
                             ui.strong(&file.label);
                             if let Some(reference) = origin {
-                                ui.small(reference_kind(&reference.kind));
+                                ui.small(crate::labels::downloaded_kind(&reference.kind));
                             }
                             ui.small(format!("{} KB", file.size.div_ceil(1024)));
                             ui.small(&file.text_status);
@@ -2059,27 +2077,40 @@ impl PonteApp {
         if detail.capture.references.is_empty() {
             ui.small("Nenhum link foi identificado nesta página.");
         }
-        let downloaded: Vec<String> = self
-            .store
-            .list_files(detail.summary.latest_capture_id)
-            .map(|files| files.into_iter().map(|f| f.url).collect())
-            .unwrap_or_default();
+        // Only consult the stored files when there is a link to match them to.
+        let downloaded = if detail.capture.references.is_empty() {
+            Vec::new()
+        } else {
+            self.store
+                .list_files(detail.summary.latest_capture_id)
+                .unwrap_or_default()
+        };
+        let mut open_file = None;
         for (index, reference) in detail.capture.references.iter().enumerate() {
             ui.push_id(("reference", index), |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.small(reference_kind(&reference.kind));
                     safe_link(ui, &reference.label, &reference.url);
-                    if downloaded.contains(&reference.url) {
+                    if let Some(file) = downloaded.iter().find(|f| f.url == reference.url) {
                         if ui
                             .small_button("cópia baixada: ler no Ponte")
-                            .on_hover_text("Este PDF foi baixado na importação. Abre a cópia local em Documento ▸ Arquivos.")
+                            .on_hover_text("Este PDF foi baixado na importação; abre a cópia local no leitor do Ponte.")
                             .clicked()
                         {
-                            self.tab = Tab::Document;
+                            open_file = Some((file.id, file.label.clone()));
                         }
                     }
                 });
             });
+        }
+        if let Some((file_id, label)) = open_file {
+            self.pdf_reader.open(
+                &self.store,
+                file_id,
+                detail.summary.latest_capture_id,
+                &label,
+                ui.ctx(),
+            );
         }
     }
 
@@ -2834,17 +2865,9 @@ impl eframe::App for PonteApp {
                 }
             }
         });
-        // Wide limits so the divider visibly follows the drag; the
-        // central area keeps at least 40% of the window.
-        let max_library = (ui.max_rect().width() * 0.6).max(320.0);
-        egui::Panel::left("library")
-            .default_size(320.0)
-            .min_size(180.0)
-            .max_size(max_library)
-            .resizable(true)
-            .show(ui, |ui| {
-                ui.add_enabled_ui(enabled, |ui| self.sidebar(ui));
-            });
+        library_panel(ui.max_rect().width()).show(ui, |ui| {
+            ui.add_enabled_ui(enabled, |ui| self.sidebar(ui));
+        });
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_enabled_ui(enabled, |ui| {
                 if self.saiop_open {
@@ -2926,8 +2949,9 @@ fn allowed_sigadoc_url(raw_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        allowed_sigadoc_url, DocPriorityFilter, DocTaskFilter, DocTaskStatusSummary, ACCENT, ERROR,
-        SUCCESS, WARNING,
+        allowed_sigadoc_url, library_panel, DocPriorityFilter, DocTaskFilter,
+        DocTaskStatusSummary, ACCENT, ERROR, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION,
+        LIBRARY_MIN_WIDTH, SUCCESS, WARNING,
     };
     use crate::tasks::Task;
 
@@ -2974,12 +2998,7 @@ mod tests {
                         egui::Panel::bottom("status").show(ui, |ui| {
                             ui.small("status");
                         });
-                        let left = egui::Panel::left("library")
-                            .default_size(300.0)
-                            .min_size(250.0)
-                            .max_size(440.0)
-                            .resizable(true)
-                            .show(ui, |ui| {
+                        let left = library_panel(ui.max_rect().width()).show(ui, |ui| {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut String::new())
                                         .desired_width(f32::INFINITY),
@@ -2987,9 +3006,10 @@ mod tests {
                                 egui::ScrollArea::vertical().id_salt("document-list").show(ui, |ui| {
                                     for i in 0..5 {
                                         ui.horizontal(|ui| {
-                                            ui.add_sized(
-                                                [ui.available_width(), 66.0],
-                                                egui::Button::new(format!("documento {i}")),
+                                            ui.add(
+                                                egui::Button::new(format!("documento {i}"))
+                                                    .wrap()
+                                                    .min_size(egui::vec2(ui.available_width(), 60.0)),
                                             );
                                         });
                                     }
@@ -3015,14 +3035,18 @@ mod tests {
         run(vec![]);
         run(vec![]);
         let initial = left_width.get();
-        assert!((initial - 300.0).abs() < 2.0, "largura inicial {initial}");
+        assert!(
+            (initial - LIBRARY_DEFAULT_WIDTH).abs() < 2.0,
+            "largura inicial {initial}"
+        );
         assert!(
             central_width.get() <= screen.width() - initial + 1.0,
             "painel central acha que tem {}px, janela {}px, lateral {initial}px",
             central_width.get(),
             screen.width()
         );
-        // Press on the divider and drag 100 px to the left.
+        // Press on the divider and drag 100 px to the left (stays above the minimum).
+        assert!(initial - 100.0 > LIBRARY_MIN_WIDTH);
         let divider = egui::pos2(initial, 400.0);
         run(vec![egui::Event::PointerMoved(divider)]);
         run(vec![egui::Event::PointerButton {
@@ -3042,10 +3066,32 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         }]);
         run(vec![]);
-        // 100 px to the left of 300 is clamped by `min_size(250)`.
         assert!(
-            (left_width.get() - 250.0).abs() < 2.0,
+            (left_width.get() - (initial - 100.0)).abs() < 2.0,
             "a divisória não acompanhou o arrasto: {initial} -> {}",
+            left_width.get()
+        );
+        // Dragging far to the right stops at 60% of the window.
+        let divider = egui::pos2(left_width.get(), 400.0);
+        run(vec![egui::Event::PointerMoved(divider)]);
+        run(vec![egui::Event::PointerButton {
+            pos: divider,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        run(vec![egui::Event::PointerMoved(egui::pos2(1100.0, 400.0))]);
+        run(vec![egui::Event::PointerButton {
+            pos: egui::pos2(1100.0, 400.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        run(vec![]);
+        let max = screen.width() * LIBRARY_MAX_FRACTION;
+        assert!(
+            (left_width.get() - max).abs() < 2.0,
+            "máximo esperado {max}, obtido {}",
             left_width.get()
         );
     }

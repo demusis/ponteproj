@@ -77,6 +77,15 @@ pub fn reference_kind(kind: &str) -> &str {
     }
 }
 
+/// Origin tag of a PDF copy stored locally (as opposed to the link itself).
+pub fn downloaded_kind(kind: &str) -> &str {
+    match kind {
+        "original" => "cópia do documento original",
+        "attachment" => "cópia de anexo",
+        _ => "cópia baixada",
+    }
+}
+
 pub fn link_kind(kind: &str) -> &str {
     match kind {
         "antecedente" => "Documento anterior",
