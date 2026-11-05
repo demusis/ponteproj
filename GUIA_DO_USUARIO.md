@@ -70,7 +70,7 @@ Documentos juntados aparecem abaixo do documento principal, com a marca ↳. O c
 - **Enquanto a IA trabalha**, a barra de baixo mostra a etapa (preparando, recebendo a resposta, conferindo) e o botão **Cancelar**. Se a resposta vier com erro (trecho inventado, prazo que não está no texto), o Ponte pede a correção ao modelo até três vezes e só salva o que passar na conferência.
 - **Atenção com a nuvem:** com Ollama Cloud, servidor remoto ou ChatGPT, o texto do documento, as notas e o contexto saem do computador a cada clique em Analisar ou Gerar sugestão (nunca ao importar). Use só com documentos que podem sair do órgão. Com o ChatGPT, quando a cota do plano acaba o Ponte avisa e espera; o limite por aplicativo fica em ChatGPT ▸ Configurações ▸ Uso.
 
-## 6. Processos e demandas (controle do gabinete)
+## 6. Atendimentos (controle do gabinete)
 
 - **Registrar nova entrada** abre a ficha ao lado da lista. Informe pelo menos a referência ou o assunto. **Salvar** fica sempre visível no alto da ficha.
 - **Importar planilha…** lê a aba PROCESSOS de um .xlsx. A prévia lista as linhas e marca as que já estão no controle; você pode importar só as novas. Uma importação pode ser desfeita em **Importações anteriores**, com confirmação.
@@ -86,7 +86,7 @@ Um computador do gabinete é o **principal**; os outros se conectam a ele pela r
 
 - **No computador principal**: escolha "Este é o computador principal do gabinete", clique em **Salvar e ficar disponível agora** e depois em **Copiar código de conexão**. Envie o código aos colegas.
 - **Nos outros computadores**: escolha "Conectar ao computador principal", cole o código em **Código de conexão**, clique em **Usar código** e depois em **Salvar e sincronizar acervo agora**.
-- O indicador no canto superior direito mostra o estado (conectado, sem conexão, conflitos). Clique nele para abrir a janela.
+- O ponto colorido na barra inferior mostra o estado em poucas palavras (em dia, a enviar, sem conexão, conflitos). Passe o mouse para ver a frase completa e clique nele para abrir a janela.
 - Sem conexão com o principal, tudo continua funcionando neste computador e é enviado quando a conexão volta.
 - Se o mesmo item foi alterado nos dois lados, aparece um **conflito de edição**: a janela mostra, campo a campo, o valor de cada lado e quem alterou. Escolha **Combinar**, **Usar só a minha versão** ou **Usar só a do computador principal**, e confirme.
 

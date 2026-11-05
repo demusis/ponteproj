@@ -1,4 +1,4 @@
-//! Área operacional "Processos e demandas" (Controle do gabinete do SAIOP) e importador `.xlsx` da aba `PROCESSOS`.
+//! Área operacional "Atendimentos" (Controle do gabinete do SAIOP) e importador `.xlsx` da aba `PROCESSOS`.
 //! Preserva atendimentos/passagens pelo gabinete independentes de captura, quatro dimensões de situação/prioridade,
 //! indicadores calculados por eventos (sem depender de `DATEDIF` da planilha), rastreabilidade de lote e reversão.
 
@@ -2111,7 +2111,20 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
 }
 
 // ============================================================================
-// Interface gráfica "Processos e demandas" (Controle do gabinete do SAIOP)
+
+/// A titled block of the atendimento form: label on the left, field on the
+/// right, one row per field.
+fn form_section(
+    ui: &mut egui::Ui,
+    title: &str,
+    id: impl egui::AsIdSalt,
+    rows: impl FnOnce(&mut egui::Ui),
+) {
+    ui.add_space(6.0);
+    ui.strong(title);
+    egui::Grid::new(id).num_columns(2).spacing([8.0, 4.0]).show(ui, rows);
+}
+// Interface gráfica "Atendimentos" (Controle do gabinete do SAIOP)
 // ============================================================================
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2296,7 +2309,7 @@ impl SaiopPanel {
         let all_items = match store.list_saiop_attendances() {
             Ok(list) => list,
             Err(e) => {
-                ui.colored_label(ERROR, format!("Erro ao carregar Processos e demandas: {e}"));
+                ui.colored_label(ERROR, format!("Erro ao carregar Atendimentos: {e}"));
                 return None;
             }
         };
@@ -2313,7 +2326,7 @@ impl SaiopPanel {
             .count();
 
         ui.horizontal_wrapped(|ui| {
-            ui.heading("Processos e demandas");
+            ui.heading("Atendimentos");
             ui.label(RichText::new("ⓘ").color(Color32::from_rgb(120, 130, 140)))
                 .on_hover_text(format!(
                     "Controle operacional do gabinete (SAIOP). {} atendimento(s) no total, {} referência(s) distinta(s).",
@@ -2996,162 +3009,146 @@ impl SaiopPanel {
                         });
                     }
 
-                    ui.columns(2, |cols| {
-                        cols[0].strong("Identificação");
-                        cols[0].horizontal(|ui| {
-                            ui.label("Referência:");
-                            ui.text_edit_singleline(&mut ed.reference_raw)
-                                .on_hover_text("Número do processo ou documento, ou um código provisório. Informe a referência ou o assunto.");
-                        });
-                        cols[0].horizontal(|ui| {
-                            ui.label("Entrada:");
-                            crate::labels::date_field(ui, ("saiop-entry", ed.id), &mut ed.entry_date);
-                        });
-                        cols[0].horizontal(|ui| {
-                            ui.label("Responsável:");
-                            ui.text_edit_singleline(&mut ed.assignee);
+                    // One column of label/field rows per section: fields size
+                    // to the ficha, so nothing overflows into a neighbour or
+                    // gets cut at the edge.
+                    let combo_width = (ui.available_width() - 160.0).clamp(150.0, 320.0);
+                    let ed_id = ed.id;
+                    form_section(ui, "Identificação", ("saiop-form-id", ed_id), |ui| {
+                        ui.label("Referência:");
+                        ui.add(egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY))
+                            .on_hover_text("Número do processo ou documento, ou um código provisório. Informe a referência ou o assunto.");
+                        ui.end_row();
+                        ui.label("Entrada:");
+                        crate::labels::date_field(ui, ("saiop-entry", ed_id), &mut ed.entry_date);
+                        ui.end_row();
+                        ui.label("Responsável:");
+                        ui.horizontal(|ui| {
+                            let width = (ui.available_width() - 120.0).max(80.0);
+                            ui.add(egui::TextEdit::singleline(&mut ed.assignee).desired_width(width));
                             if ui.small_button("Atribuir a mim").clicked() {
                                 if let Ok(cfg) = store.load_intranet_config() {
                                     ed.assignee = cfg.member_name;
                                 }
                             }
                         });
-                        cols[0].horizontal(|ui| {
-                            ui.label("Recebido de:");
-                            ui.text_edit_singleline(&mut ed.received_from);
-                        });
-                        cols[0].add_space(6.0);
-                        cols[0].strong("Situação e prioridade");
-                        cols[0].horizontal(|ui| {
-                            ui.label("Situação:");
-                            egui::ComboBox::from_id_salt("ed-saiop-status")
-                                .selected_text(status_label(&ed.status))
-                                .show_ui(ui, |ui| {
-                                    for (k, label) in STATUS_OPTIONS {
-                                        ui.selectable_value(&mut ed.status, (*k).to_owned(), *label);
-                                    }
-                                });
-                        });
-                        cols[0].horizontal(|ui| {
-                            ui.label("Prioridade:");
-                            egui::ComboBox::from_id_salt("ed-saiop-priority")
-                                .selected_text(priority_label(&ed.priority))
-                                .show_ui(ui, |ui| {
-                                    for (k, label) in PRIORITY_OPTIONS {
-                                        ui.selectable_value(
-                                            &mut ed.priority,
-                                            (*k).to_owned(),
-                                            *label,
-                                        );
-                                    }
-                                });
-                        });
-                        cols[0].horizontal(|ui| {
-                            ui.label("Motivo da prioridade:");
-                            ui.text_edit_singleline(&mut ed.priority_reason);
-                        });
-
-                        cols[1].strong("Prazo");
-                        cols[1].horizontal(|ui| {
-                            ui.label("Prazo:");
-                            crate::labels::date_field(ui, ("saiop-due", ed.id), &mut ed.due_date);
-                            egui::ComboBox::from_id_salt("ed-saiop-due-kind")
-                                .selected_text(due_kind_label(&ed.due_kind))
-                                .show_ui(ui, |ui| {
-                                    for (k, label) in DUE_KIND_OPTIONS {
-                                        ui.selectable_value(
-                                            &mut ed.due_kind,
-                                            (*k).to_owned(),
-                                            *label,
-                                        );
-                                    }
-                                });
-                        });
-                        cols[1].add_space(6.0);
-                        cols[1].strong("Condições e relações");
-                        cols[1].horizontal(|ui| {
-                            ui.label("Retorno para UAS?:");
-                            egui::ComboBox::from_id_salt("ed-saiop-uas")
-                                .selected_text(tri_state_label(&ed.uas_return))
-                                .show_ui(ui, |ui| {
-                                    for (k, label) in TRI_STATE_OPTIONS {
-                                        ui.selectable_value(
-                                            &mut ed.uas_return,
-                                            (*k).to_owned(),
-                                            *label,
-                                        );
-                                    }
-                                });
-                        });
-                        cols[1].horizontal(|ui| {
-                            ui.label("Assinado?:");
-                            egui::ComboBox::from_id_salt("ed-saiop-signed")
-                                .selected_text(tri_state_label(&ed.signed_status))
-                                .show_ui(ui, |ui| {
-                                    for (k, label) in TRI_STATE_OPTIONS {
-                                        ui.selectable_value(
-                                            &mut ed.signed_status,
-                                            (*k).to_owned(),
-                                            *label,
-                                        );
-                                    }
-                                });
-                        });
-                        cols[1].horizontal(|ui| {
+                        ui.end_row();
+                        ui.label("Recebido de:");
+                        ui.add(egui::TextEdit::singleline(&mut ed.received_from).desired_width(f32::INFINITY));
+                        ui.end_row();
+                    });
+                    form_section(ui, "Situação e prioridade", ("saiop-form-status", ed_id), |ui| {
+                        ui.label("Situação:");
+                        egui::ComboBox::from_id_salt("ed-saiop-status")
+                            .selected_text(status_label(&ed.status))
+                            .width(combo_width)
+                            .show_ui(ui, |ui| {
+                                for (k, label) in STATUS_OPTIONS {
+                                    ui.selectable_value(&mut ed.status, (*k).to_owned(), *label);
+                                }
+                            });
+                        ui.end_row();
+                        ui.label("Prioridade:");
+                        egui::ComboBox::from_id_salt("ed-saiop-priority")
+                            .selected_text(priority_label(&ed.priority))
+                            .width(combo_width)
+                            .show_ui(ui, |ui| {
+                                for (k, label) in PRIORITY_OPTIONS {
+                                    ui.selectable_value(&mut ed.priority, (*k).to_owned(), *label);
+                                }
+                            });
+                        ui.end_row();
+                        ui.label("Motivo da prioridade:");
+                        ui.add(egui::TextEdit::singleline(&mut ed.priority_reason).desired_width(f32::INFINITY));
+                        ui.end_row();
+                    });
+                    form_section(ui, "Prazo", ("saiop-form-due", ed_id), |ui| {
+                        ui.label("Prazo:");
+                        crate::labels::date_field(ui, ("saiop-due", ed_id), &mut ed.due_date);
+                        ui.end_row();
+                        ui.label("Tipo de prazo:");
+                        egui::ComboBox::from_id_salt("ed-saiop-due-kind")
+                            .selected_text(due_kind_label(&ed.due_kind))
+                            .width(combo_width)
+                            .show_ui(ui, |ui| {
+                                for (k, label) in DUE_KIND_OPTIONS {
+                                    ui.selectable_value(&mut ed.due_kind, (*k).to_owned(), *label);
+                                }
+                            });
+                        ui.end_row();
+                    });
+                    form_section(ui, "Condições e relações", ("saiop-form-conditions", ed_id), |ui| {
+                        ui.label("Retorno para UAS?:");
+                        egui::ComboBox::from_id_salt("ed-saiop-uas")
+                            .selected_text(tri_state_label(&ed.uas_return))
+                            .width(combo_width)
+                            .show_ui(ui, |ui| {
+                                for (k, label) in TRI_STATE_OPTIONS {
+                                    ui.selectable_value(&mut ed.uas_return, (*k).to_owned(), *label);
+                                }
+                            });
+                        ui.end_row();
+                        ui.label("Assinado?:");
+                        egui::ComboBox::from_id_salt("ed-saiop-signed")
+                            .selected_text(tri_state_label(&ed.signed_status))
+                            .width(combo_width)
+                            .show_ui(ui, |ui| {
+                                for (k, label) in TRI_STATE_OPTIONS {
+                                    ui.selectable_value(&mut ed.signed_status, (*k).to_owned(), *label);
+                                }
+                            });
+                        ui.end_row();
+                        ui.label("");
+                        ui.horizontal(|ui| {
                             ui.checkbox(&mut ed.scheduled, "Agendado");
                             ui.checkbox(&mut ed.sensitive, "Documento sensível");
                         });
-                        cols[1].horizontal(|ui| {
-                            ui.label("Apensado / juntado:");
-                            ui.text_edit_singleline(&mut ed.attachment_relation)
-                                .on_hover_text("Relação de apensamento ou juntada informada na planilha ou por você.");
-                        });
-                        cols[1].add_space(6.0);
-                        cols[1].strong("Resultado");
-                        cols[1].horizontal(|ui| {
-                            ui.label("Entrega prevista:");
-                            egui::ComboBox::from_id_salt("ed-saiop-doctype")
-                                .selected_text(if ed.planned_doc_type.is_empty() {
-                                    "Não definida"
-                                } else {
-                                    &ed.planned_doc_type
-                                })
-                                .show_ui(ui, |ui| {
-                                    for opt in DOC_TYPE_OPTIONS {
-                                        ui.selectable_value(
-                                            &mut ed.planned_doc_type,
-                                            (*opt).to_owned(),
-                                            if opt.is_empty() { "Não definida" } else { *opt },
-                                        );
-                                    }
-                                });
-                        });
-                        cols[1].horizontal(|ui| {
-                            ui.label("Resultado da etapa:");
-                            egui::ComboBox::from_id_salt("ed-saiop-outcome")
-                                .selected_text(outcome_label(&ed.outcome))
-                                .show_ui(ui, |ui| {
-                                    for (k, label) in OUTCOME_OPTIONS {
-                                        ui.selectable_value(
-                                            &mut ed.outcome,
-                                            (*k).to_owned(),
-                                            *label,
-                                        );
-                                    }
-                                });
-                        });
-                        cols[1].horizontal(|ui| {
-                            ui.label("Data de saída:");
-                            crate::labels::date_field(ui, ("saiop-exit", ed.id), &mut ed.exit_date);
-                        });
-                        cols[1].horizontal(|ui| {
-                            ui.label("Enviado para:");
-                            ui.text_edit_singleline(&mut ed.sent_to);
-                        });
-                        if !ed.verification_raw.is_empty() {
-                            cols[1].small(format!("Verificação na planilha: {}", ed.verification_raw));
-                        }
+                        ui.end_row();
+                        ui.label("Apensado / juntado:");
+                        ui.add(egui::TextEdit::singleline(&mut ed.attachment_relation).desired_width(f32::INFINITY))
+                            .on_hover_text("Relação de apensamento ou juntada informada na planilha ou por você.");
+                        ui.end_row();
                     });
+                    form_section(ui, "Resultado", ("saiop-form-result", ed_id), |ui| {
+                        ui.label("Entrega prevista:");
+                        egui::ComboBox::from_id_salt("ed-saiop-doctype")
+                            .selected_text(if ed.planned_doc_type.is_empty() {
+                                "Não definida"
+                            } else {
+                                &ed.planned_doc_type
+                            })
+                            .width(combo_width)
+                            .show_ui(ui, |ui| {
+                                for opt in DOC_TYPE_OPTIONS {
+                                    ui.selectable_value(
+                                        &mut ed.planned_doc_type,
+                                        (*opt).to_owned(),
+                                        if opt.is_empty() { "Não definida" } else { *opt },
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                        ui.label("Resultado da etapa:");
+                        egui::ComboBox::from_id_salt("ed-saiop-outcome")
+                            .selected_text(outcome_label(&ed.outcome))
+                            .width(combo_width)
+                            .show_ui(ui, |ui| {
+                                for (k, label) in OUTCOME_OPTIONS {
+                                    ui.selectable_value(&mut ed.outcome, (*k).to_owned(), *label);
+                                }
+                            });
+                        ui.end_row();
+                        ui.label("Data de saída:");
+                        crate::labels::date_field(ui, ("saiop-exit", ed_id), &mut ed.exit_date);
+                        ui.end_row();
+                        ui.label("Enviado para:");
+                        ui.add(egui::TextEdit::singleline(&mut ed.sent_to).desired_width(f32::INFINITY));
+                        ui.end_row();
+                    });
+                    if !ed.verification_raw.is_empty() {
+                        ui.small(format!("Verificação na planilha: {}", ed.verification_raw));
+                    }
+                    ui.add_space(6.0);
 
                     ui.horizontal(|ui| {
                         ui.label("Assunto:");

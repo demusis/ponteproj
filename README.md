@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.18.4 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.18.5 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -21,7 +21,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 2. [Um passeio pelo Ponte com um documento de exemplo](#2-um-passeio-pelo-ponte-com-um-documento-de-exemplo)
 3. [Documentos: ficha, notas e minutas](#3-documentos-ficha-notas-e-minutas)
 4. [Tarefas e prazos](#4-tarefas-e-prazos)
-5. [Processos e demandas (controle do gabinete)](#5-processos-e-demandas-controle-do-gabinete)
+5. [Atendimentos (controle do gabinete)](#5-atendimentos-controle-do-gabinete)
 6. [Trabalhar em equipe (Rede e equipe)](#6-trabalhar-em-equipe-rede-e-equipe)
 7. [IA opcional](#7-ia-opcional)
 8. [Onde ficam os dados, backup e lixeira](#8-onde-ficam-os-dados-backup-e-lixeira)
@@ -156,7 +156,7 @@ Campos da tarefa:
 | **Mais detalhes** | origem do prazo (ex.: *art. 5º do ofício*), lembrete, resultado, checklist de etapas, dependências |
 
 Regras úteis:
-- **Nada se perde ao trocar de tela.** Com uma tarefa não salva, clicar em **Documento**, **Processos e demandas**, num documento da lista, em outra tarefa ou em **Nova tarefa** abre a pergunta *"A tarefa ‘…’ tem alterações não salvas"* com **Salvar e continuar**, **Descartar alterações** e **Voltar à tarefa**. Enquanto isso, o rótulo **Tarefas ●** fica laranja no topo. Na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só leitura, sem sair da tarefa; **Ir para o documento** abre a ficha completa.
+- **Nada se perde ao trocar de tela.** Com uma tarefa não salva, clicar em **Ficha**, **Atendimentos**, num documento da lista, em outra tarefa ou em **Nova tarefa** abre a pergunta *"A tarefa ‘…’ tem alterações não salvas"* com **Salvar e continuar**, **Descartar alterações** e **Voltar à tarefa**. Enquanto isso, o rótulo **Tarefas ●** fica laranja no topo. Na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só leitura, sem sair da tarefa; **Ir para o documento** abre a ficha completa.
 - **✓ Concluir** e **Reabrir** ficam na própria lista; concluir uma tarefa não registra nada no SIGADOC.
 - **Juntados seguem o principal:** concluir a última tarefa aberta de um documento principal conclui, em cascata, as tarefas abertas dos documentos juntados a ele (e dos juntados a estes), cada uma com a anotação *"Concluída automaticamente: o documento principal X foi concluído"*. A mensagem de confirmação lista o que foi concluído; tarefas com dependência pendente ficam abertas e são informadas. Reabrir o principal não reabre as peças.
 - **Dependências aparecem na lista.** Uma tarefa que depende de outras fica recuada à direita (um degrau por nível, como os documentos juntados), com a linha *↳ depende de: A, B* (concluída riscada ✓, atrasada em vermelho), e é listada depois delas. Enquanto houver dependência aberta, o cartão mostra ⛓ e **✓ Concluir** fica desabilitado com *"Conclua antes: A, B"*. Na ficha, o bloco **Cadeia de dependências** lista o que vem antes e o que espera por ela, em qualquer nível, com **Abrir**. Ao marcar dependências, as que formariam ciclo aparecem desabilitadas e explicadas; o salvamento continua recusando ciclos.
@@ -164,9 +164,9 @@ Regras úteis:
 
 ---
 
-## 5. Processos e demandas (controle do gabinete)
+## 5. Atendimentos (controle do gabinete)
 
-Área para o controle operacional que muitos gabinetes mantêm numa planilha: cada **atendimento** é uma passagem de um processo ou documento pelo gabinete, com situação, prioridade, prazo e resultado — mesmo que o documento nunca tenha sido importado do SIGADOC.
+Área para o controle operacional que muitos gabinetes mantêm numa planilha. No SIGADOC, processos e expedientes são todos **documentos**, e é assim que entram na biblioteca do Ponte. Um **atendimento** é outra coisa: cada passagem de um desses documentos pelo gabinete (ou de uma demanda sem documento: ligação, e-mail, pedido verbal), com entrada, responsável, situação, prioridade, prazo e resultado. O mesmo documento pode ter várias passagens. O atendimento pode ser ligado ao documento importado (**Ligar a documento**), mas existe mesmo sem ele.
 
 ### Registrar uma entrada à mão
 
@@ -236,7 +236,7 @@ Um computador do gabinete é o **principal**; os outros se conectam a ele pela r
 2. Marque **Conectar ao computador principal do gabinete**, cole o código em *Código de conexão* e clique em **Usar código** — o Ponte testa a conexão na hora.
 3. **Salvar e sincronizar acervo agora**.
 
-Pronto: importações, notas, minutas, tarefas e atendimentos de todos passam a ir para o mesmo acervo, com o nome de quem fez cada coisa. O indicador no canto superior direito mostra o estado: `● Conectado • atualizado agora`, `● Sem conexão • 2 a enviar`, `● Computador principal ativo` ou `⚠ N conflito(s) de edição`. Clique nele para abrir a janela.
+Pronto: importações, notas, minutas, tarefas e atendimentos de todos passam a ir para o mesmo acervo, com o nome de quem fez cada coisa. O ponto colorido na barra inferior mostra o estado, em poucas palavras: `● conectado • atualizado agora`, `● sem conexão com o principal • 2 a enviar`, `● computador principal ativo`, `● em dia há 3 min` (pasta compartilhada) ou `● ⚠ N conflito(s) de edição`. Passe o mouse para ver a frase completa e clique para abrir a janela; durante uma sincronização a mesma linha mostra a etapa em andamento.
 
 **Se o principal desligar**, nada para: cada computador continua salvando localmente (a mensagem avisa *Salvo neste computador… será enviado ao reconectar*) e tudo é enviado quando a conexão volta. Se o principal quebrar de vez, qualquer colega pode marcar o próprio computador como principal e distribuir um novo código: o acervo dele já está completo.
 
@@ -291,7 +291,7 @@ Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo
 - **Backup**: Menu ▾ → **Fazer backup agora** cria uma cópia consistente em `…\PonteProj\backups\`. O instalador também faz uma antes de cada atualização. Um backup só abre na mesma conta do Windows que o criou.
 - **Lixeira**: excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a Lixeira (Menu ▾), de onde se restaura. Nada é apagado definitivamente.
 - **Ao fechar** com algo não salvo, a janela lista cada pendência com um botão **Ir para**.
-- **Exportar dados (CSV)**: Menu ▾ → **Exportar dados para CSV…** grava, numa pasta nova em `…\PonteProj\exportados\csv-AAAAMMDD-HHMMSS\`, três arquivos: `documentos.csv` (número, título, tipo, datas, processo, remetente, finalidade, assuntos, prioridade, juntada, contagem de tarefas e anexos), `tarefas.csv` (tarefa, ação, situação, prioridade, responsável, prazo, atraso, conclusão) e `atendimentos.csv` (Processos e demandas). Formato: UTF-8 com BOM, separador `;`, datas `AAAA-MM-DD` e coluna "Mês" (`AAAA-MM-01`) para séries mensais. Não saem textos de documentos, notas, minutas, observações nem anexos. Os arquivos abrem no Excel e entram no **CERES** (painéis do gabinete) como conjuntos: envie cada `.csv` no setor, marque a coluna `ID` como identificador para reimportar sem duplicar, e use "Mês" ou a data como coluna de período.
+- **Exportar dados (CSV)**: Menu ▾ → **Exportar dados para CSV…** grava, numa pasta nova em `…\PonteProj\exportados\csv-AAAAMMDD-HHMMSS\`, três arquivos: `documentos.csv` (número, título, tipo, datas, processo, remetente, finalidade, assuntos, prioridade, juntada, contagem de tarefas e anexos), `tarefas.csv` (tarefa, ação, situação, prioridade, responsável, prazo, atraso, conclusão) e `atendimentos.csv` (painel Atendimentos). Formato: UTF-8 com BOM, separador `;`, datas `AAAA-MM-DD` e coluna "Mês" (`AAAA-MM-01`) para séries mensais. Não saem textos de documentos, notas, minutas, observações nem anexos. Os arquivos abrem no Excel e entram no **CERES** (painéis do gabinete) como conjuntos: envie cada `.csv` no setor, marque a coluna `ID` como identificador para reimportar sem duplicar, e use "Mês" ou a data como coluna de período.
 - **Menu ▾ ▸ Sobre o Ponte** mostra a versão do programa e da extensão, a autoria, a licença e o endereço do projeto.
 
 ---
@@ -333,7 +333,7 @@ Chrome/Edge ──(Native Messaging)──► ponteproj.exe --native-host ──
 | `src/model.rs` | `Capture` (o que a extensão envia) e sua validação |
 | `src/dossier.rs` | Vínculos entre documentos, versões importadas, detecção de juntada |
 | `src/tasks.rs`, `src/tasks_ui.rs` | Tarefas, dependências, painel |
-| `src/saiop.rs` | Processos e demandas: modelo, importador `.xlsx` (leitor ZIP/XML próprio), painel |
+| `src/saiop.rs` | Atendimentos: modelo, importador `.xlsx` (leitor ZIP/XML próprio), painel |
 | `src/intranet.rs` | Modos principal/conectado, sincronização em thread própria, fila offline, mesclagem em três vias |
 | `src/pdf_reader.rs`, `src/evidence.rs`, `src/ai.rs` | Leitor de PDF + OCR do Windows, fontes para a IA, cliente Ollama |
 | `src/windows_ui.rs` | Seletor de arquivo e verificação do registro do host (crate `windows`) |

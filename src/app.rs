@@ -633,7 +633,7 @@ enum PendingTarget {
 /// they decide whether to save, discard or stay.
 #[derive(Clone)]
 enum Leave {
-    /// The "Processos e demandas" screen.
+    /// The "Atendimentos" screen.
     Saiop,
     /// The "Documento" screen with whatever document is selected.
     Documents,
@@ -955,7 +955,7 @@ impl PonteApp {
         }
         if self.saiop.dirty() {
             out.push(Pending {
-                label: "Atendimento em edição em Processos e demandas".into(),
+                label: "Atendimento em edição no painel Atendimentos".into(),
                 go: PendingTarget::Saiop,
             });
         }
@@ -1215,72 +1215,62 @@ impl PonteApp {
         };
         let conflicts = self.store.list_sync_conflicts().map(|v| v.len()).unwrap_or(0);
         let outbox = self.store.list_offline_outbox().map(|v| v.len()).unwrap_or(0);
+        let full = format!("{full}\n\nClique para abrir Rede e equipe.");
         if conflicts > 0 {
             return (
                 ERROR,
                 format!("⚠ {conflicts} conflito(s) de edição"),
-                format!("{full}\n\nAbra Rede e equipe para decidir campo a campo."),
+                format!("{full}\nDecida campo a campo."),
             );
         }
+        // Short texts live in the status bar, so they skip the mode's name:
+        // the hover sentence and the window say it.
+        let since = |at: Instant| {
+            let secs = at.elapsed().as_secs();
+            if secs < 60 {
+                "agora".to_owned()
+            } else {
+                format!("há {} min", secs / 60)
+            }
+        };
+        let pending = |text: &str| {
+            if outbox > 0 {
+                format!("{text} • {outbox} a enviar")
+            } else {
+                text.to_owned()
+            }
+        };
         match cfg.mode {
             crate::intranet::IntranetMode::Local => {
-                (Color32::from_rgb(140, 150, 160), "Só neste computador".into(), full)
+                (Color32::from_rgb(140, 150, 160), "só neste computador".into(), full)
             }
             crate::intranet::IntranetMode::Host => {
                 if self.intranet.host_running() {
-                    (SUCCESS, "Computador principal ativo".into(), full)
+                    (SUCCESS, "computador principal ativo".into(), full)
                 } else {
-                    (WARNING, "Computador principal parado".into(), full)
+                    (WARNING, "computador principal parado".into(), full)
                 }
             }
             crate::intranet::IntranetMode::SharedFolder => {
                 if self.intranet.syncing() {
-                    (ACCENT, "Sincronizando com a pasta…".into(), full)
+                    (ACCENT, "sincronizando com a pasta…".into(), full)
                 } else if self.intranet.offline {
-                    (
-                        WARNING,
-                        if outbox > 0 {
-                            format!("Pasta fora de alcance • {outbox} a enviar")
-                        } else {
-                            "Pasta fora de alcance".into()
-                        },
-                        full,
-                    )
+                    (WARNING, pending("pasta fora de alcance"), full)
                 } else if outbox > 0 {
-                    (WARNING, format!("Pasta compartilhada • {outbox} a enviar"), full)
+                    (WARNING, format!("{outbox} a enviar"), full)
                 } else if let Some((at, _)) = self.intranet.last_sync_finished {
-                    let secs = at.elapsed().as_secs();
-                    let when = if secs < 60 {
-                        "agora".to_owned()
-                    } else {
-                        format!("há {} min", secs / 60)
-                    };
-                    (SUCCESS, format!("Pasta compartilhada • em dia {when}"), full)
+                    (SUCCESS, format!("em dia {}", since(at)), full)
                 } else {
-                    (ACCENT, "Pasta compartilhada".into(), full)
+                    (ACCENT, "pasta ainda não sincronizada".into(), full)
                 }
             }
             crate::intranet::IntranetMode::Client => {
                 if self.intranet.offline {
-                    (
-                        WARNING,
-                        if outbox > 0 {
-                            format!("Sem conexão • {outbox} a enviar")
-                        } else {
-                            "Sem conexão com o principal".into()
-                        },
-                        full,
-                    )
+                    (WARNING, pending("sem conexão com o principal"), full)
                 } else if let Some((at, _)) = self.intranet.last_sync_finished {
-                    let secs = at.elapsed().as_secs();
-                    let when = if secs < 60 {
-                        "agora".to_owned()
-                    } else {
-                        format!("há {} min", secs / 60)
-                    };
-                    (SUCCESS, format!("Conectado • atualizado {when}"), full)
+                    (SUCCESS, format!("conectado • atualizado {}", since(at)), full)
                 } else {
-                    (ACCENT, "Conectando ao principal…".into(), full)
+                    (ACCENT, "conectando ao principal…".into(), full)
                 }
             }
         }
@@ -2057,7 +2047,7 @@ impl PonteApp {
             ui.heading(RichText::new("PONTE").color(ACCENT).strong());
             ui.label("Assistente documental");
             if ui
-                .selectable_label(self.saiop_open, "Processos e demandas")
+                .selectable_label(self.saiop_open, "Atendimentos")
                 .clicked()
             {
                 self.navigate(Leave::Saiop);
@@ -2080,7 +2070,7 @@ impl PonteApp {
                 self.saiop_open = false;
             }
             if ui
-                .selectable_label(!self.tasks_open && !self.saiop_open, "Documento")
+                .selectable_label(!self.tasks_open && !self.saiop_open, "Ficha")
                 .clicked()
             {
                 self.navigate(Leave::Documents);
@@ -2158,18 +2148,6 @@ impl PonteApp {
                 }
                 if export {
                     self.export_csv(ui.ctx());
-                }
-                let (color, short, full) = self.network_status();
-                let response = ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(format!("● {short}")).color(color).size(13.0),
-                        )
-                        .frame(false),
-                    )
-                    .on_hover_text(full);
-                if response.clicked() {
-                    self.intranet.open = true;
                 }
             });
         });
@@ -2885,7 +2863,7 @@ impl PonteApp {
         ui.group(|ui| {
             ui.set_width(ui.available_width());
             ui.strong(format!(
-                "Processos e demandas • {} atendimento(s) deste documento",
+                "{} atendimento(s) deste documento em Atendimentos",
                 mine.len()
             ));
             for att in mine {
@@ -2913,7 +2891,7 @@ impl PonteApp {
                             self.saiop_open = true;
                             self.tasks_open = false;
                         } else {
-                            self.error("Há um atendimento com alterações não salvas em Processos e demandas. Salve ou descarte antes de abrir outro.");
+                            self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
                         }
                     }
                 });
@@ -4158,6 +4136,9 @@ impl eframe::App for PonteApp {
             if cancel {
                 self.cancel_worker();
             }
+            // Network line: the sync progress while it runs, otherwise a
+            // discreet coloured dot with the short status (moved here from
+            // the header at the user's request).
             if self.intranet.syncing() {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -4173,6 +4154,20 @@ impl eframe::App for PonteApp {
                         ui.small(format!("Sincronizando com o computador principal… {step}"));
                     }
                 });
+            } else {
+                let (color, short, full) = self.network_status();
+                let response = ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(format!("● {short}")).color(color).size(12.0),
+                        )
+                        .frame(false)
+                        .small(),
+                    )
+                    .on_hover_text(full);
+                if response.clicked() {
+                    self.intranet.open = true;
+                }
             }
             if let Some(suggestion) = &self.suggestion {
                 ui.horizontal(|ui| {
