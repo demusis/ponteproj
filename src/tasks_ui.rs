@@ -108,8 +108,11 @@ pub struct TaskPanel {
     view: usize,
     document_filter: Option<i64>,
     /// The list follows the document open in the library (default) until
-    /// the person asks for every document.
+    /// the person asks for every document; selecting another document in
+    /// the library brings the filter back.
     show_all_documents: bool,
+    /// Document the library had selected at the last frame, to notice a change.
+    last_selected_document: Option<i64>,
     trash_requested: Option<crate::trash::Target>,
     /// "Anexos" block of the task being edited.
     attachments: crate::attachments::AttachmentsPanel,
@@ -333,7 +336,14 @@ impl TaskPanel {
         selected_document: Option<i64>,
     ) -> Option<i64> {
         let mut open = None;
-        // By default the list is the open document's; the person can widen it.
+        // By default the list is the open document's; the person can widen it,
+        // but picking another document in the library narrows it again.
+        if selected_document != self.last_selected_document {
+            self.last_selected_document = selected_document;
+            if selected_document.is_some() {
+                self.show_all_documents = false;
+            }
+        }
         if !self.show_all_documents {
             if let Some(id) = selected_document {
                 if self.document_filter != Some(id) {

@@ -76,7 +76,8 @@ Documentos juntados aparecem abaixo do documento principal, com a marca ↳. O c
 - **Importar planilha…** lê a aba PROCESSOS de um .xlsx. A prévia lista as linhas e marca as que já estão no controle; você pode importar só as novas. Uma importação pode ser desfeita em **Importações anteriores**, com confirmação.
 - **Fila** agrupa os atendimentos (vencidos, vence hoje, sem responsável…) e mostra quantos há em cada uma. **Filtros** abre responsável, origem, destino e situação.
 - Clique no título de uma coluna para ordenar.
-- **Ligar a documento** liga o atendimento a um documento importado pelo número; o Resumo do documento passa a mostrar o atendimento.
+- Com um documento aberto na biblioteca, o painel mostra só os atendimentos dele (**Todos os atendimentos** amplia) e **Registrar nova entrada** cria o atendimento já ligado ao documento aberto, com o número dele como referência.
+- **Ligar a documento** liga o atendimento a um documento importado pelo número; a referência vira o número do documento e o Resumo do documento passa a mostrar o atendimento. A ficha aceita anexos depois de salva.
 
 ## 7. Trabalhar em equipe (Menu ▸ Rede e equipe)
 

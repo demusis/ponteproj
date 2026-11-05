@@ -4205,8 +4205,23 @@ impl eframe::App for PonteApp {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_enabled_ui(enabled, |ui| {
                 if self.saiop_open {
+                    let context = self.selected_id.and_then(|id| {
+                        self.documents
+                            .iter()
+                            .find(|d| d.id == id)
+                            .map(|d| (id, d.document_number.clone()))
+                    });
+                    self.saiop.set_context_document(context);
                     if let Some(id) = self.saiop.show(ui, &mut self.store) {
                         self.select(id);
+                    }
+                    if let Some(task) = self.saiop.take_open_task() {
+                        if self.tasks.focus_task(&task) {
+                            self.tasks_open = true;
+                            self.saiop_open = false;
+                        } else {
+                            self.error("Há uma tarefa com alterações não salvas no painel Tarefas. Salve ou descarte antes de abrir outra.");
+                        }
                     }
                 } else if self.tasks_open {
                     if let Some(id) = self.tasks.show(ui, &mut self.store, self.selected_id) { self.navigate(Leave::Select(id)); }

@@ -204,7 +204,7 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
             Ok((doc, format!("Tarefa #{id} — {}", task.title)))
         }
         Kind::Attachment => {
-            let (owner_kind, owner_id, doc, bytes): (String, i64, i64, Vec<u8>) = conn
+            let (owner_kind, owner_id, doc, bytes): (String, i64, Option<i64>, Vec<u8>) = conn
                 .query_row(
                     "SELECT owner_kind,owner_id,document_id,metadata FROM attachments WHERE id=?1",
                     [id],
@@ -214,8 +214,12 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
                 .context("Anexo não encontrado.")?;
             let meta: crate::attachments::AttachmentMeta =
                 serde_json::from_slice(&protection::unseal(&bytes)?)?;
+            // An attachment of an atendimento without document has no
+            // document to hang from in the trash: document 0 marks that.
+            let doc = doc.unwrap_or(0);
             let owner = match owner_kind.as_str() {
                 "task" => format!("da tarefa #{owner_id}"),
+                "saiop" => format!("do atendimento #{owner_id}"),
                 _ => label(conn, Kind::Document, doc)
                     .map(|(_, text)| format!("do documento {text}"))
                     .unwrap_or_else(|_| format!("do documento #{doc}")),
@@ -226,6 +230,10 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
 }
 fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
     let (doc, label) = label(conn, target.kind, target.id)?;
+    ensure!(
+        doc != 0,
+        "Anexos de atendimentos não vão para a Lixeira: use “Excluir de vez” na ficha do atendimento."
+    );
     require_active_document(conn, doc)?;
     ensure!(
         !contains(conn, target.kind, target.id)?,

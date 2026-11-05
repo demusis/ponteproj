@@ -458,7 +458,9 @@ pub struct AttachmentRow {
     pub id: i64,
     pub owner_kind: String,
     pub owner_id: i64,
-    pub document_id: i64,
+    /// None for an attachment of an atendimento without a linked document.
+    #[serde(default)]
+    pub document_id: Option<i64>,
     pub meta: crate::attachments::AttachmentMeta,
 }
 
@@ -601,6 +603,11 @@ pub enum IntranetMutation {
     UndoSaiopBatch {
         batch_id: i64,
     },
+    /// Permanent removal of one atendimento (and its attachments); there is
+    /// no trash for atendimentos.
+    DeleteSaiopAttendance {
+        id: i64,
+    },
     AddAttachment {
         owner_kind: String,
         owner_id: i64,
@@ -611,6 +618,10 @@ pub enum IntranetMutation {
     UpdateAttachment {
         id: i64,
         description: String,
+    },
+    /// Permanent removal of an attachment (atendimentos have no trash).
+    DeleteAttachment {
+        id: i64,
     },
 }
 
@@ -1231,7 +1242,7 @@ impl Store {
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, i64>(2)?,
-                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(3)?,
                     r.get::<_, Vec<u8>>(4)?,
                 ))
             })?
@@ -1729,6 +1740,9 @@ impl Store {
             IntranetMutation::UpdateAttachment { id, description } => self
                 .update_attachment_description(id, &description)
                 .map(|()| MutationReply::Unit),
+            IntranetMutation::DeleteAttachment { id } => {
+                self.delete_attachment(id).map(|()| MutationReply::Unit)
+            }
             IntranetMutation::DeleteDocument { id } => {
                 self.delete_document(id).map(|()| MutationReply::Unit)
             }
@@ -1749,6 +1763,9 @@ impl Store {
             IntranetMutation::UndoSaiopBatch { batch_id } => self
                 .undo_saiop_batch(batch_id)
                 .map(|(r, k)| MutationReply::Counts(r, k)),
+            IntranetMutation::DeleteSaiopAttendance { id } => self
+                .delete_saiop_attendance(id)
+                .map(|()| MutationReply::Unit),
         };
         self.suppress_remote = prev_suppress;
         self.actor_override = prev_actor;
@@ -3175,6 +3192,9 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
         IntranetMutation::UndoSaiopBatch { batch_id } => {
             format!("Reversão do lote SAIOP #{batch_id}")
         }
+        IntranetMutation::DeleteSaiopAttendance { id } => {
+            format!("Exclusão do atendimento #{id}")
+        }
         IntranetMutation::AddAttachment {
             owner_kind,
             owner_id,
@@ -3185,6 +3205,7 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
             crate::labels::item_kind(owner_kind)
         ),
         IntranetMutation::UpdateAttachment { id, .. } => format!("Descrição do anexo #{id}"),
+        IntranetMutation::DeleteAttachment { id } => format!("Exclusão definitiva do anexo #{id}"),
     }
 }
 

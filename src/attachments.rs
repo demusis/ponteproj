@@ -19,6 +19,8 @@ pub const MAX_DESCRIPTION_CHARS: usize = 500;
 pub enum Owner {
     Document(i64),
     Task(i64),
+    /// An atendimento of the "Atendimentos" panel (kind `saiop`).
+    Attendance(i64),
 }
 
 impl Owner {
@@ -26,17 +28,19 @@ impl Owner {
         match self {
             Self::Document(_) => "document",
             Self::Task(_) => "task",
+            Self::Attendance(_) => "saiop",
         }
     }
     pub fn id(self) -> i64 {
         match self {
-            Self::Document(id) | Self::Task(id) => id,
+            Self::Document(id) | Self::Task(id) | Self::Attendance(id) => id,
         }
     }
     pub fn parse(kind: &str, id: i64) -> Result<Self> {
         match kind {
             "document" => Ok(Self::Document(id)),
             "task" => Ok(Self::Task(id)),
+            "saiop" => Ok(Self::Attendance(id)),
             _ => bail!("Tipo de item inválido para anexo."),
         }
     }
@@ -44,6 +48,7 @@ impl Owner {
         match self {
             Self::Document(_) => "documento",
             Self::Task(_) => "tarefa",
+            Self::Attendance(_) => "atendimento",
         }
     }
 }
@@ -286,17 +291,44 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS attachments(
+        const DEFINITION: &str = "(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                owner_kind TEXT NOT NULL CHECK(owner_kind IN ('document','task')),
+                owner_kind TEXT NOT NULL CHECK(owner_kind IN ('document','task','saiop')),
                 owner_id INTEGER NOT NULL,
-                document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
                 metadata BLOB NOT NULL,
                 payload BLOB NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS attachments_owner ON attachments(owner_kind,owner_id);",
+            )";
+        tx.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS attachments{DEFINITION};
+            CREATE INDEX IF NOT EXISTS attachments_owner ON attachments(owner_kind,owner_id);"
+        ))?;
+        // Libraries from before 0.19.0 only allow documents and tasks as
+        // owners and demand a document. SQLite cannot alter a CHECK, so the
+        // table is rebuilt once, keeping every row and id. Triggers that
+        // mention the table go first (`ensure_write_guards` recreates them).
+        let definition: String = tx.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='attachments'",
+            [],
+            |r| r.get(0),
         )?;
+        if !definition.contains("'saiop'") {
+            let triggers = tx
+                .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_%'")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for name in triggers {
+                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))?;
+            }
+            tx.execute_batch(&format!(
+                "CREATE TABLE attachments_v19{DEFINITION};
+                 INSERT INTO attachments_v19(id,owner_kind,owner_id,document_id,metadata,payload)
+                   SELECT id,owner_kind,owner_id,document_id,metadata,payload FROM attachments;
+                 DROP TABLE attachments;
+                 ALTER TABLE attachments_v19 RENAME TO attachments;
+                 CREATE INDEX IF NOT EXISTS attachments_owner ON attachments(owner_kind,owner_id);"
+            ))?;
+        }
         if tx.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 10 {
             tx.pragma_update(None, "user_version", 10)?;
         }
@@ -305,14 +337,82 @@ impl Store {
     }
 
     /// Document the owner belongs to, after checking that both are active.
-    fn attachment_owner_document(conn: &rusqlite::Connection, owner: Owner) -> Result<i64> {
+    /// The document an attachment hangs from: the owner itself, the task's
+    /// document, or the atendimento's linked document (none when it stands
+    /// alone). Fails when that document or owner is in the trash.
+    fn attachment_owner_document(conn: &rusqlite::Connection, owner: Owner) -> Result<Option<i64>> {
         match owner {
             Owner::Document(id) => {
                 crate::trash::require_active_document(conn, id)?;
-                Ok(id)
+                Ok(Some(id))
             }
-            Owner::Task(id) => crate::trash::require_active_task(conn, id),
+            Owner::Task(id) => crate::trash::require_active_task(conn, id).map(Some),
+            Owner::Attendance(id) => {
+                // The atendimento may stand alone; when it is linked to a
+                // document, that document must be active.
+                let document: Option<i64> = conn
+                    .query_row(
+                        "SELECT document_id FROM saiop_attendances WHERE id=?1",
+                        [id],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .context("Atendimento não encontrado.")?;
+                if let Some(document) = document {
+                    crate::trash::require_active_document(conn, document)?;
+                }
+                Ok(document)
+            }
         }
+    }
+
+    /// Removes an attachment for good. Used for attachments of atendimentos,
+    /// which have no trash (the trash hangs from documents). On a client
+    /// computer the request goes to the main computer.
+    pub fn delete_attachment(&mut self, id: i64) -> Result<()> {
+        if let Some(cfg) = self.client_config()? {
+            match self.remote_mutate(
+                &cfg,
+                crate::intranet::IntranetMutation::DeleteAttachment { id },
+            )? {
+                crate::intranet::MutationReply::Unit => return Ok(()),
+                _ => bail!("Resposta inesperada do computador principal ao excluir o anexo."),
+            }
+        }
+        let actor = self.active_actor();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (owner_kind, owner_id, document, blob): (String, i64, Option<i64>, Vec<u8>) = tx
+            .query_row(
+                "SELECT owner_kind,owner_id,document_id,metadata FROM attachments WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?
+            .context("Anexo não encontrado (já excluído?).")?;
+        let meta: AttachmentMeta = serde_json::from_slice(&protection::unseal(&blob)?)?;
+        tx.execute(
+            "DELETE FROM trash WHERE kind='attachment' AND item_id=?1",
+            [id],
+        )?;
+        tx.execute("DELETE FROM attachments WHERE id=?1", [id])?;
+        crate::intranet::record_mutation(
+            &tx,
+            &actor,
+            "attachment",
+            id,
+            None,
+            "delete_attachment",
+            document,
+            &format!(
+                "Apagou de vez o anexo “{}” de {} #{owner_id}",
+                meta.name,
+                labels::item_kind(&owner_kind)
+            ),
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Attaches a file. On a client computer the file goes to the main
@@ -388,7 +488,7 @@ impl Store {
             id,
             None,
             "add_attachment",
-            Some(document),
+            document,
             &format!(
                 "Anexou “{}” ({}, {}) a {} #{}",
                 meta.name,
@@ -559,6 +659,9 @@ pub struct AttachmentsPanel {
     message_is_error: bool,
     pdf_request: Option<(i64, String)>,
     trash_request: Option<crate::trash::Target>,
+    /// "Excluir de vez" clicked on this attachment of an atendimento; waiting
+    /// for confirmation.
+    confirm_delete: Option<i64>,
 }
 
 impl AttachmentsPanel {
@@ -634,6 +737,7 @@ impl AttachmentsPanel {
             ui.small(match owner {
                 Owner::Document(_) => "Nenhum arquivo anexado a este documento.",
                 Owner::Task(_) => "Nenhum arquivo anexado a esta tarefa.",
+                Owner::Attendance(_) => "Nenhum arquivo anexado a este atendimento.",
             });
         }
         let mut save_description: Option<(i64, String)> = None;
@@ -718,7 +822,16 @@ impl AttachmentsPanel {
                             }
                         }
                     }
-                    if ui
+                    if matches!(owner, Owner::Attendance(_)) {
+                        // Atendimentos have no trash: the removal is final.
+                        if ui
+                            .add_enabled(!busy, egui::Button::new("Excluir de vez…"))
+                            .on_hover_text("Apaga o anexo definitivamente (anexos de atendimentos não vão para a Lixeira).")
+                            .clicked()
+                        {
+                            self.confirm_delete = Some(meta.id);
+                        }
+                    } else if ui
                         .add_enabled(!busy, egui::Button::new("Excluir…"))
                         .on_hover_text("Move o anexo para a Lixeira; pode ser restaurado depois.")
                         .clicked()
@@ -731,6 +844,21 @@ impl AttachmentsPanel {
                     ui.small(format!("identificação {}…", &meta.sha256[..meta.sha256.len().min(12)]))
                         .on_hover_text(format!("SHA-256 completo: {}", meta.sha256));
                 });
+                if self.confirm_delete == Some(meta.id) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(WARNING, format!("Apagar “{}” de vez? Não há como restaurar.", meta.name));
+                        if ui.add_enabled(!busy, egui::Button::new("Apagar de vez").small()).clicked() {
+                            self.confirm_delete = None;
+                            match store.delete_attachment(meta.id) {
+                                Ok(()) => self.notice(format!("Anexo “{}” apagado.", meta.name), false),
+                                Err(error) => self.notice(error.to_string(), true),
+                            }
+                        }
+                        if ui.small_button("Cancelar").clicked() {
+                            self.confirm_delete = None;
+                        }
+                    });
+                }
             });
         }
         if let Some((id, description)) = save_description {

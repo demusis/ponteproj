@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.18.5 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.19.0 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -104,9 +104,9 @@ Tudo isso fica só no seu computador (ou no acervo do gabinete, se a equipe esti
 
 O cabeçalho da ficha mostra o número, a etiqueta de tarefas, a situação de juntada (com **Abrir documento principal** em 1 clique) e o botão **Excluir…** (vai para a lixeira, reversível).
 
-### Anexos (arquivos seus, no documento ou na tarefa)
+### Anexos (arquivos seus, no documento, na tarefa ou no atendimento)
 
-Em **Documento ▸ Anexos** e na ficha de cada tarefa, **Anexar arquivo…** abre a janela de escolha do Windows. O arquivo passa a fazer parte do acervo (cifrado, como tudo o mais) e aparece para toda a equipe. Exemplos: o ofício em Word que originou o documento, a foto de um despacho, o e-mail com a orientação recebida.
+Em **Documento ▸ Anexos**, na ficha de cada tarefa e na ficha de cada atendimento (depois de salvo), **Anexar arquivo…** abre a janela de escolha do Windows. O arquivo passa a fazer parte do acervo (cifrado, como tudo o mais) e aparece para toda a equipe. Exemplos: o ofício em Word que originou o documento, a foto de um despacho, o e-mail com a orientação recebida.
 
 | Regra | Valor |
 |---|---|
@@ -170,7 +170,7 @@ Regras úteis:
 
 ### Registrar uma entrada à mão
 
-Clique em **Registrar nova entrada**. A ficha abre **ao lado** da grade, com **Salvar / Descartar / Encerrar / Fechar** sempre visíveis no alto. Exemplo:
+Clique em **Registrar nova entrada**. A ficha abre **ao lado** da grade, com **Salvar / Descartar / Encerrar / Fechar / Excluir…** sempre visíveis no alto (a exclusão é definitiva, com confirmação; não há Lixeira para atendimentos). Exemplo:
 
 | Seção | Campo | Exemplo |
 |---|---|---|
@@ -186,7 +186,9 @@ Clique em **Registrar nova entrada**. A ficha abre **ao lado** da grade, com **S
 
 Só a **referência ou o assunto** é obrigatório. Cada mudança de situação ou de responsável vira um evento na **Linha do tempo**; você também registra eventos à mão (*"cobrado retorno por telefone"*).
 
-**Ligar a documento**: se o documento já foi importado do SIGADOC, informe o número e clique em **Ligar a documento**. O Resumo do documento passa a mostrar o atendimento, e **Criar tarefa** na ficha cria uma tarefa no painel Tarefas ligada a ele.
+**Com um documento aberto na biblioteca**, o painel mostra só os atendimentos dele ("Só SEFAZ-PRO-2026/00001"; **Todos os atendimentos** amplia) e **Registrar nova entrada** cria o atendimento já ligado ao documento aberto (mesmo com a lista em "Todos os atendimentos"), com o número dele como referência.
+
+**Ligar a documento**: se o documento já foi importado do SIGADOC, informe o número e clique em **Ligar a documento**. A referência passa a ser o número do documento (fica travada enquanto ligado; **Desligar do documento** libera), o Resumo do documento passa a mostrar o atendimento, e **Criar tarefa** na ficha cria uma tarefa no painel Tarefas ligada a ele. A ficha também aceita **Anexos** (arquivos seus), como documentos e tarefas.
 
 ### Importar a planilha do controle (.xlsx, aba PROCESSOS)
 

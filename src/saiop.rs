@@ -1296,7 +1296,13 @@ impl Store {
         let mut preserved = 0usize;
         for (id, blob) in rows {
             let att: SaiopAttendance = serde_json::from_slice(&unseal(&blob)?)?;
-            if att.human_edited || !att.task_ids.is_empty() {
+            let attachments: i64 = tx.query_row(
+                "SELECT count(*) FROM attachments a WHERE a.owner_kind='saiop' AND a.owner_id=?1
+                   AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='attachment' AND t.item_id=a.id)",
+                params![id],
+                |r| r.get(0),
+            )?;
+            if att.human_edited || !att.task_ids.is_empty() || attachments > 0 {
                 preserved += 1;
                 tx.execute(
                     "UPDATE saiop_attendances SET batch_id = NULL WHERE id = ?1",
@@ -1398,6 +1404,71 @@ impl Store {
         });
         self.save_saiop_attendance(att, version)?;
         Ok((task_id > 0).then_some(task_id))
+    }
+
+    /// Removes one atendimento for good, with its attachments (there is no
+    /// trash for atendimentos). Tasks it created stay with their documents.
+    /// On a client computer the request goes to the main computer.
+    pub fn delete_saiop_attendance(&mut self, id: i64) -> Result<()> {
+        if let Some(cfg) = self.client_config()? {
+            return match self.remote_mutate(
+                &cfg,
+                crate::intranet::IntranetMutation::DeleteSaiopAttendance { id },
+            )? {
+                crate::intranet::MutationReply::Unit => Ok(()),
+                _ => bail!("Resposta inesperada ao excluir o atendimento no anfitrião."),
+            };
+        }
+        let actor = self.active_actor();
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (document_id, blob): (Option<i64>, Vec<u8>) = tx
+            .query_row(
+                "SELECT document_id, payload FROM saiop_attendances WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("Atendimento não encontrado (já excluído?).")?;
+        let att: SaiopAttendance = serde_json::from_slice(&unseal(&blob)?)?;
+        tx.execute(
+            "DELETE FROM trash WHERE kind='attachment' AND item_id IN (SELECT id FROM attachments WHERE owner_kind='saiop' AND owner_id=?1)",
+            params![id],
+        )?;
+        let removed_files = tx.execute(
+            "DELETE FROM attachments WHERE owner_kind='saiop' AND owner_id=?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM saiop_attendances WHERE id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM item_versions WHERE kind = 'saiop' AND item_id = ?1",
+            params![id],
+        )?;
+        crate::intranet::record_mutation(
+            &tx,
+            &actor,
+            "saiop",
+            id,
+            None,
+            "delete_saiop_attendance",
+            document_id,
+            &format!(
+                "Atendimento {} excluído{}",
+                if att.reference_raw.is_empty() {
+                    "sem número"
+                } else {
+                    &att.reference_raw
+                },
+                if removed_files > 0 {
+                    format!(" (com {removed_files} anexo(s))")
+                } else {
+                    String::new()
+                }
+            ),
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// What `undo_saiop_batch` would do, without doing it.
@@ -2233,6 +2304,19 @@ pub struct SaiopPanel {
     new_event_note: String,
     message: String,
     error: bool,
+    /// Document selected in the library, when there is one: the list follows
+    /// it (like the Tarefas panel) and new entries are linked to it.
+    context_document: Option<(i64, String)>,
+    document_filter: Option<i64>,
+    /// The person asked for every atendimento; selecting another document
+    /// in the library narrows the list again.
+    show_all_documents: bool,
+    /// "Anexos" block of the atendimento being edited.
+    attachments: crate::attachments::AttachmentsPanel,
+    /// "Excluir…" was clicked for this atendimento; waiting for confirmation.
+    confirm_delete: Option<i64>,
+    /// Task the person asked to open in the Tarefas panel.
+    open_task: Option<Task>,
 }
 
 impl Default for SaiopPanel {
@@ -2263,6 +2347,12 @@ impl Default for SaiopPanel {
             new_event_note: String::new(),
             message: String::new(),
             error: false,
+            context_document: None,
+            document_filter: None,
+            show_all_documents: false,
+            attachments: Default::default(),
+            confirm_delete: None,
+            open_task: None,
         }
     }
 }
@@ -2270,6 +2360,25 @@ impl Default for SaiopPanel {
 impl SaiopPanel {
     pub fn dirty(&self) -> bool {
         self.editor != self.saved_snapshot
+    }
+
+    /// Task the person clicked "Abrir" on in the ficha, for the app to show
+    /// in the Tarefas panel.
+    pub fn take_open_task(&mut self) -> Option<Task> {
+        self.open_task.take()
+    }
+
+    /// Tells the panel which document the library has open (id and number).
+    /// Called by the app before `show`.
+    pub fn set_context_document(&mut self, document: Option<(i64, String)>) {
+        let changed = document.as_ref().map(|d| d.0) != self.context_document.as_ref().map(|d| d.0);
+        if changed {
+            self.show_all_documents = false;
+        }
+        if !self.show_all_documents {
+            self.document_filter = document.as_ref().map(|d| d.0);
+        }
+        self.context_document = document;
     }
 
     fn set_notice(&mut self, msg: impl Into<String>, error: bool) {
@@ -2355,10 +2464,40 @@ impl SaiopPanel {
                     if let Ok(cfg) = store.load_intranet_config() {
                         fresh.assignee = cfg.member_name;
                     }
+                    // With a document open in the library, the new entry is a
+                    // passage of that document: linked, with its number
+                    // (whatever the list filter; "Desligar" undoes it).
+                    if let Some((id, number)) = self.context_document.clone() {
+                        fresh.document_id = Some(id);
+                        fresh.reference_norm = normalize_reference(&number);
+                        fresh.reference_raw = number;
+                    }
                     self.load_into_editor(store, fresh);
                 }
             }
         });
+        if let Some((context_id, context_number)) = self.context_document.clone() {
+            ui.horizontal_wrapped(|ui| {
+                if self.document_filter == Some(context_id) {
+                    ui.label(format!("Só {context_number}"))
+                        .on_hover_text("A lista segue o documento aberto na biblioteca; Registrar nova entrada cria um atendimento ligado a ele.");
+                    if ui.small_button("Todos os atendimentos").clicked() {
+                        self.document_filter = None;
+                        self.show_all_documents = true;
+                    }
+                } else {
+                    ui.label("Todos os atendimentos");
+                    if ui
+                        .small_button(format!("Só {context_number}"))
+                        .on_hover_text("Volta a mostrar só os atendimentos do documento aberto.")
+                        .clicked()
+                    {
+                        self.document_filter = Some(context_id);
+                        self.show_all_documents = false;
+                    }
+                }
+            });
+        }
 
         if !self.message.is_empty() {
             ui.horizontal_wrapped(|ui| {
@@ -2716,6 +2855,11 @@ impl SaiopPanel {
         let mut filtered: Vec<&SaiopAttendance> = all_items
             .iter()
             .filter(|att| {
+                if let Some(document) = self.document_filter {
+                    if att.document_id != Some(document) {
+                        return false;
+                    }
+                }
                 if !self.status_filter.is_empty() && att.status != self.status_filter {
                     return false;
                 }
@@ -2897,6 +3041,7 @@ impl SaiopPanel {
             let mut revert_clicked = false;
             let mut create_task_clicked = false;
             let mut close_clicked = false;
+            let mut delete_confirmed = false;
             let is_dirty = self.dirty();
 
             ui.horizontal_wrapped(|ui| {
@@ -2932,7 +3077,36 @@ impl SaiopPanel {
                     .add_enabled(!is_dirty, egui::Button::new("Fechar ficha"))
                     .on_disabled_hover_text("Salve ou descarte as alterações antes de fechar.")
                     .clicked();
+                if ed.id > 0
+                    && ui
+                        .add_enabled(!is_dirty, egui::Button::new("Excluir…"))
+                        .on_hover_text("Apaga o atendimento de vez (não há Lixeira para atendimentos). As tarefas criadas a partir dele continuam nos documentos.")
+                        .on_disabled_hover_text("Salve ou descarte as alterações antes de excluir.")
+                        .clicked()
+                {
+                    self.confirm_delete = Some(ed.id);
+                }
             });
+            if self.confirm_delete == Some(ed.id) && ed.id > 0 {
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.colored_label(
+                        WARNING,
+                        format!(
+                            "Excluir o atendimento {}? Não vai para a Lixeira: anexos do atendimento são apagados; tarefas e documento ligado permanecem.",
+                            if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
+                        ),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Excluir de vez").clicked() {
+                            delete_confirmed = true;
+                        }
+                        if ui.button("Cancelar").clicked() {
+                            self.confirm_delete = None;
+                        }
+                    });
+                });
+            }
 
             egui::ScrollArea::vertical()
                 .id_salt("saiop-detail-scroll")
@@ -2961,7 +3135,10 @@ impl SaiopPanel {
                                 match store.list_documents("") {
                                     Ok(docs) => match docs.into_iter().find(|d| normalize_reference(&d.document_number) == wanted) {
                                         Some(doc) => {
+                                            // The linked document's number becomes the reference.
                                             ed.document_id = Some(doc.id);
+                                            ed.reference_norm = normalize_reference(&doc.document_number);
+                                            ed.reference_raw = doc.document_number;
                                             self.link_number.clear();
                                         }
                                         None => self.set_notice(format!("Nenhum documento importado com o número {}.", self.link_number.trim()), true),
@@ -3016,8 +3193,16 @@ impl SaiopPanel {
                     let ed_id = ed.id;
                     form_section(ui, "Identificação", ("saiop-form-id", ed_id), |ui| {
                         ui.label("Referência:");
-                        ui.add(egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY))
-                            .on_hover_text("Número do processo ou documento, ou um código provisório. Informe a referência ou o assunto.");
+                        if ed.document_id.is_some() {
+                            ui.add_enabled(
+                                false,
+                                egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY),
+                            )
+                            .on_disabled_hover_text("É o número do documento ligado. Para mudar, desligue do documento.");
+                        } else {
+                            ui.add(egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY))
+                                .on_hover_text("Número do processo ou documento, ou um código provisório. Informe a referência ou o assunto.");
+                        }
                         ui.end_row();
                         ui.label("Entrada:");
                         crate::labels::date_field(ui, ("saiop-entry", ed_id), &mut ed.entry_date);
@@ -3164,27 +3349,63 @@ impl SaiopPanel {
                             .desired_width(f32::INFINITY),
                     );
 
-                    // Tarefa ligada a este atendimento
-                    ui.horizontal_wrapped(|ui| {
-                        if ed.id > 0 {
-                            ui.add(
+                    ui.add_space(4.0);
+                    ui.strong("Anexos");
+                    if ed.id > 0 {
+                        self.attachments
+                            .show(ui, store, crate::attachments::Owner::Attendance(ed.id), false);
+                    } else {
+                        ui.small("Salve o atendimento para poder anexar arquivos a ele.");
+                    }
+
+                    // Tarefas criadas a partir deste atendimento. Tarefas pertencem
+                    // a documentos, por isso só há criação com documento ligado.
+                    if ed.id > 0 {
+                        ui.add_space(4.0);
+                        ui.strong("Tarefas deste atendimento");
+                        let linked: Vec<Task> = if ed.task_ids.is_empty() {
+                            Vec::new()
+                        } else {
+                            store
+                                .list_tasks()
+                                .map(|tasks| tasks.into_iter().filter(|t| ed.task_ids.contains(&t.id)).collect())
+                                .unwrap_or_default()
+                        };
+                        if linked.is_empty() {
+                            ui.small("Nenhuma tarefa criada a partir deste atendimento.");
+                        }
+                        for task in linked {
+                            ui.horizontal_wrapped(|ui| {
+                                let done = task.completed_at.is_some();
+                                ui.label(if done { "✓" } else { "○" });
+                                ui.label(&task.title);
+                                ui.small(crate::labels::task_status(&task.status));
+                                if !task.due_date.is_empty() {
+                                    ui.small(format!("prazo {}", crate::labels::date(&task.due_date)));
+                                }
+                                if ui.small_button("Abrir").on_hover_text("Abre a tarefa no painel Tarefas.").clicked() {
+                                    self.open_task = Some(task.clone());
+                                }
+                            });
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            let can_create = ed.document_id.is_some();
+                            ui.add_enabled(
+                                can_create,
                                 egui::TextEdit::singleline(&mut self.new_task_title)
-                                    .hint_text("Nova tarefa para este atendimento…")
-                                    .desired_width(220.0),
+                                    .hint_text("Título da nova tarefa (opcional)…")
+                                    .desired_width(240.0),
                             );
                             if ui
-                                .button("Criar tarefa")
-                                .on_hover_text(if ed.document_id.is_some() {
-                                    "Cria uma tarefa no painel Tarefas ligada ao documento importado."
-                                } else {
-                                    "Sem documento importado ligado, a providência é registrada só na linha do tempo deste atendimento."
-                                })
+                                .add_enabled(can_create, egui::Button::new("Criar tarefa"))
+                                .on_hover_text("Cria, no painel Tarefas, uma tarefa do documento ligado com a prioridade, o prazo e o responsável deste atendimento. Sem título, ela se chama “Analisar atendimento …”.")
+                                .on_disabled_hover_text("Tarefas pertencem a documentos: ligue o atendimento a um documento importado (acima) para criar uma tarefa.")
                                 .clicked()
                             {
                                 create_task_clicked = true;
                             }
-                        }
-                    });
+                        });
+                    }
 
                     // Histórico de eventos e registro original da planilha
                     if ed.id > 0 {
@@ -3257,7 +3478,25 @@ impl SaiopPanel {
 
             self.editor = Some(ed.clone());
 
-            if close_clicked {
+            if delete_confirmed {
+                self.confirm_delete = None;
+                match store.delete_saiop_attendance(ed.id) {
+                    Ok(()) => {
+                        self.editor = None;
+                        self.saved_snapshot = None;
+                        self.selected_id = None;
+                        self.set_notice(
+                            format!(
+                                "Atendimento {} excluído.",
+                                if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
+                            ),
+                            false,
+                        );
+                    }
+                    Err(e) => self.set_notice(format!("Não foi possível excluir: {e}"), true),
+                }
+            } else if close_clicked {
+                self.confirm_delete = None;
                 self.editor = None;
                 self.saved_snapshot = None;
                 self.selected_id = None;
@@ -3550,5 +3789,39 @@ mod tests {
             remaining[0].observation,
             "Revisado manualmente pelo gabinete"
         );
+    }
+
+    #[test]
+    fn deleting_an_attendance_removes_it_with_its_attachments() {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut att = SaiopAttendance::new_manual();
+        att.subject = "Pedido por telefone".into();
+        let id = store.save_saiop_attendance(&att, None).unwrap();
+        let owner = crate::attachments::Owner::Attendance(id);
+        store
+            .add_attachment(owner, "nota.txt", "anotação", b"texto simples")
+            .unwrap();
+        assert_eq!(store.list_attachments(owner).unwrap().len(), 1);
+        assert_eq!(store.attachment_counts("saiop").unwrap()[&id], 1);
+
+        // A single attachment can be removed for good (no trash for these).
+        let second = store
+            .add_attachment(owner, "foto.png", "", b"\x89PNG\r\n\x1a\n....")
+            .unwrap();
+        assert_eq!(store.list_attachments(owner).unwrap().len(), 2);
+        assert!(
+            store
+                .trash_item(crate::trash::Target { kind: crate::trash::Kind::Attachment, id: second })
+                .is_err(),
+            "attachments of atendimentos do not go to the trash"
+        );
+        store.delete_attachment(second).unwrap();
+        assert_eq!(store.list_attachments(owner).unwrap().len(), 1);
+
+        store.delete_saiop_attendance(id).unwrap();
+        assert!(store.list_saiop_attendances().unwrap().is_empty());
+        assert!(store.attachment_counts("saiop").unwrap().is_empty());
+        assert!(store.delete_saiop_attendance(id).is_err(), "second delete reports it is gone");
     }
 }
