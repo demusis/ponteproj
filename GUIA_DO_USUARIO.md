@@ -59,7 +59,7 @@ A ficha tem quatro abas:
 - **Anotações e minutas:** suas notas e o editor de minutas.
 - **Mais:** vínculos entre documentos, versões importadas e dados técnicos.
 
-**Lista de documentos.** **Buscar** procura em número, assunto, texto, notas e PDFs. **Filtrar ▾** filtra por situação das tarefas, prioridade e origem, e define a **Ordem** (mais recentes, prazo, prioridade, número ou assunto). A cor do cartão segue as tarefas: vermelho é atraso, âmbar vence hoje, azul está no prazo, verde está concluído.
+**Lista de documentos.** **Buscar** procura em número, assunto, texto, notas e PDFs. **Filtrar ▾** filtra por situação das tarefas, prioridade e origem, e define a **Ordem** (mais recentes, prazo, prioridade, número ou assunto). A etiqueta embaixo de cada cartão resume as tarefas do documento: vermelha é atraso, âmbar vence hoje, azul está no prazo, verde está concluído.
 
 **Documentos juntados** aparecem abaixo do principal, com a marca ↳. O cabeçalho da ficha tem **Abrir documento principal**.
 

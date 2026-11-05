@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Menu ▾ ▸ Guia do usuário** |
-| **Versão** | 0.19.4 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.19.5 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -115,11 +115,11 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 │ [Buscar número...]    │   Área central: muda conforme o botão do         │
 │ Filtrar ▾  + Registro │   cabeçalho.                                     │
 │                       │                                                  │
-│ ▌SESP-OFI-2026/00042  │   Ficha         a ficha do documento selecionado │
-│ ▌Pedido de revisão... │   Tarefas       o painel de tarefas              │
+│  SESP-OFI-2026/00042  │   Ficha         a ficha do documento selecionado │
+│  Pedido de revisão... │   Tarefas       o painel de tarefas              │
 │  ● 1 em aberto        │   Atendimentos  o controle do gabinete           │
 │                       │                                                  │
-│ ▌MANUAL-2026/0001     │                                                  │
+│  MANUAL-2026/0001     │                                                  │
 │  ✓ 1 concluída Manual │                                                  │
 ├───────────────────────┴──────────────────────────────────────────────────┤
 │ ● em dia há 3 min          avisos e progresso das operações              │  barra inferior
@@ -234,15 +234,17 @@ Com a resposta enviada pelo SIGADOC, clique em **✓ Concluir** ao lado de cada 
 
 ### 5.2 Como ler um cartão
 
-Cada cartão mostra o número, o assunto, uma barra colorida à esquerda e uma etiqueta embaixo. Barra e etiqueta dizem a mesma coisa, a situação das tarefas do documento:
+Cada cartão mostra o número e o assunto e, embaixo, uma **etiqueta colorida** com a situação das tarefas do documento. O Ponte escolhe a etiqueta pela primeira regra que se aplicar, nesta ordem:
 
-| Cor | Significado | Exemplo de etiqueta |
-|---|---|---|
-| vermelho | há tarefa atrasada | `⚠ 1 tarefa atrasada` |
-| âmbar | alguma tarefa vence hoje | `⏰ 1 em aberto (vence hoje)` |
-| azul-petróleo | tarefas em aberto, no prazo | `● 2 em aberto (no prazo) • Prazo: 13/11/2026` |
-| verde | todas as tarefas concluídas | `✓ 1 tarefa concluída` |
-| cinza | sem tarefas | `○ Sem tarefas` |
+| Ordem | Cor da etiqueta | Quando | Exemplo |
+|---|---|---|---|
+| 1 | vermelha | há pelo menos uma tarefa atrasada (prazo anterior a hoje, não concluída) | `⚠ 1 tarefa atrasada (+3 no prazo)` |
+| 2 | âmbar | nenhuma atrasada, mas alguma vence hoje | `⏰ 1 em aberto (vence hoje)` |
+| 3 | azul | há tarefas em aberto, todas no prazo | `● 2 em aberto (no prazo) • Prazo: 13/11/2026` |
+| 4 | verde | nenhuma em aberto e pelo menos uma concluída | `✓ 1 tarefa concluída` |
+| 5 | cinza | o documento não tem tarefas | `○ Sem tarefas` |
+
+O pior caso manda: um documento com uma tarefa atrasada e três no prazo fica vermelho. Uma tarefa sem prazo conta como "no prazo".
 
 Outras marcas do cartão: **Manual** (registro manual), `📎 N juntado(s)` (o documento tem outros juntados a ele), `↳ Juntado a …` (está juntado a outro) e *análise desatualizada* (a análise por IA foi feita sobre uma versão anterior).
 

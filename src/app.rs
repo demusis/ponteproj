@@ -232,20 +232,10 @@ impl DocTaskStatusSummary {
         }
     }
 
-    fn stripe_color(&self) -> Color32 {
-        if self.overdue > 0 {
-            ERROR
-        } else if self.due_today > 0 {
-            WARNING
-        } else if self.open_on_time > 0 {
-            ACCENT
-        } else if self.completed > 0 {
-            SUCCESS
-        } else {
-            Color32::from_rgb(160, 170, 180)
-        }
-    }
-
+    /// The label under a document card: text, text colour and background.
+    /// It is the only mark of the task situation (the coloured bar that
+    /// repeated it beside the card was removed: two of its colours were
+    /// hard to tell apart).
     fn badge(&self) -> (String, Color32, Color32) {
         if self.overdue > 0 {
             let mut label = if self.overdue == 1 {
@@ -2381,7 +2371,6 @@ impl PonteApp {
                         document.document_number.clone()
                     };
                     let summary = summaries.get(&document.id).cloned().unwrap_or_default();
-                    let stripe = summary.stripe_color();
                     let (badge_text, badge_fg, badge_bg) = summary.badge();
 
                     ui.horizontal(|ui| {
@@ -2391,12 +2380,6 @@ impl PonteApp {
                             ui.label(RichText::new("↳").size(15.0).color(JOINED_FG))
                                 .on_hover_text(joined.clone().unwrap_or_default());
                         }
-                        // Barra vertical sinalizadora (vermelho = atrasada, âmbar/azul = no prazo, verde = concluída).
-                        // Painted after the card so it matches the card's height.
-                        let stripe_left = ui.cursor().min;
-                        // The stripe's own width plus the usual gap before the card.
-                        ui.add_space(5.0 + ui.spacing().item_spacing.x);
-
                         // The title wraps instead of being cut; the card grows with it.
                         let label = format!("{}\n{}", number, document.title);
                         // The trailing grow atom keeps a short title (a manual
@@ -2410,16 +2393,11 @@ impl PonteApp {
                         if response.clicked() {
                             selected = Some(document.id);
                         }
-                        let stripe_rect = egui::Rect::from_min_size(
-                            stripe_left,
-                            egui::vec2(5.0, response.rect.height()),
-                        );
-                        ui.painter().rect_filled(stripe_rect, 2.5, stripe);
                     });
 
                     ui.horizontal_wrapped(|ui| {
                         if indent > 0.0 {
-                            ui.add_space(indent + 11.0);
+                            ui.add_space(indent);
                         }
                         pill(ui, badge_text, badge_fg, badge_bg, 11.5);
                         if document.manual {
@@ -4659,25 +4637,25 @@ mod tests {
         assert!(s1.matches(DocTaskFilter::OpenAny));
         assert!(!s1.matches(DocTaskFilter::OpenOnTime));
         assert!(!s1.matches(DocTaskFilter::Completed));
-        assert_eq!(s1.stripe_color(), ERROR);
+        assert_eq!(s1.badge().1, ERROR);
         assert!(s1.badge().0.contains("atrasada"));
 
         let s2 = DocTaskStatusSummary::from_tasks(&tasks, 2, today);
         assert!(s2.matches(DocTaskFilter::OpenOnTime));
         assert!(s2.matches(DocTaskFilter::OpenAny));
         assert!(!s2.matches(DocTaskFilter::Overdue));
-        assert_eq!(s2.stripe_color(), ACCENT);
+        assert_eq!(s2.badge().1, ACCENT);
         assert!(s2.badge().0.contains("no prazo"));
 
         let s3 = DocTaskStatusSummary::from_tasks(&tasks, 3, today);
         assert!(s3.matches(DocTaskFilter::OpenOnTime));
-        assert_eq!(s3.stripe_color(), WARNING);
+        assert_eq!(s3.badge().1, WARNING);
         assert!(s3.badge().0.contains("vence hoje"));
 
         let s4 = DocTaskStatusSummary::from_tasks(&tasks, 4, today);
         assert!(s4.matches(DocTaskFilter::Completed));
         assert!(!s4.matches(DocTaskFilter::OpenAny));
-        assert_eq!(s4.stripe_color(), SUCCESS);
+        assert_eq!(s4.badge().1, SUCCESS);
         assert!(s4.badge().0.contains("concluída"));
 
         assert!(DocPriorityFilter::Urgent.matches("urgente"));
