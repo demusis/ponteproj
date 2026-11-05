@@ -70,6 +70,18 @@ test("receipt confirmation requires committed host receipt for the captured requ
   for (const outcome of ["x", 1, null]) assert.throws(() => Core.validateReceipt({ ...receipt(), outcome }, UUID), error => error.code === "HOST_SCHEMA");
   assert.equal(Core.nativeError("Specified native messaging host not found.").error.code, "HOST_MISSING");
   assert.equal(Core.nativeError("Access to the specified native messaging host is forbidden.").error.code, "HOST_FORBIDDEN");
+  // Each failure the browser reports gets its own advice; an unknown one keeps the browser's words.
+  const exited = Core.nativeError("Native host has exited.").error;
+  assert.equal(exited.code, "HOST_EXITED");
+  assert.match(exited.message, /versão mais recente/);
+  assert.equal(Core.nativeError("Failed to start native messaging host.").error.code, "HOST_START");
+  assert.equal(Core.nativeError("Error when communicating with the native messaging host.").error.code, "HOST_PROTOCOL");
+  const unknown = Core.nativeError("Something new happened.").error;
+  assert.equal(unknown.code, "HOST_CONNECTION");
+  assert.match(unknown.message, /Something new happened/);
+  assert.equal(Core.nativeError("").error.message, "Não recebemos a confirmação do Ponte. Clique em Repetir: nada será duplicado.");
+  assert.equal(Core.nativeError(undefined).error.code, "HOST_CONNECTION");
+  for (const text of ["Native host has exited.", "x".repeat(500)]) assert.ok(Core.nativeError(text).error.message.length <= 2000);
 });
 test("lost acknowledgment retries immutable original snapshot with same UUID; double clicks coalesce", async () => {
   const sent = [];

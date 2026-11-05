@@ -11,7 +11,7 @@ O Edge instala extensões da Chrome Web Store sem passo extra (basta permitir "e
 
 ## 1. Publicar uma nova versão da extensão
 
-1. Aumente `"version"` em `extension\manifest.json` e em `extension\package.json` (a loja exige número maior que o publicado; hoje: 0.1.10).
+1. Aumente `"version"` em `extension\manifest.json` e em `extension\package.json` (a loja exige número maior que o publicado; hoje: 0.1.11).
 2. Gere o pacote: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-X.Y.Z.zip` (sem o campo `key`, como a loja exige).
 3. No painel, abra o item **Ponte • Assistente SIGADOC** → aba **Pacote** (*Package*) → **Enviar novo pacote** (*Upload new package*) → escolha o `.zip`.
 4. Se mudou algum texto da ficha, ajuste nas abas **Ficha da loja** (*Store listing*), **Práticas de privacidade** e **Distribuição**. O **Resumo** vem do campo `description` do manifesto e não é editável no painel: para mudá-lo, mude o manifesto e envie um pacote novo.
@@ -87,7 +87,8 @@ Enviar o documento aberto no SIGADOC ao aplicativo Ponte instalado no computador
 ## 3. Histórico
 
 - 2026-11-03: item criado e enviado para análise com a 0.1.8. Publicado como não listado.
-- Próximo envio: 0.1.10 (`dist\ponte-extensao-webstore-0.1.10.zip`) — só muda o texto da descrição.
+- 2026-11-05: a extensão da loja só passou a funcionar com o Ponte 0.19.3: versões anteriores do programa não reconheciam o ID da loja e fechavam sem responder ("Não recebemos a confirmação do Ponte").
+- Próximo envio: 0.1.11 (`dist\ponte-extensao-webstore-0.1.11.zip`) — descrição nova e mensagens de erro específicas para cada falha de ligação com o Ponte.
 
 ## Alternativa: política do órgão (sem loja)
 

@@ -372,10 +372,18 @@
     if (OUTCOMES.includes(result.outcome)) return result.outcome;
     return result.duplicate ? "legacy_duplicate" : "imported";
   }
+  // Chrome and Edge report the failure in English; each known case gets its
+  // own advice, and an unknown one carries the browser's words along.
+  const LATEST = "github.com/demusis/ponteproj/releases";
   function nativeError(message) {
+    message = typeof message === "string" ? message : "";
     if (/not found|não encontrado|nao encontrado/i.test(message)) return errorResult("HOST_MISSING", "O Ponte não foi encontrado neste computador. Abra o Ponte uma vez e reinicie o navegador. Se continuar, reinstale o Ponte com a sua conta do Windows.");
-    if (/forbidden|access.*denied|proibid/i.test(message)) return errorResult("HOST_FORBIDDEN", "O navegador bloqueou a ligação com o Ponte. Reinstale o Ponte neste computador e reinicie o navegador.");
-    return errorResult("HOST_CONNECTION", "Não recebemos a confirmação do Ponte. Clique em Repetir: nada será duplicado.");
+    if (/forbidden|access.*denied|proibid/i.test(message)) return errorResult("HOST_FORBIDDEN", `O navegador bloqueou a ligação com o Ponte: a versão instalada não reconhece esta extensão. Instale a versão mais recente do Ponte (${LATEST}) e reinicie o navegador.`);
+    if (/has exited|exited|encerrou/i.test(message)) return errorResult("HOST_EXITED", `O Ponte abriu e fechou sem responder. Isso acontece com um Ponte antigo, que não reconhece a extensão instalada pela loja: instale a versão mais recente (${LATEST}) com a sua conta do Windows e reinicie o navegador. Nada foi duplicado.`);
+    if (/failed to start|falha ao iniciar/i.test(message)) return errorResult("HOST_START", "O navegador não conseguiu iniciar o Ponte. Reinstale o Ponte com a sua conta do Windows e reinicie o navegador; se continuar, o antivírus ou uma regra do órgão pode estar bloqueando o programa.");
+    if (/error when communicating|erro ao comunicar/i.test(message)) return errorResult("HOST_PROTOCOL", `A resposta do Ponte chegou ilegível. Atualize o Ponte (${LATEST}) e a extensão, e reinicie o navegador.`);
+    const detail = message ? ` (Detalhe do navegador: ${message.slice(0, 160)})` : "";
+    return errorResult("HOST_CONNECTION", `Não recebemos a confirmação do Ponte. Clique em Repetir: nada será duplicado.${detail}`);
   }
   class ImportSession {
     constructor(send) { this.send = send; this.capture = null; this.state = "idle"; this.inFlight = null; }

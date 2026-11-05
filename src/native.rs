@@ -11,6 +11,9 @@ pub const MAX_FRAME: usize = 24 * 1024 * 1024;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const HOST_NAME: &str = "com.ponteproj.assistente";
 pub const EXTENSION_ID: &str = include_str!("../extension-id.txt");
+/// The same extension as published in the Chrome Web Store: the store signs
+/// it with its own key, so it has another id. Both are the Ponte's.
+pub const STORE_EXTENSION_ID: &str = include_str!("../extension-store-id.txt");
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,8 +24,31 @@ struct Request {
     files: Option<Vec<crate::files::FileInput>>,
 }
 
+/// Whether the browser launched us for one of the Ponte's own extensions:
+/// the one loaded from the installed folder or the one from the store. The
+/// installer authorizes the same two in the browser; an executable that
+/// knew only the first closed without a word for whoever installed from
+/// the store.
 pub fn valid_extension_origin(origin: &str) -> bool {
-    origin == format!("chrome-extension://{}/", EXTENSION_ID.trim())
+    [EXTENSION_ID, STORE_EXTENSION_ID]
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| id.len() == 32 && id.bytes().all(|b| (b'a'..=b'p').contains(&b)))
+        .any(|id| origin == format!("chrome-extension://{id}/"))
+}
+
+/// Answers every request with the same refusal instead of leaving without a
+/// reply: the extension then shows the reason, not "no confirmation".
+pub fn refuse<R: Read, W: Write>(reader: &mut R, writer: &mut W, code: &str, message: &str) -> Result<()> {
+    let message: String = message.chars().take(900).collect();
+    while read_frame(reader)?.is_some() {
+        write_frame(writer, &error(code, &message))?;
+    }
+    Ok(())
+}
+
+pub fn refuse_on_stdio(code: &str, message: &str) -> Result<()> {
+    refuse(&mut io::stdin().lock(), &mut io::stdout().lock(), code, message)
 }
 
 pub fn read_frame<R: Read>(reader: &mut R) -> Result<Option<Vec<u8>>> {
@@ -170,7 +196,18 @@ pub fn serve<R: Read, W: Write, F: FnMut(i64) -> bool>(
 }
 
 pub fn run_host() -> Result<()> {
-    let mut store = Store::open(&crate::paths::db_path()?)?;
+    // A library that cannot be opened is reported to the page, in words.
+    let mut store = match crate::paths::db_path().and_then(|path| Store::open(&path)) {
+        Ok(store) => store,
+        Err(error) => {
+            return refuse_on_stdio(
+                "library_unavailable",
+                &format!(
+                    "O Ponte não conseguiu abrir o acervo deste computador: {error}. Abra o Ponte pelo menu Iniciar para ver o detalhe e depois clique em Repetir."
+                ),
+            )
+        }
+    };
     serve(
         &mut io::stdin().lock(),
         &mut io::stdout().lock(),
@@ -218,9 +255,33 @@ mod tests {
             "chrome-extension://{}/",
             EXTENSION_ID.trim()
         )));
+        // The copy installed from the Chrome Web Store has its own id.
+        assert_ne!(EXTENSION_ID.trim(), STORE_EXTENSION_ID.trim());
+        assert!(valid_extension_origin(&format!(
+            "chrome-extension://{}/",
+            STORE_EXTENSION_ID.trim()
+        )));
         assert!(!valid_extension_origin("https://www.sigadoc.mt.gov.br/"));
         assert!(!valid_extension_origin(
             "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
         ));
+        assert!(!valid_extension_origin("chrome-extension:///"));
+    }
+    #[test]
+    fn a_refusal_answers_each_request_with_the_reason() {
+        let mut input = Vec::new();
+        for _ in 0..2 {
+            write_frame(&mut input, &json!({"protocol_version":1,"action":"ping"})).unwrap();
+        }
+        let mut output = Vec::new();
+        refuse(&mut input.as_slice(), &mut output, "origin_denied", "Atualize o Ponte.").unwrap();
+        let mut reader = output.as_slice();
+        for _ in 0..2 {
+            let reply: Value = serde_json::from_slice(&read_frame(&mut reader).unwrap().unwrap()).unwrap();
+            assert_eq!(reply["ok"], false);
+            assert_eq!(reply["error"]["code"], "origin_denied");
+            assert_eq!(reply["error"]["message"], "Atualize o Ponte.");
+        }
+        assert!(read_frame(&mut reader).unwrap().is_none());
     }
 }

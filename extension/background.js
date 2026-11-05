@@ -21,7 +21,9 @@ function nativeCall(request) {
         const error = chrome.runtime.lastError;
         if (error) { finish(Core.nativeError(error.message || "")); return; }
         if (request.action === "ping") {
-          if (response?.protocol_version !== 1 || response?.ok !== true) finish(Core.errorResult("HOST_SCHEMA", "O Ponte respondeu em um formato que esta extensão não reconhece. Atualize os dois pelo instalador do Ponte."));
+          // A refusal in words (unknown extension, library that will not open) is passed on as it came.
+          if (response?.protocol_version === 1 && response?.ok === false && typeof response?.error?.message === "string" && response.error.message) finish(Core.errorResult(typeof response.error.code === "string" ? response.error.code.slice(0, 100) : "HOST_REFUSED", response.error.message.slice(0, 2000)));
+          else if (response?.protocol_version !== 1 || response?.ok !== true) finish(Core.errorResult("HOST_SCHEMA", "O Ponte respondeu em um formato que esta extensão não reconhece. Atualize os dois pelo instalador do Ponte."));
           else finish({ protocol_version: 1, ok: true, app_version: typeof response.app_version === "string" ? response.app_version.slice(0, 40) : "" });
           return;
         }

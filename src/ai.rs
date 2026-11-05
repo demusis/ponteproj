@@ -1,7 +1,7 @@
 //! Explicit, stateless Ollama calls. Importing a document never invokes this module.
 use crate::model::{valid_kind, Analysis, Capture};
 use crate::storage::validate_analysis;
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::{SecondsFormat, Utc};
 use reqwest::blocking::Client;
 use rusqlite::OptionalExtension;
@@ -856,6 +856,15 @@ fn chat(
         "messages":[{"role":"system","content":system},{"role":"user","content":data}],
         "options":{"temperature":0,"num_predict":4096}
     });
+    // A self-hosted Ollama answers with its default window (4,096 tokens)
+    // unless asked for more, and refuses a longer request with HTTP 400.
+    // The hosted service sizes the window by itself.
+    let hosted = url.host_str().is_some_and(|host| host.eq_ignore_ascii_case("ollama.com"));
+    let mut window = if hosted {
+        None
+    } else {
+        context_window(estimated_tokens(system, data, schema.as_ref()))?
+    };
     // Ollama Cloud currently rejects format/schema; its output is still strictly parsed below.
     if local {
         if let Some(schema) = schema {
@@ -863,24 +872,138 @@ fn chat(
         }
     }
     let token = effective_token(settings)?;
-    let mut request = client.post(url).json(&body);
-    if !token.is_empty() {
-        request = request.bearer_auth(token);
+    for attempt in 0..2 {
+        if let Some(window) = window {
+            body["options"]["num_ctx"] = json!(window);
+        }
+        let mut request = client.post(url.clone()).json(&body);
+        if !token.is_empty() {
+            request = request.bearer_auth(&token);
+        }
+        reporter.step(match (attempt, window) {
+            (0, None) => "Enviando ao modelo e aguardando o início da resposta…".to_owned(),
+            (0, Some(_)) => "Documento longo: pedindo ao modelo uma janela maior e aguardando o início da resposta…".to_owned(),
+            _ => "O modelo pediu mais espaço: reenviando com uma janela maior…".to_owned(),
+        });
+        let response = request.send().map_err(|error| {
+            // Do not include provider bodies, request data, endpoint paths or credentials in errors.
+            if error.is_timeout() { anyhow::anyhow!("A IA excedeu o tempo limite de 120 segundos. Tente um modelo menor ou verifique o provedor.") }
+            else if error.is_connect() { anyhow::anyhow!("Não foi possível conectar à IA. Verifique o endpoint e se o Ollama está disponível.") }
+            else { anyhow::anyhow!("Falha na comunicação com o provedor de IA.") }
+        })?;
+        let status = response.status();
+        if status.is_success() {
+            return read_ollama_stream(BufReader::new(response.take(MAX_RESPONSE_BYTES + 1)), reporter);
+        }
+        let mut refusal = Vec::new();
+        let _ = response.take(64 * 1024).read_to_end(&mut refusal);
+        let failure = ollama_failure(status.as_u16(), &refusal, settings.model.trim(), local);
+        // The estimate was short: the server says how much it needs.
+        if attempt == 0 && !hosted {
+            if let Some(needed) = failure.context_needed {
+                if let Ok(Some(larger)) = context_window(needed) {
+                    if window.is_none_or(|current| larger > current) {
+                        window = Some(larger);
+                        reporter.check()?;
+                        continue;
+                    }
+                }
+            }
+        }
+        bail!("{}", failure.message);
     }
-    reporter.step("Enviando ao modelo e aguardando o início da resposta…");
-    let response = request.send().map_err(|error| {
-        // Do not include provider bodies, request data, endpoint paths or credentials in errors.
-        if error.is_timeout() { anyhow::anyhow!("A IA excedeu o tempo limite de 120 segundos. Tente um modelo menor ou verifique o provedor.") }
-        else if error.is_connect() { anyhow::anyhow!("Não foi possível conectar à IA. Verifique o endpoint e se o Ollama está disponível.") }
-        else { anyhow::anyhow!("Falha na comunicação com o provedor de IA.") }
-    })?;
-    let status = response.status();
-    ensure!(
-        status.is_success(),
-        "Provedor de IA respondeu HTTP {}. Verifique endpoint, modelo e credenciais.",
-        status.as_u16()
-    );
-    read_ollama_stream(BufReader::new(response.take(MAX_RESPONSE_BYTES + 1)), reporter)
+    unreachable!("the second attempt returns or fails")
+}
+
+/// Tokens reserved for the answer when sizing the window.
+const ANSWER_RESERVE: usize = 1536;
+/// Window an Ollama server uses when none is requested.
+const DEFAULT_WINDOW: usize = 4096;
+/// Largest window the Ponte asks for: beyond it a 4B model needs several
+/// gigabytes just for the context.
+const MAX_WINDOW: u32 = 32768;
+
+/// Rough size of a request in tokens. Three bytes per token is on the safe
+/// side for Portuguese prose and JSON; a server that needs more says so and
+/// the request is repeated with its number.
+fn estimated_tokens(system: &str, data: &str, schema: Option<&Value>) -> usize {
+    let schema = schema.map(|s| s.to_string().len()).unwrap_or(0);
+    (system.len() + data.len() + schema) / 3 + 256
+}
+
+/// Window to request for a prompt of `prompt_tokens`: none when the server's
+/// default is enough, otherwise the smallest step that fits (steps avoid
+/// reloading the model at every size). Too long for any step is an error.
+fn context_window(prompt_tokens: usize) -> Result<Option<u32>> {
+    let needed = prompt_tokens + ANSWER_RESERVE;
+    if needed <= DEFAULT_WINDOW {
+        return Ok(None);
+    }
+    match [8192_u32, 16384, MAX_WINDOW].into_iter().find(|step| needed <= *step as usize) {
+        Some(step) => Ok(Some(step)),
+        None => bail!(
+            "O documento, com as notas e as fontes, é grande demais para o modelo deste servidor (cerca de {} mil tokens; o Ponte pede no máximo {} mil). Analise sem as fontes extras ou escolha outro provedor em Configurar IA.",
+            prompt_tokens / 1000,
+            MAX_WINDOW / 1000
+        ),
+    }
+}
+
+struct OllamaFailure {
+    message: String,
+    /// Tokens the request needs, when the refusal was about the window.
+    context_needed: Option<usize>,
+}
+
+/// Turns a refusal of the Ollama API into what the person can do. The body
+/// is only quoted for a server on this computer; a remote one may echo data.
+fn ollama_failure(status: u16, body: &[u8], model: &str, local: bool) -> OllamaFailure {
+    let text = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| value["error"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned());
+    let lower = text.to_lowercase();
+    let numbers: Vec<usize> = text
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|digits| digits.parse().ok())
+        .collect();
+    let mut context_needed = None;
+    let message = if lower.contains("context size") || lower.contains("context length") || lower.contains("context window") {
+        context_needed = numbers.first().copied().filter(|n| *n > 0);
+        match (numbers.first(), numbers.get(1)) {
+            (Some(needed), Some(limit)) => format!(
+                "O documento, com as notas e as fontes, não coube na janela do modelo: precisa de {needed} tokens e o limite é {limit}. Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor em Configurar IA."
+            ),
+            _ => "O documento, com as notas e as fontes, não coube na janela do modelo. Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor em Configurar IA.".to_owned(),
+        }
+    } else if status == 404 || lower.contains("not found") {
+        format!(
+            "O modelo “{model}” não está instalado neste servidor. Em Configurar IA, clique em “Listar modelos do servidor” e escolha um{}.",
+            if local { format!(", ou instale-o no terminal com: ollama pull {model}") } else { String::new() }
+        )
+    } else if lower.contains("invalid model name") || lower.contains("model is required") {
+        format!("O nome de modelo “{model}” não é aceito pelo Ollama. Em Configurar IA, clique em “Listar modelos do servidor” e escolha um da lista.")
+    } else if lower.contains("memory") {
+        "O computador não tem memória livre para este modelo com um documento deste tamanho. Feche outros programas, use um modelo menor ou escolha outro provedor em Configurar IA.".to_owned()
+    } else if matches!(status, 401 | 403) {
+        format!("O servidor de IA recusou a credencial (HTTP {status}). Confira a chave em Configurar IA.")
+    } else {
+        let detail: String = text
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(200)
+            .collect();
+        format!(
+            "Provedor de IA respondeu HTTP {status}. Verifique endpoint, modelo e credenciais.{}",
+            if local && !detail.is_empty() { format!(" Detalhe do Ollama: {detail}") } else { String::new() }
+        )
+    };
+    OllamaFailure { message, context_needed }
 }
 
 #[derive(Deserialize)]
@@ -1371,6 +1494,91 @@ mod tests {
         server.join().unwrap();
         assert!(error.to_string().contains("HTTP 500"), "{error}");
         assert_eq!(received.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn long_requests_ask_for_a_larger_window_and_refusals_are_explained() {
+        // The default window is left alone for short prompts.
+        assert_eq!(context_window(1000).unwrap(), None);
+        assert_eq!(context_window(DEFAULT_WINDOW - ANSWER_RESERVE).unwrap(), None);
+        assert_eq!(context_window(4406).unwrap(), Some(8192));
+        assert_eq!(context_window(9000).unwrap(), Some(16384));
+        assert_eq!(context_window(20_000).unwrap(), Some(32768));
+        assert!(context_window(40_000).unwrap_err().to_string().contains("grande demais"));
+        assert!(estimated_tokens("abc", &"x".repeat(30_000), None) > 10_000);
+
+        let refused = ollama_failure(
+            400,
+            br#"{"error":"request (4406 tokens) exceeds the available context size (4096 tokens), try increasing it"}"#,
+            "qwen3:4b-instruct",
+            true,
+        );
+        assert_eq!(refused.context_needed, Some(4406));
+        assert!(refused.message.contains("4406") && refused.message.contains("4096"), "{}", refused.message);
+        let missing = ollama_failure(404, br#"{"error":"model 'x' not found"}"#, "x", true);
+        assert!(missing.message.contains("ollama pull x"), "{}", missing.message);
+        assert!(missing.context_needed.is_none());
+        let invalid = ollama_failure(400, br#"{"error":"invalid model name"}"#, "a b", true);
+        assert!(invalid.message.contains("não é aceito"), "{}", invalid.message);
+        // Unknown refusals keep the status; the body is quoted only for this computer.
+        let unknown_local = ollama_failure(500, br#"{"error":"something broke"}"#, "m", true);
+        assert!(unknown_local.message.contains("HTTP 500") && unknown_local.message.contains("something broke"));
+        let unknown_remote = ollama_failure(500, br#"{"error":"echo of private text"}"#, "m", false);
+        assert!(unknown_remote.message.contains("HTTP 500") && !unknown_remote.message.contains("private"));
+    }
+
+    #[test]
+    fn a_context_refusal_is_retried_once_with_the_window_the_server_asked_for() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sent, received) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            for round in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut all = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                let (header_end, content_length) = loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    all.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = all.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&all[..end]).to_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        break (end + 4, length);
+                    }
+                };
+                while all.len() < header_end + content_length {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    all.extend_from_slice(&buffer[..count]);
+                }
+                let body: Value = serde_json::from_slice(&all[header_end..header_end + content_length]).unwrap();
+                sent.send(body).unwrap();
+                if round == 0 {
+                    let refusal = json!({"error":"request (6000 tokens) exceeds the available context size (4096 tokens), try increasing it"}).to_string();
+                    write!(stream, "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", refusal.len(), refusal).unwrap();
+                } else {
+                    let content = json!({"subjects":["compras"],"priority":"normal","reason":"Sem prazo expresso.","deadline_candidate":null,"summary":"Solicita material."}).to_string();
+                    let response = json!({"done":true,"message":{"role":"assistant","content":content}}).to_string();
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+                }
+            }
+        });
+        let result = analyze_capture(&settings(&format!("http://{address}")), &sample_capture(), 5).unwrap();
+        server.join().unwrap();
+        assert_eq!(result.capture_id, 5);
+        let first = received.recv().unwrap();
+        let second = received.recv().unwrap();
+        assert!(first["options"].get("num_ctx").is_none(), "a short prompt starts with the default window");
+        assert_eq!(second["options"]["num_ctx"], 8192);
+        assert_eq!(second["messages"], first["messages"]);
     }
 
     #[test]

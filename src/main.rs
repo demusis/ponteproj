@@ -23,7 +23,11 @@ fn run() -> Result<()> {
         .filter(|s| s.starts_with("chrome-extension://"))
     {
         if !native::valid_extension_origin(origin) {
-            bail!("Origem da extensão não autorizada");
+            // Reply in words rather than closing: the page shows them.
+            return native::refuse_on_stdio(
+                "origin_denied",
+                "Esta extensão não é reconhecida por este Ponte. Instale a versão mais recente do Ponte (github.com/demusis/ponteproj/releases) com a sua conta do Windows e reinicie o navegador.",
+            );
         }
         return native::run_host();
     }

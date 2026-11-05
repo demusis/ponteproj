@@ -9,7 +9,7 @@ O Ponte é um programa do Windows que guarda, no seu computador, os documentos q
 3. Feche e abra o navegador (Chrome ou Edge).
 4. Abra o Ponte pelo menu Iniciar. A tela inicial diz se o navegador está ligado ao Ponte.
 5. Instale a extensão no navegador, uma única vez — de um destes dois jeitos:
-   - **Pela loja** (quando o gabinete tiver publicado): abra o link da extensão na Chrome Web Store e clique em **Adicionar ao Chrome** (no Edge, permita "extensões de outras lojas").
+   - **Pela loja** (recomendado): abra <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah> e clique em **Adicionar ao Chrome** (no Edge, permita "extensões de outras lojas"). Exige o Ponte 0.19.3 ou posterior.
    - **Pela pasta instalada**: na tela inicial do Ponte, clique em **Copiar caminho** (ao lado de "Extensão do navegador"); no navegador, abra `chrome://extensions` (ou `edge://extensions`), ative **Modo do desenvolvedor**, clique em **Carregar sem compactação** e cole o caminho na barra de endereço da janela que abre.
    - Feche e abra o navegador de novo.
 
@@ -28,7 +28,8 @@ Se aparecer um erro, a mensagem diz o que fazer. As mais comuns:
 | Mensagem | O que fazer |
 |---|---|
 | "O Ponte não foi encontrado neste computador" | Abra o Ponte uma vez e reinicie o navegador. Se continuar, rode o Instalar.cmd. |
-| "Não recebemos a confirmação do Ponte" | Clique em **Repetir importação**. Nada é duplicado. |
+| "Não recebemos a confirmação do Ponte" | Clique em **Repetir importação**. Nada é duplicado. Se a mensagem se repete sempre e a extensão veio da loja do navegador, o Ponte instalado é antigo: instale a versão mais recente (0.19.3 ou posterior) e reinicie o navegador. |
+| "O Ponte abriu e fechou sem responder" ou "Esta extensão não é reconhecida por este Ponte" | Instale a versão mais recente do Ponte com a sua conta do Windows e reinicie o navegador. |
 | "Importação ignorada: o SIGADOC mostra o mesmo conteúdo já importado em …" (em laranja) | Não é erro: o documento já está no Ponte exatamente assim, e nada foi gravado. Se ele mudou no SIGADOC, atualize a página (F5) e importe de novo; o Ponte guarda a nova versão. |
 | "A página ainda não terminou de carregar" | Espere a página abrir por completo e tente de novo. |
 | "Esta página não é a ficha de um documento" | Abra o documento, não a lista ou a busca. |

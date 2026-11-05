@@ -20,7 +20,7 @@ const MUTED: Color32 = Color32::from_rgb(120, 130, 140);
 /// Public repository with the installer, the source and the release notes.
 const PROJECT_URL: &str = "https://github.com/demusis/ponteproj";
 /// Version of the browser extension shipped with this build (extension/manifest.json).
-const EXTENSION_VERSION: &str = "0.1.9";
+const EXTENSION_VERSION: &str = "0.1.11";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DocTaskFilter {

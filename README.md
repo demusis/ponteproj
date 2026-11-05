@@ -8,8 +8,8 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 |---|---|
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
-| **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.19.2 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Extensão na Chrome Web Store** | publicada (não listada): <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah> — exige o Ponte 0.19.3 ou posterior; a extensão também vem junto com o instalador |
+| **Versão** | 0.19.3 (extensão 0.1.11) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -39,7 +39,7 @@ Não precisa de administrador: tudo é instalado na sua conta do Windows.
 2. Feche e abra o navegador (Chrome ou Edge).
 3. Na tela inicial do Ponte, o quadro **Ligação com o navegador** deve dizer *✓ O Ponte está registrado para o Chrome e Edge*.
 4. Instale a extensão **uma vez**, de um destes jeitos:
-   - **Pela loja** (assim que a publicação for aprovada): abra o link da extensão e clique em **Adicionar ao Chrome**.
+   - **Pela loja** (recomendado): abra <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah> e clique em **Adicionar ao Chrome** (no Edge, permita "extensões de outras lojas"). Exige o Ponte 0.19.3 ou posterior.
    - **Pela pasta instalada**: na tela inicial do Ponte, clique em **Copiar caminho**; no navegador abra `chrome://extensions` (ou `edge://extensions`), ative **Modo do desenvolvedor**, clique em **Carregar sem compactação** e cole o caminho na barra de endereço da janela que abre.
 5. Feche e abra o navegador de novo. Clique no ícone da extensão: deve mostrar *✓ Ligado ao Ponte X.Y.Z* (a versão instalada; ela também aparece em **Menu ▾ ▸ Sobre o Ponte**).
 
@@ -276,7 +276,7 @@ O Ponte funciona inteiro sem IA. Quando você quiser:
 
 | Opção | Quando usar | O que informar |
 |---|---|---|
-| **Ollama neste computador** | padrão; nada sai da máquina | endereço (padrão `http://127.0.0.1:11434`); instale o Ollama e baixe um modelo (`ollama pull qwen3:4b-instruct`) |
+| **Ollama neste computador** | padrão; nada sai da máquina | endereço (padrão `http://127.0.0.1:11434`); instale o Ollama e baixe um modelo (`ollama pull qwen3:4b-instruct`). Para documentos longos o Ponte pede sozinho uma janela de contexto maior (até 32 mil tokens), o que usa mais memória |
 | **Ollama Cloud** | modelos grandes sem GPU local; conta em ollama.com (gratuita por uso ou plano mensal) | a chave de API criada em [ollama.com/settings/keys](https://ollama.com/settings/keys) |
 | **Outro servidor HTTPS** | servidor do órgão compatível com a API `/api/chat` do Ollama | endereço e token opcional |
 | **ChatGPT (assinatura)** | quem já paga ChatGPT Plus ou Pro e quer usar essa cota, sem chave de API | clique em **Entrar com o ChatGPT…**, autorize o Ponte no navegador (inclusive o **uso do plano**) e escolha o modelo na lista da sua conta |
@@ -306,7 +306,9 @@ Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo
 |---|---|
 | O botão **Importar para o assistente** não aparece no SIGADOC | A extensão não está carregada ou a página não é a ficha de um documento. Clique no ícone da extensão: se disser *✗ Não ligado*, siga os passos que ele mostra. |
 | *"O Ponte não foi encontrado neste computador"* | Abra o Ponte uma vez e reinicie o navegador. Se continuar, rode o instalador de novo **com a mesma conta do Windows**. |
-| *"Não recebemos a confirmação do Ponte"* | Clique em **Repetir importação**. A repetição usa o mesmo identificador: nada é duplicado. |
+| *"Não recebemos a confirmação do Ponte"* | Clique em **Repetir importação**. A repetição usa o mesmo identificador: nada é duplicado. **Se a mensagem se repete em toda tentativa e a extensão veio da Chrome Web Store, o Ponte instalado é anterior à 0.19.3**: essas versões não reconheciam a extensão da loja e fechavam sem responder. Instale o Ponte mais recente e reinicie o navegador. |
+| *"O Ponte abriu e fechou sem responder"* / *"Esta extensão não é reconhecida por este Ponte"* | O mesmo caso, com a mensagem das versões novas: instale o Ponte mais recente (a partir da 0.19.3) com a sua conta do Windows e reinicie o navegador. |
+| *"O Ponte não conseguiu abrir o acervo deste computador"* | Abra o Ponte pelo menu Iniciar: a tela mostra o motivo (acervo de outra conta do Windows, versão mais nova, arquivo em uso). Resolvido, clique em **Repetir importação**. |
 | *"A página ainda não terminou de carregar"* | Espere a página abrir por completo e clique de novo. |
 | Tela inicial diz *✗ O navegador ainda não foi ligado ao Ponte* | O registro não existe para esta conta do Windows. Rode o instalador. |
 | Dois botões "Importar" na página | Há duas extensões (a da pasta e a da loja). Remova a da pasta em `chrome://extensions`. |
