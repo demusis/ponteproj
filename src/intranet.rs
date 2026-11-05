@@ -623,6 +623,11 @@ pub enum IntranetMutation {
     DeleteAttachment {
         id: i64,
     },
+    /// Permanent removal of an item that sat in the trash past its time.
+    PurgeTrash {
+        kind: String,
+        id: i64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1742,6 +1747,11 @@ impl Store {
                 .map(|()| MutationReply::Unit),
             IntranetMutation::DeleteAttachment { id } => {
                 self.delete_attachment(id).map(|()| MutationReply::Unit)
+            }
+            IntranetMutation::PurgeTrash { kind, id } => {
+                let parsed = TrashKind::parse(&kind)?;
+                self.purge_trash_item(TrashTarget { kind: parsed, id })
+                    .map(MutationReply::Id)
             }
             IntranetMutation::DeleteDocument { id } => {
                 self.delete_document(id).map(|()| MutationReply::Unit)
@@ -3206,6 +3216,10 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
         ),
         IntranetMutation::UpdateAttachment { id, .. } => format!("Descrição do anexo #{id}"),
         IntranetMutation::DeleteAttachment { id } => format!("Exclusão definitiva do anexo #{id}"),
+        IntranetMutation::PurgeTrash { kind, id } => format!(
+            "Apagado de vez da lixeira: {} #{id}",
+            crate::labels::item_kind(kind)
+        ),
     }
 }
 

@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.19.0 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.19.1 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -291,7 +291,7 @@ Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo
 
 - **Acervo**: `%LOCALAPPDATA%\PonteProj\acervo.sqlite3` (outra pasta via variável `PONTEPROJ_DATA_DIR`, sempre em disco local). Todo conteúdo — texto, PDFs, anexos, OCR, notas, minutas, tarefas, atendimentos, configuração de rede e de IA — é gravado cifrado com a **DPAPI** da sua conta do Windows: outra conta no mesmo PC, ou outro PC, não consegue ler. Cópias temporárias de anexos abertos em outros programas ficam em `…\PonteProj\temp\` e são apagadas ao abrir e ao fechar o Ponte.
 - **Backup**: Menu ▾ → **Fazer backup agora** cria uma cópia consistente em `…\PonteProj\backups\`. O instalador também faz uma antes de cada atualização. Um backup só abre na mesma conta do Windows que o criou.
-- **Lixeira**: excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a Lixeira (Menu ▾), de onde se restaura. Nada é apagado definitivamente.
+- **Lixeira**: excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a Lixeira (Menu ▾), de onde se restaura. Por padrão nada é apagado definitivamente; na própria janela, **Apagar de vez os itens excluídos há mais de** (7 dias a 1 ano) liga a limpeza automática, feita ao abrir o Ponte e uma vez por dia, e **Apagar agora os vencidos** antecipa. Um documento apagado de vez leva junto versões, PDFs, notas, minutas, tarefas e anexos; backups não são afetados. Em equipe, a limpeza é do computador principal, pela configuração dele.
 - **Ao fechar** com algo não salvo, a janela lista cada pendência com um botão **Ir para**.
 - **Exportar dados (CSV)**: Menu ▾ → **Exportar dados para CSV…** grava, numa pasta nova em `…\PonteProj\exportados\csv-AAAAMMDD-HHMMSS\`, três arquivos: `documentos.csv` (número, título, tipo, datas, processo, remetente, finalidade, assuntos, prioridade, juntada, contagem de tarefas e anexos), `tarefas.csv` (tarefa, ação, situação, prioridade, responsável, prazo, atraso, conclusão) e `atendimentos.csv` (painel Atendimentos). Formato: UTF-8 com BOM, separador `;`, datas `AAAA-MM-DD` e coluna "Mês" (`AAAA-MM-01`) para séries mensais. Não saem textos de documentos, notas, minutas, observações nem anexos. Os arquivos abrem no Excel e entram no **CERES** (painéis do gabinete) como conjuntos: envie cada `.csv` no setor, marque a coluna `ID` como identificador para reimportar sem duplicar, e use "Mês" ou a data como coluna de período.
 - **Menu ▾ ▸ Sobre o Ponte** mostra a versão do programa e da extensão, a autoria, a licença e o endereço do projeto.

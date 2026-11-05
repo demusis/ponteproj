@@ -309,7 +309,7 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS trash(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task','attachment')),item_id INTEGER NOT NULL,document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id)); CREATE INDEX IF NOT EXISTS trash_document ON trash(document_id); CREATE TABLE IF NOT EXISTS capture_refs(capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('draft','analysis')),owner_id INTEGER NOT NULL,owner_document INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,PRIMARY KEY(capture_id,owner_kind,owner_id));")?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS trash(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task','attachment')),item_id INTEGER NOT NULL,document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id)); CREATE INDEX IF NOT EXISTS trash_document ON trash(document_id); CREATE TABLE IF NOT EXISTS capture_refs(capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('draft','analysis')),owner_id INTEGER NOT NULL,owner_document INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,PRIMARY KEY(capture_id,owner_kind,owner_id)); CREATE TABLE IF NOT EXISTS trash_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
         // Libraries created before 0.11.0 have a trash table whose CHECK does
         // not know 'attachment'. SQLite cannot alter a CHECK, so the table is
         // rebuilt once, keeping every row.
@@ -372,6 +372,147 @@ impl Store {
     }
     pub fn trash_plan(&self, target: Target) -> Result<Plan> {
         deletion_plan(&self.conn, target)
+    }
+    /// Days an item stays in the trash before being removed for good;
+    /// 0 means never (the default).
+    pub fn trash_retention_days(&self) -> Result<u32> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM trash_settings WHERE key='retention_days'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(value.and_then(|v| v.trim().parse().ok()).unwrap_or(0))
+    }
+    pub fn set_trash_retention_days(&mut self, days: u32) -> Result<()> {
+        ensure!(days <= 3660, "Prazo da lixeira grande demais (máximo de 10 anos).");
+        self.conn.execute(
+            "INSERT INTO trash_settings(key,value) VALUES('retention_days',?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [days.to_string()],
+        )?;
+        Ok(())
+    }
+    /// Items whose stay in the trash exceeded `days`, documents first so
+    /// that their children go with them in one step.
+    pub fn expired_trash(&self, days: u32) -> Result<Vec<Target>> {
+        ensure!(days > 0, "Sem prazo, nada vence.");
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(i64::from(days))).to_rfc3339();
+        let mut statement = self.conn.prepare(
+            "SELECT kind,item_id FROM trash WHERE deleted_at < ?1
+             ORDER BY CASE kind WHEN 'document' THEN 0 ELSE 1 END, deleted_at, item_id",
+        )?;
+        let rows = statement.query_map([cutoff], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.map(|row| {
+            let (kind, id) = row?;
+            Ok(Target { kind: Kind::parse(&kind)?, id })
+        })
+        .collect()
+    }
+    /// Removes for good every item that outlived the retention. A client
+    /// computer leaves this to the main computer. Returns how many went.
+    pub fn purge_expired_trash(&mut self, days: u32) -> Result<usize> {
+        if self
+            .load_intranet_config()
+            .is_ok_and(|cfg| cfg.mode == crate::intranet::IntranetMode::Client)
+        {
+            return Ok(0);
+        }
+        let mut purged = 0;
+        for target in self.expired_trash(days)? {
+            // A child may already be gone with its document.
+            if !contains(&self.conn, target.kind, target.id)? {
+                continue;
+            }
+            self.purge_trash_item(target)?;
+            purged += 1;
+        }
+        Ok(purged)
+    }
+    /// Deletes one trashed item for good: a document with everything it
+    /// holds, a capture with its files, a task with its attachments, or one
+    /// attachment. On a client computer the request goes to the main one.
+    pub fn purge_trash_item(&mut self, target: Target) -> Result<i64> {
+        if let Some(cfg) = self.client_config()? {
+            match self.remote_mutate(
+                &cfg,
+                crate::intranet::IntranetMutation::PurgeTrash {
+                    kind: target.kind.key().into(),
+                    id: target.id,
+                },
+            )? {
+                crate::intranet::MutationReply::Id(doc) => return Ok(doc),
+                _ => anyhow::bail!("Resposta inesperada do computador principal ao apagar o item."),
+            }
+        }
+        let actor = self.active_actor();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let document: i64 = tx
+            .query_row(
+                "SELECT document_id FROM trash WHERE kind=?1 AND item_id=?2",
+                params![target.kind.key(), target.id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .context("O item não está na lixeira.")?;
+        let (_, text) = label(&tx, target.kind, target.id)?;
+        match target.kind {
+            Kind::Document => {
+                tx.execute("DELETE FROM documents WHERE id=?1", [target.id])?;
+            }
+            Kind::Capture => {
+                let current: Option<i64> = tx
+                    .query_row(
+                        "SELECT latest_capture_id FROM documents WHERE id=?1",
+                        [document],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                ensure!(
+                    current != Some(target.id),
+                    "Esta versão é a que está em uso; ela não pode ser apagada."
+                );
+                tx.execute("DELETE FROM captures WHERE id=?1", [target.id])?;
+            }
+            Kind::Task => {
+                tx.execute(
+                    "DELETE FROM trash WHERE kind='attachment' AND item_id IN (SELECT id FROM attachments WHERE owner_kind='task' AND owner_id=?1)",
+                    [target.id],
+                )?;
+                tx.execute(
+                    "DELETE FROM attachments WHERE owner_kind='task' AND owner_id=?1",
+                    [target.id],
+                )?;
+                tx.execute("DELETE FROM tasks WHERE id=?1", [target.id])?;
+            }
+            Kind::Attachment => {
+                tx.execute("DELETE FROM attachments WHERE id=?1", [target.id])?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM trash WHERE kind=?1 AND item_id=?2",
+            params![target.kind.key(), target.id],
+        )?;
+        tx.execute(
+            "DELETE FROM item_versions WHERE kind=?1 AND item_id=?2",
+            params![target.kind.key(), target.id],
+        )?;
+        crate::intranet::record_mutation(
+            &tx,
+            &actor,
+            target.kind.key(),
+            target.id,
+            None,
+            "purge_trash",
+            (target.kind != Kind::Document).then_some(document),
+            &format!("Apagou de vez da lixeira: {text}"),
+        )?;
+        tx.commit()?;
+        Ok(document)
     }
     pub fn trash_item(&mut self, target: Target) -> Result<i64> {
         if let Some(cfg) = self.client_config()? {
@@ -526,6 +667,23 @@ pub struct Panel {
     pub open: bool,
     pub pending: Option<Target>,
     message: String,
+    /// Items were removed for good; the app refreshes its lists.
+    purged: bool,
+}
+
+/// Choices for "apagar de vez após": days, 0 = never.
+pub const RETENTION_CHOICES: [u32; 6] = [0, 7, 30, 90, 180, 365];
+
+pub fn retention_label(days: u32) -> String {
+    match days {
+        0 => "Nunca".to_owned(),
+        7 => "7 dias".to_owned(),
+        30 => "30 dias".to_owned(),
+        90 => "90 dias".to_owned(),
+        180 => "180 dias".to_owned(),
+        365 => "1 ano".to_owned(),
+        other => format!("{other} dias"),
+    }
 }
 pub struct Change {
     pub target: Target,
@@ -536,6 +694,67 @@ impl Panel {
     pub fn request(&mut self, target: Target) {
         self.pending = Some(target);
         self.message.clear();
+    }
+    pub fn take_purged(&mut self) -> bool {
+        std::mem::take(&mut self.purged)
+    }
+
+    /// The retention setting and the manual purge, inside the window.
+    fn retention_row(&mut self, ui: &mut eframe::egui::Ui, store: &mut Store, busy: bool) {
+        use eframe::egui;
+        let on_client = store
+            .load_intranet_config()
+            .is_ok_and(|cfg| cfg.mode == crate::intranet::IntranetMode::Client);
+        let mut days = store.trash_retention_days().unwrap_or(0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Apagar de vez os itens excluídos há mais de:");
+            let before = days;
+            ui.add_enabled_ui(!on_client, |ui| {
+                egui::ComboBox::from_id_salt("trash-retention")
+                    .selected_text(retention_label(days))
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        for choice in RETENTION_CHOICES {
+                            ui.selectable_value(&mut days, choice, retention_label(choice));
+                        }
+                    });
+            });
+            if days != before {
+                match store.set_trash_retention_days(days) {
+                    Ok(()) => {
+                        self.message = if days == 0 {
+                            "A lixeira não será esvaziada sozinha.".into()
+                        } else {
+                            format!("Itens excluídos há mais de {} serão apagados de vez ao abrir o Ponte e uma vez por dia.", retention_label(days))
+                        }
+                    }
+                    Err(error) => self.message = error.to_string(),
+                }
+            }
+            if on_client {
+                ui.small("Definido no computador principal.");
+            } else if days > 0 {
+                let expired = store.expired_trash(days).map(|v| v.len()).unwrap_or(0);
+                if ui
+                    .add_enabled(!busy && expired > 0, egui::Button::new(format!("Apagar agora os vencidos ({expired})")))
+                    .on_hover_text("Apaga de vez, agora, os itens que já passaram do prazo. Não há como restaurar depois.")
+                    .clicked()
+                {
+                    match store.purge_expired_trash(days) {
+                        Ok(count) => {
+                            self.purged = count > 0;
+                            self.message = format!("{count} item(ns) apagado(s) de vez.");
+                        }
+                        Err(error) => self.message = error.to_string(),
+                    }
+                }
+            }
+        });
+        ui.small(if days == 0 {
+            "Itens excluídos podem ser restaurados a qualquer momento; a lixeira não é esvaziada sozinha e os arquivos continuam ocupando espaço no acervo."
+        } else {
+            "Um documento apagado de vez leva junto versões, PDFs, notas, minutas, tarefas e anexos. Backups anteriores não são afetados."
+        });
     }
     pub fn show(
         &mut self,
@@ -577,7 +796,7 @@ impl Panel {
         if self.open {
             let mut open = self.open;
             egui::Window::new("Lixeira local").open(&mut open).default_size([830.0,560.0]).show(ctx,|ui|{
-                ui.small("Itens excluídos podem ser restaurados a qualquer momento.").on_hover_text("A lixeira não é esvaziada automaticamente e os arquivos continuam ocupando espaço no acervo protegido.");
+                self.retention_row(ui, store, busy || confirming);
                 if !self.message.is_empty(){ui.label(&self.message);}
                 match store.trash_entries(){Ok(entries)=>{
                     if entries.is_empty(){ui.label("A lixeira está vazia.");}
@@ -660,6 +879,64 @@ mod tests {
         );
         assert_eq!(store.list_tasks().unwrap().len(), 1);
         assert!(store.import_capture(&capture).unwrap().duplicate);
+    }
+    #[test]
+    fn expired_items_are_purged_by_retention_and_recent_ones_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("purge.sqlite3")).unwrap();
+        assert_eq!(store.trash_retention_days().unwrap(), 0, "never, by default");
+        store.set_trash_retention_days(30).unwrap();
+        assert_eq!(store.trash_retention_days().unwrap(), 30);
+
+        // Document A: trashed 40 days ago, with a task and an attachment.
+        let a = store.import_capture(&crate::model::sample_capture()).unwrap();
+        store
+            .add_attachment(crate::attachments::Owner::Document(a.document_id), "a.txt", "", b"conteudo")
+            .unwrap();
+        store.trash_item(target(Kind::Document, a.document_id)).unwrap();
+        // Document B stays; one of its tasks was trashed 40 days ago, the
+        // other 10 days ago.
+        let mut other = crate::model::sample_capture();
+        other.document_number = "SEFAZ-PRO-2026/00077".into();
+        other.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00077".into();
+        other.request_id = uuid::Uuid::new_v4().to_string();
+        let b = store.import_capture(&other).unwrap();
+        let mut old_task = Task::new(b.document_id);
+        old_task.title = "Antiga".into();
+        let old_task = store.save_task(&old_task).unwrap();
+        let mut new_task = Task::new(b.document_id);
+        new_task.title = "Recente".into();
+        let new_task = store.save_task(&new_task).unwrap();
+        store.trash_item(target(Kind::Task, old_task)).unwrap();
+        store.trash_item(target(Kind::Task, new_task)).unwrap();
+        let old = (chrono::Utc::now() - chrono::Duration::days(40)).to_rfc3339();
+        store
+            .conn
+            .execute(
+                "UPDATE trash SET deleted_at=?1 WHERE (kind='document' AND item_id=?2) OR (kind='task' AND item_id=?3)",
+                params![old, a.document_id, old_task],
+            )
+            .unwrap();
+
+        let expired = store.expired_trash(30).unwrap();
+        assert_eq!(expired.len(), 2);
+        assert_eq!(expired[0].kind, Kind::Document, "documents go first");
+        assert_eq!(store.purge_expired_trash(30).unwrap(), 2);
+        let captures: i64 = store
+            .conn
+            .query_row("SELECT count(*) FROM captures WHERE document_id=?1", [a.document_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(captures, 0, "document A and its content are gone");
+        assert!(store.attachment_counts("document").unwrap().is_empty());
+        assert!(store.load_document(a.document_id).is_err());
+        let tasks: i64 = store
+            .conn
+            .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tasks, 2, "B's sample task and the recent trashed task remain");
+        assert_eq!(store.trash_entries().unwrap().len(), 1, "only the recent task is still in the trash");
+        assert!(store.restore_item(target(Kind::Task, new_task)).is_ok());
+        assert_eq!(store.purge_expired_trash(30).unwrap(), 0);
     }
     #[test]
     fn capture_trash_selects_fallback_and_protects_saved_derivatives() {

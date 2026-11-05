@@ -96,5 +96,5 @@ Se os colegas não conseguirem conectar, peça à TI para liberar a porta 7878 (
 ## 8. Backup e lixeira
 
 - **Menu ▸ Fazer backup agora** cria uma cópia protegida do acervo na pasta de backups. Ela só abre na mesma conta do Windows.
-- Excluir um documento, tarefa, anexo ou importação pede confirmação e manda para a **Lixeira** (Menu ▸ Lixeira…), de onde pode ser restaurado.
+- Excluir um documento, tarefa, anexo ou importação pede confirmação e manda para a **Lixeira** (Menu ▸ Lixeira…), de onde pode ser restaurado. Por padrão nada é apagado de vez; na janela da Lixeira você pode definir um prazo (7 dias a 1 ano) para a limpeza automática dos itens excluídos, ou apagar os vencidos na hora.
 - Ao fechar o Ponte com algo não salvo, a janela lista o que está pendente, com um botão **Ir para** em cada item.

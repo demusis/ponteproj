@@ -713,6 +713,8 @@ struct PonteApp {
     query: String,
     search_changed: Option<Instant>,
     last_refresh: Instant,
+    /// Last automatic sweep of the trash (at start and once a day).
+    last_trash_purge: Option<Instant>,
     tab: Tab,
     settings_open: bool,
     /// AI configuration being edited (and used by AI actions).
@@ -780,6 +782,7 @@ impl PonteApp {
             query: String::new(),
             search_changed: None,
             last_refresh: Instant::now(),
+            last_trash_purge: None,
             tab: Tab::Overview,
             settings_open: false,
             ai: AiConfig::default(),
@@ -3896,6 +3899,34 @@ impl PonteApp {
         }
         self.trash.request(target);
     }
+    /// Removes for good what outlived the trash retention: once at start
+    /// and then daily, never while another operation runs.
+    fn sweep_trash(&mut self) {
+        const DAILY: Duration = Duration::from_secs(24 * 60 * 60);
+        if self.worker.is_some()
+            || self.pdf_reader.busy()
+            || !self.last_trash_purge.is_none_or(|at| at.elapsed() > DAILY)
+        {
+            return;
+        }
+        self.last_trash_purge = Some(Instant::now());
+        let days = match self.store.trash_retention_days() {
+            Ok(days) if days > 0 => days,
+            _ => return,
+        };
+        match self.store.purge_expired_trash(days) {
+            Ok(0) => {}
+            Ok(count) => {
+                self.message(format!(
+                    "Lixeira: {count} item(ns) excluído(s) há mais de {} apagado(s) de vez.",
+                    crate::trash::retention_label(days)
+                ));
+                self.refresh();
+            }
+            Err(error) => self.error(format!("A limpeza da Lixeira falhou: {error}")),
+        }
+    }
+
     fn apply_trash_change(&mut self, change: crate::trash::Change) {
         use crate::trash::Kind;
         if !change.restored {
@@ -4082,6 +4113,7 @@ impl eframe::App for PonteApp {
         } else if self.last_refresh.elapsed() > Duration::from_secs(4) {
             self.refresh();
         }
+        self.sweep_trash();
         ctx.request_repaint_after(Duration::from_millis(300));
         self.draft_tools.comparison(&ctx);
         self.pdf_reader.show(&ctx, &mut self.store);
@@ -4265,6 +4297,9 @@ impl eframe::App for PonteApp {
                 || self.replacement.is_some(),
         ) {
             self.apply_trash_change(change);
+        }
+        if self.trash.take_purged() {
+            self.refresh();
         }
     }
 
