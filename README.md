@@ -1,16 +1,24 @@
 # Ponte — Assistente documental SIGADOC
 
-O **Ponte** é um programa do Windows que guarda, no seu computador, os documentos que você importa do SIGADOC — com texto, PDFs e histórico de tramitação — para que você anote, prepare minutas, acompanhe prazos, controle as demandas do gabinete e, se quiser, trabalhe em equipe na rede interna. Ele é formado por um aplicativo (Rust + egui + SQLite) e por uma extensão para Chrome/Edge que coloca o botão **Importar para o assistente** nas páginas do SIGADOC.
+O **Ponte** é um programa para Windows que guarda, no seu computador, os documentos que você importa do SIGADOC, com texto, PDFs e histórico de tramitação. Com eles guardados, você anota, prepara minutas, acompanha prazos, controla as demandas do gabinete e, se quiser, trabalha em equipe.
 
-O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam lá. Nada vai para a nuvem; os dados ficam protegidos na sua conta do Windows.
+Ele tem duas partes, que funcionam juntas:
+
+- o **aplicativo**, que abre pelo menu Iniciar e guarda tudo;
+- a **extensão do navegador** (Chrome ou Edge), que coloca o botão **Importar para o assistente** nas páginas do SIGADOC.
+
+**O que o Ponte não faz:** ele nunca envia nada ao SIGADOC. Assinar, tramitar e despachar continuam sendo feitos lá. O Ponte só lê, no seu navegador, as páginas às quais você já tem acesso.
+
+**Onde ficam os dados:** no seu computador, cifrados pela sua conta do Windows. Nada vai para a nuvem, a não ser que você escolha uma das opções de IA em nuvem ou a pasta compartilhada, que são explicadas e avisadas no próprio programa.
 
 | | |
 |---|---|
-| **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) — versões anteriores e notas em [Releases](https://github.com/demusis/ponteproj/releases) |
-| **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
-| **Extensão na Chrome Web Store** | publicada (não listada): <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah> — exige o Ponte 0.19.3 ou posterior; a extensão também vem junto com o instalador |
-| **Versão** | 0.19.3 (extensão 0.1.11) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
-| **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
+| **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
+| **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
+| **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em duas páginas |
+| **Versão** | 0.19.3 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
+| **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
 ---
@@ -18,40 +26,135 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 ## Sumário
 
 1. [Instalar em 5 minutos](#1-instalar-em-5-minutos)
-2. [Um passeio pelo Ponte com um documento de exemplo](#2-um-passeio-pelo-ponte-com-um-documento-de-exemplo)
-3. [Documentos: ficha, notas e minutas](#3-documentos-ficha-notas-e-minutas)
-4. [Tarefas e prazos](#4-tarefas-e-prazos)
-5. [Atendimentos (controle do gabinete)](#5-atendimentos-controle-do-gabinete)
-6. [Trabalhar em equipe (Rede e equipe)](#6-trabalhar-em-equipe-rede-e-equipe)
-7. [IA opcional](#7-ia-opcional)
-8. [Onde ficam os dados, backup e lixeira](#8-onde-ficam-os-dados-backup-e-lixeira)
-9. [Solução de problemas](#9-solução-de-problemas)
-10. [Para desenvolvedores](#10-para-desenvolvedores)
-11. [Autoria e licença](#11-autoria-e-licença)
+2. [Conceitos em uma página](#2-conceitos-em-uma-página)
+3. [A janela do Ponte](#3-a-janela-do-ponte)
+4. [Um passeio com um documento de exemplo](#4-um-passeio-com-um-documento-de-exemplo)
+5. [Documentos](#5-documentos)
+6. [Tarefas e prazos](#6-tarefas-e-prazos)
+7. [Atendimentos (controle do gabinete)](#7-atendimentos-controle-do-gabinete)
+8. [Mais de um computador: equipe e pasta compartilhada](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)
+9. [IA opcional](#9-ia-opcional)
+10. [Dados, segurança, backup e lixeira](#10-dados-segurança-backup-e-lixeira)
+11. [Solução de problemas](#11-solução-de-problemas)
+12. [Perguntas frequentes](#12-perguntas-frequentes)
+13. [Para desenvolvedores](#13-para-desenvolvedores)
+14. [Autoria e licença](#14-autoria-e-licença)
 
 ---
 
 ## 1. Instalar em 5 minutos
 
-Não precisa de administrador: tudo é instalado na sua conta do Windows.
+Tudo é instalado na sua conta do Windows. Não é preciso senha de administrador.
 
-1. Baixe o instalador por este link direto, que sempre aponta para a versão mais recente: **<https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe>**. Dê dois cliques no arquivo e avance até o fim; pode deixar marcado **Abrir o Ponte agora**. Uma versão específica (`Ponte-Setup-X.Y.Z.exe`) fica em [Releases](https://github.com/demusis/ponteproj/releases).
-2. Feche e abra o navegador (Chrome ou Edge).
-3. Na tela inicial do Ponte, o quadro **Ligação com o navegador** deve dizer *✓ O Ponte está registrado para o Chrome e Edge*.
-4. Instale a extensão **uma vez**, de um destes jeitos:
-   - **Pela loja** (recomendado): abra <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah> e clique em **Adicionar ao Chrome** (no Edge, permita "extensões de outras lojas"). Exige o Ponte 0.19.3 ou posterior.
-   - **Pela pasta instalada**: na tela inicial do Ponte, clique em **Copiar caminho**; no navegador abra `chrome://extensions` (ou `edge://extensions`), ative **Modo do desenvolvedor**, clique em **Carregar sem compactação** e cole o caminho na barra de endereço da janela que abre.
-5. Feche e abra o navegador de novo. Clique no ícone da extensão: deve mostrar *✓ Ligado ao Ponte X.Y.Z* (a versão instalada; ela também aparece em **Menu ▾ ▸ Sobre o Ponte**).
+### Passo a passo
 
-O que o instalador faz, caso queira saber: copia o programa para `%LOCALAPPDATA%\Programs\PonteProj\vX.Y.Z` e a extensão para `…\PonteProj\extension`; registra a ligação navegador↔Ponte (chaves `HKCU` do Chrome e do Edge); cria o atalho **Ponte** no menu Iniciar; **faz uma cópia de segurança do acervo** antes de mudar qualquer coisa; remove versões antigas. Para atualizar, basta rodar o instalador novo. A desinstalação fica em *Aplicativos instalados* e **não apaga seus dados**.
+1. **Baixe o instalador** por este link direto, que sempre aponta para a versão mais recente:
+   **<https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe>**
+2. **Dê dois cliques** em `Ponte-Setup.exe` e avance até o fim. Pode deixar marcado **Abrir o Ponte agora**.
+   Se o Windows mostrar o aviso "O Windows protegeu o computador", clique em **Mais informações** e em **Executar assim mesmo**: o instalador não é assinado por uma autoridade paga.
+3. **Feche e abra o navegador** (Chrome ou Edge).
+4. **Instale a extensão**, uma única vez, por um destes dois caminhos:
+   - **Pela loja (recomendado):** abra <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah> e clique em **Adicionar ao Chrome**. No Edge, permita antes "extensões de outras lojas".
+   - **Pela pasta instalada (sem acesso à loja):** na tela inicial do Ponte, clique em **Copiar caminho**, ao lado de "Extensão do navegador". No navegador, abra `chrome://extensions` (ou `edge://extensions`), ative o **Modo do desenvolvedor**, clique em **Carregar sem compactação** e cole o caminho na barra de endereço da janela que abre.
+5. **Feche e abra o navegador** de novo.
+
+### Como saber se deu certo
+
+| Onde olhar | O que deve aparecer |
+|---|---|
+| Tela inicial do Ponte, quadro **Ligação com o navegador** | *✓ O Ponte está registrado para o Chrome e Edge* |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.19.3* (a versão instalada) |
+| Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
+
+Se algum dos três não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
+
+### O que o instalador faz
+
+- Copia o programa para `%LOCALAPPDATA%\Programs\PonteProj\vX.Y.Z` e a extensão para `%LOCALAPPDATA%\Programs\PonteProj\extension`.
+- Registra a ligação entre o navegador e o Ponte, para o Chrome e para o Edge, só na sua conta do Windows.
+- Cria o atalho **Ponte** no menu Iniciar (e na área de trabalho, se você marcar).
+- **Faz uma cópia de segurança do acervo** antes de mudar qualquer coisa.
+- Remove as versões antigas do programa.
+
+### Atualizar e desinstalar
+
+- **Atualizar:** feche o Ponte e rode o instalador novo. Seus dados são mantidos. A extensão da loja se atualiza sozinha.
+- **Desinstalar:** em *Configurações ▸ Aplicativos instalados* do Windows. Os seus dados **não** são apagados; eles ficam em `%LOCALAPPDATA%\PonteProj`.
+- **Outra pessoa no mesmo computador:** cada conta do Windows instala o Ponte para si e tem o próprio acervo. Uma conta não vê os dados da outra.
 
 ---
 
-## 2. Um passeio pelo Ponte com um documento de exemplo
+## 2. Conceitos em uma página
+
+Vale ler antes de usar: são as palavras que aparecem nas telas.
+
+| Palavra | O que é |
+|---|---|
+| **Acervo** | O arquivo do Ponte no seu computador, com tudo o que você importou e escreveu. É cifrado pela sua conta do Windows. |
+| **Documento** | Um processo, ofício, memorando ou outro expediente do SIGADOC que você importou. No SIGADOC, processo e expediente são igualmente "documentos", e é assim que o Ponte os trata. Cada um tem um número oficial, como `SESP-OFI-2026/00042`. |
+| **Versão importada** | Uma fotografia do documento no momento da importação. Importar de novo depois de um despacho cria uma nova versão; as anteriores ficam guardadas. |
+| **Registro manual** | Um documento que você mesmo cria, para o que não está no SIGADOC: uma ligação, um e-mail, um ofício em papel. Recebe um número próprio, como `MANUAL-2026/0007`. |
+| **Ficha** | A tela de um documento, com quatro abas: Resumo, Documento, Anotações e minutas, Mais. |
+| **Tarefa** | Uma providência a tomar sobre um documento, com responsável e prazo. Toda tarefa pertence a um documento. |
+| **Atendimento** | Uma **passagem** de um documento ou de uma demanda pelo gabinete: quando entrou, com quem está, em que situação, quando saiu. É o que muitos gabinetes controlam em planilha. O mesmo documento pode ter várias passagens, e um atendimento pode existir sem documento. |
+| **Anexo** | Um arquivo do seu computador que você junta a um documento, a uma tarefa ou a um atendimento. Não confundir com os PDFs do SIGADOC, que vêm na importação. |
+| **Minuta** | O rascunho de uma resposta, encaminhamento ou pedido de complementação, escrito no Ponte e depois colado no SIGADOC. |
+| **Lixeira** | Para onde vai o que você exclui. De lá se restaura. |
+
+**Documento, tarefa e atendimento: qual a diferença?** O documento é o conteúdo. A tarefa é o que você precisa fazer com ele. O atendimento é o registro administrativo de que ele passou pelo gabinete. Ao importar um documento do SIGADOC, o Ponte cria os três: o documento, uma tarefa de triagem e um atendimento "Em análise".
+
+---
+
+## 3. A janela do Ponte
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ PONTE  Assistente documental   Atendimentos  Tarefas  Ficha      Menu ▾ │  cabeçalho
+├───────────────────────┬──────────────────────────────────────────────────┤
+│ Documentos            │                                                  │
+│ [Buscar número...]    │   Área central: muda conforme o botão do         │
+│ Filtrar ▾  + Registro │   cabeçalho.                                     │
+│                       │                                                  │
+│ ▌SESP-OFI-2026/00042  │   Ficha         a ficha do documento selecionado │
+│ ▌Pedido de revisão... │   Tarefas       o painel de tarefas              │
+│  ● 1 em aberto        │   Atendimentos  o controle do gabinete           │
+│                       │                                                  │
+│ ▌MANUAL-2026/0001     │                                                  │
+│  ✓ 1 concluída Manual │                                                  │
+├───────────────────────┴──────────────────────────────────────────────────┤
+│ ● em dia há 3 min          avisos e progresso das operações              │  barra inferior
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Cabeçalho:** três botões escolhem o que a área central mostra. **Ficha** é o documento selecionado na lista. **Tarefas** é o painel de tarefas. **Atendimentos** é o controle do gabinete.
+- **Lista de documentos (esquerda):** sempre visível. Selecionar um documento muda o que os três painéis mostram: a Ficha abre nele, e Tarefas e Atendimentos passam a listar só o que é dele (com um botão para ver tudo).
+- **Barra inferior:** um ponto colorido diz como está a rede (por exemplo `● só neste computador` ou `● em dia há 3 min`). Passe o mouse para a frase completa. Ali também aparecem os avisos e o progresso das operações demoradas, como a IA e a sincronização.
+- **Menu ▾:**
+
+| Item | Para quê |
+|---|---|
+| **Rede e equipe…** | Trabalhar em equipe ou em mais de um computador ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) |
+| **Sincronizar com a pasta agora** | Aparece no modo pasta compartilhada |
+| **Configurar IA…** | Escolher onde a IA roda ([seção 9](#9-ia-opcional)) |
+| **Lixeira…** | Restaurar itens excluídos e definir o prazo de limpeza |
+| **Fazer backup agora** | Cópia de segurança do acervo |
+| **Exportar dados para CSV…** | Planilhas para o Excel ou para painéis |
+| **Atualizar lista** | A lista já se atualiza sozinha; serve para forçar |
+| **Sobre o Ponte…** | Versão, autoria, licença e endereço do projeto |
+
+**Datas:** todo campo de data aceita digitar `dd/mm/aaaa` ou escolher no calendário. O botão 📅 abre o mês, com os dias da semana (D S T Q Q S S), setas ◀ ▶ para trocar de mês, hoje em destaque e os atalhos **Hoje** e **Limpar**. Uma data inválida, como `31/02/2026`, fica marcada em vermelho.
+
+**Nada se perde ao trocar de tela.** Se há algo não salvo, o Ponte pergunta antes de sair, e ao fechar o programa lista cada pendência com um botão **Ir para**.
+
+---
+
+## 4. Um passeio com um documento de exemplo
 
 Suponha que chegou ao gabinete o ofício fictício **SESP-OFI-2026/00042 — Pedido de revisão de materiais de treinamento**, com prazo de resposta em 10 dias.
 
-**Importar.** No SIGADOC, abra o documento (a ficha, não a lista). No canto inferior direito da página aparece o painel da extensão com o documento identificado:
+### 4.1 Importar
+
+No SIGADOC, abra o documento (a ficha dele, não a lista de resultados). No canto inferior direito da página aparece o painel da extensão, já com o documento identificado:
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -64,141 +167,257 @@ Suponha que chegou ao gabinete o ofício fictício **SESP-OFI-2026/00042 — Ped
 └──────────────────────────────────────────────┘
 ```
 
-Clique no botão. Em alguns segundos aparece *Importado. O Ponte abriu o documento.* — e a janela do Ponte abre com a ficha. Se um PDF não puder ser baixado (sessão expirada, arquivo muito grande), a própria mensagem diz qual.
+Clique no botão. Em alguns segundos aparece *Importado. O Ponte abriu o documento.*, e a janela do Ponte abre na ficha. Se algum PDF não puder ser baixado (sessão expirada, arquivo grande demais), a própria mensagem diz qual.
 
-**Ler.** A ficha abre na aba **Resumo**: tipo, data, situação no SIGADOC, tarefas e, mais abaixo, a análise por IA (se você quiser usá-la). A aba **Documento** traz o texto importado, os PDFs (com leitor e OCR local), os dados do SIGADOC e o histórico de tramitação.
+Nesse momento o Ponte criou três coisas: o **documento**, uma **tarefa de triagem** e um **atendimento** "Em análise" com a data de hoje e você como responsável.
 
-**Anotar.** Em **Anotações e minutas**, escreva nas notas, por exemplo:
+### 4.2 Ler
+
+A ficha abre na aba **Resumo**: dados principais, tarefas, atendimentos ligados e, mais abaixo, a análise por IA (opcional). A aba **Documento** traz o texto importado, os PDFs (com leitor próprio e reconhecimento de texto local), os dados do SIGADOC e o histórico de tramitação.
+
+### 4.3 Anotar
+
+Em **Anotações e minutas**, escreva nas notas, por exemplo:
 
 > Falar com a Coordenação de Capacitação antes de responder. Planilha anexa tem valores desatualizados (ver p. 3 do PDF).
 
 Clique em **Salvar notas**. O ponto laranja na aba some quando tudo está salvo.
 
-**Criar a tarefa com prazo.** No Resumo, em *Tarefas deste documento*, clique em **Nova tarefa**: título *Responder ao ofício*, responsável **Eu**, prazo `13/11/2026` (digite ou escolha no calendário 📅; há também o botão **Hoje**), salve. A partir daí o cartão do documento na lista da esquerda mostra `● 1 em aberto (no prazo) • Prazo: 13/11/2026`; quando o prazo passar, vira vermelho `⚠ 1 tarefa atrasada`.
+### 4.4 Criar a tarefa com prazo
 
-**Responder.** Ainda em *Anotações e minutas*, na seção **Minuta**: tipo *Resposta*, clique em **Começar por um modelo** (texto-base sem IA) ou em **Gerar sugestão com IA**; edite; **Salvar nova versão**; **Exportar (RTF)** abre a pasta com o arquivo para o Word. O texto final você cola no SIGADOC — o Ponte não tramita nem assina.
+No Resumo, em **Tarefas deste documento**, clique em **Nova tarefa**. Preencha:
 
-**Concluir.** Com a resposta enviada, clique em **✓ Concluir** ao lado da tarefa. O cartão passa a `✓ 1 tarefa concluída`.
+| Campo | Valor |
+|---|---|
+| Título | `Responder ao ofício` |
+| Responsável | clique em **Eu** |
+| Ação | *Responder* |
+| Prazo | `13/11/2026` (digite ou use o 📅) |
 
-Tudo isso fica só no seu computador (ou no acervo do gabinete, se a equipe estiver conectada — seção 6).
+Salve. O cartão do documento, na lista da esquerda, passa a mostrar `● 2 em aberto (no prazo) • Prazo: 13/11/2026`. Quando o prazo passar, vira vermelho: `⚠ 1 tarefa atrasada`.
+
+### 4.5 Responder
+
+Ainda em **Anotações e minutas**, na parte **Minuta**:
+
+1. Escolha o tipo: *Resposta*.
+2. Clique em **Começar por um modelo** (texto-base, sem IA) ou em **Gerar sugestão com IA**.
+3. Edite o texto.
+4. **Salvar nova versão**.
+5. **Exportar (RTF)** abre a pasta com o arquivo para o Word, ou **Copiar texto** para colar direto.
+
+O texto final você cola no SIGADOC. O Ponte não tramita nem assina.
+
+### 4.6 Concluir
+
+Com a resposta enviada pelo SIGADOC, clique em **✓ Concluir** ao lado de cada tarefa. O cartão passa a `✓ 2 tarefas concluídas`. No painel **Atendimentos**, abra o atendimento e clique em **Encerrar**, informando a data de saída e para onde foi.
 
 ---
 
-## 3. Documentos: ficha, notas e minutas
+## 5. Documentos
 
-### A lista da esquerda
+### 5.1 A lista da esquerda
 
-- **Buscar** procura em número, assunto, texto, notas, minutas e nos PDFs lidos.
-- **Filtrar ▾** abre os filtros por situação das tarefas (*Com tarefa aberta*, *No prazo*, *Atrasados*, *Concluídos*), por prioridade e por origem (SIGADOC ou manuais), e a **Ordem** da lista: mais recentes, prazo mais próximo, prioridade, número ou assunto. Quando há atrasados, um atalho `⚠ N atrasado(s)` aparece ao lado.
-- Cada cartão tem uma barra colorida e uma etiqueta: vermelho = tarefa atrasada; âmbar = vence hoje; azul-petróleo = em aberto no prazo; verde = tudo concluído; cinza = sem tarefas.
-- **Documentos juntados** (quando a ficha do SIGADOC diz *Juntado ao documento: …*) aparecem logo abaixo do documento principal, com a marca ↳ e a etiqueta `↳ Juntado a SESP-DIC-2026/97546`. O principal mostra `📎 N juntado(s)`. O vínculo entre os dois é criado automaticamente quando ambos estão importados, em qualquer ordem.
+- **Buscar** procura em número, assunto, texto, notas, minutas e nos PDFs já lidos.
+- **Filtrar ▾** abre os filtros e a ordem:
 
-### As quatro abas da ficha
+| Filtro | Opções |
+|---|---|
+| Situação das tarefas | *Todos*, *Com tarefa aberta*, *No prazo*, *Atrasados*, *Concluídos* |
+| Prioridade | todas, urgente, alta, normal, baixa, não classificada |
+| Origem | *Todos*, *SIGADOC*, *Manuais* (aparece quando há registros manuais) |
+| **Ordem** | *Mais recentes primeiro* (padrão), *Prazo mais próximo primeiro*, *Prioridade (urgente primeiro)*, *Número do documento*, *Assunto (A–Z)* |
+
+- **+ Registro manual** cria um documento que não está no SIGADOC ([5.5](#55-registros-manuais)).
+- Quando há tarefas atrasadas, o atalho `⚠ N atrasado(s)` aparece ao lado de Filtrar.
+
+### 5.2 Como ler um cartão
+
+Cada cartão mostra o número, o assunto, uma barra colorida à esquerda e uma etiqueta embaixo. Barra e etiqueta dizem a mesma coisa, a situação das tarefas do documento:
+
+| Cor | Significado | Exemplo de etiqueta |
+|---|---|---|
+| vermelho | há tarefa atrasada | `⚠ 1 tarefa atrasada` |
+| âmbar | alguma tarefa vence hoje | `⏰ 1 em aberto (vence hoje)` |
+| azul-petróleo | tarefas em aberto, no prazo | `● 2 em aberto (no prazo) • Prazo: 13/11/2026` |
+| verde | todas as tarefas concluídas | `✓ 1 tarefa concluída` |
+| cinza | sem tarefas | `○ Sem tarefas` |
+
+Outras marcas do cartão: **Manual** (registro manual), `📎 N juntado(s)` (o documento tem outros juntados a ele), `↳ Juntado a …` (está juntado a outro) e *análise desatualizada* (a análise por IA foi feita sobre uma versão anterior).
+
+**Documentos juntados.** Quando a ficha do SIGADOC diz *Juntado ao documento: …*, o Ponte liga os dois sozinho, em qualquer ordem de importação. O juntado aparece logo abaixo do principal, recuado, com a marca ↳.
+
+### 5.3 As quatro abas da ficha
 
 | Aba | O que tem |
 |---|---|
-| **Resumo** | Dados principais; tarefas do documento; atendimentos do controle do gabinete ligados a ele; análise por IA; contexto de trabalho e fontes extras (recolhidos); documentos parecidos. |
-| **Documento** | Texto importado (aberto); Arquivos (PDF) com **Ler no Ponte** e **Exportar**; **Anexos** (arquivos do seu computador juntados ao documento); Dados do SIGADOC; Histórico de tramitação. |
-| **Anotações e minutas** | Notas no alto; editor de minuta embaixo com tipo, modelo, IA, **Salvar nova versão**, **Copiar**, **Exportar (RTF)**, **Comparar com versão** e as versões salvas. |
-| **Mais** | Vínculos entre documentos (manuais ou automáticos) e versões importadas; o que foi importado e referências; dados técnicos. |
+| **Resumo** | Dados principais; **Tarefas deste documento**; atendimentos ligados; **Análise assistida por IA**; contexto de trabalho e fontes extras (recolhidos); documentos parecidos. |
+| **Documento** | **Texto importado**; **Arquivos (PDF)** com **Ler no Ponte** e exportação; **Anexos** (arquivos seus); dados do SIGADOC; histórico de tramitação. |
+| **Anotações e minutas** | **Notas** no alto; **Minuta** embaixo, com tipo, modelo, IA, **Salvar nova versão**, **Copiar texto**, **Exportar (RTF)**, **Comparar com versão ▾** e as versões salvas. |
+| **Mais** | Vínculos entre documentos (automáticos ou feitos por você); versões importadas, com comparação; o que foi importado e os links encontrados na página; dados técnicos. |
 
-O cabeçalho da ficha mostra o número, a etiqueta de tarefas, a situação de juntada (com **Abrir documento principal** em 1 clique) e o botão **Excluir…** (vai para a lixeira, reversível).
+O cabeçalho da ficha mostra o número, a etiqueta de tarefas, a situação de juntada (com **Abrir documento principal**), **Abrir documento no SIGADOC** e **Excluir…** (vai para a Lixeira).
 
-### Anexos (arquivos seus, no documento, na tarefa ou no atendimento)
+### 5.4 Importar de novo o mesmo documento
 
-Em **Documento ▸ Anexos**, na ficha de cada tarefa e na ficha de cada atendimento (depois de salvo), **Anexar arquivo…** abre a janela de escolha do Windows. O arquivo passa a fazer parte do acervo (cifrado, como tudo o mais) e aparece para toda a equipe. Exemplos: o ofício em Word que originou o documento, a foto de um despacho, o e-mail com a orientação recebida.
+Importar de novo nunca duplica. O Ponte compara o conteúdo da página (texto, PDFs e dados) com o que já está no acervo:
+
+| A página do SIGADOC está… | O que acontece |
+|---|---|
+| **igual** à versão em uso | **Nada é gravado.** O painel da extensão avisa, em laranja: *"Importação ignorada: o SIGADOC mostra o mesmo conteúdo já importado em 04/11/2026 12:38. Nada foi gravado. Se o documento mudou, atualize a página (F5) e importe de novo."* O Ponte nem abre. |
+| **diferente** (despacho novo, anexo novo, texto alterado) | Guarda uma **nova versão**. As anteriores ficam em **Mais ▸ Versões importadas**, com a comparação do que mudou. Análises e minutas antigas são marcadas como feitas sobre uma importação anterior. |
+| igual a uma **versão anterior** (voltou atrás) | Nada novo é gravado; aquela versão volta a ser a atual, e o painel avisa. |
+
+Se a confirmação de uma importação se perder no caminho, o botão vira **Repetir importação**. Repetir não duplica: o Ponte responde *Importação confirmada*.
+
+**Limites de uma importação:** 500 KB de texto, 8 MB por PDF e 16 MB de PDFs no total. O que passar disso é avisado; o texto da página é importado mesmo assim.
+
+### 5.5 Registros manuais
+
+Para o que não está no SIGADOC. Clique em **+ Registro manual** (ou **+ Criar registro manual…** na tela inicial) e preencha:
+
+| Campo | Exemplo |
+|---|---|
+| Tipo | *Memorando ou comunicação interna*, *Ligação telefônica*, *E-mail recebido*, *Ofício ou documento em papel*, *Reunião ou despacho verbal*, *Outro* |
+| Título | `Ligação do gabinete sobre a reforma` |
+| Origem (de quem, de onde) | `Gabinete do Secretário` |
+| Data do documento | `03/11/2026` |
+| Texto | o que foi pedido, decidido ou recebido |
+
+Ao salvar, o registro recebe o número `MANUAL-ano/sequência`, que nunca se confunde com um número do SIGADOC, e aparece com a etiqueta âmbar **Manual** na lista, na ficha e nas tarefas. Tarefas, notas, minutas, anexos, análise por IA, Lixeira e compartilhamento com a equipe funcionam como em qualquer documento. **Editar registro…** salva uma nova versão; as anteriores ficam em Mais ▸ Versões. Para guardar o arquivo original (o e-mail, a foto do papel), use **Documento ▸ Anexos**.
+
+Em equipe, o número é dado pelo computador principal. Se ele estiver fora de alcance, o registro fica como "pendente" até a próxima sincronização.
+
+### 5.6 Anexos
+
+Arquivos do seu computador podem ser juntados a um **documento** (Documento ▸ Anexos), a uma **tarefa** (na ficha dela) ou a um **atendimento** (na ficha dele). Tarefa e atendimento precisam estar salvos antes. Clique em **Anexar arquivo…** e escolha o arquivo. Ele passa a fazer parte do acervo, cifrado, e aparece para a equipe.
 
 | Regra | Valor |
 |---|---|
 | Tamanho | até 8 MB por arquivo |
-| Quantidade | até 20 por documento ou tarefa |
-| Tipos | PDF, Word, Excel, PowerPoint, OpenDocument, texto (.txt, .rtf, .csv), imagens (.png, .jpg, .gif, .bmp, .tif) e e-mails (.eml, .msg) |
+| Quantidade | até 20 por documento, tarefa ou atendimento |
+| Tipos aceitos | PDF, Word, Excel, PowerPoint, OpenDocument, texto (.txt, .rtf, .csv), imagens (.png, .jpg, .gif, .bmp, .tif) e e-mails (.eml, .msg) |
 | Recusados | programas, scripts, atalhos, arquivos compactados (.zip, .rar) e Office com macros (.docm, .xlsm) |
 
-Quando um arquivo é recusado, a mensagem diz o motivo e o que fazer (por exemplo: *"O arquivo tem 12,4 MB; o limite é 8 MB. Para reduzir: salve o PDF com compressão… ou divida o documento em partes"*). O tipo é conferido também pelo conteúdo, não só pela extensão.
+O tipo é conferido também pelo conteúdo, não só pela extensão. Quando um arquivo é recusado, a mensagem diz o motivo e o que fazer, por exemplo: *"O arquivo tem 12,4 MB; o limite é 8 MB. Para reduzir: salve o PDF com compressão… ou divida o documento em partes"*.
 
-Cada anexo tem uma **descrição** opcional e os botões **Ler no Ponte** (PDF) ou **Abrir** (demais tipos, no programa padrão do Windows, a partir de uma cópia temporária apagada ao fechar o Ponte), **Salvar como…** e **Excluir…** (vai para a Lixeira). Na lista de tarefas, **📎 2** indica quantos anexos a tarefa tem.
-
-### Registros manuais (o que não está no SIGADOC)
-
-Uma ligação telefônica, um memorando interno, um e-mail ou um ofício em papel podem virar um **registro manual**: botão **＋ Registro manual** na lista da esquerda (ou **Criar registro manual…** na tela inicial), com tipo, título, origem, data do documento e texto. O registro recebe um número próprio, `MANUAL-2026/0007`, que nunca se confunde com um número do SIGADOC, e aparece com a pílula âmbar **Manual** na lista, na ficha e nas tarefas. Tarefas, notas, minutas, anexos, análise por IA, Lixeira e compartilhamento com a equipe funcionam como em qualquer documento; a ficha mostra "Dados do registro" no lugar dos dados do SIGADOC e não tem "Abrir no SIGADOC". **Editar registro…** salva uma nova versão (as anteriores ficam em Mais ▸ Versões). Em equipe, o número é dado pelo computador principal; se ele estiver fora de alcance, o registro fica como "pendente" até a próxima sincronização. O filtro **Origem** separa SIGADOC e manuais; na exportação CSV, a coluna "Origem" vale "Manual".
-
-### Reimportar
-
-Importar de novo o mesmo documento nunca duplica nada. O Ponte compara o conteúdo (texto da página, PDFs e dados) com o que já está no acervo:
-
-| A página do SIGADOC está… | O que acontece |
-|---|---|
-| **igual** à versão em uso no Ponte | **Nada é gravado.** O painel da extensão mostra, em laranja, *"Importação ignorada: o SIGADOC mostra o mesmo conteúdo já importado em 04/11/2026 12:38. Nada foi gravado. Se o documento mudou, atualize a página (F5) e importe de novo."* O Ponte não abre e o documento não muda de lugar na lista. |
-| **diferente** (despacho novo, anexo novo, texto alterado) | Guarda uma **nova versão**; as anteriores ficam em **Mais ▸ Versões importadas**, com comparação do que mudou, e análises e minutas antigas são marcadas como feitas sobre uma importação anterior. |
-| igual a uma **versão anterior** (voltou atrás) | Nada novo é gravado; essa versão volta a ser a atual e o painel avisa em laranja que a página corresponde a uma versão anterior. |
-
-Se a confirmação de uma importação se perder no caminho (o botão vira **Repetir importação**), repetir não duplica: o Ponte responde *Importação confirmada*.
+Cada anexo tem uma **descrição** opcional e os botões **Ler no Ponte** (PDF) ou **Abrir** (demais tipos, no programa padrão do Windows, a partir de uma cópia temporária apagada ao fechar o Ponte) e **Salvar como…**. Para excluir: em documentos e tarefas, **Excluir…** manda para a Lixeira; em atendimentos, **Excluir de vez…** apaga definitivamente, com confirmação, porque atendimentos não têm Lixeira.
 
 ---
 
-## 4. Tarefas e prazos
+## 6. Tarefas e prazos
 
-Cada documento importado recebe uma tarefa de triagem. Você cria outras no Resumo (**Nova tarefa**) ou no painel **Tarefas** (topo da janela).
+Cada documento importado recebe uma tarefa de triagem. Você cria outras no Resumo do documento (**Nova tarefa**) ou no painel **Tarefas**.
 
-O painel tem a **lista à esquerda** e a **ficha à direita**. Visões: *Hoje*, *Esta semana*, *Atrasadas*, *Todas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem dependência aberta), *A triar*, *Aguardando terceiros*, *Lembretes* e *Sem prazo*.
+### 6.1 O painel
 
-Campos da tarefa:
+A lista fica à esquerda e a ficha da tarefa à direita.
 
-| Campo | Exemplo |
+- **O painel segue o documento selecionado.** Com um documento selecionado na lista da esquerda, o painel mostra só as tarefas dele: no alto aparece `Só SESP-OFI-2026/00042` e o botão **Todos os documentos**, que amplia. Selecionar outro documento volta a filtrar por ele.
+- **Visões:** *Hoje*, *Esta semana*, *Atrasadas*, *Todas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando terceiros*, *Lembretes* e *Sem prazo*.
+- **Mostrar concluídas** inclui as já concluídas na lista.
+- **Nova tarefa para …** cria uma tarefa do documento selecionado.
+
+### 6.2 Os campos
+
+| Campo | Opções ou exemplo |
 |---|---|
 | Título | `Responder ao ofício` |
-| Responsável | `MARIA` (ou botão **Eu**) |
-| Ação / Situação / Prioridade | *Responder* / *Pendente* / *Alta* |
-| Prazo | `13/11/2026` — digite dd/mm/aaaa, escolha no calendário 📅 (mês com os dias da semana) ou clique em **Hoje** |
+| Responsável | `MARIA`, ou o botão **Eu** |
+| Ação | *Triar*, *Examinar*, *Tomar ciência*, *Baixar documento*, *Responder*, *Encaminhar*, *Pedir complementação*, *Acompanhar* |
+| Situação | *Pendente*, *Em análise*, *Aguardando*, *Concluída* |
+| Prioridade | *Baixa*, *Normal*, *Alta*, *Urgente* |
+| Prazo | `13/11/2026` |
 | Observações | texto livre |
-| **Anexos** | arquivos do seu computador ligados à tarefa (depois de salvá-la); ver [Anexos](#anexos-arquivos-seus-no-documento-ou-na-tarefa) |
-| **Mais detalhes** | origem do prazo (ex.: *art. 5º do ofício*), lembrete, resultado, checklist de etapas, dependências |
+| **Anexos** | arquivos seus ligados à tarefa ([5.6](#56-anexos)) |
+| **Mais detalhes** | origem do prazo (ex.: *art. 5º do ofício*), lembrete, resultado, lista de etapas, dependências |
 
-Regras úteis:
-- **Nada se perde ao trocar de tela.** Com uma tarefa não salva, clicar em **Ficha**, **Atendimentos**, num documento da lista, em outra tarefa ou em **Nova tarefa** abre a pergunta *"A tarefa ‘…’ tem alterações não salvas"* com **Salvar e continuar**, **Descartar alterações** e **Voltar à tarefa**. Enquanto isso, o rótulo **Tarefas ●** fica laranja no topo. Na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só leitura, sem sair da tarefa; **Ir para o documento** abre a ficha completa.
-- **✓ Concluir** e **Reabrir** ficam na própria lista; concluir uma tarefa não registra nada no SIGADOC.
-- **Juntados seguem o principal:** concluir a última tarefa aberta de um documento principal conclui, em cascata, as tarefas abertas dos documentos juntados a ele (e dos juntados a estes), cada uma com a anotação *"Concluída automaticamente: o documento principal X foi concluído"*. A mensagem de confirmação lista o que foi concluído; tarefas com dependência pendente ficam abertas e são informadas. Reabrir o principal não reabre as peças.
-- **Dependências aparecem na lista.** Uma tarefa que depende de outras fica recuada à direita (um degrau por nível, como os documentos juntados), com a linha *↳ depende de: A, B* (concluída riscada ✓, atrasada em vermelho), e é listada depois delas. Enquanto houver dependência aberta, o cartão mostra ⛓ e **✓ Concluir** fica desabilitado com *"Conclua antes: A, B"*. Na ficha, o bloco **Cadeia de dependências** lista o que vem antes e o que espera por ela, em qualquer nível, com **Abrir**. Ao marcar dependências, as que formariam ciclo aparecem desabilitadas e explicadas; o salvamento continua recusando ciclos.
-- Datas inválidas (ex.: `31/02/2026`) ficam marcadas em vermelho e o salvamento avisa.
+### 6.3 Regras que vale conhecer
+
+- **✓ Concluir** e **Reabrir** ficam na própria lista. Concluir uma tarefa não registra nada no SIGADOC.
+- **Sem sair da tarefa:** na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só para leitura. **Ir para o documento** abre a ficha completa.
+- **Alterações não salvas:** com uma tarefa em edição, o rótulo **Tarefas ●** fica laranja no cabeçalho. Ao clicar em outro lugar, o Ponte pergunta: **Salvar e continuar**, **Descartar alterações** ou **Voltar à tarefa**.
+- **Juntados seguem o principal:** concluir a última tarefa aberta de um documento principal conclui também as tarefas abertas dos documentos juntados a ele, cada uma com a anotação *"Concluída automaticamente: o documento principal X foi concluído"*. A mensagem lista o que foi concluído. Reabrir o principal não reabre as peças.
+
+### 6.4 Dependências entre tarefas
+
+Uma tarefa pode depender de outras ("só posso responder depois de receber o parecer"). Marque em **Mais detalhes ▸ dependências**.
+
+| O que você vê | O que significa |
+|---|---|
+| Tarefa recuada na lista, depois das que ela espera | ela depende de outras |
+| `⛓ 1 de 2 anterior(es) em aberto` (âmbar) | quantas das tarefas anteriores ainda faltam; passe o mouse para a lista |
+| `⛓ 2 anterior(es) concluída(s)` (verde) | já pode ser feita |
+| `↳ depende de:` seguido de botões `○ A`, `⚠ B`, `✓ C` | as tarefas anteriores e a situação de cada uma: aberta, atrasada, concluída. Clicar abre a tarefa |
+| `↱ libera:` seguido de botões | as tarefas que esperam por esta |
+| barra âmbar ou azul à esquerda de um cartão | com uma tarefa aberta na ficha: âmbar marca as anteriores dela, azul as que dependem dela |
+
+Enquanto houver tarefa anterior em aberto, **✓ Concluir** fica desabilitado, com a dica *"Conclua antes: A, B"*. O Ponte não deixa formar ciclos: as opções que criariam um aparecem desabilitadas e explicadas.
 
 ---
 
-## 5. Atendimentos (controle do gabinete)
+## 7. Atendimentos (controle do gabinete)
 
-Área para o controle operacional que muitos gabinetes mantêm numa planilha. No SIGADOC, processos e expedientes são todos **documentos**, e é assim que entram na biblioteca do Ponte. Um **atendimento** é outra coisa: cada passagem de um desses documentos pelo gabinete (ou de uma demanda sem documento: ligação, e-mail, pedido verbal), com entrada, responsável, situação, prioridade, prazo e resultado. O mesmo documento pode ter várias passagens. O atendimento pode ser ligado ao documento importado (**Ligar a documento**), mas existe mesmo sem ele.
+O painel **Atendimentos** é o "livro de entrada e saída" do gabinete: cada linha é uma passagem de um documento ou de uma demanda, com entrada, responsável, situação, prazo e resultado. Substitui a planilha de controle e pode ser alimentado por ela.
 
-### Registrar uma entrada à mão
+### 7.1 De onde vêm os atendimentos
 
-Clique em **Registrar nova entrada**. A ficha abre **ao lado** da grade, com **Salvar / Descartar / Encerrar / Fechar / Excluir…** sempre visíveis no alto (a exclusão é definitiva, com confirmação; não há Lixeira para atendimentos). Exemplo:
+| Origem | Como |
+|---|---|
+| **Importação do SIGADOC** | Na primeira importação de cada documento, o Ponte cria o atendimento sozinho: referência = número do documento, assunto = título, entrada = hoje, responsável = você, situação *Em análise*, já ligado ao documento. Documentos juntados a outro não geram atendimento, e nova versão do mesmo documento não cria outro. A caixa **Criar atendimento ao importar do SIGADOC**, no alto do painel, desliga isso. |
+| **À mão** | Botão **Registrar nova entrada**. |
+| **Planilha** | Botão **Importar planilha…** ([7.4](#74-importar-a-planilha-do-controle)). |
 
-| Seção | Campo | Exemplo |
+Se já existe um atendimento com o mesmo número e sem documento ligado (vindo da planilha, por exemplo), a importação do SIGADOC **liga** esse atendimento ao documento em vez de criar outro.
+
+### 7.2 O painel segue o documento selecionado
+
+Com um documento selecionado na lista da esquerda, o painel mostra só os atendimentos ligados a ele: no alto aparece `Só SESP-OFI-2026/00042` e o botão **Todos os atendimentos**, que amplia. Nesse estado, **Registrar nova entrada** cria o atendimento já ligado ao documento, com o número dele como referência.
+
+### 7.3 A ficha do atendimento
+
+A ficha abre ao lado da grade, com os botões sempre visíveis no alto: **Salvar**, **Descartar alterações**, **Encerrar** (ou **Reabrir**), **Fechar ficha** e **Excluir…**.
+
+| Seção | Campo | Opções ou exemplo |
 |---|---|---|
-| Identificação | Referência | `SESP-PRO-2026/01234` (ou um código provisório, ex.: `DEMANDA-17`) |
+| Identificação | Referência | `SESP-PRO-2026/01234`, ou um código provisório como `DEMANDA-17` |
 | | Entrada | `03/11/2026` |
-| | Responsável / Recebido de | `MARIA` / `Gabinete do Secretário` |
-| Situação e prioridade | Situação | *Em análise* (depois: *Aguardando deliberação*, *Aguardando resposta*, *Encerrado*…) |
-| | Prioridade / motivo | *Alta* / `prazo legal de 15 dias` |
-| Prazo | Prazo / tipo | `18/11/2026` / *Prazo oficial* (ou *Meta interna*, *Cobrança de retorno*) |
-| Condições e relações | Retorno para UAS?, Assinado?, Agendado, Documento sensível, Apensado/juntado | *Sim* / *Não informado* / ☐ / ☑ / `apensado ao SESP-PRO-2026/01200` |
-| Resultado | Entrega prevista / Resultado da etapa / Saída / Enviado para | *Parecer* / *Encaminhado* / `20/11/2026` / `Procuradoria` |
-| | Assunto / Observações | texto livre |
+| | Responsável | `MARIA` (botão **Atribuir a mim**) |
+| | Recebido de | `Gabinete do Secretário` |
+| Situação e prioridade | Situação | *A distribuir*, *Em análise*, *Em elaboração*, *Aguardando deliberação*, *Aguardando resposta*, *Suspenso (Stand By)*, *Encerrado*, *Cancelado* |
+| | Prioridade e motivo | *Alta* / `prazo legal de 15 dias` |
+| Prazo | Prazo | `18/11/2026` |
+| | Tipo de prazo | *Prazo oficial*, *Meta interna*, *Cobrança de retorno*, *Texto / a confirmar* |
+| Condições e relações | Retorno para UAS? | *Não informado*, *Sim*, *Não* |
+| | Assinado? | *Não informado*, *Sim*, *Não* |
+| | Agendado, Documento sensível | caixas de marcar |
+| | Apensado / juntado | `apensado ao SESP-PRO-2026/01200` |
+| Resultado | Entrega prevista | *Despacho*, *CI*, *Ofício*, *Informação Técnica*, *Parecer*, *Nota Técnica*, *Termo* |
+| | Resultado da etapa | *Em aberto*, *Encaminhado / Tramitado*, *Arquivado no controle local*, *Respondido*, *Ciência registrada* |
+| | Data de saída, Enviado para | `20/11/2026` / `Procuradoria` |
+| | Assunto, Observações | texto livre |
 
-Só a **referência ou o assunto** é obrigatório. Cada mudança de situação ou de responsável vira um evento na **Linha do tempo**; você também registra eventos à mão (*"cobrado retorno por telefone"*).
+Só a **referência ou o assunto** é obrigatório.
 
-**Ao importar do SIGADOC**, a primeira importação de cada documento registra sozinha a entrada dele aqui: referência, assunto, data, responsável (você) e ligação ao documento, com situação "Em análise"; documentos juntados a outro não entram, e um atendimento que já tinha aquele número (da planilha, por exemplo) é ligado em vez de duplicado. A caixa **Criar atendimento ao importar do SIGADOC**, no alto do painel, desliga isso. O atendimento criado pode ser editado ou excluído como qualquer outro.
+**Ligar a um documento.** Informe o número de um documento já importado e clique em **Ligar a documento**. A referência passa a ser o número do documento e fica travada enquanto ligado; **Desligar do documento** libera. O Resumo do documento passa a mostrar o atendimento.
 
-**Com um documento aberto na biblioteca**, o painel mostra só os atendimentos dele ("Só SEFAZ-PRO-2026/00001"; **Todos os atendimentos** amplia) e **Registrar nova entrada** cria o atendimento já ligado ao documento aberto (mesmo com a lista em "Todos os atendimentos"), com o número dele como referência.
+**Tarefas deste atendimento.** Lista as tarefas criadas a partir dele, com situação, prazo e **Abrir**. O botão **Criar tarefa** cria, no painel Tarefas, uma tarefa do documento ligado, com a prioridade, o prazo e o responsável do atendimento. Como toda tarefa pertence a um documento, o botão só fica ativo com um documento ligado.
 
-**Ligar a documento**: se o documento já foi importado do SIGADOC, informe o número e clique em **Ligar a documento**. A referência passa a ser o número do documento (fica travada enquanto ligado; **Desligar do documento** libera), o Resumo do documento passa a mostrar o atendimento, e **Criar tarefa** na ficha cria uma tarefa no painel Tarefas ligada a ele. A ficha também aceita **Anexos** (arquivos seus), como documentos e tarefas.
+**Anexos.** Depois de salvo, o atendimento aceita arquivos seus ([5.6](#56-anexos)).
 
-### Importar a planilha do controle (.xlsx, aba PROCESSOS)
+**Linha do tempo.** Cada mudança de situação ou de responsável vira um evento datado. Você também registra eventos à mão, como *"cobrado retorno por telefone"*.
 
-1. **Importar planilha…** → **Escolher planilha…** (seletor de arquivo) → **Ler a planilha**.
-2. A **prévia** lista cada linha com referência, assunto, responsável, entrada, situação, prazo, alertas e se **já está registrada** no controle (mesma referência e mesma data de entrada). Nada é gravado ainda.
+**Excluir.** A exclusão de um atendimento é **definitiva**, com confirmação na própria ficha. Os anexos dele são apagados; as tarefas criadas a partir dele e o documento ligado permanecem.
+
+### 7.4 Importar a planilha do controle
+
+Para quem já mantém o controle em Excel (arquivo `.xlsx`, aba `PROCESSOS`):
+
+1. **Importar planilha…** → **Escolher planilha…** → **Ler a planilha**.
+2. A **prévia** lista cada linha com referência, assunto, responsável, entrada, situação, prazo, alertas e se **já está registrada** (mesma referência e mesma data de entrada). Nada é gravado ainda.
 3. Clique em **Importar só as N novas** (ou em importar todas). A planilha original nunca é alterada.
 
-Como as colunas da planilha viram campos:
+Como as colunas viram campos:
 
 | Coluna | Vira |
 |---|---|
@@ -207,150 +426,356 @@ Como as colunas da planilha viram campos:
 | D | Referência (define se a linha já existe) |
 | I | Recebido de |
 | J | Retorno para UAS? (`Sim`/`Não`; outro valor gera alerta) |
-| K | Prazo (data) — texto como `PRAZO DIA 18` fica como *a confirmar*, com alerta |
+| K | Prazo. Texto como `PRAZO DIA 18` fica como *a confirmar*, com alerta |
 | L | Observações |
-| M | Verificação → situação, prioridade e resultado (ex.: `Tramitado` → *Encaminhado*; com retorno da UAS fica *Aguardando resposta*; `Urgente` → prioridade urgente) |
+| M | Verificação, que vira situação, prioridade e resultado. Ex.: `Tramitado` vira *Encaminhado*; com retorno da UAS fica *Aguardando resposta*; `Urgente` vira prioridade urgente |
 | N | Assinado? (vazio = *não informado*, nunca "não") |
 | O, P, Q, R | Saída, Entrega prevista, Enviado para, Assunto |
 
-Linhas só com fórmulas são ignoradas; a mesma referência com datas de entrada diferentes vira **duas passagens**. Cada linha guarda a **linha original da planilha**, visível na ficha. Uma importação pode ser desfeita em **Importações anteriores ▸ Desfazer importação…** (pede confirmação e preserva o que você já editou ou ligou a tarefa).
+Linhas só com fórmulas são ignoradas. A mesma referência com datas de entrada diferentes vira **duas passagens**. Cada atendimento guarda a **linha original da planilha**, visível na ficha. Uma importação pode ser desfeita em **Importações anteriores ▸ Desfazer importação…**: o Ponte pede confirmação e preserva o que você já editou, ligou a tarefa ou anexou.
 
-### Filas e filtros
+### 7.5 Filas e filtros
 
-**Fila ▾** mostra quantos atendimentos há em cada uma: *Minhas pendências*, *Sem responsável*, *Prazo vencido*, *Vence hoje*, *Vence nos próximos dias* (ajuste os dias), *Aguardando resposta*, *Retorno para UAS*, *Aguardando assinatura*, *Sem atualização no período*, *Com alerta de revisão*. **Filtros ▾** abre responsável, origem, destino e situação. Clique no título de uma coluna para ordenar. A coluna *Idade / Espera* mostra dias desde a entrada e dias aguardando retorno externo.
+- **Fila ▾** mostra quantos atendimentos há em cada fila: *Minhas pendências*, *Sem responsável*, *Prazo vencido*, *Vence hoje*, *Vence nos próximos dias* (ajuste os dias), *Aguardando resposta*, *Retorno para UAS*, *Aguardando assinatura*, *Sem atualização no período*, *Com alerta de revisão*.
+- **Filtros ▾** abre responsável, origem, destino e situação.
+- Clique no título de uma coluna para ordenar. A coluna *Idade / Espera* mostra os dias desde a entrada e os dias aguardando retorno externo.
 
 ---
 
-## 6. Trabalhar em equipe (Rede e equipe)
+## 8. Mais de um computador: equipe e pasta compartilhada
 
-Um computador do gabinete é o **principal**; os outros se conectam a ele pela rede interna. Nada vai para a internet e nenhum arquivo de banco fica em pasta compartilhada (o que corromperia o SQLite). Cada computador guarda sua cópia completa e protegida.
+Em **Menu ▾ ▸ Rede e equipe** você escolhe um de quatro modos. Trocar de modo nunca apaga dados.
 
-**No computador principal** (Menu ▾ → Rede e equipe):
+| Modo | Para quem | Como os computadores se falam |
+|---|---|---|
+| **Só neste computador** | uma pessoa, um computador (padrão) | não se falam |
+| **Este é o computador principal do gabinete** | a máquina que centraliza a equipe | os colegas se conectam a ela pela rede interna |
+| **Conectar ao computador principal do gabinete** | os demais colegas | pela rede interna, com um código de conexão |
+| **Pasta compartilhada: eu, em mais de um computador** | uma pessoa em casa e no trabalho, sem rede entre os dois | por um arquivo cifrado numa pasta do Google Drive, OneDrive ou pendrive |
+
+Um aviso que vale para todos: **não instale o Ponte nem copie o acervo para dentro do Google Drive ou do OneDrive.** O acervo é cifrado pela sua conta do Windows e só abre na máquina que o gravou; além disso, um banco de dados dentro de pasta sincronizada se corrompe. Os modos abaixo são a forma segura.
+
+### 8.1 Equipe na rede interna
+
+Um computador do gabinete é o **principal**; os outros se conectam a ele. Nada vai para a internet. Cada computador guarda sua cópia completa e protegida do acervo.
+
+**No computador principal:**
+
 1. *Seu nome na equipe*: `CARLOS`.
-2. Marque **Este é o computador principal do gabinete** e **Salvar e ficar disponível agora**.
-3. **Copiar código de conexão** e envie o texto aos colegas. É algo como:
+2. Marque **Este é o computador principal do gabinete** e clique em **Salvar e ficar disponível agora**.
+3. Clique em **Copiar código de conexão** e envie o texto aos colegas. É algo assim:
    ```
    Código de conexão do Ponte (gabinete):
    ponte://conectar?host=http%3A%2F%2F192.168.1.10%3A7878&chave=ponte-3f9c…
    ```
-   Marque *Ficar disponível para a equipe sempre que o Ponte abrir* para não precisar repetir o passo 2.
+4. Marque **Ficar disponível para a equipe sempre que o Ponte abrir**, para não repetir o passo 2.
 
-**Nos outros computadores**:
-1. Nome na equipe: `MARIA`.
-2. Marque **Conectar ao computador principal do gabinete**, cole o código em *Código de conexão* e clique em **Usar código** — o Ponte testa a conexão na hora.
-3. **Salvar e sincronizar acervo agora**.
+**Nos outros computadores:**
 
-Pronto: importações, notas, minutas, tarefas e atendimentos de todos passam a ir para o mesmo acervo, com o nome de quem fez cada coisa. O ponto colorido na barra inferior mostra o estado, em poucas palavras: `● conectado • atualizado agora`, `● sem conexão com o principal • 2 a enviar`, `● computador principal ativo`, `● em dia há 3 min` (pasta compartilhada) ou `● ⚠ N conflito(s) de edição`. Passe o mouse para ver a frase completa e clique para abrir a janela; durante uma sincronização a mesma linha mostra a etapa em andamento.
+1. *Seu nome na equipe*: `MARIA`.
+2. Marque **Conectar ao computador principal do gabinete**, cole o código em *Código de conexão* e clique em **Usar código**. O Ponte testa a conexão na hora.
+3. Clique em **Salvar e sincronizar acervo agora**. A partir daí vale neste computador o acervo do gabinete. Se ele já tinha documentos próprios, faça antes um backup (**Menu ▾ ▸ Fazer backup agora**): o conteúdo local dá lugar ao do computador principal.
 
-**Se o principal desligar**, nada para: cada computador continua salvando localmente (a mensagem avisa *Salvo neste computador… será enviado ao reconectar*) e tudo é enviado quando a conexão volta. Se o principal quebrar de vez, qualquer colega pode marcar o próprio computador como principal e distribuir um novo código: o acervo dele já está completo.
+Pronto: importações, notas, minutas, tarefas e atendimentos de todos vão para o mesmo acervo, com o nome de quem fez cada coisa.
 
-**Conflito de edição** acontece só quando o *mesmo item* foi alterado nos dois lados enquanto estavam desconectados. A janela mostra, campo a campo, o valor no principal, o seu e **quem alterou** (*só por você*, *só no computador principal*, *pelos dois lados*), e oferece:
-- **Combinar as duas versões…** — cada campo fica com o lado que o alterou; textos alterados dos dois lados são juntados; nos demais campos alterados dos dois lados, a sua versão prevalece e o valor do principal fica anotado no próprio item (nada se perde em silêncio);
-- **Usar só a minha versão…**; **Usar só a do computador principal…**.
+**Se o principal desligar**, nada para. Cada computador continua salvando localmente (a mensagem avisa *Salvo neste computador… será enviado ao reconectar*) e envia tudo quando a conexão volta. Se o principal quebrar de vez, qualquer colega pode marcar o próprio computador como principal e distribuir um novo código: o acervo dele já está completo.
 
-Todas pedem confirmação. Se os colegas não conseguirem conectar, peça à TI para liberar a porta **7878 (TCP)** no Firewall do Windows do principal (a janela traz o comando).
+**Se os colegas não conseguirem conectar**, peça à TI para liberar a porta **7878 (TCP)** no Firewall do Windows do computador principal. A janela traz o comando pronto.
 
----
+### 8.2 Uma pessoa, dois computadores: pasta compartilhada
 
-### Uma pessoa, dois computadores: pasta compartilhada
+Os computadores trocam o acervo por um arquivo chamado `ponte-sync.ponte`, cifrado com uma senha sua, guardado nas pastas que você indicar.
 
-Para usar o Ponte em casa e no trabalho sem rede entre eles, escolha em **Rede e equipe** o modo **Pasta compartilhada: eu, em mais de um computador**. Os computadores trocam o acervo por um arquivo `ponte-sync.ponte`, cifrado com uma senha sua (PBKDF2 + AES-256-GCM), guardado nas pastas que você indicar com **Adicionar pasta…**: Google Drive, OneDrive, pendrive, pasta da rede, uma ou várias. Não instale o Ponte nem copie o acervo para o Drive: o acervo é cifrado pela sua conta do Windows e um SQLite em pasta sincronizada se corrompe; o arquivo de transporte é a forma segura.
+**No primeiro computador:**
 
-- **Persistente:** a lista de pastas e a senha ficam guardadas no acervo de cada computador, cifradas pela conta do Windows (desmarque **Guardar a senha neste computador** para informá-la a cada sessão). No segundo computador, aponte para as mesmas pastas e informe a mesma senha; se ele já tiver documentos, o Ponte pede confirmação antes de substituí-los.
-- **Quando sincroniza:** ao abrir, a cada 5 minutos, em **Sincronizar agora** (ou Menu ▾ ▸ Sincronizar com a pasta agora) e com aviso ao fechar se houver alterações não enviadas. A barra de baixo mostra a etapa (lendo as pastas, conciliando, gravando em N pastas, atualizando o acervo) e, ao fim, o resumo do que entrou e saiu.
-- **Só o que mudou** entra; PDFs e anexos só são copiados quando faltam. Conflitos (o mesmo item alterado nos dois lados) vão para a tela de conflitos, com as duas versões campo a campo, e você decide; o arquivo recebe tudo o que não conflita e a decisão vai na sincronização seguinte.
-- **Várias pastas:** o Ponte usa a cópia mais recente e grava em todas as que alcançar; se duas pastas divergirem, as alterações que uma tem e a outra não são conciliadas pelo diário que cada cópia carrega.
-- **Trocar de modo** nunca apaga dados: dá para passar de pasta compartilhada para principal/conectado (mesma rede) e vice-versa; com alterações não enviadas, sincronize antes.
+1. Marque **Pasta compartilhada: eu, em mais de um computador**.
+2. **Adicionar pasta…** e escolha uma pasta do Google Drive, do OneDrive, de um pendrive ou da rede. Pode adicionar mais de uma.
+3. Crie a **senha de sincronização** (mínimo de 8 caracteres) e repita. Anote-a em lugar seguro: sem ela, o arquivo não abre em lugar nenhum, nem para os autores do Ponte.
+4. **Salvar e sincronizar agora**. O arquivo é criado a partir do seu acervo.
 
----
+**No segundo computador:** instale o Ponte, escolha o mesmo modo, aponte para a mesma pasta e informe a mesma senha. Se ele já tiver documentos próprios, o Ponte pede confirmação antes de substituí-los pelo conteúdo da pasta.
 
-## 7. IA opcional
+Como funciona no dia a dia:
 
-O Ponte funciona inteiro sem IA. Quando você quiser:
+- **Quando sincroniza:** ao abrir o Ponte, a cada 5 minutos, em **Salvar e sincronizar agora** ou em **Menu ▾ ▸ Sincronizar com a pasta agora**. Ao fechar com alterações ainda não enviadas, o Ponte avisa.
+- **Espere a nuvem terminar** de sincronizar a pasta antes de abrir o Ponte no outro computador.
+- **Só o que mudou** entra. PDFs e anexos só são copiados quando faltam.
+- **Várias pastas:** o Ponte usa a cópia mais recente e grava em todas as que alcançar. Se duas pastas divergirem, as alterações de uma e de outra são conciliadas.
+- **A senha** fica guardada no acervo de cada computador, cifrada pela conta do Windows. Desmarque **Guardar a senha neste computador** para digitá-la a cada sessão.
+- **Proteção do arquivo:** chave derivada da senha por PBKDF2 e cifra AES-256-GCM.
 
-- **Resumo ▸ Analisar e sugerir providências**: resume o documento, sugere prioridade, prazo mencionado e providências (cada uma vira tarefa com um clique). Trechos citados são conferidos literalmente contra as fontes.
-- **Anotações e minutas ▸ Gerar sugestão com IA**: escreve uma minuta do tipo escolhido, com uma orientação opcional (*"solicitar a informação que falta, com tom objetivo"*). A sugestão abre para revisão e só vira versão quando você salvar.
-- Contexto de trabalho e notas não salvos são salvos antes; a linha ao lado do botão diz para onde os dados vão.
+### 8.3 Conflitos de edição
 
-**Menu ▾ → Configurar IA** oferece quatro lugares para a IA rodar:
+Um conflito acontece só quando o **mesmo item** foi alterado nos dois lados enquanto estavam sem contato. A janela Rede e equipe mostra, campo a campo, o valor de cada lado e **quem alterou** (*só por você*, *só no computador principal*, *pelos dois lados*), e oferece:
 
-| Opção | Quando usar | O que informar |
-|---|---|---|
-| **Ollama neste computador** | padrão; nada sai da máquina | endereço (padrão `http://127.0.0.1:11434`); instale o Ollama e baixe um modelo (`ollama pull qwen3:4b-instruct`). Para documentos longos o Ponte pede sozinho uma janela de contexto maior (até 32 mil tokens), o que usa mais memória |
-| **Ollama Cloud** | modelos grandes sem GPU local; conta em ollama.com (gratuita por uso ou plano mensal) | a chave de API criada em [ollama.com/settings/keys](https://ollama.com/settings/keys) |
-| **Outro servidor HTTPS** | servidor do órgão compatível com a API `/api/chat` do Ollama | endereço e token opcional |
-| **ChatGPT (assinatura)** | quem já paga ChatGPT Plus ou Pro e quer usar essa cota, sem chave de API | clique em **Entrar com o ChatGPT…**, autorize o Ponte no navegador (inclusive o **uso do plano**) e escolha o modelo na lista da sua conta |
+- **Combinar as duas versões…** — cada campo fica com o lado que o alterou; textos alterados dos dois lados são juntados; nos demais campos alterados dos dois lados, a sua versão prevalece e o valor do outro lado fica anotado no próprio item. Nada se perde em silêncio.
+- **Usar só a minha versão…**
+- **Usar só a do computador principal…**
 
-Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na caixa de seleção: o Ponte consulta o servidor (`/api/tags` no Ollama, `/v1/models` na OpenAI) e mostra o que ele oferece. A configuração é salva no acervo, cifrada com a DPAPI da sua conta do Windows; desmarque **Guardar a chave neste computador** para manter a chave (ou a sessão do ChatGPT) só na memória da sessão. A chave também pode vir da variável `PONTEPROJ_AI_TOKEN`. Com Ollama Cloud, servidor remoto ou ChatGPT, o texto do documento sai do computador: avalie sigilo e LGPD antes de usar.
+Todas pedem confirmação.
 
-**Correção automática e progresso.** Toda resposta da IA passa pela conferência do programa (JSON completo, prioridade e providências válidas, trechos citados existentes literalmente nas fontes, prazo transcrito). Se a resposta é recusada, o Ponte devolve ao modelo a resposta anterior e o motivo exato e pede a versão corrigida, até três respostas no total; a conferência continua sendo a última barreira, e nada é salvo sem passar por ela. Enquanto a IA trabalha, a barra de baixo mostra a etapa ("Preparando os dados", "Recebendo a resposta… (N caracteres)", "Conferindo", "Tentativa 2 de 3: …") e o botão **Cancelar**, que interrompe na próxima etapa sem salvar nada. Falhas de rede ou de servidor não são repetidas. Não há agentes autônomos com ferramentas: o texto do documento é tratado como dado, nunca como instrução.
+### 8.4 O indicador na barra inferior
 
-**ChatGPT (assinatura), em detalhe.** É o programa oficial "Sign in with ChatGPT" da OpenAI para aplicativos de código aberto que rodam localmente, como o Ponte. O login abre o navegador em `auth.openai.com` e volta ao Ponte por uma porta local (127.0.0.1); o Ponte não vê a sua senha e não recebe acesso às conversas, à memória nem à cobrança do ChatGPT. As chamadas vão para a API pública da OpenAI e são descontadas da cota da assinatura (Plus ou Pro; conta gratuita entra, mas não libera uso). O limite por aplicativo é ajustado em **ChatGPT ▸ Configurações ▸ Uso**; a cota é a mesma do Codex e dos demais aplicativos (uma janela de 5 horas e uma semanal), e quando acaba o Ponte avisa e **não** usa outro provedor por conta própria. Na mesma página há redefinições de limite e a opção de comprar créditos. A tela de configuração mostra o aviso: a cada clique em Analisar ou Gerar sugestão, documento, notas, contexto e fontes vão para os servidores da OpenAI, nos EUA, sob os termos da OpenAI; nada é enviado ao importar. **Sair** apaga a sessão deste computador e pede à OpenAI que a encerre (confira em ChatGPT ▸ Configurações ▸ Aplicativos conectados).
+| Texto | Significado |
+|---|---|
+| `● só neste computador` | sem rede configurada |
+| `● computador principal ativo` | este computador está atendendo a equipe |
+| `● conectado • atualizado há 3 min` | conectado ao principal |
+| `● sem conexão com o principal • 2 a enviar` | trabalhando sem o principal; duas alterações esperam |
+| `● em dia há 3 min` | pasta compartilhada sincronizada |
+| `● 2 a enviar` | pasta compartilhada com alterações a enviar |
+| `● pasta fora de alcance` | a pasta não está acessível agora |
+| `● ⚠ 2 conflito(s) de edição` | há conflitos a decidir |
 
----
-
-## 8. Onde ficam os dados, backup e lixeira
-
-- **Acervo**: `%LOCALAPPDATA%\PonteProj\acervo.sqlite3` (outra pasta via variável `PONTEPROJ_DATA_DIR`, sempre em disco local). Todo conteúdo — texto, PDFs, anexos, OCR, notas, minutas, tarefas, atendimentos, configuração de rede e de IA — é gravado cifrado com a **DPAPI** da sua conta do Windows: outra conta no mesmo PC, ou outro PC, não consegue ler. Cópias temporárias de anexos abertos em outros programas ficam em `…\PonteProj\temp\` e são apagadas ao abrir e ao fechar o Ponte.
-- **Backup**: Menu ▾ → **Fazer backup agora** cria uma cópia consistente em `…\PonteProj\backups\`. O instalador também faz uma antes de cada atualização. Um backup só abre na mesma conta do Windows que o criou.
-- **Lixeira**: excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a Lixeira (Menu ▾), de onde se restaura. Por padrão nada é apagado definitivamente; na própria janela, **Apagar de vez os itens excluídos há mais de** (7 dias a 1 ano) liga a limpeza automática, feita ao abrir o Ponte e uma vez por dia, e **Apagar agora os vencidos** antecipa. Um documento apagado de vez leva junto versões, PDFs, notas, minutas, tarefas e anexos; backups não são afetados. Em equipe, a limpeza é do computador principal, pela configuração dele.
-- **Ao fechar** com algo não salvo, a janela lista cada pendência com um botão **Ir para**.
-- **Exportar dados (CSV)**: Menu ▾ → **Exportar dados para CSV…** grava, numa pasta nova em `…\PonteProj\exportados\csv-AAAAMMDD-HHMMSS\`, três arquivos: `documentos.csv` (número, título, tipo, datas, processo, remetente, finalidade, assuntos, prioridade, juntada, contagem de tarefas e anexos), `tarefas.csv` (tarefa, ação, situação, prioridade, responsável, prazo, atraso, conclusão) e `atendimentos.csv` (painel Atendimentos). Formato: UTF-8 com BOM, separador `;`, datas `AAAA-MM-DD` e coluna "Mês" (`AAAA-MM-01`) para séries mensais. Não saem textos de documentos, notas, minutas, observações nem anexos. Os arquivos abrem no Excel e entram no **CERES** (painéis do gabinete) como conjuntos: envie cada `.csv` no setor, marque a coluna `ID` como identificador para reimportar sem duplicar, e use "Mês" ou a data como coluna de período.
-- **Menu ▾ ▸ Sobre o Ponte** mostra a versão do programa e da extensão, a autoria, a licença e o endereço do projeto.
+Passe o mouse para a frase completa e clique para abrir Rede e equipe. Durante uma sincronização, a mesma linha mostra a etapa em andamento.
 
 ---
 
-## 9. Solução de problemas
+## 9. IA opcional
+
+O Ponte funciona inteiro sem IA. Ela serve para duas coisas:
+
+- **Resumo ▸ Analisar e sugerir providências:** resume o documento, sugere prioridade, aponta o prazo mencionado e propõe providências, que viram tarefas com um clique. Os trechos citados são conferidos, palavra por palavra, contra as fontes.
+- **Anotações e minutas ▸ Gerar sugestão com IA:** escreve uma minuta do tipo escolhido, com uma orientação opcional, como *"solicitar a informação que falta, com tom objetivo"*. A sugestão abre para revisão (**Levar ao editor**, **Copiar sugestão**, **Descartar sugestão**) e só vira versão quando você salvar.
+
+Ao lado de cada botão, uma linha diz para onde os dados vão.
+
+### 9.1 Onde a IA roda
+
+Em **Menu ▾ ▸ Configurar IA**, escolha uma das quatro opções:
+
+| Opção | Os dados saem do computador? | Custo | O que informar |
+|---|---|---|---|
+| **Ollama neste computador** (padrão) | **Não** | nenhum | instale o [Ollama](https://ollama.com) e baixe um modelo: `ollama pull qwen3:4b-instruct` |
+| **Ollama Cloud** | Sim, para os servidores da Ollama | conta em ollama.com, gratuita por uso ou plano mensal | a chave de API criada em [ollama.com/settings/keys](https://ollama.com/settings/keys) |
+| **Outro servidor HTTPS** | Sim, para esse servidor | o do servidor | endereço e token opcional. Serve para um servidor do órgão compatível com a API do Ollama |
+| **ChatGPT (assinatura)** | Sim, para a OpenAI, nos EUA | usa a cota do seu plano Plus ou Pro | clique em **Entrar com o ChatGPT…** e autorize no navegador |
+
+Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na lista. Depois, **Salvar**.
+
+**Sigilo e LGPD.** Nas três opções em que os dados saem do computador, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados a cada clique em Analisar ou Gerar sugestão. Nada é enviado ao importar. Use essas opções só com documentos que podem sair do órgão.
+
+A configuração fica no acervo, cifrada pela sua conta do Windows. Desmarque **Guardar a chave neste computador** para manter a chave, ou a sessão do ChatGPT, só até fechar o Ponte.
+
+### 9.2 Ollama neste computador, na prática
+
+1. Instale o Ollama (<https://ollama.com/download>) e deixe-o aberto.
+2. No Prompt de Comando, baixe um modelo: `ollama pull qwen3:4b-instruct` (cerca de 2,5 GB).
+3. No Ponte, **Configurar IA ▸ Ollama neste computador ▸ Listar modelos do servidor**, escolha o modelo e salve.
+
+**Documentos longos.** O Ollama atende, por padrão, com uma janela de 4.096 tokens (de 12 a 16 mil caracteres, somando documento, notas, fontes e a resposta). Quando o pedido passa disso, o Ponte pede sozinho uma janela maior, de 8, 16 ou 32 mil tokens, a menor que serve, e a barra inferior avisa *"Documento longo: pedindo ao modelo uma janela maior"*. Janelas maiores usam mais memória, e a primeira análise longa leva alguns segundos a mais porque o Ollama recarrega o modelo. Se nem 32 mil tokens bastarem, o Ponte explica e sugere analisar sem as fontes extras ou usar outro provedor.
+
+### 9.3 ChatGPT (assinatura), em detalhe
+
+É o programa oficial "Sign in with ChatGPT" da OpenAI para aplicativos de código aberto que rodam no computador da pessoa.
+
+- **Login:** o botão abre o navegador em `auth.openai.com` e volta ao Ponte por uma porta local deste computador. O Ponte não vê a sua senha e não recebe acesso às suas conversas, à memória nem à cobrança do ChatGPT.
+- **Plano:** exige ChatGPT Plus ou Pro. Uma conta gratuita entra, mas não libera uso.
+- **Cota:** as chamadas são descontadas da cota do plano, a mesma do Codex e de outros aplicativos, com uma janela de 5 horas e uma semanal. Em **ChatGPT ▸ Configurações ▸ Uso** você vê o saldo, ajusta o limite do Ponte, usa uma redefinição ou compra créditos. Quando a cota acaba, o Ponte avisa e **não** usa outro provedor por conta própria.
+- **Sair:** apaga a sessão deste computador e pede à OpenAI que a encerre. Confira em ChatGPT ▸ Configurações ▸ Aplicativos conectados.
+
+### 9.4 Conferência, correção e progresso
+
+Toda resposta da IA passa por uma conferência do próprio programa: formato completo, prioridade e providências válidas, trechos citados existentes literalmente nas fontes, prazo transcrito. Se a resposta é recusada, o Ponte devolve ao modelo a resposta anterior e o motivo exato e pede a versão corrigida, até três respostas no total. Nada é salvo sem passar pela conferência.
+
+Enquanto a IA trabalha, a barra inferior mostra a etapa (*Preparando os dados*, *Recebendo a resposta… (N caracteres)*, *Conferindo*, *Tentativa 2 de 3*) e o botão **Cancelar**, que interrompe na próxima etapa sem salvar nada.
+
+O texto do documento é tratado como dado, nunca como instrução: não há agentes autônomos nem ferramentas que a IA possa acionar.
+
+---
+
+## 10. Dados, segurança, backup e lixeira
+
+### 10.1 Onde ficam os dados
+
+| O quê | Onde |
+|---|---|
+| Acervo | `%LOCALAPPDATA%\PonteProj\acervo.sqlite3` |
+| Backups | `%LOCALAPPDATA%\PonteProj\backups\` |
+| Exportações | `%LOCALAPPDATA%\PonteProj\exportados\` |
+| Cópias temporárias de anexos abertos | `%LOCALAPPDATA%\PonteProj\temp\` (apagadas ao abrir e ao fechar o Ponte) |
+| Programa | `%LOCALAPPDATA%\Programs\PonteProj\` |
+
+Para abrir essas pastas, cole o caminho na barra de endereço do Explorador de Arquivos.
+
+### 10.2 Como os dados são protegidos
+
+Todo conteúdo é gravado cifrado com a **DPAPI** da sua conta do Windows: texto, PDFs, anexos, texto reconhecido, notas, minutas, tarefas, atendimentos e as configurações de rede e de IA. Na prática:
+
+- outra conta do Windows no mesmo computador não consegue ler;
+- o arquivo copiado para outro computador não abre;
+- um backup só abre na mesma conta do Windows que o criou.
+
+Por isso, **trocar de computador ou reinstalar o Windows exige planejamento**: use a pasta compartilhada ou a equipe ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) para levar o acervo, não a cópia do arquivo.
+
+### 10.3 Backup
+
+**Menu ▾ ▸ Fazer backup agora** cria uma cópia consistente na pasta de backups. O instalador também faz uma antes de cada atualização.
+
+### 10.4 Lixeira
+
+Excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a **Lixeira** (Menu ▾), de onde se restaura com um clique.
+
+- **Por padrão, nada é apagado de vez.**
+- Na janela da Lixeira, **Apagar de vez os itens excluídos há mais de:** aceita *Nunca*, *7 dias*, *30 dias*, *90 dias*, *180 dias* ou *1 ano*. Com um prazo, o Ponte faz a limpeza ao abrir e uma vez por dia, e avisa quantos itens foram apagados. **Apagar agora os vencidos** antecipa.
+- Um documento apagado de vez leva junto versões, PDFs, notas, minutas, tarefas e anexos. Backups feitos antes não são afetados.
+- Em equipe, a limpeza é feita pelo computador principal, pela configuração dele.
+- Atendimentos e seus anexos não passam pela Lixeira: a exclusão deles é definitiva, com confirmação.
+
+### 10.5 Exportar dados (CSV)
+
+**Menu ▾ ▸ Exportar dados para CSV…** grava três arquivos numa pasta nova, `exportados\csv-AAAAMMDD-HHMMSS\`:
+
+| Arquivo | Conteúdo |
+|---|---|
+| `documentos.csv` | número, título, tipo, origem, datas, processo, remetente, finalidade, assuntos, prioridade, juntada, contagem de tarefas e de anexos |
+| `tarefas.csv` | tarefa, ação, situação, prioridade, responsável, prazo, atraso, conclusão |
+| `atendimentos.csv` | as passagens do painel Atendimentos |
+
+Formato: UTF-8, separador `;`, datas `AAAA-MM-DD` e uma coluna "Mês" para séries mensais. **Não saem** textos de documentos, notas, minutas, observações nem anexos. Os arquivos abrem no Excel e servem de entrada para painéis: marque a coluna `ID` como identificador para reimportar sem duplicar.
+
+---
+
+## 11. Solução de problemas
+
+A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
+
+### 11.1 Instalação e importação
 
 | Sintoma | O que fazer |
 |---|---|
-| O botão **Importar para o assistente** não aparece no SIGADOC | A extensão não está carregada ou a página não é a ficha de um documento. Clique no ícone da extensão: se disser *✗ Não ligado*, siga os passos que ele mostra. |
-| *"O Ponte não foi encontrado neste computador"* | Abra o Ponte uma vez e reinicie o navegador. Se continuar, rode o instalador de novo **com a mesma conta do Windows**. |
-| *"Não recebemos a confirmação do Ponte"* | Clique em **Repetir importação**. A repetição usa o mesmo identificador: nada é duplicado. **Se a mensagem se repete em toda tentativa e a extensão veio da Chrome Web Store, o Ponte instalado é anterior à 0.19.3**: essas versões não reconheciam a extensão da loja e fechavam sem responder. Instale o Ponte mais recente e reinicie o navegador. |
-| *"O Ponte abriu e fechou sem responder"* / *"Esta extensão não é reconhecida por este Ponte"* | O mesmo caso, com a mensagem das versões novas: instale o Ponte mais recente (a partir da 0.19.3) com a sua conta do Windows e reinicie o navegador. |
-| *"O Ponte não conseguiu abrir o acervo deste computador"* | Abra o Ponte pelo menu Iniciar: a tela mostra o motivo (acervo de outra conta do Windows, versão mais nova, arquivo em uso). Resolvido, clique em **Repetir importação**. |
+| O botão **Importar para o assistente** não aparece no SIGADOC | A extensão não está instalada, ou a página não é a ficha de um documento. Clique no ícone da extensão: ele diz se está ligado ao Ponte e o que fazer. |
+| Ícone da extensão diz *✗ Não foi possível ligar ao Ponte* | Siga os passos que ele mostra: instalar a versão mais recente do Ponte, abri-lo uma vez e reiniciar o navegador. |
+| *"O Ponte não foi encontrado neste computador"* | Abra o Ponte uma vez e reinicie o navegador. Se continuar, rode o instalador de novo **com a mesma conta do Windows** que usa o navegador. |
+| *"Não recebemos a confirmação do Ponte"* | Clique em **Repetir importação**; nada é duplicado. **Se a mensagem se repete em toda tentativa e a extensão veio da Chrome Web Store, o Ponte instalado é anterior à 0.19.3**: essas versões não reconheciam a extensão da loja. Instale o Ponte mais recente e reinicie o navegador. |
+| *"O Ponte abriu e fechou sem responder"* ou *"Esta extensão não é reconhecida por este Ponte"* | O mesmo caso, com a mensagem das versões novas. Instale o Ponte mais recente e reinicie o navegador. |
+| *"O navegador não conseguiu iniciar o Ponte"* | Reinstale o Ponte com a sua conta do Windows. Se continuar, o antivírus ou uma regra do órgão pode estar bloqueando o programa: procure a TI. |
+| *"O Ponte não conseguiu abrir o acervo deste computador"* | Abra o Ponte pelo menu Iniciar: a tela mostra o motivo. Resolvido, clique em **Repetir importação**. |
+| *"Importação ignorada: o SIGADOC mostra o mesmo conteúdo já importado em …"* (laranja) | Não é erro: o documento já está no Ponte exatamente assim. Se ele mudou, atualize a página (F5) e importe de novo. |
 | *"A página ainda não terminou de carregar"* | Espere a página abrir por completo e clique de novo. |
 | Tela inicial diz *✗ O navegador ainda não foi ligado ao Ponte* | O registro não existe para esta conta do Windows. Rode o instalador. |
-| Dois botões "Importar" na página | Há duas extensões (a da pasta e a da loja). Remova a da pasta em `chrome://extensions`. |
+| Dois botões "Importar" na página | Há duas extensões, a da pasta e a da loja. Remova a da pasta em `chrome://extensions`. |
+
+### 11.2 IA
+
+| Mensagem | O que fazer |
+|---|---|
+| *"Não foi possível conectar à IA"* | O Ollama não está aberto, ou o endereço em Configurar IA está errado. |
+| *"O modelo “X” não está instalado neste servidor"* | Em Configurar IA, **Listar modelos do servidor** e escolha um, ou instale com `ollama pull X`. |
+| *"O nome de modelo “X” não é aceito pelo Ollama"* | Escolha o modelo pela lista, em vez de digitar. |
+| *"O documento, com as notas e as fontes, não coube na janela do modelo"* | Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor. |
+| *"O computador não tem memória livre para este modelo"* | Feche outros programas, use um modelo menor ou outro provedor. |
+| *"A IA excedeu o tempo limite de 120 segundos"* | O modelo é lento para este computador. Tente um modelo menor. |
+| *"A cota do seu plano ChatGPT para o Ponte acabou por enquanto"* | Veja o saldo em ChatGPT ▸ Configurações ▸ Uso. Use uma redefinição, espere a renovação ou troque de provedor. |
+| *"Entre com a sua conta do ChatGPT em Configurar IA"* | A sessão expirou ou foi encerrada. Entre de novo. |
+
+### 11.3 Equipe e pasta compartilhada
+
+| Sintoma | O que fazer |
+|---|---|
 | Colega não consegue conectar ao principal | O principal precisa estar com o Ponte aberto e *disponível*; os dois na mesma rede; porta 7878 liberada no firewall do principal; código de conexão atual (gerar nova chave invalida os códigos antigos). |
-| *"Conflito de edição simultânea"* ao salvar | Outra pessoa salvou o mesmo item antes de você. Copie o que escreveu, clique em **Descartar**, abra o item de novo e aplique sua alteração. |
+| *"Conflito de edição simultânea"* ao salvar | Outra pessoa salvou o mesmo item antes de você. Copie o que escreveu, descarte, abra o item de novo e aplique sua alteração. |
+| *"Senha de sincronização incorreta"* | A senha não é a usada para criar o arquivo da pasta. Sem ela o arquivo não abre. |
+| *"A pasta ainda não recebeu a versão mais recente"* | Espere o Google Drive ou o OneDrive terminar de sincronizar e tente de novo. |
+| `● pasta fora de alcance` | A pasta não está acessível (nuvem parada, pendrive ausente). O Ponte segue com o acervo local e envia depois. |
+
+### 11.4 Dados
+
+| Mensagem | O que fazer |
+|---|---|
 | *"Não foi possível proteger/abrir os dados deste perfil Windows"* | O acervo pertence a outra conta do Windows. Entre com a conta que fez a instalação. |
+| *"Item na lixeira; restaure antes de editar"* | O item foi excluído. Restaure-o em Menu ▾ ▸ Lixeira. |
 
 ---
 
-## 10. Para desenvolvedores
+## 12. Perguntas frequentes
 
-### Arquitetura em uma olhada
+**O Ponte altera alguma coisa no SIGADOC?**
+Não. Ele só lê a página que você abriu. Assinar, tramitar e despachar continuam no SIGADOC.
+
+**Preciso de internet?**
+Só para acessar o SIGADOC e, se quiser, para a IA em nuvem ou a pasta compartilhada. O aplicativo em si funciona sem internet.
+
+**Posso usar em dois computadores?**
+Sim, pelo modo pasta compartilhada ([8.2](#82-uma-pessoa-dois-computadores-pasta-compartilhada)). Copiar o arquivo do acervo de um para o outro não funciona.
+
+**Posso instalar o Ponte dentro do Google Drive para usar em vários computadores?**
+Não. O acervo é cifrado pela conta do Windows de cada máquina, e um banco de dados em pasta sincronizada se corrompe. Use a pasta compartilhada.
+
+**O que acontece se eu importar o mesmo documento duas vezes?**
+Se nada mudou, nada é gravado e a extensão avisa. Se mudou, o Ponte guarda uma nova versão e mantém as anteriores.
+
+**A IA lê meus documentos sem eu pedir?**
+Não. Nada é enviado à IA ao importar. O envio acontece só quando você clica em **Analisar e sugerir providências** ou em **Gerar sugestão com IA**.
+
+**Qual a diferença entre a extensão da loja e a da pasta?**
+São a mesma extensão. A da loja se atualiza sozinha e não exige o modo do desenvolvedor; a da pasta vem junto com o instalador, para quem não tem acesso à loja. Use só uma das duas.
+
+**Excluí um documento sem querer. E agora?**
+Menu ▾ ▸ Lixeira ▸ **Restaurar**. Por padrão a Lixeira nunca é esvaziada.
+
+**Esqueci a senha da pasta compartilhada.**
+O arquivo da pasta não pode ser aberto sem ela. O acervo de cada computador continua intacto: escolha uma pasta nova, crie outra senha e sincronize de novo a partir do computador mais atualizado.
+
+**Onde vejo a versão instalada?**
+Em **Menu ▾ ▸ Sobre o Ponte**, ou no ícone da extensão.
+
+---
+
+## 13. Para desenvolvedores
+
+### 13.1 Arquitetura em uma olhada
 
 ```
-Chrome/Edge ──(Native Messaging)──► ponteproj.exe --native-host ──► acervo.sqlite3 (DPAPI)
-   extension/                              src/native.rs                 src/storage.rs
-                                                │
-   ponteproj.exe (egui) ◄── src/app.rs ─────────┘
+Chrome/Edge ──(Native Messaging)──► ponteproj.exe (host nativo) ──► acervo.sqlite3 (DPAPI)
+   extension/                            src/native.rs                  src/storage.rs
+                                              │
+   ponteproj.exe (egui) ◄── src/app.rs ───────┘
         │
-        └── Rede e equipe: HTTP/JSON na intranet (src/intranet.rs), fila offline e conflitos
+        ├── Rede e equipe: HTTP/JSON na intranet, fila offline, conflitos (src/intranet.rs)
+        ├── Pasta compartilhada: arquivo ponte-sync.ponte cifrado (src/sharedfolder.rs)
+        └── IA: Ollama (src/ai.rs) ou ChatGPT por assinatura (src/chatgpt.rs)
 ```
 
-| Pasta / arquivo | Papel |
+O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. Aberto pelo navegador, com a origem `chrome-extension://<id>/` como argumento, atende a extensão pela entrada e saída padrão e termina.
+
+| Pasta ou arquivo | Papel |
 |---|---|
-| `src/app.rs` | Janela principal: lista, ficha em 4 abas, menu, indicadores |
-| `src/labels.rs` | Rótulos e datas exibidos; campo de data `dd/mm/aaaa` com calendário |
+| `src/app.rs` | Janela principal: lista, ficha em 4 abas, menu, barra inferior |
+| `src/labels.rs` | Rótulos e datas exibidos; campo de data com calendário |
 | `src/storage.rs`, `src/protection.rs` | SQLite + DPAPI; `Store` é a única porta de entrada aos dados |
 | `src/model.rs` | `Capture` (o que a extensão envia) e sua validação |
+| `src/native.rs`, `src/main.rs` | Host nativo: quadros com tamanho, ações `ping`, `import_capture` e `import_bundle`, IDs de extensão aceitos |
+| `src/files.rs`, `src/pdf_reader.rs` | PDFs importados; leitor e OCR do Windows |
 | `src/dossier.rs` | Vínculos entre documentos, versões importadas, detecção de juntada |
+| `src/manual.rs` | Registros manuais |
+| `src/attachments.rs` | Anexos de documentos, tarefas e atendimentos |
 | `src/tasks.rs`, `src/tasks_ui.rs` | Tarefas, dependências, painel |
 | `src/saiop.rs` | Atendimentos: modelo, importador `.xlsx` (leitor ZIP/XML próprio), painel |
-| `src/intranet.rs` | Modos principal/conectado, sincronização em thread própria, fila offline, mesclagem em três vias |
-| `src/pdf_reader.rs`, `src/evidence.rs`, `src/ai.rs` | Leitor de PDF + OCR do Windows, fontes para a IA, cliente Ollama |
-| `src/windows_ui.rs` | Seletor de arquivo e verificação do registro do host (crate `windows`) |
-| `extension/` | Extensão MV3: `capture-core.js` (leitura da página e validação), `content.js` (painel), `background.js` (host nativo e PDFs), `popup.*` |
+| `src/trash.rs` | Lixeira, restauração e limpeza por prazo |
+| `src/intranet.rs` | Modos de rede, sincronização em thread própria, fila offline, mesclagem em três vias |
+| `src/sharedfolder.rs` | Arquivo de transporte da pasta compartilhada (PBKDF2 + AES-256-GCM) |
+| `src/ai.rs`, `src/chatgpt.rs`, `src/evidence.rs` | Cliente Ollama, login e Responses API da OpenAI, fontes para a IA |
+| `src/work_context.rs`, `src/draft_tools.rs` | Contexto de trabalho; modelos e comparação de minutas |
+| `src/export.rs` | Exportação CSV |
+| `src/windows_ui.rs`, `src/paths.rs` | Seletores de arquivo, verificação do registro do host, pastas de dados |
+| `extension/` | Extensão MV3: `capture-core.js` (leitura da página e validação), `content.js` (painel), `history.js` (tramitação), `files.js` e `background.js` (PDFs e host nativo), `popup.*` |
 | `installer/Ponte.iss` | Instalador Inno Setup |
 | `scripts/` | `build.ps1`, `build-installer.ps1`, `build-webstore-package.ps1`, `install-app.ps1`, `install-native-host.ps1` |
 | `tests/` | Fluxo nativo (`native_flow.rs`), extensão (`node --test`, Playwright) e fixtures fictícias |
 
-Decisões que valem conhecer: a identidade de um documento é o número oficial validado por expressão regular (nunca um ID de DOM); toda gravação em SQLite passa por `protection::seal`; as capturas são imutáveis (conteúdo novo cria versão; conteúdo idêntico é ignorado com aviso, sem gravar nada); limites de 500 KiB de texto, 1 MiB por pacote, 8 MiB por PDF; a extensão só aceita `https://www.sigadoc.mt.gov.br` e remove segredos de URL.
+### 13.2 Decisões que vale conhecer
 
-### Compilar e testar
+- **Identidade de um documento** é o número oficial validado por expressão regular, nunca um ID de página.
+- **Tudo o que vai para o SQLite passa por `protection::seal`.** Colunas indexadas guardam resumos criptográficos, nunca o valor: os testes de cifragem procuram números e textos em claro no arquivo do acervo.
+- **Capturas são imutáveis.** Conteúdo novo cria versão; conteúdo idêntico é ignorado com aviso, sem gravar nada.
+- **Dois IDs de extensão são aceitos:** o da pasta instalada (`extension-id.txt`) e o da Chrome Web Store (`extension-store-id.txt`). O instalador autoriza os dois no navegador e o executável confere os dois.
+- **O host nunca fecha calado.** Origem desconhecida ou acervo que não abre são respondidos com `{ok:false,error:{code,message}}`, que a extensão mostra.
+- **Mutações de equipe** (`IntranetMutation`) são a única forma de alterar o acervo em rede; a fila offline e a pasta compartilhada reaplicam as mesmas mutações.
+- **Limites:** 500 KiB de texto e 1 MiB por pacote de captura, 8 MiB por PDF, 16 MiB de PDFs por importação, 8 MiB por anexo.
+- **A extensão só atua em `https://www.sigadoc.mt.gov.br`** e remove segredos de URL.
+
+### 13.3 Compilar e testar
 
 Toolchain: Rust estável para `x86_64-pc-windows-gnu` (pode ser o conjunto portátil com MinGW) e, para a extensão, Node.js 18+ com Playwright 1.62.
 
@@ -364,20 +789,24 @@ Copy-Item .\target\release\ponteproj.exe .\dist\ponteproj.exe -Force
 .\scripts\build.ps1 -Action Test    # cargo test --all-targets --locked
 .\scripts\build.ps1 -Action Release # cargo build --release --locked
 
-# testes da extensão (31 testes; os de DOM usam o Chrome instalado)
+# testes da extensão (os de DOM usam o Chrome instalado)
 $env:PONTEPROJ_PLAYWRIGHT_DIR = 'caminho\para\node_modules\playwright'
 node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tests\extension\files.test.cjs
 ```
 
+Hoje são 81 testes unitários e 4 de integração no aplicativo, e 31 na extensão.
+
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 
-### Registrar o host para um binário de desenvolvimento
+### 13.4 Registrar o host para um binário de desenvolvimento
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-native-host.ps1 -Executable .\target\release\ponteproj.exe
 ```
 
-### Linha de comando
+Para conferir que o executável atende uma extensão, chame-o como o navegador faria, com a origem como argumento e um quadro `ping` na entrada padrão. A resposta deve trazer `"ok":true` e a versão.
+
+### 13.5 Linha de comando
 
 ```powershell
 ponteproj.exe                                  # abre a janela
@@ -388,25 +817,31 @@ ponteproj.exe --serve 0.0.0.0:7878             # computador principal sem janela
 ponteproj.exe --version | --help
 ```
 
-O binário `release` não abre console (subsistema gráfico); para ver a saída de `--list`, `--version` e `--help` use `target\debug\ponteproj.exe`.
+O binário `release` não abre console (subsistema gráfico); para ver a saída de `--list`, `--version` e `--help` num terminal comum, use `target\debug\ponteproj.exe` ou redirecione a saída.
 
-### Publicar uma versão
+Variáveis de ambiente: `PONTEPROJ_DATA_DIR` (outra pasta de dados, sempre em disco local), `PONTEPROJ_AI_TOKEN` (chave da IA sem gravá-la) e `PONTEPROJ_NO_UI` (o host não abre a janela após importar; útil em testes).
 
-1. Atualize `version` em `Cargo.toml` **e** em `Cargo.lock` (entrada `ponteproj`), e `"version"` em `extension/manifest.json` + `extension/package.json` se a extensão mudou. Nunca altere `manifest.key`, `extension-id.txt` ou `extension-key.txt`.
-2. `build.ps1 -Action All`, copie `target\release\ponteproj.exe` para `dist\ponteproj.exe` (o instalador empacota o que estiver em `dist\`; confira com `dist\ponteproj.exe --version`), escreva as notas em `ATUALIZACAO_X_Y_Z.md` (arquivo local, fora do repositório: vira o texto da Release).
-3. `scripts\build-installer.ps1` → `dist\Ponte-Setup-X.Y.Z.exe` e a cópia de nome fixo `dist\Ponte-Setup.exe` (Inno Setup 6: `winget install JRSoftware.InnoSetup`).
-4. `scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-A.B.C.zip`; envie no painel da Chrome Web Store (ficha e privacidade em [`extension/WEBSTORE.md`](extension/WEBSTORE.md)).
-5. `gh release create vX.Y.Z dist\Ponte-Setup-X.Y.Z.exe dist\Ponte-Setup.exe dist\ponte-extensao-webstore-A.B.C.zip --notes-file ATUALIZACAO_X_Y_Z.md`. O `Ponte-Setup.exe` de nome fixo é o que sustenta o link direto do topo deste README (`releases/latest/download/Ponte-Setup.exe`): sem ele na Release mais recente, o link quebra.
+### 13.6 Publicar uma versão
 
-A extensão publicada na loja tem ID próprio (`hhppmkbmainkdfmcfeaanknlnfgihnah`), registrado em `extension-store-id.txt`; o instalador e o `install-native-host.ps1` autorizam esse ID e o da versão carregada da pasta (`ecllnakmppjinmednoikimbpnbgbimhg`). A chave privada `extension.pem` **não está no repositório** e deve ficar em local seguro.
+1. Atualize `version` em `Cargo.toml` **e** em `Cargo.lock` (entrada `ponteproj`). Se a extensão mudou, atualize `"version"` em `extension/manifest.json` e `extension/package.json`, e a constante `EXTENSION_VERSION` em `src/app.rs`. Nunca altere `manifest.key`, `extension-id.txt` ou `extension-key.txt`.
+2. `build.ps1 -Action All` e copie `target\release\ponteproj.exe` para `dist\ponteproj.exe` (o instalador empacota o que estiver em `dist\`; confira com `dist\ponteproj.exe --version`). Escreva as notas em `ATUALIZACAO_X_Y_Z.md` (arquivo local, fora do repositório: vira o texto da Release).
+3. `scripts\build-installer.ps1` gera `dist\Ponte-Setup-X.Y.Z.exe` e a cópia de nome fixo `dist\Ponte-Setup.exe` (Inno Setup 6: `winget install JRSoftware.InnoSetup`).
+4. `scripts\build-webstore-package.ps1` gera `dist\ponte-extensao-webstore-A.B.C.zip`; envie no painel da Chrome Web Store (ficha, privacidade e roteiro em [`extension/WEBSTORE.md`](extension/WEBSTORE.md)).
+5. `gh release create vX.Y.Z dist\Ponte-Setup-X.Y.Z.exe dist\Ponte-Setup.exe dist\ponte-extensao-webstore-A.B.C.zip --notes-file ATUALIZACAO_X_Y_Z.md`.
 
-### O que está no repositório
+O `Ponte-Setup.exe` de nome fixo sustenta o link direto do topo deste README (`releases/latest/download/Ponte-Setup.exe`): sem ele na Release mais recente, o link quebra.
 
-Só o necessário para compilar, instalar e publicar o aplicativo e a extensão: `src/` e `Cargo.*` (aplicativo), `extension/` (extensão), `assets/` e `build.rs` (ícone), `installer/` e `scripts/` (instalador, host nativo, pacote da loja), `tests/` (fluxo nativo e extensão, com fixtures fictícias), `extension-id.txt`, `extension-key.txt` e `extension-store-id.txt` (identidades públicas da extensão), além deste README, do [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), da [`LICENSE`](LICENSE) e de [`extension/WEBSTORE.md`](extension/WEBSTORE.md) e [`extension/PRIVACIDADE.md`](extension/PRIVACIDADE.md) (publicação na loja). As notas de cada versão estão nas [Releases](https://github.com/demusis/ponteproj/releases); documentos de planejamento e a chave privada da extensão ficam fora do repositório.
+A extensão publicada na loja tem ID próprio (`hhppmkbmainkdfmcfeaanknlnfgihnah`), diferente do da versão carregada da pasta (`ecllnakmppjinmednoikimbpnbgbimhg`). A chave privada `extension.pem` **não está no repositório** e deve ficar em local seguro.
+
+### 13.7 O que está no repositório
+
+Só o necessário para compilar, instalar e publicar o aplicativo e a extensão: `src/` e `Cargo.*` (aplicativo), `extension/` (extensão), `assets/` e `build.rs` (ícone), `installer/` e `scripts/` (instalador, host nativo, pacote da loja), `tests/` (fluxo nativo e extensão, com fixtures fictícias), `extension-id.txt`, `extension-key.txt` e `extension-store-id.txt` (identidades públicas da extensão), além deste README, do [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), da [`LICENSE`](LICENSE) e de [`extension/WEBSTORE.md`](extension/WEBSTORE.md) e [`extension/PRIVACIDADE.md`](extension/PRIVACIDADE.md).
+
+Os instaladores e as notas de cada versão estão nas [Releases](https://github.com/demusis/ponteproj/releases). Documentos de planejamento e a chave privada da extensão ficam fora do repositório.
 
 ---
 
-## 11. Autoria e licença
+## 14. Autoria e licença
 
 O Ponte foi concebido e desenvolvido por **Carlo Ralph De Musis** e **João Gabriel Bezerra Estrela**. No programa, **Menu ▾ ▸ Sobre o Ponte** mostra estes créditos, a versão e o endereço do projeto.
 
