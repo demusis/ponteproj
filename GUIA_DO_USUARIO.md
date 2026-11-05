@@ -5,7 +5,7 @@ O Ponte é um programa do Windows que guarda, no seu computador, os documentos q
 ## 1. Instalar
 
 1. Feche o Ponte, se estiver aberto.
-2. Baixe o instalador em <https://github.com/demusis/ponteproj/releases/latest>, dê dois cliques em **Ponte-Setup-X.Y.Z.exe** (a versão mais recente) e clique em **Avançar** até o fim. Não precisa de administrador.
+2. Baixe o instalador em <https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe> (link direto, sempre a versão mais recente), dê dois cliques em **Ponte-Setup.exe** e clique em **Avançar** até o fim. Não precisa de administrador.
 3. Feche e abra o navegador (Chrome ou Edge).
 4. Abra o Ponte pelo menu Iniciar. A tela inicial diz se o navegador está ligado ao Ponte.
 5. Instale a extensão no navegador, uma única vez — de um destes dois jeitos:

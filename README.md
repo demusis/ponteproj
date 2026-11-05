@@ -6,7 +6,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 
 | | |
 |---|---|
-| **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
+| **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) — versões anteriores e notas em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | publicada (não listada): <https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah> — exige o Ponte 0.19.3 ou posterior; a extensão também vem junto com o instalador |
 | **Versão** | 0.19.3 (extensão 0.1.11) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
@@ -35,7 +35,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 
 Não precisa de administrador: tudo é instalado na sua conta do Windows.
 
-1. Baixe `Ponte-Setup-X.Y.Z.exe` em <https://github.com/demusis/ponteproj/releases/latest> e dê dois cliques. Avance até o fim; pode deixar marcado **Abrir o Ponte agora**.
+1. Baixe o instalador por este link direto, que sempre aponta para a versão mais recente: **<https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe>**. Dê dois cliques no arquivo e avance até o fim; pode deixar marcado **Abrir o Ponte agora**. Uma versão específica (`Ponte-Setup-X.Y.Z.exe`) fica em [Releases](https://github.com/demusis/ponteproj/releases).
 2. Feche e abra o navegador (Chrome ou Edge).
 3. Na tela inicial do Ponte, o quadro **Ligação com o navegador** deve dizer *✓ O Ponte está registrado para o Chrome e Edge*.
 4. Instale a extensão **uma vez**, de um destes jeitos:
@@ -394,9 +394,9 @@ O binário `release` não abre console (subsistema gráfico); para ver a saída 
 
 1. Atualize `version` em `Cargo.toml` **e** em `Cargo.lock` (entrada `ponteproj`), e `"version"` em `extension/manifest.json` + `extension/package.json` se a extensão mudou. Nunca altere `manifest.key`, `extension-id.txt` ou `extension-key.txt`.
 2. `build.ps1 -Action All`, copie `target\release\ponteproj.exe` para `dist\ponteproj.exe` (o instalador empacota o que estiver em `dist\`; confira com `dist\ponteproj.exe --version`), escreva as notas em `ATUALIZACAO_X_Y_Z.md` (arquivo local, fora do repositório: vira o texto da Release).
-3. `scripts\build-installer.ps1` → `dist\Ponte-Setup-X.Y.Z.exe` (Inno Setup 6: `winget install JRSoftware.InnoSetup`).
+3. `scripts\build-installer.ps1` → `dist\Ponte-Setup-X.Y.Z.exe` e a cópia de nome fixo `dist\Ponte-Setup.exe` (Inno Setup 6: `winget install JRSoftware.InnoSetup`).
 4. `scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-A.B.C.zip`; envie no painel da Chrome Web Store (ficha e privacidade em [`extension/WEBSTORE.md`](extension/WEBSTORE.md)).
-5. `gh release create vX.Y.Z dist\Ponte-Setup-X.Y.Z.exe dist\ponte-extensao-webstore-A.B.C.zip --notes-file ATUALIZACAO_X_Y_Z.md`.
+5. `gh release create vX.Y.Z dist\Ponte-Setup-X.Y.Z.exe dist\Ponte-Setup.exe dist\ponte-extensao-webstore-A.B.C.zip --notes-file ATUALIZACAO_X_Y_Z.md`. O `Ponte-Setup.exe` de nome fixo é o que sustenta o link direto do topo deste README (`releases/latest/download/Ponte-Setup.exe`): sem ele na Release mais recente, o link quebra.
 
 A extensão publicada na loja tem ID próprio (`hhppmkbmainkdfmcfeaanknlnfgihnah`), registrado em `extension-store-id.txt`; o instalador e o `install-native-host.ps1` autorizam esse ID e o da versão carregada da pasta (`ecllnakmppjinmednoikimbpnbgbimhg`). A chave privada `extension.pem` **não está no repositório** e deve ficar em local seguro.
 

@@ -78,3 +78,8 @@ if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
 $item = Get-Item -LiteralPath $output
 Write-Host ("Instalador: {0} ({1:N0} bytes)" -f $item.FullName, $item.Length)
 Write-Host ("SHA-256: " + (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash)
+# Copy with a fixed name: published beside the versioned one, it is what the
+# permanent link releases/latest/download/Ponte-Setup.exe downloads.
+$fixed = Join-Path $projectRoot 'dist\Ponte-Setup.exe'
+Copy-Item -LiteralPath $output -Destination $fixed -Force
+Write-Host "Copia de nome fixo (link direto da Release mais recente): $fixed"
