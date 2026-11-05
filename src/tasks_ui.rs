@@ -21,8 +21,9 @@ const VIEWS: [&str; 9] = [
 const PRIMARY_VIEWS: [usize; 4] = [2, 3, 4, 0];
 const SECONDARY_VIEWS: [usize; 5] = [8, 1, 5, 6, 7];
 
-/// Bar colour of a task that depends on the one open in the form.
-const RELATED: Color32 = Color32::from_rgb(24, 84, 97);
+/// Bar colour of a task that depends on the one open in the form: the same
+/// plain blue the document list uses for "no prazo".
+const RELATED: Color32 = Color32::from_rgb(26, 95, 180);
 const SUCCESS: Color32 = Color32::from_rgb(20, 118, 72);
 
 /// A clickable chip naming a related task with its state; returns the task

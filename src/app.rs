@@ -16,6 +16,10 @@ const ACCENT: Color32 = Color32::from_rgb(24, 84, 97);
 const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
 const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
 const SUCCESS: Color32 = Color32::from_rgb(20, 118, 72);
+/// "Em aberto, no prazo": a plain blue, so that it is never taken for the
+/// green of "concluído" (the accent colour is a greenish teal).
+const ON_TIME: Color32 = Color32::from_rgb(26, 95, 180);
+const ON_TIME_BG: Color32 = Color32::from_rgb(226, 236, 250);
 const MUTED: Color32 = Color32::from_rgb(120, 130, 140);
 /// Public repository with the installer, the source and the release notes.
 const PROJECT_URL: &str = "https://github.com/demusis/ponteproj";
@@ -233,9 +237,8 @@ impl DocTaskStatusSummary {
     }
 
     /// The label under a document card: text, text colour and background.
-    /// It is the only mark of the task situation (the coloured bar that
-    /// repeated it beside the card was removed: two of its colours were
-    /// hard to tell apart).
+    /// The worst situation wins: overdue, then due today, then open on
+    /// time, then all done, then no tasks.
     fn badge(&self) -> (String, Color32, Color32) {
         if self.overdue > 0 {
             let mut label = if self.overdue == 1 {
@@ -252,7 +255,18 @@ impl DocTaskStatusSummary {
             (label, ERROR, Color32::from_rgb(252, 232, 233))
         } else if self.open_on_time > 0 {
             let mut label = if self.due_today > 0 {
-                format!("⏰ {} em aberto (vence hoje)", self.open_on_time)
+                // Only the tasks due today are counted as such; the other
+                // open ones follow in brackets, as in the overdue label.
+                let mut label = if self.due_today == 1 {
+                    "⏰ 1 vence hoje".to_owned()
+                } else {
+                    format!("⏰ {} vencem hoje", self.due_today)
+                };
+                let later = self.open_on_time - self.due_today;
+                if later > 0 {
+                    label.push_str(&format!(" (+{later} no prazo)"));
+                }
+                label
             } else if self.open_on_time == 1 {
                 "● 1 em aberto (no prazo)".to_owned()
             } else {
@@ -269,7 +283,7 @@ impl DocTaskStatusSummary {
             if self.due_today > 0 {
                 (label, WARNING, Color32::from_rgb(254, 243, 224))
             } else {
-                (label, ACCENT, Color32::from_rgb(228, 243, 246))
+                (label, ON_TIME, ON_TIME_BG)
             }
         } else if self.completed > 0 {
             let label = if self.completed == 1 {
@@ -2269,7 +2283,7 @@ impl PonteApp {
                 ui.selectable_value(
                     &mut self.doc_task_filter,
                     DocTaskFilter::OpenOnTime,
-                    RichText::new(format!("● No prazo ({count_on_time})")).color(ACCENT),
+                    RichText::new(format!("● No prazo ({count_on_time})")).color(ON_TIME),
                 );
                 ui.selectable_value(
                     &mut self.doc_task_filter,
@@ -2373,7 +2387,9 @@ impl PonteApp {
                     let summary = summaries.get(&document.id).cloned().unwrap_or_default();
                     let (badge_text, badge_fg, badge_bg) = summary.badge();
 
-                    ui.horizontal(|ui| {
+                    // Left edge of the card, so that the labels start under it
+                    // whatever the indent and the width of the ↳ mark.
+                    let card_left = ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         if indent > 0.0 {
                             ui.add_space(indent - 6.0);
@@ -2393,11 +2409,14 @@ impl PonteApp {
                         if response.clicked() {
                             selected = Some(document.id);
                         }
-                    });
+                        response.rect.left()
+                    })
+                    .inner;
 
                     ui.horizontal_wrapped(|ui| {
-                        if indent > 0.0 {
-                            ui.add_space(indent);
+                        let offset = card_left - ui.cursor().min.x;
+                        if offset > 0.0 {
+                            ui.add_space(offset);
                         }
                         pill(ui, badge_text, badge_fg, badge_bg, 11.5);
                         if document.manual {
@@ -4386,8 +4405,8 @@ fn allowed_sigadoc_url(raw_url: &str) -> bool {
 mod tests {
     use super::{
         allowed_sigadoc_url, library_panel, DocPriorityFilter, DocSort, DocTaskFilter,
-        DocTaskStatusSummary, ACCENT, ERROR, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION,
-        LIBRARY_MIN_WIDTH, SUCCESS, WARNING,
+        DocTaskStatusSummary, ERROR, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION,
+        LIBRARY_MIN_WIDTH, ON_TIME, SUCCESS, WARNING,
     };
     use crate::tasks::Task;
 
@@ -4644,13 +4663,32 @@ mod tests {
         assert!(s2.matches(DocTaskFilter::OpenOnTime));
         assert!(s2.matches(DocTaskFilter::OpenAny));
         assert!(!s2.matches(DocTaskFilter::Overdue));
-        assert_eq!(s2.badge().1, ACCENT);
+        assert_eq!(s2.badge().1, ON_TIME);
+        assert_ne!(ON_TIME, SUCCESS, "open and done never share a colour");
         assert!(s2.badge().0.contains("no prazo"));
 
         let s3 = DocTaskStatusSummary::from_tasks(&tasks, 3, today);
         assert!(s3.matches(DocTaskFilter::OpenOnTime));
         assert_eq!(s3.badge().1, WARNING);
-        assert!(s3.badge().0.contains("vence hoje"));
+        assert_eq!(s3.badge().0, "⏰ 1 vence hoje");
+
+        // One task due today and two later: only one is "due today".
+        let mut later_a = Task::new(9);
+        later_a.due_date = "2026-12-01".into();
+        let mut later_b = Task::new(9);
+        later_b.due_date = "2026-12-15".into();
+        let mut due_now = Task::new(9);
+        due_now.due_date = today.into();
+        let mut done = Task::new(9);
+        done.status = "concluida".into();
+        let mixed = DocTaskStatusSummary::from_tasks(&[later_a, later_b, due_now.clone(), done], 9, today);
+        assert_eq!(mixed.badge().0, "⏰ 1 vence hoje (+2 no prazo) • ✓ 1");
+        assert_eq!(mixed.badge().1, WARNING);
+        let both_today = DocTaskStatusSummary::from_tasks(&[due_now.clone(), due_now], 9, today);
+        assert_eq!(both_today.badge().0, "⏰ 2 vencem hoje");
+
+        // An overdue task always brings its date along.
+        assert_eq!(s1.badge().0, "⚠ 1 tarefa atrasada • Prazo: 25/10/2026");
 
         let s4 = DocTaskStatusSummary::from_tasks(&tasks, 4, today);
         assert!(s4.matches(DocTaskFilter::Completed));

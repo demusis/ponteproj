@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Menu ▾ ▸ Guia do usuário** |
-| **Versão** | 0.19.5 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.19.6 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -195,7 +195,7 @@ No Resumo, em **Tarefas deste documento**, clique em **Nova tarefa**. Preencha:
 | Ação | *Responder* |
 | Prazo | `13/11/2026` (digite ou use o 📅) |
 
-Salve. O cartão do documento, na lista da esquerda, passa a mostrar `● 2 em aberto (no prazo) • Prazo: 13/11/2026`. Quando o prazo passar, vira vermelho: `⚠ 1 tarefa atrasada`.
+Salve. A etiqueta azul embaixo do cartão do documento, na lista da esquerda, passa a mostrar `● 2 em aberto (no prazo) • Prazo: 13/11/2026`. No dia do prazo ela fica âmbar, `⏰ 1 vence hoje (+1 no prazo)`, e depois dele fica vermelha, `⚠ 1 tarefa atrasada (+1 no prazo) • Prazo: 13/11/2026`.
 
 ### 4.5 Responder
 
@@ -238,13 +238,15 @@ Cada cartão mostra o número e o assunto e, embaixo, uma **etiqueta colorida** 
 
 | Ordem | Cor da etiqueta | Quando | Exemplo |
 |---|---|---|---|
-| 1 | vermelha | há pelo menos uma tarefa atrasada (prazo anterior a hoje, não concluída) | `⚠ 1 tarefa atrasada (+3 no prazo)` |
-| 2 | âmbar | nenhuma atrasada, mas alguma vence hoje | `⏰ 1 em aberto (vence hoje)` |
+| 1 | vermelha | há pelo menos uma tarefa atrasada (prazo anterior a hoje, não concluída) | `⚠ 1 tarefa atrasada (+3 no prazo) • Prazo: 20/10/2026` |
+| 2 | âmbar | nenhuma atrasada, mas alguma vence hoje | `⏰ 1 vence hoje (+2 no prazo)` |
 | 3 | azul | há tarefas em aberto, todas no prazo | `● 2 em aberto (no prazo) • Prazo: 13/11/2026` |
 | 4 | verde | nenhuma em aberto e pelo menos uma concluída | `✓ 1 tarefa concluída` |
 | 5 | cinza | o documento não tem tarefas | `○ Sem tarefas` |
 
-O pior caso manda: um documento com uma tarefa atrasada e três no prazo fica vermelho. Uma tarefa sem prazo conta como "no prazo".
+Como ler os números: o primeiro conta as tarefas na situação que dá a cor (atrasadas, ou que vencem hoje), e o que vem entre parênteses são as demais tarefas em aberto. **Prazo** é o prazo mais próximo entre as tarefas em aberto. Um `• ✓ 2` ao final diz quantas já foram concluídas.
+
+O pior caso manda: um documento com uma tarefa atrasada e três no prazo recebe a etiqueta vermelha. Uma tarefa sem prazo conta como "no prazo". Só a etiqueta muda de cor; o cartão em si não.
 
 Outras marcas do cartão: **Manual** (registro manual), `📎 N juntado(s)` (o documento tem outros juntados a ele), `↳ Juntado a …` (está juntado a outro) e *análise desatualizada* (a análise por IA foi feita sobre uma versão anterior).
 
