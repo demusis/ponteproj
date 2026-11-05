@@ -1591,7 +1591,7 @@ impl Store {
                     row.attendance.batch_id,
                     row.attendance.source_row.map(|r| r as i64),
                     row.attendance.document_id,
-                    row.attendance.reference_norm,
+                    crate::saiop::reference_key(&row.attendance.reference_norm),
                     seal(&serde_json::to_vec(&row.attendance)?)?,
                     raw_blob,
                     row.updated_at

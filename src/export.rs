@@ -393,7 +393,8 @@ mod tests {
         let folder = dir.path().join("saida");
         std::fs::create_dir_all(&folder).unwrap();
         let report = export_to(&store, &folder).unwrap();
-        assert_eq!((report.documents, report.tasks, report.attendances), (1, 1, 0));
+        // The import records the document's atendimento by itself.
+        assert_eq!((report.documents, report.tasks, report.attendances), (1, 1, 1));
         let documents = parse(&std::fs::read_to_string(folder.join("documentos.csv")).unwrap());
         assert_eq!(documents[0][1], "Documento");
         let header = &documents[0];
@@ -415,7 +416,7 @@ mod tests {
         assert_eq!(column("Mês do prazo"), "2020-01-01");
         assert_eq!(column("Responsável"), "MARIA");
         let attendances = std::fs::read_to_string(folder.join("atendimentos.csv")).unwrap();
-        assert_eq!(parse(&attendances).len(), 1, "header only");
+        assert_eq!(parse(&attendances).len(), 2, "header and the automatic atendimento");
         // No document text leaves with the export.
         let all = [
             std::fs::read_to_string(folder.join("documentos.csv")).unwrap(),

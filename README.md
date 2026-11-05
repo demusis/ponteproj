@@ -9,7 +9,7 @@ O Ponte **nunca envia nada ao SIGADOC**: assinaturas e tramitação continuam l�
 | **Instalador** | <https://github.com/demusis/ponteproj/releases/latest> → `Ponte-Setup-X.Y.Z.exe` |
 | **Guia do usuário** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md) |
 | **Extensão na Chrome Web Store** | em análise (não listada) — enquanto isso, a extensão vem junto com o instalador |
-| **Versão** | 0.19.1 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.19.2 (extensão 0.1.10) — [notas de versão nas Releases](https://github.com/demusis/ponteproj/releases) |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#11-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
 
@@ -185,6 +185,8 @@ Clique em **Registrar nova entrada**. A ficha abre **ao lado** da grade, com **S
 | | Assunto / Observações | texto livre |
 
 Só a **referência ou o assunto** é obrigatório. Cada mudança de situação ou de responsável vira um evento na **Linha do tempo**; você também registra eventos à mão (*"cobrado retorno por telefone"*).
+
+**Ao importar do SIGADOC**, a primeira importação de cada documento registra sozinha a entrada dele aqui: referência, assunto, data, responsável (você) e ligação ao documento, com situação "Em análise"; documentos juntados a outro não entram, e um atendimento que já tinha aquele número (da planilha, por exemplo) é ligado em vez de duplicado. A caixa **Criar atendimento ao importar do SIGADOC**, no alto do painel, desliga isso. O atendimento criado pode ser editado ou excluído como qualquer outro.
 
 **Com um documento aberto na biblioteca**, o painel mostra só os atendimentos dele ("Só SEFAZ-PRO-2026/00001"; **Todos os atendimentos** amplia) e **Registrar nova entrada** cria o atendimento já ligado ao documento aberto (mesmo com a lista em "Todos os atendimentos"), com o número dele como referência.
 

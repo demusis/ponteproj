@@ -295,6 +295,7 @@ impl Store {
                 previous_version: false,
             });
         }
+        let mut new_document = false;
         let document_id: i64 = match tx
             .query_row(
                 "SELECT id FROM documents WHERE identity_hash=?1",
@@ -309,6 +310,7 @@ impl Store {
                     "INSERT INTO documents(identity_hash,last_seen_at) VALUES(?1,?2)",
                     params![identity_hash, seen],
                 )?;
+                new_document = true;
                 tx.last_insert_rowid()
             }
         };
@@ -387,6 +389,13 @@ impl Store {
         // The capture is already committed; a failure here must not undo the
         // import. The next open/import retries the idempotent reconciliation.
         let _ = self.link_juntadas();
+        // First arrival of a SIGADOC document: its passage through the
+        // cabinet is recorded in Atendimentos (when the person wants that).
+        // Runs on whichever computer holds the library, never queued on
+        // its own: a replay of the import recreates it deterministically.
+        if new_document && !duplicate && !capture.is_manual() {
+            let _ = self.attendance_for_import(document_id, capture);
+        }
         Ok(ImportReceipt {
             request_id: capture.request_id.clone(),
             document_id,

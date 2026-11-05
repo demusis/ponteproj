@@ -3,6 +3,7 @@
 //! indicadores calculados por eventos (sem depender de `DATEDIF` da planilha), rastreabilidade de lote e reversão.
 
 use crate::{
+    model::Capture,
     protection::{seal, unseal},
     storage::Store,
     tasks::Task,
@@ -406,6 +407,19 @@ pub fn normalize_reference(raw: &str) -> String {
         .to_uppercase()
 }
 
+/// What the indexed `reference_norm` column stores: a digest of the
+/// normalized reference, so that document numbers never sit in clear in
+/// the library file. The readable value lives in the sealed payload.
+pub fn reference_key(normalized: &str) -> String {
+    if normalized.is_empty() {
+        return String::new();
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"ponte-saiop-reference\n");
+    hasher.update(normalized.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 /// Mapeia o rótulo original da coluna M (`Verificação`) nas 4 dimensões independentes do Ponte.
 pub fn map_verification_dimensions(
     raw_label: &str,
@@ -561,9 +575,123 @@ impl Store {
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_saiop_attendances_ref ON saiop_attendances(reference_norm);
-            CREATE INDEX IF NOT EXISTS idx_saiop_attendances_batch ON saiop_attendances(batch_id);",
+            CREATE INDEX IF NOT EXISTS idx_saiop_attendances_batch ON saiop_attendances(batch_id);
+            CREATE TABLE IF NOT EXISTS saiop_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
+        // Libraries from before 0.19.2 kept the normalized reference in clear
+        // in that column; it becomes the digest, once. Best effort: a row
+        // that cannot be read (another Windows account) is left as it is.
+        let plain: Vec<(i64, Vec<u8>)> = self
+            .conn
+            .prepare(
+                "SELECT id, payload FROM saiop_attendances
+                 WHERE reference_norm <> '' AND (length(reference_norm) <> 64 OR reference_norm GLOB '*[^0-9a-f]*')",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, blob) in plain {
+            let Ok(bytes) = unseal(&blob) else { continue };
+            let Ok(att) = serde_json::from_slice::<SaiopAttendance>(&bytes) else { continue };
+            self.conn.execute(
+                "UPDATE saiop_attendances SET reference_norm = ?1 WHERE id = ?2",
+                params![reference_key(&att.reference_norm), id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Whether a SIGADOC import records an atendimento by itself (default: yes).
+    pub fn auto_attendance_enabled(&self) -> Result<bool> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM saiop_settings WHERE key='auto_attendance'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(value.as_deref() != Some("0"))
+    }
+
+    pub fn set_auto_attendance(&mut self, enabled: bool) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO saiop_settings(key,value) VALUES('auto_attendance',?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [if enabled { "1" } else { "0" }],
         )?;
         Ok(())
+    }
+
+    /// Records the passage of a freshly imported SIGADOC document: links an
+    /// atendimento that already carries its number (from the spreadsheet,
+    /// say) or creates one with what the capture offers. Documents joined
+    /// to another are skipped. Idempotent, so a replayed import is harmless.
+    pub(crate) fn attendance_for_import(&mut self, document_id: i64, capture: &Capture) -> Result<()> {
+        if !self.auto_attendance_enabled()? || crate::dossier::detect_juntada(capture).is_some() {
+            return Ok(());
+        }
+        let reference_norm = normalize_reference(&capture.document_number);
+        ensure!(!reference_norm.is_empty(), "Documento sem número.");
+        // Never queued on its own: the import that caused it is what travels.
+        let previous = self.suppress_remote;
+        self.suppress_remote = true;
+        let result = (|| -> Result<()> {
+            let existing = self.list_saiop_attendances()?;
+            if existing
+                .iter()
+                .any(|a| a.document_id == Some(document_id) && a.reference_norm == reference_norm)
+            {
+                return Ok(());
+            }
+            let now = Utc::now().to_rfc3339();
+            let actor = self.active_actor();
+            if let Some(mut unlinked) = existing
+                .into_iter()
+                .find(|a| a.document_id.is_none() && a.reference_norm == reference_norm)
+            {
+                let version = self.item_version("saiop", unlinked.id).ok().map(|v| v.version);
+                unlinked.document_id = Some(document_id);
+                unlinked.events.push(SaiopEvent {
+                    when: now,
+                    actor,
+                    kind: "entrada".into(),
+                    detail: format!("Ligado ao documento {} importado do SIGADOC", capture.document_number),
+                });
+                self.save_saiop_attendance(&unlinked, version)?;
+                return Ok(());
+            }
+            let mut att = SaiopAttendance::new_manual();
+            att.reference_raw = capture.document_number.clone();
+            att.reference_norm = reference_norm.clone();
+            att.sigadoc_code = capture.document_number.clone();
+            att.subject = capture.title.trim().chars().take(300).collect();
+            att.document_id = Some(document_id);
+            att.assignee = self
+                .load_intranet_config()
+                .map(|cfg| cfg.member_name)
+                .unwrap_or_default();
+            att.received_from = ["sender", "remetente", "subscritor", "origin", "origem", "movement_source"]
+                .iter()
+                .find_map(|key| capture.metadata.get(*key))
+                .map(|v| v.trim().chars().take(200).collect())
+                .unwrap_or_default();
+            if let Some(kind) = capture.metadata.get("document_type") {
+                att.tags.push(kind.trim().to_owned());
+            }
+            att.events.push(SaiopEvent {
+                when: now,
+                actor,
+                kind: "entrada".into(),
+                detail: format!(
+                    "Criado automaticamente na importação de {} do SIGADOC",
+                    capture.document_number
+                ),
+            });
+            self.save_saiop_attendance(&att, None)?;
+            Ok(())
+        })();
+        self.suppress_remote = previous;
+        result
     }
 
     pub fn list_saiop_attendances(&self) -> Result<Vec<SaiopAttendance>> {
@@ -732,7 +860,7 @@ impl Store {
                  WHERE id = ?5",
                 params![
                     next.document_id,
-                    next.reference_norm,
+                    reference_key(&next.reference_norm),
                     encoded,
                     now,
                     next.id
@@ -777,7 +905,7 @@ impl Store {
                     next.batch_id,
                     next.source_row.map(|r| r as i64),
                     next.document_id,
-                    next.reference_norm,
+                    reference_key(&next.reference_norm),
                     placeholder,
                     now
                 ],
@@ -1214,7 +1342,7 @@ impl Store {
                     batch_id,
                     record.source_row.map(|r| r as i64),
                     record.document_id,
-                    record.reference_norm,
+                    reference_key(&record.reference_norm),
                     placeholder,
                     raw_blob,
                     now
@@ -2473,6 +2601,18 @@ impl SaiopPanel {
                         fresh.reference_raw = number;
                     }
                     self.load_into_editor(store, fresh);
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            let mut auto = store.auto_attendance_enabled().unwrap_or(true);
+            if ui
+                .checkbox(&mut auto, "Criar atendimento ao importar do SIGADOC")
+                .on_hover_text("Na primeira importação de cada documento do SIGADOC, registra aqui a entrada dele no gabinete: referência, assunto, data, responsável e ligação ao documento. Documentos juntados a outro não entram. Você pode editar ou excluir o atendimento depois.")
+                .changed()
+            {
+                if let Err(e) = store.set_auto_attendance(auto) {
+                    self.set_notice(format!("Não foi possível salvar a preferência: {e}"), true);
                 }
             }
         });
@@ -3789,6 +3929,57 @@ mod tests {
             remaining[0].observation,
             "Revisado manualmente pelo gabinete"
         );
+    }
+
+    #[test]
+    fn importing_a_sigadoc_document_records_its_attendance_once() {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        assert!(store.auto_attendance_enabled().unwrap(), "on by default");
+        let capture = crate::model::sample_capture();
+        let receipt = store.import_capture(&capture).unwrap();
+        let list = store.list_saiop_attendances().unwrap();
+        assert_eq!(list.len(), 1);
+        let att = &list[0];
+        assert_eq!(att.document_id, Some(receipt.document_id));
+        assert_eq!(att.reference_raw, capture.document_number);
+        assert_eq!(att.subject, capture.title.trim());
+        assert_eq!(att.status, "em_analise");
+        assert!(att.events.iter().any(|e| e.detail.contains("automaticamente")), "{:?}", att.events);
+
+        // A new version of the same document adds nothing.
+        let mut again = capture.clone();
+        again.request_id = uuid::Uuid::new_v4().to_string();
+        again.text.push_str("\nnova versão");
+        store.import_capture(&again).unwrap();
+        assert_eq!(store.list_saiop_attendances().unwrap().len(), 1);
+
+        // An atendimento that already carries the number (from the
+        // spreadsheet) is linked instead of duplicated.
+        let mut manual = SaiopAttendance::new_manual();
+        manual.reference_raw = "SEFAZ-PRO-2026/00123".into();
+        manual.reference_norm = normalize_reference(&manual.reference_raw);
+        manual.subject = "Da planilha".into();
+        let manual_id = store.save_saiop_attendance(&manual, None).unwrap();
+        let mut other = crate::model::sample_capture();
+        other.document_number = "SEFAZ-PRO-2026/00123".into();
+        other.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00123".into();
+        other.request_id = uuid::Uuid::new_v4().to_string();
+        let receipt = store.import_capture(&other).unwrap();
+        let list = store.list_saiop_attendances().unwrap();
+        assert_eq!(list.len(), 2);
+        let linked = list.iter().find(|a| a.id == manual_id).unwrap();
+        assert_eq!(linked.document_id, Some(receipt.document_id));
+        assert_eq!(linked.subject, "Da planilha", "the person's entry is kept");
+
+        // Switched off: nothing is created.
+        store.set_auto_attendance(false).unwrap();
+        let mut third = crate::model::sample_capture();
+        third.document_number = "SEFAZ-PRO-2026/00124".into();
+        third.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00124".into();
+        third.request_id = uuid::Uuid::new_v4().to_string();
+        store.import_capture(&third).unwrap();
+        assert_eq!(store.list_saiop_attendances().unwrap().len(), 2);
     }
 
     #[test]
