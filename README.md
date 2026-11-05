@@ -15,8 +15,8 @@ Ele tem duas partes, que funcionam juntas:
 |---|---|
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
-| **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em duas páginas |
-| **Versão** | 0.19.3 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Menu ▾ ▸ Guia do usuário** |
+| **Versão** | 0.19.4 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -140,6 +140,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | **Fazer backup agora** | Cópia de segurança do acervo |
 | **Exportar dados para CSV…** | Planilhas para o Excel ou para painéis |
 | **Atualizar lista** | A lista já se atualiza sozinha; serve para forçar |
+| **Guia do usuário** | Abre o guia curto no navegador, sem precisar de internet. Dá para imprimir |
 | **Sobre o Ponte…** | Versão, autoria, licença e endereço do projeto |
 
 **Datas:** todo campo de data aceita digitar `dd/mm/aaaa` ou escolher no calendário. O botão 📅 abre o mês, com os dias da semana (D S T Q Q S S), setas ◀ ▶ para trocar de mês, hoje em destaque e os atalhos **Hoje** e **Limpar**. Uma data inválida, como `31/02/2026`, fica marcada em vermelho.
@@ -758,6 +759,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/ai.rs`, `src/chatgpt.rs`, `src/evidence.rs` | Cliente Ollama, login e Responses API da OpenAI, fontes para a IA |
 | `src/work_context.rs`, `src/draft_tools.rs` | Contexto de trabalho; modelos e comparação de minutas |
 | `src/export.rs` | Exportação CSV |
+| `src/guide.rs` | Guia do usuário: `GUIA_DO_USUARIO.md` embutido e convertido em página para o navegador |
 | `src/windows_ui.rs`, `src/paths.rs` | Seletores de arquivo, verificação do registro do host, pastas de dados |
 | `extension/` | Extensão MV3: `capture-core.js` (leitura da página e validação), `content.js` (painel), `history.js` (tramitação), `files.js` e `background.js` (PDFs e host nativo), `popup.*` |
 | `installer/Ponte.iss` | Instalador Inno Setup |
@@ -794,7 +796,7 @@ $env:PONTEPROJ_PLAYWRIGHT_DIR = 'caminho\para\node_modules\playwright'
 node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tests\extension\files.test.cjs
 ```
 
-Hoje são 81 testes unitários e 4 de integração no aplicativo, e 31 na extensão.
+Hoje são 84 testes unitários e 4 de integração no aplicativo, e 31 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 
@@ -814,6 +816,8 @@ ponteproj.exe --open-document 12               # abre a ficha do documento local
 ponteproj.exe --import-json .\tests\fixtures\capture.json   # importa uma captura em JSON
 ponteproj.exe --list "treinamento"             # lista documentos (JSON) que casam com o termo
 ponteproj.exe --serve 0.0.0.0:7878             # computador principal sem janela (imprime a chave)
+ponteproj.exe --guide                          # abre o guia do usuário no navegador
+ponteproj.exe --guide .\guia.html              # grava o guia como página, sem abrir
 ponteproj.exe --version | --help
 ```
 

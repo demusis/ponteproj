@@ -828,11 +828,29 @@ impl PonteApp {
             .unwrap_or_default()
     }
 
+    /// Shows the user guide (compiled into the program) in the browser.
+    fn open_guide(&mut self) {
+        match crate::guide::open() {
+            Ok(_) => self.message("Guia do usuário aberto no navegador."),
+            Err(error) => self.error(format!("Não foi possível abrir o guia: {error:#}")),
+        }
+    }
+
     /// First screen: how to import, and whether the browser bridge is ready.
     fn welcome(&mut self, ui: &mut egui::Ui) {
         ui.add_space(32.0);
         ui.heading("Seu espaço de trabalho documental");
         ui.label("Escolha um documento na lista à esquerda, ou importe um novo pelo navegador.");
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Primeira vez por aqui?");
+            if ui
+                .button("Abrir o guia do usuário")
+                .on_hover_text("Guia curto, em dez seções, aberto no navegador. Também em Menu ▾ ▸ Guia do usuário.")
+                .clicked()
+            {
+                self.open_guide();
+            }
+        });
         ui.add_space(16.0);
         ui.strong("Para importar um documento");
         ui.label("1. Abra o documento no SIGADOC, no Chrome ou no Edge.");
@@ -2081,6 +2099,7 @@ impl PonteApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut backup = false;
                 let mut export = false;
+                let mut guide = false;
                 ui.menu_button("Menu ▾", |ui| {
                     ui.set_min_width(230.0);
                     if ui.button("Rede e equipe…").clicked() {
@@ -2139,6 +2158,14 @@ impl PonteApp {
                     }
                     ui.separator();
                     if ui
+                        .button("Guia do usuário")
+                        .on_hover_text("Abre o guia no navegador: instalar, importar, tarefas, atendimentos, mais de um computador, IA e o que fazer quando algo dá errado. Funciona sem internet.")
+                        .clicked()
+                    {
+                        guide = true;
+                        ui.close();
+                    }
+                    if ui
                         .button(format!("Sobre o Ponte {}…", env!("CARGO_PKG_VERSION")))
                         .clicked()
                     {
@@ -2151,6 +2178,9 @@ impl PonteApp {
                 }
                 if export {
                     self.export_csv(ui.ctx());
+                }
+                if guide {
+                    self.open_guide();
                 }
             });
         });

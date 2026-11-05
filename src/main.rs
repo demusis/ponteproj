@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use anyhow::{bail, Context, Result};
-use ponteproj::{app, model::Capture, native, paths, storage::Store};
+use ponteproj::{app, guide, model::Capture, native, paths, storage::Store};
 use std::io::Read;
 
 fn main() {
@@ -88,12 +88,22 @@ fn run() -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_secs(3600));
             }
         }
+        // The user guide as a web page: written to the given file, or opened
+        // in the browser when no file is named.
+        Some("--guide") => match args.get(1) {
+            Some(file) => {
+                std::fs::write(file, guide::to_html(guide::GUIDE, env!("CARGO_PKG_VERSION")))
+                    .context("Não foi possível gravar o guia no arquivo informado")?;
+                Ok(())
+            }
+            None => guide::open().map(|_| ()),
+        },
         Some("--version") => {
             println!("PonteProj {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Some("--help") => {
-            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --import-json ARQUIVO\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
+            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --import-json ARQUIVO\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
             Ok(())
         }
         Some(_) => bail!("Argumento desconhecido. Use --help."),

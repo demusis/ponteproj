@@ -2,6 +2,7 @@ pub mod ai;
 pub mod app;
 pub mod chatgpt;
 pub mod export;
+pub mod guide;
 pub mod manual;
 pub mod sharedfolder;
 pub mod attachments;
