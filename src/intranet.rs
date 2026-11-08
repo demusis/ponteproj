@@ -3822,16 +3822,46 @@ impl Drop for HostServer {
     }
 }
 
+/// Time a team request has to send its headers, and then its body (up to
+/// `MAX_HTTP_BODY`, so generous for a slow network).
+const HTTP_HEADER_TIME: Duration = Duration::from_secs(30);
+const HTTP_BODY_TIME: Duration = Duration::from_secs(180);
+
+/// A socket whose every read must finish before `deadline`: the remaining
+/// time becomes the socket timeout before each read, so a slow sender is cut
+/// off when the whole part is due, not after each byte.
+struct DeadlineReader {
+    stream: TcpStream,
+    deadline: Instant,
+}
+
+impl Read for DeadlineReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "requisição enviada devagar demais; conexão encerrada",
+            ));
+        }
+        self.stream.set_read_timeout(Some(remaining))?;
+        self.stream.read(buf)
+    }
+}
+
 fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(20)))?;
     stream.set_write_timeout(Some(Duration::from_secs(20)))?;
 
-    let mut reader = BufReader::new(stream.try_clone()?);
-    // The request line and headers are read through a bounded window and
-    // within one overall deadline: a peer that sends an endless line, or one
-    // byte at a time, cannot grow memory or hold the server indefinitely.
-    let headers_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    // Every read, however small, must finish before a deadline for the whole
+    // part being read (headers, then body): a peer that sends an endless line
+    // or one byte at a time cannot grow memory or hold the server, which
+    // serves one connection at a time.
+    let mut reader = BufReader::new(DeadlineReader {
+        stream: stream.try_clone()?,
+        deadline: Instant::now() + HTTP_HEADER_TIME,
+    });
     let mut head = (&mut reader).take(MAX_HTTP_HEADER);
     let mut request_line = String::new();
     if head.read_line(&mut request_line)? == 0 {
@@ -3853,14 +3883,14 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
     let mut content_length = 0usize;
     let mut auth_token = String::new();
     loop {
-        ensure!(
-            std::time::Instant::now() < headers_deadline,
-            "Cabeçalhos HTTP enviados devagar demais; conexão encerrada."
-        );
         let mut line = String::new();
         let read = head.read_line(&mut line)?;
-        if read == 0 || line == "\r\n" || line == "\n" {
+        if read == 0 {
+            // Either the peer closed early or the window ran out mid-header.
             ensure!(head.limit() > 0, "Cabeçalhos HTTP grandes demais.");
+            break;
+        }
+        if line == "\r\n" || line == "\n" {
             break;
         }
         if let Some((name, value)) = line.split_once(':') {
@@ -3898,6 +3928,7 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
         );
     }
 
+    reader.get_mut().deadline = Instant::now() + HTTP_BODY_TIME;
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body)?;
 
@@ -5178,6 +5209,39 @@ impl IntranetPanel {
 mod tests {
     use super::*;
     use crate::model::sample_capture;
+
+    #[test]
+    fn a_request_part_must_arrive_before_its_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut sender = TcpStream::connect(address).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        sender.write_all(b"POST").unwrap();
+        let mut reader = DeadlineReader {
+            stream: accepted,
+            deadline: Instant::now() + Duration::from_secs(5),
+        };
+        let mut buf = [0u8; 16];
+        assert_eq!(reader.read(&mut buf).unwrap(), 4, "bytes in time are read");
+        // Nothing else arrives: the read gives up when the part is due, not
+        // after a fixed timeout per byte.
+        reader.deadline = Instant::now() + Duration::from_millis(200);
+        let started = Instant::now();
+        let error = reader.read(&mut buf).unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            "{error:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        reader.deadline = Instant::now() - Duration::from_millis(1);
+        assert_eq!(
+            reader.read(&mut buf).unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+    }
 
     #[test]
     fn debug_output_of_the_configuration_hides_the_secrets() {

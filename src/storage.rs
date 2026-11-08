@@ -54,7 +54,7 @@ struct DraftPayload {
 #[derive(Default)]
 pub(crate) struct ReadCache {
     stamp: Option<(i64, i64)>,
-    values: std::collections::HashMap<String, Box<dyn std::any::Any>>,
+    values: std::collections::HashMap<String, Box<dyn std::any::Any + Send>>,
 }
 
 /// Distinct reads kept at once; a search typed letter by letter must not grow
@@ -77,7 +77,7 @@ impl Store {
     /// Returns the value of `load` for `key`, computing it only when the
     /// library changed since it was last computed. `load` must be a pure read
     /// of the library (same data, same result); it may itself use `cached`.
-    pub(crate) fn cached<T: Clone + 'static>(
+    pub(crate) fn cached<T: Clone + Send + 'static>(
         &self,
         key: &str,
         load: impl FnOnce() -> Result<T>,

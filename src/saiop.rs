@@ -2732,7 +2732,7 @@ impl SaiopPanel {
                 egui::Checkbox::new(&mut auto, "Criar atendimento ao importar do SIGADOC"),
             );
             let response = if on_client {
-                response.on_disabled_hover_text("Definido no computador principal: é ele que registra as importações da equipe.")
+                response.on_disabled_hover_text("Definido no computador principal: é ele que registra as importações da equipe. Sem conexão, a cópia local segue a configuração daqui até a próxima sincronização.")
             } else {
                 response.on_hover_text("Na primeira importação de cada documento do SIGADOC, registra aqui a entrada dele no gabinete: referência, assunto, data, responsável e ligação ao documento. Documentos juntados a outro não entram. Você pode editar ou excluir o atendimento depois.")
             };

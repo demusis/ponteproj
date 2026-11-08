@@ -142,10 +142,12 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
-    /// Every task of the library (in the trash or not), memoized until the
-    /// library changes.
+    /// Active tasks (neither they nor their document in the trash), overdue
+    /// ones first. Memoized until the library changes or the day turns, since
+    /// the order depends on today.
     pub fn list_tasks(&self) -> Result<Vec<Task>> {
-        self.cached("tasks", || self.list_tasks_uncached())
+        let today = chrono::Local::now().date_naive();
+        self.cached(&format!("tasks\u{1}{today}"), || self.list_tasks_uncached())
     }
     fn list_tasks_uncached(&self) -> Result<Vec<Task>> {
         let rows = self
