@@ -28,6 +28,7 @@ pub mod dossier;
 pub mod pdf_reader;
 
 pub mod evidence;
+pub mod extraction;
 
 pub mod draft_tools;
 

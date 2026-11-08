@@ -165,6 +165,7 @@ pub fn item_kind(kind: &str) -> &str {
         "analysis" => "análise",
         "work_context" => "contexto",
         "saiop" => "atendimento",
+        "example" => "exemplo",
         "saiop_batch" => "lote de planilha",
         "document_link" => "vínculo",
         other => other,

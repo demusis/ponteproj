@@ -36,10 +36,12 @@ pub enum IdKind {
     Draft,
     SaiopBatch,
     Link,
+    /// An example of a work template (owner of attachments).
+    Example,
 }
 
 impl IdKind {
-    pub const ALL: [IdKind; 9] = [
+    pub const ALL: [IdKind; 10] = [
         IdKind::Document,
         IdKind::Capture,
         IdKind::File,
@@ -49,6 +51,7 @@ impl IdKind {
         IdKind::Draft,
         IdKind::SaiopBatch,
         IdKind::Link,
+        IdKind::Example,
     ];
 
     fn table(self) -> &'static str {
@@ -62,6 +65,7 @@ impl IdKind {
             IdKind::Draft => "drafts",
             IdKind::SaiopBatch => "saiop_batches",
             IdKind::Link => "document_links",
+            IdKind::Example => "template_examples",
         }
     }
 
@@ -76,6 +80,7 @@ impl IdKind {
             IdKind::Draft => "draft",
             IdKind::SaiopBatch => "saiop_batch",
             IdKind::Link => "link",
+            IdKind::Example => "example",
         }
     }
 
@@ -100,6 +105,7 @@ impl IdKind {
             "document" => Some(IdKind::Document),
             "task" => Some(IdKind::Task),
             "saiop" => Some(IdKind::Saiop),
+            "example" => Some(IdKind::Example),
             _ => None,
         }
     }
@@ -319,6 +325,13 @@ pub fn created_ids(
             if attendance.id <= 0 =>
         {
             out.push(CreatedId::new(IdKind::Saiop, "", *id));
+        }
+        // An example is addressed by uid, but its row number owns
+        // attachments, which refer to it by number.
+        (IntranetMutation::SaveExample { example, .. }, MutationReply::Id(id))
+            if example.id <= 0 =>
+        {
+            out.push(CreatedId::new(IdKind::Example, "", *id));
         }
         (IntranetMutation::CreateTaskForSaiop { task: Some(_), .. }, MutationReply::Id(id))
             if *id > 0 =>
@@ -630,6 +643,10 @@ impl IdMap {
             M::UpdateAttachment { id, .. } | M::DeleteAttachment { id } => {
                 *id = t(K::Attachment, *id)?;
             }
+            M::ExtractAttachmentText { attachment_id }
+            | M::ReviewAttachmentText { attachment_id, .. } => {
+                *attachment_id = t(K::Attachment, *attachment_id)?;
+            }
             // Addressed by uid: nothing to translate.
             M::SaveTemplate { .. }
             | M::SetTemplateStatus { .. }
@@ -769,6 +786,28 @@ pub(crate) fn init_watermark(conn: &Connection) -> Result<()> {
     let marked: i64 = conn.query_row("SELECT count(*) FROM offline_watermark", [], |r| r.get(0))?;
     if marked == 0 {
         reset_frame_if_settled(conn)?;
+        return Ok(());
+    }
+    // A kind added by an update has no mark yet. Nothing of that kind can be
+    // waiting in the queue (the old version did not know it), so its current
+    // highest number is the right mark.
+    let present: Vec<String> = conn
+        .prepare("SELECT kind FROM offline_watermark")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for kind in IdKind::ALL {
+        if present.iter().any(|k| k == kind.code()) {
+            continue;
+        }
+        let max: i64 = conn.query_row(
+            &format!("SELECT coalesce(max(id),0) FROM {}", kind.table()),
+            [],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO offline_watermark(kind,max_id) VALUES(?1,?2)",
+            params![kind.code(), max],
+        )?;
     }
     Ok(())
 }

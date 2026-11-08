@@ -712,6 +712,7 @@ pub fn generate_reply_with_sources(
         blocks: Vec::new(),
         selected_blocks: Default::default(),
         examples: Vec::new(),
+        example_files: Vec::new(),
         sources: sources.to_vec(),
         current_text: String::new(),
     };
@@ -743,6 +744,8 @@ pub struct DraftJob {
     pub blocks: Vec<crate::work_templates::InstructionBlock>,
     pub selected_blocks: std::collections::BTreeSet<String>,
     pub examples: Vec<crate::work_templates::Example>,
+    /// Usable texts of the files attached to those examples.
+    pub example_files: Vec<crate::extraction::ExampleFile>,
     pub sources: Vec<crate::evidence::Source>,
     pub current_text: String,
 }
@@ -844,6 +847,7 @@ pub fn generate_draft(settings: &AiSettings, job: &DraftJob, reporter: &Reporter
             template: job.template.as_ref().map(|(t, v)| (t, v)),
             blocks,
             examples: &job.examples,
+            example_files: &job.example_files,
             sources: &job.sources,
             current_text: &current_text,
             model: &settings.model,
@@ -870,7 +874,9 @@ pub fn generate_draft(settings: &AiSettings, job: &DraftJob, reporter: &Reporter
         exempt.extend(job.sources.iter().map(|s| s.text.as_str()));
         let check_text = |body: &str| -> Result<()> {
             ensure!(!body.trim().is_empty(), "Minuta sem texto.");
-            if let Some(reason) = prompting::example_leak(body, &job.examples, &exempt) {
+            if let Some(reason) =
+                prompting::example_leak(body, &job.examples, &job.example_files, &exempt)
+            {
                 bail!("{reason}");
             }
             if job.intent == Intent::Complete {

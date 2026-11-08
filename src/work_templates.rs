@@ -841,6 +841,9 @@ pub struct TemplatesSnapshot {
     pub examples: Vec<ExampleRow>,
     #[serde(default)]
     pub generations: Vec<GenerationRow>,
+    /// Texts of the files attached to examples (see `extraction`).
+    #[serde(default)]
+    pub attachment_texts: Vec<crate::extraction::AttachmentTextRow>,
 }
 
 fn decode<T: for<'a> Deserialize<'a>>(blob: &[u8]) -> Result<T> {
@@ -915,6 +918,7 @@ impl Store {
             CREATE INDEX IF NOT EXISTS draft_generations_template ON draft_generations(template_uid);
             CREATE TABLE IF NOT EXISTS work_template_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )?;
+        crate::extraction::ensure_schema(&self.conn)?;
         Ok(())
     }
 
@@ -1500,6 +1504,12 @@ impl Store {
             .optional()?
             .context("Modelo não encontrado.")?;
         let head: TemplateHead = decode(&blob)?;
+        // Files of its examples hang from no document: removed here.
+        tx.execute(
+            "DELETE FROM attachments WHERE owner_kind='example'
+             AND owner_id IN (SELECT id FROM template_examples WHERE template_id=?1)",
+            [template_id],
+        )?;
         tx.execute("DELETE FROM work_templates WHERE id=?1", [template_id])?;
         record_mutation(
             &tx,
@@ -2015,6 +2025,10 @@ impl Store {
             .optional()?
             .context("Exemplo não encontrado.")?;
         let example: Example = decode(&blob)?;
+        tx.execute(
+            "DELETE FROM attachments WHERE owner_kind='example' AND owner_id=?1",
+            [example_id],
+        )?;
         tx.execute("DELETE FROM template_examples WHERE id=?1", [example_id])?;
         record_mutation(
             &tx,
@@ -2345,6 +2359,7 @@ impl Store {
                 created_at,
             });
         }
+        out.attachment_texts = self.export_attachment_texts()?;
         Ok(out)
     }
 }
@@ -2443,6 +2458,7 @@ pub(crate) fn apply_templates(tx: &Connection, snapshot: &TemplatesSnapshot) -> 
             ],
         )?;
     }
+    crate::extraction::apply_attachment_texts(tx, &snapshot.attachment_texts)?;
     Ok(())
 }
 

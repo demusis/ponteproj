@@ -1982,6 +1982,10 @@ impl PonteApp {
             None => (Vec::new(), Vec::new()),
         };
         let capture_id = detail.summary.latest_capture_id;
+        let mut example_files = Vec::new();
+        for example in &examples {
+            example_files.extend(self.store.example_files(example).unwrap_or_default());
+        }
         let job = ai::DraftJob {
             document_id,
             capture_id,
@@ -1996,6 +2000,7 @@ impl PonteApp {
             blocks,
             selected_blocks,
             examples,
+            example_files,
             sources: sources.clone(),
             current_text: current_text.clone(),
         };
@@ -4940,6 +4945,10 @@ impl eframe::App for PonteApp {
                             d.capture.clone(),
                         )
                     });
+                    if let Some((attachment, label)) = self.templates.take_pdf_request() {
+                        self.pdf_reader
+                            .open_attachment(&self.store, attachment, &label, &ctx);
+                    }
                     match self.templates.show(ui, &mut self.store, open_document) {
                         crate::templates_ui::TemplatesAction::UseTemplate { uid } => {
                             if let Some(id) = self.selected_id {

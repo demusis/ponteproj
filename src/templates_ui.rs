@@ -54,6 +54,7 @@ struct Preview {
     trusted: usize,
     blocks: usize,
     examples: usize,
+    files: usize,
     conflicts: Vec<String>,
     system: String,
 }
@@ -76,6 +77,19 @@ pub struct TemplatesPanel {
     block_base: String,
     example_edit: Option<Example>,
     example_base: String,
+    attachments: crate::attachments::AttachmentsPanel,
+    file_review: Option<(i64, String)>,
+    /// "Extrair de novo…" clicked on a reviewed text; waiting for confirmation.
+    confirm_reextract: Option<i64>,
+    /// Text records of the open example's files: (example id, attachment
+    /// ids, records), rebuilt when the list or a record changes.
+    file_texts: Option<(
+        i64,
+        Vec<i64>,
+        Vec<Option<crate::extraction::AttachmentText>>,
+    )>,
+    /// A PDF of an example to open in the Ponte reader: (attachment, label).
+    pdf_request: Option<(i64, String)>,
     confirm: Option<Confirm>,
     dup_name: Option<String>,
     test_selected: BTreeSet<String>,
@@ -180,7 +194,11 @@ fn badges(scope: Scope, status: Status, current: u32, pending: bool) -> String {
 
 impl TemplatesPanel {
     pub fn dirty(&self) -> bool {
-        self.template_dirty() || self.block_dirty() || self.example_dirty()
+        self.template_dirty()
+            || self.block_dirty()
+            || self.example_dirty()
+            || self.attachments.dirty()
+            || self.file_review.is_some()
     }
 
     fn template_dirty(&self) -> bool {
@@ -250,6 +268,7 @@ impl TemplatesPanel {
         self.edit = Some(template);
         self.block_edit = None;
         self.example_edit = None;
+        self.close_example_files();
         self.confirm = None;
         self.dup_name = None;
         self.test_selected.clear();
@@ -607,6 +626,7 @@ impl TemplatesPanel {
                                     self.edit = None;
                                     self.base.clear();
                                     self.example_edit = None;
+                                    self.close_example_files();
                                     self.stale = true;
                                     self.notice("Modelo excluído.", false);
                                 }
@@ -1186,24 +1206,26 @@ impl TemplatesPanel {
             });
         }
         if let Some(e) = pick {
-            if self.example_dirty() {
+            if self.example_area_dirty() {
                 self.notice(
-                    "Salve ou descarte as alterações do exemplo antes de trocar.",
+                    "Salve ou descarte as alterações do exemplo (ou dos seus arquivos) antes de trocar.",
                     true,
                 );
             } else {
+                self.close_example_files();
                 self.example_base = json(&e);
                 self.example_edit = Some(e);
                 self.confirm = None;
             }
         }
         if ui.button("Novo exemplo").clicked() {
-            if self.example_dirty() {
+            if self.example_area_dirty() {
                 self.notice(
-                    "Salve ou descarte as alterações do exemplo antes de trocar.",
+                    "Salve ou descarte as alterações do exemplo (ou dos seus arquivos) antes de trocar.",
                     true,
                 );
             } else {
+                self.close_example_files();
                 self.example_edit = Some(Example {
                     template_uid: uid.clone(),
                     ..Default::default()
@@ -1270,6 +1292,7 @@ impl TemplatesPanel {
                         Ok(()) => {
                             self.example_edit = None;
                             self.example_base.clear();
+                            self.close_example_files();
                             self.stale = true;
                             self.notice("Exemplo excluído.", false);
                         }
@@ -1281,6 +1304,188 @@ impl TemplatesPanel {
                     self.confirm = None;
                 }
             });
+        }
+        let example_id = self
+            .example_edit
+            .as_ref()
+            .filter(|e| !e.uid.is_empty())
+            .map(|e| e.id)
+            .filter(|id| *id > 0);
+        if let Some(example_id) = example_id {
+            self.example_files_section(ui, store, example_id);
+        }
+    }
+
+    /// Files attached to a saved example, with the state of their text.
+    /// Edits in the example's own fields or in its files (descriptions, a
+    /// text being reviewed).
+    fn example_area_dirty(&self) -> bool {
+        self.example_dirty() || self.attachments.dirty() || self.file_review.is_some()
+    }
+
+    /// Forgets the file state of the example that was open.
+    fn close_example_files(&mut self) {
+        self.attachments.forget();
+        self.file_review = None;
+        self.confirm_reextract = None;
+        self.file_texts = None;
+    }
+
+    /// A PDF of an example the person asked to read in the Ponte.
+    pub fn take_pdf_request(&mut self) -> Option<(i64, String)> {
+        self.pdf_request.take()
+    }
+
+    fn example_files_section(&mut self, ui: &mut egui::Ui, store: &mut Store, example_id: i64) {
+        ui.separator();
+        ui.strong("Arquivos do exemplo");
+        ui.small(
+            "Os arquivos mostram à IA a forma de uma resposta real. Só o texto extraído ou conferido de um exemplo aprovado é enviado; os fatos dos arquivos nunca valem para o caso. PDF com texto, .txt e .docx têm extração; PDF digitalizado precisa de OCR, que esta versão não faz para exemplos.",
+        );
+        self.attachments.show(
+            ui,
+            store,
+            crate::attachments::Owner::Example(example_id),
+            false,
+        );
+        if let Some(request) = self.attachments.take_pdf_request() {
+            self.pdf_request = Some(request);
+        }
+        let _ = self.attachments.take_trash_request();
+        let metas = match store.list_attachments(crate::attachments::Owner::Example(example_id)) {
+            Ok(m) => m,
+            Err(e) => {
+                ui.colored_label(ERROR, format!("{e:#}"));
+                return;
+            }
+        };
+        // The text records are unsealed once per change, not every frame.
+        let ids: Vec<i64> = metas.iter().map(|m| m.id).collect();
+        let cached = match &self.file_texts {
+            Some((cached_example, cached_ids, _)) => {
+                *cached_example == example_id && *cached_ids == ids
+            }
+            None => false,
+        };
+        if !cached {
+            let records = ids
+                .iter()
+                .map(|id| store.attachment_text(*id).ok().flatten())
+                .collect();
+            self.file_texts = Some((example_id, ids.clone(), records));
+        }
+        let records: Vec<Option<crate::extraction::AttachmentText>> = self
+            .file_texts
+            .as_ref()
+            .map(|(_, _, records)| records.clone())
+            .unwrap_or_default();
+        let mut extract: Option<(i64, String)> = None;
+        let mut open_review: Option<(i64, String)> = None;
+        for (meta, record) in metas.iter().zip(records.iter()) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(&meta.name);
+                match &record {
+                    None => {
+                        ui.colored_label(WARNING, "Texto ainda não extraído");
+                    }
+                    Some(t) if !t.current_for(&meta.sha256) => {
+                        ui.colored_label(WARNING, "Texto desatualizado (extraia de novo)");
+                    }
+                    Some(t) => {
+                        use crate::extraction::TextStatus;
+                        let warn = matches!(t.status, TextStatus::Empty | TextStatus::Failed);
+                        if warn {
+                            ui.colored_label(WARNING, t.status.label());
+                        } else {
+                            ui.label(t.status.label());
+                        }
+                        if t.status == TextStatus::Reviewed && !t.reviewed_by.is_empty() {
+                            ui.small(format!("por {}", t.reviewed_by));
+                        }
+                        if !t.note.is_empty() {
+                            ui.small(&t.note);
+                        }
+                    }
+                }
+                let reviewed = record
+                    .as_ref()
+                    .is_some_and(|t| t.status == crate::extraction::TextStatus::Reviewed);
+                if reviewed {
+                    // A person's correction is not thrown away by one click.
+                    if self.confirm_reextract == Some(meta.id) {
+                        ui.small("Substitui o texto conferido.");
+                        if ui.small_button("Confirmar").clicked() {
+                            extract = Some((meta.id, meta.name.clone()));
+                        }
+                        if ui.small_button("Cancelar").clicked() {
+                            self.confirm_reextract = None;
+                        }
+                    } else if ui.small_button("Extrair de novo…").clicked() {
+                        self.confirm_reextract = Some(meta.id);
+                    }
+                } else if ui.small_button("Extrair texto").clicked() {
+                    extract = Some((meta.id, meta.name.clone()));
+                }
+                if let Some(t) = record {
+                    if (t.status.usable() || t.status == crate::extraction::TextStatus::Empty)
+                        && ui.small_button("Conferir texto…").clicked()
+                    {
+                        open_review = Some((meta.id, t.text.clone()));
+                    }
+                }
+            });
+        }
+        if let Some((id, name)) = extract {
+            self.confirm_reextract = None;
+            self.file_texts = None;
+            match store.extract_attachment_text(id) {
+                Ok(t) => self.notice(
+                    format!("Texto extraído de “{name}”: {}", t.status.label()),
+                    false,
+                ),
+                Err(e) => self.notice(format!("{e:#}"), true),
+            }
+        }
+        if let Some(r) = open_review {
+            self.file_review = Some(r);
+        }
+        let mut done = false;
+        let mut review: Option<(i64, String)> = None;
+        if let Some((id, text)) = self.file_review.as_mut() {
+            if metas.iter().any(|m| m.id == *id) {
+                egui::ScrollArea::vertical()
+                    .max_height(240.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(text)
+                                .desired_rows(8)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                ui.horizontal(|ui| {
+                    if ui.button("Marcar como conferido").clicked() {
+                        review = Some((*id, text.clone()));
+                    }
+                    if ui.button("Cancelar").clicked() {
+                        done = true;
+                    }
+                });
+            } else {
+                done = true;
+            }
+        }
+        if let Some((id, text)) = review {
+            match store.review_attachment_text(id, &text) {
+                Ok(_) => {
+                    self.notice("Texto marcado como conferido.", false);
+                    self.file_texts = None;
+                    done = true;
+                }
+                Err(e) => self.notice(format!("{e:#}"), true),
+            }
+        }
+        if done {
+            self.file_review = None;
         }
     }
 
@@ -1343,6 +1548,7 @@ impl TemplatesPanel {
                     "Exemplos aprovados que seriam enviados: {}",
                     p.examples
                 ));
+                ui.label(format!("arquivos de exemplo: {}", p.files));
                 for c in &p.conflicts {
                     ui.colored_label(WARNING, c);
                 }
@@ -1380,6 +1586,10 @@ impl TemplatesPanel {
                     .take(crate::prompting::MAX_EXAMPLES)
                     .collect()
             };
+            let mut example_files = Vec::new();
+            for example in &examples {
+                example_files.extend(store.example_files(example)?);
+            }
             let request = crate::prompting::DraftRequest {
                 capture: &doc.2,
                 kind: &t.kind,
@@ -1389,6 +1599,7 @@ impl TemplatesPanel {
                 template: Some((t, v)),
                 blocks: resolved,
                 examples: &examples,
+                example_files: &example_files,
                 sources: &[],
                 current_text: "",
                 model: "",
@@ -1401,6 +1612,7 @@ impl TemplatesPanel {
                 trusted: assembled.trusted_bytes,
                 blocks,
                 examples: examples.len(),
+                files: example_files.len(),
                 conflicts: assembled.conflicts.iter().map(|c| c.describe()).collect(),
                 system: assembled.system,
             })

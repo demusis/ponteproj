@@ -21,6 +21,9 @@ pub enum Owner {
     Task(i64),
     /// An atendimento of the "Atendimentos" panel (kind `saiop`).
     Attendance(i64),
+    /// An example of a work template (kind `example`): a past reply whose
+    /// text may be shown to the AI as a model of form.
+    Example(i64),
 }
 
 impl Owner {
@@ -29,11 +32,12 @@ impl Owner {
             Self::Document(_) => "document",
             Self::Task(_) => "task",
             Self::Attendance(_) => "saiop",
+            Self::Example(_) => "example",
         }
     }
     pub fn id(self) -> i64 {
         match self {
-            Self::Document(id) | Self::Task(id) | Self::Attendance(id) => id,
+            Self::Document(id) | Self::Task(id) | Self::Attendance(id) | Self::Example(id) => id,
         }
     }
     pub fn parse(kind: &str, id: i64) -> Result<Self> {
@@ -41,6 +45,7 @@ impl Owner {
             "document" => Ok(Self::Document(id)),
             "task" => Ok(Self::Task(id)),
             "saiop" => Ok(Self::Attendance(id)),
+            "example" => Ok(Self::Example(id)),
             _ => bail!("Tipo de item inválido para anexo."),
         }
     }
@@ -49,7 +54,13 @@ impl Owner {
             Self::Document(_) => "documento",
             Self::Task(_) => "tarefa",
             Self::Attendance(_) => "atendimento",
+            Self::Example(_) => "exemplo",
         }
+    }
+    /// Owners whose attachments have no trash (they hang from no document):
+    /// removal is final.
+    pub fn deletes_for_good(self) -> bool {
+        matches!(self, Self::Attendance(_) | Self::Example(_))
     }
 }
 
@@ -295,7 +306,7 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         const DEFINITION: &str = "(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                owner_kind TEXT NOT NULL CHECK(owner_kind IN ('document','task','saiop')),
+                owner_kind TEXT NOT NULL CHECK(owner_kind IN ('document','task','saiop','example')),
                 owner_id INTEGER NOT NULL,
                 document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
                 metadata BLOB NOT NULL,
@@ -306,15 +317,16 @@ impl Store {
             CREATE INDEX IF NOT EXISTS attachments_owner ON attachments(owner_kind,owner_id);"
         ))?;
         // Libraries from before 0.19.0 only allow documents and tasks as
-        // owners and demand a document. SQLite cannot alter a CHECK, so the
-        // table is rebuilt once, keeping every row and id. Triggers that
-        // mention the table go first (`ensure_write_guards` recreates them).
+        // owners and demand a document; those before 0.20.1 lack the
+        // example owner. SQLite cannot alter a CHECK, so the table is
+        // rebuilt once, keeping every row and id. Triggers that mention the
+        // table go first (`ensure_write_guards` recreates them).
         let definition: String = tx.query_row(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='attachments'",
             [],
             |r| r.get(0),
         )?;
-        if !definition.contains("'saiop'") {
+        if !definition.contains("'example'") {
             let triggers = tx
                 .prepare(
                     "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_%'",
@@ -325,11 +337,11 @@ impl Store {
                 tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))?;
             }
             tx.execute_batch(&format!(
-                "CREATE TABLE attachments_v19{DEFINITION};
-                 INSERT INTO attachments_v19(id,owner_kind,owner_id,document_id,metadata,payload)
+                "CREATE TABLE attachments_v20{DEFINITION};
+                 INSERT INTO attachments_v20(id,owner_kind,owner_id,document_id,metadata,payload)
                    SELECT id,owner_kind,owner_id,document_id,metadata,payload FROM attachments;
                  DROP TABLE attachments;
-                 ALTER TABLE attachments_v19 RENAME TO attachments;
+                 ALTER TABLE attachments_v20 RENAME TO attachments;
                  CREATE INDEX IF NOT EXISTS attachments_owner ON attachments(owner_kind,owner_id);"
             ))?;
         }
@@ -366,6 +378,18 @@ impl Store {
                     crate::trash::require_active_document(conn, document)?;
                 }
                 Ok(document)
+            }
+            Owner::Example(id) => {
+                let exists: Option<i64> = conn
+                    .query_row("SELECT id FROM template_examples WHERE id=?1", [id], |r| {
+                        r.get(0)
+                    })
+                    .optional()?;
+                ensure!(
+                    exists.is_some(),
+                    "Exemplo não encontrado; salve-o antes de anexar."
+                );
+                Ok(None)
             }
         }
     }
@@ -740,6 +764,7 @@ impl AttachmentsPanel {
                 Owner::Document(_) => "Nenhum arquivo anexado a este documento.",
                 Owner::Task(_) => "Nenhum arquivo anexado a esta tarefa.",
                 Owner::Attendance(_) => "Nenhum arquivo anexado a este atendimento.",
+                Owner::Example(_) => "Nenhum arquivo anexado a este exemplo.",
             });
         }
         let mut save_description: Option<(i64, String)> = None;
@@ -824,11 +849,12 @@ impl AttachmentsPanel {
                             }
                         }
                     }
-                    if matches!(owner, Owner::Attendance(_)) {
-                        // Atendimentos have no trash: the removal is final.
+                    if owner.deletes_for_good() {
+                        // Atendimentos and examples have no trash: the
+                        // removal is final.
                         if ui
                             .add_enabled(!busy, egui::Button::new("Excluir de vez…"))
-                            .on_hover_text("Apaga o anexo definitivamente (anexos de atendimentos não vão para a Lixeira).")
+                            .on_hover_text("Apaga o anexo definitivamente (anexos de atendimentos e de exemplos não vão para a Lixeira).")
                             .clicked()
                         {
                             self.confirm_delete = Some(meta.id);

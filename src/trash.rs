@@ -222,6 +222,7 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
             let owner = match owner_kind.as_str() {
                 "task" => format!("da tarefa #{owner_id}"),
                 "saiop" => format!("do atendimento #{owner_id}"),
+                "example" => format!("do exemplo #{owner_id}"),
                 _ => label(conn, Kind::Document, doc)
                     .map(|(_, text)| format!("do documento {text}"))
                     .unwrap_or_else(|_| format!("do documento #{doc}")),
@@ -234,7 +235,7 @@ fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
     let (doc, label) = label(conn, target.kind, target.id)?;
     ensure!(
         doc != 0,
-        "Anexos de atendimentos não vão para a Lixeira: use “Excluir de vez” na ficha do atendimento."
+        "Anexos de atendimentos e de exemplos não vão para a Lixeira: use “Excluir de vez” onde o anexo aparece."
     );
     require_active_document(conn, doc)?;
     ensure!(

@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Menu ▾ ▸ Guia do usuário** |
-| **Versão** | 0.20.0 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.20.1 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, quadro **Ligação com o navegador** | *✓ O Ponte está registrado para o Chrome e Edge* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.20.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.20.1.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 Se algum dos três não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -618,9 +618,13 @@ Pessoal é apenas um filtro de exibição. Não protege o conteúdo: quem tem ac
 |---|---|
 | **Estrutura** | Nome, finalidade, tipo, critérios de uso, escopo, seções, variáveis, critérios de conferência e nota da versão. Botões **Salvar rascunho** e **Publicar versão N**. |
 | **Instruções** | Biblioteca de blocos; anexar ao modelo como obrigatória, opcional ou condicional; editar e publicar versões do bloco. |
-| **Exemplos** | Cadastrar, **Aprovar** ou **Rejeitar** exemplos. |
+| **Exemplos** | Cadastrar, **Aprovar** ou **Rejeitar** exemplos; anexar arquivos (PDF com texto, .txt, .docx), **Extrair texto** e **Conferir texto…**. |
 | **Referências** | Fontes que o modelo manda conferir. |
 | **Testar** | Escolhe um documento aberto e mostra o que seria enviado à IA: instruções incluídas, tamanhos e conflitos. **Nada é enviado.** |
+
+**Arquivos de exemplo**
+
+Um exemplo pode ter arquivos anexados: um ofício real já respondido, uma minuta aprovada. O Ponte extrai o texto de PDF com camada de texto, de .txt e de .docx (**Extrair texto**); um PDF digitalizado fica como "precisa de OCR" e não é enviado. O texto extraído pode ser lido e corrigido por uma pessoa (**Conferir texto…**), e aí passa a valer o texto conferido. Só vai à IA o texto de arquivo de exemplo **aprovado**, com extração atual (se o arquivo ou o extrator mudar, o texto fica "desatualizado" até ser extraído de novo). O texto dos arquivos é dado, como o dos exemplos: a IA não pode copiá-lo nem tratar seus fatos como do caso. Anexos de exemplos não vão para a Lixeira; a exclusão é definitiva.
 
 **Como usar na minuta**
 
@@ -820,6 +824,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/work_templates.rs` | Modelos de trabalho: dados e versões, instruções, exemplos, registro de geração, migração dos modelos pessoais antigos |
 | `src/prompting.rs` | Montagem do prompt em camadas, detecção de conflitos e conferências (cópia de exemplo, texto preservado ao completar) |
 | `src/templates_ui.rs` | Área **Modelos**: lista, abas Estrutura, Instruções, Exemplos, Referências e Testar |
+| `src/extraction.rs` | Texto dos arquivos de exemplo (PDF, .txt, .docx), com versão do extrator, situação e conferência por pessoa |
 | `src/export.rs` | Exportação CSV |
 | `src/guide.rs` | Guia do usuário: `GUIA_DO_USUARIO.md` embutido e convertido em página para o navegador |
 | `src/windows_ui.rs`, `src/paths.rs` | Seletores de arquivo, verificação do registro do host, pastas de dados |
@@ -839,7 +844,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 - **O host nunca fecha calado.** Origem desconhecida ou acervo que não abre são respondidos com `{ok:false,error:{code,message}}`, que a extensão mostra.
 - **Mutações de equipe** (`IntranetMutation`) são a única forma de alterar o acervo em rede; a fila offline e a pasta compartilhada reaplicam as mesmas mutações.
 - **Modelos de trabalho** usam as tabelas `work_templates`, `work_template_versions`, `instruction_blocks`, `instruction_block_versions`, `template_examples` e `draft_generations`. Os itens são endereçados por `uid` (UUID), não pelo número da linha, o que dispensa tradução de números na sincronização; só o registro de geração, que aponta para documento e captura, passa por `idmap`. A camada confiável do prompt só recebe texto de modelo, instruções e pedido; documentos e exemplos vão como dados.
-- **`SCHEMA_VERSION` 11:** o acervo muda de formato. Quem está em equipe atualiza todos os computadores juntos, o principal primeiro.
+- **`SCHEMA_VERSION` 12 (11 na 0.20.0):** o acervo muda de formato. Quem está em equipe atualiza todos os computadores juntos, o principal primeiro.
 - **Limites:** 500 KiB de texto e 1 MiB por pacote de captura, até 10 PDFs, 8 MiB por PDF e 16 MiB de PDFs por importação, 8 MiB por anexo, 100 MiB por planilha `.xlsx` (256 MiB descompactada).
 - **A extensão só atua em `https://www.sigadoc.mt.gov.br`** e remove segredos de URL.
 - **Leituras caras ficam em memória até o acervo mudar.** Cada linha é decifrada pela DPAPI, e a interface redesenha várias vezes por segundo. `Store::cached` guarda o resultado de listas como tarefas, documentos e atendimentos e o descarta a cada gravação, desta conexão ou de outra. Uma leitura nova que seja cara e sem efeitos colaterais deve passar por ele.
@@ -881,7 +886,7 @@ node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tes
 
 Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
-Hoje são 113 testes unitários (mais um que exige um Ollama de verdade e fica de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
+Hoje são 118 testes unitários (mais um que exige um Ollama de verdade e fica de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 

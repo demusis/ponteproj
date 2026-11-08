@@ -93,6 +93,9 @@ pub struct DraftRequest<'a> {
     pub blocks: Vec<ResolvedBlock<'a>>,
     /// Only Approved ones are used; others ignored.
     pub examples: &'a [Example],
+    /// Usable texts of the files attached to those examples (each file's
+    /// text is clipped to [`MAX_EXAMPLE_FILE_BYTES`] in the data).
+    pub example_files: &'a [crate::extraction::ExampleFile],
     pub sources: &'a [Source],
     /// Editor text (used by Complete/Revise).
     pub current_text: &'a str,
@@ -294,7 +297,7 @@ pub fn assemble(base_system: &str, req: &DraftRequest) -> Result<Assembled> {
         approved.len() <= MAX_EXAMPLES,
         "Escolha no máximo {MAX_EXAMPLES} exemplos aprovados."
     );
-    let form_examples: Vec<serde_json::Value> = approved
+    let mut form_examples: Vec<serde_json::Value> = approved
         .iter()
         .map(|e| {
             json!({
@@ -303,6 +306,7 @@ pub fn assemble(base_system: &str, req: &DraftRequest) -> Result<Assembled> {
                 "reply": e.reply,
                 "explanation": e.explanation,
                 "comments": e.comments,
+                "files": [],
             })
         })
         .collect();
@@ -312,8 +316,35 @@ pub fn assemble(base_system: &str, req: &DraftRequest) -> Result<Assembled> {
         "Os exemplos escolhidos passam de {} KiB; escolha menos ou mais curtos.",
         MAX_EXAMPLES_BYTES / 1024
     );
+    // Files fit in what the examples left: the person chose the examples,
+    // not the size of their files, so a file is clipped or left out with a
+    // note, never a refusal.
+    let mut remaining = MAX_EXAMPLES_BYTES - examples_bytes;
+    let mut files_trimmed = false;
+    for (index, example) in approved.iter().enumerate() {
+        let mut files = Vec::new();
+        for file in req
+            .example_files
+            .iter()
+            .filter(|f| f.example_uid == example.uid)
+        {
+            if remaining < MIN_EXAMPLE_FILE_BYTES {
+                files_trimmed = true;
+                break;
+            }
+            let budget = remaining.min(MAX_EXAMPLE_FILE_BYTES);
+            let (text, clipped) = clip_file_text(&file.text, budget);
+            files_trimmed |= clipped;
+            remaining = remaining.saturating_sub(text.len() + file.name.len() + 32);
+            files.push(json!({"name": file.name, "text": text}));
+        }
+        form_examples[index]["files"] = json!(files);
+    }
     if !approved.is_empty() {
-        system.push_str("\n\nOs itens de form_examples são exemplos de redação já aprovados: mostram apenas organização, tom e estrutura. Seus fatos, nomes, números, datas, destinatários e conclusões NÃO existem neste caso e não podem aparecer na minuta.");
+        system.push_str("\n\nOs itens de form_examples são exemplos de redação já aprovados: mostram apenas organização, tom e estrutura. Seus fatos, nomes, números, datas, destinatários e conclusões NÃO existem neste caso e não podem aparecer na minuta. O mesmo vale para o texto dos arquivos em files de cada exemplo.");
+        if files_trimmed {
+            system.push_str(" Alguns arquivos de exemplo foram cortados ou omitidos por tamanho.");
+        }
         for (index, example) in approved.iter().enumerate() {
             let comments: Vec<&String> = example
                 .comments
@@ -634,8 +665,32 @@ fn char_windows(text: &str, size: usize) -> Vec<&str> {
         .collect()
 }
 
-/// Some(reason) when a 120-char normalized window of an approved example's demand/reply appears in `body`, unless that window also appears in one of `template_texts` (boilerplate). Reason in Portuguese starting with "Trecho copiado de exemplo".
-pub fn example_leak(body: &str, examples: &[Example], template_texts: &[&str]) -> Option<String> {
+/// Text of one example file as sent to the model, at most.
+pub const MAX_EXAMPLE_FILE_BYTES: usize = 16 * 1024;
+/// Below this much room left, a file is left out rather than clipped to
+/// a meaningless fragment.
+const MIN_EXAMPLE_FILE_BYTES: usize = 512;
+
+/// `text` within `budget` bytes, and whether it was clipped.
+fn clip_file_text(text: &str, budget: usize) -> (String, bool) {
+    const MARK: &str = "\n[…texto do arquivo cortado…]";
+    if text.len() <= budget {
+        return (text.to_owned(), false);
+    }
+    let mut end = budget.saturating_sub(MARK.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (format!("{}{MARK}", &text[..end]), true)
+}
+
+/// Some(reason) when a 120-char normalized window of an approved example's demand/reply, or of one of its files' texts, appears in `body`, unless that window also appears in one of `template_texts` (boilerplate). Reason in Portuguese starting with "Trecho copiado de exemplo".
+pub fn example_leak(
+    body: &str,
+    examples: &[Example],
+    files: &[crate::extraction::ExampleFile],
+    template_texts: &[&str],
+) -> Option<String> {
     let body = normalize_for_leak(body);
     let body_windows: HashSet<&str> = char_windows(&body, LEAK_WINDOW).into_iter().collect();
     if body_windows.is_empty() {
@@ -649,7 +704,15 @@ pub fn example_leak(body: &str, examples: &[Example], template_texts: &[&str]) -
         .iter()
         .filter(|e| e.status == ExampleStatus::Approved)
     {
-        for part in [&example.demand, &example.reply] {
+        let file_texts: Vec<&String> = files
+            .iter()
+            .filter(|f| f.example_uid == example.uid)
+            .map(|f| &f.text)
+            .collect();
+        for part in [&example.demand, &example.reply]
+            .into_iter()
+            .chain(file_texts)
+        {
             let part = normalize_for_leak(part);
             for window in char_windows(&part, LEAK_WINDOW) {
                 if body_windows.contains(window) && !templates.iter().any(|t| t.contains(window)) {
@@ -819,6 +882,7 @@ mod tests {
             template,
             blocks,
             examples,
+            example_files: &[],
             sources,
             current_text: "",
             model: "modelo-local",
@@ -964,19 +1028,21 @@ mod tests {
     fn example_text_copied_into_body_is_refused() {
         let examples = vec![example(ExampleStatus::Approved, LONG_REPLY)];
         let body = format!("MINUTA PARA REVISÃO\n\n{}", LONG_REPLY.replace(' ', "  "));
-        let reason = example_leak(&body, &examples, &[]).unwrap();
+        let reason = example_leak(&body, &examples, &[], &[]).unwrap();
         assert!(reason.starts_with("Trecho copiado de exemplo"));
-        assert!(example_leak("MINUTA PARA REVISÃO\n\nTexto próprio.", &examples, &[]).is_none());
+        assert!(
+            example_leak("MINUTA PARA REVISÃO\n\nTexto próprio.", &examples, &[], &[]).is_none()
+        );
         // Unapproved examples are not checked (they are never sent).
         let unverified = vec![example(ExampleStatus::Unverified, LONG_REPLY)];
-        assert!(example_leak(&body, &unverified, &[]).is_none());
+        assert!(example_leak(&body, &unverified, &[], &[]).is_none());
     }
 
     #[test]
     fn boilerplate_from_the_template_is_not_a_leak() {
         let examples = vec![example(ExampleStatus::Approved, LONG_REPLY)];
         let body = format!("MINUTA PARA REVISÃO\n\n{LONG_REPLY}");
-        assert!(example_leak(&body, &examples, &[LONG_REPLY]).is_none());
+        assert!(example_leak(&body, &examples, &[], &[LONG_REPLY]).is_none());
     }
 
     #[test]
@@ -1079,5 +1145,45 @@ mod tests {
         ] {
             assert!(resolve_blocks(&make(vec![bad]), &blocks, &BTreeSet::new()).is_err());
         }
+    }
+    #[test]
+    fn example_file_texts_travel_with_their_example_and_are_checked() {
+        let capture = sample_capture();
+        let mut example = example(
+            ExampleStatus::Approved,
+            "Resposta exemplar aprovada com três parágrafos.",
+        );
+        example.uid = "e".repeat(32);
+        let long_file = "Considerando o disposto no regulamento interno de compras e a necessidade de reposição do estoque de material de expediente para o segundo semestre, encaminha-se.".to_owned();
+        let files = vec![crate::extraction::ExampleFile {
+            example_uid: example.uid.clone(),
+            name: "resposta-2024.docx".into(),
+            text: long_file.clone(),
+        }];
+        let examples = vec![example];
+        let mut req = request(&capture, None, Vec::new(), &examples, &[]);
+        req.example_files = &files;
+        let out = assemble("Regras.", &req).unwrap();
+        assert_eq!(
+            out.data["form_examples"][0]["files"][0]["name"],
+            "resposta-2024.docx"
+        );
+        assert!(out.data["form_examples"][0]["files"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("regulamento interno"));
+        assert!(
+            !out.system.contains("regulamento interno"),
+            "file text is data"
+        );
+        // Text copied from the file is a leak too; the file of another
+        // example is not checked against this one.
+        let body = format!("MINUTA PARA REVISÃO\n\n{long_file}");
+        assert!(example_leak(&body, &examples, &files, &[]).is_some());
+        let other_files = vec![crate::extraction::ExampleFile {
+            example_uid: "f".repeat(32),
+            ..files[0].clone()
+        }];
+        assert!(example_leak(&body, &examples, &other_files, &[]).is_none());
     }
 }

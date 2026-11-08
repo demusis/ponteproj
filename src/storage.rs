@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const SCHEMA_VERSION: i64 = 11;
+pub(crate) const SCHEMA_VERSION: i64 = 12;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -256,6 +256,7 @@ impl Store {
             "instruction_block_versions",
             "template_examples",
             "draft_generations",
+            "attachment_texts",
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());

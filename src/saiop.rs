@@ -2276,7 +2276,7 @@ const MAX_XLSX_FILE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_XLSX_EXPANDED_BYTES: usize = 256 * 1024 * 1024;
 
 /// Lê entradas de um arquivo ZIP (`.xlsx`) a partir do Central Directory e descompacta blocos Stored (0) ou Deflate (8).
-fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
+pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut total = 0usize;
     ensure!(bytes.len() >= 22, "Arquivo .xlsx truncado ou inválido.");
     // Localiza End of Central Directory (EOCD) signature 0x06054b50

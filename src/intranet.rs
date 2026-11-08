@@ -716,6 +716,15 @@ pub enum IntranetMutation {
     RecordGeneration {
         record: crate::work_templates::GenerationRecord,
     },
+    /// Text of a file attached to an example: extracted by the computer
+    /// holding the library, or confirmed by a person.
+    ExtractAttachmentText {
+        attachment_id: i64,
+    },
+    ReviewAttachmentText {
+        attachment_id: i64,
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1570,7 +1579,8 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Clear `trash` first so active-record triggers never block re-inserting archived items.
         tx.execute_batch(
-            "DELETE FROM draft_generations;
+            "DELETE FROM attachment_texts;
+             DELETE FROM draft_generations;
              DELETE FROM template_examples;
              DELETE FROM work_template_versions;
              DELETE FROM work_templates;
@@ -1909,6 +1919,15 @@ impl Store {
             IntranetMutation::RecordGeneration { record } => self
                 .record_generation(&record)
                 .map(|()| MutationReply::Unit),
+            IntranetMutation::ExtractAttachmentText { attachment_id } => self
+                .extract_attachment_text(attachment_id)
+                .map(|_| MutationReply::Unit),
+            IntranetMutation::ReviewAttachmentText {
+                attachment_id,
+                text,
+            } => self
+                .review_attachment_text(attachment_id, &text)
+                .map(|_| MutationReply::Unit),
             IntranetMutation::SaveAnalysis {
                 document_id,
                 analysis,
@@ -3942,6 +3961,12 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
         IntranetMutation::DeleteExample { .. } => "Exclusão de exemplo".to_owned(),
         IntranetMutation::RecordGeneration { record } => {
             format!("Registro de geração do documento #{}", record.document_id)
+        }
+        IntranetMutation::ExtractAttachmentText { attachment_id } => {
+            format!("Texto do anexo #{attachment_id}")
+        }
+        IntranetMutation::ReviewAttachmentText { attachment_id, .. } => {
+            format!("Texto conferido do anexo #{attachment_id}")
         }
         IntranetMutation::SaveAnalysis { document_id, .. } => {
             format!("Análise do documento #{document_id}")
@@ -6953,17 +6978,28 @@ mod tests {
         let template = a
             .set_template_status(&template.uid, Status::Published, None)
             .unwrap();
-        a.save_example(
-            &Example {
-                template_uid: template.uid.clone(),
-                title: "Caso aprovado".into(),
-                reply: "Resposta exemplar".into(),
-                status: ExampleStatus::Approved,
-                ..Default::default()
-            },
-            None,
-        )
-        .unwrap();
+        let example = a
+            .save_example(
+                &Example {
+                    template_uid: template.uid.clone(),
+                    title: "Caso aprovado".into(),
+                    reply: "Resposta exemplar".into(),
+                    status: ExampleStatus::Approved,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        // A file of the example, with its extracted text, travels too.
+        let file_id = a
+            .add_attachment(
+                crate::attachments::Owner::Example(example.id),
+                "modelo-2024.txt",
+                "",
+                b"Texto do arquivo de exemplo",
+            )
+            .unwrap();
+        a.extract_attachment_text(file_id).unwrap();
         let receipt = a.import_capture(&sample_capture()).unwrap();
         let record = GenerationRecord {
             uid: uuid::Uuid::new_v4().simple().to_string(),
@@ -7028,6 +7064,13 @@ mod tests {
         let examples = b.examples_of(&template.uid).unwrap();
         assert_eq!(examples.len(), 1);
         assert_eq!(examples[0].status, ExampleStatus::Approved);
+        let files = b.example_files(&examples[0]).unwrap();
+        assert_eq!(files.len(), 1, "the file and its text arrived");
+        assert_eq!(files[0].text, "Texto do arquivo de exemplo");
+        assert_eq!(
+            b.attachment_bytes(file_id).unwrap().1,
+            b"Texto do arquivo de exemplo"
+        );
         let generations = b.generations_for_document(receipt.document_id).unwrap();
         assert_eq!(generations.len(), 1);
         assert_eq!(generations[0].draft_id, Some(draft_id));
