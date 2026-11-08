@@ -614,6 +614,10 @@ enum WorkResult {
     },
     Backup(std::result::Result<PathBuf, String>),
     Export(std::result::Result<crate::export::ExportReport, String>),
+    MailFolders(std::result::Result<Vec<crate::imap::Folder>, String>),
+    MailMessages(std::result::Result<Vec<crate::imap::MessageSummary>, String>),
+    /// Raw messages by uid, to be imported on the window's thread.
+    MailFetched(std::result::Result<crate::imap::Fetched, String>),
 }
 
 /// What the background worker is doing; the screen adapts buttons to it.
@@ -624,6 +628,8 @@ enum WorkKind {
     Draft,
     Backup,
     Export,
+    /// Talking to a mailbox (folders, list, fetch).
+    Mail,
 }
 
 struct Worker {
@@ -754,6 +760,8 @@ struct PonteApp {
     templates_open: bool,
     /// The generation record being shown in "Material utilizado".
     material: Option<(i64, String)>,
+    /// The "Importar do e-mail" window.
+    mail: crate::mail_ui::MailPanel,
     /// "Anexos" block of the open document.
     attachments: crate::attachments::AttachmentsPanel,
     sources: crate::evidence::SourcesPanel,
@@ -831,6 +839,7 @@ impl PonteApp {
             templates: Default::default(),
             templates_open: false,
             material: None,
+            mail: Default::default(),
             attachments: Default::default(),
             sources: Default::default(),
             pdf_reader: Default::default(),
@@ -948,6 +957,65 @@ impl PonteApp {
                 }
             }
             Err(error) => self.error(format!("E-mail não importado: {error:#}")),
+        }
+    }
+
+    /// The "Importar do e-mail" window. Every exchange with the mailbox
+    /// runs on the worker thread; the window only asks and receives.
+    fn mail_window(&mut self, ctx: &egui::Context) {
+        if !self.mail.open {
+            return;
+        }
+        let busy = self.worker.is_some();
+        let action = self.mail.show(ctx, &mut self.store, busy);
+        match action {
+            crate::mail_ui::MailAction::None => {}
+            crate::mail_ui::MailAction::ListFolders(account) => {
+                self.spawn(
+                    format!("Conectando a {}", account.host),
+                    WorkKind::Mail,
+                    move |_| {
+                        WorkResult::MailFolders(
+                            crate::imap::list_folders(&account).map_err(|e| format!("{e:#}")),
+                        )
+                    },
+                    ctx,
+                );
+            }
+            crate::mail_ui::MailAction::ListMessages {
+                account,
+                folder,
+                filter,
+            } => {
+                self.spawn(
+                    format!("Listando mensagens de {folder}"),
+                    WorkKind::Mail,
+                    move |_| {
+                        WorkResult::MailMessages(
+                            crate::imap::list_messages(&account, &folder, filter, 100)
+                                .map_err(|e| format!("{e:#}")),
+                        )
+                    },
+                    ctx,
+                );
+            }
+            crate::mail_ui::MailAction::Fetch {
+                account,
+                folder,
+                uids,
+            } => {
+                self.spawn(
+                    format!("Baixando {} mensagem(ns)", uids.len()),
+                    WorkKind::Mail,
+                    move |reporter| {
+                        WorkResult::MailFetched(
+                            crate::imap::fetch_messages(&account, &folder, &uids, &reporter)
+                                .map_err(|e| format!("{e:#}")),
+                        )
+                    },
+                    ctx,
+                );
+            }
         }
     }
 
@@ -2233,6 +2301,40 @@ impl PonteApp {
                 }
                 Err(error) => self.error(format!("Backup não concluído: {error}")),
             },
+            WorkResult::MailFolders(result) => self.mail.accept_folders(result),
+            WorkResult::MailMessages(result) => self.mail.accept_messages(result),
+            WorkResult::MailFetched(result) => match result {
+                Ok(fetched) => {
+                    let mut outcomes = Vec::with_capacity(fetched.len());
+                    let mut last_document = None;
+                    for (uid, bytes) in fetched {
+                        let outcome = bytes.and_then(|bytes| {
+                            self.store
+                                .import_eml_bytes(&bytes)
+                                .map_err(|e| e.to_string())
+                        });
+                        if let Ok(import) = &outcome {
+                            last_document = Some(import.receipt.document_id);
+                        }
+                        outcomes.push((uid, outcome));
+                    }
+                    let imported = outcomes.iter().filter(|(_, o)| o.is_ok()).count();
+                    self.mail.accept_imports(outcomes);
+                    if imported > 0 {
+                        self.refresh();
+                        if let Some(id) = last_document {
+                            // Through the guard: an unsaved task is never hidden.
+                            self.navigate(Leave::Select(id));
+                        }
+                        self.message(format!(
+                            "{imported} mensagem(ns) importada(s) como registro(s) manual(is)."
+                        ));
+                    }
+                }
+                Err(error) => {
+                    self.error(format!("Não foi possível ler a conta de e-mail: {error}"))
+                }
+            },
             WorkResult::Export(result) => match result {
                 Ok(report) => {
                     self.message(format!(
@@ -2408,6 +2510,14 @@ impl PonteApp {
                         .clicked()
                     {
                         import_mail = true;
+                        ui.close();
+                    }
+                    if ui
+                        .button("Importar do e-mail (IMAP)…")
+                        .on_hover_text("Lista as mensagens de uma conta de e-mail (Gmail com senha de app, por exemplo) e importa as que você marcar. Só leitura: nada é marcado, movido ou apagado na conta.")
+                        .clicked()
+                    {
+                        self.mail.open = true;
                         ui.close();
                     }
                     if self.intranet.folder_mode(&self.store) {
@@ -5102,6 +5212,7 @@ impl eframe::App for PonteApp {
             self.configuration(&ctx);
             self.suggestion_window(&ctx);
             self.material_window(&ctx);
+            self.mail_window(&ctx);
             if self.intranet.show(&ctx, &mut self.store, &self.db_path) {
                 self.refresh();
             }

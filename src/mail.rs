@@ -779,13 +779,29 @@ fn walk(
 /// A UUID that follows from the message: the same `.eml` imported twice
 /// is the same request, so nothing is duplicated.
 fn request_id_for(parsed: &ParsedMail, bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
     if parsed.message_id.is_empty() {
+        let mut hasher = Sha256::new();
         hasher.update(bytes);
-    } else {
-        hasher.update(b"ponte-mail:");
-        hasher.update(parsed.message_id.as_bytes());
+        return uuid_from_digest(hasher);
     }
+    request_id_for_message_id(&parsed.message_id)
+}
+
+/// The request id a message with this Message-ID gets, wherever it is
+/// imported from (a `.eml` file or the mailbox).
+pub(crate) fn request_id_for_message_id(message_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ponte-mail:");
+    hasher.update(
+        message_id
+            .trim()
+            .trim_matches(|c| c == '<' || c == '>')
+            .as_bytes(),
+    );
+    uuid_from_digest(hasher)
+}
+
+fn uuid_from_digest(hasher: Sha256) -> String {
     let digest = hasher.finalize();
     let mut raw = [0u8; 16];
     raw.copy_from_slice(&digest[..16]);

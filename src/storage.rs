@@ -216,6 +216,7 @@ impl Store {
         store.ensure_ai_config()?;
         store.ensure_attachments()?;
         store.ensure_work_templates()?;
+        store.ensure_mail_accounts()?;
         store.ensure_write_guards()?;
         crate::idmap::init_watermark(&store.conn)?;
         // Lazy, idempotent: libraries imported before this feature gain the
@@ -257,6 +258,7 @@ impl Store {
             "template_examples",
             "draft_generations",
             "attachment_texts",
+            "mail_accounts",
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());
