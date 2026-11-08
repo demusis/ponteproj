@@ -17,6 +17,7 @@ pub mod prompting;
 pub mod protection;
 pub mod sharedfolder;
 pub mod storage;
+pub mod suggestion;
 pub mod tasks;
 pub mod tasks_ui;
 pub mod templates_ui;

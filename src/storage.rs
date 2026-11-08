@@ -1308,7 +1308,7 @@ fn similarity_text(detail: &DocumentDetail) -> String {
     text
 }
 
-fn lexical_terms(value: &str) -> BTreeMap<String, usize> {
+pub(crate) fn lexical_terms(value: &str) -> BTreeMap<String, usize> {
     const STOP: &[&str] = &[
         "para",
         "pela",

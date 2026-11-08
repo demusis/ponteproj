@@ -1578,11 +1578,10 @@ impl TemplatesPanel {
             let examples: Vec<Example> = if t.uid.is_empty() {
                 Vec::new()
             } else {
+                // The same choice the generation makes for this document.
                 store
-                    .examples_of(&t.uid)?
+                    .rank_examples(&t.uid, &doc.2)?
                     .into_iter()
-                    .filter(|e| e.status == ExampleStatus::Approved)
-                    .rev()
                     .take(crate::prompting::MAX_EXAMPLES)
                     .collect()
             };

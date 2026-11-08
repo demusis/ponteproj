@@ -1966,16 +1966,15 @@ impl PonteApp {
             },
             None => None,
         };
-        // Only approved examples travel, and at most the newest three.
+        // Only approved examples travel: the ones most like this document,
+        // at most three (newest first when none resembles it).
         let (blocks, examples) = match &template {
             Some((found, _)) => (
                 self.store.list_blocks().unwrap_or_default(),
                 self.store
-                    .examples_of(&found.uid)
+                    .rank_examples(&found.uid, &detail.capture)
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|e| e.status == crate::work_templates::ExampleStatus::Approved)
-                    .rev()
                     .take(crate::prompting::MAX_EXAMPLES)
                     .collect(),
             ),
@@ -3757,6 +3756,16 @@ impl PonteApp {
         } else {
             self.store.list_blocks().unwrap_or_default()
         };
+        // A lexical hint: the offered template whose words match the
+        // document's, shown only while no template is chosen.
+        let suggested = if self.editors[&id].template_uid.is_none() && !offered.is_empty() {
+            self.store
+                .suggest_template(&detail.capture, &current_kind, &member)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
         let mut export = false;
         let mut compare: Option<crate::model::DraftVersion> = None;
         let busy_generating = self
@@ -3837,6 +3846,20 @@ impl PonteApp {
                     .on_hover_text("Leva este texto para a área Modelos como rascunho de um novo modelo de trabalho.")
                     .clicked();
             });
+            if let Some(ranked) = &suggested {
+                ui.horizontal_wrapped(|ui| {
+                    ui.small(format!(
+                        "Modelo sugerido pelas palavras do documento: {} ({}% de semelhança)",
+                        ranked.item.name,
+                        ranked.percent()
+                    ))
+                    .on_hover_text("Comparação lexical entre o documento e o nome, a finalidade, os critérios de uso e os exemplos aprovados de cada modelo publicado. É só uma sugestão.");
+                    if ui.small_button("Usar este modelo").clicked() {
+                        editor.template_uid = Some(ranked.item.uid.clone());
+                        editor.selected_blocks.clear();
+                    }
+                });
+            }
             // Optional and conditional blocks of the chosen template.
             if let Some(version) = editor
                 .template_uid
