@@ -64,7 +64,7 @@ impl Task {
             && !self.due_date.is_empty()
             && self.due_date < chrono::Local::now().format("%Y-%m-%d").to_string()
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             !self.title.trim().is_empty() && self.title.len() <= 1000 && self.notes.len() <= 32000,
             "Informe um título de tarefa válido (até 1000 bytes) e observações de até 32 KiB."
@@ -244,93 +244,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        crate::trash::require_active_document(&tx, task.document_id)?;
-        if task.id > 0 {
-            ensure!(
-                crate::trash::require_active_task(&tx, task.id)? == task.document_id,
-                "Vínculo da tarefa alterado."
-            );
-        }
-        let mut saved = task.clone();
-        saved.completed_at = if task.status == "concluida" {
-            task.completed_at
-                .clone()
-                .or_else(|| Some(chrono::Utc::now().to_rfc3339()))
-        } else {
-            None
-        };
-        if task.id == 0 {
-            tx.execute(
-                "INSERT INTO tasks(document_id,payload) VALUES(?1,?2)",
-                params![task.document_id, encode(&saved)?],
-            )?;
-            saved.id = tx.last_insert_rowid();
-        } else {
-            ensure!(
-                tx.execute(
-                    "UPDATE tasks SET payload=?1 WHERE id=?2 AND document_id=?3",
-                    params![encode(&saved)?, task.id, task.document_id]
-                )? == 1,
-                "Tarefa não encontrada ou vínculo alterado."
-            );
-        }
-        let mut statement = tx.prepare("SELECT t.id,t.payload FROM tasks t WHERE NOT EXISTS(SELECT 1 FROM trash x WHERE x.kind='task' AND x.item_id=t.id) AND NOT EXISTS(SELECT 1 FROM trash x WHERE x.kind='document' AND x.item_id=t.document_id)")?;
-        let rows =
-            statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-        let mut graph = std::collections::BTreeMap::<i64, Task>::new();
-        for row in rows {
-            let (id, bytes) = row?;
-            let mut value: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
-            value.id = id;
-            graph.insert(id, value);
-            ensure!(
-                graph.len() <= 10000,
-                "Limite de tarefas para validação de dependências excedido."
-            );
-        }
-        drop(statement);
-        ensure!(
-            saved.dependencies.len() <= 100
-                && saved
-                    .dependencies
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .len()
-                    == saved.dependencies.len(),
-            "Dependências duplicadas ou excessivas."
-        );
-        for &dependency in &saved.dependencies {
-            ensure!(
-                dependency != saved.id && graph.contains_key(&dependency),
-                "Dependência inexistente ou da própria tarefa."
-            );
-            if saved.status == "concluida" {
-                ensure!(
-                    graph[&dependency].status == "concluida",
-                    "Conclua as tarefas anteriores antes de concluir esta tarefa."
-                );
-            }
-            let mut pending = vec![dependency];
-            let mut visited = std::collections::BTreeSet::new();
-            while let Some(id) = pending.pop() {
-                ensure!(id != saved.id, "As dependências formariam um ciclo.");
-                if visited.insert(id) {
-                    if let Some(value) = graph.get(&id) {
-                        pending.extend(value.dependencies.iter().copied());
-                    }
-                }
-            }
-        }
-        crate::intranet::record_mutation(
-            &tx,
-            &actor,
-            "task",
-            saved.id,
-            if task.id > 0 { expected_version } else { None },
-            "save_task",
-            Some(task.document_id),
-            &format!("Tarefa #{}: {} ({})", saved.id, saved.title, saved.status),
-        )?;
+        let saved = write_task(&tx, &actor, task, expected_version)?;
         tx.commit()?;
         if saved.status == "concluida" && !self.cascade_suppressed {
             // A concluded main document implicitly concludes the pieces
@@ -344,7 +258,108 @@ impl Store {
         }
         Ok(saved.id)
     }
+}
 
+/// Writes a task inside the caller's transaction (dependency rules,
+/// version check, team log) and returns it as stored. `save_task_checked`
+/// and the task created from an atendimento share it.
+pub(crate) fn write_task(
+    tx: &rusqlite::Transaction,
+    actor: &str,
+    task: &Task,
+    expected_version: Option<i64>,
+) -> Result<Task> {
+    task.validate()?;
+    crate::trash::require_active_document(tx, task.document_id)?;
+    if task.id > 0 {
+        ensure!(
+            crate::trash::require_active_task(tx, task.id)? == task.document_id,
+            "Vínculo da tarefa alterado."
+        );
+    }
+    let mut saved = task.clone();
+    saved.completed_at = if task.status == "concluida" {
+        task.completed_at
+            .clone()
+            .or_else(|| Some(chrono::Utc::now().to_rfc3339()))
+    } else {
+        None
+    };
+    if task.id == 0 {
+        tx.execute(
+            "INSERT INTO tasks(document_id,payload) VALUES(?1,?2)",
+            params![task.document_id, encode(&saved)?],
+        )?;
+        saved.id = tx.last_insert_rowid();
+    } else {
+        ensure!(
+            tx.execute(
+                "UPDATE tasks SET payload=?1 WHERE id=?2 AND document_id=?3",
+                params![encode(&saved)?, task.id, task.document_id]
+            )? == 1,
+            "Tarefa não encontrada ou vínculo alterado."
+        );
+    }
+    let mut statement = tx.prepare("SELECT t.id,t.payload FROM tasks t WHERE NOT EXISTS(SELECT 1 FROM trash x WHERE x.kind='task' AND x.item_id=t.id) AND NOT EXISTS(SELECT 1 FROM trash x WHERE x.kind='document' AND x.item_id=t.document_id)")?;
+    let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+    let mut graph = std::collections::BTreeMap::<i64, Task>::new();
+    for row in rows {
+        let (id, bytes) = row?;
+        let mut value: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+        value.id = id;
+        graph.insert(id, value);
+        ensure!(
+            graph.len() <= 10000,
+            "Limite de tarefas para validação de dependências excedido."
+        );
+    }
+    drop(statement);
+    ensure!(
+        saved.dependencies.len() <= 100
+            && saved
+                .dependencies
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == saved.dependencies.len(),
+        "Dependências duplicadas ou excessivas."
+    );
+    for &dependency in &saved.dependencies {
+        ensure!(
+            dependency != saved.id && graph.contains_key(&dependency),
+            "Dependência inexistente ou da própria tarefa."
+        );
+        if saved.status == "concluida" {
+            ensure!(
+                graph[&dependency].status == "concluida",
+                "Conclua as tarefas anteriores antes de concluir esta tarefa."
+            );
+        }
+        let mut pending = vec![dependency];
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            ensure!(id != saved.id, "As dependências formariam um ciclo.");
+            if visited.insert(id) {
+                if let Some(value) = graph.get(&id) {
+                    pending.extend(value.dependencies.iter().copied());
+                }
+            }
+        }
+    }
+    crate::intranet::record_mutation(
+        tx,
+        actor,
+        "task",
+        saved.id,
+        if task.id > 0 { expected_version } else { None },
+        "save_task",
+        Some(task.document_id),
+        &format!("Tarefa #{}: {} ({})", saved.id, saved.title, saved.status),
+    )?;
+    Ok(saved)
+}
+
+impl Store {
     /// When `document_id` has no open task left, concludes the open tasks of
     /// every document joined to it (and of their joined documents), recording
     /// the reason in each task. Tasks whose dependencies are still open are

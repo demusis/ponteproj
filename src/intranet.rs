@@ -642,6 +642,15 @@ pub enum IntranetMutation {
     DeleteSaiopAttendance {
         id: i64,
     },
+    /// A task created from an atendimento and its record in the
+    /// atendimento's timeline, written together (`task` is `None` when the
+    /// atendimento has no document: only the timeline changes).
+    CreateTaskForSaiop {
+        attendance_id: i64,
+        task: Option<Task>,
+        title: String,
+        expected_version: Option<i64>,
+    },
     AddAttachment {
         owner_kind: String,
         owner_id: i64,
@@ -688,6 +697,10 @@ pub struct OutboxEntry {
     /// it already incorporates it (shared-folder mode).
     #[serde(default)]
     pub uid: String,
+    /// What the change created here, with this computer's numbers, so that
+    /// later changes can be translated to the numbers it gets elsewhere.
+    #[serde(default)]
+    pub created: Vec<crate::idmap::CreatedId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -702,6 +715,10 @@ pub struct SyncConflict {
     pub mutation: IntranetMutation,
     #[serde(default)]
     pub base: Option<IntranetMutation>,
+    /// The change refers to an item created without connection that never
+    /// reached the team's library: it cannot be applied again, only redone.
+    #[serde(default)]
+    pub unresolved: bool,
 }
 
 /// One field that differs between the host and the offline edit.
@@ -790,6 +807,36 @@ struct StoredDraftPayload {
     materials: Vec<Source>,
     kind: String,
     body: String,
+}
+
+/// Why a replacement of the library was rolled back: a change was queued
+/// meanwhile (by the window or by the process serving the browser) on the
+/// library about to be replaced. The next synchronization redoes it.
+const QUEUE_GREW: &str =
+    "Uma alteração foi feita durante a sincronização; ela será concluída na próxima.";
+
+/// Inside the transaction that replaces the library: nothing may be queued
+/// besides the changes that were sent (`sent`), or its numbers would refer
+/// to a library that no longer exists.
+fn ensure_queue_settled(conn: &Connection, sent: &[i64]) -> Result<()> {
+    let queued = conn
+        .prepare("SELECT id FROM offline_outbox")?
+        .query_map([], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ensure!(queued.iter().all(|id| sent.contains(id)), "{QUEUE_GREW}");
+    Ok(())
+}
+
+/// Stores the network settings (sealed), also inside a caller's transaction.
+fn write_intranet_config(conn: &Connection, config: &IntranetConfig) -> Result<()> {
+    config.validate()?;
+    let payload = seal(&serde_json::to_vec(&config.for_storage())?)?;
+    conn.execute(
+        "INSERT INTO intranet_config(id,payload) VALUES(1,?1)
+         ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+        [payload],
+    )?;
+    Ok(())
 }
 
 fn now_iso() -> String {
@@ -932,6 +979,7 @@ impl Store {
                 payload BLOB NOT NULL
             );",
         )?;
+        crate::idmap::ensure_schema(&tx)?;
         if tx.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 9 {
             tx.pragma_update(None, "user_version", 9)?;
         }
@@ -958,13 +1006,10 @@ impl Store {
     }
 
     pub fn save_intranet_config(&mut self, config: &IntranetConfig) -> Result<()> {
-        config.validate()?;
-        let payload = seal(&serde_json::to_vec(&config.for_storage())?)?;
-        self.conn.execute(
-            "INSERT INTO intranet_config(id,payload) VALUES(1,?1)
-             ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
-            [payload],
-        )?;
+        write_intranet_config(&self.conn, config)?;
+        // With nothing waiting to be sent, this library matches the team's
+        // (or starts a shared copy): its numbers become the reference.
+        crate::idmap::reset_frame_if_settled(&self.conn)?;
         Ok(())
     }
 
@@ -1371,6 +1416,24 @@ impl Store {
         F: Fn(i64, i64) -> Result<Vec<u8>>,
         G: Fn(i64) -> Result<Vec<u8>>,
     {
+        self.apply_snapshot_and(snapshot, fetch_pdf, fetch_attachment, |_| Ok(()))
+    }
+
+    /// [`Store::apply_snapshot`] plus `finish`, run in the same transaction
+    /// after the copy is in place: whatever must change together with the
+    /// library (the queue that was sent, its conflicts) does.
+    pub(crate) fn apply_snapshot_and<F, G, H>(
+        &mut self,
+        snapshot: &CabinetSnapshot,
+        fetch_pdf: F,
+        fetch_attachment: G,
+        finish: H,
+    ) -> Result<()>
+    where
+        F: Fn(i64, i64) -> Result<Vec<u8>>,
+        G: Fn(i64) -> Result<Vec<u8>>,
+        H: FnOnce(&rusqlite::Transaction) -> Result<()>,
+    {
         // Attachments already here with the same content are kept; the rest
         // are transferred from the main computer and checked by hash.
         let existing_attachments = self
@@ -1696,6 +1759,9 @@ impl Store {
                 }
             }
         }
+        // This library now numbers its items as the copy it received.
+        crate::idmap::reset_frame(&tx, true)?;
+        finish(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -1834,6 +1900,14 @@ impl Store {
             IntranetMutation::DeleteSaiopAttendance { id } => self
                 .delete_saiop_attendance(id)
                 .map(|()| MutationReply::Unit),
+            IntranetMutation::CreateTaskForSaiop {
+                attendance_id,
+                task,
+                title,
+                expected_version,
+            } => self
+                .write_task_for_saiop(attendance_id, task.as_ref(), &title, expected_version)
+                .map(|id| MutationReply::Id(id.unwrap_or(0))),
         };
         self.suppress_remote = prev_suppress;
         self.actor_override = prev_actor;
@@ -1869,29 +1943,55 @@ impl Store {
             };
             self.note_host_reachability(true);
 
+            // Numbers of items created here are translated into the ones the
+            // main computer gives them, change by change. The translation is
+            // stored, so a connection that drops halfway loses nothing.
+            let mut ids = crate::idmap::load(&self.conn)?;
+            let mut host_frame = host_snapshot;
             for entry in outbox {
+                let sent = match ids.remap(
+                    &entry.mutation,
+                    &*self,
+                    host_frame.as_deref().map(|s| s as &dyn crate::idmap::Frame),
+                ) {
+                    Ok(mutation) => OutboxEntry {
+                        mutation,
+                        base: entry.base.as_ref().map(|base| {
+                            ids.remap(base, &*self, None)
+                                .unwrap_or_else(|_| base.clone())
+                        }),
+                        ..entry.clone()
+                    },
+                    Err(reason) => {
+                        let learned = ids.learn(&entry.created, None);
+                        let mut conflict =
+                            build_sync_conflict(&entry, &reason, host_frame.as_deref());
+                        conflict.unresolved = true;
+                        self.finish_outbox_entry(entry.id, &learned, Some(&conflict))?;
+                        pushed_offline = true;
+                        continue;
+                    }
+                };
                 match send_rpc_classified(
                     &cfg,
                     &RpcRequest::Mutate {
-                        actor: entry.actor.clone(),
-                        mutation: entry.mutation.clone(),
+                        actor: sent.actor.clone(),
+                        mutation: sent.mutation.clone(),
                     },
                 ) {
-                    Ok(RpcResponse::Mutated { .. }) => {
-                        self.conn
-                            .execute("DELETE FROM offline_outbox WHERE id=?1", params![entry.id])?;
+                    Ok(RpcResponse::Mutated {
+                        reply, snapshot, ..
+                    }) => {
+                        let there = crate::idmap::created_ids(&*snapshot, &sent.mutation, &reply)?;
+                        let learned = ids.learn(&entry.created, Some(&there));
+                        self.finish_outbox_entry(entry.id, &learned, None)?;
+                        host_frame = Some(snapshot);
                         pushed_offline = true;
                     }
                     Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
-                        let conflict =
-                            build_sync_conflict(&entry, &message, host_snapshot.as_deref());
-                        let blob = seal(&serde_json::to_vec(&conflict)?)?;
-                        self.conn.execute(
-                            "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                            params![conflict.created_at, blob],
-                        )?;
-                        self.conn
-                            .execute("DELETE FROM offline_outbox WHERE id=?1", params![entry.id])?;
+                        let learned = ids.learn(&entry.created, None);
+                        let conflict = build_sync_conflict(&sent, &message, host_frame.as_deref());
+                        self.finish_outbox_entry(entry.id, &learned, Some(&conflict))?;
                         pushed_offline = true;
                     }
                     Ok(_) => {
@@ -1904,7 +2004,9 @@ impl Store {
             }
         }
 
-        let since = if force_full || pushed_offline {
+        // A pending translation means this library still uses its own
+        // numbers: only a full copy of the main one settles it.
+        let since = if force_full || pushed_offline || crate::idmap::has_pending(&self.conn)? {
             None
         } else {
             Some(cfg.synced_revision)
@@ -1929,10 +2031,11 @@ impl Store {
             RpcResponse::UpToDate { .. } => Ok(pushed_offline),
             RpcResponse::Snapshot(snapshot) => {
                 let cfg_clone = cfg.clone();
-                self.apply_snapshot(
+                self.apply_snapshot_and(
                     &snapshot,
                     |file_id, capture_id| fetch_remote_pdf(&cfg_clone, file_id, capture_id),
                     |id| fetch_remote_attachment(&cfg_clone, id),
+                    |tx| ensure_queue_settled(tx, &[]),
                 )?;
                 Ok(true)
             }
@@ -2013,6 +2116,7 @@ impl Store {
         });
         let outbox = self.list_offline_outbox()?;
         let first_write = copies.is_empty();
+        let mut joining = false;
         if let Some(best) = copies.first() {
             ensure!(
                 best.header.revision >= cfg.synced_revision,
@@ -2024,7 +2128,7 @@ impl Store {
             // this very computer wrote proves otherwise, even when the local
             // bookkeeping was lost (a window of 0.18.0 overwrote it).
             let wrote_a_copy = copies.iter().any(|c| c.header.writer == cfg.folder_writer);
-            let joining =
+            joining =
                 cfg.synced_revision == 0 && cfg.folder_lineage.trim().is_empty() && !wrote_a_copy;
             if joining && !allow_replace {
                 let local_documents = self.list_documents("")?.len();
@@ -2040,8 +2144,8 @@ impl Store {
             .first()
             .map(|c| c.payload.applied.iter().cloned().collect())
             .unwrap_or_default();
-        let mut foreign: Vec<(JournalEntry, String)> = Vec::new();
-        for copy in copies.iter().skip(1) {
+        let mut foreign: Vec<(JournalEntry, usize)> = Vec::new();
+        for (index, copy) in copies.iter().enumerate().skip(1) {
             let missing_from_journal = copy
                 .payload
                 .applied
@@ -2061,7 +2165,7 @@ impl Store {
                 if !best_applied.contains(&entry.uid)
                     && !foreign.iter().any(|(e, _)| e.uid == entry.uid)
                 {
-                    foreign.push((entry.clone(), copy.path.display().to_string()));
+                    foreign.push((entry.clone(), index));
                 }
             }
         }
@@ -2094,6 +2198,7 @@ impl Store {
             foreign,
             outbox,
             first_write,
+            joining,
             &temp_path,
             reporter,
             report,
@@ -2112,9 +2217,10 @@ impl Store {
         lineage: &str,
         copies: &[crate::sharedfolder::Copy],
         absent: &[PathBuf],
-        foreign: Vec<(crate::sharedfolder::JournalEntry, String)>,
+        foreign: Vec<(crate::sharedfolder::JournalEntry, usize)>,
         outbox: Vec<OutboxEntry>,
         first_write: bool,
+        joining: bool,
         temp_path: &std::path::Path,
         reporter: &crate::ai::Reporter,
         mut report: FolderSyncReport,
@@ -2123,6 +2229,9 @@ impl Store {
         let mut applied: std::collections::BTreeSet<String> = Default::default();
         let mut journal: Vec<JournalEntry> = Vec::new();
         let mut processed_outbox: Vec<i64> = Vec::new();
+        // Recorded only once the exchange succeeds: until then they refer to
+        // a copy that may never be written.
+        let mut conflicts: Vec<SyncConflict> = Vec::new();
         let mut temp: Option<Store> = None;
         let base_snapshot = copies.first().map(|c| &c.payload.snapshot);
         if first_write {
@@ -2138,6 +2247,7 @@ impl Store {
                     mutation: entry.mutation.clone(),
                     base: entry.base.clone(),
                     revision: 0,
+                    created: entry.created.clone(),
                 });
                 processed_outbox.push(entry.id);
             }
@@ -2169,38 +2279,83 @@ impl Store {
             )?;
             applied = best.payload.applied.iter().cloned().collect();
             journal = best.payload.journal.clone();
+            // What each change created, with the numbers of the copy being
+            // built (`None` when it was refused here), by change uid.
+            let mut resolved: BTreeMap<String, Option<Vec<crate::idmap::CreatedId>>> = journal
+                .iter()
+                .map(|e| (e.uid.clone(), Some(e.created.clone())))
+                .collect();
             if !foreign.is_empty() {
                 reporter.step(format!(
                     "Conciliando {} alteração(ões) vindas de outras pastas…",
                     foreign.len()
                 ));
             }
-            for (entry, from) in foreign {
+            for (entry, index) in foreign {
                 if applied.contains(&entry.uid) {
                     continue;
                 }
-                match store.execute_mutation(&entry.actor, entry.mutation.clone()) {
-                    Ok(_) => {
+                let source = &copies[index];
+                let from = source.path.display().to_string();
+                // That copy may have numbered new items differently.
+                let ids = crate::idmap::IdMap::from_journal(
+                    source
+                        .payload
+                        .journal
+                        .iter()
+                        .map(|e| (e.uid.as_str(), e.created.as_slice())),
+                    &resolved,
+                    &applied,
+                );
+                let remapped = ids.remap(&entry.mutation, &source.payload.snapshot, Some(&store));
+                let outcome = match &remapped {
+                    Ok(mutation) => store
+                        .execute_mutation(&entry.actor, mutation.clone())
+                        .map_err(|error| error.to_string()),
+                    Err(reason) => Err(reason.clone()),
+                };
+                match (remapped, outcome) {
+                    (Ok(mutation), Ok(reply)) => {
+                        let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
                         report.merged_foreign += 1;
                         let revision = store.cabinet_revision()?;
                         applied.insert(entry.uid.clone());
-                        journal.push(JournalEntry { revision, ..entry });
+                        resolved.insert(entry.uid.clone(), Some(created.clone()));
+                        let base = entry.base.as_ref().map(|base| {
+                            ids.remap(base, &source.payload.snapshot, None)
+                                .unwrap_or_else(|_| base.clone())
+                        });
+                        journal.push(JournalEntry {
+                            revision,
+                            mutation,
+                            base,
+                            created,
+                            ..entry
+                        });
                     }
-                    Err(error) => {
+                    (remapped, outcome) => {
+                        let unresolved = remapped.is_err();
+                        let error = outcome.err().unwrap_or_default();
+                        resolved.insert(entry.uid.clone(), None);
                         let as_entry = OutboxEntry {
                             id: 0,
                             created_at: entry.created_at.clone(),
                             actor: entry.actor.clone(),
                             label: format!("[da pasta {}] {}", from, entry.label),
-                            mutation: entry.mutation.clone(),
-                            base: entry.base.clone(),
+                            mutation: remapped.unwrap_or_else(|_| entry.mutation.clone()),
+                            base: entry.base.as_ref().map(|base| {
+                                ids.remap(base, &source.payload.snapshot, None)
+                                    .unwrap_or_else(|_| base.clone())
+                            }),
                             uid: entry.uid.clone(),
+                            created: Vec::new(),
                         };
-                        self.record_conflict(
+                        conflicts.push(conflict_for(
                             &as_entry,
                             &format!("{error} (alteração vinda de {from})"),
                             base_snapshot,
-                        )?;
+                            unresolved,
+                        ));
                         applied.insert(entry.uid.clone());
                         report.conflicts += 1;
                     }
@@ -2212,29 +2367,88 @@ impl Store {
                     outbox.len()
                 ));
             }
+            // This computer's numbers, translated into the copy's. This
+            // library matches the copy it last exchanged with; when the copy
+            // being built diverged from that one, the items created there are
+            // found through the journal kept from it.
+            let mut ids = crate::idmap::load(&self.conn)?;
+            let frame = crate::idmap::load_frame_journal(&self.conn)?;
+            ids.absorb(crate::idmap::IdMap::from_journal(
+                frame
+                    .iter()
+                    .map(|(uid, created)| (uid.as_str(), created.as_slice())),
+                &resolved,
+                &applied,
+            ));
             for entry in &outbox {
                 processed_outbox.push(entry.id);
                 if applied.contains(&entry.uid) {
+                    // Already in the copy (an exchange that could not finish
+                    // here): what it created there is in the journal.
+                    // Without it in the journal (compacted), it is shared
+                    // history: same numbers.
+                    if let Some(Some(there)) = resolved.get(&entry.uid) {
+                        ids.learn(&entry.created, Some(there));
+                    }
                     continue;
                 }
-                match store.execute_mutation(&entry.actor, entry.mutation.clone()) {
-                    Ok(_) => {
+                if joining {
+                    // Made on a library that the folder's one has replaced:
+                    // its numbers mean nothing there.
+                    ids.learn(&entry.created, None);
+                    conflicts.push(conflict_for(
+                        entry,
+                        "Alteração feita antes de este computador entrar na pasta; o acervo daqui foi substituído pelo da pasta.",
+                        base_snapshot,
+                        true,
+                    ));
+                    applied.insert(entry.uid.clone());
+                    report.conflicts += 1;
+                    continue;
+                }
+                let remapped = ids.remap(&entry.mutation, &*self, Some(&store));
+                let outcome = match &remapped {
+                    Ok(mutation) => store
+                        .execute_mutation(&entry.actor, mutation.clone())
+                        .map_err(|error| error.to_string()),
+                    Err(reason) => Err(reason.clone()),
+                };
+                match (remapped, outcome) {
+                    (Ok(mutation), Ok(reply)) => {
+                        let created = crate::idmap::created_ids(&store, &mutation, &reply)?;
+                        ids.learn(&entry.created, Some(&created));
                         report.pushed += 1;
                         let revision = store.cabinet_revision()?;
                         applied.insert(entry.uid.clone());
+                        let base = entry.base.as_ref().map(|base| {
+                            ids.remap(base, &*self, None)
+                                .unwrap_or_else(|_| base.clone())
+                        });
                         journal.push(JournalEntry {
                             uid: entry.uid.clone(),
                             created_at: entry.created_at.clone(),
                             actor: entry.actor.clone(),
                             writer: cfg.folder_writer.clone(),
                             label: entry.label.clone(),
-                            mutation: entry.mutation.clone(),
-                            base: entry.base.clone(),
+                            mutation,
+                            base,
                             revision,
+                            created,
                         });
                     }
-                    Err(error) => {
-                        self.record_conflict(entry, &error.to_string(), base_snapshot)?;
+                    (remapped, outcome) => {
+                        ids.learn(&entry.created, None);
+                        let unresolved = remapped.is_err();
+                        let error = outcome.err().unwrap_or_default();
+                        let sent = OutboxEntry {
+                            mutation: remapped.unwrap_or_else(|_| entry.mutation.clone()),
+                            base: entry.base.as_ref().map(|base| {
+                                ids.remap(base, &*self, None)
+                                    .unwrap_or_else(|_| base.clone())
+                            }),
+                            ..entry.clone()
+                        };
+                        conflicts.push(conflict_for(&sent, &error, base_snapshot, unresolved));
                         applied.insert(entry.uid.clone());
                         report.conflicts += 1;
                     }
@@ -2297,13 +2511,42 @@ impl Store {
         }
         report.notes.extend(failures);
 
+        // The library, the queue that was sent, its conflicts, the settings
+        // and the journal of the copy now matched change together: an
+        // interruption leaves either the old state (and the next exchange
+        // finds its changes already in the copy) or the new one.
+        let mut updated = cfg.clone();
+        updated.synced_revision = revision;
+        updated.last_sync_at = now_iso();
+        updated.folder_lineage = lineage.to_owned();
+        let replaced = temp.is_some();
+        let finish = |tx: &rusqlite::Transaction| -> Result<()> {
+            for conflict in &conflicts {
+                tx.execute(
+                    "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
+                    params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
+                )?;
+            }
+            ensure_queue_settled(tx, &processed_outbox)?;
+            for id in &processed_outbox {
+                tx.execute("DELETE FROM offline_outbox WHERE id=?1", params![id])?;
+            }
+            write_intranet_config(tx, &updated)?;
+            if !replaced {
+                // First copy, made from this library: its numbers are the
+                // reference from now on.
+                crate::idmap::reset_frame(tx, true)?;
+            }
+            crate::idmap::save_frame_journal(tx, &payload.journal)
+        };
         if let Some(store) = &temp {
             reporter.step("Atualizando o acervo deste computador…");
             let before = self.version_map()?;
-            self.apply_snapshot(
+            self.apply_snapshot_and(
                 &final_snapshot,
                 |file_id, capture_id| store.pdf_bytes(file_id, capture_id),
                 |id| store.attachment_bytes(id).map(|(_, bytes)| bytes),
+                finish,
             )?;
             for (kind, id, meta) in &final_snapshot.item_versions {
                 if kind == "cabinet" {
@@ -2316,32 +2559,33 @@ impl Store {
                 }
             }
             report.changed = true;
+        } else {
+            let tx = self.conn.transaction()?;
+            finish(&tx)?;
+            tx.commit()?;
         }
-        for id in processed_outbox {
-            self.conn
-                .execute("DELETE FROM offline_outbox WHERE id=?1", params![id])?;
-        }
-        let mut updated = cfg.clone();
-        updated.synced_revision = revision;
-        updated.last_sync_at = now_iso();
-        updated.folder_lineage = lineage.to_owned();
-        self.save_intranet_config(&updated)?;
         report.revision = revision;
         Ok(report)
     }
 
-    fn record_conflict(
+    /// Removes a queued change that was sent (or refused), storing the
+    /// numbers it taught and its conflict in the same transaction.
+    fn finish_outbox_entry(
         &mut self,
-        entry: &OutboxEntry,
-        reason: &str,
-        host_snapshot: Option<&CabinetSnapshot>,
+        entry_id: i64,
+        learned: &[(crate::idmap::IdKind, i64, Option<i64>)],
+        conflict: Option<&SyncConflict>,
     ) -> Result<()> {
-        let conflict = build_sync_conflict(entry, reason, host_snapshot);
-        let blob = seal(&serde_json::to_vec(&conflict)?)?;
-        self.conn.execute(
-            "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-            params![conflict.created_at, blob],
-        )?;
+        let tx = self.conn.transaction()?;
+        crate::idmap::save(&tx, learned)?;
+        if let Some(conflict) = conflict {
+            tx.execute(
+                "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
+                params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
+            )?;
+        }
+        tx.execute("DELETE FROM offline_outbox WHERE id=?1", params![entry_id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2378,6 +2622,12 @@ impl Store {
             // queued for the next exchange through the folders.
             return self.queue_locally(&actor, mutation);
         }
+        if !self.list_offline_outbox()?.is_empty() || crate::idmap::has_pending(&self.conn)? {
+            // Older changes still wait (or this library still uses its own
+            // numbers): this one goes after them, in order, with the next
+            // synchronization.
+            return self.queue_locally(&actor, mutation);
+        }
         let attempt = if self.host_known_unreachable() {
             Err(RpcError::Unreachable(
                 "Computador principal fora de alcance (verificado há instantes).".into(),
@@ -2396,12 +2646,18 @@ impl Store {
                 reply, snapshot, ..
             }) => {
                 let cfg_clone = cfg.clone();
-                self.apply_snapshot(
+                match self.apply_snapshot_and(
                     &snapshot,
                     |file_id, capture_id| fetch_remote_pdf(&cfg_clone, file_id, capture_id),
                     |id| fetch_remote_attachment(&cfg_clone, id),
-                )?;
-                Ok(reply)
+                    |tx| ensure_queue_settled(tx, &[]),
+                ) {
+                    // The change is on the main computer; this copy catches up
+                    // with the next synchronization, after the queued change.
+                    Err(error) if error.to_string() == QUEUE_GREW => Ok(reply),
+                    Err(error) => Err(error),
+                    Ok(()) => Ok(reply),
+                }
             }
             Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
                 bail!("{message}")
@@ -2422,7 +2678,8 @@ impl Store {
         let queued_mutation = self.prepare_mutation_for_outbox(mutation.clone());
         let base = self.snapshot_for_mutation(&queued_mutation);
         let reply = self.execute_mutation(actor, mutation)?;
-        self.enqueue_offline_mutation(actor, queued_mutation, base)?;
+        let created = crate::idmap::created_ids(&*self, &queued_mutation, &reply)?;
+        self.enqueue_offline_mutation(actor, queued_mutation, base, created)?;
         self.offline_queued += 1;
         Ok(reply)
     }
@@ -2557,14 +2814,26 @@ impl Store {
         actor: &str,
         mutation: IntranetMutation,
         base: Option<IntranetMutation>,
+        created: Vec<crate::idmap::CreatedId>,
     ) -> Result<()> {
         let existing = self.list_offline_outbox()?;
         let target_key = mutation_target_key(&mutation);
         if let Some(key) = target_key {
             if let Some(prev) = existing
-                .into_iter()
+                .iter()
                 .find(|e| mutation_target_key(&e.mutation).as_deref() == Some(key.as_str()))
+                .cloned()
             {
+                // The merged edit keeps the place of the first one (later
+                // changes may depend on it), unless it now refers to items
+                // created by changes queued after that place.
+                let later = crate::idmap::IdMap::refusing(
+                    existing
+                        .iter()
+                        .filter(|e| e.id > prev.id)
+                        .flat_map(|e| e.created.iter()),
+                );
+                let must_move = later.remap(&mutation, &*self, None).is_err();
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
                 let updated = OutboxEntry {
                     id: prev.id,
@@ -2577,15 +2846,24 @@ impl Store {
                     // A coalesced edit is a new change: a copy that had the
                     // first version must take this one too.
                     uid: uuid::Uuid::new_v4().simple().to_string(),
+                    // Edits create nothing: what the first one recorded stays.
+                    created: prev.created,
                 };
-                self.conn.execute(
-                    "UPDATE offline_outbox SET created_at=?1, payload=?2 WHERE id=?3",
-                    params![
-                        updated.created_at,
-                        seal(&serde_json::to_vec(&updated)?)?,
-                        prev.id
-                    ],
-                )?;
+                let payload = seal(&serde_json::to_vec(&updated)?)?;
+                if must_move {
+                    let tx = self.conn.transaction()?;
+                    tx.execute("DELETE FROM offline_outbox WHERE id=?1", params![prev.id])?;
+                    tx.execute(
+                        "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
+                        params![updated.created_at, payload],
+                    )?;
+                    tx.commit()?;
+                } else {
+                    self.conn.execute(
+                        "UPDATE offline_outbox SET created_at=?1, payload=?2 WHERE id=?3",
+                        params![updated.created_at, payload, prev.id],
+                    )?;
+                }
                 return Ok(());
             }
         }
@@ -2597,6 +2875,7 @@ impl Store {
             mutation,
             base,
             uid: uuid::Uuid::new_v4().simple().to_string(),
+            created,
         };
         self.conn.execute(
             "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
@@ -2674,6 +2953,16 @@ impl Store {
             .find(|c| c.id == conflict_id)
             .context("Choque de sincronização não encontrado.")?;
 
+        // Its numbers mean nothing in the team's library: only redone.
+        if conflict.unresolved && resolution != ConflictResolution::KeepHost {
+            bail!("{}", crate::idmap::UNRESOLVED);
+        }
+        // The conflict uses the team's numbers; while a translation is
+        // pending (a synchronization that stopped halfway) this library
+        // still uses its own.
+        if resolution != ConflictResolution::KeepHost && crate::idmap::has_pending(&self.conn)? {
+            bail!("A sincronização com o computador principal ainda não terminou. Sincronize e tente de novo.");
+        }
         match resolution {
             ConflictResolution::KeepHost => {
                 // Mantém a versão que já está no anfitrião (e sincronizada localmente) e remove o alerta de choque.
@@ -2741,6 +3030,20 @@ impl Store {
                 let ver = self.item_version("saiop", attendance.id)?.version;
                 IntranetMutation::SaveSaiopAttendance {
                     attendance,
+                    expected_version: Some(ver),
+                }
+            }
+            IntranetMutation::CreateTaskForSaiop {
+                attendance_id,
+                task,
+                title,
+                ..
+            } => {
+                let ver = self.item_version("saiop", attendance_id)?.version;
+                IntranetMutation::CreateTaskForSaiop {
+                    attendance_id,
+                    task,
+                    title,
                     expected_version: Some(ver),
                 }
             }
@@ -3445,6 +3748,11 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
         IntranetMutation::DeleteSaiopAttendance { id } => {
             format!("Exclusão do atendimento #{id}")
         }
+        IntranetMutation::CreateTaskForSaiop {
+            attendance_id,
+            title,
+            ..
+        } => format!("Tarefa \"{title}\" do atendimento #{attendance_id}"),
         IntranetMutation::AddAttachment {
             owner_kind,
             owner_id,
@@ -3541,6 +3849,18 @@ fn collect_blobs(store: &Store, snapshot: &CabinetSnapshot) -> Result<crate::sha
             .insert(row.id, store.attachment_bytes(row.id)?.1);
     }
     Ok(blobs)
+}
+
+/// A conflict to record, `unresolved` when the change cannot be translated.
+fn conflict_for(
+    entry: &OutboxEntry,
+    reason: &str,
+    snapshot: Option<&CabinetSnapshot>,
+    unresolved: bool,
+) -> SyncConflict {
+    let mut conflict = build_sync_conflict(entry, reason, snapshot);
+    conflict.unresolved = unresolved;
+    conflict
 }
 
 fn build_sync_conflict(
@@ -3646,6 +3966,7 @@ fn build_sync_conflict(
         host_summary,
         reason: reason.to_owned(),
         mutation: entry.mutation.clone(),
+        unresolved: false,
     }
 }
 
@@ -3733,6 +4054,15 @@ fn send_rpc_classified(
             "Resposta inválida recebida do computador anfitrião: {e}"
         ))
     })?;
+    if status.is_server_error() {
+        // Busy or failing for a moment (library locked, too many
+        // connections): the change waits and is sent again later; it is not
+        // a refusal of the change itself.
+        return Err(RpcError::Unreachable(match rpc {
+            RpcResponse::Error { message } => message,
+            _ => format!("O computador anfitrião falhou (HTTP {}).", status.as_u16()),
+        }));
+    }
     if !status.is_success() {
         if let RpcResponse::Error { message } = rpc {
             return Err(RpcError::Rejected(message));
@@ -3749,6 +4079,118 @@ pub struct HostServer {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
+    slots: Arc<Slots>,
+}
+
+/// Connections served at the same time, in all and from one computer. Each
+/// has its own thread, so a slow or hostile peer only holds its own slots;
+/// the library itself is used by one request at a time, and only while the
+/// request is processed (never while bytes travel).
+const MAX_CONNECTIONS: usize = 16;
+const MAX_CONNECTIONS_PER_PEER: usize = 4;
+
+/// Connections being served, by peer address.
+#[derive(Default)]
+struct Slots {
+    busy: Mutex<BTreeMap<IpAddr, usize>>,
+}
+
+/// One connection being served; frees its slot when dropped.
+struct Slot {
+    slots: Arc<Slots>,
+    peer: IpAddr,
+}
+
+impl Slots {
+    fn take(slots: &Arc<Slots>, peer: IpAddr) -> Option<Slot> {
+        let mut busy = slots.busy.lock().ok()?;
+        let total: usize = busy.values().sum();
+        let mine = busy.entry(peer).or_insert(0);
+        if total >= MAX_CONNECTIONS || *mine >= MAX_CONNECTIONS_PER_PEER {
+            if *mine == 0 {
+                busy.remove(&peer);
+            }
+            return None;
+        }
+        *mine += 1;
+        Some(Slot {
+            slots: Arc::clone(slots),
+            peer,
+        })
+    }
+
+    fn in_use(&self) -> usize {
+        self.busy.lock().map(|b| b.values().sum()).unwrap_or(0)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if let Ok(mut busy) = self.slots.busy.lock() {
+            if let Some(count) = busy.get_mut(&self.peer) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    busy.remove(&self.peer);
+                }
+            }
+        }
+    }
+}
+
+/// Refusals being answered at the same time; beyond that a connection is
+/// simply closed.
+const MAX_REFUSALS: usize = 32;
+
+/// Answers, on a short-lived thread, a connection that found no free slot:
+/// "busy, try again" (HTTP 503), which the sender treats as a temporary
+/// absence. The request is read first (briefly, at most 64 KiB): closing a
+/// socket with unread data would reset it before the answer arrives.
+fn refuse_busy(stream: TcpStream, refusals: &Arc<std::sync::atomic::AtomicUsize>) {
+    if refusals.fetch_add(1, Ordering::SeqCst) >= MAX_REFUSALS {
+        refusals.fetch_sub(1, Ordering::SeqCst);
+        return;
+    }
+    let counter = Arc::clone(refusals);
+    let answer = move || {
+        let mut stream = stream;
+        let drain = |stream: &mut TcpStream| {
+            let deadline = Instant::now() + Duration::from_millis(500);
+            let mut buffer = [0u8; 8192];
+            let mut total = 0usize;
+            while total < 64 * 1024 {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+                    break;
+                }
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => total += read,
+                }
+            }
+        };
+        if stream.set_nonblocking(false).is_ok() {
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+            drain(&mut stream);
+            let _ = write_http_json(
+                &mut stream,
+                503,
+                &RpcResponse::Error {
+                    message: "O computador principal está atendendo muitas conexões agora; tente de novo em instantes.".into(),
+                },
+            );
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            drain(&mut stream);
+        }
+    };
+    let spawned = std::thread::Builder::new()
+        .name("ponte-intranet-busy".into())
+        .spawn(move || {
+            answer();
+            counter.fetch_sub(1, Ordering::SeqCst);
+        });
+    if spawned.is_err() {
+        refusals.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl HostServer {
@@ -3764,6 +4206,9 @@ impl HostServer {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_flag = Arc::clone(&stop);
         let db_lock = Arc::new(Mutex::new(db_path));
+        let slots = Arc::new(Slots::default());
+        let accept_slots = Arc::clone(&slots);
+        let refusals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         let handle = std::thread::Builder::new()
             .name("ponte-intranet-host".into())
@@ -3774,8 +4219,19 @@ impl HostServer {
                             if !is_allowed_peer_ip(peer.ip()) {
                                 continue;
                             }
+                            let Some(slot) = Slots::take(&accept_slots, peer.ip()) else {
+                                refuse_busy(stream, &refusals);
+                                continue;
+                            };
                             let db = Arc::clone(&db_lock);
-                            let _ = handle_connection(stream, &db);
+                            // If the thread cannot start, the closure (with
+                            // the connection and the slot) is dropped.
+                            let _ = std::thread::Builder::new()
+                                .name("ponte-intranet-connection".into())
+                                .spawn(move || {
+                                    let _slot = slot;
+                                    let _ = handle_connection(stream, &db);
+                                });
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(25));
@@ -3792,6 +4248,7 @@ impl HostServer {
             addr,
             stop,
             handle: Some(handle),
+            slots,
         })
     }
 
@@ -3812,6 +4269,12 @@ impl HostServer {
         );
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
+        }
+        // Requests already accepted finish (each is bounded by its deadlines);
+        // a stop waits a little for them, so the library is left quiet.
+        let waited = Instant::now();
+        while self.slots.in_use() > 0 && waited.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 }
@@ -3856,8 +4319,7 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
 
     // Every read, however small, must finish before a deadline for the whole
     // part being read (headers, then body): a peer that sends an endless line
-    // or one byte at a time cannot grow memory or hold the server, which
-    // serves one connection at a time.
+    // or one byte at a time cannot grow memory nor keep its slot for long.
     let mut reader = BufReader::new(DeadlineReader {
         stream: stream.try_clone()?,
         deadline: Instant::now() + HTTP_HEADER_TIME,
@@ -3932,66 +4394,57 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body)?;
 
-    let path_guard = db_lock
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Bloqueio interno do anfitrião"))?;
-    let mut store = match Store::open(&path_guard) {
+    // The library is used by one request at a time, and released before the
+    // answer travels: a peer that reads slowly holds nothing but its slot.
+    let (status, response) = {
+        let path_guard = db_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Bloqueio interno do anfitrião"))?;
+        answer_rpc(&path_guard, &auth_token, &body)
+    };
+    write_http_json(&mut stream, status, &response)
+}
+
+/// Opens the library, checks the token and processes one request.
+fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16, RpcResponse) {
+    let error = |message: String| RpcResponse::Error { message };
+    let mut store = match Store::open(db_path) {
         Ok(s) => s,
         Err(e) => {
-            return write_http_json(
-                &mut stream,
+            return (
                 500,
-                &RpcResponse::Error {
-                    message: format!("Erro ao abrir acervo do anfitrião: {e}"),
-                },
-            );
+                error(format!("Erro ao abrir acervo do anfitrião: {e}")),
+            )
         }
     };
     let host_cfg = match store.load_intranet_config() {
         Ok(c) => c,
         Err(e) => {
-            return write_http_json(
-                &mut stream,
+            return (
                 500,
-                &RpcResponse::Error {
-                    message: format!("Erro ao ler configuração do anfitrião: {e}"),
-                },
-            );
+                error(format!("Erro ao ler configuração do anfitrião: {e}")),
+            )
         }
     };
-    if !verify_token_constant_time(&host_cfg.cabinet_token, &auth_token) {
-        return write_http_json(
-            &mut stream,
+    if !verify_token_constant_time(&host_cfg.cabinet_token, auth_token) {
+        return (
             401,
-            &RpcResponse::Error {
-                message: "Token do gabinete inválido ou não autorizado.".into(),
-            },
+            error("Token do gabinete inválido ou não autorizado.".into()),
         );
     }
-
-    let rpc_req: RpcRequest = match serde_json::from_slice(&body) {
+    let rpc_req: RpcRequest = match serde_json::from_slice(body) {
         Ok(r) => r,
         Err(_) => {
-            return write_http_json(
-                &mut stream,
+            return (
                 400,
-                &RpcResponse::Error {
-                    message: "Formato de mensagem incompatível com o anfitrião.".into(),
-                },
-            );
+                error("Formato de mensagem incompatível com o anfitrião.".into()),
+            )
         }
     };
-
-    let (status, response) = match process_rpc(&mut store, &host_cfg, rpc_req) {
+    match process_rpc(&mut store, &host_cfg, rpc_req) {
         Ok(resp) => (200, resp),
-        Err(err) => (
-            400,
-            RpcResponse::Error {
-                message: err.to_string(),
-            },
-        ),
-    };
-    write_http_json(&mut stream, status, &response)
+        Err(err) => (400, error(err.to_string())),
+    }
 }
 
 fn process_rpc(
@@ -4060,6 +4513,7 @@ fn write_http_json(stream: &mut TcpStream, status: u16, body: &RpcResponse) -> R
         401 => "Unauthorized",
         404 => "Not Found",
         413 => "Payload Too Large",
+        503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
     let header = format!(
@@ -5093,6 +5547,12 @@ impl IntranetPanel {
                                             .pending_resolution
                                             .filter(|(id, _)| *id == conflict.id);
                                         match pending_here {
+                                            None if conflict.unresolved => {
+                                                ui.label(egui::RichText::new("Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.").small());
+                                                if ui.button("Dispensar o aviso").clicked() {
+                                                    self.pending_resolution = Some((conflict.id, ConflictResolution::KeepHost));
+                                                }
+                                            }
                                             None => {
                                                 ui.horizontal_wrapped(|ui| {
                                                     if ui
@@ -5773,6 +6233,448 @@ mod tests {
         }
     }
 
+    fn manual_attendance(reference: &str, subject: &str) -> crate::saiop::SaiopAttendance {
+        let mut att = crate::saiop::SaiopAttendance::new_manual();
+        att.reference_raw = reference.into();
+        att.reference_norm = crate::saiop::normalize_reference(reference);
+        att.subject = subject.into();
+        att
+    }
+
+    #[test]
+    fn changes_to_items_created_offline_follow_the_numbers_the_team_gave_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = dir.path().join("Drive").join("ponte-sync.ponte");
+        let pen = dir.path().join("Pendrive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
+        let files = vec![drive.display().to_string(), pen.display().to_string()];
+        let reporter = crate::ai::Reporter::silent();
+        let key = "senha-de-teste-123";
+        let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        a.save_intranet_config(&folder_config("Casa", files.clone()))
+            .unwrap();
+        let receipt = a.import_capture(&sample_capture()).unwrap();
+        a.sync_with_folders(&a.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+        let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+        b.save_intranet_config(&folder_config("Trabalho", files.clone()))
+            .unwrap();
+        b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+
+        // Both create a task and an atendimento before exchanging: each
+        // library gives them the same numbers.
+        let mut from_b = Task::new(receipt.document_id);
+        from_b.title = "Tarefa de B".into();
+        let b_task = b.save_task(&from_b).unwrap();
+        let b_att = b
+            .save_saiop_attendance(&manual_attendance("PROC-B", "Atendimento de B"), None)
+            .unwrap();
+        let mut from_a = Task::new(receipt.document_id);
+        from_a.title = "Tarefa de A".into();
+        let a_task = a.save_task(&from_a).unwrap();
+        let a_att = a
+            .save_saiop_attendance(&manual_attendance("PROC-A", "Atendimento de A"), None)
+            .unwrap();
+        assert_eq!(
+            (a_task, a_att),
+            (b_task, b_att),
+            "the scenario needs colliding numbers"
+        );
+        // A keeps working on what it created: edits, an attachment, a link
+        // between the new task and the new atendimento.
+        let mut edited = a
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == a_task)
+            .unwrap();
+        edited.title = "Tarefa de A, revista".into();
+        a.save_task(&edited).unwrap();
+        a.add_attachment(
+            crate::attachments::Owner::Task(a_task),
+            "nota.txt",
+            "",
+            b"anexo de A",
+        )
+        .unwrap();
+        let mut att = a
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == a_att)
+            .unwrap();
+        att.observation = "Observação de A".into();
+        att.task_ids = vec![a_task];
+        a.save_saiop_attendance(&att, None).unwrap();
+
+        // B exchanges first; then A.
+        b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+        let report = a
+            .sync_with_folders(&a.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+        assert_eq!(
+            report.conflicts,
+            0,
+            "{:?}",
+            a.list_sync_conflicts().unwrap()
+        );
+        b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+
+        for store in [&a, &b] {
+            let tasks = store.list_tasks().unwrap();
+            let b_side = tasks.iter().find(|t| t.title == "Tarefa de B").unwrap();
+            let a_side = tasks
+                .iter()
+                .find(|t| t.title == "Tarefa de A, revista")
+                .expect("A's edit reached A's task");
+            assert_ne!(a_side.id, b_side.id);
+            assert!(!tasks.iter().any(|t| t.title == "Tarefa de A"));
+            assert!(store
+                .list_attachments(crate::attachments::Owner::Task(b_side.id))
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                store
+                    .list_attachments(crate::attachments::Owner::Task(a_side.id))
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let atts = store.list_saiop_attendances().unwrap();
+            let of_b = atts
+                .iter()
+                .find(|x| x.subject == "Atendimento de B")
+                .unwrap();
+            let of_a = atts
+                .iter()
+                .find(|x| x.subject == "Atendimento de A")
+                .unwrap();
+            assert!(of_b.observation.is_empty(), "B's atendimento untouched");
+            assert_eq!(of_a.observation, "Observação de A");
+            assert_eq!(of_a.task_ids, vec![a_side.id]);
+        }
+
+        // Diverged copies. A works with the pen drive only: creates a task
+        // and edits it, and that copy is what A now matches. B works with the
+        // Drive only and makes more changes, so the Drive copy wins (newest)
+        // and A's pen drive changes come in as changes of another copy. A
+        // then edits its task again and exchanges with both folders: its
+        // numbers refer to the pen drive copy, not to the one being built.
+        let mut a_pen = a.load_intranet_config().unwrap();
+        a_pen.folder_files = vec![pen.display().to_string()];
+        a.save_intranet_config(&a_pen).unwrap();
+        let mut pen_task = Task::new(receipt.document_id);
+        pen_task.title = "Pelo pendrive".into();
+        let pen_id = a.save_task(&pen_task).unwrap();
+        let find = |store: &Store, id: i64| {
+            store
+                .list_tasks()
+                .unwrap()
+                .into_iter()
+                .find(|t| t.id == id)
+                .unwrap()
+        };
+        let mut pen_task = find(&a, pen_id);
+        pen_task.notes = "Editada sem conexão".into();
+        a.save_task(&pen_task).unwrap();
+        a.sync_with_folders(&a_pen, key, false, &reporter).unwrap();
+        let mut b_drive = b.load_intranet_config().unwrap();
+        b_drive.folder_files = vec![drive.display().to_string()];
+        b.save_intranet_config(&b_drive).unwrap();
+        let mut drive_task = Task::new(receipt.document_id);
+        drive_task.title = "Pelo Drive".into();
+        assert_eq!(b.save_task(&drive_task).unwrap(), pen_id);
+        b.save_note(receipt.document_id, "Nota pelo Drive").unwrap();
+        b.save_note(receipt.document_id, "Nota pelo Drive, revista")
+            .unwrap();
+        let mut second = Task::new(receipt.document_id);
+        second.title = "Outra pelo Drive".into();
+        b.save_task(&second).unwrap();
+        b.sync_with_folders(&b_drive, key, false, &reporter)
+            .unwrap();
+        assert!(
+            crate::sharedfolder::read_header(&drive)
+                .unwrap()
+                .unwrap()
+                .revision
+                > crate::sharedfolder::read_header(&pen)
+                    .unwrap()
+                    .unwrap()
+                    .revision,
+            "the scenario needs the Drive copy to win"
+        );
+        // Changing the folders before editing must not lose track of the copy
+        // A matches.
+        let mut a_both = a.load_intranet_config().unwrap();
+        a_both.folder_files = files.clone();
+        a.save_intranet_config(&a_both).unwrap();
+        let mut pen_task = find(&a, pen_id);
+        pen_task.outcome = "Concluída depois".into();
+        a.save_task(&pen_task).unwrap();
+        let report = a.sync_with_folders(&a_both, key, false, &reporter).unwrap();
+        assert_eq!(
+            report.merged_foreign, 2,
+            "creation and edit from the pen drive"
+        );
+        assert_eq!(
+            report.conflicts,
+            0,
+            "{:?}",
+            a.list_sync_conflicts().unwrap()
+        );
+        b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+        for store in [&a, &b] {
+            let tasks = store.list_tasks().unwrap();
+            let drive_side = tasks.iter().find(|t| t.title == "Pelo Drive").unwrap();
+            let pen_side = tasks.iter().find(|t| t.title == "Pelo pendrive").unwrap();
+            assert_ne!(drive_side.id, pen_side.id);
+            assert!(drive_side.notes.is_empty(), "B's task untouched");
+            assert!(drive_side.outcome.is_empty(), "B's task untouched");
+            assert_eq!(pen_side.notes, "Editada sem conexão");
+            assert_eq!(pen_side.outcome, "Concluída depois");
+        }
+    }
+
+    #[test]
+    fn an_offline_client_s_new_items_get_the_main_computer_s_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let host_db_path = dir.path().join("host.sqlite3");
+        let token = generate_token();
+        let mut host = Store::open(&host_db_path).unwrap();
+        host.save_intranet_config(&IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "ANFITRIAO".into(),
+            bind_addr: "127.0.0.1:0".into(),
+            host_url: "http://127.0.0.1:7878".into(),
+            cabinet_token: token.clone(),
+            ..IntranetConfig::default()
+        })
+        .unwrap();
+        let mut server = HostServer::start(host_db_path.clone(), "127.0.0.1:0").unwrap();
+        let mut client = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        let mut client_cfg = IntranetConfig {
+            mode: IntranetMode::Client,
+            member_name: "MARIA".into(),
+            bind_addr: "127.0.0.1:0".into(),
+            host_url: format!("http://{}", server.local_addr()),
+            cabinet_token: token.clone(),
+            ..IntranetConfig::default()
+        };
+        client.save_intranet_config(&client_cfg).unwrap();
+        let receipt = client.import_capture(&sample_capture()).unwrap();
+        let mut second = sample_capture();
+        second.document_number = "SEFAZ-PRO-2026/00777".into();
+        second.source_url =
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00777"
+                .into();
+        second.request_id = uuid::Uuid::new_v4().to_string();
+        let receipt2 = client.import_capture(&second).unwrap();
+        server.stop();
+
+        // Offline: a new task, its edit and an attachment to it.
+        let mut task = Task::new(receipt.document_id);
+        task.title = "Tarefa de Maria".into();
+        let local_id = client.save_task(&task).unwrap();
+        let mut task = client
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == local_id)
+            .unwrap();
+        task.notes = "Editada sem conexão".into();
+        client.save_task(&task).unwrap();
+        client
+            .add_attachment(
+                crate::attachments::Owner::Task(local_id),
+                "nota.txt",
+                "",
+                b"anexo de Maria",
+            )
+            .unwrap();
+        // Meanwhile the main computer creates a task with the same number.
+        let mut hosts = Task::new(receipt.document_id);
+        hosts.title = "Tarefa do anfitrião".into();
+        assert_eq!(host.save_task(&hosts).unwrap(), local_id);
+
+        // Back online: everything lands on the right items.
+        let mut server = HostServer::start(host_db_path.clone(), "127.0.0.1:0").unwrap();
+        client_cfg = client.load_intranet_config().unwrap();
+        client_cfg.host_url = format!("http://{}", server.local_addr());
+        client.save_intranet_config(&client_cfg).unwrap();
+        client.sync_from_host(false).unwrap();
+        assert!(client.list_offline_outbox().unwrap().is_empty());
+        assert!(client.list_sync_conflicts().unwrap().is_empty());
+        let tasks = host.list_tasks().unwrap();
+        let of_host = tasks
+            .iter()
+            .find(|t| t.title == "Tarefa do anfitrião")
+            .unwrap();
+        let of_maria = tasks.iter().find(|t| t.title == "Tarefa de Maria").unwrap();
+        assert!(of_host.notes.is_empty(), "the host's task untouched");
+        assert_eq!(of_maria.notes, "Editada sem conexão");
+        assert!(host
+            .list_attachments(crate::attachments::Owner::Task(of_host.id))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            host.list_attachments(crate::attachments::Owner::Task(of_maria.id))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(client.list_tasks().unwrap().len(), tasks.len());
+
+        // A refused creation turns the changes that depend on it into a
+        // notice that cannot be applied, never into an edit of another item.
+        server.stop();
+        let mut doomed = Task::new(receipt2.document_id);
+        doomed.title = "Tarefa recusada".into();
+        let doomed_id = client.save_task(&doomed).unwrap();
+        let mut doomed = client
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == doomed_id)
+            .unwrap();
+        doomed.notes = "Edição órfã".into();
+        client.save_task(&doomed).unwrap();
+        host.trash_item(TrashTarget {
+            kind: TrashKind::Document,
+            id: receipt2.document_id,
+        })
+        .unwrap();
+        let count = |store: &Store| -> i64 {
+            store
+                .conn
+                .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
+                .unwrap()
+        };
+        let before = count(&host);
+        let mut server = HostServer::start(host_db_path.clone(), "127.0.0.1:0").unwrap();
+        client_cfg = client.load_intranet_config().unwrap();
+        client_cfg.host_url = format!("http://{}", server.local_addr());
+        client.save_intranet_config(&client_cfg).unwrap();
+        client.sync_from_host(false).unwrap();
+        let conflicts = client.list_sync_conflicts().unwrap();
+        assert_eq!(conflicts.len(), 2, "{conflicts:?}");
+        let orphan = conflicts
+            .iter()
+            .find(|c| c.unresolved)
+            .expect("orphan edit");
+        assert!(client
+            .resolve_sync_conflict(orphan.id, ConflictResolution::KeepLocal)
+            .is_err());
+        client
+            .resolve_sync_conflict(orphan.id, ConflictResolution::KeepHost)
+            .unwrap();
+        assert_eq!(count(&host), before, "nothing created nor edited there");
+        assert!(host
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .all(|t| t.notes != "Edição órfã"));
+        server.stop();
+    }
+
+    #[test]
+    fn a_silent_peer_does_not_hold_the_main_computer() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("host.sqlite3");
+        let token = generate_token();
+        let mut host = Store::open(&db).unwrap();
+        host.save_intranet_config(&IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "ANFITRIAO".into(),
+            bind_addr: "127.0.0.1:0".into(),
+            host_url: "http://127.0.0.1:7878".into(),
+            cabinet_token: token.clone(),
+            ..IntranetConfig::default()
+        })
+        .unwrap();
+        let mut server = HostServer::start(db.clone(), "127.0.0.1:0").unwrap();
+        let cfg = IntranetConfig {
+            mode: IntranetMode::Client,
+            member_name: "MARIA".into(),
+            host_url: format!("http://{}", server.local_addr()),
+            cabinet_token: token,
+            ..IntranetConfig::default()
+        };
+        let wait_for = |count: usize| {
+            let started = Instant::now();
+            while server.slots.in_use() != count && started.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(server.slots.in_use(), count);
+        };
+
+        // Connections that never send anything do not delay another request.
+        let mut idle: Vec<TcpStream> = (1..MAX_CONNECTIONS_PER_PEER)
+            .map(|_| TcpStream::connect(server.local_addr()).unwrap())
+            .collect();
+        wait_for(MAX_CONNECTIONS_PER_PEER - 1);
+        let started = Instant::now();
+        ping_host(&cfg).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        // With every slot of this computer taken, a request is told to come
+        // back later: a change would wait in the queue, not become a conflict.
+        idle.push(TcpStream::connect(server.local_addr()).unwrap());
+        wait_for(MAX_CONNECTIONS_PER_PEER);
+        match send_rpc_classified(&cfg, &RpcRequest::Ping) {
+            Err(RpcError::Unreachable(message)) => {
+                assert!(message.contains("muitas conexões"), "{message}")
+            }
+            Err(RpcError::Rejected(message)) => panic!("refused: {message}"),
+            Ok(_) => panic!("served beyond the limit"),
+        }
+
+        // Closed connections give their slots back.
+        drop(idle);
+        wait_for(0);
+        ping_host(&cfg).unwrap();
+        server.stop();
+    }
+
+    #[test]
+    fn a_change_queued_during_a_synchronization_keeps_the_library_it_was_made_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = Store::open(&dir.path().join("team.sqlite3")).unwrap();
+        let copy = team.export_snapshot().unwrap();
+        let mut here = Store::open(&dir.path().join("here.sqlite3")).unwrap();
+        let folder = dir.path().join("ponte-sync.ponte").display().to_string();
+        here.save_intranet_config(&folder_config("Casa", vec![folder]))
+            .unwrap();
+        let receipt = here.import_capture(&sample_capture()).unwrap();
+        let queued: Vec<i64> = here
+            .list_offline_outbox()
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(queued.len(), 1);
+        let replace = |store: &mut Store, sent: &[i64]| {
+            store.apply_snapshot_and(
+                &copy,
+                |_, _| unreachable!(),
+                |_| unreachable!(),
+                |tx| ensure_queue_settled(tx, sent),
+            )
+        };
+        // The import was queued after the exchange listed the queue (empty).
+        let error = replace(&mut here, &[]).unwrap_err().to_string();
+        assert_eq!(error, QUEUE_GREW);
+        assert_eq!(here.list_documents("").unwrap().len(), 1, "rolled back");
+        assert!(here.load_document(receipt.document_id).is_ok());
+        // Once it was among the changes sent, the replacement goes through.
+        replace(&mut here, &queued).unwrap();
+        assert!(here.list_documents("").unwrap().is_empty());
+    }
+
     #[test]
     fn three_way_merge_keeps_each_side_s_change_and_records_double_changes() {
         // Scalar: only one side changed → that side wins, nothing recorded.
@@ -5847,6 +6749,7 @@ mod tests {
                 task: base,
                 expected_version: None,
             }),
+            unresolved: false,
         };
         let diffs = store.conflict_differences(&conflict);
         let by_label = |label: &str| {

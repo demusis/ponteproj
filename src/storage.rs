@@ -214,6 +214,7 @@ impl Store {
         store.ensure_ai_config()?;
         store.ensure_attachments()?;
         store.ensure_write_guards()?;
+        crate::idmap::init_watermark(&store.conn)?;
         // Lazy, idempotent: libraries imported before this feature gain the
         // juntada links too. Unreadable content never prevents opening.
         let _ = store.link_juntadas();
@@ -471,7 +472,8 @@ impl Store {
         // Runs on whichever computer holds the library, never queued on
         // its own: a replay of the import recreates it deterministically.
         if new_document && !duplicate && !capture.is_manual() {
-            let _ = self.attendance_for_import(document_id, capture);
+            let outcome = self.attendance_for_import(document_id, capture);
+            self.note_auto_attendance(document_id, &capture.document_number, outcome);
         }
         Ok(ImportReceipt {
             request_id: capture.request_id.clone(),

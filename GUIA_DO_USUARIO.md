@@ -104,6 +104,7 @@ Um atendimento é uma **passagem** de um documento ou de uma demanda pelo gabine
 
 - **De onde vêm:** da importação do SIGADOC (o Ponte cria sozinho na primeira importação de cada documento), do botão **Registrar nova entrada** ou de **Importar planilha…**.
 - **Desligar a criação automática:** desmarque **Criar atendimento ao importar do SIGADOC**, no alto do painel.
+- **Se a criação automática falhar**, o documento é importado assim mesmo e o painel mostra um aviso com o número e o motivo. Use **Tentar de novo** ou **Dispensar** (e registre à mão, se quiser).
 - **O painel segue o documento selecionado:** mostra só os atendimentos dele, e **Registrar nova entrada** cria um atendimento já ligado a ele. **Todos os atendimentos** amplia.
 - **A ficha** abre ao lado da lista, com **Salvar**, **Encerrar** e **Excluir…** no alto. Só a referência ou o assunto é obrigatório.
 - **Ligar a documento:** informe o número de um documento já importado. A referência passa a ser o número dele.
@@ -126,6 +127,7 @@ Em **Menu ▾ ▸ Rede e equipe**. Trocar de modo nunca apaga dados.
 
 - Sem conexão com o principal, tudo continua funcionando e é enviado quando a conexão volta.
 - Se o mesmo item foi alterado nos dois lados, aparece um **conflito de edição**. A janela mostra os dois valores, campo a campo, e você escolhe **Combinar**, **Usar só a minha versão** ou **Usar só a do computador principal**.
+- Se o principal recusou algo criado sem conexão (uma tarefa de um documento que foi para a lixeira, por exemplo), as alterações seguintes desse item aparecem como aviso, só com **Dispensar o aviso**. Refaça à mão o que ainda for necessário.
 - Se os colegas não conseguirem conectar, peça à TI para liberar a porta 7878 (TCP) no firewall do computador principal.
 
 **Nunca** instale o Ponte nem copie o acervo para dentro do Google Drive ou do OneDrive: o acervo só abre na conta do Windows que o gravou.

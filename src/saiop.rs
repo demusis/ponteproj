@@ -358,6 +358,16 @@ pub struct SaiopImportBatch {
     pub flagged_rows: usize,
 }
 
+/// An import whose automatic atendimento could not be recorded.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AutoAttendanceFailure {
+    #[serde(default)]
+    pub document_id: i64,
+    pub number: String,
+    pub message: String,
+    pub at: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct SaiopImportPreview {
     pub file_name: String,
@@ -588,7 +598,11 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS idx_saiop_attendances_ref ON saiop_attendances(reference_norm);
             CREATE INDEX IF NOT EXISTS idx_saiop_attendances_batch ON saiop_attendances(batch_id);
-            CREATE TABLE IF NOT EXISTS saiop_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+            CREATE TABLE IF NOT EXISTS saiop_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS saiop_auto_failures (
+                document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+                payload BLOB NOT NULL
+            );",
         )?;
         // Libraries from before 0.19.2 kept the normalized reference in clear
         // in that column; it becomes the digest, once. Best effort: a row
@@ -650,7 +664,8 @@ impl Store {
         }
         let reference_norm = normalize_reference(&capture.document_number);
         ensure!(!reference_norm.is_empty(), "Documento sem número.");
-        // Never queued on its own: the import that caused it is what travels.
+        // Never queued on its own: the import that caused it is what travels,
+        // and its replay recreates it (also after a retry here).
         let previous = self.suppress_remote;
         self.suppress_remote = true;
         let result = (|| -> Result<()> {
@@ -723,6 +738,102 @@ impl Store {
         })();
         self.suppress_remote = previous;
         result
+    }
+
+    /// Records how the automatic atendimento of an import went. The import
+    /// may run in the process that serves the browser extension, which has
+    /// no window: a failure is kept here and shown in Atendimentos, where it
+    /// can be retried. Recording is best effort and never fails the import.
+    pub(crate) fn note_auto_attendance(
+        &mut self,
+        document_id: i64,
+        number: &str,
+        outcome: Result<()>,
+    ) {
+        let _ = self.store_auto_attendance_outcome(document_id, number, outcome);
+    }
+
+    fn store_auto_attendance_outcome(
+        &mut self,
+        document_id: i64,
+        number: &str,
+        outcome: Result<()>,
+    ) -> Result<()> {
+        match outcome {
+            Ok(()) => {
+                self.conn.execute(
+                    "DELETE FROM saiop_auto_failures WHERE document_id = ?1",
+                    params![document_id],
+                )?;
+            }
+            Err(error) => {
+                let failure = AutoAttendanceFailure {
+                    document_id,
+                    number: number.to_owned(),
+                    message: format!("{error:#}"),
+                    at: Utc::now().to_rfc3339(),
+                };
+                self.conn.execute(
+                    "INSERT INTO saiop_auto_failures(document_id, payload) VALUES(?1, ?2)
+                     ON CONFLICT(document_id) DO UPDATE SET payload = excluded.payload",
+                    params![document_id, seal(&serde_json::to_vec(&failure)?)?],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Imports whose automatic atendimento could not be recorded, oldest
+    /// first (documents in the trash are left out).
+    pub fn auto_attendance_failures(&self) -> Result<Vec<AutoAttendanceFailure>> {
+        self.cached("saiop_auto_failures", || {
+            let mut statement = self.conn.prepare(
+                "SELECT f.document_id, f.payload FROM saiop_auto_failures f
+                 WHERE NOT EXISTS(SELECT 1 FROM trash x WHERE x.kind = 'document' AND x.item_id = f.document_id)
+                 ORDER BY f.rowid",
+            )?;
+            let rows = statement
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut out = Vec::new();
+            for (document_id, blob) in rows {
+                // A record this Windows account cannot read says nothing useful.
+                if let Ok(mut failure) = unseal(&blob).and_then(|plain| {
+                    Ok(serde_json::from_slice::<AutoAttendanceFailure>(&plain)?)
+                })
+                {
+                    failure.document_id = document_id;
+                    out.push(failure);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Tries the automatic atendimento of an import again (the setting must
+    /// be on). Succeeds also when it already exists.
+    pub fn retry_auto_attendance(&mut self, document_id: i64) -> Result<()> {
+        ensure!(
+            self.auto_attendance_enabled()?,
+            "Ative \"Criar atendimento ao importar do SIGADOC\" para tentar de novo, ou dispense o aviso."
+        );
+        let capture = self.load_document(document_id)?.capture;
+        let outcome = self.attendance_for_import(document_id, &capture);
+        let message = outcome.as_ref().err().map(|e| format!("{e:#}"));
+        self.note_auto_attendance(document_id, &capture.document_number, outcome);
+        match message {
+            Some(message) => bail!("{message}"),
+            None => Ok(()),
+        }
+    }
+
+    /// Forgets a failure the person chose not to retry.
+    pub fn dismiss_auto_attendance_failure(&mut self, document_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM saiop_auto_failures WHERE document_id = ?1",
+            params![document_id],
+        )?;
+        Ok(())
     }
 
     /// Every atendimento, newest first, memoized until the library changes.
@@ -841,13 +952,26 @@ impl Store {
         }
 
         let actor = self.active_actor();
-        let now = Utc::now().to_rfc3339();
-        let today = Local::now().format("%Y-%m-%d").to_string();
-
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let id = Self::write_attendance(&tx, &actor, attendance, expected_version, by_person)?;
+        tx.commit()?;
+        Ok(id)
+    }
 
+    /// Writes an atendimento inside the caller's transaction (events for
+    /// status and assignee changes, version check, team log).
+    fn write_attendance(
+        tx: &rusqlite::Transaction,
+        actor: &str,
+        attendance: &SaiopAttendance,
+        expected_version: Option<i64>,
+        by_person: bool,
+    ) -> Result<i64> {
+        let actor = actor.to_owned();
+        let now = Utc::now().to_rfc3339();
+        let today = Local::now().format("%Y-%m-%d").to_string();
         let mut next = attendance.clone();
         next.reference_raw = next.reference_raw.trim().to_owned();
         next.reference_norm = normalize_reference(&next.reference_raw);
@@ -920,7 +1044,7 @@ impl Store {
                 ],
             )?;
             crate::intranet::record_mutation(
-                &tx,
+                tx,
                 &actor,
                 "saiop",
                 next.id,
@@ -937,7 +1061,6 @@ impl Store {
                     status_label(&next.status)
                 ),
             )?;
-            tx.commit()?;
             Ok(next.id)
         } else {
             next.created_at = now.clone();
@@ -971,7 +1094,7 @@ impl Store {
                 params![encoded, id],
             )?;
             crate::intranet::record_mutation(
-                &tx,
+                tx,
                 &actor,
                 "saiop",
                 id,
@@ -987,7 +1110,6 @@ impl Store {
                     }
                 ),
             )?;
-            tx.commit()?;
             Ok(id)
         }
     }
@@ -1527,9 +1649,10 @@ impl Store {
         Ok((removed, preserved))
     }
 
-    /// Cria uma tarefa vinculada a um atendimento do gabinete e ao documento
-    /// importado. Sem documento vinculado não há tarefa: a providência fica
-    /// registrada apenas na linha do tempo e o retorno é `None`.
+    /// Creates a task for an atendimento, linked to its document, and records
+    /// it in the atendimento's timeline, all in one write (also when the
+    /// change goes to the team). Without a linked document there is no task:
+    /// the step is only recorded in the timeline and `None` comes back.
     pub fn create_task_for_saiop(
         &mut self,
         attendance_id: i64,
@@ -1538,56 +1661,94 @@ impl Store {
         due_date: &str,
         assignee: &str,
     ) -> Result<Option<i64>> {
-        let mut attendances = self.list_saiop_attendances()?;
-        let att = attendances
-            .iter_mut()
+        let att = self
+            .list_saiop_attendances()?
+            .into_iter()
             .find(|a| a.id == attendance_id)
             .context("Atendimento não encontrado.")?;
         let version = self
             .item_version("saiop", attendance_id)
             .ok()
             .map(|v| v.version);
-
-        let task_id = if let Some(doc_id) = att.document_id {
-            let task = Task {
-                id: 0,
-                document_id: doc_id,
-                title: title.trim().to_owned(),
-                action: "examinar".into(),
-                status: "pendente".into(),
-                priority: if matches!(priority, "baixa" | "normal" | "alta" | "urgente") {
-                    priority.to_owned()
+        let task = att.document_id.map(|doc_id| Task {
+            id: 0,
+            document_id: doc_id,
+            title: title.trim().to_owned(),
+            action: "examinar".into(),
+            status: "pendente".into(),
+            priority: if matches!(priority, "baixa" | "normal" | "alta" | "urgente") {
+                priority.to_owned()
+            } else {
+                "normal".into()
+            },
+            due_date: due_date.trim().to_owned(),
+            notes: format!(
+                "Referência do gabinete: {}",
+                if att.reference_raw.is_empty() {
+                    &att.subject
                 } else {
-                    "normal".into()
+                    &att.reference_raw
+                }
+            ),
+            completed_at: None,
+            due_source: "definido pelo usuario".into(),
+            dependencies: Vec::new(),
+            reminder_date: String::new(),
+            checklist: Vec::new(),
+            outcome: String::new(),
+            assignee: assignee.trim().to_owned(),
+        });
+        if let Some(task) = &task {
+            task.validate()?;
+        }
+        if let Some(cfg) = self.client_config()? {
+            return match self.remote_mutate(
+                &cfg,
+                crate::intranet::IntranetMutation::CreateTaskForSaiop {
+                    attendance_id,
+                    task,
+                    title: title.trim().to_owned(),
+                    expected_version: version,
                 },
-                due_date: due_date.trim().to_owned(),
-                notes: format!(
-                    "Referência do gabinete: {}",
-                    if att.reference_raw.is_empty() {
-                        &att.subject
-                    } else {
-                        &att.reference_raw
-                    }
-                ),
-                completed_at: None,
-                due_source: "definido pelo usuario".into(),
-                dependencies: Vec::new(),
-                reminder_date: String::new(),
-                checklist: Vec::new(),
-                outcome: String::new(),
-                assignee: assignee.trim().to_owned(),
+            )? {
+                crate::intranet::MutationReply::Id(id) => Ok((id > 0).then_some(id)),
+                _ => bail!("Resposta inesperada ao criar a tarefa do atendimento."),
             };
-            let id = self.save_task(&task)?;
-            if !att.task_ids.contains(&id) {
-                att.task_ids.push(id);
+        }
+        self.write_task_for_saiop(attendance_id, task.as_ref(), title, version)
+    }
+
+    /// The single transaction behind [`Store::create_task_for_saiop`], also
+    /// run by the main computer and when a queued change is replayed.
+    pub(crate) fn write_task_for_saiop(
+        &mut self,
+        attendance_id: i64,
+        task: Option<&Task>,
+        title: &str,
+        expected_version: Option<i64>,
+    ) -> Result<Option<i64>> {
+        let actor = self.active_actor();
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut att = load_attendance_tx(&tx, attendance_id)?;
+        let task_id = match task {
+            Some(task) => {
+                ensure!(
+                    task.id == 0 && att.document_id == Some(task.document_id),
+                    "O atendimento mudou de documento; abra-o de novo e repita."
+                );
+                let saved = crate::tasks::write_task(&tx, &actor, task, None)?;
+                if !att.task_ids.contains(&saved.id) {
+                    att.task_ids.push(saved.id);
+                }
+                saved.id
             }
-            id
-        } else {
-            0
+            None => 0,
         };
         att.events.push(SaiopEvent {
             when: Utc::now().to_rfc3339(),
-            actor: self.active_actor(),
+            actor: actor.clone(),
             kind: "tarefa".into(),
             detail: if task_id > 0 {
                 format!("Tarefa #{task_id} criada: {}", title.trim())
@@ -1595,7 +1756,8 @@ impl Store {
                 format!("Providência registrada no atendimento: {}", title.trim())
             },
         });
-        self.save_saiop_attendance(att, version)?;
+        Self::write_attendance(&tx, &actor, &att, expected_version, true)?;
+        tx.commit()?;
         Ok((task_id > 0).then_some(task_id))
     }
 
@@ -1684,6 +1846,32 @@ impl Store {
 /// Whether undoing a spreadsheet import keeps this atendimento instead of
 /// deleting it: someone edited it, made a task from it or attached files to
 /// it. The preview and the undo itself both ask here, so they never disagree.
+/// One atendimento as stored, read inside a transaction.
+fn load_attendance_tx(conn: &rusqlite::Connection, id: i64) -> Result<SaiopAttendance> {
+    let (batch_id, source_row, document_id, blob) = conn
+        .query_row(
+            "SELECT batch_id, source_row, document_id, payload FROM saiop_attendances WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .context("Atendimento não encontrado no acervo.")?;
+    let mut att: SaiopAttendance = serde_json::from_slice(&unseal(&blob)?)
+        .context("Registro de atendimento SAIOP inválido")?;
+    att.id = id;
+    att.batch_id = batch_id;
+    att.source_row = source_row.map(|r| r as usize);
+    att.document_id = document_id;
+    Ok(att)
+}
+
 fn kept_on_undo(conn: &rusqlite::Connection, id: i64, att: &SaiopAttendance) -> Result<bool> {
     if att.human_edited || !att.task_ids.is_empty() {
         return Ok(true);
@@ -2742,6 +2930,55 @@ impl SaiopPanel {
                 }
             }
         });
+        // Imports (often made from the browser, with no window to tell) whose
+        // automatic atendimento could not be recorded.
+        let failures = store.auto_attendance_failures().unwrap_or_default();
+        if !failures.is_empty() {
+            ui.group(|ui| {
+                ui.colored_label(
+                    WARNING,
+                    format!(
+                        "⚠ {} importação(ões) sem o atendimento automático:",
+                        failures.len()
+                    ),
+                );
+                for failure in failures.iter().take(5) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(&failure.number).strong())
+                            .on_hover_text(format!(
+                                "Importado {}",
+                                crate::labels::elapsed(&failure.at).unwrap_or_default()
+                            ));
+                        ui.label(RichText::new(&failure.message).small());
+                        if ui.small_button("Tentar de novo").clicked() {
+                            match store.retry_auto_attendance(failure.document_id) {
+                                Ok(()) => self.set_notice(
+                                    format!("Atendimento de {} registrado.", failure.number),
+                                    false,
+                                ),
+                                Err(e) => {
+                                    self.set_notice(format!("Ainda não foi possível: {e:#}"), true)
+                                }
+                            }
+                        }
+                        if ui
+                            .small_button("Dispensar")
+                            .on_hover_text("Some o aviso; registre o atendimento à mão, se quiser.")
+                            .clicked()
+                        {
+                            if let Err(e) =
+                                store.dismiss_auto_attendance_failure(failure.document_id)
+                            {
+                                self.set_notice(format!("Não foi possível dispensar: {e}"), true);
+                            }
+                        }
+                    });
+                }
+                if failures.len() > 5 {
+                    ui.small(format!("e mais {}…", failures.len() - 5));
+                }
+            });
+        }
         if let Some((context_id, context_number)) = self.context_document.clone() {
             ui.horizontal_wrapped(|ui| {
                 if self.document_filter == Some(context_id) {
@@ -4189,5 +4426,101 @@ mod tests {
             store.delete_saiop_attendance(id).is_err(),
             "second delete reports it is gone"
         );
+    }
+    #[test]
+    fn a_task_created_from_an_atendimento_is_written_with_its_record_or_not_at_all() {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let receipt = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let att = store.list_saiop_attendances().unwrap().remove(0);
+        assert_eq!(att.document_id, Some(receipt.document_id));
+        let tasks_before = store.list_tasks().unwrap().len();
+
+        let task_id = store
+            .create_task_for_saiop(att.id, "Responder ofício", "alta", "", "Ana")
+            .unwrap()
+            .expect("a document is linked");
+        let tasks = store.list_tasks().unwrap();
+        assert_eq!(tasks.len(), tasks_before + 1);
+        let task = tasks.iter().find(|t| t.id == task_id).unwrap();
+        assert_eq!(task.document_id, receipt.document_id);
+        assert_eq!(task.priority, "alta");
+        let att = store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == att.id)
+            .unwrap();
+        assert_eq!(att.task_ids, vec![task_id]);
+        assert!(att
+            .events
+            .iter()
+            .any(|e| e.kind == "tarefa" && e.detail.contains("Responder ofício")));
+
+        // The atendimento changed meanwhile (stale version): neither the
+        // task nor the record is written.
+        let stale = store.item_version("saiop", att.id).unwrap().version - 1;
+        let mut task = task.clone();
+        task.id = 0;
+        task.title = "Não deve ficar".into();
+        assert!(store
+            .write_task_for_saiop(att.id, Some(&task), "Não deve ficar", Some(stale))
+            .is_err());
+        assert_eq!(store.list_tasks().unwrap().len(), tasks_before + 1);
+        assert!(!store
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .any(|t| t.title == "Não deve ficar"));
+    }
+    #[test]
+    fn a_failed_automatic_attendance_is_kept_for_the_person_to_retry() {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER block_att BEFORE INSERT ON saiop_attendances
+                 BEGIN SELECT RAISE(ABORT, 'disco cheio'); END;",
+            )
+            .unwrap();
+        let receipt = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        assert!(store.list_saiop_attendances().unwrap().is_empty());
+        let failures = store.auto_attendance_failures().unwrap();
+        assert_eq!(failures.len(), 1, "the import itself went through");
+        assert_eq!(failures[0].document_id, receipt.document_id);
+        assert!(failures[0].message.contains("disco cheio"), "{failures:?}");
+
+        assert!(store.retry_auto_attendance(receipt.document_id).is_err());
+        assert_eq!(store.auto_attendance_failures().unwrap().len(), 1);
+        store.conn.execute_batch("DROP TRIGGER block_att;").unwrap();
+        store.retry_auto_attendance(receipt.document_id).unwrap();
+        assert!(store.auto_attendance_failures().unwrap().is_empty());
+        assert_eq!(store.list_saiop_attendances().unwrap().len(), 1);
+
+        // Dismissing forgets the notice without creating anything.
+        store
+            .conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER block_att BEFORE INSERT ON saiop_attendances
+                 BEGIN SELECT RAISE(ABORT, 'disco cheio'); END;",
+            )
+            .unwrap();
+        let mut other = crate::model::sample_capture();
+        other.document_number = "SEFAZ-PRO-2026/00555".into();
+        other.source_url =
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00555"
+                .into();
+        other.request_id = uuid::Uuid::new_v4().to_string();
+        let second = store.import_capture(&other).unwrap();
+        assert_eq!(store.auto_attendance_failures().unwrap().len(), 1);
+        store
+            .dismiss_auto_attendance_failure(second.document_id)
+            .unwrap();
+        assert!(store.auto_attendance_failures().unwrap().is_empty());
     }
 }

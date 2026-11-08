@@ -60,6 +60,11 @@ pub struct JournalEntry {
     pub base: Option<IntranetMutation>,
     /// Revision of the copy right after this change was incorporated.
     pub revision: i64,
+    /// What the change created, with the numbers of this copy (its
+    /// `mutation` uses them too), so that a copy that numbered differently
+    /// can translate later changes.
+    #[serde(default)]
+    pub created: Vec<crate::idmap::CreatedId>,
 }
 
 /// Encrypted part of the file.

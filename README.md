@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Menu ▾ ▸ Guia do usuário** |
-| **Versão** | 0.19.6 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.19.7 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, quadro **Ligação com o navegador** | *✓ O Ponte está registrado para o Chrome e Edge* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.19.6.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.19.7.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 Se algum dos três não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -369,7 +369,7 @@ O painel **Atendimentos** é o "livro de entrada e saída" do gabinete: cada lin
 
 | Origem | Como |
 |---|---|
-| **Importação do SIGADOC** | Na primeira importação de cada documento, o Ponte cria o atendimento sozinho: referência = número do documento, assunto = título, entrada = hoje, responsável = você, situação *Em análise*, já ligado ao documento. Documentos juntados a outro não geram atendimento, e nova versão do mesmo documento não cria outro. A caixa **Criar atendimento ao importar do SIGADOC**, no alto do painel, desliga isso. |
+| **Importação do SIGADOC** | Na primeira importação de cada documento, o Ponte cria o atendimento sozinho: referência = número do documento, assunto = título, entrada = hoje, responsável = você, situação *Em análise*, já ligado ao documento. Documentos juntados a outro não geram atendimento, e nova versão do mesmo documento não cria outro. A caixa **Criar atendimento ao importar do SIGADOC**, no alto do painel, desliga isso. Se o registro automático falhar (a importação em si continua valendo), o painel mostra um aviso com o número do documento e o motivo, e os botões **Tentar de novo** e **Dispensar**. |
 | **À mão** | Botão **Registrar nova entrada**. |
 | **Planilha** | Botão **Importar planilha…** ([7.4](#74-importar-a-planilha-do-controle)). |
 
@@ -406,7 +406,7 @@ Só a **referência ou o assunto** é obrigatório.
 
 **Ligar a um documento.** Informe o número de um documento já importado e clique em **Ligar a documento**. A referência passa a ser o número do documento e fica travada enquanto ligado; **Desligar do documento** libera. O Resumo do documento passa a mostrar o atendimento.
 
-**Tarefas deste atendimento.** Lista as tarefas criadas a partir dele, com situação, prazo e **Abrir**. O botão **Criar tarefa** cria, no painel Tarefas, uma tarefa do documento ligado, com a prioridade, o prazo e o responsável do atendimento. Como toda tarefa pertence a um documento, o botão só fica ativo com um documento ligado.
+**Tarefas deste atendimento.** Lista as tarefas criadas a partir dele, com situação, prazo e **Abrir**. O botão **Criar tarefa** cria, no painel Tarefas, uma tarefa do documento ligado, com a prioridade, o prazo e o responsável do atendimento. Como toda tarefa pertence a um documento, o botão só fica ativo com um documento ligado. A tarefa e o registro dela na linha do tempo são gravados juntos: ou ficam os dois, ou nenhum.
 
 **Anexos.** Depois de salvo, o atendimento aceita arquivos seus ([5.6](#56-anexos)).
 
@@ -483,7 +483,7 @@ Um computador do gabinete é o **principal**; os outros se conectam a ele. Nada 
 
 Pronto: importações, notas, minutas, tarefas e atendimentos de todos vão para o mesmo acervo, com o nome de quem fez cada coisa.
 
-**Se o principal desligar**, nada para. Cada computador continua salvando localmente (a mensagem avisa *Salvo neste computador… será enviado ao reconectar*) e envia tudo quando a conexão volta. Se o principal quebrar de vez, qualquer colega pode marcar o próprio computador como principal e distribuir um novo código: o acervo dele já está completo.
+**Se o principal desligar**, nada para. Cada computador continua salvando localmente (a mensagem avisa *Salvo neste computador… será enviado ao reconectar*) e envia tudo quando a conexão volta, na ordem em que foi feito. O que foi criado sem conexão (uma tarefa, um atendimento, um anexo) pode receber outro número no principal; o Ponte acompanha essa troca, e as alterações seguintes chegam ao item certo. Se o principal quebrar de vez, qualquer colega pode marcar o próprio computador como principal e distribuir um novo código: o acervo dele já está completo.
 
 **Se os colegas não conseguirem conectar**, peça à TI para liberar a porta **7878 (TCP)** no Firewall do Windows do computador principal. A janela traz o comando pronto.
 
@@ -518,6 +518,8 @@ Um conflito acontece só quando o **mesmo item** foi alterado nos dois lados enq
 - **Usar só a do computador principal…**
 
 Todas pedem confirmação.
+
+Um caso especial: se o computador principal recusou a criação de um item feito sem conexão (por exemplo, a tarefa de um documento que um colega mandou para a lixeira), as alterações seguintes desse item não têm onde cair. Elas aparecem como aviso, sem as opções acima, só com **Dispensar o aviso**: refaça a alteração à mão, se ainda for necessária.
 
 ### 8.4 O indicador na barra inferior
 
@@ -758,7 +760,8 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/tasks.rs`, `src/tasks_ui.rs` | Tarefas, dependências, painel |
 | `src/saiop.rs` | Atendimentos: modelo, importador `.xlsx` (leitor ZIP/XML próprio), painel |
 | `src/trash.rs` | Lixeira, restauração e limpeza por prazo |
-| `src/intranet.rs` | Modos de rede, sincronização em thread própria, fila offline, mesclagem em três vias |
+| `src/intranet.rs` | Modos de rede, sincronização em thread própria, fila offline, mesclagem em três vias; o computador principal atende cada conexão numa thread, com limite por computador |
+| `src/idmap.rs` | Tradução dos números de itens criados sem conexão para os que receberam no acervo da equipe |
 | `src/sharedfolder.rs` | Arquivo de transporte da pasta compartilhada (PBKDF2 + AES-256-GCM) |
 | `src/ai.rs`, `src/chatgpt.rs`, `src/evidence.rs` | Cliente Ollama, login e Responses API da OpenAI, fontes para a IA |
 | `src/work_context.rs`, `src/draft_tools.rs` | Contexto de trabalho; modelos e comparação de minutas |
@@ -821,7 +824,7 @@ node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tes
 
 Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
-Hoje são 88 testes unitários (mais um que exige um Ollama de verdade e fica de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
+Hoje são 97 testes unitários (mais um que exige um Ollama de verdade e fica de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 
