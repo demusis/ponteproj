@@ -903,6 +903,54 @@ impl PonteApp {
             .unwrap_or_default()
     }
 
+    /// Asks for a `.eml` file and imports it as a manual record with its
+    /// attachments, then opens the record.
+    fn import_eml_dialog(&mut self) {
+        if self.worker.is_some() {
+            self.error("Aguarde a operação em andamento antes de importar um e-mail.");
+            return;
+        }
+        let Some(path) = crate::windows_ui::pick_file(
+            "Importar e-mail",
+            &[
+                ("E-mail salvo (.eml)", "*.eml"),
+                ("Todos os arquivos", "*.*"),
+            ],
+        ) else {
+            return;
+        };
+        match self.store.import_eml(&path) {
+            Ok(result) => {
+                self.refresh();
+                self.select(result.receipt.document_id);
+                self.tab = Tab::Document;
+                let mut message = if result.already_imported {
+                    format!(
+                        "Este e-mail já estava no acervo (“{}”); nada foi duplicado.",
+                        result.subject
+                    )
+                } else {
+                    format!(
+                        "E-mail “{}” importado como registro manual, com {} anexo(s).",
+                        result.subject, result.attachments_added
+                    )
+                };
+                for note in result.notes.iter().chain(result.attachments_skipped.iter()) {
+                    message.push(' ');
+                    message.push_str(note);
+                }
+                // A note is information; a file that could not be attached
+                // deserves the warning colour.
+                if result.attachments_skipped.is_empty() {
+                    self.message(message);
+                } else {
+                    self.error(message);
+                }
+            }
+            Err(error) => self.error(format!("E-mail não importado: {error:#}")),
+        }
+    }
+
     /// Shows the user guide (compiled into the program) in the browser.
     fn open_guide(&mut self) {
         match crate::guide::open() {
@@ -936,9 +984,18 @@ impl PonteApp {
         ui.horizontal_wrapped(|ui| {
             ui.label("Uma ligação, um memorando, um e-mail ou um papel podem virar um registro manual, marcado como tal e com tarefas, notas e anexos como qualquer documento.");
         });
-        if ui.button("+ Criar registro manual…").clicked() {
-            self.manual_form.open_new();
-        }
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("+ Criar registro manual…").clicked() {
+                self.manual_form.open_new();
+            }
+            if ui
+                .button("+ Importar e-mail (.eml)…")
+                .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro manual do tipo E-mail recebido, com os anexos. Nada é lido da sua conta de e-mail.")
+                .clicked()
+            {
+                self.import_eml_dialog();
+            }
+        });
         ui.add_space(16.0);
         let status = self.install_status();
         ui.group(|ui| {
@@ -2336,12 +2393,21 @@ impl PonteApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut backup = false;
+                let mut import_mail = false;
                 let mut export = false;
                 let mut guide = false;
                 ui.menu_button("Menu ▾", |ui| {
                     ui.set_min_width(230.0);
                     if ui.button("Rede e equipe…").clicked() {
                         self.intranet.open = true;
+                        ui.close();
+                    }
+                    if ui
+                        .button("Importar e-mail (.eml)…")
+                        .on_hover_text("Um e-mail salvo como arquivo vira um registro manual com os anexos.")
+                        .clicked()
+                    {
+                        import_mail = true;
                         ui.close();
                     }
                     if self.intranet.folder_mode(&self.store) {
@@ -2413,6 +2479,9 @@ impl PonteApp {
                 });
                 if backup {
                     self.backup(ui.ctx());
+                }
+                if import_mail {
+                    self.import_eml_dialog();
                 }
                 if export {
                     self.export_csv(ui.ctx());

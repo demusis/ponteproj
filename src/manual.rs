@@ -90,7 +90,24 @@ impl ManualFields {
     }
 
     fn capture(&self, number: &str, registered_by: &str) -> Capture {
-        let mut metadata = BTreeMap::new();
+        self.capture_with(
+            number,
+            registered_by,
+            uuid::Uuid::new_v4().to_string(),
+            BTreeMap::new(),
+        )
+    }
+
+    /// The capture with a given request id (an import that must recognize
+    /// itself, like an e-mail by its Message-ID) and extra metadata.
+    pub(crate) fn capture_with(
+        &self,
+        number: &str,
+        registered_by: &str,
+        request_id: String,
+        extra: BTreeMap<String, String>,
+    ) -> Capture {
+        let mut metadata = extra;
         metadata.insert("manual_kind".to_string(), self.kind.clone());
         metadata.insert(
             "document_type".to_string(),
@@ -113,7 +130,7 @@ impl ManualFields {
         }
         Capture {
             schema_version: 1,
-            request_id: uuid::Uuid::new_v4().to_string(),
+            request_id,
             source_url: format!("{MANUAL_ORIGIN}{number}"),
             document_number: number.to_owned(),
             title: self.title.trim().to_owned(),

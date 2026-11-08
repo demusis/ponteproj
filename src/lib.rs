@@ -9,6 +9,7 @@ pub mod export;
 pub mod files;
 pub mod guide;
 pub mod idmap;
+pub mod mail;
 pub mod manual;
 pub mod model;
 pub mod native;

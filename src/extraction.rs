@@ -132,11 +132,36 @@ pub fn extract(name: &str, bytes: &[u8]) -> Extracted {
         .unwrap_or_default();
     match extension.as_str() {
         "pdf" => extract_pdf(bytes),
-        // E-mails (.eml) are raw MIME: headers with addresses and encoded
-        // bodies would go to the AI as if they were text, so they wait for
-        // a real decoder.
         "txt" | "csv" => extract_plain(bytes),
         "docx" => extract_docx(bytes),
+        // Decoded MIME: subject and text only, never the addresses.
+        "eml" => match crate::mail::example_text(bytes) {
+            Ok(text) => {
+                let (text, clipped) = clip(text);
+                Extracted {
+                    status: if text.trim().is_empty() {
+                        TextStatus::Empty
+                    } else {
+                        TextStatus::Extracted
+                    },
+                    extractor: "mail",
+                    text,
+                    pages: 0,
+                    note: if clipped {
+                        format!("texto cortado em {} KiB", MAX_TEXT_BYTES / 1024)
+                    } else {
+                        "só assunto e texto; endereços deixados de fora".into()
+                    },
+                }
+            }
+            Err(error) => Extracted {
+                status: TextStatus::Failed,
+                extractor: "mail",
+                text: String::new(),
+                pages: 0,
+                note: format!("{error}"),
+            },
+        },
         _ => Extracted {
             status: TextStatus::Failed,
             extractor: "none",
@@ -266,7 +291,7 @@ fn extract_plain(bytes: &[u8]) -> Extracted {
     }
 }
 
-fn windows_1252(byte: u8) -> char {
+pub(crate) fn windows_1252(byte: u8) -> char {
     const HIGH: [char; 32] = [
         '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž',
         '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}',
@@ -810,11 +835,15 @@ mod tests {
         let wide = extract("nota.txt", &utf16);
         assert_eq!(wide.text, "Ofício");
         assert!(wide.note.contains("UTF-16"));
-        // E-mails are not decoded yet: refused, not sent as raw MIME.
-        assert_eq!(
-            extract("msg.eml", b"From: a@b\r\n\r\nQm9t").status,
-            TextStatus::Failed
+        // E-mails: decoded, subject and text only.
+        let mail = extract(
+            "msg.eml",
+            b"From: a@b\r\nSubject: Oi\r\nContent-Type: text/plain\r\n\r\nCorpo da mensagem",
         );
+        assert_eq!(mail.status, TextStatus::Extracted);
+        assert_eq!(mail.text, "Assunto: Oi\n\nCorpo da mensagem");
+        assert!(!mail.text.contains("a@b"));
+        assert_eq!(extract("lixo.eml", b"nada").status, TextStatus::Failed);
     }
 
     #[test]
