@@ -801,6 +801,38 @@ pub(crate) fn request_id_for_message_id(message_id: &str) -> String {
     uuid_from_digest(hasher)
 }
 
+/// The request id of a message that shares its Message-ID with a different
+/// one already in the library: tied to the content, so importing it again
+/// is still recognized.
+fn request_id_for_content(message_id: &str, digest: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ponte-mail-content:");
+    hasher.update(message_id.trim().as_bytes());
+    hasher.update(b"\n");
+    hasher.update(digest.as_bytes());
+    uuid_from_digest(hasher)
+}
+
+/// What a message says and carries: the record text and the content of
+/// every attachment. Two messages with the same Message-ID are the same
+/// message only when this matches (a Message-ID is not secret: anyone on
+/// the thread has it).
+fn content_digest(text: &str, attachments: &[MailAttachment]) -> String {
+    let mut files: Vec<String> = attachments
+        .iter()
+        .map(|a| format!("{:x}", Sha256::digest(&a.data)))
+        .collect();
+    files.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(b"ponte-mail-digest:");
+    hasher.update(text.as_bytes());
+    for file in files {
+        hasher.update(b"\n");
+        hasher.update(file.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 fn uuid_from_digest(hasher: Sha256) -> String {
     let digest = hasher.finalize();
     let mut raw = [0u8; 16];
@@ -859,8 +891,12 @@ fn record_text(parsed: &ParsedMail) -> (String, Option<String>) {
 pub struct MailImport {
     pub receipt: ImportReceipt,
     pub subject: String,
-    /// True when the message was already in the library (same Message-ID).
+    /// True when the message was already in the library (same Message-ID
+    /// and same content).
     pub already_imported: bool,
+    /// True when another message with the same Message-ID but different
+    /// content was there: this one became a record of its own.
+    pub separate_record: bool,
     pub attachments_added: usize,
     /// Files that could not be attached, with the reason.
     pub attachments_skipped: Vec<String>,
@@ -889,6 +925,7 @@ impl Store {
     pub fn import_eml_bytes(&mut self, bytes: &[u8]) -> Result<MailImport> {
         let parsed = parse(bytes)?;
         let (text, clipped) = record_text(&parsed);
+        let digest = content_digest(&text, &parsed.attachments);
         let title = if parsed.subject.chars().count() >= 3 {
             parsed.subject.clone()
         } else {
@@ -906,7 +943,7 @@ impl Store {
             title: clip_bytes(&title, 1000),
             origin: clip_bytes(&parsed.from, 1000),
             document_date: parsed.date.clone(),
-            text,
+            text: text.clone(),
         };
         fields.validate()?;
         let mut extra = BTreeMap::new();
@@ -922,19 +959,55 @@ impl Store {
             }
         }
         extra.insert("imported_from".to_owned(), "arquivo .eml".to_owned());
+        extra.insert("mail_digest".to_owned(), digest.clone());
         let actor = self.active_actor();
         let capture = fields.capture_with(
             MANUAL_PENDING,
             &actor,
             request_id_for(&parsed, bytes),
-            extra,
+            extra.clone(),
         );
-        let receipt = self.import_capture(&capture)?;
-        let already_imported = receipt.effective_outcome() != ImportOutcome::Imported;
+        let mut receipt = self.import_capture(&capture)?;
         let mut notes = parsed.notes.clone();
         if let Some(note) = clipped {
             notes.push(note);
         }
+        // Same Message-ID: the stored record answers whether it is the same
+        // message. Only then may this import complete its attachments.
+        let mut separate_record = false;
+        let mut may_attach = true;
+        if receipt.effective_outcome() != ImportOutcome::Imported {
+            match self.load_document(receipt.document_id) {
+                Ok(detail) => {
+                    let same = match detail.capture.metadata.get("mail_digest") {
+                        Some(stored) => *stored == digest,
+                        // Imported before the digest existed: the text,
+                        // which lists the attachments by name, decides.
+                        None => detail.capture.text.trim() == text.trim(),
+                    };
+                    if !same {
+                        let capture = fields.capture_with(
+                            MANUAL_PENDING,
+                            &actor,
+                            request_id_for_content(&parsed.message_id, &digest),
+                            extra,
+                        );
+                        receipt = self.import_capture(&capture)?;
+                        separate_record = true;
+                        notes.push(
+                            "Já havia no acervo outro e-mail com o mesmo identificador (Message-ID) e conteúdo diferente; este foi guardado como registro separado. Confira a origem.".to_owned(),
+                        );
+                    }
+                }
+                Err(_) => {
+                    may_attach = false;
+                    notes.push(
+                        "O registro já existente não pôde ser conferido neste computador; os anexos não foram acrescentados.".to_owned(),
+                    );
+                }
+            }
+        }
+        let already_imported = receipt.effective_outcome() != ImportOutcome::Imported;
         // Files already there (by content) are skipped quietly, so a second
         // import completes what a first one could not attach.
         let present = self
@@ -942,7 +1015,7 @@ impl Store {
             .unwrap_or_default();
         let mut added = 0usize;
         let mut skipped = Vec::new();
-        for attachment in &parsed.attachments {
+        for attachment in parsed.attachments.iter().filter(|_| may_attach) {
             let sha256 = format!("{:x}", Sha256::digest(&attachment.data));
             if present.iter().any(|a| a.sha256 == sha256) {
                 continue;
@@ -962,6 +1035,7 @@ impl Store {
             receipt,
             subject: fields.title,
             already_imported,
+            separate_record,
             attachments_added: added,
             attachments_skipped: skipped,
             notes,
@@ -1097,6 +1171,30 @@ iVBORw0KGgo=\r\n\
         let nameless = b"From: a@b\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment\r\n\r\n%PDF-1.4 x\r\n--x--\r\n";
         let mail = parse(nameless).unwrap();
         assert_eq!(mail.attachments[0].name, "anexo-1.pdf");
+    }
+
+    #[test]
+    fn a_different_message_with_a_known_message_id_never_joins_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let first = store.import_eml_bytes(SAMPLE.as_bytes()).unwrap();
+        let original = Owner::Document(first.receipt.document_id);
+        assert_eq!(store.list_attachments(original).unwrap().len(), 1);
+        // Anyone on the thread knows the Message-ID; the content differs.
+        let forged = SAMPLE.replace("To: gabinete@", "To: outro@");
+        assert_ne!(forged, SAMPLE);
+        let second = store.import_eml_bytes(forged.as_bytes()).unwrap();
+        assert!(second.separate_record);
+        assert!(!second.already_imported);
+        assert_ne!(second.receipt.document_id, first.receipt.document_id);
+        assert_eq!(store.list_attachments(original).unwrap().len(), 1);
+        assert!(second.notes.iter().any(|n| n.contains("registro separado")));
+        // That message again is recognized as itself.
+        let third = store.import_eml_bytes(forged.as_bytes()).unwrap();
+        assert!(third.already_imported && third.separate_record);
+        assert_eq!(third.receipt.document_id, second.receipt.document_id);
+        assert_eq!(third.attachments_added, 0);
+        assert_eq!(store.list_documents("").unwrap().len(), 2);
     }
 
     #[test]

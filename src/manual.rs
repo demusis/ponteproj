@@ -180,7 +180,17 @@ impl Store {
             .get("registered_by")
             .cloned()
             .unwrap_or_else(|| self.active_actor());
-        let capture = fields.capture(&detail.capture.document_number, &registered_by);
+        let mut capture = fields.capture(&detail.capture.document_number, &registered_by);
+        // Where the record came from stays with every version: an e-mail's
+        // identity and digest let a later import of it be recognized.
+        for (key, value) in &detail.capture.metadata {
+            if key.starts_with("mail_") || key == "imported_from" {
+                capture
+                    .metadata
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+        }
         let receipt = self.import_capture(&capture)?;
         ensure!(
             receipt.document_id == id,

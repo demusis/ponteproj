@@ -49,6 +49,11 @@ impl Reporter {
     }
 
     /// Reports the current step; a closed channel is not an error.
+    /// The cancel flag itself, for work that waits on the network.
+    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
     pub fn step(&self, text: impl Into<String>) {
         if let Some(sender) = &self.sender {
             let _ = sender.send(text.into());

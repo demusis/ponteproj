@@ -27,6 +27,15 @@ use serde::{Deserialize, Serialize};
 pub const EXTRACTOR_VERSION: i64 = 1;
 /// Text kept per file; what the AI sees is capped again at assembly.
 pub const MAX_TEXT_BYTES: usize = 512 * 1024;
+/// Longest a PDF may take to give its text (under the 25 s a client waits
+/// for the main computer, so a slow file is a refusal, not a retry).
+const PDF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// PDF readers that may run at once, abandoned slow ones included: a file
+/// that never finishes cannot pile up threads.
+const MAX_PDF_READERS: usize = 2;
+static PDF_READERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Stack of the thread that reads a PDF (reserved, used only as needed).
+const PDF_STACK_BYTES: usize = 256 * 1024 * 1024;
 const MAX_PAGES: usize = 300;
 const MAX_DOCX_XML_BYTES: usize = 32 * 1024 * 1024;
 
@@ -187,17 +196,59 @@ fn clip(mut text: String) -> (String, bool) {
 }
 
 fn extract_pdf(bytes: &[u8]) -> Extracted {
-    let pages = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem_by_pages(bytes))
-        .ok()
-        .and_then(Result::ok);
-    let Some(pages) = pages else {
+    // The PDF may come from any member (the main computer extracts what a
+    // client attached): it is read on a thread of its own, with a deep
+    // stack for nested objects and a time limit, so a hostile file can
+    // neither hang the caller nor exhaust its stack.
+    use std::sync::atomic::Ordering;
+    if PDF_READERS.fetch_add(1, Ordering::SeqCst) >= MAX_PDF_READERS {
+        PDF_READERS.fetch_sub(1, Ordering::SeqCst);
         return Extracted {
             status: TextStatus::Failed,
             extractor: "pdf_extract",
             text: String::new(),
             pages: 0,
-            note: "O PDF não pôde ser lido.".into(),
+            note: "Outro PDF ainda está sendo lido; tente de novo em instantes.".into(),
         };
+    }
+    let owned = bytes.to_vec();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("ponte-pdf-text".into())
+        .stack_size(PDF_STACK_BYTES)
+        .spawn(move || {
+            let pages =
+                std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem_by_pages(&owned))
+                    .ok()
+                    .and_then(Result::ok);
+            PDF_READERS.fetch_sub(1, Ordering::SeqCst);
+            let _ = sender.send(pages);
+        });
+    if spawned.is_err() {
+        PDF_READERS.fetch_sub(1, Ordering::SeqCst);
+    }
+    let outcome = match spawned {
+        Ok(_) => receiver
+            .recv_timeout(PDF_TIMEOUT)
+            .map_err(|error| matches!(error, std::sync::mpsc::RecvTimeoutError::Timeout)),
+        Err(_) => Err(false),
+    };
+    let pages = match outcome {
+        Ok(Some(pages)) => pages,
+        failure => {
+            let note = if failure == Err(true) {
+                "O PDF demorou demais para ser lido."
+            } else {
+                "O PDF não pôde ser lido."
+            };
+            return Extracted {
+                status: TextStatus::Failed,
+                extractor: "pdf_extract",
+                text: String::new(),
+                pages: 0,
+                note: note.into(),
+            };
+        }
     };
     let total = pages.len();
     let mut text = String::new();

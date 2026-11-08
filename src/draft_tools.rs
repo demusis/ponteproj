@@ -1,5 +1,6 @@
-//! Draft export to RTF, the placeholder filler of the old personal templates
-//! (kept for migrated libraries) and the comparison window.
+//! Draft export to RTF and the comparison window. The old personal-template
+//! table is only read by the migration to work templates; `save_personal_template`
+//! and `apply` are kept for the tests of that migration and are not called by the UI.
 use crate::{model::Capture, protection, storage::Store};
 use anyhow::{ensure, Result};
 use eframe::egui;

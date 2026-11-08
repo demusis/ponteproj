@@ -48,6 +48,8 @@ const MAX_SECTION_TEXT: usize = 128 * 1024;
 const MIGRATED_FROM: &str = "personal_templates";
 const MAX_EXAMPLE_TEXT: usize = 64 * 1024;
 const MAX_COMMENTS: usize = 10;
+/// What the person typed in "Pedido desta minuta", as recorded.
+const MAX_GUIDANCE: usize = 64 * 1024;
 
 /// Who sees a template or block.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -560,6 +562,39 @@ pub fn detect_variables(text: &str) -> Vec<Variable> {
     out
 }
 
+/// What a publication fixes: the draft version and each block's version.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishPlan {
+    pub version: u32,
+    pub pins: Vec<(String, u32)>,
+    /// Digest of the draft as the publisher saw it: a colleague's edit of
+    /// the same draft number is not published in their name.
+    #[serde(default)]
+    pub draft_sha256: String,
+    /// Bringing an archived template back, not publishing a draft.
+    #[serde(default)]
+    pub unarchive: bool,
+}
+
+/// What the draft says, not who saved it or when: the computer that
+/// replays a save stamps its own author and time on the same content.
+fn draft_digest(version: &TemplateVersion) -> String {
+    let refs: Vec<(&str, &BlockMode)> = version
+        .block_refs
+        .iter()
+        .map(|r| (r.block_uid.as_str(), &r.mode))
+        .collect();
+    let bytes = serde_json::to_vec(&(
+        &version.sections,
+        &version.variables,
+        refs,
+        &version.references,
+        &version.criteria,
+    ))
+    .unwrap_or_default();
+    format!("{:x}", Sha256::digest(&bytes))
+}
+
 /// Stable digest of a member name, so a personal item is found by its owner
 /// on any computer without the name in clear.
 pub fn owner_key(member: &str) -> Vec<u8> {
@@ -729,6 +764,24 @@ fn validate_example(example: &Example) -> Result<()> {
     Ok(())
 }
 
+/// The provenance a saved draft carries, checked like any team input.
+pub(crate) fn validate_provenance(provenance: &crate::model::DraftProvenance) -> Result<()> {
+    if let Some(uid) = &provenance.generation_uid {
+        ensure_uid(uid)?;
+    }
+    if let Some(uid) = &provenance.template_uid {
+        ensure_uid(uid)?;
+    }
+    ensure_text(&provenance.template_name, MAX_NAME, "O nome do modelo")?;
+    ensure_text(&provenance.model, MAX_NAME, "O modelo de IA")?;
+    ensure_text(&provenance.provider, MAX_NAME, "O serviço de IA")?;
+    ensure!(
+        provenance.request_guidance.len() <= MAX_GUIDANCE,
+        "O pedido desta minuta é longo demais."
+    );
+    Ok(())
+}
+
 pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
     ensure_uid(&record.uid)?;
     ensure!(
@@ -745,6 +798,41 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
             && record.conflicts_shown.len() <= 64,
         "Registro de geração grande demais."
     );
+    // Names and identifiers are short and clean; long texts are only
+    // bounded (they come from the person and the model, pasted text may
+    // carry anything).
+    ensure_text(&record.template_name, MAX_NAME, "O nome do modelo")?;
+    ensure_text(&record.model, MAX_NAME, "O modelo de IA")?;
+    ensure_text(&record.provider, MAX_NAME, "O serviço de IA")?;
+    ensure_text(&record.system_sha256, 64, "O resumo do texto de sistema")?;
+    ensure!(
+        record.request_guidance.len() <= MAX_GUIDANCE,
+        "O pedido desta minuta é longo demais."
+    );
+    for block in &record.blocks {
+        ensure_uid(&block.uid)?;
+        ensure_text(&block.name, MAX_NAME, "O nome da instrução")?;
+        ensure!(block.mode.len() <= 4096, "Registro de geração inválido.");
+    }
+    for uid in &record.example_uids {
+        ensure_uid(uid)?;
+    }
+    for source in &record.sources {
+        ensure_text(&source.id, MAX_NAME, "O identificador da fonte")?;
+        ensure!(
+            source.label.len() <= MAX_SHORT_TEXT,
+            "Registro de geração inválido."
+        );
+    }
+    for conflict in &record.conflicts_shown {
+        ensure!(
+            conflict.len() <= MAX_SHORT_TEXT * 4,
+            "Registro de geração inválido."
+        );
+    }
+    if let Outcome::Refused { reason } = &record.outcome {
+        ensure!(reason.len() <= 8 * 1024, "Registro de geração inválido.");
+    }
     let bytes: usize = record.blocks.iter().map(|b| b.text.len()).sum::<usize>()
         + record.request_guidance.len()
         + record
@@ -1307,7 +1395,21 @@ impl Store {
                         reference.version = None;
                     }
                     let published: TemplateVersion = decode(&last.2)?;
-                    if !same_template_content(&published, &value) {
+                    // Compared as it would be published: floating
+                    // references at the blocks' current versions, so
+                    // adopting a newer instruction counts as a change.
+                    let mut following = value.clone();
+                    for reference in &mut following.block_refs {
+                        reference.version = tx
+                            .query_row(
+                                "SELECT current_version FROM instruction_blocks WHERE uid=?1",
+                                [&reference.block_uid],
+                                |r| r.get::<_, i64>(0),
+                            )
+                            .optional()?
+                            .map(|v| v as u32);
+                    }
+                    if !same_template_content(&published, &following) {
                         tx.execute(
                             "INSERT INTO work_template_versions(template_id,version,published,payload,created_at)
                              VALUES(?1,?2,0,?3,?4)",
@@ -1344,13 +1446,80 @@ impl Store {
         expected_version: Option<i64>,
     ) -> Result<WorkTemplate> {
         ensure_uid(uid)?;
+        let plan = if status == Status::Published {
+            self.publish_plan(uid)?
+        } else {
+            None
+        };
+        self.set_template_status_with(uid, status, plan, expected_version)
+    }
+
+    /// What publishing means as this computer sees it: the draft number and
+    /// the block version each reference gets. Sent with the change, so the
+    /// main computer (or a later replay) publishes exactly that, not the
+    /// blocks' versions of the moment. For an archived template the plan
+    /// says "bring it back".
+    fn publish_plan(&self, uid: &str) -> Result<Option<PublishPlan>> {
+        let template = self
+            .template_by_uid(uid)?
+            .context("Modelo não encontrado.")?;
+        if template.status == Status::Archived {
+            return Ok(Some(PublishPlan {
+                unarchive: true,
+                ..Default::default()
+            }));
+        }
+        let draft = template
+            .draft_version()
+            .context("Não há alterações a publicar neste modelo.")?;
+        let blocks = self.list_blocks()?;
+        let mut pins = Vec::new();
+        for reference in &draft.block_refs {
+            let version = match reference.version {
+                Some(version) => version,
+                None => blocks
+                    .iter()
+                    .find(|b| b.uid == reference.block_uid)
+                    .context(
+                        "Uma instrução deste modelo não existe mais; retire-a antes de publicar.",
+                    )?
+                    .current_version,
+            };
+            pins.push((reference.block_uid.clone(), version));
+        }
+        Ok(Some(PublishPlan {
+            version: draft.version,
+            pins,
+            draft_sha256: draft_digest(draft),
+            unarchive: false,
+        }))
+    }
+
+    pub(crate) fn set_template_status_with(
+        &mut self,
+        uid: &str,
+        status: Status,
+        plan: Option<PublishPlan>,
+        expected_version: Option<i64>,
+    ) -> Result<WorkTemplate> {
+        ensure_uid(uid)?;
         ensure!(status != Status::Draft, "Situação inválida.");
+        if let Some(plan) = &plan {
+            ensure!(
+                plan.pins.len() <= MAX_BLOCKS_PER_TEMPLATE,
+                "Publicação inválida."
+            );
+            for (block_uid, _) in &plan.pins {
+                ensure_uid(block_uid)?;
+            }
+        }
         if let Some(cfg) = self.client_config()? {
             self.remote_mutate(
                 &cfg,
                 IntranetMutation::SetTemplateStatus {
                     uid: uid.to_owned(),
                     status,
+                    plan,
                     expected_version,
                 },
             )?;
@@ -1375,6 +1544,12 @@ impl Store {
         let current_status = Status::parse(&current_status)?;
         let details = match status {
             Status::Published if current_status == Status::Archived => {
+                // Asked to publish a draft, found archived (a colleague
+                // archived it meanwhile): never turned into an unarchive.
+                ensure!(
+                    plan.as_ref().is_none_or(|p| p.unarchive),
+                    "O modelo foi arquivado enquanto isso; desarquive-o antes de publicar."
+                );
                 // Unarchiving only brings it back: published if it ever was,
                 // otherwise a draft again; a pending draft stays a draft.
                 let current: i64 = tx.query_row(
@@ -1390,6 +1565,12 @@ impl Store {
                 format!("Desarquivou o modelo \"{}\"", head.name)
             }
             Status::Published => {
+                // Asked to bring back, found active (a colleague did it):
+                // a pending draft is never published by that request.
+                ensure!(
+                    !plan.as_ref().is_some_and(|p| p.unarchive),
+                    "O modelo já foi desarquivado enquanto isso."
+                );
                 let draft: Option<(i64, Vec<u8>)> = tx
                     .query_row(
                         "SELECT version,payload FROM work_template_versions WHERE template_id=?1 AND published=0 ORDER BY version DESC LIMIT 1",
@@ -1399,7 +1580,20 @@ impl Store {
                     .optional()?;
                 match draft {
                     Some((number, blob)) => {
+                        if let Some(plan) = &plan {
+                            ensure!(
+                                number == i64::from(plan.version),
+                                "O rascunho do modelo mudou desde que foi aberto; confira e publique de novo."
+                            );
+                        }
                         let mut value: TemplateVersion = decode(&blob)?;
+                        if let Some(plan) = &plan {
+                            ensure!(
+                                plan.draft_sha256.is_empty()
+                                    || plan.draft_sha256 == draft_digest(&value),
+                                "O rascunho do modelo mudou desde que foi aberto; confira e publique de novo."
+                            );
+                        }
                         for reference in &mut value.block_refs {
                             let block = blocks
                                 .iter()
@@ -1427,7 +1621,26 @@ impl Store {
                                         "Publique a instrução \"{}\" antes de publicar o modelo.",
                                         block.name
                                     );
-                                    block.current_version
+                                    match &plan {
+                                        // The version the publisher saw.
+                                        Some(plan) => {
+                                            let version = plan
+                                                .pins
+                                                .iter()
+                                                .find(|(b, _)| *b == reference.block_uid)
+                                                .map(|(_, v)| *v)
+                                                .context(
+                                                    "Publicação incompleta; publique de novo.",
+                                                )?;
+                                            ensure!(
+                                                block.version(version).is_some_and(|v| v.published),
+                                                "A versão {version} da instrução \"{}\" não está publicada.",
+                                                block.name
+                                            );
+                                            version
+                                        }
+                                        None => block.current_version,
+                                    }
                                 }
                             };
                             reference.version = Some(pinned);
@@ -1530,11 +1743,14 @@ impl Store {
         let source = self
             .template_by_uid(uid)?
             .context("Modelo não encontrado.")?;
-        let base = source
+        let mut base = source
             .published_version()
             .or(source.versions.last())
             .cloned()
             .context("O modelo não tem versão.")?;
+        for reference in &mut base.block_refs {
+            reference.version = None;
+        }
         let copy = WorkTemplate {
             id: 0,
             uid: String::new(),
@@ -1933,11 +2149,20 @@ impl Store {
         let previous_status = match &existing {
             Some((_, status, blob)) => {
                 let previous: Example = decode(blob)?;
+                let previous_status = ExampleStatus::parse(status)?;
+                // Changed text was not reviewed: it goes back to "não
+                // conferido" until someone approves it again.
+                if previous_status == ExampleStatus::Approved
+                    && stored.status == ExampleStatus::Approved
+                    && !same_example_content(&previous, &stored)
+                {
+                    stored.status = ExampleStatus::Unverified;
+                }
                 stored.created_by = previous.created_by;
                 stored.created_at = previous.created_at;
                 stored.reviewed_by = previous.reviewed_by;
                 stored.reviewed_at = previous.reviewed_at;
-                Some(ExampleStatus::parse(status)?)
+                Some(previous_status)
             }
             None => {
                 stored.created_by = actor.clone();
@@ -2061,20 +2286,57 @@ impl Store {
         }
         let actor = self.active_actor();
         let mut stored = record.clone();
-        if stored.created_by.trim().is_empty() {
-            stored.created_by = actor.clone();
-        }
-        if stored.created_at.trim().is_empty() {
+        // Who generated is who sends it, never what the record says; the
+        // time is kept when plausible (a queued record arrives later).
+        stored.created_by = actor.clone();
+        let plausible = chrono::DateTime::parse_from_rfc3339(&stored.created_at)
+            .is_ok_and(|t| t <= chrono::Utc::now() + chrono::Duration::minutes(5));
+        if !plausible {
             stored.created_at = now();
         }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let belongs: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM captures WHERE id=?1 AND document_id=?2)",
+            params![stored.capture_id, stored.document_id],
+            |r| r.get(0),
+        )?;
+        ensure!(belongs, "A captura não pertence a este documento.");
+        let existing: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT document_id,capture_id FROM draft_generations WHERE uid=?1",
+                [&stored.uid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((document_id, capture_id)) = existing {
+            // A replay (queued change sent twice): the first record stands,
+            // and it can never be moved to another document.
+            ensure!(
+                document_id == stored.document_id && capture_id == stored.capture_id,
+                "Este registro de geração pertence a outro documento."
+            );
+            if let Some(draft_id) = stored.draft_id {
+                link_generation(&tx, &stored.uid, document_id, draft_id)?;
+            }
+            tx.commit()?;
+            return Ok(());
+        }
+        // A draft named by the record must be of the same document.
+        if let Some(draft_id) = stored.draft_id {
+            let same: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM drafts WHERE id=?1 AND document_id=?2)",
+                params![draft_id, stored.document_id],
+                |r| r.get(0),
+            )?;
+            if !same {
+                stored.draft_id = None;
+            }
+        }
         tx.execute(
             "INSERT INTO draft_generations(uid,document_id,capture_id,draft_id,template_uid,payload,created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)
-             ON CONFLICT(uid) DO UPDATE SET payload=excluded.payload,
-                 draft_id=coalesce(draft_generations.draft_id, excluded.draft_id)",
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![
                 stored.uid,
                 stored.document_id,
@@ -2154,10 +2416,17 @@ impl Store {
         }
         // An interrupted run leaves migrated groups behind: recognized by
         // their origin mark, they are not created twice.
+        // Only this member's own personal ones: a colleague's migrated
+        // template with the same name (arrived by sync) is not this one.
+        let me = owner_key(&self.active_actor());
         let already: Vec<(String, String)> = self
             .list_templates()?
             .into_iter()
-            .filter(|t| t.derived_from.as_deref() == Some(MIGRATED_FROM))
+            .filter(|t| {
+                t.derived_from.as_deref() == Some(MIGRATED_FROM)
+                    && t.scope == Scope::Personal
+                    && owner_key(&t.owner) == me
+            })
             .map(|t| (t.name.clone(), t.kind.clone()))
             .collect();
         let mut created = 0;
@@ -2464,21 +2733,30 @@ pub(crate) fn apply_templates(tx: &Connection, snapshot: &TemplatesSnapshot) -> 
 
 /// Links a saved draft version to the generation it came from (inside the
 /// draft's transaction).
-pub(crate) fn link_generation(tx: &Connection, generation_uid: &str, draft_id: i64) -> Result<()> {
+pub(crate) fn link_generation(
+    tx: &Connection,
+    generation_uid: &str,
+    document_id: i64,
+    draft_id: i64,
+) -> Result<()> {
+    // Only a generation of the same document, not linked yet, to a draft
+    // of that document.
     tx.execute(
-        "UPDATE draft_generations SET draft_id=?1 WHERE uid=?2 AND draft_id IS NULL",
-        params![draft_id, generation_uid],
+        "UPDATE draft_generations SET draft_id=?1
+         WHERE uid=?2 AND document_id=?3 AND draft_id IS NULL
+           AND EXISTS(SELECT 1 FROM drafts WHERE id=?1 AND document_id=?3)",
+        params![draft_id, generation_uid, document_id],
     )?;
     Ok(())
 }
 
-/// Whether two versions say the same thing (pinned block versions, author,
-/// dates and notes aside).
+/// Whether two versions say the same thing, block versions included
+/// (author, dates and notes aside).
 fn same_template_content(a: &TemplateVersion, b: &TemplateVersion) -> bool {
-    let refs = |v: &TemplateVersion| -> Vec<(String, BlockMode)> {
+    let refs = |v: &TemplateVersion| -> Vec<(String, BlockMode, Option<u32>)> {
         v.block_refs
             .iter()
-            .map(|r| (r.block_uid.clone(), r.mode.clone()))
+            .map(|r| (r.block_uid.clone(), r.mode.clone(), r.version))
             .collect()
     };
     a.sections == b.sections
@@ -2486,6 +2764,15 @@ fn same_template_content(a: &TemplateVersion, b: &TemplateVersion) -> bool {
         && refs(a) == refs(b)
         && a.references == b.references
         && a.criteria == b.criteria
+}
+
+fn same_example_content(a: &Example, b: &Example) -> bool {
+    a.template_uid == b.template_uid
+        && a.title == b.title
+        && a.demand == b.demand
+        && a.reply == b.reply
+        && a.explanation == b.explanation
+        && a.comments == b.comments
 }
 
 fn owner_hash_for(scope: Scope, owner: &str) -> Option<Vec<u8>> {
@@ -2705,6 +2992,178 @@ mod tests {
             )
             .unwrap();
         assert_eq!(versions, 0);
+    }
+
+    #[test]
+    fn records_and_examples_resist_rewriting() {
+        let (_dir, mut store) = store();
+        let one = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let mut other_capture = crate::model::sample_capture();
+        other_capture.request_id = uuid::Uuid::new_v4().to_string();
+        other_capture.document_number = "SEFAZ-PRO-2026/00999".into();
+        other_capture.source_url = other_capture.source_url.replace("00001", "00999");
+        let two = store.import_capture(&other_capture).unwrap();
+        assert_ne!(one.document_id, two.document_id);
+        let record = GenerationRecord {
+            uid: new_uid(),
+            document_id: one.document_id,
+            capture_id: one.capture_id,
+            created_by: "Outra pessoa".into(),
+            outcome: Outcome::Accepted,
+            ..Default::default()
+        };
+        store.record_generation(&record).unwrap();
+        let stored = store.generations_for_document(one.document_id).unwrap();
+        assert_ne!(stored[0].created_by, "Outra pessoa");
+        // A replay keeps the first record; another document is refused.
+        let replay = GenerationRecord {
+            model: "outro".into(),
+            ..record.clone()
+        };
+        store.record_generation(&replay).unwrap();
+        assert!(store.generations_for_document(one.document_id).unwrap()[0]
+            .model
+            .is_empty());
+        let moved = GenerationRecord {
+            document_id: two.document_id,
+            capture_id: two.capture_id,
+            ..record.clone()
+        };
+        assert!(store.record_generation(&moved).is_err());
+        // A capture of another document is refused too.
+        let mismatched = GenerationRecord {
+            uid: new_uid(),
+            capture_id: two.capture_id,
+            ..record.clone()
+        };
+        assert!(store.record_generation(&mismatched).is_err());
+
+        // An approved example whose text changes needs approval again.
+        let template = store
+            .save_template(&WorkTemplate::new("Ofício", "resposta", "Texto"), None)
+            .unwrap();
+        let example = store
+            .save_example(
+                &Example {
+                    template_uid: template.uid.clone(),
+                    title: "Ex".into(),
+                    reply: "Resposta".into(),
+                    status: ExampleStatus::Approved,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(example.status, ExampleStatus::Approved);
+        let renamed = store
+            .save_example(
+                &Example {
+                    origin: "anotação nova".into(),
+                    ..example.clone()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(renamed.status, ExampleStatus::Approved);
+        let edited = store
+            .save_example(
+                &Example {
+                    reply: "Resposta alterada".into(),
+                    ..renamed
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(edited.status, ExampleStatus::Unverified);
+        assert!(edited.reviewed_by.is_empty());
+    }
+
+    #[test]
+    fn publishing_fixes_what_the_publisher_saw() {
+        let (_dir, mut store) = store();
+        let block = store
+            .save_block(
+                &InstructionBlock::new("Tom", "estilo", "Seja cordial."),
+                None,
+            )
+            .unwrap();
+        let block = store
+            .set_block_status(&block.uid, Status::Published, None)
+            .unwrap();
+        let mut template = WorkTemplate::new("Ofício", "resposta", "Texto");
+        template.versions[0].block_refs.push(BlockRef {
+            block_uid: block.uid.clone(),
+            version: None,
+            mode: BlockMode::Mandatory,
+        });
+        let template = store.save_template(&template, None).unwrap();
+        let plan = store.publish_plan(&template.uid).unwrap().unwrap();
+        assert_eq!(plan.pins, vec![(block.uid.clone(), 1)]);
+        assert!(!plan.unarchive && !plan.draft_sha256.is_empty());
+        // Meanwhile the block gets a version 2.
+        let mut newer = block.clone();
+        newer.versions.last_mut().unwrap().text = "Seja cordial e breve.".into();
+        let newer = store.save_block(&newer, None).unwrap();
+        store
+            .set_block_status(&newer.uid, Status::Published, None)
+            .unwrap();
+        // The replayed publication pins what its author saw, version 1.
+        let published = store
+            .set_template_status_with(&template.uid, Status::Published, Some(plan), None)
+            .unwrap();
+        assert_eq!(
+            published.published_version().unwrap().block_refs[0].version,
+            Some(1)
+        );
+        // A revision that only follows the newer instruction is a change
+        // that can be published.
+        let revised = store.save_template(&published, None).unwrap();
+        assert!(revised.draft_version().is_some());
+        let republished = store
+            .set_template_status(&revised.uid, Status::Published, None)
+            .unwrap();
+        assert_eq!(
+            republished.published_version().unwrap().block_refs[0].version,
+            Some(2)
+        );
+        // A publication for a draft that was archived meanwhile is refused,
+        // not turned into an unarchive.
+        let again = store.save_template(
+            &WorkTemplate {
+                versions: vec![TemplateVersion {
+                    criteria: vec!["Nova regra".into()],
+                    ..republished.published_version().unwrap().clone()
+                }],
+                ..republished.clone()
+            },
+            None,
+        );
+        let again = again.unwrap();
+        let plan = store.publish_plan(&again.uid).unwrap();
+        store
+            .set_template_status(&again.uid, Status::Archived, None)
+            .unwrap();
+        assert!(store
+            .set_template_status_with(&again.uid, Status::Published, plan, None)
+            .is_err());
+        // Bringing it back, then a second "bring back" that arrives late,
+        // never publishes the pending draft.
+        let back = store.publish_plan(&again.uid).unwrap();
+        assert!(back.as_ref().unwrap().unarchive);
+        store
+            .set_template_status_with(&again.uid, Status::Published, back.clone(), None)
+            .unwrap();
+        assert!(store
+            .set_template_status_with(&again.uid, Status::Published, back, None)
+            .is_err());
+        assert!(store
+            .template_by_uid(&again.uid)
+            .unwrap()
+            .unwrap()
+            .draft_version()
+            .is_some());
     }
 
     #[test]

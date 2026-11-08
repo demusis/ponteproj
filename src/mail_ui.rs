@@ -35,6 +35,16 @@ pub enum MailAction {
     },
 }
 
+/// Why the window's controls may be locked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MailBusy {
+    Free,
+    /// A mail-server request is running.
+    Mail,
+    /// Some other operation of the app is running.
+    Other,
+}
+
 /// The inline account form (creating or editing).
 struct AccountForm {
     account: MailAccount,
@@ -81,6 +91,11 @@ pub struct MailPanel {
     /// Uids whose Message-ID is already in the library (computed once).
     imported: BTreeSet<u32>,
     summary: Vec<(Color32, String)>,
+    /// Warning lines about messages left out of the running import (too
+    /// large); they join the result list when the import answers.
+    skipped_lines: Vec<String>,
+    /// "Excluir" clicked on the account; waiting for confirmation.
+    confirm_delete_account: bool,
     notice: Option<(String, bool)>,
     /// New messages arrived: compute `imported` on the next frame.
     pending_check: bool,
@@ -143,6 +158,7 @@ impl MailPanel {
         self.checked.clear();
         self.imported.clear();
         self.summary.clear();
+        self.skipped_lines.clear();
     }
 
     /// The selected account with the session password filled in when needed.
@@ -199,9 +215,21 @@ impl MailPanel {
         }
     }
 
+    /// The download of the ticked messages failed before any was imported.
+    pub fn accept_fetch_error(&mut self, error: String) {
+        self.skipped_lines.clear();
+        self.set_notice(
+            format!("Não foi possível baixar as mensagens: {error}"),
+            true,
+        );
+    }
+
     /// One entry per fetched uid: the import outcome or the error.
     pub fn accept_imports(&mut self, results: Vec<(u32, Result<MailImport, String>)>) {
         self.summary.clear();
+        for line in std::mem::take(&mut self.skipped_lines) {
+            self.summary.push((WARNING, line));
+        }
         let (mut ok, mut failed) = (0usize, 0usize);
         for (uid, result) in results {
             let subject = self
@@ -221,8 +249,15 @@ impl MailPanel {
                     self.checked.remove(&uid);
                     self.imported.insert(uid);
                     if done.already_imported {
-                        self.summary
-                            .push((WARNING, format!("{title}: já estava no acervo")));
+                        let line = if done.attachments_added > 0 {
+                            format!(
+                                "{title}: já estava no acervo; {} anexo(s) que faltava(m) acrescentado(s)",
+                                done.attachments_added
+                            )
+                        } else {
+                            format!("{title}: já estava no acervo")
+                        };
+                        self.summary.push((WARNING, line));
                     } else {
                         let mut line = format!("✓ {title} — {} anexo(s)", done.attachments_added);
                         if !done.attachments_skipped.is_empty() {
@@ -253,7 +288,12 @@ impl MailPanel {
             }
         }
         if failed == 0 {
-            self.set_notice(format!("{ok} mensagem(ns) importada(s)."), false);
+            let text = if ok == 1 {
+                "1 mensagem importada.".to_string()
+            } else {
+                format!("{ok} mensagens importadas.")
+            };
+            self.set_notice(text, false);
         } else {
             self.set_notice(
                 format!("{ok} importada(s), {failed} com erro. Veja a lista abaixo."),
@@ -271,7 +311,7 @@ impl MailPanel {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, store: &mut Store, busy: bool) -> MailAction {
+    pub fn show(&mut self, ctx: &egui::Context, store: &mut Store, busy: MailBusy) -> MailAction {
         if !self.open {
             return MailAction::None;
         }
@@ -308,7 +348,8 @@ impl MailPanel {
         action
     }
 
-    fn contents(&mut self, ui: &mut egui::Ui, store: &mut Store, busy: bool) -> MailAction {
+    fn contents(&mut self, ui: &mut egui::Ui, store: &mut Store, state: MailBusy) -> MailAction {
+        let busy = state != MailBusy::Free;
         let mut action = MailAction::None;
 
         // 4. Notice line (kept at the top).
@@ -325,11 +366,17 @@ impl MailPanel {
             });
             ui.separator();
         }
-        if busy {
-            ui.colored_label(
-                WARNING,
-                "Aguarde: o Ponte está conversando com o servidor de e-mail…",
-            );
+        match state {
+            MailBusy::Free => {}
+            MailBusy::Mail => {
+                ui.colored_label(
+                    WARNING,
+                    "Aguarde: o Ponte está conversando com o servidor de e-mail…",
+                );
+            }
+            MailBusy::Other => {
+                ui.colored_label(WARNING, "Aguarde a operação em andamento.");
+            }
         }
 
         self.accounts_section(ui, store, busy);
@@ -400,7 +447,11 @@ impl MailPanel {
         });
         if let Some(uid) = changed_to {
             self.selected = Some(uid);
+            self.confirm_delete_account = false;
             self.reset_mailbox();
+        }
+        if new_account || edit {
+            self.confirm_delete_account = false;
         }
         if new_account {
             self.form = Some(AccountForm::new(MailAccount {
@@ -426,20 +477,45 @@ impl MailPanel {
             }
         }
         if delete {
-            if let Some(uid) = self.selected.clone() {
-                match store.delete_mail_account(&uid) {
-                    Ok(()) => {
-                        self.session_passwords.remove(&uid);
-                        self.selected = None;
-                        self.reload_accounts(store);
-                        self.reset_mailbox();
-                        self.set_notice("Conta excluída.", false);
-                    }
-                    Err(e) => {
-                        self.set_notice(format!("Não foi possível excluir a conta: {e}"), true)
+            self.confirm_delete_account = true;
+        }
+        if self.confirm_delete_account && self.form.is_none() {
+            let name = self
+                .selected
+                .as_ref()
+                .and_then(|uid| self.accounts.iter().find(|a| &a.uid == uid))
+                .map(|a| a.name.clone())
+                .unwrap_or_default();
+            ui.colored_label(
+                WARNING,
+                format!(
+                    "Excluir a conta “{name}” deste computador? A senha guardada também é apagada."
+                ),
+            );
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Sim, excluir"))
+                    .clicked()
+                {
+                    self.confirm_delete_account = false;
+                    if let Some(uid) = self.selected.clone() {
+                        match store.delete_mail_account(&uid) {
+                            Ok(()) => {
+                                self.session_passwords.remove(&uid);
+                                self.selected = None;
+                                self.reload_accounts(store);
+                                self.reset_mailbox();
+                                self.set_notice("Conta excluída.", false);
+                            }
+                            Err(e) => self
+                                .set_notice(format!("Não foi possível excluir a conta: {e}"), true),
+                        }
                     }
                 }
-            }
+                if ui.button("Cancelar").clicked() {
+                    self.confirm_delete_account = false;
+                }
+            });
         }
 
         if self.form.is_some() {
@@ -553,7 +629,7 @@ impl MailPanel {
                     self.reset_mailbox();
                     self.set_notice("Conta salva.", false);
                 }
-                Err(e) => self.set_notice(format!("{e}"), true),
+                Err(e) => self.set_notice(format!("Não foi possível salvar a conta: {e}"), true),
             }
         }
     }
@@ -728,7 +804,11 @@ impl MailPanel {
             if ui
                 .add_enabled(
                     can_fetch,
-                    egui::Button::new(format!("Importar {count} marcadas")),
+                    egui::Button::new(if count == 1 {
+                        "Importar 1 marcada".to_string()
+                    } else {
+                        format!("Importar {count} marcadas")
+                    }),
                 )
                 .clicked()
             {
@@ -749,15 +829,28 @@ impl MailPanel {
                         .filter(|m| self.checked.contains(&m.uid) && m.size <= limit)
                         .map(|m| m.uid)
                         .collect();
+                    // The warning goes to the result list (the import answer
+                    // replaces the notice line) and the left-out messages are
+                    // unticked so a second click does not repeat it.
+                    self.skipped_lines.clear();
                     if !too_big.is_empty() {
-                        self.set_notice(
-                            format!(
-                                "Mensagens acima de {} MB ficam de fora (salve-as como .eml): {}.",
-                                limit / (1024 * 1024),
-                                too_big.join("; ")
-                            ),
-                            true,
+                        let line = format!(
+                            "Mensagens acima de {} MB ficam de fora (salve-as como .eml): {}.",
+                            limit / (1024 * 1024),
+                            too_big.join("; ")
                         );
+                        self.checked.retain(|uid| {
+                            !self
+                                .messages
+                                .iter()
+                                .any(|m| m.uid == *uid && m.size > limit)
+                        });
+                        if uids.is_empty() {
+                            self.summary.clear();
+                            self.summary.push((WARNING, line));
+                        } else {
+                            self.skipped_lines.push(line);
+                        }
                     }
                     if !uids.is_empty() {
                         action = MailAction::Fetch {

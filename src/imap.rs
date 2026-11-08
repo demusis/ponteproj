@@ -22,8 +22,9 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 993;
 pub const MAX_LIST: usize = 200;
@@ -33,11 +34,18 @@ pub const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 /// hundred large messages do not pile up in memory.
 pub const MAX_BATCH_BYTES: usize = 96 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Silence tolerated from the server before giving up.
 const IO_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often a blocked read wakes up to look at cancel and the deadline.
+const POLL: Duration = Duration::from_secs(2);
+/// Longest one command may take, however steadily the server trickles
+/// (a 32 MB message on a slow line fits).
+const COMMAND_DEADLINE: Duration = Duration::from_secs(20 * 60);
+/// Most one command's response may bring, every line and literal counted.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// One mailbox the person reads from.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailAccount {
     #[serde(default)]
     pub uid: String,
@@ -55,6 +63,25 @@ pub struct MailAccount {
     /// Folder opened by default ("INBOX", "[Gmail]/Com estrela", a label).
     #[serde(default = "default_folder")]
     pub folder: String,
+}
+
+/// The password never shows in debug output.
+impl std::fmt::Debug for MailAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailAccount")
+            .field("uid", &self.uid)
+            .field("name", &self.name)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field(
+                "password",
+                &if self.password.is_empty() { "" } else { "***" },
+            )
+            .field("remember", &self.remember)
+            .field("folder", &self.folder)
+            .finish()
+    }
 }
 
 fn default_port() -> u16 {
@@ -97,7 +124,9 @@ impl MailAccount {
             "Usuário e senha de app devem usar só letras, números e sinais comuns."
         );
         ensure!(
-            !self.folder.trim().is_empty() && self.folder.len() <= 500,
+            !self.folder.trim().is_empty()
+                && self.folder.len() <= 500
+                && !self.folder.chars().any(char::is_control),
             "Escolha uma pasta."
         );
         Ok(())
@@ -243,17 +272,56 @@ fn utf7_encode(name: &str) -> String {
 // ---------------------------------------------------------------------------
 // The connection.
 
+/// The socket as rustls sees it: every read first checks "Cancelar" and the
+/// deadline, so a server trickling a TLS record byte by byte (rustls keeps
+/// reading until the record is whole) still cannot hold the session.
+struct Guarded {
+    tcp: TcpStream,
+    cancel: Arc<AtomicBool>,
+    deadline: Arc<std::sync::Mutex<Instant>>,
+}
+
+impl Read for Guarded {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let late = self
+            .deadline
+            .lock()
+            .map(|deadline| Instant::now() >= *deadline)
+            .unwrap_or(true);
+        if self.cancel.load(Ordering::Relaxed) || late {
+            return Err(std::io::Error::other("interrompido"));
+        }
+        self.tcp.read(buf)
+    }
+}
+
+impl Write for Guarded {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.tcp.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.tcp.flush()
+    }
+}
+
 struct Session {
-    stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+    stream: rustls::StreamOwned<rustls::ClientConnection, Guarded>,
     tag: u32,
     buffer: Vec<u8>,
+    /// Set by "Cancelar" in the window; looked at while waiting.
+    cancel: Arc<AtomicBool>,
+    /// When the current command (or the greeting) must be done; shared
+    /// with the socket guard.
+    deadline: Arc<std::sync::Mutex<Instant>>,
+    /// Bytes the current command has received so far.
+    received: usize,
 }
 
 /// One untagged line of a response, with any literals inlined.
 type Line = Vec<u8>;
 
 impl Session {
-    fn connect(account: &MailAccount) -> Result<Self> {
+    fn connect(account: &MailAccount, cancel: Arc<AtomicBool>) -> Result<Self> {
         account.validate()?;
         let addresses: Vec<_> = (account.host.as_str(), account.port)
             .to_socket_addrs()
@@ -279,7 +347,7 @@ impl Session {
                 account.host, account.port
             )
         })?;
-        tcp.set_read_timeout(Some(IO_TIMEOUT))?;
+        tcp.set_read_timeout(Some(POLL))?;
         tcp.set_write_timeout(Some(IO_TIMEOUT))?;
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -296,10 +364,19 @@ impl Session {
             .context("Nome do servidor inválido para TLS.")?;
         let connection = rustls::ClientConnection::new(Arc::new(config), server_name)
             .context("Não foi possível preparar a conexão segura.")?;
+        let deadline = Arc::new(std::sync::Mutex::new(Instant::now() + IO_TIMEOUT));
+        let guarded = Guarded {
+            tcp,
+            cancel: Arc::clone(&cancel),
+            deadline: Arc::clone(&deadline),
+        };
         let mut session = Session {
-            stream: rustls::StreamOwned::new(connection, tcp),
+            stream: rustls::StreamOwned::new(connection, guarded),
             tag: 0,
             buffer: Vec::new(),
+            cancel,
+            deadline,
+            received: 0,
         };
         let greeting = session
             .read_line()
@@ -321,17 +398,61 @@ impl Session {
                 return Ok(line);
             }
             let mut chunk = [0u8; 16 * 1024];
-            let read = self
-                .stream
-                .read(&mut chunk)
-                .context("A conexão com o servidor de e-mail caiu.")?;
-            ensure!(read > 0, "O servidor de e-mail encerrou a conexão.");
+            let read = self.read_chunk(&mut chunk)?;
             self.buffer.extend_from_slice(&chunk[..read]);
-            ensure!(
-                self.buffer.len() <= MAX_RESPONSE_BYTES,
-                "Resposta do servidor grande demais."
-            );
         }
+    }
+
+    /// One read from the server. A quiet server is waited for in short
+    /// steps, so "Cancelar", the command's deadline and the silence limit
+    /// are all honoured; every byte counts against the command's budget.
+    fn read_chunk(&mut self, chunk: &mut [u8]) -> Result<usize> {
+        let mut silent = Duration::ZERO;
+        loop {
+            if self.cancel.load(Ordering::Relaxed) {
+                bail!("Cancelado por você.");
+            }
+            ensure!(
+                !self.late(),
+                "O servidor de e-mail demorou demais para responder."
+            );
+            match self.stream.read(chunk) {
+                Ok(0) => bail!("O servidor de e-mail encerrou a conexão."),
+                Ok(read) => {
+                    self.received += read;
+                    ensure!(
+                        self.received <= MAX_RESPONSE_BYTES,
+                        "Resposta do servidor grande demais."
+                    );
+                    return Ok(read);
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    silent += POLL;
+                    ensure!(
+                        silent < IO_TIMEOUT,
+                        "O servidor de e-mail parou de responder."
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                // Stopped by the guard: the loop says why.
+                Err(_) if self.cancel.load(Ordering::Relaxed) || self.late() => {}
+                Err(error) => {
+                    return Err(error).context("A conexão com o servidor de e-mail caiu.")
+                }
+            }
+        }
+    }
+
+    fn late(&self) -> bool {
+        self.deadline
+            .lock()
+            .map(|deadline| Instant::now() >= *deadline)
+            .unwrap_or(true)
     }
 
     fn read_exact(&mut self, count: usize) -> Result<Vec<u8>> {
@@ -342,11 +463,7 @@ impl Session {
         );
         while self.buffer.len() < count {
             let mut chunk = vec![0u8; (count - self.buffer.len()).min(64 * 1024)];
-            let read = self
-                .stream
-                .read(&mut chunk)
-                .context("A conexão com o servidor de e-mail caiu.")?;
-            ensure!(read > 0, "O servidor de e-mail encerrou a conexão.");
+            let read = self.read_chunk(&mut chunk)?;
             self.buffer.extend_from_slice(&chunk[..read]);
         }
         Ok(self.buffer.drain(..count).collect())
@@ -357,6 +474,10 @@ impl Session {
     /// server's words.
     fn command(&mut self, command: &str) -> Result<Vec<Line>> {
         self.tag += 1;
+        if let Ok(mut deadline) = self.deadline.lock() {
+            *deadline = Instant::now() + COMMAND_DEADLINE;
+        }
+        self.received = 0;
         let tag = format!("P{:04}", self.tag);
         self.stream
             .write_all(format!("{tag} {command}\r\n").as_bytes())
@@ -365,10 +486,13 @@ impl Session {
         loop {
             let mut line = self.read_line()?;
             // A literal: "{n}" at the end announces n raw bytes, after which
-            // the same response line continues.
-            while let Some(size) = literal_size(&line) {
+            // the same response line continues. Only the text after the
+            // last literal is looked at: the literal itself is raw bytes.
+            let mut text_from = 0;
+            while let Some(size) = literal_size(&line[text_from..]) {
                 let bytes = self.read_exact(size)?;
                 line.extend_from_slice(&bytes);
+                text_from = line.len();
                 let rest = self.read_line()?;
                 line.extend_from_slice(&rest);
             }
@@ -415,6 +539,17 @@ fn friendly(message: &str) -> String {
     } else {
         format!("O servidor de e-mail recusou: {message}")
     }
+}
+
+/// Opens a folder read-only. A name with control characters (a line break
+/// would start another command) is refused, whatever the server listed.
+fn examine(session: &mut Session, folder: &str) -> Result<()> {
+    ensure!(
+        !folder.is_empty() && !folder.chars().any(char::is_control),
+        "Nome de pasta inválido."
+    );
+    session.command(&format!("EXAMINE {}", quote(folder)))?;
+    Ok(())
 }
 
 fn quote(value: &str) -> String {
@@ -510,8 +645,8 @@ fn login(session: &mut Session, account: &MailAccount) -> Result<()> {
 }
 
 /// The folders of the account (Gmail labels included), selectable first.
-pub fn list_folders(account: &MailAccount) -> Result<Vec<Folder>> {
-    let mut session = Session::connect(account)?;
+pub fn list_folders(account: &MailAccount, reporter: &crate::ai::Reporter) -> Result<Vec<Folder>> {
+    let mut session = Session::connect(account, reporter.cancel_flag())?;
     login(&mut session, account)?;
     let lines = session.command("LIST \"\" \"*\"")?;
     let _ = session.command("LOGOUT");
@@ -524,7 +659,18 @@ pub fn list_folders(account: &MailAccount) -> Result<Vec<Folder>> {
             continue;
         }
         let flags = parts[2].to_ascii_lowercase();
-        let raw = unquote(parts.last().unwrap());
+        let mut raw = unquote(parts.last().unwrap());
+        // A name sent as a literal arrives as "{n}name".
+        if let Some(rest) = raw.strip_prefix('{') {
+            if let Some((digits, name)) = rest.split_once('}') {
+                if digits.bytes().all(|b| b.is_ascii_digit()) {
+                    raw = name.to_owned();
+                }
+            }
+        }
+        if raw.is_empty() || raw.chars().any(char::is_control) {
+            continue;
+        }
         folders.push(Folder {
             name: utf7_decode(&raw),
             no_select: flags.contains("\\noselect"),
@@ -553,11 +699,12 @@ pub fn list_messages(
     folder: &str,
     filter: Filter,
     limit: usize,
+    reporter: &crate::ai::Reporter,
 ) -> Result<Vec<MessageSummary>> {
     let limit = limit.clamp(1, MAX_LIST);
-    let mut session = Session::connect(account)?;
+    let mut session = Session::connect(account, reporter.cancel_flag())?;
     login(&mut session, account)?;
-    session.command(&format!("EXAMINE {}", quote(folder)))?;
+    examine(&mut session, folder)?;
     let lines = session.command(&format!("UID SEARCH {}", filter.search_key()))?;
     let mut uids: Vec<u32> = Vec::new();
     for line in &lines {
@@ -609,7 +756,8 @@ fn parse_fetch_summary(line: &[u8]) -> Option<MessageSummary> {
             .ok()?
     };
     let close = line[open..].iter().position(|&b| b == b'}')? + open;
-    let headers = &line[close + 1..(close + 1 + literal_len).min(line.len())];
+    let end = (close + 1).saturating_add(literal_len).min(line.len());
+    let headers = &line[close + 1..end];
     let mut summary = MessageSummary::default();
     // The attributes sit inside the FETCH parenthesized list, before and
     // after the literal (a server may order them as it likes).
@@ -617,7 +765,7 @@ fn parse_fetch_summary(line: &[u8]) -> Option<MessageSummary> {
         .split_once("FETCH (")
         .map(|(_, rest)| rest)
         .unwrap_or(head);
-    let tail = String::from_utf8_lossy(&line[(close + 1 + literal_len).min(line.len())..]);
+    let tail = String::from_utf8_lossy(&line[end..]);
     let attributes = tokens(&format!("{inner} {tail}"));
     let mut iterator = attributes.iter().peekable();
     while let Some(token) = iterator.next() {
@@ -663,9 +811,9 @@ pub fn fetch_messages(
     uids: &[u32],
     reporter: &crate::ai::Reporter,
 ) -> Result<Fetched> {
-    let mut session = Session::connect(account)?;
+    let mut session = Session::connect(account, reporter.cancel_flag())?;
     login(&mut session, account)?;
-    session.command(&format!("EXAMINE {}", quote(folder)))?;
+    examine(&mut session, folder)?;
     let mut out: Fetched = Vec::new();
     let mut total = 0usize;
     for (index, uid) in uids.iter().copied().enumerate() {
@@ -739,7 +887,7 @@ fn parse_fetch_body(line: &[u8], wanted: u32) -> Option<Vec<u8>> {
         .parse()
         .ok()?;
     let start = close + 1;
-    let end = (start + size).min(line.len());
+    let end = start.saturating_add(size).min(line.len());
     // The UID is matched exactly, wherever the server put it.
     let inner = head
         .split_once("FETCH (")
@@ -871,6 +1019,43 @@ mod tests {
     }
 
     #[test]
+    fn hostile_fetch_lines_never_panic() {
+        let lines: [&[u8]; 5] = [
+            b"* 1 FETCH (UID 5 X {18446744073709551615} BODY[] {10}abc",
+            b"* 1 FETCH (UID 5 BODY[] {99999999}short)",
+            b"* 1 FETCH (UID 5 BODY[] {}",
+            b"* 1 FETCH (UID 5 BODY[] {abc}",
+            b"* 1 FETCH {",
+        ];
+        for line in lines {
+            let _ = parse_fetch_summary(line);
+            let _ = parse_fetch_body(line, 5);
+        }
+        assert_eq!(
+            parse_fetch_body(b"* 1 FETCH (UID 5 BODY[] {99999999}short)", 5).unwrap(),
+            b"short)"
+        );
+        // The password stays out of debug output.
+        let account = MailAccount {
+            password: "abcd efgh ijkl mnop".into(),
+            ..Default::default()
+        };
+        assert!(!format!("{account:?}").contains("abcd"));
+        // A folder name with a line break is never sent.
+        let mut account = MailAccount {
+            name: "x".into(),
+            host: "imap.exemplo.com".into(),
+            port: 993,
+            user: "a@b".into(),
+            folder: "INBOX\r\nP9 DELETE INBOX".into(),
+            ..Default::default()
+        };
+        assert!(account.validate().is_err());
+        account.folder = "INBOX".into();
+        assert!(account.validate().is_ok());
+    }
+
+    #[test]
     fn tokens_keep_lists_and_quotes_whole() {
         let parts = tokens(r#"* LIST (\HasNoChildren \Flagged) "/" "[Gmail]/Com estrela""#);
         assert_eq!(parts[2], r"(\HasNoChildren \Flagged)");
@@ -948,7 +1133,7 @@ mod live_tests {
             remember: false,
             folder: "INBOX".into(),
         };
-        let mut session = Session::connect(&account).unwrap();
+        let mut session = Session::connect(&account, Arc::default()).unwrap();
         // A wrong app password is refused with the friendly explanation.
         let error = login(&mut session, &account).unwrap_err().to_string();
         assert!(error.contains("senha de app"), "{error}");

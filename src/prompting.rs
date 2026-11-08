@@ -225,6 +225,44 @@ fn template_section(template: &WorkTemplate, version: &TemplateVersion) -> Strin
     out
 }
 
+/// An example as the data object carries it (files added later).
+fn example_json(example: &Example) -> serde_json::Value {
+    json!({
+        "title": example.title,
+        "demand": example.demand,
+        "reply": example.reply,
+        "explanation": example.explanation,
+        "comments": example.comments,
+        "files": [],
+    })
+}
+
+/// The automatic choice of examples: approved ones in the order given
+/// (most like the document first), as many as fit in the limits. A long
+/// example is passed over, never a reason to refuse the generation.
+pub fn fit_examples(ranked: impl IntoIterator<Item = Example>) -> Vec<Example> {
+    let mut chosen: Vec<Example> = Vec::new();
+    let mut values: Vec<serde_json::Value> = Vec::new();
+    for example in ranked {
+        if chosen.len() == MAX_EXAMPLES {
+            break;
+        }
+        if example.status != ExampleStatus::Approved {
+            continue;
+        }
+        values.push(example_json(&example));
+        let fits = serde_json::to_string(&values)
+            .map(|text| text.len() <= MAX_EXAMPLES_BYTES)
+            .unwrap_or(false);
+        if fits {
+            chosen.push(example);
+        } else {
+            values.pop();
+        }
+    }
+    chosen
+}
+
 fn sha256_hex(text: &str) -> String {
     Sha256::digest(text.as_bytes())
         .iter()
@@ -297,19 +335,8 @@ pub fn assemble(base_system: &str, req: &DraftRequest) -> Result<Assembled> {
         approved.len() <= MAX_EXAMPLES,
         "Escolha no máximo {MAX_EXAMPLES} exemplos aprovados."
     );
-    let mut form_examples: Vec<serde_json::Value> = approved
-        .iter()
-        .map(|e| {
-            json!({
-                "title": e.title,
-                "demand": e.demand,
-                "reply": e.reply,
-                "explanation": e.explanation,
-                "comments": e.comments,
-                "files": [],
-            })
-        })
-        .collect();
+    let mut form_examples: Vec<serde_json::Value> =
+        approved.iter().map(|e| example_json(e)).collect();
     let examples_bytes = serde_json::to_string(&form_examples)?.len();
     ensure!(
         examples_bytes <= MAX_EXAMPLES_BYTES,

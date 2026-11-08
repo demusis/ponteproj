@@ -77,6 +77,17 @@ pub struct TemplatesPanel {
     block_base: String,
     example_edit: Option<Example>,
     example_base: String,
+    /// Versions of the stored items as they were when loaded into the
+    /// editors. Saves check against these, not against the store at click
+    /// time, so a colleague's change that arrived by sync in the meantime is
+    /// refused instead of silently overwritten.
+    template_version_seen: Option<i64>,
+    block_version_seen: Option<i64>,
+    example_version_seen: Option<i64>,
+    /// Discard clicked on unsaved changes; waiting for confirmation.
+    confirm_discard_template: bool,
+    confirm_discard_block: bool,
+    confirm_discard_example: bool,
     attachments: crate::attachments::AttachmentsPanel,
     file_review: Option<(i64, String)>,
     /// "Extrair de novo…" clicked on a reviewed text; waiting for confirmation.
@@ -109,6 +120,23 @@ fn expected(store: &Store, kind: &str, uid: &str) -> Option<i64> {
         .item_version(kind, version_key(uid))
         .ok()
         .map(|m| m.version)
+}
+
+/// Feminine badge for instructions ("Compartilhada com a equipe"), matching
+/// the instruction editor; templates keep the masculine labels.
+fn scope_label_f(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Personal => "Pessoal",
+        Scope::Shared => "Compartilhada com a equipe",
+    }
+}
+
+fn status_label_f(status: Status) -> &'static str {
+    match status {
+        Status::Draft => "Rascunho",
+        Status::Published => "Publicada",
+        Status::Archived => "Arquivada",
+    }
 }
 
 fn text_row(ui: &mut egui::Ui, label: &str, value: &mut String) {
@@ -181,8 +209,8 @@ fn string_list(ui: &mut egui::Ui, id: &str, items: &mut Vec<String>, hint: &str,
     }
 }
 
-fn badges(scope: Scope, status: Status, current: u32, pending: bool) -> String {
-    let mut text = format!("{} · {}", scope.label(), status.label());
+fn badges((scope, status): (&'static str, &'static str), current: u32, pending: bool) -> String {
+    let mut text = format!("{scope} · {status}");
     if current > 0 {
         text.push_str(&format!(" · v{current}"));
     }
@@ -228,7 +256,7 @@ impl TemplatesPanel {
         };
         let mut template = WorkTemplate::new("Novo modelo", kind, body);
         template.scope = Scope::Personal;
-        self.load_template(template, true);
+        self.install_template(template, true, None, false);
         self.tab = Tab::Structure;
         self.notice(
             "Modelo novo a partir do texto da minuta. Dê um nome e salve.",
@@ -241,7 +269,32 @@ impl TemplatesPanel {
         self.error = error;
     }
 
-    fn load_template(&mut self, mut template: WorkTemplate, unsaved: bool) {
+    /// Opens a template, switching away from whatever instruction or example
+    /// was being edited.
+    fn load_template(&mut self, store: &Store, template: WorkTemplate, unsaved: bool) {
+        // Read again with its version: the list may be a few seconds old,
+        // and old content stamped with the new version would overwrite a
+        // colleague's change without the check noticing.
+        let template = fresh_template(store, template);
+        let seen = expected(store, "template", &template.uid);
+        self.install_template(template, unsaved, seen, false);
+    }
+
+    /// Reloads the same template after a save, publish or discard. The
+    /// instruction and example editors keep their unsaved work.
+    fn reload_template(&mut self, store: &Store, template: WorkTemplate) {
+        let template = fresh_template(store, template);
+        let seen = expected(store, "template", &template.uid);
+        self.install_template(template, false, seen, true);
+    }
+
+    fn install_template(
+        &mut self,
+        mut template: WorkTemplate,
+        unsaved: bool,
+        seen: Option<i64>,
+        keep_editors: bool,
+    ) {
         // The editor always works on a draft version. A published template
         // gets a working copy of its last version; it only becomes a stored
         // version when something actually changes (the Store skips a copy
@@ -266,16 +319,37 @@ impl TemplatesPanel {
             json(&template)
         };
         self.edit = Some(template);
-        self.block_edit = None;
-        self.example_edit = None;
-        self.close_example_files();
-        self.confirm = None;
+        self.template_version_seen = seen;
+        self.confirm_discard_template = false;
+        if !keep_editors {
+            self.block_edit = None;
+            self.block_base.clear();
+            self.block_version_seen = None;
+            self.example_edit = None;
+            self.example_base.clear();
+            self.example_version_seen = None;
+            self.confirm_discard_block = false;
+            self.confirm_discard_example = false;
+            self.close_example_files();
+            self.confirm = None;
+        }
         self.dup_name = None;
         self.test_selected.clear();
         self.test_result = None;
     }
 
-    fn load_block(&mut self, mut block: InstructionBlock, unsaved: bool) {
+    fn load_block(&mut self, store: &Store, block: InstructionBlock, unsaved: bool) {
+        let mut block = if block.uid.is_empty() {
+            block
+        } else {
+            store
+                .block_by_uid(&block.uid)
+                .ok()
+                .flatten()
+                .unwrap_or(block)
+        };
+        self.block_version_seen = expected(store, "block", &block.uid);
+        self.confirm_discard_block = false;
         if block.draft_version().is_none() {
             if let Some(last) = block.versions.last().cloned() {
                 block.versions.push(crate::work_templates::BlockVersion {
@@ -324,10 +398,9 @@ impl TemplatesPanel {
         let Some(template) = self.edit.clone() else {
             return false;
         };
-        let exp = expected(store, "template", &template.uid);
-        match store.save_template(&template, exp) {
+        match store.save_template(&template, self.template_version_seen) {
             Ok(saved) => {
-                self.load_template(saved, false);
+                self.reload_template(store, saved);
                 self.stale = true;
                 self.notice("Rascunho salvo.", false);
                 true
@@ -346,11 +419,10 @@ impl TemplatesPanel {
         let Some(uid) = self.edit.as_ref().map(|t| t.uid.clone()) else {
             return;
         };
-        let exp = expected(store, "template", &uid);
-        match store.set_template_status(&uid, Status::Published, exp) {
+        match store.set_template_status(&uid, Status::Published, self.template_version_seen) {
             Ok(saved) => {
                 let n = saved.current_version;
-                self.load_template(saved, false);
+                self.reload_template(store, saved);
                 self.stale = true;
                 self.notice(format!("Versão {n} publicada."), false);
             }
@@ -362,10 +434,9 @@ impl TemplatesPanel {
         let Some(uid) = self.edit.as_ref().map(|t| t.uid.clone()) else {
             return;
         };
-        let exp = expected(store, "template", &uid);
-        match store.set_template_status(&uid, status, exp) {
+        match store.set_template_status(&uid, status, self.template_version_seen) {
             Ok(saved) => {
-                self.load_template(saved, false);
+                self.reload_template(store, saved);
                 self.stale = true;
                 self.notice(
                     if status == Status::Archived {
@@ -384,10 +455,9 @@ impl TemplatesPanel {
         let Some(block) = self.block_edit.clone() else {
             return false;
         };
-        let exp = expected(store, "block", &block.uid);
-        match store.save_block(&block, exp) {
+        match store.save_block(&block, self.block_version_seen) {
             Ok(saved) => {
-                self.load_block(saved, false);
+                self.load_block(store, saved, false);
                 self.stale = true;
                 self.notice("Rascunho da instrução salvo.", false);
                 true
@@ -406,10 +476,9 @@ impl TemplatesPanel {
         let Some(uid) = self.block_edit.as_ref().map(|b| b.uid.clone()) else {
             return;
         };
-        let exp = expected(store, "block", &uid);
-        match store.set_block_status(&uid, status, exp) {
+        match store.set_block_status(&uid, status, self.block_version_seen) {
             Ok(saved) => {
-                self.load_block(saved, false);
+                self.load_block(store, saved, false);
                 self.stale = true;
                 self.notice("Instrução atualizada.", false);
             }
@@ -421,12 +490,30 @@ impl TemplatesPanel {
         let Some(mut example) = self.example_edit.clone() else {
             return;
         };
+        // Approving edited text: the text is saved first (the store sends an
+        // edited approved example back to "não conferido"), then approved,
+        // so the approval names who looked at this text.
+        if status == Some(ExampleStatus::Approved) && self.example_dirty() {
+            let mut edited = example.clone();
+            edited.status = ExampleStatus::Unverified;
+            match store.save_example(&edited, self.example_version_seen) {
+                Ok(saved) => {
+                    self.example_version_seen = expected(store, "example", &saved.uid);
+                    example.uid = saved.uid;
+                    example.id = saved.id;
+                }
+                Err(e) => {
+                    self.notice(format!("{e:#}"), true);
+                    return;
+                }
+            }
+        }
         if let Some(status) = status {
             example.status = status;
         }
-        let exp = expected(store, "example", &example.uid);
-        match store.save_example(&example, exp) {
+        match store.save_example(&example, self.example_version_seen) {
             Ok(saved) => {
+                self.example_version_seen = expected(store, "example", &saved.uid);
                 self.example_base = json(&saved);
                 self.example_edit = Some(saved);
                 self.stale = true;
@@ -520,8 +607,7 @@ impl TemplatesPanel {
                     }
                     ui.label(
                         RichText::new(badges(
-                            t.scope,
-                            t.status,
+                            (t.scope.label(), t.status.label()),
                             t.current_version,
                             t.draft_version().is_some() && t.current_version > 0,
                         ))
@@ -536,7 +622,7 @@ impl TemplatesPanel {
                             true,
                         );
                     } else {
-                        self.load_template(t, false);
+                        self.load_template(store, t, false);
                     }
                 }
 
@@ -551,7 +637,7 @@ impl TemplatesPanel {
                         } else {
                             let mut t = WorkTemplate::new("", "resposta", "");
                             t.scope = Scope::Personal;
-                            self.load_template(t, false);
+                            self.load_template(store, t, false);
                         }
                     }
                     let stored = self.stored().cloned();
@@ -589,18 +675,25 @@ impl TemplatesPanel {
                     let name = name.clone();
                     ui.horizontal(|ui| {
                         if ui.button("Criar cópia").clicked() {
-                            let uid = self
-                                .edit
-                                .as_ref()
-                                .map(|t| t.uid.clone())
-                                .unwrap_or_default();
-                            match store.duplicate_template(&uid, name.trim()) {
-                                Ok(copy) => {
-                                    self.load_template(copy, false);
-                                    self.stale = true;
-                                    self.notice("Cópia criada como rascunho pessoal.", false);
+                            if self.dirty() {
+                                self.notice(
+                                    "Salve ou descarte as alterações antes de trocar de modelo.",
+                                    true,
+                                );
+                            } else {
+                                let uid = self
+                                    .edit
+                                    .as_ref()
+                                    .map(|t| t.uid.clone())
+                                    .unwrap_or_default();
+                                match store.duplicate_template(&uid, name.trim()) {
+                                    Ok(copy) => {
+                                        self.load_template(store, copy, false);
+                                        self.stale = true;
+                                        self.notice("Cópia criada como rascunho pessoal.", false);
+                                    }
+                                    Err(e) => self.notice(format!("{e:#}"), true),
                                 }
-                                Err(e) => self.notice(format!("{e:#}"), true),
                             }
                             self.dup_name = None;
                         }
@@ -643,11 +736,11 @@ impl TemplatesPanel {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.strong("Instruções (biblioteca)");
-                self.block_list(ui, member);
+                self.block_list(ui, store, member);
             });
     }
 
-    fn block_list(&mut self, ui: &mut egui::Ui, member: &str) {
+    fn block_list(&mut self, ui: &mut egui::Ui, store: &Store, member: &str) {
         let mut pick: Option<InstructionBlock> = None;
         let selected = self.block_edit.as_ref().map(|b| b.uid.clone());
         for b in &self.blocks {
@@ -660,8 +753,7 @@ impl TemplatesPanel {
             }
             ui.label(
                 RichText::new(badges(
-                    b.scope,
-                    b.status,
+                    (scope_label_f(b.scope), status_label_f(b.status)),
                     b.current_version,
                     b.draft_version().is_some() && b.current_version > 0,
                 ))
@@ -676,7 +768,7 @@ impl TemplatesPanel {
                     true,
                 );
             } else {
-                self.load_block(b, false);
+                self.load_block(store, b, false);
                 self.tab = Tab::Blocks;
             }
         }
@@ -687,7 +779,7 @@ impl TemplatesPanel {
                     true,
                 );
             } else {
-                self.load_block(InstructionBlock::new("", "", ""), false);
+                self.load_block(store, InstructionBlock::new("", "", ""), false);
                 self.tab = Tab::Blocks;
             }
         }
@@ -734,7 +826,7 @@ impl TemplatesPanel {
             .show(ui, |ui| match self.tab {
                 Tab::Structure => self.tab_structure(ui),
                 Tab::Blocks => self.tab_blocks(ui, store, member),
-                Tab::Examples => self.tab_examples(ui, store, member),
+                Tab::Examples => self.tab_examples(ui, store),
                 Tab::References => self.tab_references(ui),
                 Tab::Test => self.tab_test(ui, store, doc),
             });
@@ -775,32 +867,67 @@ impl TemplatesPanel {
             if ui.button("Salvar rascunho").clicked() {
                 self.save_template(store);
             }
+            // A published template without a draft has nothing new to publish;
+            // the store would refuse, so say it up front.
+            let nothing_new = !self.template_dirty()
+                && stored.as_ref().is_some_and(|t| {
+                    t.published_version().is_some() && t.draft_version().is_none()
+                });
             if ui
-                .button(format!("Publicar versão {draft_number}"))
+                .add_enabled(
+                    !nothing_new,
+                    egui::Button::new(format!("Publicar versão {draft_number}")),
+                )
+                .on_disabled_hover_text(
+                    "Não há alterações a publicar. Altere o modelo e salve o rascunho antes.",
+                )
                 .clicked()
             {
                 self.publish_template(store);
             }
             if ui.button("Descartar alterações").clicked() {
-                match self.stored().cloned() {
-                    Some(t) => self.load_template(t, false),
-                    None => {
-                        self.edit = None;
-                        self.base.clear();
-                    }
+                if self.template_dirty() {
+                    self.confirm_discard_template = true;
+                } else {
+                    self.discard_template(store);
                 }
-                self.notice("Alterações descartadas.", false);
             }
             let can_use = has_doc
-                && stored
-                    .as_ref()
-                    .is_some_and(|t| t.published_version().is_some());
+                && stored.as_ref().is_some_and(|t| {
+                    t.status == Status::Published && t.published_version().is_some()
+                });
             if can_use && ui.button("Usar este modelo na minuta").clicked() {
                 if let Some(t) = &stored {
                     *action = Some(TemplatesAction::UseTemplate { uid: t.uid.clone() });
                 }
             }
         });
+        if self.confirm_discard_template {
+            ui.colored_label(
+                WARNING,
+                "Descartar todas as alterações não salvas do modelo?",
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Sim, descartar").clicked() {
+                    self.discard_template(store);
+                }
+                if ui.button("Cancelar").clicked() {
+                    self.confirm_discard_template = false;
+                }
+            });
+        }
+    }
+
+    fn discard_template(&mut self, store: &Store) {
+        self.confirm_discard_template = false;
+        match self.stored().cloned() {
+            Some(t) => self.reload_template(store, t),
+            None => {
+                self.edit = None;
+                self.base.clear();
+            }
+        }
+        self.notice("Alterações descartadas.", false);
     }
 
     // -- tabs ---------------------------------------------------------------
@@ -1012,11 +1139,13 @@ impl TemplatesPanel {
         let mut do_publish = false;
         let mut do_status: Option<Status> = None;
         let mut do_delete = false;
+        let mut do_discard = false;
         ui.horizontal_wrapped(|ui| {
-            do_save = ui.button("Salvar rascunho").clicked();
+            do_save = ui.button("Salvar rascunho da instrução").clicked();
             do_publish = ui
                 .button(format!("Publicar versão {draft_number}"))
                 .clicked();
+            do_discard = ui.button("Descartar").clicked();
             match stored_status {
                 Some(Status::Archived) => {
                     do_status = ui
@@ -1050,6 +1179,27 @@ impl TemplatesPanel {
         if do_delete {
             self.confirm = Some(Confirm::Block);
         }
+        if do_discard {
+            if dirty {
+                self.confirm_discard_block = true;
+            } else {
+                self.discard_block(store);
+            }
+        }
+        if self.confirm_discard_block {
+            ui.colored_label(
+                WARNING,
+                "Descartar as alterações não salvas desta instrução?",
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Sim, descartar").clicked() {
+                    self.discard_block(store);
+                }
+                if ui.button("Cancelar").clicked() {
+                    self.confirm_discard_block = false;
+                }
+            });
+        }
         if self.confirm == Some(Confirm::Block) {
             ui.colored_label(WARNING, "Excluir esta instrução de vez?");
             ui.horizontal(|ui| {
@@ -1077,9 +1227,31 @@ impl TemplatesPanel {
         }
     }
 
+    /// Goes back to the stored instruction; a new, never-saved one is closed.
+    fn discard_block(&mut self, store: &Store) {
+        self.confirm_discard_block = false;
+        let uid = self
+            .block_edit
+            .as_ref()
+            .map(|b| b.uid.clone())
+            .unwrap_or_default();
+        match self.blocks.iter().find(|b| b.uid == uid).cloned() {
+            Some(b) if !uid.is_empty() => self.load_block(store, b, false),
+            _ => {
+                self.block_edit = None;
+                self.block_base.clear();
+                self.block_version_seen = None;
+            }
+        }
+        self.notice("Alterações da instrução descartadas.", false);
+    }
+
     fn block_refs(&mut self, ui: &mut egui::Ui, member: &str) {
         ui.strong("Instruções deste modelo");
-        ui.small("As alterações valem no rascunho; use \"Salvar rascunho\" no alto.");
+        ui.small(
+            "As alterações valem no rascunho do modelo; use \"Salvar rascunho\" no alto, \
+             não o botão da instrução.",
+        );
         let blocks = &self.blocks;
         let Some(v) = self.edit.as_mut().and_then(|t| t.versions.last_mut()) else {
             return;
@@ -1174,7 +1346,38 @@ impl TemplatesPanel {
         }
     }
 
-    fn tab_examples(&mut self, ui: &mut egui::Ui, store: &mut Store, _member: &str) {
+    /// Goes back to the stored example; a new, never-saved one is closed.
+    fn discard_example(&mut self, store: &Store) {
+        self.confirm_discard_example = false;
+        let uid = self
+            .example_edit
+            .as_ref()
+            .map(|e| e.uid.clone())
+            .unwrap_or_default();
+        let stored = if uid.is_empty() {
+            None
+        } else {
+            self.stored()
+                .and_then(|t| store.examples_of(&t.uid).ok())
+                .and_then(|list| list.into_iter().find(|e| e.uid == uid))
+        };
+        match stored {
+            Some(e) => {
+                self.example_version_seen = expected(store, "example", &e.uid);
+                self.example_base = json(&e);
+                self.example_edit = Some(e);
+            }
+            None => {
+                self.example_edit = None;
+                self.example_base.clear();
+                self.example_version_seen = None;
+                self.close_example_files();
+            }
+        }
+        self.notice("Alterações do exemplo descartadas.", false);
+    }
+
+    fn tab_examples(&mut self, ui: &mut egui::Ui, store: &mut Store) {
         let Some(uid) = self.stored().map(|t| t.uid.clone()) else {
             ui.label("Salve o rascunho do modelo para cadastrar exemplos.");
             return;
@@ -1213,8 +1416,10 @@ impl TemplatesPanel {
                 );
             } else {
                 self.close_example_files();
+                self.example_version_seen = expected(store, "example", &e.uid);
                 self.example_base = json(&e);
                 self.example_edit = Some(e);
+                self.confirm_discard_example = false;
                 self.confirm = None;
             }
         }
@@ -1226,11 +1431,16 @@ impl TemplatesPanel {
                 );
             } else {
                 self.close_example_files();
-                self.example_edit = Some(Example {
+                let fresh = Example {
                     template_uid: uid.clone(),
                     ..Default::default()
-                });
-                self.example_base.clear();
+                };
+                // Same as "Nova instrução": the empty form is the baseline, so
+                // it only counts as changed once something is typed.
+                self.example_base = json(&fresh);
+                self.example_edit = Some(fresh);
+                self.example_version_seen = None;
+                self.confirm_discard_example = false;
             }
         }
         ui.separator();
@@ -1261,10 +1471,12 @@ impl TemplatesPanel {
             ui.colored_label(WARNING, "● alterações não salvas");
         }
         let (mut save, mut approve, mut reject, mut delete) = (false, false, false, false);
+        let mut discard = false;
         ui.horizontal_wrapped(|ui| {
             save = ui.button("Salvar exemplo").clicked();
             approve = ui.button("Aprovar").clicked();
             reject = ui.button("Rejeitar").clicked();
+            discard = ui.button("Descartar").clicked();
             if !is_new {
                 delete = ui.button("Excluir").clicked();
             }
@@ -1275,6 +1487,24 @@ impl TemplatesPanel {
             self.save_example(store, Some(ExampleStatus::Approved));
         } else if reject {
             self.save_example(store, Some(ExampleStatus::Rejected));
+        }
+        if discard {
+            if dirty {
+                self.confirm_discard_example = true;
+            } else {
+                self.discard_example(store);
+            }
+        }
+        if self.confirm_discard_example {
+            ui.colored_label(WARNING, "Descartar as alterações não salvas deste exemplo?");
+            ui.horizontal(|ui| {
+                if ui.button("Sim, descartar").clicked() {
+                    self.discard_example(store);
+                }
+                if ui.button("Cancelar").clicked() {
+                    self.confirm_discard_example = false;
+                }
+            });
         }
         if delete {
             self.confirm = Some(Confirm::Example);
@@ -1351,7 +1581,6 @@ impl TemplatesPanel {
         if let Some(request) = self.attachments.take_pdf_request() {
             self.pdf_request = Some(request);
         }
-        let _ = self.attachments.take_trash_request();
         let metas = match store.list_attachments(crate::attachments::Owner::Example(example_id)) {
             Ok(m) => m,
             Err(e) => {
@@ -1447,7 +1676,16 @@ impl TemplatesPanel {
             }
         }
         if let Some(r) = open_review {
-            self.file_review = Some(r);
+            // One review at a time: opening another would drop the text being
+            // corrected.
+            if self.file_review.is_some() {
+                self.notice(
+                    "Conclua ou cancele a conferência do texto aberto antes de abrir outro.",
+                    true,
+                );
+            } else {
+                self.file_review = Some(r);
+            }
         }
         let mut done = false;
         let mut review: Option<(i64, String)> = None;
@@ -1548,7 +1786,7 @@ impl TemplatesPanel {
                     "Exemplos aprovados que seriam enviados: {}",
                     p.examples
                 ));
-                ui.label(format!("arquivos de exemplo: {}", p.files));
+                ui.label(format!("Arquivos de exemplo: {}", p.files));
                 for c in &p.conflicts {
                     ui.colored_label(WARNING, c);
                 }
@@ -1579,11 +1817,7 @@ impl TemplatesPanel {
                 Vec::new()
             } else {
                 // The same choice the generation makes for this document.
-                store
-                    .rank_examples(&t.uid, &doc.2)?
-                    .into_iter()
-                    .take(crate::prompting::MAX_EXAMPLES)
-                    .collect()
+                crate::prompting::fit_examples(store.rank_examples(&t.uid, &doc.2)?)
             };
             let mut example_files = Vec::new();
             for example in &examples {
@@ -1618,4 +1852,17 @@ impl TemplatesPanel {
         })();
         self.test_result = Some(result.map_err(|e| format!("{e:#}")));
     }
+}
+
+/// The template as the store has it now; the given one when it was never
+/// saved or cannot be read.
+fn fresh_template(store: &Store, template: WorkTemplate) -> WorkTemplate {
+    if template.uid.is_empty() {
+        return template;
+    }
+    store
+        .template_by_uid(&template.uid)
+        .ok()
+        .flatten()
+        .unwrap_or(template)
 }

@@ -756,6 +756,9 @@ impl Store {
     ) -> Result<i64> {
         crate::evidence::validate(materials, &[])?;
         ensure!(valid_kind(kind), "Tipo de minuta inválido.");
+        if let Some(provenance) = provenance {
+            crate::work_templates::validate_provenance(provenance)?;
+        }
         ensure!(
             !body.trim().is_empty() && body.len() <= MAX_HUMAN_BYTES,
             "Minuta vazia ou excede 500 KiB."
@@ -793,7 +796,7 @@ impl Store {
         )?;
         let draft_id = tx.last_insert_rowid();
         if let Some(generation) = provenance.and_then(|p| p.generation_uid.as_deref()) {
-            crate::work_templates::link_generation(&tx, generation, draft_id)?;
+            crate::work_templates::link_generation(&tx, generation, id, draft_id)?;
         }
         crate::trash::register_refs(&tx, "draft", draft_id, id, capture_id, materials)?;
         crate::intranet::record_mutation(

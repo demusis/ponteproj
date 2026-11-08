@@ -106,9 +106,9 @@ O caminho do dia a dia:
 
 1. **Criar:** em uma minuta já revisada, clique em **Guardar como modelo**. O texto vira o rascunho de um modelo novo. Dê um nome.
 2. **Estrutura:** ajuste as seções, as variáveis e os critérios de conferência. **Salvar rascunho**.
-3. **Instruções:** cadastre as regras de redação e anexe ao modelo como *obrigatória*, *opcional* ou *condicional*.
+3. **Instruções:** cadastre as regras de redação e clique em **Publicar versão** em cada uma (só instrução publicada pode ser adicionada a um modelo). Depois, na aba **Instruções** do modelo, escolha **Adicionar instrução ao modelo** e defina cada uma como *obrigatória*, *opcional* ou *condicional*.
 4. **Exemplos:** cadastre respostas boas e clique em **Aprovar**. Pode anexar o arquivo da resposta real (PDF com texto, .txt ou .docx) e clicar em **Extrair texto**; se quiser, leia e corrija em **Conferir texto…**. Só exemplo aprovado, com texto extraído ou conferido, é usado. Eles ensinam organização e tom, nunca os fatos do caso.
-5. **Testar:** escolha um documento aberto e veja o que seria enviado à IA. Nada é enviado.
+5. **Testar:** com o documento desejado selecionado na Ficha, veja o que seria enviado à IA. Nada é enviado.
 6. **Publicar:** **Publicar versão N**. Para mudar depois, revise: o Ponte cria a versão seguinte, e as minutas antigas continuam ligadas à versão que usaram.
 7. **Usar:** em **Anotações e minutas**, escolha o **Modelo de trabalho** (o Ponte pode sugerir um pelas palavras do documento; a escolha é sua), marque as **Instruções opcionais** que valem para o caso e escreva o **Pedido desta minuta**. Depois clique em **Gerar nova com IA**, **Completar texto atual** (preserva o que já está escrito) ou **Revisar texto atual** (abre a comparação antes de substituir).
 8. **Conferir:** na lista de versões, **Material utilizado** mostra o modelo, as instruções, os exemplos e as fontes que a geração usou. Um trecho "encontrado na fonte" prova só que a citação existe, não que a conclusão está certa.

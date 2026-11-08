@@ -730,8 +730,13 @@ impl AttachmentsPanel {
                 pick = true;
             }
             ui.small(format!("{} de {MAX_PER_OWNER}", list.len()));
+            let on_delete = if owner.deletes_for_good() {
+                "Excluir um anexo o remove em definitivo."
+            } else {
+                "Excluir um anexo o leva para a Lixeira, de onde pode ser restaurado."
+            };
             ui.label(RichText::new("ⓘ").color(MUTED)).on_hover_text(format!(
-                "Até {MAX_PER_OWNER} anexos de até {} cada. Tipos aceitos: {ACCEPTED_TYPES_TEXT}. Programas, scripts, atalhos e arquivos compactados não são aceitos. Excluir um anexo o leva para a Lixeira, de onde pode ser restaurado.",
+                "Até {MAX_PER_OWNER} anexos de até {} cada. Tipos aceitos: {ACCEPTED_TYPES_TEXT}. Programas, scripts, atalhos e arquivos compactados não são aceitos. {on_delete}",
                 labels::file_size(MAX_ATTACHMENT_BYTES as u64)
             ));
         });

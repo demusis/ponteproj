@@ -687,6 +687,10 @@ pub enum IntranetMutation {
     SetTemplateStatus {
         uid: String,
         status: crate::work_templates::Status,
+        /// What the publisher saw (draft number, block versions); absent
+        /// from older computers and for archiving.
+        #[serde(default)]
+        plan: Option<crate::work_templates::PublishPlan>,
         expected_version: Option<i64>,
     },
     DeleteTemplate {
@@ -1884,9 +1888,10 @@ impl Store {
             IntranetMutation::SetTemplateStatus {
                 uid,
                 status,
+                plan,
                 expected_version,
             } => self
-                .set_template_status(&uid, status, expected_version)
+                .set_template_status_with(&uid, status, plan, expected_version)
                 .map(|_| MutationReply::Unit),
             IntranetMutation::DeleteTemplate { uid } => {
                 self.delete_template(&uid).map(|()| MutationReply::Unit)
@@ -2900,12 +2905,14 @@ impl Store {
             IntranetMutation::SetTemplateStatus {
                 uid,
                 status,
+                plan,
                 expected_version,
             } => {
                 let ver = expected_version.or_else(|| self.uid_version("template", &uid));
                 IntranetMutation::SetTemplateStatus {
                     uid,
                     status,
+                    plan,
                     expected_version: ver,
                 }
             }
@@ -3258,11 +3265,14 @@ impl Store {
                     expected_version: ver,
                 }
             }
-            IntranetMutation::SetTemplateStatus { uid, status, .. } => {
+            IntranetMutation::SetTemplateStatus {
+                uid, status, plan, ..
+            } => {
                 let ver = self.uid_version("template", &uid);
                 IntranetMutation::SetTemplateStatus {
                     uid,
                     status,
+                    plan,
                     expected_version: ver,
                 }
             }

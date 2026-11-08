@@ -697,6 +697,7 @@ enum PendingTarget {
     Tasks,
     Saiop,
     Templates,
+    Mail,
     Suggestion,
     Settings,
     Network,
@@ -933,7 +934,12 @@ impl PonteApp {
                 self.refresh();
                 self.select(result.receipt.document_id);
                 self.tab = Tab::Document;
-                let mut message = if result.already_imported {
+                let mut message = if result.already_imported && result.attachments_added > 0 {
+                    format!(
+                        "Este e-mail já estava no acervo (“{}”); foram acrescentados {} anexo(s) que faltavam.",
+                        result.subject, result.attachments_added
+                    )
+                } else if result.already_imported {
                     format!(
                         "Este e-mail já estava no acervo (“{}”); nada foi duplicado.",
                         result.subject
@@ -948,9 +954,10 @@ impl PonteApp {
                     message.push(' ');
                     message.push_str(note);
                 }
-                // A note is information; a file that could not be attached
-                // deserves the warning colour.
-                if result.attachments_skipped.is_empty() {
+                // A note is information; a file that could not be attached,
+                // or a second message under the same Message-ID, deserves
+                // the warning colour.
+                if result.attachments_skipped.is_empty() && !result.separate_record {
                     self.message(message);
                 } else {
                     self.error(message);
@@ -966,7 +973,13 @@ impl PonteApp {
         if !self.mail.open {
             return;
         }
-        let busy = self.worker.is_some();
+        // The window says what is running: its own exchange with the
+        // mailbox, or something else (an AI draft, a backup) to wait for.
+        let busy = match &self.worker {
+            None => crate::mail_ui::MailBusy::Free,
+            Some(worker) if worker.kind == WorkKind::Mail => crate::mail_ui::MailBusy::Mail,
+            Some(_) => crate::mail_ui::MailBusy::Other,
+        };
         let action = self.mail.show(ctx, &mut self.store, busy);
         match action {
             crate::mail_ui::MailAction::None => {}
@@ -974,9 +987,10 @@ impl PonteApp {
                 self.spawn(
                     format!("Conectando a {}", account.host),
                     WorkKind::Mail,
-                    move |_| {
+                    move |reporter| {
                         WorkResult::MailFolders(
-                            crate::imap::list_folders(&account).map_err(|e| format!("{e:#}")),
+                            crate::imap::list_folders(&account, &reporter)
+                                .map_err(|e| format!("{e:#}")),
                         )
                     },
                     ctx,
@@ -990,9 +1004,9 @@ impl PonteApp {
                 self.spawn(
                     format!("Listando mensagens de {folder}"),
                     WorkKind::Mail,
-                    move |_| {
+                    move |reporter| {
                         WorkResult::MailMessages(
-                            crate::imap::list_messages(&account, &folder, filter, 100)
+                            crate::imap::list_messages(&account, &folder, filter, 100, &reporter)
                                 .map_err(|e| format!("{e:#}")),
                         )
                     },
@@ -1165,6 +1179,12 @@ impl PonteApp {
                 go: PendingTarget::Templates,
             });
         }
+        if self.mail.dirty() {
+            out.push(Pending {
+                label: "Conta de e-mail em edição".into(),
+                go: PendingTarget::Mail,
+            });
+        }
         if self.tasks.dirty() {
             out.push(Pending {
                 label: "Tarefa em edição no painel Tarefas".into(),
@@ -1256,6 +1276,7 @@ impl PonteApp {
                 self.saiop_open = false;
                 self.tasks_open = false;
             }
+            PendingTarget::Mail => self.mail.open = true,
             PendingTarget::Suggestion => self.suggestion_open = true,
             PendingTarget::Settings => self.settings_open = true,
             PendingTarget::Network => self.intranet.open = true,
@@ -2092,16 +2113,16 @@ impl PonteApp {
             None => None,
         };
         // Only approved examples travel: the ones most like this document,
-        // at most three (newest first when none resembles it).
+        // at most three and within the size limit (newest first when none
+        // resembles it).
         let (blocks, examples) = match &template {
             Some((found, _)) => (
                 self.store.list_blocks().unwrap_or_default(),
-                self.store
-                    .rank_examples(&found.uid, &detail.capture)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .take(crate::prompting::MAX_EXAMPLES)
-                    .collect(),
+                crate::prompting::fit_examples(
+                    self.store
+                        .rank_examples(&found.uid, &detail.capture)
+                        .unwrap_or_default(),
+                ),
             ),
             None => (Vec::new(), Vec::new()),
         };
@@ -2331,9 +2352,7 @@ impl PonteApp {
                         ));
                     }
                 }
-                Err(error) => {
-                    self.error(format!("Não foi possível ler a conta de e-mail: {error}"))
-                }
+                Err(error) => self.mail.accept_fetch_error(error),
             },
             WorkResult::Export(result) => match result {
                 Ok(report) => {
@@ -5014,6 +5033,7 @@ impl eframe::App for PonteApp {
         self.draft_tools.comparison(&ctx);
         self.pdf_reader.show(&ctx, &mut self.store);
         let pending = self.templates.dirty()
+            || self.mail.dirty()
             || self.pdf_reader.busy()
             || self.dossier.dirty()
             || self.work_context.dirty()
@@ -5154,7 +5174,18 @@ impl eframe::App for PonteApp {
                     match self.templates.show(ui, &mut self.store, open_document) {
                         crate::templates_ui::TemplatesAction::UseTemplate { uid } => {
                             if let Some(id) = self.selected_id {
+                                // The minuta takes the template's kind, or the
+                                // editor would drop a template of another kind.
+                                let kind = self
+                                    .store
+                                    .template_by_uid(&uid)
+                                    .ok()
+                                    .flatten()
+                                    .map(|t| t.kind);
                                 if let Some(editor) = self.editors.get_mut(&id) {
+                                    if let Some(kind) = kind {
+                                        editor.kind = kind;
+                                    }
                                     editor.template_uid = Some(uid);
                                     editor.selected_blocks.clear();
                                 }
