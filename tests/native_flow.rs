@@ -238,13 +238,11 @@ fn unchanged_import_warns_without_opening_the_app() {
     let message = ignored["message"].as_str().unwrap();
     assert!(message.starts_with("Importação ignorada"), "{message}");
     assert!(message.contains("Nada foi gravado"), "{message}");
-    let stored_at: String = rusqlite::Connection::open_with_flags(
-        &path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap()
-    .query_row("SELECT created_at FROM captures", [], |row| row.get(0))
-    .unwrap();
+    let stored_at: String =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+            .query_row("SELECT created_at FROM captures", [], |row| row.get(0))
+            .unwrap();
     assert!(
         message.contains(&ponteproj::labels::datetime(&stored_at)),
         "{message}"

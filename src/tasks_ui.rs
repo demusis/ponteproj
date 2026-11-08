@@ -38,7 +38,9 @@ fn dependency_chip(ui: &mut egui::Ui, task: &Task) -> Option<Task> {
     } else {
         ("○", WARNING)
     };
-    let mut text = RichText::new(format!("{mark} {}", task.title)).small().color(color);
+    let mut text = RichText::new(format!("{mark} {}", task.title))
+        .small()
+        .color(color);
     if task.status == "concluida" {
         text = text.strikethrough();
     }
@@ -78,9 +80,14 @@ fn chain_row(ui: &mut egui::Ui, task: &Task, open: &mut Option<Task>) {
             ui.small(RichText::new("○").color(WARNING));
         }
         ui.small(&task.title);
-        ui.small(RichText::new(format!("• {}", crate::tasks::status_label(&task.status))).color(MUTED));
+        ui.small(
+            RichText::new(format!("• {}", crate::tasks::status_label(&task.status))).color(MUTED),
+        );
         if !task.due_date.is_empty() {
-            ui.small(RichText::new(format!("• prazo {}", crate::labels::date(&task.due_date))).color(MUTED));
+            ui.small(
+                RichText::new(format!("• prazo {}", crate::labels::date(&task.due_date)))
+                    .color(MUTED),
+            );
         }
         if ui.small_button("Abrir").clicked() {
             *open = Some(task.clone());
@@ -173,10 +180,7 @@ impl TaskPanel {
                     .ok()
                     .and_then(|tasks| tasks.into_iter().find(|t| t.id == id));
                 self.original = self.draft.clone();
-                self.base_version = store
-                    .item_version("task", id)
-                    .ok()
-                    .map(|v| v.version);
+                self.base_version = store.item_version("task", id).ok().map(|v| v.version);
                 let mut text = "Tarefa salva.".to_owned();
                 for note in store.take_cascade_notes() {
                     text.push_str(" • ");
@@ -279,10 +283,7 @@ impl TaskPanel {
         }
         self.original = Some(task.clone());
         self.draft = Some(task.clone());
-        self.base_version = store
-            .item_version("task", task.id)
-            .ok()
-            .map(|v| v.version);
+        self.base_version = store.item_version("task", task.id).ok().map(|v| v.version);
         self.message.clear();
         true
     }
@@ -317,7 +318,10 @@ impl TaskPanel {
         );
         self.draft = Some(task);
         self.original = None;
-        self.notice("Revise e salve para criar a tarefa. Nada foi enviado ao SIGADOC.", false);
+        self.notice(
+            "Revise e salve para criar a tarefa. Nada foi enviado ao SIGADOC.",
+            false,
+        );
         true
     }
     /// True while the form holds something that would be lost. A new task
@@ -432,7 +436,10 @@ impl TaskPanel {
             };
             ui.menu_button(more_label, |ui| {
                 for index in SECONDARY_VIEWS {
-                    if ui.selectable_value(&mut self.view, index, VIEWS[index]).clicked() {
+                    if ui
+                        .selectable_value(&mut self.view, index, VIEWS[index])
+                        .clicked()
+                    {
                         ui.close();
                     }
                 }
@@ -462,7 +469,11 @@ impl TaskPanel {
         if !self.message.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(
-                    if self.message_is_error { ERROR } else { Color32::from_rgb(24, 84, 97) },
+                    if self.message_is_error {
+                        ERROR
+                    } else {
+                        Color32::from_rgb(24, 84, 97)
+                    },
                     &self.message,
                 );
                 if ui.small_button("Fechar").clicked() {
@@ -485,7 +496,10 @@ impl TaskPanel {
         let visible: Vec<&Task> = tasks
             .iter()
             .filter(|task| {
-                if self.document_filter.is_some_and(|id| task.document_id != id) {
+                if self
+                    .document_filter
+                    .is_some_and(|id| task.document_id != id)
+                {
                     return false;
                 }
                 if !self.show_done && task.status == "concluida" {
@@ -769,10 +783,7 @@ impl TaskPanel {
         let mut open = None;
         if let Some(task) = &self.draft {
             if task.id > 0 && self.base_version.is_none() {
-                self.base_version = store
-                    .item_version("task", task.id)
-                    .ok()
-                    .map(|v| v.version);
+                self.base_version = store.item_version("task", task.id).ok().map(|v| v.version);
             }
         }
         let current_actor = store.active_actor();
@@ -830,7 +841,9 @@ impl TaskPanel {
             }
             if ui
                 .add_enabled(task.id > 0 && !dirty, egui::Button::new("Excluir…"))
-                .on_disabled_hover_text("Salve ou cancele as alterações antes de excluir esta tarefa.")
+                .on_disabled_hover_text(
+                    "Salve ou cancele as alterações antes de excluir esta tarefa.",
+                )
                 .clicked()
             {
                 self.trash_requested = Some(crate::trash::Target {
@@ -845,7 +858,11 @@ impl TaskPanel {
         ui.horizontal_wrapped(|ui| {
             ui.label("Responsável:");
             ui.add(egui::TextEdit::singleline(&mut task.assignee).desired_width(180.0));
-            if ui.small_button("Eu").on_hover_text(format!("Atribuir a {current_actor}")).clicked() {
+            if ui
+                .small_button("Eu")
+                .on_hover_text(format!("Atribuir a {current_actor}"))
+                .clicked()
+            {
                 task.assignee = current_actor.clone();
             }
         });
@@ -882,8 +899,9 @@ impl TaskPanel {
         ui.horizontal_wrapped(|ui| {
             ui.label("Prazo:");
             crate::labels::date_field(ui, ("task-due", task.id), &mut task.due_date);
-            ui.label(RichText::new("ⓘ").color(MUTED))
-                .on_hover_text("Deixe vazio se não houver prazo confirmado. Anote a origem em “Mais detalhes”.");
+            ui.label(RichText::new("ⓘ").color(MUTED)).on_hover_text(
+                "Deixe vazio se não houver prazo confirmado. Anote a origem em “Mais detalhes”.",
+            );
         });
         ui.label("Observações");
         ui.add(
@@ -1110,10 +1128,7 @@ impl TaskPanel {
                 if self.draft.as_ref().is_some_and(|t| t.id == id) {
                     self.draft = Some(updated.clone());
                     self.original = Some(updated.clone());
-                    self.base_version = store
-                        .item_version("task", id)
-                        .ok()
-                        .map(|v| v.version);
+                    self.base_version = store.item_version("task", id).ok().map(|v| v.version);
                 }
                 let mut text = if complete {
                     format!("Tarefa concluída: {}", updated.title)
@@ -1172,9 +1187,16 @@ mod navigation_tests {
 
         // A new task with text typed in: the question names it.
         assert!(panel.start_new(document));
-        assert_eq!(panel.editing_title().as_deref(), None, "a blank new task has nothing to lose");
+        assert_eq!(
+            panel.editing_title().as_deref(),
+            None,
+            "a blank new task has nothing to lose"
+        );
         panel.draft.as_mut().unwrap().title = "Responder ao ofício".into();
-        assert_eq!(panel.editing_title().as_deref(), Some("Responder ao ofício"));
+        assert_eq!(
+            panel.editing_title().as_deref(),
+            Some("Responder ao ofício")
+        );
 
         // "Salvar e continuar" saves and leaves nothing pending.
         panel.save_draft(&mut store).unwrap();
@@ -1204,7 +1226,10 @@ mod navigation_tests {
         panel.draft.as_mut().unwrap().notes = "ainda escrevendo".into();
         assert!(panel.editing_title().is_some());
         assert!(!panel.start_new(document));
-        assert!(panel.take_blocked().is_none(), "start_new itself does not queue; the panel's button does");
+        assert!(
+            panel.take_blocked().is_none(),
+            "start_new itself does not queue; the panel's button does"
+        );
         panel.blocked = Some(Intent::New(document));
         assert_eq!(panel.take_blocked(), Some(Intent::New(document)));
         assert!(panel.take_blocked().is_none());

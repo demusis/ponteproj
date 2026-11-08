@@ -234,7 +234,9 @@ pub fn validate_description(description: &str) -> Result<()> {
         description.chars().count()
     );
     ensure!(
-        !description.chars().any(|c| c.is_control() && c != '\n' && c != '\t'),
+        !description
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t'),
         "A descrição contém caracteres inválidos."
     );
     Ok(())
@@ -314,7 +316,9 @@ impl Store {
         )?;
         if !definition.contains("'saiop'") {
             let triggers = tx
-                .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_%'")?
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_%'",
+                )?
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for name in triggers {
@@ -580,7 +584,9 @@ impl Store {
             "Anexo na lixeira. Restaure-o antes de editar."
         );
         let blob: Vec<u8> =
-            tx.query_row("SELECT metadata FROM attachments WHERE id=?1", [id], |r| r.get(0))?;
+            tx.query_row("SELECT metadata FROM attachments WHERE id=?1", [id], |r| {
+                r.get(0)
+            })?;
         let mut meta: AttachmentMeta = serde_json::from_slice(&protection::unseal(&blob)?)?;
         meta.description = description.trim().into();
         tx.execute(
@@ -708,13 +714,20 @@ impl AttachmentsPanel {
         if pick {
             if let Some(path) = crate::windows_ui::pick_file(
                 "Anexar arquivo",
-                &[("Documentos e imagens", DIALOG_PATTERN), ("Todos os arquivos", "*.*")],
+                &[
+                    ("Documentos e imagens", DIALOG_PATTERN),
+                    ("Todos os arquivos", "*.*"),
+                ],
             ) {
                 self.attach(store, owner, &path);
             }
         }
         if !self.message.is_empty() {
-            let color = if self.message_is_error { ERROR } else { Color32::from_rgb(30, 110, 60) };
+            let color = if self.message_is_error {
+                ERROR
+            } else {
+                Color32::from_rgb(30, 110, 60)
+            };
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(color, &self.message);
                 if ui.small_button("✕").clicked() {
@@ -915,36 +928,76 @@ mod tests {
     fn types_sizes_and_signatures_are_checked_with_guidance() {
         let pdf = include_bytes!("../tests/fixtures/document.pdf");
         assert_eq!(validate_file("oficio.pdf", pdf).unwrap(), "PDF");
-        assert_eq!(validate_file("foto.PNG", b"\x89PNG\r\n\x1a\n....").unwrap(), "Imagem");
-        assert_eq!(validate_file("nota.txt", "texto simples\n".as_bytes()).unwrap(), "Texto");
-        assert_eq!(validate_file("planilha.xlsx", b"PK\x03\x04rest").unwrap(), "Excel");
         assert_eq!(
-            validate_file("antigo.doc", &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0]).unwrap(),
+            validate_file("foto.PNG", b"\x89PNG\r\n\x1a\n....").unwrap(),
+            "Imagem"
+        );
+        assert_eq!(
+            validate_file("nota.txt", "texto simples\n".as_bytes()).unwrap(),
+            "Texto"
+        );
+        assert_eq!(
+            validate_file("planilha.xlsx", b"PK\x03\x04rest").unwrap(),
+            "Excel"
+        );
+        assert_eq!(
+            validate_file(
+                "antigo.doc",
+                &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0]
+            )
+            .unwrap(),
             "Word"
         );
 
-        let zip = validate_file("lote.zip", b"PK\x03\x04").unwrap_err().to_string();
-        assert!(zip.contains("compactados") && zip.contains("um a um"), "{zip}");
-        let exe = validate_file("instalador.exe", b"MZ...").unwrap_err().to_string();
+        let zip = validate_file("lote.zip", b"PK\x03\x04")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            zip.contains("compactados") && zip.contains("um a um"),
+            "{zip}"
+        );
+        let exe = validate_file("instalador.exe", b"MZ...")
+            .unwrap_err()
+            .to_string();
         assert!(exe.contains("segurança"), "{exe}");
-        let macro_doc = validate_file("modelo.docm", b"PK\x03\x04").unwrap_err().to_string();
-        assert!(macro_doc.contains("macros") && macro_doc.contains(".docx"), "{macro_doc}");
+        let macro_doc = validate_file("modelo.docm", b"PK\x03\x04")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            macro_doc.contains("macros") && macro_doc.contains(".docx"),
+            "{macro_doc}"
+        );
         let unknown = validate_file("desenho.dwg", b"xx").unwrap_err().to_string();
-        assert!(unknown.contains("Tipos aceitos") && unknown.contains("PDF"), "{unknown}");
+        assert!(
+            unknown.contains("Tipos aceitos") && unknown.contains("PDF"),
+            "{unknown}"
+        );
         let no_ext = validate_file("semextensao", b"xx").unwrap_err().to_string();
         assert!(no_ext.contains("não tem extensão"), "{no_ext}");
         let empty = validate_file("vazio.pdf", b"").unwrap_err().to_string();
         assert!(empty.contains("vazio"), "{empty}");
-        let renamed = validate_file("programa.pdf", b"MZ\x90\x00").unwrap_err().to_string();
+        let renamed = validate_file("programa.pdf", b"MZ\x90\x00")
+            .unwrap_err()
+            .to_string();
         assert!(renamed.contains("programa"), "{renamed}");
-        let mismatch = validate_file("foto.jpg", b"%PDF-1.4").unwrap_err().to_string();
-        assert!(mismatch.contains("não corresponde") && mismatch.contains(".jpg"), "{mismatch}");
-        let binary_text = validate_file("nota.txt", b"abc\0def").unwrap_err().to_string();
+        let mismatch = validate_file("foto.jpg", b"%PDF-1.4")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            mismatch.contains("não corresponde") && mismatch.contains(".jpg"),
+            "{mismatch}"
+        );
+        let binary_text = validate_file("nota.txt", b"abc\0def")
+            .unwrap_err()
+            .to_string();
         assert!(binary_text.contains("não corresponde"), "{binary_text}");
 
         let big = vec![b'a'; MAX_ATTACHMENT_BYTES + 1];
         let too_big = validate_file("grande.txt", &big).unwrap_err().to_string();
-        assert!(too_big.contains("8 MB") && too_big.contains("divida"), "{too_big}");
+        assert!(
+            too_big.contains("8 MB") && too_big.contains("divida"),
+            "{too_big}"
+        );
         assert!(size_message("x.pdf", 13_000_000_u64).contains("12,4 MB"));
 
         assert!(validate_description(&"x".repeat(MAX_DESCRIPTION_CHARS)).is_ok());
@@ -965,20 +1018,30 @@ mod tests {
             let mut store = Store::open(&path).unwrap();
             let receipt = store.import_capture(&sample_capture()).unwrap();
             // Put a task in the trash, then downgrade the table to the 0.10 shape.
-            let task = store.save_task(&crate::tasks::Task::new(receipt.document_id)).unwrap();
+            let task = store
+                .save_task(&crate::tasks::Task::new(receipt.document_id))
+                .unwrap();
             store
-                .trash_item(crate::trash::Target { kind: crate::trash::Kind::Task, id: task })
+                .trash_item(crate::trash::Target {
+                    kind: crate::trash::Kind::Task,
+                    id: task,
+                })
                 .unwrap();
             let triggers = store
                 .conn
-                .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_%'")
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_%'",
+                )
                 .unwrap()
                 .query_map([], |r| r.get::<_, String>(0))
                 .unwrap()
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap();
             for name in triggers {
-                store.conn.execute_batch(&format!("DROP TRIGGER {name};")).unwrap();
+                store
+                    .conn
+                    .execute_batch(&format!("DROP TRIGGER {name};"))
+                    .unwrap();
             }
             store
                 .conn
@@ -1004,9 +1067,14 @@ mod tests {
         // The row that was in the trash survived the rebuild.
         assert_eq!(store.trash_entries().unwrap().len(), 1);
         let owner = Owner::Document(document);
-        let id = store.add_attachment(owner, "nota.txt", "", b"ok\n").unwrap();
+        let id = store
+            .add_attachment(owner, "nota.txt", "", b"ok\n")
+            .unwrap();
         store
-            .trash_item(crate::trash::Target { kind: crate::trash::Kind::Attachment, id })
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Attachment,
+                id,
+            })
             .unwrap();
         assert_eq!(store.trash_entries().unwrap().len(), 2);
     }
@@ -1024,12 +1092,16 @@ mod tests {
         // Sealed: neither the bytes nor the name are visible in the database file.
         let blob: Vec<u8> = store
             .conn
-            .query_row("SELECT payload FROM attachments WHERE id=?1", [id], |r| r.get(0))
+            .query_row("SELECT payload FROM attachments WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert!(!blob.windows(5).any(|w| w == b"%PDF-"));
         let meta_blob: Vec<u8> = store
             .conn
-            .query_row("SELECT metadata FROM attachments WHERE id=?1", [id], |r| r.get(0))
+            .query_row("SELECT metadata FROM attachments WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert!(!meta_blob.windows(6).any(|w| w == "recebido".as_bytes()));
 
@@ -1050,24 +1122,37 @@ mod tests {
         assert!(duplicate.contains("Ofício recebido.pdf"), "{duplicate}");
 
         // Description edits persist; invalid ones are refused.
-        store.update_attachment_description(id, "versão assinada").unwrap();
-        assert_eq!(store.list_attachments(owner).unwrap()[0].description, "versão assinada");
+        store
+            .update_attachment_description(id, "versão assinada")
+            .unwrap();
+        assert_eq!(
+            store.list_attachments(owner).unwrap()[0].description,
+            "versão assinada"
+        );
         assert!(store
             .update_attachment_description(id, &"x".repeat(MAX_DESCRIPTION_CHARS + 1))
             .is_err());
 
         // Trash hides it, keeps the bytes, and restore brings it back.
-        let target = crate::trash::Target { kind: crate::trash::Kind::Attachment, id };
+        let target = crate::trash::Target {
+            kind: crate::trash::Kind::Attachment,
+            id,
+        };
         let plan = store.trash_plan(target.clone()).unwrap();
         assert!(plan.blocker.is_none());
         assert!(plan.label.contains("Ofício recebido.pdf"));
         assert_eq!(store.trash_item(target.clone()).unwrap(), document);
         assert!(store.list_attachments(owner).unwrap().is_empty());
-        assert_eq!(store.attachment_counts("document").unwrap().get(&document), None);
+        assert_eq!(
+            store.attachment_counts("document").unwrap().get(&document),
+            None
+        );
         assert!(store.attachment_bytes(id).is_ok());
         assert!(store.update_attachment_description(id, "x").is_err());
         let entries = store.trash_entries().unwrap();
-        assert!(entries.iter().any(|e| e.target.kind == crate::trash::Kind::Attachment && e.target.id == id));
+        assert!(entries
+            .iter()
+            .any(|e| e.target.kind == crate::trash::Kind::Attachment && e.target.id == id));
         store.restore_item(target).unwrap();
         assert_eq!(store.list_attachments(owner).unwrap().len(), 1);
         assert_eq!(store.attachment_counts("document").unwrap()[&document], 1);
@@ -1075,22 +1160,35 @@ mod tests {
         // Per-owner limit, with guidance.
         for i in 0..(MAX_PER_OWNER - 1) {
             store
-                .add_attachment(owner, &format!("nota-{i}.txt"), "", format!("nota {i}\n").as_bytes())
+                .add_attachment(
+                    owner,
+                    &format!("nota-{i}.txt"),
+                    "",
+                    format!("nota {i}\n").as_bytes(),
+                )
                 .unwrap();
         }
         let full = store
             .add_attachment(owner, "mais-uma.txt", "", b"mais\n")
             .unwrap_err()
             .to_string();
-        assert!(full.contains("máximo") && full.contains("Lixeira"), "{full}");
+        assert!(
+            full.contains("máximo") && full.contains("Lixeira"),
+            "{full}"
+        );
 
         // Tasks have their own list; a trashed owner refuses new attachments.
         let task = store.save_task(&crate::tasks::Task::new(document)).unwrap();
-        store.add_attachment(Owner::Task(task), "checklist.txt", "", b"ok\n").unwrap();
+        store
+            .add_attachment(Owner::Task(task), "checklist.txt", "", b"ok\n")
+            .unwrap();
         assert_eq!(store.list_attachments(Owner::Task(task)).unwrap().len(), 1);
         assert_eq!(store.attachment_counts("task").unwrap()[&task], 1);
         store
-            .trash_item(crate::trash::Target { kind: crate::trash::Kind::Task, id: task })
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Task,
+                id: task,
+            })
             .unwrap();
         assert!(store
             .add_attachment(Owner::Task(task), "depois.txt", "", b"x\n")

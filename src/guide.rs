@@ -120,7 +120,9 @@ fn render(markdown: &str) -> (String, Vec<(String, String)>) {
 fn heading(line: &str) -> Option<(usize, &str)> {
     let level = line.bytes().take_while(|b| *b == b'#').count();
     if (1..=3).contains(&level) {
-        line[level..].strip_prefix(' ').map(|text| (level, text.trim()))
+        line[level..]
+            .strip_prefix(' ')
+            .map(|text| (level, text.trim()))
     } else {
         None
     }
@@ -170,7 +172,8 @@ fn list(lines: &[&str], mut i: usize, out: &mut String) -> usize {
         }
         out.push_str(&format!("<li>{}", inline(text)));
         i += 1;
-        if let Some((nested_indent, nested_ordered, _)) = lines.get(i).and_then(|line| marker(line)) {
+        if let Some((nested_indent, nested_ordered, _)) = lines.get(i).and_then(|line| marker(line))
+        {
             if nested_indent > base {
                 out.push_str(&format!("<{}>", tag(nested_ordered)));
                 while let Some((inner, _, text)) = lines.get(i).and_then(|line| marker(line)) {
@@ -238,7 +241,9 @@ fn escape(text: &str) -> String {
 /// Only web addresses become links; anything else stays as written.
 fn web_address(url: &str) -> bool {
     (url.starts_with("https://") || url.starts_with("http://"))
-        && !url.chars().any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '<' || c == '>')
+        && !url
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '<' || c == '>')
 }
 
 /// Position of `needle` in `chars` at or after `from`.
@@ -246,7 +251,8 @@ fn find(chars: &[char], from: usize, needle: &[char]) -> Option<usize> {
     if needle.is_empty() || from > chars.len() {
         return None;
     }
-    (from..chars.len().saturating_sub(needle.len() - 1)).find(|&at| chars[at..at + needle.len()] == *needle)
+    (from..chars.len().saturating_sub(needle.len() - 1))
+        .find(|&at| chars[at..at + needle.len()] == *needle)
 }
 
 /// Bold, italics, code and links inside one line; everything else escaped.
@@ -326,14 +332,23 @@ mod tests {
             inline("**Salvar** e `a<b` com *ênfase*"),
             "<strong>Salvar</strong> e <code>a&lt;b</code> com <em>ênfase</em>"
         );
-        assert_eq!(inline("<script>alert(1)</script> & \"x\""), "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;x&quot;");
+        assert_eq!(
+            inline("<script>alert(1)</script> & \"x\""),
+            "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;x&quot;"
+        );
         assert_eq!(
             inline("veja <https://exemplo.gov.br/a?b=1&c=2>"),
             "veja <a href=\"https://exemplo.gov.br/a?b=1&amp;c=2\">https://exemplo.gov.br/a?b=1&amp;c=2</a>"
         );
-        assert_eq!(inline("[Guia](https://exemplo.gov.br)"), "<a href=\"https://exemplo.gov.br\">Guia</a>");
+        assert_eq!(
+            inline("[Guia](https://exemplo.gov.br)"),
+            "<a href=\"https://exemplo.gov.br\">Guia</a>"
+        );
         // Only web addresses are linked.
-        assert_eq!(inline("[x](javascript:alert(1))"), "[x](javascript:alert(1))");
+        assert_eq!(
+            inline("[x](javascript:alert(1))"),
+            "[x](javascript:alert(1))"
+        );
         assert_eq!(inline("<file:///c:/x>"), "&lt;file:///c:/x&gt;");
         // Unfinished marks stay as typed.
         assert_eq!(inline("2 * 3 e **sem fim"), "2 * 3 e **sem fim");
@@ -372,7 +387,9 @@ mod tests {
         let (_, sections) = render(GUIDE);
         assert_eq!(sections.len(), 10, "{sections:?}");
         for (id, _) in &sections {
-            assert!(page.contains(&format!("href=\"#{id}\"")) && page.contains(&format!("id=\"{id}\"")));
+            assert!(
+                page.contains(&format!("href=\"#{id}\"")) && page.contains(&format!("id=\"{id}\""))
+            );
         }
         assert!(page.contains("<a href=\"https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe\">"));
         // Nothing of the source notation is left visible.

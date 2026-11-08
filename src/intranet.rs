@@ -194,9 +194,7 @@ impl IntranetConfig {
     pub fn validate(&self) -> Result<()> {
         let member = self.member_name.trim();
         ensure!(
-            !member.is_empty()
-                && member.len() <= 120
-                && !member.chars().any(char::is_control),
+            !member.is_empty() && member.len() <= 120 && !member.chars().any(char::is_control),
             "Informe seu nome ou identificação na equipe (até 120 bytes)."
         );
         match self.mode {
@@ -631,7 +629,10 @@ pub enum IntranetMutation {
         file_name: String,
         file_sha256: String,
         sheet_name: String,
-        items: Vec<(crate::saiop::SaiopAttendance, crate::saiop::RawSpreadsheetRow)>,
+        items: Vec<(
+            crate::saiop::SaiopAttendance,
+            crate::saiop::RawSpreadsheetRow,
+        )>,
     },
     UndoSaiopBatch {
         batch_id: i64,
@@ -946,11 +947,9 @@ impl Store {
     fn load_intranet_config_uncached(&self) -> Result<IntranetConfig> {
         let blob: Option<Vec<u8>> = self
             .conn
-            .query_row(
-                "SELECT payload FROM intranet_config WHERE id=1",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT payload FROM intranet_config WHERE id=1", [], |r| {
+                r.get(0)
+            })
             .optional()?;
         match blob {
             Some(bytes) => Ok(serde_json::from_slice(&unseal(&bytes)?)?),
@@ -999,9 +998,9 @@ impl Store {
     }
 
     pub fn list_team_events(&self, limit: usize) -> Result<Vec<TeamEvent>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id,created_at,payload FROM team_events ORDER BY id DESC LIMIT ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id,created_at,payload FROM team_events ORDER BY id DESC LIMIT ?1")?;
         let rows = stmt.query_map([limit.min(500) as i64], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -1024,7 +1023,9 @@ impl Store {
         let revision = self.cabinet_revision()?;
         let documents = self
             .conn
-            .prepare("SELECT id,identity_hash,latest_capture_id,last_seen_at FROM documents ORDER BY id")?
+            .prepare(
+                "SELECT id,identity_hash,latest_capture_id,last_seen_at FROM documents ORDER BY id",
+            )?
             .query_map([], |r| {
                 Ok(DocRow {
                     id: r.get(0)?,
@@ -1037,7 +1038,9 @@ impl Store {
 
         let raw_captures = self
             .conn
-            .prepare("SELECT id,document_id,content_hash,payload,created_at FROM captures ORDER BY id")?
+            .prepare(
+                "SELECT id,document_id,content_hash,payload,created_at FROM captures ORDER BY id",
+            )?
             .query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
@@ -1122,7 +1125,9 @@ impl Store {
 
         let raw_analyses = self
             .conn
-            .prepare("SELECT id,document_id,capture_id,payload,created_at FROM analyses ORDER BY id")?
+            .prepare(
+                "SELECT id,document_id,capture_id,payload,created_at FROM analyses ORDER BY id",
+            )?
             .query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
@@ -1269,7 +1274,9 @@ impl Store {
 
         let raw_versions = self
             .conn
-            .prepare("SELECT kind,item_id,version,payload FROM item_versions ORDER BY kind,item_id")?
+            .prepare(
+                "SELECT kind,item_id,version,payload FROM item_versions ORDER BY kind,item_id",
+            )?
             .query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -1288,7 +1295,9 @@ impl Store {
 
         let raw_attachments = self
             .conn
-            .prepare("SELECT id,owner_kind,owner_id,document_id,metadata FROM attachments ORDER BY id")?
+            .prepare(
+                "SELECT id,owner_kind,owner_id,document_id,metadata FROM attachments ORDER BY id",
+            )?
             .query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
@@ -1378,7 +1387,9 @@ impl Store {
         let mut attachment_blobs = BTreeMap::<i64, (String, Vec<u8>)>::new();
         for (id, meta_blob, payload_blob) in existing_attachments {
             if let Ok(plain) = unseal(&meta_blob) {
-                if let Ok(meta) = serde_json::from_slice::<crate::attachments::AttachmentMeta>(&plain) {
+                if let Ok(meta) =
+                    serde_json::from_slice::<crate::attachments::AttachmentMeta>(&plain)
+                {
                     attachment_blobs.insert(id, (meta.sha256, payload_blob));
                 }
             }
@@ -1540,11 +1551,7 @@ impl Store {
         for task in &snapshot.tasks {
             tx.execute(
                 "INSERT INTO tasks(id,document_id,payload) VALUES(?1,?2,?3)",
-                params![
-                    task.id,
-                    task.document_id,
-                    seal(&serde_json::to_vec(task)?)?
-                ],
+                params![task.id, task.document_id, seal(&serde_json::to_vec(task)?)?],
             )?;
         }
         for (doc_id, ctx) in &snapshot.work_contexts {
@@ -1673,11 +1680,9 @@ impl Store {
         }
 
         if let Some(blob) = tx
-            .query_row(
-                "SELECT payload FROM intranet_config WHERE id=1",
-                [],
-                |r| r.get::<_, Vec<u8>>(0),
-            )
+            .query_row("SELECT payload FROM intranet_config WHERE id=1", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
             .optional()?
         {
             if let Ok(plain) = unseal(&blob) {
@@ -1847,7 +1852,12 @@ impl Store {
         let outbox = self.list_offline_outbox()?;
         let mut pushed_offline = false;
         if !outbox.is_empty() {
-            let host_snapshot = match send_rpc_classified(&cfg, &RpcRequest::Sync { since_revision: None }) {
+            let host_snapshot = match send_rpc_classified(
+                &cfg,
+                &RpcRequest::Sync {
+                    since_revision: None,
+                },
+            ) {
                 Ok(RpcResponse::Snapshot(snap)) => Some(snap),
                 Ok(RpcResponse::Error { message }) => bail!("{message}"),
                 Ok(_) => None,
@@ -1868,27 +1878,20 @@ impl Store {
                     },
                 ) {
                     Ok(RpcResponse::Mutated { .. }) => {
-                        self.conn.execute(
-                            "DELETE FROM offline_outbox WHERE id=?1",
-                            params![entry.id],
-                        )?;
+                        self.conn
+                            .execute("DELETE FROM offline_outbox WHERE id=?1", params![entry.id])?;
                         pushed_offline = true;
                     }
                     Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
-                        let conflict = build_sync_conflict(
-                            &entry,
-                            &message,
-                            host_snapshot.as_deref(),
-                        );
+                        let conflict =
+                            build_sync_conflict(&entry, &message, host_snapshot.as_deref());
                         let blob = seal(&serde_json::to_vec(&conflict)?)?;
                         self.conn.execute(
                             "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
                             params![conflict.created_at, blob],
                         )?;
-                        self.conn.execute(
-                            "DELETE FROM offline_outbox WHERE id=?1",
-                            params![entry.id],
-                        )?;
+                        self.conn
+                            .execute("DELETE FROM offline_outbox WHERE id=?1", params![entry.id])?;
                         pushed_offline = true;
                     }
                     Ok(_) => {
@@ -1906,7 +1909,12 @@ impl Store {
         } else {
             Some(cfg.synced_revision)
         };
-        let response = match send_rpc_classified(&cfg, &RpcRequest::Sync { since_revision: since }) {
+        let response = match send_rpc_classified(
+            &cfg,
+            &RpcRequest::Sync {
+                since_revision: since,
+            },
+        ) {
             Ok(response) => {
                 self.note_host_reachability(true);
                 response
@@ -1953,7 +1961,10 @@ impl Store {
             "A pasta compartilhada não está ativa neste computador."
         );
         cfg.validate()?;
-        ensure!(!key.is_empty(), "Informe a senha de sincronização em Rede e equipe.");
+        ensure!(
+            !key.is_empty(),
+            "Informe a senha de sincronização em Rede e equipe."
+        );
         let paths = cfg.folder_paths();
         let mut report = FolderSyncReport::default();
         reporter.step("Lendo as pastas…");
@@ -1997,7 +2008,8 @@ impl Store {
             );
         }
         copies.sort_by(|a, b| {
-            (b.header.revision, &b.header.written_at).cmp(&(a.header.revision, &a.header.written_at))
+            (b.header.revision, &b.header.written_at)
+                .cmp(&(a.header.revision, &a.header.written_at))
         });
         let outbox = self.list_offline_outbox()?;
         let first_write = copies.is_empty();
@@ -2012,7 +2024,8 @@ impl Store {
             // this very computer wrote proves otherwise, even when the local
             // bookkeeping was lost (a window of 0.18.0 overwrote it).
             let wrote_a_copy = copies.iter().any(|c| c.header.writer == cfg.folder_writer);
-            let joining = cfg.synced_revision == 0 && cfg.folder_lineage.trim().is_empty() && !wrote_a_copy;
+            let joining =
+                cfg.synced_revision == 0 && cfg.folder_lineage.trim().is_empty() && !wrote_a_copy;
             if joining && !allow_replace {
                 let local_documents = self.list_documents("")?.len();
                 ensure!(
@@ -2033,7 +2046,10 @@ impl Store {
                 .payload
                 .applied
                 .iter()
-                .filter(|uid| !best_applied.contains(*uid) && !copy.payload.journal.iter().any(|e| &e.uid == *uid))
+                .filter(|uid| {
+                    !best_applied.contains(*uid)
+                        && !copy.payload.journal.iter().any(|e| &e.uid == *uid)
+                })
                 .count();
             if missing_from_journal > 0 {
                 report.notes.push(format!(
@@ -2042,12 +2058,15 @@ impl Store {
                 ));
             }
             for entry in &copy.payload.journal {
-                if !best_applied.contains(&entry.uid) && !foreign.iter().any(|(e, _)| e.uid == entry.uid) {
+                if !best_applied.contains(&entry.uid)
+                    && !foreign.iter().any(|(e, _)| e.uid == entry.uid)
+                {
                     foreign.push((entry.clone(), copy.path.display().to_string()));
                 }
             }
         }
-        foreign.sort_by(|a, b| (a.0.revision, &a.0.created_at).cmp(&(b.0.revision, &b.0.created_at)));
+        foreign
+            .sort_by(|a, b| (a.0.revision, &a.0.created_at).cmp(&(b.0.revision, &b.0.created_at)));
         let lagging = copies
             .iter()
             .skip(1)
@@ -2125,17 +2144,36 @@ impl Store {
             report.created = true;
         } else {
             let best = &copies[0];
-            reporter.step(format!("Carregando a cópia mais recente ({})…", sharedfolder::describe(&best.header)));
-            let mut store = Store::open(temp_path).context("Não foi possível preparar o acervo temporário da sincronização.")?;
+            reporter.step(format!(
+                "Carregando a cópia mais recente ({})…",
+                sharedfolder::describe(&best.header)
+            ));
+            let mut store = Store::open(temp_path)
+                .context("Não foi possível preparar o acervo temporário da sincronização.")?;
             store.apply_snapshot(
                 &best.payload.snapshot,
-                |file_id, _| best.blobs.pdfs.get(&file_id).cloned().context("PDF ausente no arquivo de sincronização."),
-                |id| best.blobs.attachments.get(&id).cloned().context("Anexo ausente no arquivo de sincronização."),
+                |file_id, _| {
+                    best.blobs
+                        .pdfs
+                        .get(&file_id)
+                        .cloned()
+                        .context("PDF ausente no arquivo de sincronização.")
+                },
+                |id| {
+                    best.blobs
+                        .attachments
+                        .get(&id)
+                        .cloned()
+                        .context("Anexo ausente no arquivo de sincronização.")
+                },
             )?;
             applied = best.payload.applied.iter().cloned().collect();
             journal = best.payload.journal.clone();
             if !foreign.is_empty() {
-                reporter.step(format!("Conciliando {} alteração(ões) vindas de outras pastas…", foreign.len()));
+                reporter.step(format!(
+                    "Conciliando {} alteração(ões) vindas de outras pastas…",
+                    foreign.len()
+                ));
             }
             for (entry, from) in foreign {
                 if applied.contains(&entry.uid) {
@@ -2158,14 +2196,21 @@ impl Store {
                             base: entry.base.clone(),
                             uid: entry.uid.clone(),
                         };
-                        self.record_conflict(&as_entry, &format!("{error} (alteração vinda de {from})"), base_snapshot)?;
+                        self.record_conflict(
+                            &as_entry,
+                            &format!("{error} (alteração vinda de {from})"),
+                            base_snapshot,
+                        )?;
                         applied.insert(entry.uid.clone());
                         report.conflicts += 1;
                     }
                 }
             }
             if !outbox.is_empty() {
-                reporter.step(format!("Aplicando {} alteração(ões) deste computador…", outbox.len()));
+                reporter.step(format!(
+                    "Aplicando {} alteração(ões) deste computador…",
+                    outbox.len()
+                ));
             }
             for entry in &outbox {
                 processed_outbox.push(entry.id);
@@ -2305,7 +2350,10 @@ impl Store {
             .conn
             .prepare("SELECT kind,item_id,version FROM item_versions")?;
         let rows = statement.query_map([], |r| {
-            Ok(((r.get::<_, String>(0)?, r.get::<_, i64>(1)?), r.get::<_, i64>(2)?))
+            Ok((
+                (r.get::<_, String>(0)?, r.get::<_, i64>(1)?),
+                r.get::<_, i64>(2)?,
+            ))
         })?;
         let mut out = BTreeMap::new();
         for row in rows {
@@ -2408,9 +2456,8 @@ impl Store {
                         expected_version: None,
                     }
                 } else {
-                    let ver = expected_version.or_else(|| {
-                        self.item_version("task", task.id).ok().map(|m| m.version)
-                    });
+                    let ver = expected_version
+                        .or_else(|| self.item_version("task", task.id).ok().map(|m| m.version));
                     IntranetMutation::SaveTask {
                         task,
                         expected_version: ver,
@@ -2472,7 +2519,11 @@ impl Store {
                 })
             }
             IntranetMutation::SaveTask { task, .. } if task.id > 0 => {
-                let current = self.list_tasks().ok()?.into_iter().find(|t| t.id == task.id)?;
+                let current = self
+                    .list_tasks()
+                    .ok()?
+                    .into_iter()
+                    .find(|t| t.id == task.id)?;
                 Some(IntranetMutation::SaveTask {
                     task: current,
                     expected_version: None,
@@ -2754,30 +2805,49 @@ impl Store {
                     let mut kept = Vec::new();
                     macro_rules! scalar {
                         ($field:ident, $label:expr, $show:expr) => {{
-                            let (value, both) = pick(
-                                base_task.map(|b| &b.$field),
-                                &ht.$field,
-                                &local_task.$field,
-                            );
+                            let (value, both) =
+                                pick(base_task.map(|b| &b.$field), &ht.$field, &local_task.$field);
                             if both {
-                                kept.push(format!("{}: no computador principal estava \"{}\"", $label, $show(&ht.$field)));
+                                kept.push(format!(
+                                    "{}: no computador principal estava \"{}\"",
+                                    $label,
+                                    $show(&ht.$field)
+                                ));
                             }
                             m.$field = value;
                         }};
                     }
                     let plain = |v: &String| v.clone();
                     scalar!(title, "Título", plain);
-                    scalar!(action, "Ação", |v: &String| crate::tasks::action_label(v).to_owned());
-                    scalar!(status, "Situação", |v: &String| crate::tasks::status_label(v).to_owned());
-                    scalar!(priority, "Prioridade", |v: &String| crate::labels::priority(v).to_owned());
+                    scalar!(action, "Ação", |v: &String| crate::tasks::action_label(v)
+                        .to_owned());
+                    scalar!(status, "Situação", |v: &String| {
+                        crate::tasks::status_label(v).to_owned()
+                    });
+                    scalar!(priority, "Prioridade", |v: &String| {
+                        crate::labels::priority(v).to_owned()
+                    });
                     scalar!(due_date, "Prazo", |v: &String| crate::labels::date(v));
                     scalar!(due_source, "Origem do prazo", plain);
-                    scalar!(reminder_date, "Lembrete", |v: &String| crate::labels::date(v));
+                    scalar!(reminder_date, "Lembrete", |v: &String| crate::labels::date(
+                        v
+                    ));
                     scalar!(assignee, "Responsável", plain);
-                    m.notes = pick_text(base_task.map(|b| b.notes.as_str()), &ht.notes, &local_task.notes, actor);
-                    m.outcome = pick_text(base_task.map(|b| b.outcome.as_str()), &ht.outcome, &local_task.outcome, actor);
+                    m.notes = pick_text(
+                        base_task.map(|b| b.notes.as_str()),
+                        &ht.notes,
+                        &local_task.notes,
+                        actor,
+                    );
+                    m.outcome = pick_text(
+                        base_task.map(|b| b.outcome.as_str()),
+                        &ht.outcome,
+                        &local_task.outcome,
+                        actor,
+                    );
                     for (done_l, text_l) in &local_task.checklist {
-                        if let Some((done_m, _)) = m.checklist.iter_mut().find(|(_, t)| t == text_l) {
+                        if let Some((done_m, _)) = m.checklist.iter_mut().find(|(_, t)| t == text_l)
+                        {
                             *done_m = *done_m || *done_l;
                         } else {
                             m.checklist.push((*done_l, text_l.clone()));
@@ -2829,21 +2899,46 @@ impl Store {
                             &local_ctx.$field,
                         );
                         if both {
-                            kept.push(format!("{}: no computador principal estava \"{}\"", $label, $show(&host_ctx.$field)));
+                            kept.push(format!(
+                                "{}: no computador principal estava \"{}\"",
+                                $label,
+                                $show(&host_ctx.$field)
+                            ));
                         }
                         m.$field = value;
                     }};
                 }
                 let plain = |v: &String| v.clone();
-                scalar!(purpose, "Finalidade", |v: &String| crate::work_context::purpose_label(v).to_owned());
+                scalar!(purpose, "Finalidade", |v: &String| {
+                    crate::work_context::purpose_label(v).to_owned()
+                });
                 scalar!(document_type, "Tipo local", plain);
-                scalar!(priority, "Prioridade", |v: &String| crate::labels::priority(v).to_owned());
+                scalar!(priority, "Prioridade", |v: &String| {
+                    crate::labels::priority(v).to_owned()
+                });
                 scalar!(sender, "Remetente informado", plain);
-                scalar!(received_date, "Recebido em", |v: &String| crate::labels::date(v));
+                scalar!(received_date, "Recebido em", |v: &String| {
+                    crate::labels::date(v)
+                });
                 scalar!(process_number, "Processo vinculado", plain);
-                m.subjects = pick_text(base_ctx.map(|b| b.subjects.as_str()), &host_ctx.subjects, &local_ctx.subjects, actor);
-                m.priority_reason = pick_text(base_ctx.map(|b| b.priority_reason.as_str()), &host_ctx.priority_reason, &local_ctx.priority_reason, actor);
-                m.notes = pick_text(base_ctx.map(|b| b.notes.as_str()), &host_ctx.notes, &local_ctx.notes, actor);
+                m.subjects = pick_text(
+                    base_ctx.map(|b| b.subjects.as_str()),
+                    &host_ctx.subjects,
+                    &local_ctx.subjects,
+                    actor,
+                );
+                m.priority_reason = pick_text(
+                    base_ctx.map(|b| b.priority_reason.as_str()),
+                    &host_ctx.priority_reason,
+                    &local_ctx.priority_reason,
+                    actor,
+                );
+                m.notes = pick_text(
+                    base_ctx.map(|b| b.notes.as_str()),
+                    &host_ctx.notes,
+                    &local_ctx.notes,
+                    actor,
+                );
                 if !kept.is_empty() {
                     m.notes.push_str(&format!(
                         "\n\n{stamp} Campos alterados nos dois lados; sua versão prevaleceu:\n• {}",
@@ -2866,7 +2961,9 @@ impl Store {
                     .into_iter()
                     .find(|a| a.id == local_att.id);
                 let base_att = match base {
-                    Some(IntranetMutation::SaveSaiopAttendance { attendance, .. }) => Some(attendance),
+                    Some(IntranetMutation::SaveSaiopAttendance { attendance, .. }) => {
+                        Some(attendance)
+                    }
                     _ => None,
                 };
                 let merged_att = if let Some(ha) = host_att {
@@ -2874,40 +2971,66 @@ impl Store {
                     let mut kept = Vec::new();
                     macro_rules! scalar {
                         ($field:ident, $label:expr, $show:expr) => {{
-                            let (value, both) = pick(
-                                base_att.map(|b| &b.$field),
-                                &ha.$field,
-                                &local_att.$field,
-                            );
+                            let (value, both) =
+                                pick(base_att.map(|b| &b.$field), &ha.$field, &local_att.$field);
                             if both {
-                                kept.push(format!("{}: no computador principal estava \"{}\"", $label, $show(&ha.$field)));
+                                kept.push(format!(
+                                    "{}: no computador principal estava \"{}\"",
+                                    $label,
+                                    $show(&ha.$field)
+                                ));
                             }
                             m.$field = value;
                         }};
                     }
                     let plain = |v: &String| v.clone();
-                    let flag = |v: &bool| if *v { "sim".to_owned() } else { "não".to_owned() };
+                    let flag = |v: &bool| {
+                        if *v {
+                            "sim".to_owned()
+                        } else {
+                            "não".to_owned()
+                        }
+                    };
                     scalar!(reference_raw, "Referência", plain);
                     scalar!(subject, "Assunto", plain);
                     scalar!(entry_date, "Entrada", |v: &String| crate::labels::date(v));
                     scalar!(assignee, "Responsável", plain);
                     scalar!(received_from, "Recebido de", plain);
-                    scalar!(uas_return, "Retorno para UAS", |v: &String| crate::saiop::tri_state_label(v).to_owned());
+                    scalar!(uas_return, "Retorno para UAS", |v: &String| {
+                        crate::saiop::tri_state_label(v).to_owned()
+                    });
                     scalar!(due_date, "Prazo", |v: &String| crate::labels::date(v));
-                    scalar!(due_kind, "Tipo de prazo", |v: &String| crate::saiop::due_kind_label(v).to_owned());
-                    scalar!(status, "Situação", |v: &String| crate::saiop::status_label(v).to_owned());
-                    scalar!(priority, "Prioridade", |v: &String| crate::saiop::priority_label(v).to_owned());
+                    scalar!(due_kind, "Tipo de prazo", |v: &String| {
+                        crate::saiop::due_kind_label(v).to_owned()
+                    });
+                    scalar!(status, "Situação", |v: &String| {
+                        crate::saiop::status_label(v).to_owned()
+                    });
+                    scalar!(priority, "Prioridade", |v: &String| {
+                        crate::saiop::priority_label(v).to_owned()
+                    });
                     scalar!(priority_reason, "Motivo da prioridade", plain);
-                    scalar!(signed_status, "Assinado", |v: &String| crate::saiop::tri_state_label(v).to_owned());
-                    scalar!(exit_date, "Data de saída", |v: &String| crate::labels::date(v));
+                    scalar!(signed_status, "Assinado", |v: &String| {
+                        crate::saiop::tri_state_label(v).to_owned()
+                    });
+                    scalar!(exit_date, "Data de saída", |v: &String| {
+                        crate::labels::date(v)
+                    });
                     scalar!(planned_doc_type, "Entrega prevista", plain);
                     scalar!(sent_to, "Enviado para", plain);
-                    scalar!(outcome, "Resultado da etapa", |v: &String| crate::saiop::outcome_label(v).to_owned());
+                    scalar!(outcome, "Resultado da etapa", |v: &String| {
+                        crate::saiop::outcome_label(v).to_owned()
+                    });
                     scalar!(scheduled, "Agendado", flag);
                     scalar!(sensitive, "Documento sensível", flag);
                     scalar!(attachment_relation, "Apensado / juntado", plain);
                     m.reference_norm = crate::saiop::normalize_reference(&m.reference_raw);
-                    m.observation = pick_text(base_att.map(|b| b.observation.as_str()), &ha.observation, &local_att.observation, actor);
+                    m.observation = pick_text(
+                        base_att.map(|b| b.observation.as_str()),
+                        &ha.observation,
+                        &local_att.observation,
+                        actor,
+                    );
                     for tag in &local_att.tags {
                         if !m.tags.contains(tag) {
                             m.tags.push(tag.clone());
@@ -2924,7 +3047,9 @@ impl Store {
                         }
                     }
                     for ev in &local_att.events {
-                        if !m.events.iter().any(|e| e.when == ev.when && e.kind == ev.kind && e.detail == ev.detail) {
+                        if !m.events.iter().any(|e| {
+                            e.when == ev.when && e.kind == ev.kind && e.detail == ev.detail
+                        }) {
                             m.events.push(ev.clone());
                         }
                     }
@@ -2973,7 +3098,9 @@ impl Store {
                     label: label.to_owned(),
                     host: h,
                     local: l,
-                    base: base.as_ref().and_then(|b| b.get(index).map(|(_, v)| v.clone())),
+                    base: base
+                        .as_ref()
+                        .and_then(|b| b.get(index).map(|(_, v)| v.clone())),
                 })
                 .collect()
         }
@@ -2981,7 +3108,10 @@ impl Store {
             IntranetMutation::SaveNote {
                 document_id, note, ..
             } => {
-                let host = self.load_document(*document_id).map(|d| d.note).unwrap_or_default();
+                let host = self
+                    .load_document(*document_id)
+                    .map(|d| d.note)
+                    .unwrap_or_default();
                 let base = match &conflict.base {
                     Some(IntranetMutation::SaveNote { note, .. }) => Some(note.clone()),
                     _ => None,
@@ -2989,11 +3119,20 @@ impl Store {
                 if host == *note {
                     vec![]
                 } else {
-                    vec![FieldDiff { label: "Notas do documento".into(), host, local: note.clone(), base }]
+                    vec![FieldDiff {
+                        label: "Notas do documento".into(),
+                        host,
+                        local: note.clone(),
+                        base,
+                    }]
                 }
             }
             IntranetMutation::SaveTask { task, .. } => {
-                let Some(host) = self.list_tasks().ok().and_then(|t| t.into_iter().find(|h| h.id == task.id)) else {
+                let Some(host) = self
+                    .list_tasks()
+                    .ok()
+                    .and_then(|t| t.into_iter().find(|h| h.id == task.id))
+                else {
                     return vec![];
                 };
                 let base = match &conflict.base {
@@ -3002,10 +3141,14 @@ impl Store {
                 };
                 diff(task_fields(&host), task_fields(task), base)
             }
-            IntranetMutation::SaveWorkContext { document_id, value, .. } => {
+            IntranetMutation::SaveWorkContext {
+                document_id, value, ..
+            } => {
                 let host = self.load_work_context(*document_id).unwrap_or_default();
                 let base = match &conflict.base {
-                    Some(IntranetMutation::SaveWorkContext { value, .. }) => Some(context_fields(value)),
+                    Some(IntranetMutation::SaveWorkContext { value, .. }) => {
+                        Some(context_fields(value))
+                    }
                     _ => None,
                 };
                 diff(context_fields(&host), context_fields(value), base)
@@ -3019,7 +3162,9 @@ impl Store {
                     return vec![];
                 };
                 let base = match &conflict.base {
-                    Some(IntranetMutation::SaveSaiopAttendance { attendance, .. }) => Some(saiop_fields(attendance)),
+                    Some(IntranetMutation::SaveSaiopAttendance { attendance, .. }) => {
+                        Some(saiop_fields(attendance))
+                    }
                     _ => None,
                 };
                 diff(saiop_fields(&host), saiop_fields(attendance), base)
@@ -3057,7 +3202,10 @@ fn task_fields(t: &Task) -> Vec<(&'static str, String)> {
         ("Título", t.title.clone()),
         ("Ação", crate::tasks::action_label(&t.action).to_owned()),
         ("Situação", crate::tasks::status_label(&t.status).to_owned()),
-        ("Prioridade", crate::labels::priority(&t.priority).to_owned()),
+        (
+            "Prioridade",
+            crate::labels::priority(&t.priority).to_owned(),
+        ),
         ("Prazo", crate::labels::date(&t.due_date)),
         ("Origem do prazo", t.due_source.clone()),
         ("Lembrete", crate::labels::date(&t.reminder_date)),
@@ -3077,10 +3225,16 @@ fn task_fields(t: &Task) -> Vec<(&'static str, String)> {
 
 fn context_fields(c: &WorkContext) -> Vec<(&'static str, String)> {
     vec![
-        ("Finalidade", crate::work_context::purpose_label(&c.purpose).to_owned()),
+        (
+            "Finalidade",
+            crate::work_context::purpose_label(&c.purpose).to_owned(),
+        ),
         ("Assuntos", c.subjects.clone()),
         ("Tipo local", c.document_type.clone()),
-        ("Prioridade", crate::labels::priority(&c.priority).to_owned()),
+        (
+            "Prioridade",
+            crate::labels::priority(&c.priority).to_owned(),
+        ),
         ("Motivo da prioridade", c.priority_reason.clone()),
         ("Remetente informado", c.sender.clone()),
         ("Recebido em", crate::labels::date(&c.received_date)),
@@ -3090,24 +3244,45 @@ fn context_fields(c: &WorkContext) -> Vec<(&'static str, String)> {
 }
 
 fn saiop_fields(a: &crate::saiop::SaiopAttendance) -> Vec<(&'static str, String)> {
-    let flag = |v: bool| if v { "sim".to_owned() } else { "não".to_owned() };
+    let flag = |v: bool| {
+        if v {
+            "sim".to_owned()
+        } else {
+            "não".to_owned()
+        }
+    };
     vec![
         ("Referência", a.reference_raw.clone()),
         ("Assunto", a.subject.clone()),
         ("Entrada", crate::labels::date(&a.entry_date)),
         ("Responsável", a.assignee.clone()),
         ("Recebido de", a.received_from.clone()),
-        ("Retorno para UAS", crate::saiop::tri_state_label(&a.uas_return).to_owned()),
+        (
+            "Retorno para UAS",
+            crate::saiop::tri_state_label(&a.uas_return).to_owned(),
+        ),
         ("Prazo", crate::labels::date(&a.due_date)),
-        ("Tipo de prazo", crate::saiop::due_kind_label(&a.due_kind).to_owned()),
+        (
+            "Tipo de prazo",
+            crate::saiop::due_kind_label(&a.due_kind).to_owned(),
+        ),
         ("Situação", crate::saiop::status_label(&a.status).to_owned()),
-        ("Prioridade", crate::saiop::priority_label(&a.priority).to_owned()),
+        (
+            "Prioridade",
+            crate::saiop::priority_label(&a.priority).to_owned(),
+        ),
         ("Motivo da prioridade", a.priority_reason.clone()),
-        ("Assinado", crate::saiop::tri_state_label(&a.signed_status).to_owned()),
+        (
+            "Assinado",
+            crate::saiop::tri_state_label(&a.signed_status).to_owned(),
+        ),
         ("Data de saída", crate::labels::date(&a.exit_date)),
         ("Entrega prevista", a.planned_doc_type.clone()),
         ("Enviado para", a.sent_to.clone()),
-        ("Resultado da etapa", crate::saiop::outcome_label(&a.outcome).to_owned()),
+        (
+            "Resultado da etapa",
+            crate::saiop::outcome_label(&a.outcome).to_owned(),
+        ),
         ("Agendado", flag(a.scheduled)),
         ("Documento sensível", flag(a.sensitive)),
         ("Apensado / juntado", a.attachment_relation.clone()),
@@ -3133,9 +3308,7 @@ fn merge_text_blocks(host_text: &str, local_text: &str, actor: &str) -> String {
 fn mutation_target_key(mutation: &IntranetMutation) -> Option<String> {
     match mutation {
         IntranetMutation::SaveNote { document_id, .. } => Some(format!("note:{document_id}")),
-        IntranetMutation::SaveTask { task, .. } if task.id > 0 => {
-            Some(format!("task:{}", task.id))
-        }
+        IntranetMutation::SaveTask { task, .. } if task.id > 0 => Some(format!("task:{}", task.id)),
         IntranetMutation::SaveWorkContext { document_id, .. } => {
             Some(format!("work_context:{document_id}"))
         }
@@ -3319,19 +3492,31 @@ impl FolderSyncReport {
             ));
         }
         if self.pushed > 0 {
-            parts.push(format!("{} alteração(ões) deste computador enviada(s)", self.pushed));
+            parts.push(format!(
+                "{} alteração(ões) deste computador enviada(s)",
+                self.pushed
+            ));
         }
         if self.merged_foreign > 0 {
-            parts.push(format!("{} alteração(ões) de outras pastas conciliada(s)", self.merged_foreign));
+            parts.push(format!(
+                "{} alteração(ões) de outras pastas conciliada(s)",
+                self.merged_foreign
+            ));
         }
         if self.conflicts > 0 {
-            parts.push(format!("⚠ {} conflito(s) para você decidir", self.conflicts));
+            parts.push(format!(
+                "⚠ {} conflito(s) para você decidir",
+                self.conflicts
+            ));
         }
         if !self.written_to.is_empty() {
             parts.push(format!("gravado em {} pasta(s)", self.written_to.len()));
         }
         if !self.unreachable.is_empty() {
-            parts.push(format!("{} pasta(s) fora de alcance", self.unreachable.len()));
+            parts.push(format!(
+                "{} pasta(s) fora de alcance",
+                self.unreachable.len()
+            ));
         }
         if parts.is_empty() {
             format!("em dia (revisão {})", self.revision)
@@ -3346,10 +3531,14 @@ impl FolderSyncReport {
 fn collect_blobs(store: &Store, snapshot: &CabinetSnapshot) -> Result<crate::sharedfolder::Blobs> {
     let mut blobs = crate::sharedfolder::Blobs::default();
     for meta in &snapshot.files_meta {
-        blobs.pdfs.insert(meta.id, store.pdf_bytes(meta.id, meta.capture_id)?);
+        blobs
+            .pdfs
+            .insert(meta.id, store.pdf_bytes(meta.id, meta.capture_id)?);
     }
     for row in &snapshot.attachments {
-        blobs.attachments.insert(row.id, store.attachment_bytes(row.id)?.1);
+        blobs
+            .attachments
+            .insert(row.id, store.attachment_bytes(row.id)?.1);
     }
     Ok(blobs)
 }
@@ -3441,7 +3630,10 @@ fn build_sync_conflict(
             );
             (local_desc, host_desc)
         }
-        _ => (entry.label.clone(), "Modificado simultaneamente no anfitrião".into()),
+        _ => (
+            entry.label.clone(),
+            "Modificado simultaneamente no anfitrião".into(),
+        ),
     };
 
     SyncConflict {
@@ -3517,14 +3709,23 @@ fn send_rpc_classified(
         .connect_timeout(Duration::from_secs(4))
         .no_proxy()
         .build()
-        .map_err(|e| RpcError::Unreachable(format!("Não foi possível preparar o cliente de intranet: {e}")))?;
+        .map_err(|e| {
+            RpcError::Unreachable(format!(
+                "Não foi possível preparar o cliente de intranet: {e}"
+            ))
+        })?;
     let response = client
         .post(&endpoint)
-        .header("Authorization", format!("Bearer {}", cfg.cabinet_token.trim()))
+        .header(
+            "Authorization",
+            format!("Bearer {}", cfg.cabinet_token.trim()),
+        )
         .json(request)
         .send()
         .map_err(|e| {
-            RpcError::Unreachable(format!("Sem conexão com o computador anfitrião em {base}: {e}"))
+            RpcError::Unreachable(format!(
+                "Sem conexão com o computador anfitrião em {base}: {e}"
+            ))
         })?;
     let status = response.status();
     let rpc: RpcResponse = response.json().map_err(|e| {
@@ -3668,7 +3869,10 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
             if key == "content-length" {
                 content_length = val.parse().unwrap_or(0);
             } else if key == "authorization" {
-                if let Some(rest) = val.strip_prefix("Bearer ").or_else(|| val.strip_prefix("bearer ")) {
+                if let Some(rest) = val
+                    .strip_prefix("Bearer ")
+                    .or_else(|| val.strip_prefix("bearer "))
+                {
                     auth_token = rest.trim().to_owned();
                 }
             }
@@ -3880,7 +4084,9 @@ impl SyncWorker {
                         Arc::new(AtomicBool::new(false)),
                     );
                     let result = match store.as_mut() {
-                        Some(store) => run_sync(store, &request, &reporter).map_err(|e| e.to_string()),
+                        Some(store) => {
+                            run_sync(store, &request, &reporter).map_err(|e| e.to_string())
+                        }
                         None => Err("Não foi possível abrir o acervo para sincronizar.".into()),
                     };
                     if outcome_tx
@@ -3912,7 +4118,11 @@ pub struct SyncDone {
     pub summary: String,
 }
 
-fn run_sync(store: &mut Store, request: &SyncRequest, reporter: &crate::ai::Reporter) -> Result<SyncDone> {
+fn run_sync(
+    store: &mut Store,
+    request: &SyncRequest,
+    reporter: &crate::ai::Reporter,
+) -> Result<SyncDone> {
     let mut cfg = store.load_intranet_config()?;
     match cfg.mode {
         IntranetMode::SharedFolder => {
@@ -4062,7 +4272,10 @@ impl IntranetPanel {
         ui.add_space(4.0);
         ui.strong("Pastas (o arquivo ponte-sync.ponte dentro de cada uma)");
         let mut remove: Option<usize> = None;
-        let saved_revision = store.load_intranet_config().map(|c| c.synced_revision).unwrap_or(0);
+        let saved_revision = store
+            .load_intranet_config()
+            .map(|c| c.synced_revision)
+            .unwrap_or(0);
         for (index, path) in self.draft.folder_files.clone().iter().enumerate() {
             ui.horizontal_wrapped(|ui| {
                 ui.label(format!("{}.", index + 1));
@@ -4070,13 +4283,19 @@ impl IntranetPanel {
                 let state = match crate::sharedfolder::read_header(std::path::Path::new(path)) {
                     Ok(Some(header)) => {
                         if header.revision < saved_revision {
-                            format!("({}; atrás deste computador)", crate::sharedfolder::describe(&header))
+                            format!(
+                                "({}; atrás deste computador)",
+                                crate::sharedfolder::describe(&header)
+                            )
                         } else {
                             format!("({})", crate::sharedfolder::describe(&header))
                         }
                     }
                     Ok(None) => {
-                        if std::path::Path::new(path).parent().is_some_and(|p| p.is_dir()) {
+                        if std::path::Path::new(path)
+                            .parent()
+                            .is_some_and(|p| p.is_dir())
+                        {
                             "(pasta acessível; arquivo ainda não criado)".to_owned()
                         } else {
                             "(pasta fora de alcance agora)".to_owned()
@@ -4138,7 +4357,10 @@ impl IntranetPanel {
         if let Some(text) = self.replace_confirmation.clone() {
             ui.colored_label(egui::Color32::from_rgb(153, 88, 16), format!("⚠ {text}"));
             ui.horizontal(|ui| {
-                if ui.button("Substituir o acervo deste computador e sincronizar").clicked() {
+                if ui
+                    .button("Substituir o acervo deste computador e sincronizar")
+                    .clicked()
+                {
                     self.allow_replace_next = true;
                     self.replace_confirmation = None;
                     self.request_full_sync();
@@ -4183,7 +4405,11 @@ impl IntranetPanel {
             }
             if self.sync_in_flight {
                 ui.spinner();
-                ui.small(if self.sync_step.is_empty() { "sincronizando…" } else { self.sync_step.as_str() });
+                ui.small(if self.sync_step.is_empty() {
+                    "sincronizando…"
+                } else {
+                    self.sync_step.as_str()
+                });
             }
         });
         if !self.last_summary.is_empty() {
@@ -4255,7 +4481,10 @@ impl IntranetPanel {
         let due = self
             .last_sync_request
             .is_none_or(|at| at.elapsed() >= interval);
-        if cfg.mode == IntranetMode::SharedFolder && self.replace_confirmation.is_some() && !self.manual_sync {
+        if cfg.mode == IntranetMode::SharedFolder
+            && self.replace_confirmation.is_some()
+            && !self.manual_sync
+        {
             // Waiting for the person's decision: no automatic retries.
             return changed;
         }
@@ -4291,7 +4520,12 @@ impl IntranetPanel {
         changed
     }
 
-    fn apply_sync_outcome(&mut self, store: &mut Store, cfg: &IntranetConfig, outcome: SyncOutcome) {
+    fn apply_sync_outcome(
+        &mut self,
+        store: &mut Store,
+        cfg: &IntranetConfig,
+        outcome: SyncOutcome,
+    ) {
         let conflicts = store.list_sync_conflicts().map(|v| v.len()).unwrap_or(0);
         let outbox = store.list_offline_outbox().map(|v| v.len()).unwrap_or(0);
         self.sync_step.clear();
@@ -4307,7 +4541,8 @@ impl IntranetPanel {
                         .load_intranet_config()
                         .map(|c| crate::labels::datetime(&c.last_sync_at))
                         .unwrap_or_default();
-                    self.status_summary = format!("Pasta compartilhada • {} • {}", done.summary, when);
+                    self.status_summary =
+                        format!("Pasta compartilhada • {} • {}", done.summary, when);
                     if outcome.manual {
                         self.error = false;
                         self.message = format!("Sincronização concluída: {}.", done.summary);
@@ -4318,7 +4553,9 @@ impl IntranetPanel {
                     self.last_sync_finished = Some((Instant::now(), false));
                     if let Some(rest) = error.strip_prefix("[confirmar-substituicao] ") {
                         self.replace_confirmation = Some(rest.to_owned());
-                        self.status_summary = "Pasta compartilhada • aguardando sua confirmação (ver Rede e equipe)".into();
+                        self.status_summary =
+                            "Pasta compartilhada • aguardando sua confirmação (ver Rede e equipe)"
+                                .into();
                         self.error = false;
                         self.message.clear();
                     } else {
@@ -4326,7 +4563,8 @@ impl IntranetPanel {
                         if conflicts > 0 {
                             extras.push_str(&format!(" • ⚠ {conflicts} conflito(s) de edição"));
                         }
-                        self.status_summary = format!("Pasta compartilhada fora de alcance{extras}");
+                        self.status_summary =
+                            format!("Pasta compartilhada fora de alcance{extras}");
                         if outcome.manual {
                             self.error = true;
                             self.message = format!("Não foi possível sincronizar agora: {error}");
@@ -4343,7 +4581,9 @@ impl IntranetPanel {
                 self.last_sync_finished = Some((Instant::now(), changed));
                 let mut suffix = String::new();
                 if conflicts > 0 {
-                    suffix.push_str(&format!(" • ⚠ {conflicts} conflito(s) de edição para decidir"));
+                    suffix.push_str(&format!(
+                        " • ⚠ {conflicts} conflito(s) de edição para decidir"
+                    ));
                 }
                 if outbox > 0 {
                     suffix.push_str(&format!(" • {outbox} alteração(ões) a enviar"));
@@ -4361,7 +4601,9 @@ impl IntranetPanel {
                 self.offline = true;
                 store.note_host_reachability(false);
                 self.last_sync_finished = Some((Instant::now(), false));
-                let mut extras = format!(" • trabalhando neste computador ({outbox} alteração(ões) aguardando envio)");
+                let mut extras = format!(
+                    " • trabalhando neste computador ({outbox} alteração(ões) aguardando envio)"
+                );
                 if conflicts > 0 {
                     extras.push_str(&format!(" • ⚠ {conflicts} conflito(s) de edição"));
                 }
@@ -4946,8 +5188,14 @@ mod tests {
             ..IntranetConfig::default()
         };
         let shown = format!("{config:?}");
-        assert!(shown.contains("MARIA") && shown.contains("<oculto>"), "{shown}");
-        assert!(!shown.contains("ponte-chave-secreta") && !shown.contains("senha-da-pasta"), "{shown}");
+        assert!(
+            shown.contains("MARIA") && shown.contains("<oculto>"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("ponte-chave-secreta") && !shown.contains("senha-da-pasta"),
+            "{shown}"
+        );
     }
 
     #[test]
@@ -5002,9 +5250,7 @@ mod tests {
             url: pdf_url,
             data_base64: STANDARD.encode(include_bytes!("../tests/fixtures/document.pdf")),
         };
-        let receipt = client_store
-            .import_bundle(&capture, &[pdf_input])
-            .unwrap();
+        let receipt = client_store.import_bundle(&capture, &[pdf_input]).unwrap();
         assert!(!receipt.duplicate);
 
         // Both Host and Client have the document, task, and PDF encrypted in their respective stores!
@@ -5021,7 +5267,12 @@ mod tests {
         // the client receives the bytes with the snapshot (hash-checked).
         let owner = crate::attachments::Owner::Document(receipt.document_id);
         let attachment_id = client_store
-            .add_attachment(owner, "despacho.txt", "foto do despacho", b"texto do despacho\n")
+            .add_attachment(
+                owner,
+                "despacho.txt",
+                "foto do despacho",
+                b"texto do despacho\n",
+            )
             .unwrap();
         let host_list = host_store.list_attachments(owner).unwrap();
         assert_eq!(host_list.len(), 1);
@@ -5042,7 +5293,10 @@ mod tests {
             "despacho assinado"
         );
         // Trash through the host hides it on both sides; restore brings it back.
-        let target = TrashTarget { kind: TrashKind::Attachment, id: attachment_id };
+        let target = TrashTarget {
+            kind: TrashKind::Attachment,
+            id: attachment_id,
+        };
         client_store.trash_item(target.clone()).unwrap();
         assert!(host_store.list_attachments(owner).unwrap().is_empty());
         assert!(client_store.list_attachments(owner).unwrap().is_empty());
@@ -5112,7 +5366,10 @@ mod tests {
             .save_note(receipt.document_id, "Primeira anotação offline de Maria")
             .unwrap();
         client_store
-            .save_note(receipt.document_id, "Parecer técnico elaborado por Maria offline")
+            .save_note(
+                receipt.document_id,
+                "Parecer técnico elaborado por Maria offline",
+            )
             .unwrap();
         assert_eq!(
             client_store
@@ -5130,7 +5387,10 @@ mod tests {
 
         // Meanwhile, on the Host PC (before reconnecting), Carlo also edits the same document's note!
         host_store
-            .save_note(receipt.document_id, "Despacho urgente registrado por Carlo no Anfitrião")
+            .save_note(
+                receipt.document_id,
+                "Despacho urgente registrado por Carlo no Anfitrião",
+            )
             .unwrap();
 
         // Now Host comes back online!
@@ -5167,10 +5427,7 @@ mod tests {
             .unwrap();
         assert_eq!(client_store.list_sync_conflicts().unwrap().len(), 0);
 
-        let merged_host_note = host_store
-            .load_document(receipt.document_id)
-            .unwrap()
-            .note;
+        let merged_host_note = host_store.load_document(receipt.document_id).unwrap().note;
         let merged_client_note = client_store
             .load_document(receipt.document_id)
             .unwrap()
@@ -5186,7 +5443,10 @@ mod tests {
         failover_cfg.bind_addr = "127.0.0.1:0".into();
         client_store.save_intranet_config(&failover_cfg).unwrap();
         client_store
-            .save_note(receipt.document_id, "Nota gravada após assumir como Anfitrião")
+            .save_note(
+                receipt.document_id,
+                "Nota gravada após assumir como Anfitrião",
+            )
             .unwrap();
         assert_eq!(
             client_store
@@ -5246,7 +5506,8 @@ mod tests {
 
         // Computer A: a document with an attachment, then the first copy.
         let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
-        a.save_intranet_config(&folder_config("Casa", files.clone())).unwrap();
+        a.save_intranet_config(&folder_config("Casa", files.clone()))
+            .unwrap();
         let cfg_a = a.load_intranet_config().unwrap();
         let receipt = a.import_capture(&crate::model::sample_capture()).unwrap();
         a.add_attachment(
@@ -5257,10 +5518,18 @@ mod tests {
         )
         .unwrap();
         a.save_note(receipt.document_id, "Nota inicial").unwrap();
-        assert_eq!(a.list_offline_outbox().unwrap().len(), 3, "every change queued for the folders");
+        assert_eq!(
+            a.list_offline_outbox().unwrap().len(),
+            3,
+            "every change queued for the folders"
+        );
         let report = a.sync_with_folders(&cfg_a, key, false, &reporter).unwrap();
         assert!(report.created);
-        assert_eq!(report.written_to.len(), 1, "the pen drive folder does not exist yet");
+        assert_eq!(
+            report.written_to.len(),
+            1,
+            "the pen drive folder does not exist yet"
+        );
         assert_eq!(report.unreachable.len(), 1);
         assert!(a.list_offline_outbox().unwrap().is_empty());
         let header = crate::sharedfolder::read_header(&drive).unwrap().unwrap();
@@ -5271,7 +5540,8 @@ mod tests {
 
         // Computer B joins with an empty library: receives everything.
         let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
-        b.save_intranet_config(&folder_config("Trabalho", files.clone())).unwrap();
+        b.save_intranet_config(&folder_config("Trabalho", files.clone()))
+            .unwrap();
         let cfg_b = b.load_intranet_config().unwrap();
         let report = b.sync_with_folders(&cfg_b, key, false, &reporter).unwrap();
         assert!(report.changed);
@@ -5282,35 +5552,62 @@ mod tests {
             .list_attachments(crate::attachments::Owner::Document(receipt.document_id))
             .unwrap();
         assert_eq!(attachments.len(), 1);
-        assert_eq!(b.attachment_bytes(attachments[0].id).unwrap().1, b"%PDF-1.4 anexo sintetico");
-        assert!(b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter).unwrap().written_to.is_empty(), "up to date: nothing rewritten");
+        assert_eq!(
+            b.attachment_bytes(attachments[0].id).unwrap().1,
+            b"%PDF-1.4 anexo sintetico"
+        );
+        assert!(
+            b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter)
+                .unwrap()
+                .written_to
+                .is_empty(),
+            "up to date: nothing rewritten"
+        );
 
         // Wrong password and a copy of another library are refused.
-        assert!(b.sync_with_folders(&cfg_b, "outra-senha-999", false, &reporter).is_err());
+        assert!(b
+            .sync_with_folders(&cfg_b, "outra-senha-999", false, &reporter)
+            .is_err());
 
         // Both edit the same note; B also adds a task. B syncs first.
-        b.save_note(receipt.document_id, "Nota inicial\nAcréscimo do trabalho").unwrap();
+        b.save_note(receipt.document_id, "Nota inicial\nAcréscimo do trabalho")
+            .unwrap();
         let mut task = crate::tasks::Task::new(receipt.document_id);
         task.title = "Tarefa criada no trabalho".into();
         b.save_task(&task).unwrap();
-        a.save_note(receipt.document_id, "Nota inicial\nAcréscimo de casa").unwrap();
+        a.save_note(receipt.document_id, "Nota inicial\nAcréscimo de casa")
+            .unwrap();
         let cfg_b = b.load_intranet_config().unwrap();
         let report = b.sync_with_folders(&cfg_b, key, false, &reporter).unwrap();
         assert_eq!(report.pushed, 2);
-        let revision_after_b = crate::sharedfolder::read_header(&drive).unwrap().unwrap().revision;
+        let revision_after_b = crate::sharedfolder::read_header(&drive)
+            .unwrap()
+            .unwrap()
+            .revision;
         assert!(revision_after_b > header.revision);
 
         // A syncs: its note conflicts, the task arrives, the file is rewritten.
         let cfg_a = a.load_intranet_config().unwrap();
         let report = a.sync_with_folders(&cfg_a, key, false, &reporter).unwrap();
         assert_eq!(report.conflicts, 1);
-        assert!(a.list_tasks().unwrap().iter().any(|t| t.title == "Tarefa criada no trabalho"));
-        assert_eq!(a.load_document(receipt.document_id).unwrap().note, "Nota inicial\nAcréscimo do trabalho");
+        assert!(a
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .any(|t| t.title == "Tarefa criada no trabalho"));
+        assert_eq!(
+            a.load_document(receipt.document_id).unwrap().note,
+            "Nota inicial\nAcréscimo do trabalho"
+        );
         let conflicts = a.list_sync_conflicts().unwrap();
         assert_eq!(conflicts.len(), 1);
-        a.resolve_sync_conflict(conflicts[0].id, ConflictResolution::Merge).unwrap();
+        a.resolve_sync_conflict(conflicts[0].id, ConflictResolution::Merge)
+            .unwrap();
         let merged = a.load_document(receipt.document_id).unwrap().note;
-        assert!(merged.contains("Acréscimo do trabalho") && merged.contains("Acréscimo de casa"), "{merged}");
+        assert!(
+            merged.contains("Acréscimo do trabalho") && merged.contains("Acréscimo de casa"),
+            "{merged}"
+        );
         let cfg_a = a.load_intranet_config().unwrap();
         let report = a.sync_with_folders(&cfg_a, key, false, &reporter).unwrap();
         assert_eq!(report.pushed, 1);
@@ -5321,7 +5618,11 @@ mod tests {
         let cfg_b = b.load_intranet_config().unwrap();
         let report = b.sync_with_folders(&cfg_b, key, false, &reporter).unwrap();
         assert_eq!(b.load_document(receipt.document_id).unwrap().note, merged);
-        assert!(report.written_to.iter().any(|p| p.contains("Pendrive")), "{:?}", report.written_to);
+        assert!(
+            report.written_to.iter().any(|p| p.contains("Pendrive")),
+            "{:?}",
+            report.written_to
+        );
         let drive_header = crate::sharedfolder::read_header(&drive).unwrap().unwrap();
         let pen_header = crate::sharedfolder::read_header(&pen).unwrap().unwrap();
         assert_eq!(drive_header.revision, pen_header.revision);
@@ -5331,50 +5632,74 @@ mod tests {
         let mut a_pen_only = a.load_intranet_config().unwrap();
         a_pen_only.folder_files = vec![pen.display().to_string()];
         a.save_intranet_config(&a_pen_only).unwrap();
-        a.save_note(receipt.document_id, &format!("{merged}\nSó pelo pendrive")).unwrap();
-        a.sync_with_folders(&a_pen_only, key, false, &reporter).unwrap();
+        a.save_note(receipt.document_id, &format!("{merged}\nSó pelo pendrive"))
+            .unwrap();
+        a.sync_with_folders(&a_pen_only, key, false, &reporter)
+            .unwrap();
         let mut b_drive_only = b.load_intranet_config().unwrap();
         b_drive_only.folder_files = vec![drive.display().to_string()];
         b.save_intranet_config(&b_drive_only).unwrap();
         let mut other = crate::tasks::Task::new(receipt.document_id);
         other.title = "Tarefa só pelo Drive".into();
         b.save_task(&other).unwrap();
-        b.sync_with_folders(&b_drive_only, key, false, &reporter).unwrap();
+        b.sync_with_folders(&b_drive_only, key, false, &reporter)
+            .unwrap();
         let mut b_both = b.load_intranet_config().unwrap();
         b_both.folder_files = files.clone();
         b.save_intranet_config(&b_both).unwrap();
         let report = b.sync_with_folders(&b_both, key, false, &reporter).unwrap();
         assert_eq!(report.merged_foreign, 1, "the pen drive's note reaches B");
-        assert!(b.load_document(receipt.document_id).unwrap().note.ends_with("Só pelo pendrive"));
-        assert!(b.list_tasks().unwrap().iter().any(|t| t.title == "Tarefa só pelo Drive"));
+        assert!(b
+            .load_document(receipt.document_id)
+            .unwrap()
+            .note
+            .ends_with("Só pelo pendrive"));
+        assert!(b
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .any(|t| t.title == "Tarefa só pelo Drive"));
         assert_eq!(report.written_to.len(), 2);
 
         // A joining computer with its own documents must confirm the replacement.
         let mut c = Store::open(&dir.path().join("c.sqlite3")).unwrap();
         let mut own = crate::model::sample_capture();
         own.document_number = "SEFAZ-PRO-2026/00099".into();
-        own.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00099".into();
+        own.source_url =
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00099"
+                .into();
         c.import_capture(&own).unwrap();
-        c.save_intranet_config(&folder_config("Notebook", files.clone())).unwrap();
+        c.save_intranet_config(&folder_config("Notebook", files.clone()))
+            .unwrap();
         let cfg_c = c.load_intranet_config().unwrap();
-        let error = c.sync_with_folders(&cfg_c, key, false, &reporter).unwrap_err().to_string();
+        let error = c
+            .sync_with_folders(&cfg_c, key, false, &reporter)
+            .unwrap_err()
+            .to_string();
         assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
         c.sync_with_folders(&cfg_c, key, true, &reporter).unwrap();
         assert_eq!(c.list_documents("").unwrap().len(), 1);
 
         // A computer whose bookkeeping was lost, but which wrote a copy
         // itself, is not joining: it reconciles without the question.
-        c.save_note(receipt.document_id, "Nota gravada por C").unwrap();
+        c.save_note(receipt.document_id, "Nota gravada por C")
+            .unwrap();
         let cfg_c = c.load_intranet_config().unwrap();
         c.sync_with_folders(&cfg_c, key, false, &reporter).unwrap();
         let mut forgotten = c.load_intranet_config().unwrap();
         forgotten.synced_revision = 0;
         forgotten.folder_lineage.clear();
         c.save_intranet_config(&forgotten).unwrap();
-        c.save_note(receipt.document_id, "Nota depois do esquecimento").unwrap();
-        c.sync_with_folders(&forgotten, key, false, &reporter).unwrap();
+        c.save_note(receipt.document_id, "Nota depois do esquecimento")
+            .unwrap();
+        c.sync_with_folders(&forgotten, key, false, &reporter)
+            .unwrap();
         assert!(c.load_intranet_config().unwrap().synced_revision > 0);
-        assert!(c.load_document(receipt.document_id).unwrap().note.ends_with("esquecimento"));
+        assert!(c
+            .load_document(receipt.document_id)
+            .unwrap()
+            .note
+            .ends_with("esquecimento"));
 
         // Nothing readable in the transport files.
         for path in [&drive, &pen] {
@@ -5467,7 +5792,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{label} missing from {diffs:?}"))
         };
         assert_eq!(by_label("Título").changed_by(), "só por você");
-        assert_eq!(by_label("Responsável").changed_by(), "só no computador principal");
+        assert_eq!(
+            by_label("Responsável").changed_by(),
+            "só no computador principal"
+        );
         assert_eq!(by_label("Situação").changed_by(), "pelos dois lados");
         assert_eq!(by_label("Situação").host, "Em análise");
         assert_eq!(by_label("Situação").local, "Aguardando");
@@ -5486,7 +5814,9 @@ mod tests {
         assert_eq!(parse_connection_code(&pasted).unwrap().0, host);
         // Public addresses and short keys are refused like in the form.
         assert!(parse_connection_code(&connection_code("http://8.8.8.8:7878", &token)).is_none());
-        assert!(parse_connection_code(&connection_code("http://192.168.1.10:7878", "curta")).is_none());
+        assert!(
+            parse_connection_code(&connection_code("http://192.168.1.10:7878", "curta")).is_none()
+        );
         assert!(parse_connection_code("ponte://conectar?host=x").is_none());
         assert!(parse_connection_code("qualquer coisa").is_none());
     }

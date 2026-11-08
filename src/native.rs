@@ -42,7 +42,12 @@ pub fn valid_extension_origin(origin: &str) -> bool {
 
 /// Answers every request with the same refusal instead of leaving without a
 /// reply: the extension then shows the reason, not "no confirmation".
-pub fn refuse<R: Read, W: Write>(reader: &mut R, writer: &mut W, code: &str, message: &str) -> Result<()> {
+pub fn refuse<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    code: &str,
+    message: &str,
+) -> Result<()> {
     let message: String = message.chars().take(900).collect();
     while read_frame(reader)?.is_some() {
         write_frame(writer, &error(code, &message))?;
@@ -51,7 +56,12 @@ pub fn refuse<R: Read, W: Write>(reader: &mut R, writer: &mut W, code: &str, mes
 }
 
 pub fn refuse_on_stdio(code: &str, message: &str) -> Result<()> {
-    refuse(&mut io::stdin().lock(), &mut io::stdout().lock(), code, message)
+    refuse(
+        &mut io::stdin().lock(),
+        &mut io::stdout().lock(),
+        code,
+        message,
+    )
 }
 
 pub fn read_frame<R: Read>(reader: &mut R) -> Result<Option<Vec<u8>>> {
@@ -143,7 +153,8 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
                     let mut response = json!({"protocol_version":1,"ok":true,"request_id":receipt.request_id,"document_id":receipt.document_id,"capture_id":receipt.capture_id,"duplicate":receipt.duplicate,"outcome":outcome.as_str()});
                     match outcome {
                         ImportOutcome::Imported => {
-                            response["message"] = json!("Informações da página gravadas no acervo local.");
+                            response["message"] =
+                                json!("Informações da página gravadas no acervo local.");
                             (response, Some(receipt.document_id))
                         }
                         ImportOutcome::Confirmed => {
@@ -280,10 +291,17 @@ mod tests {
             write_frame(&mut input, &json!({"protocol_version":1,"action":"ping"})).unwrap();
         }
         let mut output = Vec::new();
-        refuse(&mut input.as_slice(), &mut output, "origin_denied", "Atualize o Ponte.").unwrap();
+        refuse(
+            &mut input.as_slice(),
+            &mut output,
+            "origin_denied",
+            "Atualize o Ponte.",
+        )
+        .unwrap();
         let mut reader = output.as_slice();
         for _ in 0..2 {
-            let reply: Value = serde_json::from_slice(&read_frame(&mut reader).unwrap().unwrap()).unwrap();
+            let reply: Value =
+                serde_json::from_slice(&read_frame(&mut reader).unwrap().unwrap()).unwrap();
             assert_eq!(reply["ok"], false);
             assert_eq!(reply["error"]["code"], "origin_denied");
             assert_eq!(reply["error"]["message"], "Atualize o Ponte.");

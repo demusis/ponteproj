@@ -27,7 +27,8 @@ const DISCOVERY_URL: &str = "https://auth.openai.com/.well-known/openid-configur
 /// Public API used for inference and for listing models.
 pub const API_BASE: &str = "https://api.openai.com/v1";
 const RESOURCE: &str = "https://api.openai.com/v1";
-const SCOPES: &str = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
+const SCOPES: &str =
+    "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 /// The scope that lets the app spend the person's plan allowance.
 pub const SHARING_SCOPE: &str = "chatgpt.tokens.use.direct";
 const DYNAMIC_CLIENT: &str = "dynamic_agent_client";
@@ -341,11 +342,8 @@ impl Login {
                         reply_http(&mut stream, 404, "Nada aqui.");
                         continue;
                     }
-                    let parsed = parse_callback(
-                        query,
-                        &self.state,
-                        self.expected_client.as_deref(),
-                    );
+                    let parsed =
+                        parse_callback(query, &self.state, self.expected_client.as_deref());
                     match &parsed {
                         Ok(_) => reply_http(&mut stream, 200, "Pronto. A autorização chegou ao Ponte; você já pode fechar esta aba e voltar ao programa."),
                         Err(error) => reply_http(&mut stream, 400, &format!("A autorização não foi concluída: {error} Volte ao Ponte e tente de novo.")),
@@ -362,14 +360,23 @@ impl Login {
         }
     }
 
-    fn finish(self, callback: Callback, tokens: TokenResponse, client: &Client) -> Result<ChatGptSession> {
+    fn finish(
+        self,
+        callback: Callback,
+        tokens: TokenResponse,
+        client: &Client,
+    ) -> Result<ChatGptSession> {
         let id_token = tokens
             .id_token
             .clone()
             .filter(|t| !t.is_empty())
             .context("A OpenAI não devolveu a identidade da conta.")?;
         let claims = verify_id_token(client, &id_token, &callback.client_id, &self.nonce)?;
-        let scopes = if tokens.scope.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        let scopes = if tokens
+            .scope
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+        {
             split_scopes(tokens.scope.as_deref().unwrap_or(""))
         } else {
             callback.scopes
@@ -454,19 +461,42 @@ fn parse_callback(query: &str, state: &str, expected_client: Option<&str>) -> Re
     let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
-    let get = |name: &str| pairs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+    let get = |name: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    };
     if let Some(error) = get("error") {
         if error == "access_denied" {
             bail!("você não autorizou o Ponte na página do ChatGPT.");
         }
         let description = get("error_description").unwrap_or("");
-        bail!("a OpenAI recusou o pedido ({}).", clean(if description.is_empty() { error } else { description }, 200));
+        bail!(
+            "a OpenAI recusou o pedido ({}).",
+            clean(
+                if description.is_empty() {
+                    error
+                } else {
+                    description
+                },
+                200
+            )
+        );
     }
-    ensure!(get("state") == Some(state), "a resposta não corresponde a este pedido de login (state).");
-    let code = get("code").filter(|c| !c.is_empty()).context("a resposta veio sem o código de autorização.")?;
+    ensure!(
+        get("state") == Some(state),
+        "a resposta não corresponde a este pedido de login (state)."
+    );
+    let code = get("code")
+        .filter(|c| !c.is_empty())
+        .context("a resposta veio sem o código de autorização.")?;
     let client_id = match (expected_client, get("client_id")) {
         (Some(expected), Some(given)) => {
-            ensure!(given == expected, "a resposta veio para outro cliente registrado.");
+            ensure!(
+                given == expected,
+                "a resposta veio para outro cliente registrado."
+            );
             expected.to_owned()
         }
         (Some(expected), None) => expected.to_owned(),
@@ -474,7 +504,10 @@ fn parse_callback(query: &str, state: &str, expected_client: Option<&str>) -> Re
         (None, _) => bail!("o registro do Ponte na OpenAI não foi concluído (sem client_id)."),
     };
     ensure!(
-        client_id.len() <= 512 && !client_id.chars().any(|c| c.is_control() || c.is_whitespace()),
+        client_id.len() <= 512
+            && !client_id
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace()),
         "identificação do cliente inválida."
     );
     Ok(Callback {
@@ -543,14 +576,27 @@ fn token_request(client: &Client, form: &[(&str, &str)]) -> Result<TokenResponse
                 if description.is_empty() && code.is_empty() {
                     String::new()
                 } else {
-                    format!(": {}", clean(if description.is_empty() { &code } else { &description }, 200))
+                    format!(
+                        ": {}",
+                        clean(
+                            if description.is_empty() {
+                                &code
+                            } else {
+                                &description
+                            },
+                            200
+                        )
+                    )
                 }
             ),
         });
     }
-    let tokens: TokenResponse =
-        serde_json::from_slice(&body).context("Resposta de token da OpenAI em formato inesperado.")?;
-    ensure!(!tokens.access_token.is_empty(), "A OpenAI devolveu um token vazio.");
+    let tokens: TokenResponse = serde_json::from_slice(&body)
+        .context("Resposta de token da OpenAI em formato inesperado.")?;
+    ensure!(
+        !tokens.access_token.is_empty(),
+        "A OpenAI devolveu um token vazio."
+    );
     Ok(tokens)
 }
 
@@ -607,7 +653,10 @@ fn exchange_code(
 /// Standard refresh; the refresh token rotates, so the caller must store the
 /// returned session at once.
 pub fn refresh(session: &ChatGptSession) -> Result<ChatGptSession> {
-    ensure!(session.signed_in(), "Entre com a sua conta do ChatGPT em Configurar IA.");
+    ensure!(
+        session.signed_in(),
+        "Entre com a sua conta do ChatGPT em Configurar IA."
+    );
     let client = http(Duration::from_secs(30))?;
     let tokens = token_request(
         &client,
@@ -652,7 +701,10 @@ pub fn access_token(shared: &SharedSession) -> Result<String> {
         match refresh(&session) {
             Ok(renewed) => *session = renewed,
             Err(error) => {
-                if error.downcast_ref::<TokenError>().is_some_and(TokenError::signed_out) {
+                if error
+                    .downcast_ref::<TokenError>()
+                    .is_some_and(TokenError::signed_out)
+                {
                     *session = session.without_tokens();
                     bail!("A sessão do ChatGPT foi encerrada (desconectada nas configurações do ChatGPT ou expirada). Entre de novo em Configurar IA.");
                 }
@@ -703,7 +755,8 @@ fn discovery(client: &Client) -> Result<Value> {
         response.status().as_u16()
     );
     let body = read_limited(response, MAX_ERROR_BYTES)?;
-    serde_json::from_slice(&body).context("Configuração de identidade da OpenAI em formato inesperado.")
+    serde_json::from_slice(&body)
+        .context("Configuração de identidade da OpenAI em formato inesperado.")
 }
 
 fn read_limited(response: reqwest::blocking::Response, max: u64) -> Result<Vec<u8>> {
@@ -712,7 +765,10 @@ fn read_limited(response: reqwest::blocking::Response, max: u64) -> Result<Vec<u
         .take(max + 1)
         .read_to_end(&mut bytes)
         .context("Falha ao ler a resposta da OpenAI.")?;
-    ensure!(bytes.len() as u64 <= max, "Resposta da OpenAI grande demais.");
+    ensure!(
+        bytes.len() as u64 <= max,
+        "Resposta da OpenAI grande demais."
+    );
     Ok(bytes)
 }
 
@@ -726,7 +782,10 @@ pub struct IdClaims {
 /// expiry and nonce.
 fn verify_id_token(client: &Client, token: &str, client_id: &str, nonce: &str) -> Result<IdClaims> {
     let parts: Vec<&str> = token.split('.').collect();
-    ensure!(parts.len() == 3, "Identidade da conta em formato inesperado.");
+    ensure!(
+        parts.len() == 3,
+        "Identidade da conta em formato inesperado."
+    );
     let header: Value = serde_json::from_slice(&base64url_decode(parts[0])?)
         .context("Cabeçalho da identidade inválido.")?;
     ensure!(
@@ -743,7 +802,11 @@ fn verify_id_token(client: &Client, token: &str, client_id: &str, nonce: &str) -
         .get(&jwks_uri)
         .send()
         .context("Não foi possível obter as chaves de assinatura da OpenAI.")?;
-    ensure!(response.status().is_success(), "A OpenAI respondeu HTTP {} às chaves de assinatura.", response.status().as_u16());
+    ensure!(
+        response.status().is_success(),
+        "A OpenAI respondeu HTTP {} às chaves de assinatura.",
+        response.status().as_u16()
+    );
     let jwks: Value = serde_json::from_slice(&read_limited(response, MAX_ERROR_BYTES)?)
         .context("Chaves de assinatura em formato inesperado.")?;
     let key = jwks["keys"]
@@ -781,9 +844,15 @@ fn check_claims(claims: &Value, client_id: &str, nonce: &str, now: i64) -> Resul
         Value::Array(list) => list.iter().any(|a| a.as_str() == Some(client_id)),
         _ => false,
     };
-    ensure!(audience_ok, "A identidade foi emitida para outro aplicativo.");
+    ensure!(
+        audience_ok,
+        "A identidade foi emitida para outro aplicativo."
+    );
     let exp = claims["exp"].as_i64().context("Identidade sem validade.")?;
-    ensure!(exp + 60 > now, "A identidade recebida já expirou; entre de novo.");
+    ensure!(
+        exp + 60 > now,
+        "A identidade recebida já expirou; entre de novo."
+    );
     ensure!(
         claims["nonce"].as_str() == Some(nonce),
         "A identidade não corresponde a este pedido de login (nonce)."
@@ -822,7 +891,8 @@ fn list_models_at(base: &str, token: &str) -> Result<Vec<crate::ai::ModelInfo>> 
 /// `models` array of `{slug, display_name, visibility}` (OpenAI's Sign in
 /// with ChatGPT documentation), the plain API with `data` of `{id}`.
 fn parse_models(bytes: &[u8]) -> Result<Vec<crate::ai::ModelInfo>> {
-    let value: Value = serde_json::from_slice(bytes).context("Lista de modelos em formato inesperado.")?;
+    let value: Value =
+        serde_json::from_slice(bytes).context("Lista de modelos em formato inesperado.")?;
     let entries = value["models"]
         .as_array()
         .or_else(|| value["data"].as_array())
@@ -924,7 +994,15 @@ pub fn respond(
     reporter: &crate::ai::Reporter,
 ) -> Result<String> {
     let token = access_token(shared)?;
-    respond_at(API_BASE, &token, model, instructions, input, schema, reporter)
+    respond_at(
+        API_BASE,
+        &token,
+        model,
+        instructions,
+        input,
+        schema,
+        reporter,
+    )
 }
 
 fn respond_at(
@@ -966,7 +1044,10 @@ fn respond_at(
         let body = read_limited(response, MAX_ERROR_BYTES)?;
         return Err(api_error(status, &body));
     }
-    read_stream(BufReader::new(response.take(MAX_RESPONSE_BYTES + 1)), reporter)
+    read_stream(
+        BufReader::new(response.take(MAX_RESPONSE_BYTES + 1)),
+        reporter,
+    )
 }
 
 /// Collects the text of a server-sent-events stream; success only on
@@ -981,7 +1062,10 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
         match event["type"].as_str().unwrap_or("") {
             "response.output_text.delta" => {
                 text.push_str(event["delta"].as_str().unwrap_or(""));
-                ensure!(text.len() <= MAX_GENERATED_BYTES, "Resposta da IA excede 128 KiB.");
+                ensure!(
+                    text.len() <= MAX_GENERATED_BYTES,
+                    "Resposta da IA excede 128 KiB."
+                );
                 Ok(false)
             }
             "response.completed" => Ok(true),
@@ -1018,7 +1102,12 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
             }
             "response.incomplete" => bail!(
                 "A IA interrompeu a resposta antes do fim ({}); nada foi salvo.",
-                clean(event["response"]["incomplete_details"]["reason"].as_str().unwrap_or("motivo não informado"), 100)
+                clean(
+                    event["response"]["incomplete_details"]["reason"]
+                        .as_str()
+                        .unwrap_or("motivo não informado"),
+                    100
+                )
             ),
             _ => Ok(false),
         }
@@ -1026,14 +1115,18 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
     for line in reader.lines() {
         let line = line.context("A conexão com o ChatGPT caiu no meio da resposta.")?;
         total += line.len() as u64 + 1;
-        ensure!(total <= MAX_RESPONSE_BYTES, "Resposta da IA excede o limite de 2 MiB.");
+        ensure!(
+            total <= MAX_RESPONSE_BYTES,
+            "Resposta da IA excede o limite de 2 MiB."
+        );
         if let Some(rest) = line.strip_prefix("data:") {
             data.push_str(rest.trim_start());
             continue;
         }
         if line.is_empty() && !data.is_empty() {
             reporter.check()?;
-            let event: Value = serde_json::from_str(&data).context("Evento do ChatGPT em formato inesperado.")?;
+            let event: Value =
+                serde_json::from_str(&data).context("Evento do ChatGPT em formato inesperado.")?;
             data.clear();
             if handle_event(&event, &mut text)? {
                 completed = Some(event);
@@ -1045,11 +1138,15 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
                 || now.duration_since(last_report.0) >= Duration::from_millis(500)
             {
                 last_report = (now, text.len());
-                reporter.step(format!("Recebendo a resposta… ({} caracteres)", text.chars().count()));
+                reporter.step(format!(
+                    "Recebendo a resposta… ({} caracteres)",
+                    text.chars().count()
+                ));
             }
         }
     }
-    let completed = completed.context("A resposta do ChatGPT terminou sem confirmação de conclusão; nada foi salvo.")?;
+    let completed = completed
+        .context("A resposta do ChatGPT terminou sem confirmação de conclusão; nada foi salvo.")?;
     if text.trim().is_empty() {
         // Some servers only send the final object.
         if let Some(outputs) = completed["response"]["output"].as_array() {
@@ -1064,7 +1161,10 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
             }
         }
     }
-    ensure!(!text.trim().is_empty() && text.len() <= MAX_GENERATED_BYTES, "Resposta da IA vazia ou excede 128 KiB.");
+    ensure!(
+        !text.trim().is_empty() && text.len() <= MAX_GENERATED_BYTES,
+        "Resposta da IA vazia ou excede 128 KiB."
+    );
     Ok(text.trim().to_owned())
 }
 
@@ -1085,8 +1185,10 @@ mod tests {
         assert!(host.starts_with("urn:uuid:"));
         let first = Login::start(&host, None).unwrap();
         let url = url::Url::parse(&first.authorize_url).unwrap();
-        let pairs: std::collections::BTreeMap<String, String> =
-            url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        let pairs: std::collections::BTreeMap<String, String> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
         assert_eq!(pairs["client_id"], DYNAMIC_CLIENT);
         assert_eq!(pairs["agent_name_hint"], "Ponte");
         assert_eq!(pairs["ext_agent_host_id"], host);
@@ -1107,8 +1209,10 @@ mod tests {
         };
         let again = Login::start(&host, Some(&previous)).unwrap();
         let url = url::Url::parse(&again.authorize_url).unwrap();
-        let pairs: std::collections::BTreeMap<String, String> =
-            url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        let pairs: std::collections::BTreeMap<String, String> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
         assert_eq!(pairs["client_id"], "cid_123");
         assert!(!pairs.contains_key("agent_name_hint"));
         assert_eq!(pairs["id_token_hint"], "a.b.c");
@@ -1122,10 +1226,16 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!((ok.code.as_str(), ok.client_id.as_str()), ("abc", "cid_new"));
+        assert_eq!(
+            (ok.code.as_str(), ok.client_id.as_str()),
+            ("abc", "cid_new")
+        );
         assert_eq!(ok.scopes, ["openid", SHARING_SCOPE]);
         assert!(parse_callback("code=abc&state=OTHER&client_id=x", "S1", None).is_err());
-        assert!(parse_callback("code=abc&state=S1", "S1", None).is_err(), "dynamic registration must return a client id");
+        assert!(
+            parse_callback("code=abc&state=S1", "S1", None).is_err(),
+            "dynamic registration must return a client id"
+        );
         assert!(parse_callback("error=access_denied&state=S1", "S1", None)
             .err()
             .unwrap()
@@ -1133,7 +1243,12 @@ mod tests {
             .contains("não autorizou"));
         let reauth = parse_callback("code=abc&state=S1", "S1", Some("cid_123")).unwrap();
         assert_eq!(reauth.client_id, "cid_123");
-        assert!(parse_callback("code=abc&state=S1&client_id=cid_other", "S1", Some("cid_123")).is_err());
+        assert!(parse_callback(
+            "code=abc&state=S1&client_id=cid_other",
+            "S1",
+            Some("cid_123")
+        )
+        .is_err());
         assert_eq!(split_scopes("a b+c"), ["a", "b", "c"]);
     }
 
@@ -1141,15 +1256,24 @@ mod tests {
     fn id_token_claims_are_checked_before_an_account_is_accepted() {
         let good = json!({"iss": ISSUER, "aud": ["cid"], "exp": 2_000_000_000_i64, "nonce": "n1", "sub": "user-1", "email": "p@example.org"});
         let claims = check_claims(&good, "cid", "n1", 1_900_000_000).unwrap();
-        assert_eq!((claims.sub.as_str(), claims.email.as_str()), ("user-1", "p@example.org"));
+        assert_eq!(
+            (claims.sub.as_str(), claims.email.as_str()),
+            ("user-1", "p@example.org")
+        );
         let mut bad = good.clone();
         bad["iss"] = json!("https://evil.example");
         assert!(check_claims(&bad, "cid", "n1", 1_900_000_000).is_err());
         let mut bad = good.clone();
         bad["aud"] = json!("other");
         assert!(check_claims(&bad, "cid", "n1", 1_900_000_000).is_err());
-        assert!(check_claims(&good, "cid", "n1", 2_100_000_000).is_err(), "expired");
-        assert!(check_claims(&good, "cid", "n2", 1_900_000_000).is_err(), "nonce");
+        assert!(
+            check_claims(&good, "cid", "n1", 2_100_000_000).is_err(),
+            "expired"
+        );
+        assert!(
+            check_claims(&good, "cid", "n2", 1_900_000_000).is_err(),
+            "nonce"
+        );
         let mut string_aud = good.clone();
         string_aud["aud"] = json!("cid");
         assert!(check_claims(&string_aud, "cid", "n1", 1_900_000_000).is_ok());
@@ -1185,7 +1309,10 @@ mod tests {
                 .as_bytes(),
         )
         .unwrap();
-        assert_eq!(models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["gpt-a", "gpt-b"]);
+        assert_eq!(
+            models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            ["gpt-a", "gpt-b"]
+        );
         // Shape documented for the plan-sharing flow.
         let models = parse_models(
             json!({"object":"list","models":[
@@ -1196,42 +1323,92 @@ mod tests {
             .as_bytes(),
         )
         .unwrap();
-        assert_eq!(models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["gpt-6.1-sol"]);
-        let error = parse_models(br#"{"object":"list","items":[]}"#).err().unwrap().to_string();
-        assert!(error.contains("items") && error.contains("object"), "{error}");
+        assert_eq!(
+            models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            ["gpt-6.1-sol"]
+        );
+        let error = parse_models(br#"{"object":"list","items":[]}"#)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains("items") && error.contains("object"),
+            "{error}"
+        );
     }
 
     #[test]
     fn stream_text_is_collected_only_until_completion_and_limits_are_explained() {
         let stream = "event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"a\\\":\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"1}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}\n\n";
         let silent = crate::ai::Reporter::silent();
-        assert_eq!(read_stream(Cursor::new(stream), &silent).unwrap(), "{\"a\":1}");
+        assert_eq!(
+            read_stream(Cursor::new(stream), &silent).unwrap(),
+            "{\"a\":1}"
+        );
         let cut = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
-        assert!(read_stream(Cursor::new(cut), &silent).unwrap_err().to_string().contains("sem confirmação"));
+        assert!(read_stream(Cursor::new(cut), &silent)
+            .unwrap_err()
+            .to_string()
+            .contains("sem confirmação"));
         let failed = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\",\"message\":\"limit\"}}}\n\n";
-        assert!(read_stream(Cursor::new(failed), &silent).unwrap_err().to_string().contains("cota"));
+        assert!(read_stream(Cursor::new(failed), &silent)
+            .unwrap_err()
+            .to_string()
+            .contains("cota"));
         // Nested error object, and an error event with nothing recognizable.
         let nested = "data: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"campo recusado\"}}\n\n";
-        let error = read_stream(Cursor::new(nested), &silent).unwrap_err().to_string();
-        assert!(error.contains("interrompeu") && error.contains("invalid_request_error") && error.contains("campo recusado"), "{error}");
+        let error = read_stream(Cursor::new(nested), &silent)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("interrompeu")
+                && error.contains("invalid_request_error")
+                && error.contains("campo recusado"),
+            "{error}"
+        );
         let bare = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"id\":\"r9\"}}\n\n";
-        let error = read_stream(Cursor::new(bare), &silent).unwrap_err().to_string();
-        assert!(error.contains("evento recebido") && error.contains("r9"), "{error}");
+        let error = read_stream(Cursor::new(bare), &silent)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("evento recebido") && error.contains("r9"),
+            "{error}"
+        );
         let only_final ="data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final\"}]}]}}\n\n";
-        assert_eq!(read_stream(Cursor::new(only_final), &silent).unwrap(), "final");
+        assert_eq!(
+            read_stream(Cursor::new(only_final), &silent).unwrap(),
+            "final"
+        );
         // Progress is reported and a cancellation stops the reading.
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let reporter = crate::ai::Reporter::new(sender, cancel.clone());
-        assert_eq!(read_stream(Cursor::new(stream), &reporter).unwrap(), "{\"a\":1}");
+        assert_eq!(
+            read_stream(Cursor::new(stream), &reporter).unwrap(),
+            "{\"a\":1}"
+        );
         let steps: Vec<String> = receiver.try_iter().collect();
-        assert!(steps.iter().any(|s| s.contains("Recebendo a resposta")), "{steps:?}");
+        assert!(
+            steps.iter().any(|s| s.contains("Recebendo a resposta")),
+            "{steps:?}"
+        );
         cancel.store(true, Ordering::Relaxed);
-        assert!(read_stream(Cursor::new(stream), &reporter).unwrap_err().to_string().contains("Cancelado"));
+        assert!(read_stream(Cursor::new(stream), &reporter)
+            .unwrap_err()
+            .to_string()
+            .contains("Cancelado"));
         assert!(explain(401, "", "", "").contains("Entre de novo"));
-        assert!(explain(403, "subscription_sharing_user_not_eligible", "", "").contains("Plus ou Pro"));
+        assert!(
+            explain(403, "subscription_sharing_user_not_eligible", "", "").contains("Plus ou Pro")
+        );
         assert!(explain(503, "", "", "").contains("Tente de novo"));
-        assert!(explain(400, "subscription_sharing_unsupported_capability", "", "tools").contains("tools"));
+        assert!(explain(
+            400,
+            "subscription_sharing_unsupported_capability",
+            "",
+            "tools"
+        )
+        .contains("tools"));
     }
 
     #[test]
@@ -1242,7 +1419,9 @@ mod tests {
         let server = std::thread::spawn(move || {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let mut all = Vec::new();
                 let mut buffer = [0_u8; 4096];
                 let (header_end, content_length) = loop {
@@ -1267,7 +1446,8 @@ mod tests {
                     all.extend_from_slice(&buffer[..count]);
                 }
                 let head = String::from_utf8_lossy(&all[..header_end]).into_owned();
-                let body: Value = serde_json::from_slice(&all[header_end..header_end + content_length]).unwrap();
+                let body: Value =
+                    serde_json::from_slice(&all[header_end..header_end + content_length]).unwrap();
                 let limit = body["model"] == "limited";
                 sent.send((head, body)).unwrap();
                 if limit {
@@ -1281,7 +1461,16 @@ mod tests {
         });
         let base = format!("http://{address}");
         let silent = crate::ai::Reporter::silent();
-        let text = respond_at(&base, "tok", "gpt-x", "instru\u{e7}\u{f5}es", "{\"dado\":1}", Some(json!({"type":"object"})), &silent).unwrap();
+        let text = respond_at(
+            &base,
+            "tok",
+            "gpt-x",
+            "instru\u{e7}\u{f5}es",
+            "{\"dado\":1}",
+            Some(json!({"type":"object"})),
+            &silent,
+        )
+        .unwrap();
         assert_eq!(text, "ol\u{e1}");
         let error = respond_at(&base, "tok", "limited", "i", "d", None, &silent).unwrap_err();
         assert!(error.to_string().contains("cota"), "{error}");

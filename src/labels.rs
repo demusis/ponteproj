@@ -361,19 +361,29 @@ fn calendar_popup(
                 .spacing([2.0, 2.0])
                 .show(ui, |ui| {
                     for name in WEEKDAYS {
-                        ui.add_sized([CELL, 18.0], egui::Label::new(egui::RichText::new(name).small().color(egui::Color32::from_rgb(120, 130, 140))));
+                        ui.add_sized(
+                            [CELL, 18.0],
+                            egui::Label::new(
+                                egui::RichText::new(name)
+                                    .small()
+                                    .color(egui::Color32::from_rgb(120, 130, 140)),
+                            ),
+                        );
                     }
                     ui.end_row();
                     for week in month_grid(year, month) {
                         for cell in week {
                             match cell {
                                 Some(day) => {
-                                    let date = chrono::NaiveDate::from_ymd_opt(year, month, day).expect("valid day");
+                                    let date = chrono::NaiveDate::from_ymd_opt(year, month, day)
+                                        .expect("valid day");
                                     let is_selected = selected == Some(date);
                                     let is_today = date == today;
                                     let mut text = egui::RichText::new(day.to_string());
                                     if is_today {
-                                        text = text.strong().color(egui::Color32::from_rgb(24, 84, 97));
+                                        text = text
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(24, 84, 97));
                                     }
                                     let response = ui.add_sized(
                                         [CELL, 22.0],
@@ -421,17 +431,29 @@ mod tests {
         assert_eq!(november.len(), 5);
         // February 2024 (leap year): 29 days, starting on a Thursday.
         let february = month_grid(2024, 2);
-        assert_eq!(february[0], [None, None, None, None, Some(1), Some(2), Some(3)]);
+        assert_eq!(
+            february[0],
+            [None, None, None, None, Some(1), Some(2), Some(3)]
+        );
         assert_eq!(february.iter().flatten().flatten().count(), 29);
         assert!(month_grid(2026, 13).is_empty());
     }
 
     #[test]
     fn typed_dates_are_normalized_to_iso() {
-        assert_eq!(parse_typed_date("03/11/2026").as_deref(), Some("2026-11-03"));
+        assert_eq!(
+            parse_typed_date("03/11/2026").as_deref(),
+            Some("2026-11-03")
+        );
         assert_eq!(parse_typed_date("3/11/2026").as_deref(), Some("2026-11-03"));
-        assert_eq!(parse_typed_date("03-11-2026").as_deref(), Some("2026-11-03"));
-        assert_eq!(parse_typed_date("2026-11-03").as_deref(), Some("2026-11-03"));
+        assert_eq!(
+            parse_typed_date("03-11-2026").as_deref(),
+            Some("2026-11-03")
+        );
+        assert_eq!(
+            parse_typed_date("2026-11-03").as_deref(),
+            Some("2026-11-03")
+        );
         assert_eq!(parse_typed_date("03/11/26").as_deref(), Some("2026-11-03"));
         assert_eq!(parse_typed_date("31/02/2026"), None);
         assert_eq!(parse_typed_date("amanhã"), None);
@@ -448,7 +470,10 @@ mod tests {
         assert_eq!(priority(""), "Não definida");
         assert_eq!(priority("alta"), "Alta");
         assert_eq!(draft_kind("complementacao"), "Pedido de complementação");
-        assert_eq!(saiop_event_kind("importacao_planilha"), "Importação de planilha");
+        assert_eq!(
+            saiop_event_kind("importacao_planilha"),
+            "Importação de planilha"
+        );
         assert_eq!(spreadsheet_column("D"), "Referência");
         assert_eq!(file_size(512), "512 bytes");
         assert_eq!(file_size(850_000), "830 KB");

@@ -336,7 +336,10 @@ impl Store {
         let pending_manual = capture.is_manual() && capture.document_number == MANUAL_PENDING;
         let assigned;
         let capture: &Capture = if pending_manual {
-            ensure!(files.is_empty(), "Registro manual não leva PDFs importados.");
+            ensure!(
+                files.is_empty(),
+                "Registro manual não leva PDFs importados."
+            );
             assigned = with_manual_number(capture, &next_manual_number(&tx)?);
             &assigned
         } else {
@@ -488,7 +491,9 @@ impl Store {
     /// Active documents matching `query` (empty: all), memoized per query
     /// until the library changes.
     pub fn list_documents(&self, query: &str) -> Result<Vec<DocumentSummary>> {
-        self.cached(&format!("documents\u{1}{query}"), || self.list_documents_uncached(query))
+        self.cached(&format!("documents\u{1}{query}"), || {
+            self.list_documents_uncached(query)
+        })
     }
     fn list_documents_uncached(&self, query: &str) -> Result<Vec<DocumentSummary>> {
         ensure!(query.len() <= 8192, "Busca grande demais.");
@@ -503,7 +508,12 @@ impl Store {
         // a search or filter never changes a parent's count of joined pieces.
         let by_number: BTreeMap<String, i64> = details
             .iter()
-            .map(|d| (d.summary.document_number.trim().to_uppercase(), d.summary.id))
+            .map(|d| {
+                (
+                    d.summary.document_number.trim().to_uppercase(),
+                    d.summary.id,
+                )
+            })
             .collect();
         let mut children = BTreeMap::<i64, usize>::new();
         for detail in &mut details {
@@ -862,7 +872,9 @@ impl Store {
     /// Documents whose text resembles document `id`, memoized until the
     /// library changes.
     pub fn similar_documents(&self, id: i64, limit: usize) -> Result<Vec<DocumentSummary>> {
-        self.cached(&format!("similar\u{1}{id}\u{1}{limit}"), || self.similar_documents_uncached(id, limit))
+        self.cached(&format!("similar\u{1}{id}\u{1}{limit}"), || {
+            self.similar_documents_uncached(id, limit)
+        })
     }
     fn similar_documents_uncached(&self, id: i64, limit: usize) -> Result<Vec<DocumentSummary>> {
         let target = self.load_document(id)?;
@@ -942,8 +954,8 @@ impl Store {
     /// Latest result of the background synchronization. An unreachable host
     /// is remembered for a few seconds, so the next save is queued at once.
     pub fn note_host_reachability(&mut self, reachable: bool) {
-        self.host_unreachable_until = (!reachable)
-            .then(|| std::time::Instant::now() + std::time::Duration::from_secs(12));
+        self.host_unreachable_until =
+            (!reachable).then(|| std::time::Instant::now() + std::time::Duration::from_secs(12));
     }
 
     pub(crate) fn host_known_unreachable(&self) -> bool {
@@ -1043,14 +1055,18 @@ fn identity_hash_for_number(number: &str) -> Vec<u8> {
 fn next_manual_number(tx: &rusqlite::Transaction<'_>) -> Result<String> {
     let year = chrono::Local::now().format("%Y").to_string();
     let prefix = format!("{MANUAL_PREFIX}{year}/");
-    let mut statement = tx.prepare(
-        "SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id",
-    )?;
+    let mut statement = tx
+        .prepare("SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id")?;
     let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
     let mut highest = 0_u32;
     for row in rows {
         let capture: Capture = decode(&row?)?;
-        if let Some(rest) = capture.document_number.trim().to_uppercase().strip_prefix(&prefix) {
+        if let Some(rest) = capture
+            .document_number
+            .trim()
+            .to_uppercase()
+            .strip_prefix(&prefix)
+        {
             if let Ok(sequence) = rest.parse::<u32>() {
                 highest = highest.max(sequence);
             }
@@ -1353,16 +1369,26 @@ mod tests {
         // So is a write committed by another connection (the team server).
         task.title = "De lá".into();
         there.save_task(&task).unwrap();
-        let titles: Vec<String> = here.list_tasks().unwrap().into_iter().map(|t| t.title).collect();
+        let titles: Vec<String> = here
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
         assert_eq!(titles.len(), before + 2);
         assert!(titles.iter().any(|t| t == "De lá"), "{titles:?}");
 
         // And a change through raw SQL (a migration, a test) as well.
-        here.conn.execute("DELETE FROM tasks WHERE id=(SELECT max(id) FROM tasks)", []).unwrap();
+        here.conn
+            .execute("DELETE FROM tasks WHERE id=(SELECT max(id) FROM tasks)", [])
+            .unwrap();
         assert_eq!(here.list_tasks().unwrap().len(), before + 1);
         // Searches are kept apart.
         assert_eq!(here.list_documents("").unwrap().len(), 1);
-        assert!(here.list_documents("palavra-que-nao-existe").unwrap().is_empty());
+        assert!(here
+            .list_documents("palavra-que-nao-existe")
+            .unwrap()
+            .is_empty());
         assert_eq!(here.list_documents("").unwrap().len(), 1);
     }
 
@@ -1395,7 +1421,11 @@ mod tests {
                 .query_row("SELECT count(*) FROM requests", [], |r| r.get::<_, i64>(0))
                 .unwrap()
         };
-        let seen_before = db.load_document(first.document_id).unwrap().summary.last_seen_at;
+        let seen_before = db
+            .load_document(first.document_id)
+            .unwrap()
+            .summary
+            .last_seen_at;
         c.request_id = uuid::Uuid::new_v4().to_string();
         c.captured_at = "2026-11-02T12:00:00Z".into();
         let repeat = db.import_capture(&c).unwrap();
@@ -1447,13 +1477,20 @@ mod tests {
         assert!(back.previous_version);
         assert_eq!(back.capture_id, first.capture_id);
         assert_eq!(
-            db.load_document(first.document_id).unwrap().summary.latest_capture_id,
+            db.load_document(first.document_id)
+                .unwrap()
+                .summary
+                .latest_capture_id,
             first.capture_id
         );
         assert_eq!((captures(&db), requests(&db)), (2, 3));
 
         // Once more, identical to what is now current: ignored outright.
-        let seen = db.load_document(first.document_id).unwrap().summary.last_seen_at;
+        let seen = db
+            .load_document(first.document_id)
+            .unwrap()
+            .summary
+            .last_seen_at;
         a.request_id = uuid::Uuid::new_v4().to_string();
         let again = db.import_capture(&a).unwrap();
         assert_eq!(again.outcome, Some(ImportOutcome::Unchanged));
@@ -1466,9 +1503,18 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(again.existing_captured_at.as_deref(), Some(stored_at.as_str()));
+        assert_eq!(
+            again.existing_captured_at.as_deref(),
+            Some(stored_at.as_str())
+        );
         assert_eq!((captures(&db), requests(&db)), (2, 3));
-        assert_eq!(db.load_document(first.document_id).unwrap().summary.last_seen_at, seen);
+        assert_eq!(
+            db.load_document(first.document_id)
+                .unwrap()
+                .summary
+                .last_seen_at,
+            seen
+        );
 
         // A receipt from an older team host (no outcome) still behaves as before.
         let legacy: ImportReceipt = serde_json::from_str(

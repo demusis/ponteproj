@@ -3,17 +3,17 @@
 //! command-line option.
 pub mod ai;
 pub mod app;
+pub mod attachments;
 pub mod chatgpt;
 pub mod export;
+pub mod files;
 pub mod guide;
 pub mod manual;
-pub mod sharedfolder;
-pub mod attachments;
-pub mod files;
 pub mod model;
 pub mod native;
 pub mod paths;
 pub mod protection;
+pub mod sharedfolder;
 pub mod storage;
 pub mod tasks;
 pub mod tasks_ui;
@@ -38,4 +38,3 @@ pub mod icon;
 pub mod labels;
 
 pub mod windows_ui;
-

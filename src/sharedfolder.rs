@@ -109,7 +109,9 @@ fn derive_key(password: &str, salt: &[u8]) -> [u8; KEY_BYTES] {
 
 pub fn validate_password(password: &str) -> Result<()> {
     ensure!(
-        password.chars().count() >= 8 && password.len() <= 256 && !password.chars().any(char::is_control),
+        password.chars().count() >= 8
+            && password.len() <= 256
+            && !password.chars().any(char::is_control),
         "A senha de sincronização precisa ter pelo menos 8 caracteres."
     );
     Ok(())
@@ -120,12 +122,22 @@ pub fn read_header(path: &Path) -> Result<Option<Header>> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).with_context(|| format!("Não foi possível ler {}", path.display())),
+        Err(error) => {
+            return Err(error).with_context(|| format!("Não foi possível ler {}", path.display()))
+        }
     };
     let mut magic = vec![0_u8; MAGIC.len()];
-    file.read_exact(&mut magic)
-        .with_context(|| format!("{} não é um arquivo de sincronização do Ponte.", path.display()))?;
-    ensure!(magic == MAGIC, "{} não é um arquivo de sincronização do Ponte.", path.display());
+    file.read_exact(&mut magic).with_context(|| {
+        format!(
+            "{} não é um arquivo de sincronização do Ponte.",
+            path.display()
+        )
+    })?;
+    ensure!(
+        magic == MAGIC,
+        "{} não é um arquivo de sincronização do Ponte.",
+        path.display()
+    );
     let mut line = Vec::new();
     let mut byte = [0_u8; 1];
     loop {
@@ -135,7 +147,10 @@ pub fn read_header(path: &Path) -> Result<Option<Header>> {
             break;
         }
         line.push(byte[0]);
-        ensure!(line.len() <= 64 * 1024, "Cabeçalho do arquivo de sincronização grande demais.");
+        ensure!(
+            line.len() <= 64 * 1024,
+            "Cabeçalho do arquivo de sincronização grande demais."
+        );
     }
     let header: Header =
         serde_json::from_slice(&line).context("Cabeçalho do arquivo de sincronização ilegível.")?;
@@ -152,8 +167,12 @@ pub fn read(path: &Path, password: &str) -> Result<Option<Copy>> {
         return Ok(None);
     };
     let size = std::fs::metadata(path)?.len();
-    ensure!(size <= MAX_FILE_BYTES, "Arquivo de sincronização excede 512 MiB.");
-    let bytes = std::fs::read(path).with_context(|| format!("Não foi possível ler {}", path.display()))?;
+    ensure!(
+        size <= MAX_FILE_BYTES,
+        "Arquivo de sincronização excede 512 MiB."
+    );
+    let bytes =
+        std::fs::read(path).with_context(|| format!("Não foi possível ler {}", path.display()))?;
     let header_end = MAGIC.len()
         + bytes[MAGIC.len()..]
             .iter()
@@ -161,8 +180,12 @@ pub fn read(path: &Path, password: &str) -> Result<Option<Copy>> {
             .context("Cabeçalho do arquivo de sincronização incompleto.")?;
     let header_bytes = bytes[MAGIC.len()..header_end].to_vec();
     let mut body = bytes[header_end + 1..].to_vec();
-    let salt = STANDARD.decode(&header.salt).context("Sal do arquivo inválido.")?;
-    let nonce = STANDARD.decode(&header.nonce).context("Nonce do arquivo inválido.")?;
+    let salt = STANDARD
+        .decode(&header.salt)
+        .context("Sal do arquivo inválido.")?;
+    let nonce = STANDARD
+        .decode(&header.nonce)
+        .context("Nonce do arquivo inválido.")?;
     ensure!(nonce.len() == NONCE_BYTES, "Nonce do arquivo inválido.");
     let key = ring::aead::LessSafeKey::new(
         ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &derive_key(password, &salt))
@@ -193,7 +216,13 @@ pub struct WriteRequest<'a> {
 
 /// Encrypts and writes atomically (temporary file, then rename), so a cloud
 /// client never sees a half-written copy. Returns the header written.
-pub fn write(path: &Path, password: &str, request: &WriteRequest<'_>, payload: &Payload, blobs: &Blobs) -> Result<Header> {
+pub fn write(
+    path: &Path,
+    password: &str,
+    request: &WriteRequest<'_>,
+    payload: &Payload,
+    blobs: &Blobs,
+) -> Result<Header> {
     ensure!(!password.is_empty(), "Informe a senha de sincronização.");
     let salt = random(SALT_BYTES)?;
     let nonce_bytes = random(NONCE_BYTES)?;
@@ -220,13 +249,20 @@ pub fn write(path: &Path, password: &str, request: &WriteRequest<'_>, payload: &
     key.seal_in_place_append_tag(nonce, ring::aead::Aad::from(&header_bytes), &mut body)
         .map_err(|_| anyhow::anyhow!("Falha ao cifrar o arquivo de sincronização."))?;
     let total = MAGIC.len() as u64 + header_bytes.len() as u64 + 1 + body.len() as u64;
-    ensure!(total <= MAX_FILE_BYTES, "O acervo excede 512 MiB; a pasta compartilhada não comporta.");
-    let parent = path.parent().context("Caminho do arquivo de sincronização inválido.")?;
+    ensure!(
+        total <= MAX_FILE_BYTES,
+        "O acervo excede 512 MiB; a pasta compartilhada não comporta."
+    );
+    let parent = path
+        .parent()
+        .context("Caminho do arquivo de sincronização inválido.")?;
     std::fs::create_dir_all(parent)
         .with_context(|| format!("A pasta {} não está acessível.", parent.display()))?;
     let temp = parent.join(format!(
         ".{}.tmp-{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("ponte-sync.ponte"),
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("ponte-sync.ponte"),
         uuid::Uuid::new_v4().simple()
     ));
     let result = (|| -> Result<()> {
@@ -279,22 +315,32 @@ struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        ensure!(self.at + len <= self.data.len(), "Arquivo de sincronização truncado.");
+        ensure!(
+            self.at + len <= self.data.len(),
+            "Arquivo de sincronização truncado."
+        );
         let slice = &self.data[self.at..self.at + len];
         self.at += len;
         Ok(slice)
     }
     fn u64(&mut self) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes")))
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
     }
     fn i64(&mut self) -> Result<i64> {
-        Ok(i64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes")))
+        Ok(i64::from_le_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
     }
 }
 
 fn unpack(plain: &[u8]) -> Result<(Payload, Blobs)> {
     let mut cursor = Cursor { data: plain, at: 0 };
-    ensure!(cursor.take(1)?[0] == CONTAINER_VERSION, "Conteúdo do arquivo em formato desconhecido.");
+    ensure!(
+        cursor.take(1)?[0] == CONTAINER_VERSION,
+        "Conteúdo do arquivo em formato desconhecido."
+    );
     let json_len = cursor.u64()? as usize;
     let payload: Payload = serde_json::from_slice(cursor.take(json_len)?)
         .context("Conteúdo do arquivo de sincronização ilegível.")?;
@@ -308,7 +354,10 @@ fn unpack(plain: &[u8]) -> Result<(Payload, Blobs)> {
             section.insert(id, cursor.take(len)?.to_vec());
         }
     }
-    ensure!(cursor.at == plain.len(), "Arquivo de sincronização com dados sobrando.");
+    ensure!(
+        cursor.at == plain.len(),
+        "Arquivo de sincronização com dados sobrando."
+    );
     Ok((payload, blobs))
 }
 
@@ -335,7 +384,11 @@ pub fn describe(header: &Header) -> String {
     format!(
         "revisão {} • gravada por {} em {}",
         header.revision,
-        if header.writer_name.is_empty() { "?" } else { &header.writer_name },
+        if header.writer_name.is_empty() {
+            "?"
+        } else {
+            &header.writer_name
+        },
         crate::labels::datetime(&header.written_at)
     )
 }
@@ -373,7 +426,10 @@ mod tests {
         let header = write(&path, "senha-forte-123", &request, &payload, &blobs).unwrap();
         assert_eq!(header.revision, 3);
         assert_eq!(read_header(&path).unwrap().unwrap(), header);
-        assert!(dir.path().join("Drive").read_dir().unwrap().count() == 1, "no temp file left");
+        assert!(
+            dir.path().join("Drive").read_dir().unwrap().count() == 1,
+            "no temp file left"
+        );
 
         let copy = read(&path, "senha-forte-123").unwrap().unwrap();
         assert_eq!(copy.payload.applied, ["a", "b"]);
@@ -395,7 +451,12 @@ mod tests {
         let text = String::from_utf8_lossy(&future).replace("\"format\":1", "\"format\":9");
         future = text.into_bytes();
         std::fs::write(&path, &future).unwrap();
-        assert!(read_header(&path).unwrap_err().to_string().contains("atualize"));
-        assert!(validate_password("curta").is_err() && validate_password("senha-forte-123").is_ok());
+        assert!(read_header(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("atualize"));
+        assert!(
+            validate_password("curta").is_err() && validate_password("senha-forte-123").is_ok()
+        );
     }
 }

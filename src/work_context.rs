@@ -93,7 +93,9 @@ impl Store {
     /// Work context of a document (empty when none was saved), memoized until
     /// the library changes.
     pub fn load_work_context(&self, document_id: i64) -> Result<WorkContext> {
-        self.cached(&format!("work_context\u{1}{document_id}"), || self.load_work_context_uncached(document_id))
+        self.cached(&format!("work_context\u{1}{document_id}"), || {
+            self.load_work_context_uncached(document_id)
+        })
     }
     fn load_work_context_uncached(&self, document_id: i64) -> Result<WorkContext> {
         let blob: Option<Vec<u8>> = self
@@ -285,7 +287,10 @@ pub fn show_analysis_context(ui: &mut eframe::egui::Ui, human_context: &str) {
         ("Finalidade", purpose_label(&context.purpose).to_owned()),
         ("Assuntos", context.subjects.clone()),
         ("Tipo local", context.document_type.clone()),
-        ("Prioridade", crate::labels::priority(&context.priority).to_owned()),
+        (
+            "Prioridade",
+            crate::labels::priority(&context.priority).to_owned(),
+        ),
         ("Motivo da prioridade", context.priority_reason.clone()),
         ("Remetente informado", context.sender.clone()),
         ("Recebido em", crate::labels::date(&context.received_date)),

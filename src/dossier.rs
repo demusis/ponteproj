@@ -101,8 +101,10 @@ fn juntada_state_pattern() -> &'static regex::Regex {
 fn event_date(text: &str) -> Option<chrono::NaiveDateTime> {
     static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let pattern = PATTERN.get_or_init(|| {
-        regex::Regex::new(r"\b(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?")
-            .expect("constant date pattern")
+        regex::Regex::new(
+            r"\b(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?",
+        )
+        .expect("constant date pattern")
     });
     let c = pattern.captures(text)?;
     let number = |i: usize| c.get(i).and_then(|m| m.as_str().parse::<u32>().ok());
@@ -289,7 +291,9 @@ impl Store {
     }
     /// Imported versions of a document, memoized until the library changes.
     pub fn capture_versions(&self, document: i64) -> Result<Vec<CaptureVersion>> {
-        self.cached(&format!("capture_versions\u{1}{document}"), || self.capture_versions_uncached(document))
+        self.cached(&format!("capture_versions\u{1}{document}"), || {
+            self.capture_versions_uncached(document)
+        })
     }
     fn capture_versions_uncached(&self, document: i64) -> Result<Vec<CaptureVersion>> {
         let mut statement = self.conn.prepare(
@@ -682,7 +686,11 @@ impl DossierPanel {
                         ("resposta", false) => "Respondido por".to_owned(),
                         (kind, _) => crate::labels::link_kind(kind).to_owned(),
                     },
-                    if link.active { "" } else { " (vínculo desativado)" }
+                    if link.active {
+                        ""
+                    } else {
+                        " (vínculo desativado)"
+                    }
                 ));
                 if ui.link(label).clicked() {
                     open = Some(other);
@@ -790,9 +798,10 @@ mod tests {
             CHILD,
             "Despacho de encaminhamento.\n\n| Data | Lotação | Evento | Descrição |\n| 02/11/2026 10:15 | SESP-GAB | Juntada | Juntado ao documento: SESP-DIC-2026/97546-A |",
         );
-        capture
-            .metadata
-            .insert("via_status".into(), "1ª Via (Setor Competente) - Juntado".into());
+        capture.metadata.insert(
+            "via_status".into(),
+            "1ª Via (Setor Competente) - Juntado".into(),
+        );
         capture
     }
 
@@ -801,7 +810,10 @@ mod tests {
         let info = detect_juntada(&joined_child()).unwrap();
         assert!(info.is_joined);
         assert_eq!(info.parent_document_number.as_deref(), Some(PARENT));
-        assert_eq!(info.raw_target_via.as_deref(), Some("SESP-DIC-2026/97546-A"));
+        assert_eq!(
+            info.raw_target_via.as_deref(),
+            Some("SESP-DIC-2026/97546-A")
+        );
         assert_eq!(
             canonical_parent_number("SESP-DIC-2026/97546-A").as_deref(),
             Some(PARENT)
@@ -813,7 +825,10 @@ mod tests {
         let mut plain = joined_child();
         plain.metadata.clear();
         assert_eq!(
-            detect_juntada(&plain).unwrap().parent_document_number.as_deref(),
+            detect_juntada(&plain)
+                .unwrap()
+                .parent_document_number
+                .as_deref(),
             Some(PARENT)
         );
 
@@ -834,7 +849,10 @@ mod tests {
         });
         by_reference.validate().unwrap();
         assert_eq!(
-            detect_juntada(&by_reference).unwrap().parent_document_number.as_deref(),
+            detect_juntada(&by_reference)
+                .unwrap()
+                .parent_document_number
+                .as_deref(),
             Some(PARENT)
         );
 
@@ -865,7 +883,10 @@ mod tests {
         );
         by_history.validate().unwrap();
         assert_eq!(
-            detect_juntada(&by_history).unwrap().parent_document_number.as_deref(),
+            detect_juntada(&by_history)
+                .unwrap()
+                .parent_document_number
+                .as_deref(),
             Some(PARENT)
         );
         // A later desentranhamento undoes it.
@@ -885,7 +906,10 @@ mod tests {
 
         // Never joined to itself; ordinary documents are not joined.
         assert_eq!(
-            detect_juntada(&capture_for(PARENT, "Juntado ao documento: SESP-DIC-2026/97546-A")),
+            detect_juntada(&capture_for(
+                PARENT,
+                "Juntado ao documento: SESP-DIC-2026/97546-A"
+            )),
             None
         );
         assert_eq!(detect_juntada(&crate::model::sample_capture()), None);
@@ -907,7 +931,9 @@ mod tests {
             let path = temp.path().join("juntada.sqlite3");
             let mut store = Store::open(&path).unwrap();
             let (parent, child) = if parent_first {
-                let p = store.import_capture(&capture_for(PARENT, "Processo principal.")).unwrap();
+                let p = store
+                    .import_capture(&capture_for(PARENT, "Processo principal."))
+                    .unwrap();
                 let summary = store.list_documents("").unwrap();
                 assert_eq!(summary[0].joined_children_count, 0);
                 let c = store.import_capture(&joined_child()).unwrap();
@@ -919,7 +945,9 @@ mod tests {
                 assert_eq!(orphan.joined_to_number.as_deref(), Some(PARENT));
                 assert_eq!(orphan.joined_to_id, None);
                 assert!(juntada_links(&store, c.document_id).is_empty());
-                let p = store.import_capture(&capture_for(PARENT, "Processo principal.")).unwrap();
+                let p = store
+                    .import_capture(&capture_for(PARENT, "Processo principal."))
+                    .unwrap();
                 (p.document_id, c.document_id)
             };
             let links = juntada_links(&store, child);
@@ -934,7 +962,10 @@ mod tests {
             let parent_summary = documents.iter().find(|d| d.id == parent).unwrap();
             assert_eq!(parent_summary.joined_children_count, 1);
             assert_eq!(store.joined_children(parent).unwrap()[0].id, child);
-            assert_eq!(store.load_document(child).unwrap().summary.joined_to_id, Some(parent));
+            assert_eq!(
+                store.load_document(child).unwrap().summary.joined_to_id,
+                Some(parent)
+            );
 
             // Idempotent: reimport and reopen never duplicate the link.
             let mut again = joined_child();
@@ -951,10 +982,18 @@ mod tests {
             assert_eq!(links.len(), 1);
             assert!(!links[0].active);
 
-            store.conn.execute_batch("PRAGMA wal_checkpoint(FULL)").unwrap();
+            store
+                .conn
+                .execute_batch("PRAGMA wal_checkpoint(FULL)")
+                .unwrap();
             for entry in std::fs::read_dir(temp.path()).unwrap() {
                 let bytes = std::fs::read(entry.unwrap().path()).unwrap();
-                for secret in [PARENT, CHILD, "Juntado ao documento", "Identificado automaticamente"] {
+                for secret in [
+                    PARENT,
+                    CHILD,
+                    "Juntado ao documento",
+                    "Identificado automaticamente",
+                ] {
                     assert!(
                         !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
                         "plaintext {secret} found"
@@ -969,10 +1008,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("lazy.sqlite3");
         let mut store = Store::open(&path).unwrap();
-        let parent = store.import_capture(&capture_for(PARENT, "Principal.")).unwrap();
+        let parent = store
+            .import_capture(&capture_for(PARENT, "Principal."))
+            .unwrap();
         let child = store.import_capture(&joined_child()).unwrap();
         // Simulate a library created before automatic links existed.
-        store.conn.execute("DELETE FROM document_links", []).unwrap();
+        store
+            .conn
+            .execute("DELETE FROM document_links", [])
+            .unwrap();
         drop(store);
         let store = Store::open(&path).unwrap();
         let links = juntada_links(&store, parent.document_id);

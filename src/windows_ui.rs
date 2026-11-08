@@ -111,8 +111,11 @@ pub fn open_url(url: &str) -> anyhow::Result<()> {
         url.starts_with("https://") && !url.chars().any(|c| c.is_control() || c.is_whitespace()),
         "Endereço inválido para abrir no navegador."
     );
-    open_with_default_app(Path::new(url))
-        .map_err(|_| anyhow::anyhow!("O Windows não conseguiu abrir o navegador. Copie o endereço e abra-o manualmente."))
+    open_with_default_app(Path::new(url)).map_err(|_| {
+        anyhow::anyhow!(
+            "O Windows não conseguiu abrir o navegador. Copie o endereço e abra-o manualmente."
+        )
+    })
 }
 
 /// Default string value of a key under HKEY_CURRENT_USER, if present.
@@ -186,7 +189,11 @@ pub fn installation_status() -> InstallStatus {
         .clone()
         .or(edge.clone())
         .map(PathBuf::from)
-        .or_else(|| crate::paths::data_dir().ok().map(|d| d.join(format!("{host}.json"))));
+        .or_else(|| {
+            crate::paths::data_dir()
+                .ok()
+                .map(|d| d.join(format!("{host}.json")))
+        });
     let manifest_valid = manifest.as_deref().is_some_and(manifest_names_existing_exe);
     let extension_dir = locate_extension_dir();
     InstallStatus {

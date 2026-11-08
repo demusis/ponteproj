@@ -596,13 +596,25 @@ impl Worker {
         if self.cancelling() {
             return "cancelando…".into();
         }
-        let step = self.latest.split(" (").next().unwrap_or("").trim_end_matches('…');
+        let step = self
+            .latest
+            .split(" (")
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('…');
         if step.is_empty() {
             format!("{} s", self.started.elapsed().as_secs())
         } else if let Some(attempt) = step.strip_prefix("Tentativa ") {
-            format!("tentativa {}", attempt.split(':').next().unwrap_or("").trim())
+            format!(
+                "tentativa {}",
+                attempt.split(':').next().unwrap_or("").trim()
+            )
         } else {
-            format!("{}, {} s", step.to_lowercase(), self.started.elapsed().as_secs())
+            format!(
+                "{}, {} s",
+                step.to_lowercase(),
+                self.started.elapsed().as_secs()
+            )
         }
     }
 }
@@ -662,10 +674,7 @@ impl Leave {
     fn replaces_task(&self) -> bool {
         matches!(
             self,
-            Leave::NewTask(_)
-                | Leave::OpenTask(_)
-                | Leave::EditTask(_)
-                | Leave::Suggestion { .. }
+            Leave::NewTask(_) | Leave::OpenTask(_) | Leave::EditTask(_) | Leave::Suggestion { .. }
         )
     }
 }
@@ -986,7 +995,10 @@ impl PonteApp {
         }
         if let Some(suggestion) = &self.suggestion {
             out.push(Pending {
-                label: format!("Sugestão de minuta de {} ainda não revisada", suggestion.number),
+                label: format!(
+                    "Sugestão de minuta de {} ainda não revisada",
+                    suggestion.number
+                ),
                 go: PendingTarget::Suggestion,
             });
         }
@@ -1131,7 +1143,9 @@ impl PonteApp {
     fn open_consult(&mut self, document_id: i64) {
         match self.store.load_document(document_id) {
             Ok(detail) => self.consult = Some(Consult { detail }),
-            Err(error) => self.error(format!("Não foi possível abrir o documento para consulta: {error}")),
+            Err(error) => self.error(format!(
+                "Não foi possível abrir o documento para consulta: {error}"
+            )),
         }
     }
 
@@ -1236,10 +1250,22 @@ impl PonteApp {
     fn network_status(&self) -> (Color32, String, String) {
         let full = self.intranet.banner_text(&self.store);
         let Ok(cfg) = self.store.load_intranet_config() else {
-            return (Color32::from_rgb(140, 150, 160), "Só neste computador".into(), full);
+            return (
+                Color32::from_rgb(140, 150, 160),
+                "Só neste computador".into(),
+                full,
+            );
         };
-        let conflicts = self.store.list_sync_conflicts().map(|v| v.len()).unwrap_or(0);
-        let outbox = self.store.list_offline_outbox().map(|v| v.len()).unwrap_or(0);
+        let conflicts = self
+            .store
+            .list_sync_conflicts()
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let outbox = self
+            .store
+            .list_offline_outbox()
+            .map(|v| v.len())
+            .unwrap_or(0);
         let full = format!("{full}\n\nClique para abrir Rede e equipe.");
         if conflicts > 0 {
             return (
@@ -1266,9 +1292,11 @@ impl PonteApp {
             }
         };
         match cfg.mode {
-            crate::intranet::IntranetMode::Local => {
-                (Color32::from_rgb(140, 150, 160), "só neste computador".into(), full)
-            }
+            crate::intranet::IntranetMode::Local => (
+                Color32::from_rgb(140, 150, 160),
+                "só neste computador".into(),
+                full,
+            ),
             crate::intranet::IntranetMode::Host => {
                 if self.intranet.host_running() {
                     (SUCCESS, "computador principal ativo".into(), full)
@@ -1293,7 +1321,11 @@ impl PonteApp {
                 if self.intranet.offline {
                     (WARNING, pending("sem conexão com o principal"), full)
                 } else if let Some((at, _)) = self.intranet.last_sync_finished {
-                    (SUCCESS, format!("conectado • atualizado {}", since(at)), full)
+                    (
+                        SUCCESS,
+                        format!("conectado • atualizado {}", since(at)),
+                        full,
+                    )
                 } else {
                     (ACCENT, "conectando ao principal…".into(), full)
                 }
@@ -1419,7 +1451,9 @@ impl PonteApp {
             self.ai_saved = to_save;
         }
         if was_signed_in && !shared.signed_in() {
-            self.error("A sessão do ChatGPT foi encerrada. Entre de novo em Menu ▾ ▸ Configurar IA.");
+            self.error(
+                "A sessão do ChatGPT foi encerrada. Entre de novo em Menu ▾ ▸ Configurar IA.",
+            );
         }
     }
 
@@ -1479,7 +1513,8 @@ impl PonteApp {
                 });
             }
             Err(error) => {
-                self.chatgpt_login_error = Some(format!("Não foi possível iniciar o login: {error}"));
+                self.chatgpt_login_error =
+                    Some(format!("Não foi possível iniciar o login: {error}"));
             }
         }
     }
@@ -1773,7 +1808,10 @@ impl PonteApp {
             saved.push("notas");
         }
         if !saved.is_empty() {
-            self.message(format!("{} salvo(s) antes de acionar a IA.", saved.join(" e ")));
+            self.message(format!(
+                "{} salvo(s) antes de acionar a IA.",
+                saved.join(" e ")
+            ));
             self.reload(id);
         }
         true
@@ -2322,7 +2360,9 @@ impl PonteApp {
                         }
                     })
                     .response
-                    .on_hover_text("Ordena a lista; documentos juntados continuam abaixo do principal.");
+                    .on_hover_text(
+                        "Ordena a lista; documentos juntados continuam abaixo do principal.",
+                    );
             });
             let manual_count = self.documents.iter().filter(|d| d.manual).count();
             if manual_count > 0 || self.doc_origin_filter != DocOriginFilter::All {
@@ -2330,7 +2370,11 @@ impl PonteApp {
                     ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
                     ui.small("Origem:");
                     ui.selectable_value(&mut self.doc_origin_filter, DocOriginFilter::All, "Todos");
-                    ui.selectable_value(&mut self.doc_origin_filter, DocOriginFilter::Sigadoc, "SIGADOC");
+                    ui.selectable_value(
+                        &mut self.doc_origin_filter,
+                        DocOriginFilter::Sigadoc,
+                        "SIGADOC",
+                    );
                     ui.selectable_value(
                         &mut self.doc_origin_filter,
                         DocOriginFilter::Manual,
@@ -2352,8 +2396,9 @@ impl PonteApp {
                 task_ok && prio_ok && origin_ok
             })
             .collect();
-        self.doc_sort
-            .apply(&mut filtered_docs, |id| summaries.get(&id).and_then(|s| s.nearest_due.clone()));
+        self.doc_sort.apply(&mut filtered_docs, |id| {
+            summaries.get(&id).and_then(|s| s.nearest_due.clone())
+        });
 
         if filtered_docs.len() != self.documents.len() {
             ui.small(format!(
@@ -2568,7 +2613,11 @@ impl PonteApp {
             return;
         }
         if detail.summary.manual {
-            let versions = self.store.capture_versions(id).map(|v| v.len()).unwrap_or(1);
+            let versions = self
+                .store
+                .capture_versions(id)
+                .map(|v| v.len())
+                .unwrap_or(1);
             let by = detail
                 .capture
                 .metadata
@@ -2608,8 +2657,9 @@ impl PonteApp {
             ui.selectable_value(&mut self.tab, Tab::More, "Mais");
         });
         ui.separator();
-        egui::ScrollArea::vertical().id_salt(("document-content", id, self.tab as u8)).show(ui, |ui| {
-            match self.tab {
+        egui::ScrollArea::vertical()
+            .id_salt(("document-content", id, self.tab as u8))
+            .show(ui, |ui| match self.tab {
                 Tab::Overview => self.overview(ui, detail),
                 Tab::Document => self.document_tab(ui, detail),
                 Tab::Notes => {
@@ -2619,8 +2669,7 @@ impl PonteApp {
                     self.drafts(ui, detail);
                 }
                 Tab::More => self.more_tab(ui, detail),
-            }
-        });
+            });
     }
 
     fn section<R>(
@@ -2641,7 +2690,11 @@ impl PonteApp {
     fn document_tab(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         let id = detail.summary.id;
         let manual = detail.summary.manual;
-        let text_title = if manual { "Texto do registro" } else { "Texto importado" };
+        let text_title = if manual {
+            "Texto do registro"
+        } else {
+            "Texto importado"
+        };
         Self::section(ui, id, text_title, true, |ui| {
             ui.horizontal(|ui| {
                 if manual {
@@ -2660,7 +2713,13 @@ impl PonteApp {
             } else {
                 let mut text = detail.capture.text.as_str();
                 egui::ScrollArea::horizontal().show(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut text).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).desired_rows(24).code_editor());
+                    ui.add(
+                        egui::TextEdit::multiline(&mut text)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(24)
+                            .code_editor(),
+                    );
                 });
             }
         });
@@ -2670,7 +2729,9 @@ impl PonteApp {
             .map(|f| !f.is_empty())
             .unwrap_or(false);
         if !manual {
-            Self::section(ui, id, "Arquivos (PDF)", has_files, |ui| self.files_list(ui, detail));
+            Self::section(ui, id, "Arquivos (PDF)", has_files, |ui| {
+                self.files_list(ui, detail)
+            });
         }
         let has_attachments = self
             .store
@@ -2683,8 +2744,12 @@ impl PonteApp {
                 info(ui, "Arquivos do seu computador juntados a este documento (ofício em Word, foto de um despacho, e-mail). Ficam guardados protegidos no acervo e visíveis para a equipe. Nada é enviado ao SIGADOC.");
                 ui.small("Arquivos anexados por pessoas; os PDFs do SIGADOC ficam na seção acima.");
             });
-            self.attachments
-                .show(ui, &mut self.store, crate::attachments::Owner::Document(id), busy);
+            self.attachments.show(
+                ui,
+                &mut self.store,
+                crate::attachments::Owner::Document(id),
+                busy,
+            );
         });
         if let Some((attachment, label)) = self.attachments.take_pdf_request() {
             self.pdf_reader
@@ -2694,7 +2759,9 @@ impl PonteApp {
             self.request_trash(target);
         }
         if manual {
-            Self::section(ui, id, "Dados do registro", true, |ui| manual_facts(ui, detail));
+            Self::section(ui, id, "Dados do registro", true, |ui| {
+                manual_facts(ui, detail)
+            });
         } else {
             Self::section(ui, id, "Dados do SIGADOC", false, |ui| {
                 crate::work_context::provenance(ui, detail);
@@ -2771,8 +2838,14 @@ impl PonteApp {
         if save {
             let fields = self.manual_form.fields.clone();
             let result = match self.manual_form.id {
-                None => self.store.create_manual_document(&fields).map(|r| (r, true)),
-                Some(id) => self.store.update_manual_document(id, &fields).map(|r| (r, false)),
+                None => self
+                    .store
+                    .create_manual_document(&fields)
+                    .map(|r| (r, true)),
+                Some(id) => self
+                    .store
+                    .update_manual_document(id, &fields)
+                    .map(|r| (r, false)),
             };
             match result {
                 Ok((receipt, created)) => {
@@ -2801,7 +2874,9 @@ impl PonteApp {
         } else if !open {
             if self.manual_form.dirty() {
                 // The X never discards silently.
-                self.manual_form.message = "Há alterações não salvas: clique em Salvar ou em Cancelar para descartar.".into();
+                self.manual_form.message =
+                    "Há alterações não salvas: clique em Salvar ou em Cancelar para descartar."
+                        .into();
             } else {
                 self.manual_form = ManualForm::default();
             }
@@ -2811,14 +2886,20 @@ impl PonteApp {
     /// Local relations, versions and technical details.
     fn more_tab(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         let id = detail.summary.id;
-        Self::section(ui, id, "Vínculos locais e versões importadas", true, |ui| {
-            if let Some(other) = self.dossier.show(ui, &mut self.store, id) {
-                self.select(other);
-            }
-            if let Some(target) = self.dossier.take_trash_request() {
-                self.request_trash(target);
-            }
-        });
+        Self::section(
+            ui,
+            id,
+            "Vínculos locais e versões importadas",
+            true,
+            |ui| {
+                if let Some(other) = self.dossier.show(ui, &mut self.store, id) {
+                    self.select(other);
+                }
+                if let Some(target) = self.dossier.take_trash_request() {
+                    self.request_trash(target);
+                }
+            },
+        );
         if !detail.summary.manual {
             Self::section(ui, id, "O que foi importado e referências", false, |ui| {
                 self.coverage_and_references(ui, detail);
@@ -3061,11 +3142,7 @@ impl PonteApp {
                     ui.small("Cópias baixadas na importação, guardadas protegidas no acervo.");
                 });
                 for file in files {
-                    let origin = detail
-                        .capture
-                        .references
-                        .iter()
-                        .find(|r| r.url == file.url);
+                    let origin = detail.capture.references.iter().find(|r| r.url == file.url);
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal_wrapped(|ui| {
@@ -3103,8 +3180,11 @@ impl PonteApp {
                                     Err(e) => self.error(format!("PDF não exportado: {e}")),
                                 }
                             }
-                            ui.small(format!("identificação {}…", &file.sha256[..file.sha256.len().min(12)]))
-                                .on_hover_text(format!("SHA-256 completo: {}", file.sha256));
+                            ui.small(format!(
+                                "identificação {}…",
+                                &file.sha256[..file.sha256.len().min(12)]
+                            ))
+                            .on_hover_text(format!("SHA-256 completo: {}", file.sha256));
                         });
                     });
                 }
@@ -3122,7 +3202,10 @@ impl PonteApp {
             detail.capture.references.len()
         ));
         if detail.capture.coverage.recognized.is_empty() {
-            ui.colored_label(WARNING, "Nenhuma parte da página foi marcada como reconhecida.");
+            ui.colored_label(
+                WARNING,
+                "Nenhuma parte da página foi marcada como reconhecida.",
+            );
         } else {
             ui.label("Reconhecido na página:");
             for item in &detail.capture.coverage.recognized {
@@ -3211,8 +3294,12 @@ impl PonteApp {
             .metadata
             .iter()
             .filter(|(key, _)| {
-                !["movement_history", "movement_source", "downloaded_files_sha256"]
-                    .contains(&key.as_str())
+                ![
+                    "movement_history",
+                    "movement_source",
+                    "downloaded_files_sha256",
+                ]
+                .contains(&key.as_str())
             })
             .collect();
         if !other.is_empty() {
@@ -3268,47 +3355,128 @@ impl PonteApp {
         });
     }
     fn document_tasks(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
-        ui.group(|ui|{
+        ui.group(|ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui|{
+            ui.horizontal_wrapped(|ui| {
                 ui.strong("Tarefas deste documento");
-                if ui.button("Nova tarefa").clicked(){
+                if ui.button("Nova tarefa").clicked() {
                     self.navigate(Leave::NewTask(detail.summary.id));
                 }
-                if ui.button("Ver todas").clicked(){self.tasks.focus_document(detail.summary.id);self.tasks_open=true;self.saiop_open=false;}
+                if ui.button("Ver todas").clicked() {
+                    self.tasks.focus_document(detail.summary.id);
+                    self.tasks_open = true;
+                    self.saiop_open = false;
+                }
             });
-            match self.store.list_tasks(){
-                Ok(tasks)=>{
-                    let tasks=tasks.into_iter().filter(|task|task.document_id==detail.summary.id).collect::<Vec<_>>();
-                    let pending=tasks.iter().filter(|task|task.status!="concluida").count();
-                    if tasks.is_empty(){ui.small("Nenhuma tarefa ainda.");}
-                    else{ui.small(format!("{} pendente(s) • {} concluída(s)",pending,tasks.len()-pending));}
-                    if pending>5{ui.small("As cinco mais urgentes estão abaixo; \"Ver todas\" mostra o restante.");}
+            match self.store.list_tasks() {
+                Ok(tasks) => {
+                    let tasks = tasks
+                        .into_iter()
+                        .filter(|task| task.document_id == detail.summary.id)
+                        .collect::<Vec<_>>();
+                    let pending = tasks
+                        .iter()
+                        .filter(|task| task.status != "concluida")
+                        .count();
+                    if tasks.is_empty() {
+                        ui.small("Nenhuma tarefa ainda.");
+                    } else {
+                        ui.small(format!(
+                            "{} pendente(s) • {} concluída(s)",
+                            pending,
+                            tasks.len() - pending
+                        ));
+                    }
+                    if pending > 5 {
+                        ui.small(
+                            "As cinco mais urgentes estão abaixo; \"Ver todas\" mostra o restante.",
+                        );
+                    }
                     // Same order and signals as the Tarefas panel: a task after
                     // what it depends on, ⛓ while something before it is open.
-                    let deps=crate::tasks::Dependencies::new(&tasks);
-                    let open:Vec<&crate::tasks::Task>=tasks.iter().filter(|task|task.status!="concluida").collect();
-                    let open=deps.order(&open);
-                    for task in open.into_iter().take(5){
-                        let blockers=deps.open_blockers(task.id);
-                        let blocked=!blockers.is_empty();
-                        let names=blockers.iter().map(|t|t.title.as_str()).collect::<Vec<_>>().join(", ");
-                        let indent=18.0*deps.level(task.id).min(4) as f32;
-                        ui.horizontal_wrapped(|ui|{
-                            if indent>0.0{ui.add_space(indent);}
-                            if blocked{ui.label(RichText::new("⛓").color(WARNING)).on_hover_text(format!("Aguardando: {names}"));}
-                            ui.label(&task.title);ui.label(crate::tasks::status_label(&task.status));
-                            ui.label(format!("Prioridade da tarefa: {}",crate::tasks::priority_label(&task.priority)));
-                            if !task.due_date.is_empty(){let date=chrono::NaiveDate::parse_from_str(&task.due_date,"%Y-%m-%d").map(|date|date.format("%d/%m/%Y").to_string()).unwrap_or_else(|_|task.due_date.clone());ui.label(format!("Prazo local: {date}"));}
-                            if task.overdue(){ui.colored_label(ERROR,"Atrasada");}
-                            if blocked{ui.small(RichText::new(format!("↳ depende de: {names}")).color(MUTED));}
-                            if ui.add_enabled(!self.tasks.task_dirty(task.id)&&!blocked,egui::Button::new("✓ Concluir").small()).on_hover_text("Marca a tarefa como concluída. Nada é enviado ao SIGADOC.").on_disabled_hover_text(if blocked{format!("Conclua antes: {names}")}else{"Salve ou cancele a edição desta tarefa antes de concluí-la.".to_owned()}).clicked(){
-                                match self.store.complete_task(task.id){Ok(done)=>{self.tasks.forget_task(task.id);let mut text=format!("Tarefa concluída: {}",done.title);for note in self.store.take_cascade_notes(){text.push_str(" • ");text.push_str(&note);}self.message(text);},Err(e)=>self.error(format!("Não foi possível concluir a tarefa: {e}"))}
+                    let deps = crate::tasks::Dependencies::new(&tasks);
+                    let open: Vec<&crate::tasks::Task> = tasks
+                        .iter()
+                        .filter(|task| task.status != "concluida")
+                        .collect();
+                    let open = deps.order(&open);
+                    for task in open.into_iter().take(5) {
+                        let blockers = deps.open_blockers(task.id);
+                        let blocked = !blockers.is_empty();
+                        let names = blockers
+                            .iter()
+                            .map(|t| t.title.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let indent = 18.0 * deps.level(task.id).min(4) as f32;
+                        ui.horizontal_wrapped(|ui| {
+                            if indent > 0.0 {
+                                ui.add_space(indent);
                             }
-                            if ui.button("Editar").clicked(){self.navigate(Leave::EditTask(task.clone()));}
+                            if blocked {
+                                ui.label(RichText::new("⛓").color(WARNING))
+                                    .on_hover_text(format!("Aguardando: {names}"));
+                            }
+                            ui.label(&task.title);
+                            ui.label(crate::tasks::status_label(&task.status));
+                            ui.label(format!(
+                                "Prioridade da tarefa: {}",
+                                crate::tasks::priority_label(&task.priority)
+                            ));
+                            if !task.due_date.is_empty() {
+                                let date =
+                                    chrono::NaiveDate::parse_from_str(&task.due_date, "%Y-%m-%d")
+                                        .map(|date| date.format("%d/%m/%Y").to_string())
+                                        .unwrap_or_else(|_| task.due_date.clone());
+                                ui.label(format!("Prazo local: {date}"));
+                            }
+                            if task.overdue() {
+                                ui.colored_label(ERROR, "Atrasada");
+                            }
+                            if blocked {
+                                ui.small(
+                                    RichText::new(format!("↳ depende de: {names}")).color(MUTED),
+                                );
+                            }
+                            if ui
+                                .add_enabled(
+                                    !self.tasks.task_dirty(task.id) && !blocked,
+                                    egui::Button::new("✓ Concluir").small(),
+                                )
+                                .on_hover_text(
+                                    "Marca a tarefa como concluída. Nada é enviado ao SIGADOC.",
+                                )
+                                .on_disabled_hover_text(if blocked {
+                                    format!("Conclua antes: {names}")
+                                } else {
+                                    "Salve ou cancele a edição desta tarefa antes de concluí-la."
+                                        .to_owned()
+                                })
+                                .clicked()
+                            {
+                                match self.store.complete_task(task.id) {
+                                    Ok(done) => {
+                                        self.tasks.forget_task(task.id);
+                                        let mut text = format!("Tarefa concluída: {}", done.title);
+                                        for note in self.store.take_cascade_notes() {
+                                            text.push_str(" • ");
+                                            text.push_str(&note);
+                                        }
+                                        self.message(text);
+                                    }
+                                    Err(e) => self
+                                        .error(format!("Não foi possível concluir a tarefa: {e}")),
+                                }
+                            }
+                            if ui.button("Editar").clicked() {
+                                self.navigate(Leave::EditTask(task.clone()));
+                            }
                         });
                     }
-                },Err(error)=>{ui.label(format!("Não foi possível ler as tarefas: {error}"));}
+                }
+                Err(error) => {
+                    ui.label(format!("Não foi possível ler as tarefas: {error}"));
+                }
             }
         });
     }
@@ -3607,8 +3775,7 @@ impl PonteApp {
             AiProvider::Local => format!("{provider}, sem envio externo"),
             _ => format!("envia dados ao {provider}: {destination}"),
         };
-        ui.small(text)
-            .on_hover_text(self.ai_disclosure_text(false));
+        ui.small(text).on_hover_text(self.ai_disclosure_text(false));
     }
 
     /// Opens "Configurar IA" and asks the server for its models.
@@ -4080,7 +4247,9 @@ impl PonteApp {
                     for item in &pending {
                         ui.horizontal(|ui| {
                             ui.label(format!("• {}", item.label));
-                            if !matches!(item.go, PendingTarget::None) && ui.small_button("Ir para").clicked() {
+                            if !matches!(item.go, PendingTarget::None)
+                                && ui.small_button("Ir para").clicked()
+                            {
                                 go = Some(item.go);
                             }
                         });
@@ -4184,7 +4353,10 @@ impl eframe::App for PonteApp {
                     ));
                     if matches!(worker.kind, WorkKind::Analysis | WorkKind::Draft) {
                         cancel = ui
-                            .add_enabled(!worker.cancelling(), egui::Button::new("Cancelar").small())
+                            .add_enabled(
+                                !worker.cancelling(),
+                                egui::Button::new("Cancelar").small(),
+                            )
                             .on_hover_text("Interrompe a IA na próxima etapa. Nada é salvo.")
                             .clicked();
                     }
@@ -4203,7 +4375,11 @@ impl eframe::App for PonteApp {
                     if self.intranet.folder_mode(&self.store) {
                         ui.small(format!(
                             "Sincronizando com a pasta compartilhada… {}",
-                            if step.is_empty() { "lendo as pastas…" } else { step }
+                            if step.is_empty() {
+                                "lendo as pastas…"
+                            } else {
+                                step
+                            }
                         ));
                     } else if step.is_empty() {
                         ui.small("Sincronizando com o computador principal…");
@@ -4341,7 +4517,12 @@ fn display_date(value: &str) -> String {
 /// "Dados do registro" of a manual record.
 fn manual_facts(ui: &mut egui::Ui, detail: &DocumentDetail) {
     let metadata = &detail.capture.metadata;
-    let value = |key: &str| metadata.get(key).cloned().unwrap_or_else(|| "não informado".into());
+    let value = |key: &str| {
+        metadata
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| "não informado".into())
+    };
     ui.small("Informado por quem criou o registro; nada disto vem do SIGADOC.");
     egui::Grid::new(("manual-facts", detail.summary.id))
         .num_columns(2)
@@ -4358,7 +4539,12 @@ fn manual_facts(ui: &mut egui::Ui, detail: &DocumentDetail) {
             ui.add(egui::Label::new(value("origin")).wrap());
             ui.end_row();
             ui.label("Data do documento");
-            ui.label(metadata.get("document_date").map(|d| crate::labels::date(d)).unwrap_or_else(|| "não informada".into()));
+            ui.label(
+                metadata
+                    .get("document_date")
+                    .map(|d| crate::labels::date(d))
+                    .unwrap_or_else(|| "não informada".into()),
+            );
             ui.end_row();
             ui.label("Registrado por");
             ui.label(value("registered_by"));
@@ -4423,7 +4609,8 @@ mod tests {
             3 => Some("2026-11-05".to_owned()),
             _ => None,
         };
-        let ids = |docs: &[&crate::model::DocumentSummary]| docs.iter().map(|d| d.id).collect::<Vec<_>>();
+        let ids =
+            |docs: &[&crate::model::DocumentSummary]| docs.iter().map(|d| d.id).collect::<Vec<_>>();
 
         let mut docs = vec![&a, &b, &c];
         DocSort::Recent.apply(&mut docs, due);
@@ -4438,10 +4625,18 @@ mod tests {
         assert_eq!(ids(&docs), [3, 2, 1]);
         let mut docs = vec![&a, &b, &c];
         DocSort::Title.apply(&mut docs, due);
-        assert_eq!(ids(&docs), [3, 1, 2], "plain lowercase compare: accents sort after z");
+        assert_eq!(
+            ids(&docs),
+            [3, 1, 2],
+            "plain lowercase compare: accents sort after z"
+        );
     }
 
-    fn summary(id: i64, number: &str, parent: Option<(i64, &str)>) -> crate::model::DocumentSummary {
+    fn summary(
+        id: i64,
+        number: &str,
+        parent: Option<(i64, &str)>,
+    ) -> crate::model::DocumentSummary {
         crate::model::DocumentSummary {
             id,
             document_number: number.into(),
@@ -4477,45 +4672,48 @@ mod tests {
                 ..Default::default()
             };
             let output = ctx.run_ui(input, |ui| {
-                        egui::Panel::top("header").show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.heading("PONTE");
-                            });
+                egui::Panel::top("header").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.heading("PONTE");
+                    });
+                });
+                egui::Panel::bottom("status").show(ui, |ui| {
+                    ui.small("status");
+                });
+                let left = library_panel(ui.max_rect().width()).show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut String::new()).desired_width(f32::INFINITY),
+                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt("document-list")
+                        .show(ui, |ui| {
+                            for i in 0..5 {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Button::new(format!("documento {i}"))
+                                            .wrap()
+                                            .min_size(egui::vec2(ui.available_width(), 60.0)),
+                                    );
+                                });
+                            }
                         });
-                        egui::Panel::bottom("status").show(ui, |ui| {
-                            ui.small("status");
-                        });
-                        let left = library_panel(ui.max_rect().width()).show(ui, |ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut String::new())
-                                        .desired_width(f32::INFINITY),
-                                );
-                                egui::ScrollArea::vertical().id_salt("document-list").show(ui, |ui| {
-                                    for i in 0..5 {
-                                        ui.horizontal(|ui| {
-                                            ui.add(
-                                                egui::Button::new(format!("documento {i}"))
-                                                    .wrap()
-                                                    .min_size(egui::vec2(ui.available_width(), 60.0)),
-                                            );
-                                        });
-                                    }
+                });
+                left_width.set(left.response.rect.width());
+                egui::CentralPanel::default().show(ui, |ui| {
+                    central_width.set(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .id_salt("document-content")
+                        .show(ui, |ui| {
+                            ui.group(|ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label("Tipo: DECLARAÇÃO");
+                                    ui.separator();
+                                    ui.label("Documento Eletrônico");
                                 });
                             });
-                        left_width.set(left.response.rect.width());
-                        egui::CentralPanel::default().show(ui, |ui| {
-                            central_width.set(ui.available_width());
-                            egui::ScrollArea::vertical().id_salt("document-content").show(ui, |ui| {
-                                ui.group(|ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label("Tipo: DECLARAÇÃO");
-                                        ui.separator();
-                                        ui.label("Documento Eletrônico");
-                                    });
-                                });
-                            });
                         });
+                });
             });
             output.drop_without_applying_deltas();
         };
@@ -4628,7 +4826,10 @@ mod tests {
         );
         let mut via_only = summary(9, "X-2026/1", None);
         via_only.is_joined = true;
-        assert_eq!(super::joined_label(&via_only).as_deref(), Some("↳ Documento juntado"));
+        assert_eq!(
+            super::joined_label(&via_only).as_deref(),
+            Some("↳ Documento juntado")
+        );
         assert_eq!(super::joined_label(&docs[1]), None);
     }
 
@@ -4679,7 +4880,8 @@ mod tests {
         due_now.due_date = today.into();
         let mut done = Task::new(9);
         done.status = "concluida".into();
-        let mixed = DocTaskStatusSummary::from_tasks(&[later_a, later_b, due_now.clone(), done], 9, today);
+        let mixed =
+            DocTaskStatusSummary::from_tasks(&[later_a, later_b, due_now.clone(), done], 9, today);
         assert_eq!(mixed.badge().0, "⏰ 1 vence hoje (+2 no prazo) • ✓ 1");
         assert_eq!(mixed.badge().1, WARNING);
         let both_today = DocTaskStatusSummary::from_tasks(&[due_now.clone(), due_now], 9, today);

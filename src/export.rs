@@ -97,7 +97,10 @@ fn iso_date(value: &str) -> String {
         return String::new();
     }
     if let Ok(at) = chrono::DateTime::parse_from_rfc3339(value) {
-        return at.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+        return at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string();
     }
     if chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok() {
         return value.to_owned();
@@ -117,7 +120,9 @@ fn iso_date(value: &str) -> String {
 /// panels use for monthly series.
 fn month_of(iso: &str) -> String {
     match iso.get(..7) {
-        Some(prefix) if chrono::NaiveDate::parse_from_str(&format!("{prefix}-01"), "%Y-%m-%d").is_ok() => {
+        Some(prefix)
+            if chrono::NaiveDate::parse_from_str(&format!("{prefix}-01"), "%Y-%m-%d").is_ok() =>
+        {
             format!("{prefix}-01")
         }
         _ => String::new(),
@@ -137,7 +142,13 @@ fn documents_table(store: &Store) -> Result<Table> {
         let detail = store.load_document(summary.id)?;
         let metadata = &detail.capture.metadata;
         let context = &detail.work_context;
-        let meta = |key: &str| metadata.get(key).map(String::as_str).unwrap_or("").to_owned();
+        let meta = |key: &str| {
+            metadata
+                .get(key)
+                .map(String::as_str)
+                .unwrap_or("")
+                .to_owned()
+        };
         let pick = |own: &str, key: &str| {
             if own.trim().is_empty() {
                 meta(key)
@@ -145,7 +156,10 @@ fn documents_table(store: &Store) -> Result<Table> {
                 own.trim().to_owned()
             }
         };
-        let own_tasks: Vec<_> = tasks.iter().filter(|t| t.document_id == summary.id).collect();
+        let own_tasks: Vec<_> = tasks
+            .iter()
+            .filter(|t| t.document_id == summary.id)
+            .collect();
         let open = own_tasks.iter().filter(|t| t.status != "concluida").count();
         let overdue = own_tasks
             .iter()
@@ -181,7 +195,11 @@ fn documents_table(store: &Store) -> Result<Table> {
             overdue.to_string(),
             done.to_string(),
             next_due,
-            attachments.get(&summary.id).copied().unwrap_or(0).to_string(),
+            attachments
+                .get(&summary.id)
+                .copied()
+                .unwrap_or(0)
+                .to_string(),
         ]);
     }
     Ok(Table {
@@ -365,7 +383,10 @@ mod tests {
     fn csv_quotes_separators_quotes_and_line_breaks_and_dates_become_iso() {
         let table = Table {
             headers: vec!["A", "B"],
-            rows: vec![vec!["com; separador".into(), "diz \"olá\"\ne linha".into()], vec!["x\u{7}y".into(), " espaço ".into()]],
+            rows: vec![
+                vec!["com; separador".into(), "diz \"olá\"\ne linha".into()],
+                vec!["x\u{7}y".into(), " espaço ".into()],
+            ],
         };
         let text = render_csv(&table);
         assert!(text.starts_with("\u{feff}A;B\r\n"));
@@ -384,7 +405,9 @@ mod tests {
     fn export_writes_three_files_with_documents_tasks_and_attendances() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
-        let receipt = store.import_capture(&crate::model::sample_capture()).unwrap();
+        let receipt = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
         let mut task = store.list_tasks().unwrap().remove(0);
         task.title = "Responder; com ponto e vírgula".into();
         task.due_date = "2020-01-10".into();
@@ -394,7 +417,10 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let report = export_to(&store, &folder).unwrap();
         // The import records the document's atendimento by itself.
-        assert_eq!((report.documents, report.tasks, report.attendances), (1, 1, 1));
+        assert_eq!(
+            (report.documents, report.tasks, report.attendances),
+            (1, 1, 1)
+        );
         let documents = parse(&std::fs::read_to_string(folder.join("documentos.csv")).unwrap());
         assert_eq!(documents[0][1], "Documento");
         let header = &documents[0];
@@ -416,7 +442,11 @@ mod tests {
         assert_eq!(column("Mês do prazo"), "2020-01-01");
         assert_eq!(column("Responsável"), "MARIA");
         let attendances = std::fs::read_to_string(folder.join("atendimentos.csv")).unwrap();
-        assert_eq!(parse(&attendances).len(), 2, "header and the automatic atendimento");
+        assert_eq!(
+            parse(&attendances).len(),
+            2,
+            "header and the automatic atendimento"
+        );
         // No document text leaves with the export.
         let all = [
             std::fs::read_to_string(folder.join("documentos.csv")).unwrap(),

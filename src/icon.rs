@@ -167,8 +167,8 @@ fn sample_icon(u: f32, v: f32, variant: IconVariant) -> [f32; 4] {
 
     // 3. Architectural Bridge ("Ponte") spanning across the lower half
     let gold_bright = [0.953, 0.710, 0.208]; // #F3B535
-    let gold_deep = [0.835, 0.545, 0.047];   // #D58B0C
-    let cream = [0.988, 0.976, 0.949];       // #FCF9F2
+    let gold_deep = [0.835, 0.545, 0.047]; // #D58B0C
+    let cream = [0.988, 0.976, 0.949]; // #FCF9F2
 
     // 3a. Suspension cables (parabolic arcs from towers x=0.25 and x=0.75)
     let cable_y = if (0.11..0.25).contains(&u) {

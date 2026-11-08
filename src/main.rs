@@ -95,8 +95,11 @@ fn run() -> Result<()> {
         // in the browser when no file is named.
         Some("--guide") => match args.get(1) {
             Some(file) => {
-                std::fs::write(file, guide::to_html(guide::GUIDE, env!("CARGO_PKG_VERSION")))
-                    .context("Não foi possível gravar o guia no arquivo informado")?;
+                std::fs::write(
+                    file,
+                    guide::to_html(guide::GUIDE, env!("CARGO_PKG_VERSION")),
+                )
+                .context("Não foi possível gravar o guia no arquivo informado")?;
                 Ok(())
             }
             None => guide::open().map(|_| ()),

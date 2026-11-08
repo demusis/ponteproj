@@ -29,7 +29,8 @@ pub fn is_manual_number(number: &str) -> bool {
 pub fn valid_manual_number(number: &str) -> bool {
     static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
     let pattern = PATTERN.get_or_init(|| {
-        regex::Regex::new(r"^MANUAL-(?:19|20)[0-9]{2}/[0-9]{1,8}$").expect("constant manual pattern")
+        regex::Regex::new(r"^MANUAL-(?:19|20)[0-9]{2}/[0-9]{1,8}$")
+            .expect("constant manual pattern")
     });
     pattern.is_match(&number.trim().to_uppercase())
 }
@@ -229,12 +230,18 @@ impl Capture {
         );
         let date = DateTime::parse_from_rfc3339(&self.captured_at)
             .context("Data do registro inválida.")?;
-        ensure!(date.offset().local_minus_utc() == 0, "Data do registro deve usar UTC.");
+        ensure!(
+            date.offset().local_minus_utc() == 0,
+            "Data do registro deve usar UTC."
+        );
         ensure!(
             self.text.len() <= MAX_CAPTURE_TEXT_BYTES,
             "O texto do registro excede 500 KiB; reduza-o ou anexe o arquivo."
         );
-        ensure!(self.references.is_empty(), "Registro manual não leva referências do SIGADOC.");
+        ensure!(
+            self.references.is_empty(),
+            "Registro manual não leva referências do SIGADOC."
+        );
         ensure!(
             !self.metadata.contains_key("movement_history")
                 && !self.metadata.contains_key("movement_source"),
@@ -478,7 +485,10 @@ pub(crate) fn sample_manual_capture() -> Capture {
         captured_at: "2026-11-04T12:00:00Z".into(),
         text: "Registro da ligação: pedem posição até sexta.".into(),
         metadata: BTreeMap::from([
-            ("document_type".to_string(), "Ligação telefônica".to_string()),
+            (
+                "document_type".to_string(),
+                "Ligação telefônica".to_string(),
+            ),
             ("manual_kind".to_string(), "ligacao".to_string()),
             ("origin".to_string(), "Gabinete do Secretário".to_string()),
         ]),
@@ -501,11 +511,16 @@ mod manual_tests {
         manual.validate().unwrap();
         assert!(manual.is_manual());
         assert!(valid_manual_number("MANUAL-2026/0007") && !valid_manual_number("MANUAL-26/7"));
-        assert!(valid_document_number("MANUAL-2026/0007"), "the official grammar would accept it…");
+        assert!(
+            valid_document_number("MANUAL-2026/0007"),
+            "the official grammar would accept it…"
+        );
         // …so a SIGADOC capture carrying a manual number is refused.
         let mut fake = sample_capture();
         fake.document_number = "MANUAL-2026/0007".into();
-        fake.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=MANUAL-2026%2F0007".into();
+        fake.source_url =
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=MANUAL-2026%2F0007"
+                .into();
         assert!(fake.validate().is_err());
         // And a manual record cannot borrow an official number or SIGADOC links.
         let mut wrong = sample_manual_capture();
@@ -521,7 +536,10 @@ mod manual_tests {
         assert!(with_link.validate().is_err());
         let mut mismatch = sample_manual_capture();
         mismatch.document_number = "MANUAL-2026/0001".into();
-        assert!(mismatch.validate().is_err(), "origin must carry the same number");
+        assert!(
+            mismatch.validate().is_err(),
+            "origin must carry the same number"
+        );
         let mut short = sample_manual_capture();
         short.title = "ab".into();
         assert!(short.validate().is_err());

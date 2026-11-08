@@ -4,7 +4,9 @@
 //! (tasks, notes, drafts, attachments, AI, trash, team sync): a creation or
 //! an edit is just a capture with the `ponte://manual/` origin, so the main
 //! computer numbers it and replicates it like any import.
-use crate::model::{Capture, Coverage, ImportOutcome, ImportReceipt, MANUAL_ADAPTER, MANUAL_ORIGIN, MANUAL_PENDING};
+use crate::model::{
+    Capture, Coverage, ImportOutcome, ImportReceipt, MANUAL_ADAPTER, MANUAL_ORIGIN, MANUAL_PENDING,
+};
 use crate::storage::Store;
 use anyhow::{ensure, Context, Result};
 use std::collections::BTreeMap;
@@ -48,7 +50,9 @@ impl ManualFields {
         );
         let title = self.title.trim();
         ensure!(
-            title.chars().count() >= 3 && title.len() <= 1000 && !title.chars().any(char::is_control),
+            title.chars().count() >= 3
+                && title.len() <= 1000
+                && !title.chars().any(char::is_control),
             "Informe um título com pelo menos 3 caracteres."
         );
         ensure!(
@@ -72,7 +76,11 @@ impl ManualFields {
         Self {
             kind: {
                 let kind = meta("manual_kind");
-                if kind.is_empty() { "outro".into() } else { kind }
+                if kind.is_empty() {
+                    "outro".into()
+                } else {
+                    kind
+                }
             },
             title: capture.title.clone(),
             origin: meta("origin"),
@@ -84,15 +92,24 @@ impl ManualFields {
     fn capture(&self, number: &str, registered_by: &str) -> Capture {
         let mut metadata = BTreeMap::new();
         metadata.insert("manual_kind".to_string(), self.kind.clone());
-        metadata.insert("document_type".to_string(), kind_label(&self.kind).to_string());
+        metadata.insert(
+            "document_type".to_string(),
+            kind_label(&self.kind).to_string(),
+        );
         if !self.origin.trim().is_empty() {
             metadata.insert("origin".to_string(), self.origin.trim().to_string());
         }
         if !self.document_date.trim().is_empty() {
-            metadata.insert("document_date".to_string(), self.document_date.trim().to_string());
+            metadata.insert(
+                "document_date".to_string(),
+                self.document_date.trim().to_string(),
+            );
         }
         if !registered_by.trim().is_empty() {
-            metadata.insert("registered_by".to_string(), registered_by.trim().to_string());
+            metadata.insert(
+                "registered_by".to_string(),
+                registered_by.trim().to_string(),
+            );
         }
         Capture {
             schema_version: 1,
@@ -125,10 +142,17 @@ impl Store {
 
     /// Saves a new version of an existing manual record (same number).
     /// Identical content is reported as `Unchanged`, like any import.
-    pub fn update_manual_document(&mut self, id: i64, fields: &ManualFields) -> Result<ImportReceipt> {
+    pub fn update_manual_document(
+        &mut self,
+        id: i64,
+        fields: &ManualFields,
+    ) -> Result<ImportReceipt> {
         fields.validate()?;
         let detail = self.load_document(id)?;
-        ensure!(detail.capture.is_manual(), "Este documento veio do SIGADOC; ele não é editado no Ponte.");
+        ensure!(
+            detail.capture.is_manual(),
+            "Este documento veio do SIGADOC; ele não é editado no Ponte."
+        );
         ensure!(
             detail.capture.document_number != MANUAL_PENDING,
             "Este registro ainda não recebeu número do computador principal. Aguarde a sincronização para editá-lo."
@@ -166,7 +190,8 @@ mod tests {
             title: "Ligação do gabinete sobre a reforma".into(),
             origin: "Gabinete do Secretário".into(),
             document_date: "2026-11-04".into(),
-            text: "Pedem posição até sexta. Juntado ao processo SEFAZ-PRO-2026/00001 (anotação).".into(),
+            text: "Pedem posição até sexta. Juntado ao processo SEFAZ-PRO-2026/00001 (anotação)."
+                .into(),
         }
     }
 
@@ -180,18 +205,35 @@ mod tests {
         let first = store.create_manual_document(&fields()).unwrap();
         assert_eq!(first.effective_outcome(), ImportOutcome::Imported);
         let detail = store.load_document(first.document_id).unwrap();
-        assert_eq!(detail.summary.document_number, format!("MANUAL-{year}/0001"));
+        assert_eq!(
+            detail.summary.document_number,
+            format!("MANUAL-{year}/0001")
+        );
         assert!(detail.summary.manual);
-        assert_eq!(detail.capture.source_url, format!("{MANUAL_ORIGIN}MANUAL-{year}/0001"));
-        assert_eq!(detail.capture.metadata["document_type"], "Ligação telefônica");
+        assert_eq!(
+            detail.capture.source_url,
+            format!("{MANUAL_ORIGIN}MANUAL-{year}/0001")
+        );
+        assert_eq!(
+            detail.capture.metadata["document_type"],
+            "Ligação telefônica"
+        );
         assert!(!detail.summary.is_joined, "free text never marks a juntada");
         assert_ne!(first.document_id, official.document_id);
         // The triage task exists like for any document.
-        assert!(store.list_tasks().unwrap().iter().any(|t| t.document_id == first.document_id));
+        assert!(store
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .any(|t| t.document_id == first.document_id));
 
         let second = store.create_manual_document(&fields()).unwrap();
         assert_eq!(
-            store.load_document(second.document_id).unwrap().summary.document_number,
+            store
+                .load_document(second.document_id)
+                .unwrap()
+                .summary
+                .document_number,
             format!("MANUAL-{year}/0002"),
             "same content, new record: manual records are never merged"
         );
@@ -199,32 +241,55 @@ mod tests {
         // Editing = new version with the same number; identical edit is ignored.
         let mut edited = fields();
         edited.text.push_str("\nRetorno dado em 05/11.");
-        let version = store.update_manual_document(first.document_id, &edited).unwrap();
+        let version = store
+            .update_manual_document(first.document_id, &edited)
+            .unwrap();
         assert_eq!(version.effective_outcome(), ImportOutcome::Imported);
         assert_eq!(version.document_id, first.document_id);
         let detail = store.load_document(first.document_id).unwrap();
-        assert_eq!(detail.summary.document_number, format!("MANUAL-{year}/0001"));
+        assert_eq!(
+            detail.summary.document_number,
+            format!("MANUAL-{year}/0001")
+        );
         assert!(detail.capture.text.ends_with("05/11."));
         assert_eq!(store.capture_versions(first.document_id).unwrap().len(), 2);
-        let same = store.update_manual_document(first.document_id, &edited).unwrap();
+        let same = store
+            .update_manual_document(first.document_id, &edited)
+            .unwrap();
         assert!(unchanged(&same));
-        assert!(store.update_manual_document(official.document_id, &edited).is_err());
-        assert_eq!(ManualFields::from_capture(&detail.capture).title, fields().title);
+        assert!(store
+            .update_manual_document(official.document_id, &edited)
+            .is_err());
+        assert_eq!(
+            ManualFields::from_capture(&detail.capture).title,
+            fields().title
+        );
 
         // Numbers are not reused after trashing.
         store
-            .trash_item(crate::trash::Target { kind: crate::trash::Kind::Document, id: second.document_id })
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Document,
+                id: second.document_id,
+            })
             .unwrap();
         let third = store.create_manual_document(&fields()).unwrap();
         assert_eq!(
-            store.load_document(third.document_id).unwrap().summary.document_number,
+            store
+                .load_document(third.document_id)
+                .unwrap()
+                .summary
+                .document_number,
             format!("MANUAL-{year}/0003")
         );
 
         // Validation guides the person.
         let mut bad = fields();
         bad.title = "ab".into();
-        assert!(store.create_manual_document(&bad).unwrap_err().to_string().contains("título"));
+        assert!(store
+            .create_manual_document(&bad)
+            .unwrap_err()
+            .to_string()
+            .contains("título"));
         bad = fields();
         bad.document_date = "04/11/2026".into();
         assert!(store.create_manual_document(&bad).is_err());
@@ -234,6 +299,8 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         crate::export::export_to(&store, &out).unwrap();
         let csv = std::fs::read_to_string(out.join("documentos.csv")).unwrap();
-        assert!(csv.contains(&format!("MANUAL-{year}/0001;Ligação do gabinete sobre a reforma;Manual;")));
+        assert!(csv.contains(&format!(
+            "MANUAL-{year}/0001;Ligação do gabinete sobre a reforma;Manual;"
+        )));
     }
 }

@@ -224,11 +224,7 @@ impl Store {
             .context("Tarefa não encontrada após reabrir.")
     }
 
-    pub fn save_task_checked(
-        &mut self,
-        task: &Task,
-        expected_version: Option<i64>,
-    ) -> Result<i64> {
+    pub fn save_task_checked(&mut self, task: &Task, expected_version: Option<i64>) -> Result<i64> {
         task.validate()?;
         if let Some(cfg) = self.client_config()? {
             match self.remote_mutate(
@@ -614,7 +610,9 @@ impl<'a> Dependencies<'a> {
 
     /// Everything waiting for this task, at any depth, nearest first.
     pub fn descendants(&self, id: i64) -> Vec<&'a Task> {
-        self.walk(id, |t| self.dependents.get(&t.id).cloned().unwrap_or_default())
+        self.walk(id, |t| {
+            self.dependents.get(&t.id).cloned().unwrap_or_default()
+        })
     }
 
     fn walk(&self, start: i64, next: impl Fn(&Task) -> Vec<i64>) -> Vec<&'a Task> {
@@ -643,10 +641,16 @@ impl<'a> Dependencies<'a> {
     pub fn order<'b>(&self, tasks: &[&'b Task]) -> Vec<&'b Task> {
         use std::cmp::Reverse;
         use std::collections::{BTreeMap, BinaryHeap};
-        let index: BTreeMap<i64, usize> = tasks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+        let index: BTreeMap<i64, usize> =
+            tasks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         let mut remaining: Vec<usize> = tasks
             .iter()
-            .map(|t| t.dependencies.iter().filter(|d| index.contains_key(d)).count())
+            .map(|t| {
+                t.dependencies
+                    .iter()
+                    .filter(|d| index.contains_key(d))
+                    .count()
+            })
             .collect();
         let mut ready: BinaryHeap<Reverse<usize>> = remaining
             .iter()
@@ -659,7 +663,12 @@ impl<'a> Dependencies<'a> {
         while let Some(Reverse(i)) = ready.pop() {
             done[i] = true;
             out.push(tasks[i]);
-            for &dependent in self.dependents.get(&tasks[i].id).map(Vec::as_slice).unwrap_or(&[]) {
+            for &dependent in self
+                .dependents
+                .get(&tasks[i].id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+            {
                 if let Some(&j) = index.get(&dependent) {
                     remaining[j] = remaining[j].saturating_sub(1);
                     if remaining[j] == 0 && !done[j] {
@@ -711,10 +720,18 @@ mod graph_tests {
             v.iter().map(|t| t.title.clone()).collect()
         }
         assert_eq!(titles(deps.direct(4)), ["B", "C"]);
-        assert_eq!(titles(deps.open_blockers(4)), ["C"], "B is concluded, only C blocks D");
+        assert_eq!(
+            titles(deps.open_blockers(4)),
+            ["C"],
+            "B is concluded, only C blocks D"
+        );
         assert!(deps.is_blocked(4));
         assert!(!deps.is_blocked(3), "A is concluded, C may go");
-        assert_eq!(titles(deps.ancestors(4)), ["B", "C", "A"], "nearest first, A once");
+        assert_eq!(
+            titles(deps.ancestors(4)),
+            ["B", "C", "A"],
+            "nearest first, A once"
+        );
         assert_eq!(titles(deps.descendants(1)), ["B", "C", "D"]);
         assert!(deps.descendants(5).is_empty());
 
@@ -723,7 +740,12 @@ mod graph_tests {
         let refs: Vec<&Task> = tasks.iter().collect();
         let ordered = titles(deps.order(&refs));
         let pos = |name: &str| ordered.iter().position(|t| *t == name).unwrap();
-        assert!(pos("A") < pos("B") && pos("A") < pos("C") && pos("B") < pos("D") && pos("C") < pos("D"));
+        assert!(
+            pos("A") < pos("B")
+                && pos("A") < pos("C")
+                && pos("B") < pos("D")
+                && pos("C") < pos("D")
+        );
         assert_eq!(ordered.iter().filter(|t| **t == "D").count(), 1);
         assert_eq!(ordered[0], "E", "independent tasks keep their place");
 
@@ -748,7 +770,11 @@ mod graph_tests {
         );
 
         // A cycle (never produced by saving) neither hangs nor hides tasks.
-        let looped = vec![task(1, "X", &[2], "pendente"), task(2, "Y", &[1], "pendente"), task(3, "Z", &[], "pendente")];
+        let looped = vec![
+            task(1, "X", &[2], "pendente"),
+            task(2, "Y", &[1], "pendente"),
+            task(3, "Z", &[], "pendente"),
+        ];
         let loop_deps = Dependencies::new(&looped);
         let refs: Vec<&Task> = looped.iter().collect();
         assert_eq!(loop_deps.order(&refs).len(), 3);
@@ -875,7 +901,11 @@ mod completion_tests {
             .contains("SESP-DES-2026/39019"));
         // Unrelated documents are untouched; nothing cascades again.
         assert_eq!(
-            tasks.iter().find(|t| t.document_id == unrelated.document_id).unwrap().status,
+            tasks
+                .iter()
+                .find(|t| t.document_id == unrelated.document_id)
+                .unwrap()
+                .status,
             "pendente"
         );
         assert!(store.take_cascade_notes().is_empty());

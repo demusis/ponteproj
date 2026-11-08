@@ -377,11 +377,18 @@ pub struct SaiopImportPreview {
 
 impl SaiopImportPreview {
     pub fn new_rows(&self) -> usize {
-        self.already_registered.iter().filter(|r| r.is_none()).count()
+        self.already_registered
+            .iter()
+            .filter(|r| r.is_none())
+            .count()
     }
     /// Copy of the preview keeping only the rows not yet in the control.
     pub fn only_new(&self) -> Self {
-        let keep: Vec<bool> = self.already_registered.iter().map(|r| r.is_none()).collect();
+        let keep: Vec<bool> = self
+            .already_registered
+            .iter()
+            .map(|r| r.is_none())
+            .collect();
         let items: Vec<_> = self
             .items
             .iter()
@@ -390,8 +397,14 @@ impl SaiopImportPreview {
             .map(|(item, _)| item.clone())
             .collect();
         Self {
-            flagged_count: items.iter().filter(|(a, _)| !a.review_flags.is_empty()).count(),
-            linked_documents: items.iter().filter(|(a, _)| a.document_id.is_some()).count(),
+            flagged_count: items
+                .iter()
+                .filter(|(a, _)| !a.review_flags.is_empty())
+                .count(),
+            linked_documents: items
+                .iter()
+                .filter(|(a, _)| a.document_id.is_some())
+                .count(),
             already_registered: vec![None; items.len()],
             items,
             ..self.clone()
@@ -590,7 +603,9 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (id, blob) in plain {
             let Ok(bytes) = unseal(&blob) else { continue };
-            let Ok(att) = serde_json::from_slice::<SaiopAttendance>(&bytes) else { continue };
+            let Ok(att) = serde_json::from_slice::<SaiopAttendance>(&bytes) else {
+                continue;
+            };
             self.conn.execute(
                 "UPDATE saiop_attendances SET reference_norm = ?1 WHERE id = ?2",
                 params![reference_key(&att.reference_norm), id],
@@ -625,7 +640,11 @@ impl Store {
     /// atendimento that already carries its number (from the spreadsheet,
     /// say) or creates one with what the capture offers. Documents joined
     /// to another are skipped. Idempotent, so a replayed import is harmless.
-    pub(crate) fn attendance_for_import(&mut self, document_id: i64, capture: &Capture) -> Result<()> {
+    pub(crate) fn attendance_for_import(
+        &mut self,
+        document_id: i64,
+        capture: &Capture,
+    ) -> Result<()> {
         if !self.auto_attendance_enabled()? || crate::dossier::detect_juntada(capture).is_some() {
             return Ok(());
         }
@@ -648,13 +667,19 @@ impl Store {
                 .into_iter()
                 .find(|a| a.document_id.is_none() && a.reference_norm == reference_norm)
             {
-                let version = self.item_version("saiop", unlinked.id).ok().map(|v| v.version);
+                let version = self
+                    .item_version("saiop", unlinked.id)
+                    .ok()
+                    .map(|v| v.version);
                 unlinked.document_id = Some(document_id);
                 unlinked.events.push(SaiopEvent {
                     when: now,
                     actor,
                     kind: "entrada".into(),
-                    detail: format!("Ligado ao documento {} importado do SIGADOC", capture.document_number),
+                    detail: format!(
+                        "Ligado ao documento {} importado do SIGADOC",
+                        capture.document_number
+                    ),
                 });
                 self.save_saiop_attendance_by(&unlinked, version, false)?;
                 return Ok(());
@@ -669,11 +694,18 @@ impl Store {
                 .load_intranet_config()
                 .map(|cfg| cfg.member_name)
                 .unwrap_or_default();
-            att.received_from = ["sender", "remetente", "subscritor", "origin", "origem", "movement_source"]
-                .iter()
-                .find_map(|key| capture.metadata.get(*key))
-                .map(|v| v.trim().chars().take(200).collect())
-                .unwrap_or_default();
+            att.received_from = [
+                "sender",
+                "remetente",
+                "subscritor",
+                "origin",
+                "origem",
+                "movement_source",
+            ]
+            .iter()
+            .find_map(|key| capture.metadata.get(*key))
+            .map(|v| v.trim().chars().take(200).collect())
+            .unwrap_or_default();
             if let Some(kind) = capture.metadata.get("document_type") {
                 att.tags.push(kind.trim().to_owned());
             }
@@ -695,7 +727,9 @@ impl Store {
 
     /// Every atendimento, newest first, memoized until the library changes.
     pub fn list_saiop_attendances(&self) -> Result<Vec<SaiopAttendance>> {
-        self.cached("saiop_attendances", || self.list_saiop_attendances_uncached())
+        self.cached("saiop_attendances", || {
+            self.list_saiop_attendances_uncached()
+        })
     }
     fn list_saiop_attendances_uncached(&self) -> Result<Vec<SaiopAttendance>> {
         let mut stmt = self.conn.prepare(
@@ -1002,7 +1036,8 @@ impl Store {
         // First pass: count reference occurrences and distinct entry dates to detect re-entries
         let mut ref_dates: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for row in &sheet.rows {
-            let ref_norm = normalize_reference(row.cells.get("D").map(String::as_str).unwrap_or(""));
+            let ref_norm =
+                normalize_reference(row.cells.get("D").map(String::as_str).unwrap_or(""));
             if !ref_norm.is_empty() {
                 let date_b = row
                     .cells
@@ -1053,8 +1088,8 @@ impl Store {
 
             // Rows containing only prepared formulas (e.g. E/F/G/H) without operational data are ignored
             let has_operational_data = ![
-                col_b, col_c, col_d, col_i, col_j, col_k, col_l, col_m, col_n, col_o, col_p,
-                col_q, col_r,
+                col_b, col_c, col_d, col_i, col_j, col_k, col_l, col_m, col_n, col_o, col_p, col_q,
+                col_r,
             ]
             .iter()
             .all(|v| v.is_empty());
@@ -1277,7 +1312,10 @@ impl Store {
         })
     }
 
-    pub fn commit_saiop_import(&mut self, preview: &SaiopImportPreview) -> Result<SaiopImportBatch> {
+    pub fn commit_saiop_import(
+        &mut self,
+        preview: &SaiopImportPreview,
+    ) -> Result<SaiopImportBatch> {
         if let Some(cfg) = self.client_config()? {
             return match self.remote_mutate(
                 &cfg,
@@ -1443,9 +1481,8 @@ impl Store {
 
         let mut rows = Vec::new();
         {
-            let mut stmt = tx.prepare(
-                "SELECT id, payload FROM saiop_attendances WHERE batch_id = ?1",
-            )?;
+            let mut stmt =
+                tx.prepare("SELECT id, payload FROM saiop_attendances WHERE batch_id = ?1")?;
             let mapped = stmt.query_map(params![batch_id], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
             })?;
@@ -1682,7 +1719,9 @@ fn parse_xlsx_processos_sheet(bytes: &[u8]) -> Result<ParsedSheet> {
     let sheet_bytes = entries
         .get(&sheet_path)
         .or_else(|| entries.get(sheet_path.trim_start_matches('/')))
-        .with_context(|| format!("Aba '{sheet_name}' ({sheet_path}) não encontrada no arquivo .xlsx"))?;
+        .with_context(|| {
+            format!("Aba '{sheet_name}' ({sheet_path}) não encontrada no arquivo .xlsx")
+        })?;
     let sheet_xml =
         std::str::from_utf8(sheet_bytes).context("XML da planilha não está em UTF-8 válido")?;
 
@@ -1699,10 +1738,7 @@ fn resolve_processos_sheet_path(entries: &BTreeMap<String, Vec<u8>>) -> Result<(
     if let Some(rels_bytes) = entries.get("xl/_rels/workbook.xml.rels") {
         if let Ok(rels_xml) = std::str::from_utf8(rels_bytes) {
             for tag in extract_xml_tags(rels_xml, "Relationship") {
-                if let (Some(id), Some(target)) = (
-                    xml_attr(&tag, "Id"),
-                    xml_attr(&tag, "Target"),
-                ) {
+                if let (Some(id), Some(target)) = (xml_attr(&tag, "Id"), xml_attr(&tag, "Target")) {
                     let full = if target.starts_with("xl/") || target.starts_with("/xl/") {
                         target.trim_start_matches('/').to_owned()
                     } else {
@@ -1772,7 +1808,11 @@ fn extract_all_t_elements(xml_fragment: &str) -> String {
     let mut pos = 0;
     while let Some(start) = xml_fragment[pos..].find("<t") {
         let abs = pos + start;
-        let after_t = xml_fragment.as_bytes().get(abs + 2).copied().unwrap_or(b' ');
+        let after_t = xml_fragment
+            .as_bytes()
+            .get(abs + 2)
+            .copied()
+            .unwrap_or(b' ');
         if after_t != b'>' && after_t != b' ' && after_t != b'/' {
             pos = abs + 2;
             continue;
@@ -2236,7 +2276,8 @@ impl HuffmanTree {
 
 /// A ZIP entry that inflates beyond the size it declares is refused: it is
 /// either damaged or built to exhaust memory (a "zip bomb").
-const INFLATE_OVERFLOW: &str = "A planilha tem uma parte compactada maior do que declara; o arquivo parece danificado.";
+const INFLATE_OVERFLOW: &str =
+    "A planilha tem uma parte compactada maior do que declara; o arquivo parece danificado.";
 
 /// Inflates one Deflate stream, never producing more than `expected_size`
 /// bytes (the size the ZIP directory declares).
@@ -2346,12 +2387,12 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                     } else {
                         let len_idx = sym - 257;
                         ensure!(len_idx < LEN_BASE.len(), "Código de comprimento inválido.");
-                        let length = LEN_BASE[len_idx]
-                            + reader.read_bits(LEN_EXTRA[len_idx])? as usize;
+                        let length =
+                            LEN_BASE[len_idx] + reader.read_bits(LEN_EXTRA[len_idx])? as usize;
                         let dist_sym = dist_tree.decode(&mut reader)? as usize;
                         ensure!(dist_sym < DIST_BASE.len(), "Código de distância inválido.");
-                        let distance = DIST_BASE[dist_sym]
-                            + reader.read_bits(DIST_EXTRA[dist_sym])? as usize;
+                        let distance =
+                            DIST_BASE[dist_sym] + reader.read_bits(DIST_EXTRA[dist_sym])? as usize;
                         ensure!(
                             distance > 0 && distance <= out.len(),
                             "Distância LZ77 fora da janela."
@@ -2385,7 +2426,10 @@ fn form_section(
 ) {
     ui.add_space(6.0);
     ui.strong(title);
-    egui::Grid::new(id).num_columns(2).spacing([8.0, 4.0]).show(ui, rows);
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, rows);
 }
 // Interface gráfica "Atendimentos" (Controle do gabinete do SAIOP)
 // ============================================================================
@@ -2458,12 +2502,20 @@ impl SaiopSort {
             Self::Entry => (att.entry_date.clone(), 0),
             Self::Status => (status_label(&att.status).to_owned(), 0),
             Self::Due => (
-                if att.due_date.is_empty() { "9999".to_owned() } else { att.due_date.clone() },
+                if att.due_date.is_empty() {
+                    "9999".to_owned()
+                } else {
+                    att.due_date.clone()
+                },
                 0,
             ),
             Self::Age => (String::new(), -att.age_days(today).unwrap_or(0)),
             Self::Destination => (
-                if att.sent_to.is_empty() { att.exit_date.clone() } else { att.sent_to.to_lowercase() },
+                if att.sent_to.is_empty() {
+                    att.exit_date.clone()
+                } else {
+                    att.sent_to.to_lowercase()
+                },
                 0,
             ),
         }
@@ -2980,7 +3032,8 @@ impl SaiopPanel {
             SaiopQueue::StaleDays,
             SaiopQueue::NeedsReview,
         ];
-        let queue_count = |queue: SaiopQueue| all_items.iter().filter(|a| in_queue(a, queue)).count();
+        let queue_count =
+            |queue: SaiopQueue| all_items.iter().filter(|a| in_queue(a, queue)).count();
         let advanced_active = !self.assignee_filter.trim().is_empty()
             || !self.origin_filter.trim().is_empty()
             || !self.dest_filter.trim().is_empty()
@@ -2993,7 +3046,11 @@ impl SaiopPanel {
                     .desired_width(240.0),
             );
             egui::ComboBox::from_id_salt("saiop-queue")
-                .selected_text(format!("Fila: {} ({})", self.queue.label(), queue_count(self.queue)))
+                .selected_text(format!(
+                    "Fila: {} ({})",
+                    self.queue.label(),
+                    queue_count(self.queue)
+                ))
                 .width(260.0)
                 .show_ui(ui, |ui| {
                     for q in queues {
@@ -3006,16 +3063,25 @@ impl SaiopPanel {
                 });
             if self.queue == SaiopQueue::DueSoon {
                 ui.label("até");
-                ui.add(egui::DragValue::new(&mut self.due_soon_days).range(1..=60).suffix(" dias"));
+                ui.add(
+                    egui::DragValue::new(&mut self.due_soon_days)
+                        .range(1..=60)
+                        .suffix(" dias"),
+                );
             } else if self.queue == SaiopQueue::StaleDays {
                 ui.label("parado há");
-                ui.add(egui::DragValue::new(&mut self.stale_days_threshold).range(1..=365).suffix(" dias"));
+                ui.add(
+                    egui::DragValue::new(&mut self.stale_days_threshold)
+                        .range(1..=365)
+                        .suffix(" dias"),
+                );
             }
-            let toggle = if self.filters_open { "Filtros ▴" } else { "Filtros ▾" };
-            if ui
-                .add(egui::Button::new(toggle).small())
-                .clicked()
-            {
+            let toggle = if self.filters_open {
+                "Filtros ▴"
+            } else {
+                "Filtros ▾"
+            };
+            if ui.add(egui::Button::new(toggle).small()).clicked() {
                 self.filters_open = !self.filters_open;
             }
             if (advanced_active || !self.query.is_empty() || self.queue != SaiopQueue::All)
@@ -4019,7 +4085,13 @@ mod tests {
         assert_eq!(att.reference_raw, capture.document_number);
         assert_eq!(att.subject, capture.title.trim());
         assert_eq!(att.status, "em_analise");
-        assert!(att.events.iter().any(|e| e.detail.contains("automaticamente")), "{:?}", att.events);
+        assert!(
+            att.events
+                .iter()
+                .any(|e| e.detail.contains("automaticamente")),
+            "{:?}",
+            att.events
+        );
 
         // A new version of the same document adds nothing.
         let mut again = capture.clone();
@@ -4037,7 +4109,9 @@ mod tests {
         let manual_id = store.save_saiop_attendance(&manual, None).unwrap();
         let mut other = crate::model::sample_capture();
         other.document_number = "SEFAZ-PRO-2026/00123".into();
-        other.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00123".into();
+        other.source_url =
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00123"
+                .into();
         other.request_id = uuid::Uuid::new_v4().to_string();
         let receipt = store.import_capture(&other).unwrap();
         let list = store.list_saiop_attendances().unwrap();
@@ -4050,7 +4124,9 @@ mod tests {
         store.set_auto_attendance(false).unwrap();
         let mut third = crate::model::sample_capture();
         third.document_number = "SEFAZ-PRO-2026/00124".into();
-        third.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00124".into();
+        third.source_url =
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00124"
+                .into();
         third.request_id = uuid::Uuid::new_v4().to_string();
         store.import_capture(&third).unwrap();
         assert_eq!(store.list_saiop_attendances().unwrap().len(), 2);
@@ -4088,19 +4164,30 @@ mod tests {
         assert_eq!(store.list_attachments(owner).unwrap().len(), 2);
         assert!(
             store
-                .trash_item(crate::trash::Target { kind: crate::trash::Kind::Attachment, id: second })
+                .trash_item(crate::trash::Target {
+                    kind: crate::trash::Kind::Attachment,
+                    id: second
+                })
                 .is_err(),
             "attachments of atendimentos do not go to the trash"
         );
         // An atendimento without a document has no document id to log.
-        store.update_attachment_description(second, "foto do ofício").unwrap();
-        assert_eq!(store.list_attachments(owner).unwrap()[1].description, "foto do ofício");
+        store
+            .update_attachment_description(second, "foto do ofício")
+            .unwrap();
+        assert_eq!(
+            store.list_attachments(owner).unwrap()[1].description,
+            "foto do ofício"
+        );
         store.delete_attachment(second).unwrap();
         assert_eq!(store.list_attachments(owner).unwrap().len(), 1);
 
         store.delete_saiop_attendance(id).unwrap();
         assert!(store.list_saiop_attendances().unwrap().is_empty());
         assert!(store.attachment_counts("saiop").unwrap().is_empty());
-        assert!(store.delete_saiop_attendance(id).is_err(), "second delete reports it is gone");
+        assert!(
+            store.delete_saiop_attendance(id).is_err(),
+            "second delete reports it is gone"
+        );
     }
 }

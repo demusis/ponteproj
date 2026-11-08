@@ -325,7 +325,9 @@ impl Store {
             // rename a table while any trigger points at a missing one, so
             // they go first. `ensure_write_guards` recreates all of them.
             let triggers = tx
-                .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_%'")?
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_%'",
+                )?
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for name in triggers {
@@ -391,7 +393,10 @@ impl Store {
     /// Sets the retention of this computer. Not synchronized: in a team, only
     /// the main computer purges, with its own value.
     pub fn set_trash_retention_days(&mut self, days: u32) -> Result<()> {
-        ensure!(days <= 3660, "Prazo da lixeira grande demais (máximo de 10 anos).");
+        ensure!(
+            days <= 3660,
+            "Prazo da lixeira grande demais (máximo de 10 anos)."
+        );
         self.conn.execute(
             "INSERT INTO trash_settings(key,value) VALUES('retention_days',?1)
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -408,10 +413,15 @@ impl Store {
             "SELECT kind,item_id FROM trash WHERE deleted_at < ?1
              ORDER BY CASE kind WHEN 'document' THEN 0 ELSE 1 END, deleted_at, item_id",
         )?;
-        let rows = statement.query_map([cutoff], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let rows = statement.query_map([cutoff], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
         rows.map(|row| {
             let (kind, id) = row?;
-            Ok(Target { kind: Kind::parse(&kind)?, id })
+            Ok(Target {
+                kind: Kind::parse(&kind)?,
+                id,
+            })
         })
         .collect()
     }
@@ -664,7 +674,11 @@ impl Store {
             None,
             "restore_item",
             Some(document),
-            &format!("Restaurou da lixeira: {} #{}", target.kind.label(), target.id),
+            &format!(
+                "Restaurou da lixeira: {} #{}",
+                target.kind.label(),
+                target.id
+            ),
         )?;
         tx.commit()?;
         Ok(document)
@@ -892,21 +906,36 @@ mod tests {
     fn expired_items_are_purged_by_retention_and_recent_ones_stay() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("purge.sqlite3")).unwrap();
-        assert_eq!(store.trash_retention_days().unwrap(), 0, "never, by default");
+        assert_eq!(
+            store.trash_retention_days().unwrap(),
+            0,
+            "never, by default"
+        );
         store.set_trash_retention_days(30).unwrap();
         assert_eq!(store.trash_retention_days().unwrap(), 30);
 
         // Document A: trashed 40 days ago, with a task and an attachment.
-        let a = store.import_capture(&crate::model::sample_capture()).unwrap();
-        store
-            .add_attachment(crate::attachments::Owner::Document(a.document_id), "a.txt", "", b"conteudo")
+        let a = store
+            .import_capture(&crate::model::sample_capture())
             .unwrap();
-        store.trash_item(target(Kind::Document, a.document_id)).unwrap();
+        store
+            .add_attachment(
+                crate::attachments::Owner::Document(a.document_id),
+                "a.txt",
+                "",
+                b"conteudo",
+            )
+            .unwrap();
+        store
+            .trash_item(target(Kind::Document, a.document_id))
+            .unwrap();
         // Document B stays; one of its tasks was trashed 40 days ago, the
         // other 10 days ago.
         let mut other = crate::model::sample_capture();
         other.document_number = "SEFAZ-PRO-2026/00077".into();
-        other.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00077".into();
+        other.source_url =
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00077"
+                .into();
         other.request_id = uuid::Uuid::new_v4().to_string();
         let b = store.import_capture(&other).unwrap();
         let mut old_task = Task::new(b.document_id);
@@ -932,7 +961,11 @@ mod tests {
         assert_eq!(store.purge_expired_trash(30).unwrap(), 2);
         let captures: i64 = store
             .conn
-            .query_row("SELECT count(*) FROM captures WHERE document_id=?1", [a.document_id], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM captures WHERE document_id=?1",
+                [a.document_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(captures, 0, "document A and its content are gone");
         assert!(store.attachment_counts("document").unwrap().is_empty());
@@ -941,8 +974,15 @@ mod tests {
             .conn
             .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(tasks, 2, "B's sample task and the recent trashed task remain");
-        assert_eq!(store.trash_entries().unwrap().len(), 1, "only the recent task is still in the trash");
+        assert_eq!(
+            tasks, 2,
+            "B's sample task and the recent trashed task remain"
+        );
+        assert_eq!(
+            store.trash_entries().unwrap().len(),
+            1,
+            "only the recent task is still in the trash"
+        );
         assert!(store.restore_item(target(Kind::Task, new_task)).is_ok());
         assert_eq!(store.purge_expired_trash(30).unwrap(), 0);
     }
