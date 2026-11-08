@@ -68,6 +68,7 @@ fn run() -> Result<()> {
                 .context("Informe o identificador local")?
                 .parse()?,
         )),
+        Some("--templates") => app::run_opening(None, true),
         Some("--serve") => {
             let db_path = paths::db_path()?;
             let mut store = Store::open(&db_path)?;
@@ -109,7 +110,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("--help") => {
-            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --import-json ARQUIVO\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
+            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
             Ok(())
         }
         Some(_) => bail!("Argumento desconhecido. Use --help."),

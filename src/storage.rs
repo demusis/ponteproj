@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const SCHEMA_VERSION: i64 = 10;
+pub(crate) const SCHEMA_VERSION: i64 = 11;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -45,6 +45,8 @@ struct DraftPayload {
     materials: Vec<crate::evidence::Source>,
     kind: String,
     body: String,
+    #[serde(default)]
+    provenance: Option<crate::model::DraftProvenance>,
 }
 
 /// Memo of expensive reads. Valid while the library is unchanged: `stamp`
@@ -213,6 +215,7 @@ impl Store {
         store.ensure_saiop()?;
         store.ensure_ai_config()?;
         store.ensure_attachments()?;
+        store.ensure_work_templates()?;
         store.ensure_write_guards()?;
         crate::idmap::init_watermark(&store.conn)?;
         // Lazy, idempotent: libraries imported before this feature gain the
@@ -247,6 +250,12 @@ impl Store {
             "saiop_attendances",
             "ai_config",
             "attachments",
+            "work_templates",
+            "work_template_versions",
+            "instruction_blocks",
+            "instruction_block_versions",
+            "template_examples",
+            "draft_generations",
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());
@@ -608,6 +617,7 @@ impl Store {
                 created_at,
                 stale: capture_id != latest_capture_id || self.sources_stale(&payload.materials),
                 materials: payload.materials,
+                provenance: payload.provenance,
             });
         }
         let work_context = self.load_work_context(id)?;
@@ -726,6 +736,21 @@ impl Store {
         body: &str,
         materials: &[crate::evidence::Source],
     ) -> Result<i64> {
+        self.save_draft_full(id, capture_id, kind, body, materials, None)
+    }
+
+    /// Saves a draft version with where it came from (`provenance`: the
+    /// generation record, template version and request). On a client
+    /// computer it goes to the main one.
+    pub fn save_draft_full(
+        &mut self,
+        id: i64,
+        capture_id: i64,
+        kind: &str,
+        body: &str,
+        materials: &[crate::evidence::Source],
+        provenance: Option<&crate::model::DraftProvenance>,
+    ) -> Result<i64> {
         crate::evidence::validate(materials, &[])?;
         ensure!(valid_kind(kind), "Tipo de minuta inválido.");
         ensure!(
@@ -741,6 +766,7 @@ impl Store {
                     kind: kind.to_owned(),
                     body: body.to_owned(),
                     materials: materials.to_vec(),
+                    provenance: provenance.cloned(),
                 },
             )? {
                 crate::intranet::MutationReply::Id(draft_id) => return Ok(draft_id),
@@ -752,6 +778,7 @@ impl Store {
             materials: materials.to_vec(),
             kind: kind.into(),
             body: body.into(),
+            provenance: provenance.cloned(),
         })?;
         let tx = self
             .conn
@@ -762,6 +789,9 @@ impl Store {
             params![id, capture_id, payload, now()],
         )?;
         let draft_id = tx.last_insert_rowid();
+        if let Some(generation) = provenance.and_then(|p| p.generation_uid.as_deref()) {
+            crate::work_templates::link_generation(&tx, generation, draft_id)?;
+        }
         crate::trash::register_refs(&tx, "draft", draft_id, id, capture_id, materials)?;
         crate::intranet::record_mutation(
             &tx,

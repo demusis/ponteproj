@@ -25,7 +25,7 @@ Os dados ficam só na sua conta do Windows, cifrados. Outra conta no mesmo compu
 ## 2. A janela em um minuto
 
 - **Lista de documentos (esquerda):** sempre visível. O que você seleciona ali é o que os painéis mostram.
-- **Cabeçalho:** três botões escolhem a área central. **Ficha** é o documento selecionado. **Tarefas** é o painel de tarefas. **Atendimentos** é o controle do gabinete.
+- **Cabeçalho:** os botões escolhem a área central. **Ficha** é o documento selecionado. **Tarefas** é o painel de tarefas. **Atendimentos** é o controle do gabinete. **Modelos** guarda os modelos de trabalho.
 - **Barra inferior:** um ponto colorido mostra a situação da rede; ali também aparecem os avisos e o progresso das operações demoradas.
 - **Menu ▾:** Rede e equipe, Configurar IA, Lixeira, backup, exportação, este guia e Sobre o Ponte.
 - **Datas:** digite `dd/mm/aaaa` ou clique no 📅 para escolher no calendário.
@@ -80,8 +80,8 @@ A ficha tem quatro abas:
 ## 6. Notas, minutas e IA
 
 - **Notas:** escreva e clique em **Salvar notas**. O ponto laranja na aba indica algo não salvo.
-- **Minuta:** escolha o tipo (*Resposta*, *Encaminhamento*, *Pedido de complementação*) e clique em **Começar por um modelo**, ou escreva. **Salvar nova versão** guarda o texto, **Exportar (RTF)** cria um arquivo para o Word e **Comparar com versão ▾** mostra as diferenças. O texto final você cola no SIGADOC.
-- **IA (opcional):** **Analisar e sugerir providências**, no Resumo, ou **Gerar sugestão com IA**, na minuta. A sugestão abre para revisão e só é salva quando você salvar.
+- **Minuta:** escolha o tipo (*Resposta*, *Encaminhamento*, *Pedido de complementação*) e clique em **Começar por um modelo** (texto-base, sem IA) ou escreva. **Salvar nova versão** guarda o texto, **Exportar (RTF)** cria um arquivo para o Word e **Comparar com versão ▾** mostra as diferenças. O texto final você cola no SIGADOC.
+- **IA (opcional):** **Analisar e sugerir providências**, no Resumo, ou **Gerar nova com IA**, **Completar texto atual** ou **Revisar texto atual**, na minuta, com o que você quer em **Pedido desta minuta**. A sugestão abre para revisão e só é salva quando você salvar.
 
 **Menu ▾ ▸ Configurar IA** define onde a IA roda:
 
@@ -94,9 +94,28 @@ A ficha tem quatro abas:
 
 Depois de escolher, clique em **Listar modelos do servidor**, selecione o modelo e salve.
 
-**Atenção com a nuvem:** nas opções em que os dados saem do computador, o texto do documento, as notas e as fontes são enviados a cada clique em Analisar ou Gerar sugestão, nunca ao importar. Use só com documentos que podem sair do órgão.
+**Atenção com a nuvem:** nas opções em que os dados saem do computador, o texto do documento, as notas e as fontes são enviados a cada clique em Analisar ou Gerar, nunca ao importar. Use só com documentos que podem sair do órgão.
 
 Enquanto a IA trabalha, a barra inferior mostra a etapa e o botão **Cancelar**. Documentos longos no Ollama local demoram um pouco mais na primeira vez, porque o Ponte pede ao modelo uma janela maior.
+
+### Modelos de trabalho
+
+Um modelo de trabalho guarda a estrutura, as instruções e os exemplos de um tipo de resposta, para você e a IA começarem do mesmo ponto. Ele fica no botão **Modelos** do cabeçalho. É opcional.
+
+O caminho do dia a dia:
+
+1. **Criar:** em uma minuta já revisada, clique em **Guardar como modelo**. O texto vira o rascunho de um modelo novo. Dê um nome.
+2. **Estrutura:** ajuste as seções, as variáveis e os critérios de conferência. **Salvar rascunho**.
+3. **Instruções:** cadastre as regras de redação e anexe ao modelo como *obrigatória*, *opcional* ou *condicional*.
+4. **Exemplos:** cadastre respostas boas e clique em **Aprovar**. Só exemplo aprovado é usado. Eles ensinam organização e tom, nunca os fatos do caso.
+5. **Testar:** escolha um documento aberto e veja o que seria enviado à IA. Nada é enviado.
+6. **Publicar:** **Publicar versão N**. Para mudar depois, revise: o Ponte cria a versão seguinte, e as minutas antigas continuam ligadas à versão que usaram.
+7. **Usar:** em **Anotações e minutas**, escolha o **Modelo de trabalho**, marque as **Instruções opcionais** que valem para o caso e escreva o **Pedido desta minuta**. Depois clique em **Gerar nova com IA**, **Completar texto atual** (preserva o que já está escrito) ou **Revisar texto atual** (abre a comparação antes de substituir).
+8. **Conferir:** na lista de versões, **Material utilizado** mostra o modelo, as instruções, os exemplos e as fontes que a geração usou. Um trecho "encontrado na fonte" prova só que a citação existe, não que a conclusão está certa.
+
+Se duas instruções se contradisserem, o Ponte avisa antes de gerar. É só um aviso: decida você.
+
+**Em equipe:** ao publicar com o escopo **Compartilhado com a equipe**, o modelo chega a todos na próxima sincronização. Qualquer integrante pode revisar, e o histórico guarda quem fez cada versão. **Pessoal** apenas esconde o modelo dos outros na tela; não é uma proteção. Os modelos pessoais antigos viram modelos pessoais publicados, sem perda de texto. Esta atualização muda o formato do acervo: na equipe, atualize todos os computadores juntos.
 
 ## 7. Atendimentos
 

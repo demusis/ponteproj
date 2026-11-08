@@ -303,14 +303,41 @@ impl DocTaskStatusSummary {
 }
 
 pub fn run(initial_document: Option<i64>) -> Result<()> {
+    run_opening(initial_document, false)
+}
+
+/// Opens the window, on a document or on the "Modelos" area.
+pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Result<()> {
     let db_path = crate::paths::db_path()?;
     let store = Store::open(&db_path).context("Não foi possível abrir a biblioteca protegida")?;
     // Temporary copies of attachments opened in other programs do not outlive a session.
     crate::attachments::clear_temp_dir();
     let mut app = PonteApp::new(store, db_path);
     app.intranet.initialize(&mut app.store, &app.db_path);
+    // Personal templates of versions before 0.20 become work templates.
+    match app.store.migrate_personal_templates() {
+        Ok((0, problems)) if problems.is_empty() => {}
+        Ok((count, problems)) => {
+            if problems.is_empty() {
+                app.message(format!(
+                    "{count} modelo(s) pessoal(is) de versões anteriores foram levados para a área Modelos."
+                ));
+            } else {
+                app.error(format!(
+                    "{count} modelo(s) antigo(s) convertido(s); não foi possível converter: {}",
+                    problems.join("; ")
+                ));
+            }
+        }
+        Err(error) => app.error(format!(
+            "Os modelos pessoais antigos não puderam ser convertidos: {error}"
+        )),
+    }
     app.load_ai_config();
     app.refresh();
+    if open_templates {
+        app.templates_open = true;
+    }
     if let Some(id) = initial_document {
         app.select(id);
     }
@@ -480,7 +507,14 @@ struct Editor {
     capture_id: i64,
     saved_capture_id: i64,
     origin: String,
+    /// "Pedido desta minuta": what the person asks the AI (trusted layer).
     instructions: String,
+    /// The work template chosen for generation, and its optional and
+    /// conditional blocks the person ticked.
+    template_uid: Option<String>,
+    selected_blocks: std::collections::BTreeSet<String>,
+    /// Where the text in the editor came from, saved with the version.
+    provenance: Option<crate::model::DraftProvenance>,
 }
 
 impl Editor {
@@ -499,6 +533,9 @@ impl Editor {
             saved_capture_id: capture_id,
             origin: "Editor vazio".into(),
             instructions: String::new(),
+            template_uid: None,
+            selected_blocks: Default::default(),
+            provenance: None,
         }
     }
 
@@ -532,6 +569,7 @@ struct Replacement {
     origin: String,
     saved: bool,
     from_suggestion: bool,
+    provenance: Option<crate::model::DraftProvenance>,
 }
 
 #[derive(Clone)]
@@ -542,8 +580,17 @@ struct Suggestion {
     capture_id: i64,
     kind: String,
     body: String,
+    intent: crate::work_templates::Intent,
+    /// The editor text when the generation was asked (shown side by side
+    /// for a revision).
+    previous_text: String,
+    provenance: Option<crate::model::DraftProvenance>,
 }
 
+// A draft result carries the generation record and the text; the other
+// results are small. One value is sent per job, so boxing would only add
+// noise.
+#[allow(clippy::large_enum_variant)]
 enum WorkResult {
     Sources {
         document_id: i64,
@@ -559,6 +606,10 @@ enum WorkResult {
         number: String,
         capture_id: i64,
         kind: String,
+        intent: crate::work_templates::Intent,
+        previous_text: String,
+        /// What was sent, kept whether or not the text was accepted.
+        record: crate::work_templates::GenerationRecord,
         result: std::result::Result<String, String>,
     },
     Backup(std::result::Result<PathBuf, String>),
@@ -639,6 +690,7 @@ enum PendingTarget {
     Document(i64, Tab),
     Tasks,
     Saiop,
+    Templates,
     Suggestion,
     Settings,
     Network,
@@ -651,6 +703,8 @@ enum PendingTarget {
 enum Leave {
     /// The "Atendimentos" screen.
     Saiop,
+    /// The "Modelos" screen.
+    Templates,
     /// The "Documento" screen with whatever document is selected.
     Documents,
     /// Open this document (sidebar, "Ir para o documento").
@@ -695,6 +749,11 @@ struct ChatGptLogin {
 
 struct PonteApp {
     draft_tools: crate::draft_tools::DraftTools,
+    /// The "Modelos" screen.
+    templates: crate::templates_ui::TemplatesPanel,
+    templates_open: bool,
+    /// The generation record being shown in "Material utilizado".
+    material: Option<(i64, String)>,
     /// "Anexos" block of the open document.
     attachments: crate::attachments::AttachmentsPanel,
     sources: crate::evidence::SourcesPanel,
@@ -769,6 +828,9 @@ impl PonteApp {
     fn new(store: Store, db_path: PathBuf) -> Self {
         Self {
             draft_tools: Default::default(),
+            templates: Default::default(),
+            templates_open: false,
+            material: None,
             attachments: Default::default(),
             sources: Default::default(),
             pdf_reader: Default::default(),
@@ -972,13 +1034,10 @@ impl PonteApp {
                 go: PendingTarget::Document(id, Tab::More),
             });
         }
-        if self.draft_tools.dirty() {
+        if self.templates.dirty() {
             out.push(Pending {
-                label: "Modelo pessoal de minuta em edição".into(),
-                go: self
-                    .selected_id
-                    .map(|id| PendingTarget::Document(id, Tab::Notes))
-                    .unwrap_or(PendingTarget::None),
+                label: "Modelo de trabalho em edição".into(),
+                go: PendingTarget::Templates,
             });
         }
         if self.tasks.dirty() {
@@ -1060,9 +1119,16 @@ impl PonteApp {
             PendingTarget::Tasks => {
                 self.tasks_open = true;
                 self.saiop_open = false;
+                self.templates_open = false;
             }
             PendingTarget::Saiop => {
                 self.saiop_open = true;
+                self.tasks_open = false;
+                self.templates_open = false;
+            }
+            PendingTarget::Templates => {
+                self.templates_open = true;
+                self.saiop_open = false;
                 self.tasks_open = false;
             }
             PendingTarget::Suggestion => self.suggestion_open = true,
@@ -1091,10 +1157,17 @@ impl PonteApp {
             Leave::Saiop => {
                 self.saiop_open = true;
                 self.tasks_open = false;
+                self.templates_open = false;
+            }
+            Leave::Templates => {
+                self.templates_open = true;
+                self.saiop_open = false;
+                self.tasks_open = false;
             }
             Leave::Documents => {
                 self.tasks_open = false;
                 self.saiop_open = false;
+                self.templates_open = false;
             }
             Leave::Select(id) => self.select(id),
             Leave::NewTask(document_id) => {
@@ -1402,6 +1475,7 @@ impl PonteApp {
     fn select(&mut self, id: i64) {
         self.tasks_open = false;
         self.saiop_open = false;
+        self.templates_open = false;
         self.selected_id = Some(id);
         self.detail = None;
         self.similar.clear();
@@ -1817,7 +1891,15 @@ impl PonteApp {
         true
     }
 
-    fn generate(&mut self, detail: &DocumentDetail, ctx: &egui::Context) {
+    /// Asks the AI for a draft with the chosen intent: the editor's template,
+    /// ticked blocks and request form the trusted layer; the document, notes,
+    /// sources and approved examples are data.
+    fn generate(
+        &mut self,
+        detail: &DocumentDetail,
+        intent: crate::work_templates::Intent,
+        ctx: &egui::Context,
+    ) {
         if !self.save_pending_inputs(detail.summary.id) {
             return;
         }
@@ -1837,34 +1919,102 @@ impl PonteApp {
             }
         };
         let document_id = detail.summary.id;
-        let editor = &self.editors[&document_id];
+        let (kind, note, request_guidance, selected_blocks, current_text, template_uid) = {
+            let editor = &self.editors[&document_id];
+            (
+                editor.kind.clone(),
+                editor.note.clone(),
+                editor.instructions.clone(),
+                editor.selected_blocks.clone(),
+                editor.body.clone(),
+                editor.template_uid.clone(),
+            )
+        };
         let local_context = match self.store.load_work_context(document_id) {
-            Ok(value) => value.analysis_text(&editor.note),
+            Ok(value) => value.analysis_text(&note),
             Err(e) => {
                 self.error(format!("Falha ao ler contexto: {e}"));
                 return;
             }
         };
-        let context = format!("Contexto local e notas do usuário (conferir na fonte):\n{}\n\nOrientação para esta minuta:\n{}", local_context, editor.instructions);
-        let kind = editor.kind.clone();
-        let capture = detail.capture.clone();
+        let member = self
+            .store
+            .load_intranet_config()
+            .map(|c| c.member_name)
+            .unwrap_or_default();
+        let template = match &template_uid {
+            Some(uid) => match self.store.template_by_uid(uid) {
+                Ok(Some(found)) if found.offered_for(&kind, &member) => {
+                    let version = found
+                        .published_version()
+                        .cloned()
+                        .expect("offered templates have a published version");
+                    Some((found, version))
+                }
+                Ok(Some(_)) => {
+                    self.error("O modelo escolhido não está publicado para este tipo de minuta. Escolha outro ou publique-o na área Modelos.");
+                    return;
+                }
+                Ok(None) => {
+                    self.error("O modelo escolhido não existe mais.");
+                    return;
+                }
+                Err(error) => {
+                    self.error(format!("Falha ao ler o modelo: {error}"));
+                    return;
+                }
+            },
+            None => None,
+        };
+        // Only approved examples travel, and at most the newest three.
+        let (blocks, examples) = match &template {
+            Some((found, _)) => (
+                self.store.list_blocks().unwrap_or_default(),
+                self.store
+                    .examples_of(&found.uid)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|e| e.status == crate::work_templates::ExampleStatus::Approved)
+                    .rev()
+                    .take(crate::prompting::MAX_EXAMPLES)
+                    .collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
         let capture_id = detail.summary.latest_capture_id;
+        let job = ai::DraftJob {
+            document_id,
+            capture_id,
+            capture: detail.capture.clone(),
+            kind: kind.clone(),
+            intent,
+            local_context: format!(
+                "Contexto local e notas do usuário (conferir na fonte):\n{local_context}"
+            ),
+            request_guidance,
+            template,
+            blocks,
+            selected_blocks,
+            examples,
+            sources: sources.clone(),
+            current_text: current_text.clone(),
+        };
         let number = detail.summary.document_number.clone();
         self.spawn(
             format!("Gerando minuta de {}", number),
             WorkKind::Draft,
             move |reporter| {
-                let result = ai::generate_reply_with_sources(
-                    &settings, &capture, &kind, &context, &sources, &reporter,
-                )
-                .map_err(|e| e.to_string());
+                let outcome = ai::generate_draft(&settings, &job, &reporter);
                 WorkResult::Draft {
                     materials: sources,
                     document_id,
                     number,
                     capture_id,
                     kind,
-                    result,
+                    intent,
+                    previous_text: current_text,
+                    record: outcome.record,
+                    result: outcome.result,
                 }
             },
             ctx,
@@ -1978,22 +2128,43 @@ impl PonteApp {
                 number,
                 capture_id,
                 kind,
+                intent,
+                previous_text,
+                record,
                 result,
-            } => match result {
-                Ok(body) => {
-                    self.suggestion = Some(Suggestion {
-                        materials,
-                        document_id,
-                        number,
-                        capture_id,
-                        kind,
-                        body,
-                    });
-                    self.suggestion_open = true;
-                    self.message("Sugestão pronta para revisão. Salve uma versão quando o texto estiver adequado.");
+            } => {
+                // Every generation is recorded, accepted or refused.
+                if let Err(error) = self.store.record_generation(&record) {
+                    self.error(format!("A geração não pôde ser registrada: {error}"));
                 }
-                Err(error) => self.error(format!("Minuta não gerada: {error}")),
-            },
+                match result {
+                    Ok(body) => {
+                        let provenance = crate::model::DraftProvenance {
+                            generation_uid: Some(record.uid.clone()),
+                            template_uid: record.template_uid.clone(),
+                            template_version: record.template_version,
+                            template_name: record.template_name.clone(),
+                            model: record.model.clone(),
+                            provider: record.provider.clone(),
+                            request_guidance: record.request_guidance.clone(),
+                        };
+                        self.suggestion = Some(Suggestion {
+                            materials,
+                            document_id,
+                            number,
+                            capture_id,
+                            kind,
+                            body,
+                            intent,
+                            previous_text,
+                            provenance: Some(provenance),
+                        });
+                        self.suggestion_open = true;
+                        self.message("Sugestão pronta para revisão. Salve uma versão quando o texto estiver adequado.");
+                    }
+                    Err(error) => self.error(format!("Minuta não gerada: {error}")),
+                }
+            }
             WorkResult::Backup(result) => match result {
                 Ok(path) => {
                     self.message(format!("Backup protegido concluído: {}", path.display()));
@@ -2044,6 +2215,7 @@ impl PonteApp {
             editor.kind = replacement.kind;
             editor.capture_id = replacement.capture_id;
             editor.origin = replacement.origin;
+            editor.provenance = replacement.provenance;
             if replacement.saved {
                 editor.mark_draft_saved();
             } else {
@@ -2085,12 +2257,13 @@ impl PonteApp {
             self.error("Escreva a minuta antes de salvar.");
             return;
         }
-        match self.store.save_draft_with_sources(
+        match self.store.save_draft_full(
             id,
             editor.capture_id,
             &editor.kind,
             &editor.body,
             &editor.materials,
+            editor.provenance.as_ref(),
         ) {
             Ok(version) => {
                 let editor = self.editors.get_mut(&id).expect("editor exists");
@@ -2115,6 +2288,18 @@ impl PonteApp {
             {
                 self.navigate(Leave::Saiop);
             }
+            let templates_label = if self.templates.dirty() {
+                RichText::new("Modelos ●").color(WARNING)
+            } else {
+                RichText::new("Modelos")
+            };
+            if ui
+                .selectable_label(self.templates_open, templates_label)
+                .on_hover_text("Modelos de trabalho: estrutura, instruções, exemplos e referências para as minutas.")
+                .clicked()
+            {
+                self.navigate(Leave::Templates);
+            }
             // The orange dot follows the unsaved task wherever the person is,
             // like the "Anotações e minutas ●" tab does for notes.
             let tasks_label = if self.tasks.dirty() {
@@ -2122,7 +2307,10 @@ impl PonteApp {
             } else {
                 RichText::new("Tarefas")
             };
-            let tasks_response = ui.selectable_label(self.tasks_open && !self.saiop_open, tasks_label);
+            let tasks_response = ui.selectable_label(
+                self.tasks_open && !self.saiop_open && !self.templates_open,
+                tasks_label,
+            );
             let tasks_response = if self.tasks.dirty() {
                 tasks_response.on_hover_text("Há uma tarefa com alterações não salvas.")
             } else {
@@ -2131,9 +2319,13 @@ impl PonteApp {
             if tasks_response.clicked() {
                 self.tasks_open = true;
                 self.saiop_open = false;
+                self.templates_open = false;
             }
             if ui
-                .selectable_label(!self.tasks_open && !self.saiop_open, "Ficha")
+                .selectable_label(
+                    !self.tasks_open && !self.saiop_open && !self.templates_open,
+                    "Ficha",
+                )
                 .clicked()
             {
                 self.navigate(Leave::Documents);
@@ -3534,30 +3726,32 @@ impl PonteApp {
                 }
             }
         };
-        if let Some((kind, body, origin)) = self.draft_tools.show(
-            ui,
-            &mut self.store,
-            &detail.capture,
-            &editor.body,
-            &editor.kind,
-            &detail.drafts,
-        ) {
-            self.replace_editor(Replacement {
-                materials: Vec::new(),
-                document_id: detail.summary.id,
-                capture_id: detail.summary.latest_capture_id,
-                kind,
-                body,
-                origin,
-                saved: false,
-                from_suggestion: false,
-            });
-        }
         let id = detail.summary.id;
         let mut template = false;
-        let mut generate = false;
+        let mut generate: Option<crate::work_templates::Intent> = None;
+        let mut save_as_template = false;
+        let mut material: Option<String> = None;
         let mut save = false;
         let mut loaded = None;
+        // Published work templates of the editor's kind, visible to this member.
+        let member = self
+            .store
+            .load_intranet_config()
+            .map(|c| c.member_name)
+            .unwrap_or_default();
+        let current_kind = self.editors[&id].kind.clone();
+        let offered: Vec<crate::work_templates::WorkTemplate> = self
+            .store
+            .list_templates()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| t.offered_for(&current_kind, &member))
+            .collect();
+        let blocks = if offered.is_empty() {
+            Vec::new()
+        } else {
+            self.store.list_blocks().unwrap_or_default()
+        };
         let mut export = false;
         let mut compare: Option<crate::model::DraftVersion> = None;
         let busy_generating = self
@@ -3584,29 +3778,160 @@ impl PonteApp {
                             ui.selectable_value(&mut editor.kind, kind.into(), kind_label(kind));
                         }
                     });
+                ui.label("Modelo de trabalho:");
+                // A template no longer offered (other kind, archived or
+                // unpublished meanwhile) is dropped, not kept hidden.
+                if editor
+                    .template_uid
+                    .as_ref()
+                    .is_some_and(|uid| !offered.iter().any(|t| &t.uid == uid))
+                {
+                    editor.template_uid = None;
+                    editor.selected_blocks.clear();
+                }
+                let chosen = editor
+                    .template_uid
+                    .as_ref()
+                    .and_then(|uid| offered.iter().find(|t| &t.uid == uid));
+                let chosen_name = chosen
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| "Nenhum".into());
+                egui::ComboBox::from_id_salt("draft-template")
+                    .selected_text(chosen_name)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(editor.template_uid.is_none(), "Nenhum")
+                            .clicked()
+                        {
+                            editor.template_uid = None;
+                            editor.selected_blocks.clear();
+                        }
+                        for candidate in &offered {
+                            let selected = editor.template_uid.as_deref() == Some(&candidate.uid);
+                            let response = ui.selectable_label(selected, &candidate.name);
+                            let response = if candidate.purpose.is_empty() {
+                                response
+                            } else {
+                                response.on_hover_text(&candidate.purpose)
+                            };
+                            if response.clicked() {
+                                editor.template_uid = Some(candidate.uid.clone());
+                                editor.selected_blocks.clear();
+                            }
+                        }
+                    });
                 template = ui
                     .button("Começar por um modelo")
-                    .on_hover_text("Preenche o editor com um texto-base sem usar IA.")
+                    .on_hover_text("Preenche o editor com a estrutura do modelo escolhido (ou um texto-base) sem usar IA.")
                     .clicked();
-                let generate_response = ui
+                save_as_template = ui
                     .add_enabled(
-                        !busy_generating && !suggestion_pending,
-                        egui::Button::new(generating_label.clone().unwrap_or_else(|| "Gerar sugestão com IA".into())),
+                        !editor.body.trim().is_empty(),
+                        egui::Button::new("Guardar como modelo"),
                     )
-                    .on_hover_text(&disclosure)
-                    .on_disabled_hover_text(if suggestion_pending {
-                        "Há uma sugestão pronta aguardando revisão (barra inferior)."
-                    } else {
-                        "Aguarde a geração em andamento."
-                    });
-                generate = generate_response.clicked();
+                    .on_hover_text("Leva este texto para a área Modelos como rascunho de um novo modelo de trabalho.")
+                    .clicked();
             });
+            // Optional and conditional blocks of the chosen template.
+            if let Some(version) = editor
+                .template_uid
+                .as_ref()
+                .and_then(|uid| offered.iter().find(|t| &t.uid == uid))
+                .and_then(|t| t.published_version())
+            {
+                use crate::work_templates::BlockMode;
+                let optional: Vec<_> = version
+                    .block_refs
+                    .iter()
+                    .filter(|r| r.mode != BlockMode::Mandatory)
+                    .collect();
+                if !optional.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.small("Instruções opcionais:");
+                        for reference in optional {
+                            let name = blocks
+                                .iter()
+                                .find(|b| b.uid == reference.block_uid)
+                                .map(|b| b.name.clone())
+                                .unwrap_or_else(|| "instrução".into());
+                            let label = match &reference.mode {
+                                BlockMode::Conditional { condition } => {
+                                    format!("{name} (se: {condition})")
+                                }
+                                _ => name,
+                            };
+                            let mut on = editor.selected_blocks.contains(&reference.block_uid);
+                            if ui.checkbox(&mut on, label).changed() {
+                                if on {
+                                    editor.selected_blocks.insert(reference.block_uid.clone());
+                                } else {
+                                    editor.selected_blocks.remove(&reference.block_uid);
+                                }
+                            }
+                        }
+                    });
+                }
+            }
             ui.add(
                 egui::TextEdit::multiline(&mut editor.instructions)
                     .desired_rows(1)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Orientação para a IA (opcional): ex. solicitar a informação que falta, com tom objetivo."),
+                    .hint_text("Pedido desta minuta (opcional): ex. solicitar a informação que falta, com tom objetivo."),
             );
+            ui.horizontal_wrapped(|ui| {
+                use crate::work_templates::Intent;
+                let can_generate = !busy_generating && !suggestion_pending;
+                let has_text = !editor.body.trim().is_empty();
+                let disabled_reason = if suggestion_pending {
+                    "Há uma sugestão pronta aguardando revisão (barra inferior)."
+                } else {
+                    "Aguarde a geração em andamento."
+                };
+                if ui
+                    .add_enabled(
+                        can_generate,
+                        egui::Button::new(
+                            generating_label
+                                .clone()
+                                .unwrap_or_else(|| "Gerar nova com IA".into()),
+                        ),
+                    )
+                    .on_hover_text(&disclosure)
+                    .on_disabled_hover_text(disabled_reason)
+                    .clicked()
+                {
+                    generate = Some(Intent::New);
+                }
+                if ui
+                    .add_enabled(
+                        can_generate && has_text,
+                        egui::Button::new("Completar texto atual"),
+                    )
+                    .on_hover_text("A IA preserva o que você escreveu, preenche os [preencher] e acrescenta as seções que faltam.")
+                    .on_disabled_hover_text(if has_text { disabled_reason } else { "Escreva ou carregue um texto antes." })
+                    .clicked()
+                {
+                    generate = Some(Intent::Complete);
+                }
+                let has_request = !editor.instructions.trim().is_empty();
+                if ui
+                    .add_enabled(
+                        can_generate && has_text && has_request,
+                        egui::Button::new("Revisar texto atual"),
+                    )
+                    .on_hover_text("A IA altera só o necessário para atender ao pedido; o resultado abre lado a lado com o texto atual.")
+                    .on_disabled_hover_text(if !has_text {
+                        "Escreva ou carregue um texto antes."
+                    } else if !has_request {
+                        "Escreva em \"Pedido desta minuta\" o que deve ser revisado."
+                    } else {
+                        disabled_reason
+                    })
+                    .clicked()
+                {
+                    generate = Some(Intent::Revise);
+                }
+            });
         }
         ui.add_space(6.0);
         {
@@ -3680,6 +4005,19 @@ impl PonteApp {
                     if draft.stale || draft.capture_id != detail.summary.latest_capture_id {
                         ui.colored_label(WARNING, "importação anterior");
                     }
+                    if let Some(provenance) = &draft.provenance {
+                        if let Some(uid) = &provenance.generation_uid {
+                            if ui
+                                .small_button("Material utilizado")
+                                .on_hover_text("Modelo, instruções, pedido, exemplos, fontes e IA que produziram este texto.")
+                                .clicked()
+                            {
+                                material = Some(uid.clone());
+                            }
+                        } else if !provenance.template_name.is_empty() {
+                            ui.small(format!("modelo {}", provenance.template_name));
+                        }
+                    }
                 });
             }
             if detail.drafts.is_empty() {
@@ -3706,20 +4044,57 @@ impl PonteApp {
                 body,
             );
         }
+        if let Some(uid) = material {
+            self.material = Some((id, uid));
+        }
         if template {
+            let editor_kind = self.editors[&id].kind.clone();
+            let chosen = self.editors[&id]
+                .template_uid
+                .as_ref()
+                .and_then(|uid| offered.iter().find(|t| &t.uid == uid));
+            let (body, origin) = match chosen.and_then(|t| t.published_version().map(|v| (t, v))) {
+                Some((found, version)) => (
+                    crate::prompting::skeleton(version, &detail.capture),
+                    format!("Estrutura do modelo \"{}\" — revisar campos", found.name),
+                ),
+                None => (
+                    ai::template_reply(&detail.capture, &editor_kind),
+                    "Modelo sem IA — revisar campos".into(),
+                ),
+            };
+            let provenance = chosen.map(|t| crate::model::DraftProvenance {
+                template_uid: Some(t.uid.clone()),
+                template_version: Some(t.current_version),
+                template_name: t.name.clone(),
+                ..Default::default()
+            });
             self.replace_editor(Replacement {
                 document_id: id,
                 capture_id: detail.summary.latest_capture_id,
-                kind: self.editors[&id].kind.clone(),
-                body: ai::template_reply(&detail.capture, &self.editors[&id].kind),
-                origin: "Modelo sem IA — revisar campos".into(),
+                kind: editor_kind,
+                body,
+                origin,
                 saved: false,
                 from_suggestion: false,
                 materials: Vec::new(),
+                provenance,
             });
         }
-        if generate {
-            self.generate(detail, ui.ctx());
+        if save_as_template {
+            if self.templates.dirty() {
+                self.error("Há um modelo com alterações não salvas na área Modelos. Salve ou descarte antes de criar outro.");
+            } else {
+                let (kind, body) = {
+                    let editor = &self.editors[&id];
+                    (editor.kind.clone(), editor.body.clone())
+                };
+                self.templates.start_from_text(&kind, &body);
+                self.navigate(Leave::Templates);
+            }
+        }
+        if let Some(intent) = generate {
+            self.generate(detail, intent, ui.ctx());
         }
         if save {
             self.save_draft(id);
@@ -3734,6 +4109,7 @@ impl PonteApp {
                 saved: true,
                 from_suggestion: false,
                 materials: draft.materials,
+                provenance: draft.provenance,
             });
         }
     }
@@ -4037,18 +4413,137 @@ impl PonteApp {
         }
         if use_text {
             if let Some(suggestion) = self.suggestion.clone() {
+                // A revision is shown next to the text it replaces.
+                if suggestion.intent == crate::work_templates::Intent::Revise {
+                    self.draft_tools.open_comparison(
+                        "Texto anterior".into(),
+                        suggestion.previous_text.clone(),
+                        suggestion.body.clone(),
+                    );
+                }
                 self.replace_editor(Replacement {
                     document_id: suggestion.document_id,
                     capture_id: suggestion.capture_id,
                     kind: suggestion.kind,
                     body: suggestion.body,
-                    origin: "Sugestão de IA revisável".into(),
+                    origin: match suggestion.intent {
+                        crate::work_templates::Intent::New => "Sugestão de IA revisável".into(),
+                        crate::work_templates::Intent::Complete => {
+                            "Texto completado pela IA — revisar".into()
+                        }
+                        crate::work_templates::Intent::Revise => {
+                            "Texto revisado pela IA — comparar e revisar".into()
+                        }
+                    },
                     saved: false,
                     from_suggestion: true,
                     materials: suggestion.materials,
+                    provenance: suggestion.provenance,
                 });
                 self.suggestion_open = false;
             }
+        }
+    }
+
+    /// The window "Material utilizado": everything a generation used, as
+    /// recorded at the time, so the text can be read with its basis.
+    fn material_window(&mut self, ctx: &egui::Context) {
+        let Some((document_id, uid)) = self.material.clone() else {
+            return;
+        };
+        let record = match self.store.generation_by_uid(document_id, &uid) {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                self.material = None;
+                self.error("O registro desta geração não está neste acervo.");
+                return;
+            }
+            Err(error) => {
+                self.material = None;
+                self.error(format!("Falha ao ler o registro: {error}"));
+                return;
+            }
+        };
+        let mut open = true;
+        egui::Window::new("Material utilizado na geração")
+            .open(&mut open)
+            .default_size([700.0, 560.0])
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.label(format!("O que foi pedido: {}", record.intent.label()));
+                    match &record.template_uid {
+                        Some(_) => ui.label(format!(
+                            "Modelo de trabalho: {} (versão {})",
+                            record.template_name,
+                            record.template_version.unwrap_or(0)
+                        )),
+                        None => ui.label("Modelo de trabalho: nenhum"),
+                    };
+                    ui.label(format!("IA: {} ({})", record.model, record.provider));
+                    ui.label(format!(
+                        "Por {} em {}",
+                        record.created_by,
+                        display_date(&record.created_at)
+                    ));
+                    match &record.outcome {
+                        crate::work_templates::Outcome::Accepted => {
+                            ui.label("Resultado: texto aceito pelo programa e levado à revisão.");
+                        }
+                        crate::work_templates::Outcome::Refused { reason } => {
+                            ui.colored_label(WARNING, format!("Resultado: recusado — {reason}"));
+                        }
+                    }
+                    if !record.request_guidance.trim().is_empty() {
+                        ui.add_space(6.0);
+                        ui.strong("Pedido desta minuta");
+                        ui.label(&record.request_guidance);
+                    }
+                    if !record.blocks.is_empty() {
+                        ui.add_space(6.0);
+                        ui.strong("Instruções aplicadas");
+                        for block in &record.blocks {
+                            ui.collapsing(
+                                format!("{} (versão {}, {})", block.name, block.version, block.mode),
+                                |ui| {
+                                    ui.label(&block.text);
+                                },
+                            );
+                        }
+                    }
+                    if !record.example_uids.is_empty() {
+                        ui.add_space(6.0);
+                        ui.strong(format!(
+                            "Exemplos aprovados mostrados: {}",
+                            record.example_uids.len()
+                        ));
+                        ui.small("Os exemplos mostram só a forma; seus fatos não valem para este caso.");
+                    }
+                    if !record.sources.is_empty() {
+                        ui.add_space(6.0);
+                        ui.strong("Fontes selecionadas");
+                        for source in &record.sources {
+                            ui.label(format!("{} — {}", source.id, source.label));
+                        }
+                        ui.small("Um trecho citado foi encontrado literalmente na fonte; isso não comprova a conclusão.");
+                    }
+                    if !record.conflicts_shown.is_empty() {
+                        ui.add_space(6.0);
+                        ui.strong("Avisos de conflito exibidos antes de gerar");
+                        for conflict in &record.conflicts_shown {
+                            ui.colored_label(WARNING, conflict);
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.small(format!(
+                        "Instruções enviadas: {} • dados: {} • assinatura {}",
+                        crate::labels::file_size(record.system_bytes as u64),
+                        crate::labels::file_size(record.data_bytes as u64),
+                        record.system_sha256.chars().take(12).collect::<String>()
+                    ));
+                });
+            });
+        if !open {
+            self.material = None;
         }
     }
 
@@ -4067,7 +4562,7 @@ impl PonteApp {
         };
         let blocked = match target.kind {
             Kind::Document => {
-                self.draft_tools.dirty()
+                self.templates.dirty()
                     || self.editors.get(&plan.document).is_some_and(Editor::dirty)
                     || self.work_context.document_dirty(plan.document)
                     || self.dossier.document_dirty(plan.document)
@@ -4311,7 +4806,7 @@ impl eframe::App for PonteApp {
         ctx.request_repaint_after(Duration::from_millis(300));
         self.draft_tools.comparison(&ctx);
         self.pdf_reader.show(&ctx, &mut self.store);
-        let pending = self.draft_tools.dirty()
+        let pending = self.templates.dirty()
             || self.pdf_reader.busy()
             || self.dossier.dirty()
             || self.work_context.dirty()
@@ -4437,7 +4932,28 @@ impl eframe::App for PonteApp {
         });
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_enabled_ui(enabled, |ui| {
-                if self.saiop_open {
+                if self.templates_open {
+                    let open_document = self.detail.as_ref().map(|d| {
+                        (
+                            d.summary.id,
+                            d.summary.document_number.clone(),
+                            d.capture.clone(),
+                        )
+                    });
+                    match self.templates.show(ui, &mut self.store, open_document) {
+                        crate::templates_ui::TemplatesAction::UseTemplate { uid } => {
+                            if let Some(id) = self.selected_id {
+                                if let Some(editor) = self.editors.get_mut(&id) {
+                                    editor.template_uid = Some(uid);
+                                    editor.selected_blocks.clear();
+                                }
+                                self.tab = Tab::Notes;
+                                self.navigate(Leave::Documents);
+                            }
+                        }
+                        crate::templates_ui::TemplatesAction::None => {}
+                    }
+                } else if self.saiop_open {
                     let context = self.selected_id.and_then(|id| {
                         self.documents
                             .iter()
@@ -4484,6 +5000,7 @@ impl eframe::App for PonteApp {
             self.consult_window(&ctx);
             self.configuration(&ctx);
             self.suggestion_window(&ctx);
+            self.material_window(&ctx);
             if self.intranet.show(&ctx, &mut self.store, &self.db_path) {
                 self.refresh();
             }

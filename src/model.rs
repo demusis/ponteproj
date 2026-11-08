@@ -173,6 +173,32 @@ pub struct DraftVersion {
     pub capture_id: i64,
     pub created_at: String,
     pub stale: bool,
+    /// Where the text came from; `None` for versions saved before 0.20 or
+    /// typed without the AI.
+    #[serde(default)]
+    pub provenance: Option<DraftProvenance>,
+}
+
+/// How a draft version was produced: enough to read it later even without
+/// the generation record (which may live on another computer's copy).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftProvenance {
+    /// The generation record, when the text came from the AI.
+    #[serde(default)]
+    pub generation_uid: Option<String>,
+    #[serde(default)]
+    pub template_uid: Option<String>,
+    #[serde(default)]
+    pub template_version: Option<u32>,
+    #[serde(default)]
+    pub template_name: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub provider: String,
+    /// What the person asked for this draft.
+    #[serde(default)]
+    pub request_guidance: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

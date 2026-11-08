@@ -1,4 +1,5 @@
-//! Personal templates and explicit rich-text export, with protected persistence.
+//! Draft export to RTF, the placeholder filler of the old personal templates
+//! (kept for migrated libraries) and the comparison window.
 use crate::{model::Capture, protection, storage::Store};
 use anyhow::{ensure, Result};
 use eframe::egui;
@@ -107,54 +108,15 @@ pub fn export(capture: &Capture, body: &str) -> Result<std::path::PathBuf> {
         .write_all(text.as_bytes())?;
     Ok(path)
 }
+/// The side-by-side comparison window of two draft texts.
 #[derive(Default)]
 pub struct DraftTools {
-    name: String,
-    body: String,
-    kind: String,
-    saved_body: String,
-    saved_name: String,
-    saved_kind: String,
-    message: String,
     comparison: Option<(String, String, String)>,
 }
 impl DraftTools {
-    pub fn dirty(&self) -> bool {
-        self.body != self.saved_body || self.name != self.saved_name || self.kind != self.saved_kind
-    }
     /// Opens the side-by-side comparison window.
     pub fn open_comparison(&mut self, label: String, before: String, after: String) {
         self.comparison = Some((label, before, after));
-    }
-    pub fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        store: &mut Store,
-        capture: &Capture,
-        current_body: &str,
-        current_kind: &str,
-        drafts: &[crate::model::DraftVersion],
-    ) -> Option<(String, String, String)> {
-        let mut chosen = None;
-        ui.collapsing("Modelos pessoais de minuta",|ui|{
-            ui.small("Variáveis aceitas: {{numero_documento}}, {{assunto}}, {{destinatario}}, {{providencia}}, {{prazo}}.").on_hover_text("Modelos são versões locais protegidas. Campos desconhecidos devem ser preenchidos e conferidos.");
-            match store.personal_templates(){Ok(templates)=>{for (id,template) in templates{ui.horizontal_wrapped(|ui|{
-                ui.label(format!("{} • {} • {}",template.name,crate::labels::draft_kind(&template.kind),crate::labels::datetime(&template.created_at)));
-                if ui.button(format!("Usar modelo #{id}")).clicked(){chosen=Some((template.kind.clone(),apply(&template.body,capture),format!("Modelo pessoal #{} — revisar campos",id)));}
-            });}},Err(e)=>{ui.label(format!("Falha ao ler modelos: {e}"));}}
-            if ui.button("Preparar modelo a partir do texto atual").clicked(){if self.dirty(){self.message="Salve ou cancele o modelo em edição antes de substituí-lo.".into();}else{self.body=current_body.into();self.name.clear();self.kind=current_kind.into();}}
-            ui.label("Nome do modelo");ui.text_edit_singleline(&mut self.name);
-            if self.kind.is_empty(){self.kind=current_kind.into();self.saved_kind=self.kind.clone();}
-            egui::ComboBox::from_id_salt("personal-template-kind").selected_text(crate::labels::draft_kind(&self.kind)).show_ui(ui,|ui|{for kind in ["resposta","encaminhamento","complementacao"]{ui.selectable_value(&mut self.kind,kind.into(),crate::labels::draft_kind(kind));}});
-            ui.add(egui::TextEdit::multiline(&mut self.body).desired_rows(5).desired_width(f32::INFINITY));
-            ui.horizontal_wrapped(|ui|{
-                if ui.button("Salvar nova versão do modelo").clicked(){match store.save_personal_template(&self.name,&self.kind,&self.body){Ok(())=>{self.saved_body=self.body.clone();self.saved_name=self.name.clone();self.saved_kind=self.kind.clone();self.message="Modelo salvo como nova versão.".into();},Err(e)=>self.message=e.to_string()}}
-                if ui.button("Cancelar edição do modelo").clicked(){self.body=self.saved_body.clone();self.name=self.saved_name.clone();self.kind=self.saved_kind.clone();self.message.clear();}
-            });
-            if !self.message.is_empty(){ui.label(&self.message);}
-            let _ = drafts;
-        });
-        chosen
     }
     pub fn comparison(&mut self, ctx: &egui::Context) {
         let mut open = true;

@@ -630,6 +630,35 @@ impl IdMap {
             M::UpdateAttachment { id, .. } | M::DeleteAttachment { id } => {
                 *id = t(K::Attachment, *id)?;
             }
+            // Addressed by uid: nothing to translate.
+            M::SaveTemplate { .. }
+            | M::SetTemplateStatus { .. }
+            | M::DeleteTemplate { .. }
+            | M::SaveInstructionBlock { .. }
+            | M::SetBlockStatus { .. }
+            | M::DeleteBlock { .. }
+            | M::SaveExample { .. }
+            | M::DeleteExample { .. } => {}
+            M::RecordGeneration { record } => {
+                record.document_id = t(K::Document, record.document_id)?;
+                record.capture_id = t(K::Capture, record.capture_id)?;
+                if let Some(draft) = record.draft_id {
+                    record.draft_id = Some(t(K::Draft, draft)?);
+                }
+                for source in &mut record.sources {
+                    let (capture, file) = (source.capture_id, source.file_id);
+                    source.document_id = t(K::Document, source.document_id)?;
+                    source.capture_id = t(K::Capture, source.capture_id)?;
+                    if let Some(file) = source.file_id {
+                        source.file_id = Some(t(K::File, file)?);
+                    }
+                    if let Some(name) =
+                        rename_source(&source.id, capture, file, source.capture_id, source.file_id)
+                    {
+                        source.id = name;
+                    }
+                }
+            }
         }
         Ok(out)
     }

@@ -13,12 +13,15 @@ pub mod manual;
 pub mod model;
 pub mod native;
 pub mod paths;
+pub mod prompting;
 pub mod protection;
 pub mod sharedfolder;
 pub mod storage;
 pub mod tasks;
 pub mod tasks_ui;
+pub mod templates_ui;
 pub mod work_context;
+pub mod work_templates;
 
 pub mod dossier;
 

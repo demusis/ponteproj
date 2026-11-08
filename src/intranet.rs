@@ -11,7 +11,7 @@ use crate::{
     dossier::LinkPayload,
     evidence::Source,
     files::{FileInput, FileSummary},
-    model::{Analysis, Capture, ImportReceipt},
+    model::{Analysis, Capture, DraftProvenance, ImportReceipt},
     pdf_reader::PageText,
     protection::{seal, unseal},
     storage::Store,
@@ -463,6 +463,8 @@ pub struct DraftRow {
     pub kind: String,
     pub body: String,
     pub created_at: String,
+    #[serde(default)]
+    pub provenance: Option<DraftProvenance>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -556,6 +558,9 @@ pub struct CabinetSnapshot {
     pub saiop_attendances: Vec<SaiopAttendanceRow>,
     #[serde(default)]
     pub attachments: Vec<AttachmentRow>,
+    /// Work templates, blocks, examples and generation records.
+    #[serde(default)]
+    pub templates: crate::work_templates::TemplatesSnapshot,
 }
 
 // Captures and file bundles make some variants large. A change is built,
@@ -581,6 +586,8 @@ pub enum IntranetMutation {
         kind: String,
         body: String,
         materials: Vec<Source>,
+        #[serde(default)]
+        provenance: Option<DraftProvenance>,
     },
     SaveAnalysis {
         document_id: i64,
@@ -670,6 +677,44 @@ pub enum IntranetMutation {
     PurgeTrash {
         kind: String,
         id: i64,
+    },
+    /// Work templates, instruction blocks and examples are addressed by
+    /// uid, so these need no number translation.
+    SaveTemplate {
+        template: crate::work_templates::WorkTemplate,
+        expected_version: Option<i64>,
+    },
+    SetTemplateStatus {
+        uid: String,
+        status: crate::work_templates::Status,
+        expected_version: Option<i64>,
+    },
+    DeleteTemplate {
+        uid: String,
+    },
+    SaveInstructionBlock {
+        block: crate::work_templates::InstructionBlock,
+        expected_version: Option<i64>,
+    },
+    SetBlockStatus {
+        uid: String,
+        status: crate::work_templates::Status,
+        expected_version: Option<i64>,
+    },
+    DeleteBlock {
+        uid: String,
+    },
+    SaveExample {
+        example: crate::work_templates::Example,
+        expected_version: Option<i64>,
+    },
+    DeleteExample {
+        uid: String,
+    },
+    /// What one AI generation used (its document and capture numbers are
+    /// translated like a draft's).
+    RecordGeneration {
+        record: crate::work_templates::GenerationRecord,
     },
 }
 
@@ -807,6 +852,8 @@ struct StoredDraftPayload {
     materials: Vec<Source>,
     kind: String,
     body: String,
+    #[serde(default)]
+    provenance: Option<DraftProvenance>,
 }
 
 /// Why a replacement of the library was rolled back: a change was queued
@@ -1165,6 +1212,7 @@ impl Store {
                 kind: payload.kind,
                 body: payload.body,
                 created_at,
+                provenance: payload.provenance,
             });
         }
 
@@ -1400,6 +1448,7 @@ impl Store {
             saiop_batches,
             saiop_attendances,
             attachments,
+            templates: self.export_templates()?,
         })
     }
 
@@ -1521,7 +1570,13 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Clear `trash` first so active-record triggers never block re-inserting archived items.
         tx.execute_batch(
-            "DELETE FROM trash;
+            "DELETE FROM draft_generations;
+             DELETE FROM template_examples;
+             DELETE FROM work_template_versions;
+             DELETE FROM work_templates;
+             DELETE FROM instruction_block_versions;
+             DELETE FROM instruction_blocks;
+             DELETE FROM trash;
              DELETE FROM attachments;
              DELETE FROM saiop_attendances;
              DELETE FROM saiop_batches;
@@ -1587,6 +1642,7 @@ impl Store {
                 materials: draft.materials.clone(),
                 kind: draft.kind.clone(),
                 body: draft.body.clone(),
+                provenance: draft.provenance.clone(),
             };
             tx.execute(
                 "INSERT INTO drafts(id,document_id,capture_id,payload,created_at) VALUES(?1,?2,?3,?4,?5)",
@@ -1735,6 +1791,7 @@ impl Store {
             )?;
         }
         // Populate `trash` last so active-item triggers remain satisfied throughout the batch.
+        crate::work_templates::apply_templates(&tx, &snapshot.templates)?;
         for t in &snapshot.trash {
             tx.execute(
                 "INSERT INTO trash(kind,item_id,document_id,deleted_at) VALUES(?1,?2,?3,?4)",
@@ -1797,9 +1854,61 @@ impl Store {
                 kind,
                 body,
                 materials,
+                provenance,
             } => self
-                .save_draft_with_sources(document_id, capture_id, &kind, &body, &materials)
+                .save_draft_full(
+                    document_id,
+                    capture_id,
+                    &kind,
+                    &body,
+                    &materials,
+                    provenance.as_ref(),
+                )
                 .map(MutationReply::Id),
+            IntranetMutation::SaveTemplate {
+                template,
+                expected_version,
+            } => self
+                .save_template(&template, expected_version)
+                .map(|_| MutationReply::Unit),
+            IntranetMutation::SetTemplateStatus {
+                uid,
+                status,
+                expected_version,
+            } => self
+                .set_template_status(&uid, status, expected_version)
+                .map(|_| MutationReply::Unit),
+            IntranetMutation::DeleteTemplate { uid } => {
+                self.delete_template(&uid).map(|()| MutationReply::Unit)
+            }
+            IntranetMutation::SaveInstructionBlock {
+                block,
+                expected_version,
+            } => self
+                .save_block(&block, expected_version)
+                .map(|_| MutationReply::Unit),
+            IntranetMutation::SetBlockStatus {
+                uid,
+                status,
+                expected_version,
+            } => self
+                .set_block_status(&uid, status, expected_version)
+                .map(|_| MutationReply::Unit),
+            IntranetMutation::DeleteBlock { uid } => {
+                self.delete_block(&uid).map(|()| MutationReply::Unit)
+            }
+            IntranetMutation::SaveExample {
+                example,
+                expected_version,
+            } => self
+                .save_example(&example, expected_version)
+                .map(|e| MutationReply::Id(e.id)),
+            IntranetMutation::DeleteExample { uid } => {
+                self.delete_example(&uid).map(|()| MutationReply::Unit)
+            }
+            IntranetMutation::RecordGeneration { record } => self
+                .record_generation(&record)
+                .map(|()| MutationReply::Unit),
             IntranetMutation::SaveAnalysis {
                 document_id,
                 analysis,
@@ -2759,8 +2868,84 @@ impl Store {
                     }
                 }
             }
+            IntranetMutation::SaveTemplate {
+                template,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("template", &template.uid));
+                IntranetMutation::SaveTemplate {
+                    template,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SetTemplateStatus {
+                uid,
+                status,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("template", &uid));
+                IntranetMutation::SetTemplateStatus {
+                    uid,
+                    status,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SaveInstructionBlock {
+                block,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("block", &block.uid));
+                IntranetMutation::SaveInstructionBlock {
+                    block,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SetBlockStatus {
+                uid,
+                status,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("block", &uid));
+                IntranetMutation::SetBlockStatus {
+                    uid,
+                    status,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SaveExample {
+                example,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("example", &example.uid));
+                IntranetMutation::SaveExample {
+                    example,
+                    expected_version: ver,
+                }
+            }
             other => other,
         }
+    }
+
+    /// The version of a uid-addressed item (template, block, example), or
+    /// `None` when it does not exist here yet (a creation).
+    fn uid_version(&self, kind: &str, uid: &str) -> Option<i64> {
+        if uid.is_empty() {
+            return None;
+        }
+        let exists: bool = match kind {
+            "template" => self.template_by_uid(uid).ok().flatten().is_some(),
+            "block" => self.block_by_uid(uid).ok().flatten().is_some(),
+            _ => self
+                .list_examples()
+                .ok()
+                .is_some_and(|list| list.iter().any(|e| e.uid == uid)),
+        };
+        if !exists {
+            return None;
+        }
+        self.item_version(kind, crate::work_templates::version_key(uid))
+            .ok()
+            .map(|m| m.version)
     }
 
     /// The current stored state of the item a mutation is about to change.
@@ -3045,6 +3230,43 @@ impl Store {
                     task,
                     title,
                     expected_version: Some(ver),
+                }
+            }
+            IntranetMutation::SaveTemplate { template, .. } => {
+                let ver = self.uid_version("template", &template.uid);
+                IntranetMutation::SaveTemplate {
+                    template,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SetTemplateStatus { uid, status, .. } => {
+                let ver = self.uid_version("template", &uid);
+                IntranetMutation::SetTemplateStatus {
+                    uid,
+                    status,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SaveInstructionBlock { block, .. } => {
+                let ver = self.uid_version("block", &block.uid);
+                IntranetMutation::SaveInstructionBlock {
+                    block,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SetBlockStatus { uid, status, .. } => {
+                let ver = self.uid_version("block", &uid);
+                IntranetMutation::SetBlockStatus {
+                    uid,
+                    status,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SaveExample { example, .. } => {
+                let ver = self.uid_version("example", &example.uid);
+                IntranetMutation::SaveExample {
+                    example,
+                    expected_version: ver,
                 }
             }
             other => other,
@@ -3700,6 +3922,27 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
         IntranetMutation::SaveDraft {
             document_id, kind, ..
         } => format!("Minuta ({kind}) do documento #{document_id}"),
+        IntranetMutation::SaveTemplate { template, .. } => {
+            format!("Modelo de trabalho \"{}\"", template.name)
+        }
+        IntranetMutation::SetTemplateStatus { status, .. } => {
+            format!("Modelo de trabalho: {}", status.label().to_lowercase())
+        }
+        IntranetMutation::DeleteTemplate { .. } => "Exclusão de modelo de trabalho".to_owned(),
+        IntranetMutation::SaveInstructionBlock { block, .. } => {
+            format!("Instrução \"{}\"", block.name)
+        }
+        IntranetMutation::SetBlockStatus { status, .. } => {
+            format!("Instrução: {}", status.label().to_lowercase())
+        }
+        IntranetMutation::DeleteBlock { .. } => "Exclusão de instrução".to_owned(),
+        IntranetMutation::SaveExample { example, .. } => {
+            format!("Exemplo \"{}\"", example.title)
+        }
+        IntranetMutation::DeleteExample { .. } => "Exclusão de exemplo".to_owned(),
+        IntranetMutation::RecordGeneration { record } => {
+            format!("Registro de geração do documento #{}", record.document_id)
+        }
         IntranetMutation::SaveAnalysis { document_id, .. } => {
             format!("Análise do documento #{document_id}")
         }
@@ -6673,6 +6916,180 @@ mod tests {
         // Once it was among the changes sent, the replacement goes through.
         replace(&mut here, &queued).unwrap();
         assert!(here.list_documents("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn work_templates_and_generation_records_travel_with_the_library() {
+        use crate::work_templates::{
+            BlockMode, BlockRef, Example, ExampleStatus, GenerationRecord, InstructionBlock,
+            Outcome, Scope, Status, UsedBlock, WorkTemplate,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let drive = dir.path().join("Drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        let files = vec![drive.display().to_string()];
+        let reporter = crate::ai::Reporter::silent();
+        let key = "senha-de-teste-123";
+
+        // A publishes a shared template with a mandatory block and an
+        // approved example, generates a draft with it and saves the draft.
+        let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        a.save_intranet_config(&folder_config("Casa", files.clone()))
+            .unwrap();
+        let mut block = InstructionBlock::new("Linguagem", "estilo", "Use frases curtas.");
+        block.scope = Scope::Shared;
+        let block = a.save_block(&block, None).unwrap();
+        a.set_block_status(&block.uid, Status::Published, None)
+            .unwrap();
+        let mut template =
+            WorkTemplate::new("Ofício padrão", "resposta", "Ref. {{numero_documento}}");
+        template.scope = Scope::Shared;
+        template.versions[0].block_refs.push(BlockRef {
+            block_uid: block.uid.clone(),
+            version: None,
+            mode: BlockMode::Mandatory,
+        });
+        let template = a.save_template(&template, None).unwrap();
+        let template = a
+            .set_template_status(&template.uid, Status::Published, None)
+            .unwrap();
+        a.save_example(
+            &Example {
+                template_uid: template.uid.clone(),
+                title: "Caso aprovado".into(),
+                reply: "Resposta exemplar".into(),
+                status: ExampleStatus::Approved,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt = a.import_capture(&sample_capture()).unwrap();
+        let record = GenerationRecord {
+            uid: uuid::Uuid::new_v4().simple().to_string(),
+            document_id: receipt.document_id,
+            capture_id: receipt.capture_id,
+            template_uid: Some(template.uid.clone()),
+            template_version: Some(1),
+            template_name: template.name.clone(),
+            blocks: vec![UsedBlock {
+                uid: block.uid.clone(),
+                name: block.name.clone(),
+                version: 1,
+                mode: "Obrigatória".into(),
+                text: "Use frases curtas.".into(),
+            }],
+            model: "modelo-teste".into(),
+            outcome: Outcome::Accepted,
+            ..Default::default()
+        };
+        a.record_generation(&record).unwrap();
+        let draft_id = a
+            .save_draft_full(
+                receipt.document_id,
+                receipt.capture_id,
+                "resposta",
+                "MINUTA PARA REVISÃO gerada",
+                &[],
+                Some(&crate::model::DraftProvenance {
+                    generation_uid: Some(record.uid.clone()),
+                    template_uid: Some(template.uid.clone()),
+                    template_version: Some(1),
+                    template_name: template.name.clone(),
+                    model: "modelo-teste".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        a.sync_with_folders(&a.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+
+        // B receives everything, with the same identities and versions.
+        let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+        b.save_intranet_config(&folder_config("Trabalho", files.clone()))
+            .unwrap();
+        b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+        let on_b = b.template_by_uid(&template.uid).unwrap().unwrap();
+        assert_eq!(on_b.status, Status::Published);
+        assert_eq!(on_b.current_version, 1);
+        assert_eq!(
+            on_b.published_version().unwrap().block_refs[0].version,
+            Some(1)
+        );
+        assert!(
+            on_b.offered_for("resposta", "Trabalho"),
+            "shared: visible to B"
+        );
+        assert_eq!(
+            b.block_by_uid(&block.uid).unwrap().unwrap().current_version,
+            1
+        );
+        let examples = b.examples_of(&template.uid).unwrap();
+        assert_eq!(examples.len(), 1);
+        assert_eq!(examples[0].status, ExampleStatus::Approved);
+        let generations = b.generations_for_document(receipt.document_id).unwrap();
+        assert_eq!(generations.len(), 1);
+        assert_eq!(generations[0].draft_id, Some(draft_id));
+        assert_eq!(generations[0].blocks[0].text, "Use frases curtas.");
+        let drafts = b.load_document(receipt.document_id).unwrap().drafts;
+        assert_eq!(
+            drafts[0].provenance.as_ref().unwrap().template_version,
+            Some(1)
+        );
+
+        // B revises the template (a queued change replayed on A's side):
+        // version 2 is published, and the draft made with version 1 still
+        // says version 1, whose text is intact.
+        let mut revised = on_b.clone();
+        let mut next = on_b.published_version().unwrap().clone();
+        next.sections[0].guidance = "Texto revisto por B".into();
+        revised.versions.push(next);
+        b.save_template(&revised, None).unwrap();
+        b.set_template_status(&template.uid, Status::Published, None)
+            .unwrap();
+        b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+        let report = a
+            .sync_with_folders(&a.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+        assert_eq!(
+            report.conflicts,
+            0,
+            "{:?}",
+            a.list_sync_conflicts().unwrap()
+        );
+        let on_a = a.template_by_uid(&template.uid).unwrap().unwrap();
+        assert_eq!(on_a.current_version, 2);
+        assert_eq!(
+            on_a.version(1).unwrap().sections[0].guidance,
+            "Ref. {{numero_documento}}"
+        );
+        assert_eq!(
+            on_a.version(2).unwrap().sections[0].guidance,
+            "Texto revisto por B"
+        );
+        let drafts = a.load_document(receipt.document_id).unwrap().drafts;
+        assert_eq!(
+            drafts[0].provenance.as_ref().unwrap().template_version,
+            Some(1)
+        );
+        assert!(a.template_in_use(&template.uid).unwrap());
+        assert!(a.delete_template(&template.uid).is_err());
+
+        // A personal template of A is carried but not offered to B.
+        let personal = a
+            .save_template(&WorkTemplate::new("Só meu", "resposta", "Texto"), None)
+            .unwrap();
+        a.set_template_status(&personal.uid, Status::Published, None)
+            .unwrap();
+        a.sync_with_folders(&a.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+        b.sync_with_folders(&b.load_intranet_config().unwrap(), key, false, &reporter)
+            .unwrap();
+        let personal_on_b = b.template_by_uid(&personal.uid).unwrap().unwrap();
+        assert!(personal_on_b.offered_for("resposta", "Casa"));
+        assert!(!personal_on_b.offered_for("resposta", "Trabalho"));
     }
 
     #[test]

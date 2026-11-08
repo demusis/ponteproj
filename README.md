@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Menu ▾ ▸ Guia do usuário** |
-| **Versão** | 0.19.7 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.20.0 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, quadro **Ligação com o navegador** | *✓ O Ponte está registrado para o Chrome e Edge* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.19.7.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.20.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 Se algum dos três não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -126,7 +126,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Cabeçalho:** três botões escolhem o que a área central mostra. **Ficha** é o documento selecionado na lista. **Tarefas** é o painel de tarefas. **Atendimentos** é o controle do gabinete.
+- **Cabeçalho:** os botões escolhem o que a área central mostra. **Ficha** é o documento selecionado na lista. **Tarefas** é o painel de tarefas. **Atendimentos** é o controle do gabinete. **Modelos** é a área dos modelos de trabalho ([seção 9.5](#95-modelos-de-trabalho)).
 - **Lista de documentos (esquerda):** sempre visível. Selecionar um documento muda o que os três painéis mostram: a Ficha abre nele, e Tarefas e Atendimentos passam a listar só o que é dele (com um botão para ver tudo).
 - **Barra inferior:** um ponto colorido diz como está a rede (por exemplo `● só neste computador` ou `● em dia há 3 min`). Passe o mouse para a frase completa. Ali também aparecem os avisos e o progresso das operações demoradas, como a IA e a sincronização.
 - **Menu ▾:**
@@ -202,7 +202,7 @@ Salve. A etiqueta azul embaixo do cartão do documento, na lista da esquerda, pa
 Ainda em **Anotações e minutas**, na parte **Minuta**:
 
 1. Escolha o tipo: *Resposta*.
-2. Clique em **Começar por um modelo** (texto-base, sem IA) ou em **Gerar sugestão com IA**.
+2. Clique em **Começar por um modelo** (texto-base, sem IA) ou em **Gerar nova com IA**. Para usar um modelo de trabalho, escolha-o antes em **Modelo de trabalho** ([seção 9.5](#95-modelos-de-trabalho)).
 3. Edite o texto.
 4. **Salvar nova versão**.
 5. **Exportar (RTF)** abre a pasta com o arquivo para o Word, ou **Copiar texto** para colar direto.
@@ -258,7 +258,7 @@ Outras marcas do cartão: **Manual** (registro manual), `📎 N juntado(s)` (o d
 |---|---|
 | **Resumo** | Dados principais; **Tarefas deste documento**; atendimentos ligados; **Análise assistida por IA**; contexto de trabalho e fontes extras (recolhidos); documentos parecidos. |
 | **Documento** | **Texto importado**; **Arquivos (PDF)** com **Ler no Ponte** e exportação; **Anexos** (arquivos seus); dados do SIGADOC; histórico de tramitação. |
-| **Anotações e minutas** | **Notas** no alto; **Minuta** embaixo, com tipo, modelo, IA, **Salvar nova versão**, **Copiar texto**, **Exportar (RTF)**, **Comparar com versão ▾** e as versões salvas. |
+| **Anotações e minutas** | **Notas** no alto; **Minuta** embaixo, com tipo, **Modelo de trabalho**, **Começar por um modelo**, **Guardar como modelo**, **Pedido desta minuta**, IA (**Gerar nova com IA**, **Completar texto atual**, **Revisar texto atual**), **Salvar nova versão**, **Copiar texto**, **Exportar (RTF)**, **Comparar com versão ▾** e as versões salvas, cada uma com **Material utilizado** quando foi gerada com IA. |
 | **Mais** | Vínculos entre documentos (automáticos ou feitos por você); versões importadas, com comparação; o que foi importado e os links encontrados na página; dados técnicos. |
 
 O cabeçalho da ficha mostra o número, a etiqueta de tarefas, a situação de juntada (com **Abrir documento principal**), **Abrir documento no SIGADOC** e **Excluir…** (vai para a Lixeira).
@@ -543,7 +543,7 @@ Passe o mouse para a frase completa e clique para abrir Rede e equipe. Durante u
 O Ponte funciona inteiro sem IA. Ela serve para duas coisas:
 
 - **Resumo ▸ Analisar e sugerir providências:** resume o documento, sugere prioridade, aponta o prazo mencionado e propõe providências, que viram tarefas com um clique. Os trechos citados são conferidos, palavra por palavra, contra as fontes.
-- **Anotações e minutas ▸ Gerar sugestão com IA:** escreve uma minuta do tipo escolhido, com uma orientação opcional, como *"solicitar a informação que falta, com tom objetivo"*. A sugestão abre para revisão (**Levar ao editor**, **Copiar sugestão**, **Descartar sugestão**) e só vira versão quando você salvar.
+- **Anotações e minutas ▸ Gerar nova com IA, Completar texto atual e Revisar texto atual:** escrevem uma minuta do tipo escolhido, completam o texto que está no editor ou o revisam. O campo **Pedido desta minuta** recebe o que você quer, como *"solicitar a informação que falta, com tom objetivo"*; com um **Modelo de trabalho** escolhido, a IA segue também as instruções dele ([seção 9.5](#95-modelos-de-trabalho)). A sugestão abre para revisão (**Levar ao editor**, **Copiar sugestão**, **Descartar sugestão**) e só vira versão quando você salvar.
 
 Ao lado de cada botão, uma linha diz para onde os dados vão.
 
@@ -560,7 +560,7 @@ Em **Menu ▾ ▸ Configurar IA**, escolha uma das quatro opções:
 
 Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na lista. Depois, **Salvar**.
 
-**Sigilo e LGPD.** Nas três opções em que os dados saem do computador, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados a cada clique em Analisar ou Gerar sugestão. Nada é enviado ao importar. Use essas opções só com documentos que podem sair do órgão.
+**Sigilo e LGPD.** Nas três opções em que os dados saem do computador, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados a cada clique em Analisar ou Gerar. Nada é enviado ao importar. Use essas opções só com documentos que podem sair do órgão.
 
 A configuração fica no acervo, cifrada pela sua conta do Windows. Desmarque **Guardar a chave neste computador** para manter a chave, ou a sessão do ChatGPT, só até fechar o Ponte.
 
@@ -588,6 +588,58 @@ Toda resposta da IA passa por uma conferência do próprio programa: formato com
 Enquanto a IA trabalha, a barra inferior mostra a etapa (*Preparando os dados*, *Recebendo a resposta… (N caracteres)*, *Conferindo*, *Tentativa 2 de 3*) e o botão **Cancelar**, que interrompe na próxima etapa sem salvar nada.
 
 O texto do documento é tratado como dado, nunca como instrução: não há agentes autônomos nem ferramentas que a IA possa acionar.
+
+### 9.5 Modelos de trabalho
+
+Um modelo de trabalho reúne o que se repete na redação de um tipo de resposta, para que a IA e as pessoas da equipe partam do mesmo ponto. A área fica no botão **Modelos** do cabeçalho. Modelos são opcionais: sem eles, a minuta funciona como antes.
+
+**O que um modelo guarda**
+
+- **Estrutura:** seções, com orientação e marca de obrigatória, e variáveis a preencher.
+- **Instruções:** blocos de texto reutilizáveis, cada um *obrigatório*, *opcional* ou *condicional* (com a condição escrita). Um bloco pode servir a vários modelos.
+- **Exemplos:** demanda e resposta revisada, com explicação e comentários. Cada exemplo tem situação: *Não conferido*, *Aprovado* ou *Rejeitado*. Só os aprovados são usados.
+- **Referências:** rótulo, localizador (norma, artigo, processo) e nota.
+- **Critérios de conferência:** o que a minuta deve cumprir antes de seguir.
+
+**Versões**
+
+O modelo nasce como rascunho e pode ser editado. **Publicar versão N** congela o texto. Para mudar um modelo publicado, revise: o Ponte cria a versão seguinte, em rascunho. As minutas já geradas continuam ligadas à versão que usaram e não mudam.
+
+**Escopo**
+
+- **Pessoal:** aparece só para quem o criou.
+- **Compartilhado com a equipe:** aparece para todos, na próxima sincronização.
+
+Pessoal é apenas um filtro de exibição. Não protege o conteúdo: quem tem acesso ao acervo da equipe tem acesso ao dado. Qualquer integrante pode revisar um modelo compartilhado, e o histórico guarda quem fez cada versão.
+
+**As cinco abas**
+
+| Aba | Para quê |
+|---|---|
+| **Estrutura** | Nome, finalidade, tipo, critérios de uso, escopo, seções, variáveis, critérios de conferência e nota da versão. Botões **Salvar rascunho** e **Publicar versão N**. |
+| **Instruções** | Biblioteca de blocos; anexar ao modelo como obrigatória, opcional ou condicional; editar e publicar versões do bloco. |
+| **Exemplos** | Cadastrar, **Aprovar** ou **Rejeitar** exemplos. |
+| **Referências** | Fontes que o modelo manda conferir. |
+| **Testar** | Escolhe um documento aberto e mostra o que seria enviado à IA: instruções incluídas, tamanhos e conflitos. **Nada é enviado.** |
+
+**Como usar na minuta**
+
+Em **Anotações e minutas**, escolha o **Modelo de trabalho** (só os publicados do tipo aparecem). Marque as **Instruções opcionais** que valem para este caso, escreva o **Pedido desta minuta** e clique em **Gerar nova com IA**, **Completar texto atual** (preenche o que falta e preserva o que já está escrito) ou **Revisar texto atual** (altera só o necessário e abre a comparação antes de substituir). **Começar por um modelo** preenche o editor com as seções, sem IA. **Guardar como modelo** leva a minuta revisada para a área Modelos, como rascunho de um modelo novo. Em **Modelos**, **Usar este modelo na minuta** faz o caminho inverso.
+
+**Como as instruções chegam à IA**
+
+- As instruções do modelo e o **Pedido desta minuta** vão na parte confiável do pedido, que a IA trata como ordem.
+- O documento, as notas, as fontes e os exemplos vão como dados. Dados nunca valem como ordem, mesmo que tragam frases como "ignore as instruções".
+- Os exemplos mostram só organização, tom e estrutura. Os fatos, nomes, números e datas deles não valem para o caso. Se a minuta copiar um trecho de exemplo, o programa a recusa e pede nova resposta.
+- Instruções que se contradizem, como *"sempre cite a norma"* e *"nunca cite a norma"*, geram um aviso antes de gerar. A detecção é uma heurística por palavras e serve só de alerta: o Ponte não resolve o conflito sozinho, e uma contradição pode passar sem aviso.
+
+**Registro de geração e Material utilizado**
+
+Cada geração é registrada, aceita ou recusada. Na lista de versões, **Material utilizado** mostra: modelo e versão; instruções incluídas, com o texto da época; pedido; exemplos; fontes e arquivos; modelo de IA e provedor; e os conflitos avisados. A conferência dos trechos citados mostra que a citação existe na fonte ("trecho encontrado na fonte"). Ela não comprova que a conclusão esteja certa: a revisão é sua.
+
+**Modelos pessoais de versões anteriores**
+
+Na primeira abertura depois da atualização, cada modelo pessoal antigo vira um modelo pessoal já publicado, com uma versão para cada texto antigo e uma seção **Texto**. Nada se perde. Para compartilhar, mude o escopo e publique uma nova versão.
 
 ---
 
@@ -713,7 +765,7 @@ Não. O acervo é cifrado pela conta do Windows de cada máquina, e um banco de 
 Se nada mudou, nada é gravado e a extensão avisa. Se mudou, o Ponte guarda uma nova versão e mantém as anteriores.
 
 **A IA lê meus documentos sem eu pedir?**
-Não. Nada é enviado à IA ao importar. O envio acontece só quando você clica em **Analisar e sugerir providências** ou em **Gerar sugestão com IA**.
+Não. Nada é enviado à IA ao importar. O envio acontece só quando você clica em **Analisar e sugerir providências** ou em **Gerar nova com IA**, **Completar texto atual** ou **Revisar texto atual**.
 
 **Qual a diferença entre a extensão da loja e a da pasta?**
 São a mesma extensão. A da loja se atualiza sozinha e não exige o modo do desenvolvedor; a da pasta vem junto com o instalador, para quem não tem acesso à loja. Use só uma das duas.
@@ -764,7 +816,10 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/idmap.rs` | Tradução dos números de itens criados sem conexão para os que receberam no acervo da equipe |
 | `src/sharedfolder.rs` | Arquivo de transporte da pasta compartilhada (PBKDF2 + AES-256-GCM) |
 | `src/ai.rs`, `src/chatgpt.rs`, `src/evidence.rs` | Cliente Ollama, login e Responses API da OpenAI, fontes para a IA |
-| `src/work_context.rs`, `src/draft_tools.rs` | Contexto de trabalho; modelos e comparação de minutas |
+| `src/work_context.rs`, `src/draft_tools.rs` | Contexto de trabalho; texto-base e comparação de minutas |
+| `src/work_templates.rs` | Modelos de trabalho: dados e versões, instruções, exemplos, registro de geração, migração dos modelos pessoais antigos |
+| `src/prompting.rs` | Montagem do prompt em camadas, detecção de conflitos e conferências (cópia de exemplo, texto preservado ao completar) |
+| `src/templates_ui.rs` | Área **Modelos**: lista, abas Estrutura, Instruções, Exemplos, Referências e Testar |
 | `src/export.rs` | Exportação CSV |
 | `src/guide.rs` | Guia do usuário: `GUIA_DO_USUARIO.md` embutido e convertido em página para o navegador |
 | `src/windows_ui.rs`, `src/paths.rs` | Seletores de arquivo, verificação do registro do host, pastas de dados |
@@ -783,6 +838,8 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 - **Dois IDs de extensão são aceitos:** o da pasta instalada (`extension-id.txt`) e o da Chrome Web Store (`extension-store-id.txt`). O instalador autoriza os dois no navegador e o executável confere os dois.
 - **O host nunca fecha calado.** Origem desconhecida ou acervo que não abre são respondidos com `{ok:false,error:{code,message}}`, que a extensão mostra.
 - **Mutações de equipe** (`IntranetMutation`) são a única forma de alterar o acervo em rede; a fila offline e a pasta compartilhada reaplicam as mesmas mutações.
+- **Modelos de trabalho** usam as tabelas `work_templates`, `work_template_versions`, `instruction_blocks`, `instruction_block_versions`, `template_examples` e `draft_generations`. Os itens são endereçados por `uid` (UUID), não pelo número da linha, o que dispensa tradução de números na sincronização; só o registro de geração, que aponta para documento e captura, passa por `idmap`. A camada confiável do prompt só recebe texto de modelo, instruções e pedido; documentos e exemplos vão como dados.
+- **`SCHEMA_VERSION` 11:** o acervo muda de formato. Quem está em equipe atualiza todos os computadores juntos, o principal primeiro.
 - **Limites:** 500 KiB de texto e 1 MiB por pacote de captura, até 10 PDFs, 8 MiB por PDF e 16 MiB de PDFs por importação, 8 MiB por anexo, 100 MiB por planilha `.xlsx` (256 MiB descompactada).
 - **A extensão só atua em `https://www.sigadoc.mt.gov.br`** e remove segredos de URL.
 - **Leituras caras ficam em memória até o acervo mudar.** Cada linha é decifrada pela DPAPI, e a interface redesenha várias vezes por segundo. `Store::cached` guarda o resultado de listas como tarefas, documentos e atendimentos e o descarta a cada gravação, desta conexão ou de outra. Uma leitura nova que seja cara e sem efeitos colaterais deve passar por ele.
@@ -824,7 +881,7 @@ node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tes
 
 Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
-Hoje são 97 testes unitários (mais um que exige um Ollama de verdade e fica de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
+Hoje são 113 testes unitários (mais um que exige um Ollama de verdade e fica de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 
