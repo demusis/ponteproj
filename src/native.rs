@@ -1,3 +1,6 @@
+//! Native Messaging host: length-prefixed JSON frames on standard input and
+//! output, the extension ids accepted, and replies that always explain a
+//! refusal in words instead of closing silently.
 use crate::{
     model::{Capture, ImportOutcome},
     storage::Store,
@@ -87,6 +90,9 @@ pub fn error(code: &str, message: &str) -> Value {
     json!({"protocol_version": PROTOCOL_VERSION, "ok": false, "error": {"code": code, "message": message}})
 }
 
+/// Handles one request frame (`ping`, `import_capture`, `import_bundle`).
+/// Returns the reply and, when something was stored, the document to open.
+/// Requests may reach `MAX_FRAME` (PDFs travel inside); replies stay small.
 pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
     let request: Request = match serde_json::from_slice(bytes) {
         Ok(request) => request,

@@ -1,4 +1,7 @@
-//! Explicit, stateless Ollama calls. Importing a document never invokes this module.
+//! The optional AI: configuration (sealed in the library), the Ollama API
+//! (this computer, Ollama Cloud or another HTTPS server) and the ChatGPT
+//! plan (see `chatgpt`), with strict checking and repair of every answer.
+//! Nothing here runs unless the person asks; importing never calls it.
 use crate::model::{valid_kind, Analysis, Capture};
 use crate::storage::validate_analysis;
 use anyhow::{bail, ensure, Context, Result};
@@ -499,7 +502,7 @@ fn parse_tags(bytes: &[u8]) -> Result<Vec<ModelInfo>> {
             )
         })
         .collect();
-    models.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    models.sort_by_key(|a| a.name.to_lowercase());
     models.dedup_by(|a, b| a.name == b.name);
     Ok(models)
 }

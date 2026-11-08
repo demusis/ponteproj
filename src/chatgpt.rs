@@ -487,7 +487,7 @@ fn parse_callback(query: &str, state: &str, expected_client: Option<&str>) -> Re
 /// Scopes come space-separated in token responses and "+"-separated in the
 /// callback query (already decoded to spaces by form parsing).
 fn split_scopes(text: &str) -> Vec<String> {
-    text.split(|c: char| c == ' ' || c == '+')
+    text.split([' ', '+'])
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .collect()

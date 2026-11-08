@@ -148,17 +148,17 @@ fn sample_icon(u: f32, v: f32, variant: IconVariant) -> [f32; 4] {
         }
 
         // Header accent bar on document (#D99500)
-        if u >= 0.345 && u <= 0.53 && v >= 0.215 && v <= 0.252 {
+        if (0.345..=0.53).contains(&u) && (0.215..=0.252).contains(&v) {
             sheet = [0.851, 0.584, 0.000];
         }
         // Document text lines in petrol teal (#185461)
-        if u >= 0.345 && u <= 0.645 && v >= 0.295 && v <= 0.326 {
+        if (0.345..=0.645).contains(&u) && (0.295..=0.326).contains(&v) {
             sheet = [0.094, 0.329, 0.380];
         }
-        if u >= 0.345 && u <= 0.605 && v >= 0.362 && v <= 0.393 {
+        if (0.345..=0.605).contains(&u) && (0.362..=0.393).contains(&v) {
             sheet = [0.094, 0.329, 0.380];
         }
-        if u >= 0.345 && u <= 0.565 && v >= 0.429 && v <= 0.458 {
+        if (0.345..=0.565).contains(&u) && (0.429..=0.458).contains(&v) {
             sheet = [0.220, 0.455, 0.510];
         }
 
@@ -171,10 +171,10 @@ fn sample_icon(u: f32, v: f32, variant: IconVariant) -> [f32; 4] {
     let cream = [0.988, 0.976, 0.949];       // #FCF9F2
 
     // 3a. Suspension cables (parabolic arcs from towers x=0.25 and x=0.75)
-    let cable_y = if u >= 0.11 && u < 0.25 {
+    let cable_y = if (0.11..0.25).contains(&u) {
         let s = (0.25 - u) / 0.14;
         0.41 + 0.21 * s * s
-    } else if u >= 0.25 && u <= 0.75 {
+    } else if (0.25..=0.75).contains(&u) {
         let s = (u - 0.50) / 0.25;
         0.575 - 0.165 * s * s
     } else if u > 0.75 && u <= 0.89 {
@@ -201,7 +201,7 @@ fn sample_icon(u: f32, v: f32, variant: IconVariant) -> [f32; 4] {
     }
 
     // 3b. Lower Roman/structural arch under the deck (spanning x = 0.14..0.86)
-    if u >= 0.13 && u <= 0.87 {
+    if (0.13..=0.87).contains(&u) {
         let norm_x = (u - 0.50) / 0.36;
         let arch_center_y = 0.665 + 0.175 * norm_x * norm_x;
         let arch_half_thick = match variant {
@@ -219,12 +219,12 @@ fn sample_icon(u: f32, v: f32, variant: IconVariant) -> [f32; 4] {
         IconVariant::Extension => 0.038,
     };
     for &tx in &[0.25f32, 0.75f32] {
-        if (u - tx).abs() <= tower_half_w && v >= 0.38 && v <= 0.84 {
+        if (u - tx).abs() <= tower_half_w && (0.38..=0.84).contains(&v) {
             let edge = ((u - tx) / tower_half_w).abs();
             rgb = if edge > 0.65 { gold_deep } else { gold_bright };
         }
         // Tower cap
-        if (u - tx).abs() <= tower_half_w * 1.25 && v >= 0.365 && v <= 0.395 {
+        if (u - tx).abs() <= tower_half_w * 1.25 && (0.365..=0.395).contains(&v) {
             rgb = cream;
         }
     }
@@ -236,7 +236,7 @@ fn sample_icon(u: f32, v: f32, variant: IconVariant) -> [f32; 4] {
     }
 
     // 3e. Subtle water reflection wave at bottom (v = 0.87..0.895)
-    if u >= 0.28 && u <= 0.72 && (v - 0.885).abs() <= 0.012 {
+    if (0.28..=0.72).contains(&u) && (v - 0.885).abs() <= 0.012 {
         blend(&mut rgb, [0.42, 0.82, 0.90], 0.65);
     }
 
@@ -257,8 +257,8 @@ fn sample_icon(u: f32, v: f32, variant: IconVariant) -> [f32; 4] {
                 let rx = (u - bx) / br;
                 let ry = (v - by) / br;
                 let in_shaft = rx.abs() <= 0.16 && (-0.52..=0.18).contains(&ry);
-                let in_head = ry >= -0.05 && ry <= 0.38 && rx.abs() <= (0.38 - ry) * 1.15;
-                let in_tray = ry >= 0.44 && ry <= 0.58 && rx.abs() <= 0.46;
+                let in_head = (-0.05..=0.38).contains(&ry) && rx.abs() <= (0.38 - ry) * 1.15;
+                let in_tray = (0.44..=0.58).contains(&ry) && rx.abs() <= 0.46;
                 if in_shaft || in_head || in_tray {
                     rgb = cream;
                 }

@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, quadro **Ligação com o navegador** | *✓ O Ponte está registrado para o Chrome e Edge* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.19.3* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.19.6.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 Se algum dos três não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -141,7 +141,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | **Exportar dados para CSV…** | Planilhas para o Excel ou para painéis |
 | **Atualizar lista** | A lista já se atualiza sozinha; serve para forçar |
 | **Guia do usuário** | Abre o guia curto no navegador, sem precisar de internet. Dá para imprimir |
-| **Sobre o Ponte…** | Versão, autoria, licença e endereço do projeto |
+| **Sobre o Ponte X.Y.Z…** (com o número da versão) | Versão, autoria, licença e endereço do projeto |
 
 **Datas:** todo campo de data aceita digitar `dd/mm/aaaa` ou escolher no calendário. O botão 📅 abre o mês, com os dias da semana (D S T Q Q S S), setas ◀ ▶ para trocar de mês, hoje em destaque e os atalhos **Hoje** e **Limpar**. Uma data inválida, como `31/02/2026`, fica marcada em vermelho.
 
@@ -244,7 +244,7 @@ Cada cartão mostra o número e o assunto e, embaixo, uma **etiqueta colorida** 
 | 4 | verde | nenhuma em aberto e pelo menos uma concluída | `✓ 1 tarefa concluída` |
 | 5 | cinza | o documento não tem tarefas | `○ Sem tarefas` |
 
-Como ler os números: o primeiro conta as tarefas na situação que dá a cor (atrasadas, ou que vencem hoje), e o que vem entre parênteses são as demais tarefas em aberto. **Prazo** é o prazo mais próximo entre as tarefas em aberto. Um `• ✓ 2` ao final diz quantas já foram concluídas.
+Como ler os números: o primeiro conta as tarefas na situação que dá a cor (atrasadas, ou que vencem hoje), e o que vem entre parênteses são as demais tarefas em aberto. **Prazo** é o prazo mais próximo entre as tarefas em aberto. Nas etiquetas azul e âmbar, um `• ✓ 2` ao final diz quantas já foram concluídas.
 
 O pior caso manda: um documento com uma tarefa atrasada e três no prazo recebe a etiqueta vermelha. Uma tarefa sem prazo conta como "no prazo". Só a etiqueta muda de cor; o cartão em si não.
 
@@ -275,7 +275,7 @@ Importar de novo nunca duplica. O Ponte compara o conteúdo da página (texto, P
 
 Se a confirmação de uma importação se perder no caminho, o botão vira **Repetir importação**. Repetir não duplica: o Ponte responde *Importação confirmada*.
 
-**Limites de uma importação:** 500 KB de texto, 8 MB por PDF e 16 MB de PDFs no total. O que passar disso é avisado; o texto da página é importado mesmo assim.
+**Limites de uma importação:** 500 KB de texto, até 10 PDFs, 8 MB por PDF e 16 MB de PDFs no total. O que passar disso é avisado; o texto da página é importado mesmo assim.
 
 ### 5.5 Registros manuais
 
@@ -441,7 +441,7 @@ Linhas só com fórmulas são ignoradas. A mesma referência com datas de entrad
 
 ### 7.5 Filas e filtros
 
-- **Fila ▾** mostra quantos atendimentos há em cada fila: *Minhas pendências*, *Sem responsável*, *Prazo vencido*, *Vence hoje*, *Vence nos próximos dias* (ajuste os dias), *Aguardando resposta*, *Retorno para UAS*, *Aguardando assinatura*, *Sem atualização no período*, *Com alerta de revisão*.
+- **Fila:** a lista suspensa no alto do painel (por exemplo *Fila: Minhas pendências (3)*) mostra quantos atendimentos há em cada fila: *Minhas pendências*, *Sem responsável*, *Prazo vencido*, *Vence hoje*, *Vence nos próximos dias* (ajuste os dias), *Aguardando resposta*, *Retorno para UAS*, *Aguardando assinatura*, *Sem atualização no período*, *Com alerta de revisão*.
 - **Filtros ▾** abre responsável, origem, destino e situação.
 - Clique no título de uma coluna para ordenar. A coluna *Idade / Espera* mostra os dias desde a entrada e os dias aguardando retorno externo.
 
@@ -765,6 +765,8 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/export.rs` | Exportação CSV |
 | `src/guide.rs` | Guia do usuário: `GUIA_DO_USUARIO.md` embutido e convertido em página para o navegador |
 | `src/windows_ui.rs`, `src/paths.rs` | Seletores de arquivo, verificação do registro do host, pastas de dados |
+| `src/icon.rs`, `build.rs`, `assets/` | Ícone da janela e do executável |
+| `src/lib.rs`, `src/main.rs` | A biblioteca com todos os módulos; `main.rs` decide se abre a janela, atende o navegador ou executa uma opção de linha de comando |
 | `extension/` | Extensão MV3: `capture-core.js` (leitura da página e validação), `content.js` (painel), `history.js` (tramitação), `files.js` e `background.js` (PDFs e host nativo), `popup.*` |
 | `installer/Ponte.iss` | Instalador Inno Setup |
 | `scripts/` | `build.ps1`, `build-installer.ps1`, `build-webstore-package.ps1`, `install-app.ps1`, `install-native-host.ps1` |
@@ -778,8 +780,16 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 - **Dois IDs de extensão são aceitos:** o da pasta instalada (`extension-id.txt`) e o da Chrome Web Store (`extension-store-id.txt`). O instalador autoriza os dois no navegador e o executável confere os dois.
 - **O host nunca fecha calado.** Origem desconhecida ou acervo que não abre são respondidos com `{ok:false,error:{code,message}}`, que a extensão mostra.
 - **Mutações de equipe** (`IntranetMutation`) são a única forma de alterar o acervo em rede; a fila offline e a pasta compartilhada reaplicam as mesmas mutações.
-- **Limites:** 500 KiB de texto e 1 MiB por pacote de captura, 8 MiB por PDF, 16 MiB de PDFs por importação, 8 MiB por anexo.
+- **Limites:** 500 KiB de texto e 1 MiB por pacote de captura, até 10 PDFs, 8 MiB por PDF e 16 MiB de PDFs por importação, 8 MiB por anexo, 100 MiB por planilha `.xlsx` (256 MiB descompactada).
 - **A extensão só atua em `https://www.sigadoc.mt.gov.br`** e remove segredos de URL.
+- **Leituras caras ficam em memória até o acervo mudar.** Cada linha é decifrada pela DPAPI, e a interface redesenha várias vezes por segundo. `Store::cached` guarda o resultado de listas como tarefas, documentos e atendimentos e o descarta a cada gravação, desta conexão ou de outra. Uma leitura nova que seja cara e sem efeitos colaterais deve passar por ele.
+
+**Convenções para quem for alterar o código:**
+
+- Toda gravação do acervo passa por `Store`, numa transação `Immediate`, e registra-se com `intranet::record_mutation`. Num computador conectado ou em pasta compartilhada, a função começa por `client_config()` e envia a alteração com `remote_mutate`, como uma `IntranetMutation`.
+- Toda tabela nova guarda o conteúdo com `protection::seal` e, se pertence a um documento, entra nas proteções de `ensure_write_guards` (`src/storage.rs`).
+- Textos para a pessoa ficam em português e dizem o que fazer; comentários e nomes no código ficam em inglês.
+- Configurações com segredos não derivam `Debug`; escreva um que oculte o segredo, como em `IntranetConfig`.
 
 ### 13.3 Compilar e testar
 
@@ -791,14 +801,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Action 
 Copy-Item .\target\release\ponteproj.exe .\dist\ponteproj.exe -Force
 
 # só uma etapa
-.\scripts\build.ps1 -Action Check   # cargo check --all-targets --locked
-.\scripts\build.ps1 -Action Test    # cargo test --all-targets --locked
-.\scripts\build.ps1 -Action Release # cargo build --release --locked
+.\scripts\build.ps1 -Action Check     # cargo check --all-targets --locked
+.\scripts\build.ps1 -Action Test      # cargo test --all-targets --locked
+.\scripts\build.ps1 -Action Release   # cargo build --release --locked
+
+# qualidade (não fazem parte do All; rode antes de publicar)
+.\scripts\build.ps1 -Action Lint      # clippy em todo o código; qualquer aviso falha
+.\scripts\build.ps1 -Action Format    # confere a formatação (rustfmt), sem alterar arquivos
+.\scripts\build.ps1 -Action LintFix   # aplica as correções automáticas do clippy
+.\scripts\build.ps1 -Action FormatFix # formata todo o código
+.\scripts\build.ps1 -Action AiSmoke   # teste da IA contra um Ollama local de verdade (ignorado no Test)
 
 # testes da extensão (os de DOM usam o Chrome instalado)
+cd extension; npm install; npm test; cd ..
+# ou, com um Playwright já instalado em outra pasta:
 $env:PONTEPROJ_PLAYWRIGHT_DIR = 'caminho\para\node_modules\playwright'
 node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tests\extension\files.test.cjs
 ```
+
+Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
 Hoje são 84 testes unitários e 4 de integração no aplicativo, e 31 na extensão.
 
@@ -822,6 +843,7 @@ ponteproj.exe --list "treinamento"             # lista documentos (JSON) que cas
 ponteproj.exe --serve 0.0.0.0:7878             # computador principal sem janela (imprime a chave)
 ponteproj.exe --guide                          # abre o guia do usuário no navegador
 ponteproj.exe --guide .\guia.html              # grava o guia como página, sem abrir
+ponteproj.exe --native-host                    # atende a extensão pela entrada e saída padrão, como o navegador faz
 ponteproj.exe --version | --help
 ```
 

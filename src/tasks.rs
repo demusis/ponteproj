@@ -1,3 +1,5 @@
+//! Tasks: model, validation, dependencies between tasks and the cascade that
+//! concludes the tasks of joined documents.
 use crate::{protection, storage::Store};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection};
@@ -140,7 +142,12 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+    /// Every task of the library (in the trash or not), memoized until the
+    /// library changes.
     pub fn list_tasks(&self) -> Result<Vec<Task>> {
+        self.cached("tasks", || self.list_tasks_uncached())
+    }
+    fn list_tasks_uncached(&self) -> Result<Vec<Task>> {
         let rows = self
             .conn
             .prepare("SELECT t.id,t.document_id,t.payload FROM tasks t WHERE NOT EXISTS(SELECT 1 FROM trash x WHERE x.kind='task' AND x.item_id=t.id) AND NOT EXISTS(SELECT 1 FROM trash x WHERE x.kind='document' AND x.item_id=t.document_id)")?
@@ -397,12 +404,9 @@ impl Store {
                             number_of(*parent)
                         ));
                         let version = self.item_version("task", task.id).ok().map(|v| v.version);
-                        match self.save_task_checked(&done, version) {
-                            Ok(_) => {
-                                progress = true;
-                                concluded.push(format!("{} — {}", number_of(*child), task.title));
-                            }
-                            Err(_) => {}
+                        if self.save_task_checked(&done, version).is_ok() {
+                            progress = true;
+                            concluded.push(format!("{} — {}", number_of(*child), task.title));
                         }
                     }
                 }
@@ -605,7 +609,7 @@ impl<'a> Dependencies<'a> {
     /// Everything that must be concluded before this task, at any depth,
     /// nearest first. Each task appears once.
     pub fn ancestors(&self, id: i64) -> Vec<&'a Task> {
-        self.walk(id, |t| t.dependencies.iter().copied().collect())
+        self.walk(id, |t| t.dependencies.to_vec())
     }
 
     /// Everything waiting for this task, at any depth, nearest first.

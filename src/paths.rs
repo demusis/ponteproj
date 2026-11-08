@@ -1,3 +1,5 @@
+//! Where the library lives: `PONTEPROJ_DATA_DIR`, or
+//! `%LOCALAPPDATA%\PonteProj`.
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 

@@ -1,3 +1,8 @@
+//! The library: SQLite schema, migrations, write guards and the document
+//! API. `Store` is the only way in; every stored payload is sealed with DPAPI
+//! (`protection::seal`) and every change goes through
+//! `intranet::record_mutation`. Expensive reads are memoized until the
+//! library changes (`Store::cached`).
 use crate::model::*;
 use crate::protection::{seal, unseal};
 use anyhow::{ensure, Context, Result};
@@ -29,6 +34,9 @@ pub struct Store {
     pub(crate) cascade_suppressed: bool,
     /// Human-readable results of the last cascade, drained by the UI.
     pub(crate) cascade_notes: Vec<String>,
+    /// Results of expensive reads (every row is unsealed with DPAPI), kept
+    /// until the library changes. See [`Store::cached`].
+    pub(crate) read_cache: std::cell::RefCell<ReadCache>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -37,6 +45,66 @@ struct DraftPayload {
     materials: Vec<crate::evidence::Source>,
     kind: String,
     body: String,
+}
+
+/// Memo of expensive reads. Valid while the library is unchanged: `stamp`
+/// combines the rows this connection has written (`total_changes()`) with
+/// SQLite's `data_version`, which moves when any other connection (the team
+/// server thread, a synchronization) commits.
+#[derive(Default)]
+pub(crate) struct ReadCache {
+    stamp: Option<(i64, i64)>,
+    values: std::collections::HashMap<String, Box<dyn std::any::Any>>,
+}
+
+/// Distinct reads kept at once; a search typed letter by letter must not grow
+/// the memo without bound.
+const READ_CACHE_ENTRIES: usize = 64;
+
+impl Store {
+    /// Library state the read memo is tied to, or `None` when it cannot be
+    /// read (the memo is then bypassed).
+    fn library_stamp(&self) -> Option<(i64, i64)> {
+        self.conn
+            .query_row(
+                "SELECT total_changes(), (SELECT data_version FROM pragma_data_version)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    /// Returns the value of `load` for `key`, computing it only when the
+    /// library changed since it was last computed. `load` must be a pure read
+    /// of the library (same data, same result); it may itself use `cached`.
+    pub(crate) fn cached<T: Clone + 'static>(
+        &self,
+        key: &str,
+        load: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let Some(stamp) = self.library_stamp() else {
+            return load();
+        };
+        {
+            let mut cache = self.read_cache.borrow_mut();
+            if cache.stamp != Some(stamp) {
+                cache.values.clear();
+                cache.stamp = Some(stamp);
+            }
+            if let Some(value) = cache.values.get(key).and_then(|v| v.downcast_ref::<T>()) {
+                return Ok(value.clone());
+            }
+        }
+        let value = load()?;
+        let mut cache = self.read_cache.borrow_mut();
+        if cache.stamp == Some(stamp) {
+            if cache.values.len() >= READ_CACHE_ENTRIES {
+                cache.values.clear();
+            }
+            cache.values.insert(key.to_owned(), Box::new(value.clone()));
+        }
+        Ok(value)
+    }
 }
 
 impl Store {
@@ -132,6 +200,7 @@ impl Store {
             host_unreachable_until: None,
             cascade_suppressed: false,
             cascade_notes: Vec::new(),
+            read_cache: Default::default(),
         };
         store.ensure_tasks()?;
         store.ensure_files()?;
@@ -229,6 +298,11 @@ impl Store {
         Ok(())
     }
 
+    /// Imports a page captured by the extension. A new document or new content
+    /// is stored as a version; identical content stores nothing. The first
+    /// import of a document also creates its triage task, its automatic
+    /// atendimento and its juntada links. Idempotent by `request_id`; on a
+    /// client computer it is sent to the main one.
     pub fn import_capture(&mut self, capture: &Capture) -> Result<ImportReceipt> {
         if let Some(cfg) = self.client_config()? {
             match self.remote_mutate(
@@ -411,7 +485,12 @@ impl Store {
         })
     }
 
+    /// Active documents matching `query` (empty: all), memoized per query
+    /// until the library changes.
     pub fn list_documents(&self, query: &str) -> Result<Vec<DocumentSummary>> {
+        self.cached(&format!("documents\u{1}{query}"), || self.list_documents_uncached(query))
+    }
+    fn list_documents_uncached(&self, query: &str) -> Result<Vec<DocumentSummary>> {
         ensure!(query.len() <= 8192, "Busca grande demais.");
         let terms = tokens(query);
         let mut out = Vec::new();
@@ -732,6 +811,9 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes a document and everything it holds for good, bypassing the
+    /// trash (the interface uses `trash_item`). Goes through
+    /// `record_mutation`; on a client computer it is sent to the main one.
     pub fn delete_document(&mut self, id: i64) -> Result<()> {
         if let Some(cfg) = self.client_config()? {
             self.remote_mutate(
@@ -777,7 +859,12 @@ impl Store {
         Ok(())
     }
 
+    /// Documents whose text resembles document `id`, memoized until the
+    /// library changes.
     pub fn similar_documents(&self, id: i64, limit: usize) -> Result<Vec<DocumentSummary>> {
+        self.cached(&format!("similar\u{1}{id}\u{1}{limit}"), || self.similar_documents_uncached(id, limit))
+    }
+    fn similar_documents_uncached(&self, id: i64, limit: usize) -> Result<Vec<DocumentSummary>> {
         let target = self.load_document(id)?;
         if limit == 0 {
             return Ok(vec![]);
@@ -1244,6 +1331,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Store::open(&dir.path().join("documents.sqlite3")).unwrap();
         (dir, db)
+    }
+
+    #[test]
+    fn memoized_reads_follow_writes_from_this_and_other_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.sqlite3");
+        let mut here = Store::open(&path).unwrap();
+        let mut there = Store::open(&path).unwrap();
+        let receipt = here.import_capture(&sample_capture()).unwrap();
+        let before = here.list_tasks().unwrap().len();
+        // Same answer while nothing changes (served from memory).
+        assert_eq!(here.list_tasks().unwrap().len(), before);
+
+        // A write on this connection is seen at once.
+        let mut task = crate::tasks::Task::new(receipt.document_id);
+        task.title = "Daqui".into();
+        here.save_task(&task).unwrap();
+        assert_eq!(here.list_tasks().unwrap().len(), before + 1);
+
+        // So is a write committed by another connection (the team server).
+        task.title = "De lá".into();
+        there.save_task(&task).unwrap();
+        let titles: Vec<String> = here.list_tasks().unwrap().into_iter().map(|t| t.title).collect();
+        assert_eq!(titles.len(), before + 2);
+        assert!(titles.iter().any(|t| t == "De lá"), "{titles:?}");
+
+        // And a change through raw SQL (a migration, a test) as well.
+        here.conn.execute("DELETE FROM tasks WHERE id=(SELECT max(id) FROM tasks)", []).unwrap();
+        assert_eq!(here.list_tasks().unwrap().len(), before + 1);
+        // Searches are kept apart.
+        assert_eq!(here.list_documents("").unwrap().len(), 1);
+        assert!(here.list_documents("palavra-que-nao-existe").unwrap().is_empty());
+        assert_eq!(here.list_documents("").unwrap().len(), 1);
     }
 
     fn analysis(capture_id: i64) -> Analysis {

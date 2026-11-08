@@ -266,6 +266,7 @@ pub struct DocumentLink {
     pub active: bool,
     pub payload: LinkPayload,
 }
+#[derive(Clone)]
 pub struct CaptureVersion {
     pub id: i64,
     pub saved_at: String,
@@ -286,7 +287,11 @@ impl Store {
         )?;
         Ok(serde_json::from_slice(&protection::unseal(&bytes)?)?)
     }
+    /// Imported versions of a document, memoized until the library changes.
     pub fn capture_versions(&self, document: i64) -> Result<Vec<CaptureVersion>> {
+        self.cached(&format!("capture_versions\u{1}{document}"), || self.capture_versions_uncached(document))
+    }
+    fn capture_versions_uncached(&self, document: i64) -> Result<Vec<CaptureVersion>> {
         let mut statement = self.conn.prepare(
             "SELECT c.id,c.created_at,c.payload FROM captures c WHERE c.document_id=?1 AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='capture' AND t.item_id=c.id) ORDER BY c.id DESC",
         )?;

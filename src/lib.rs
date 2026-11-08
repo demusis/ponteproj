@@ -1,3 +1,6 @@
+//! The Ponte library crate: every module of the program. `main.rs` only
+//! decides whether to open the window, serve the browser extension or run a
+//! command-line option.
 pub mod ai;
 pub mod app;
 pub mod chatgpt;

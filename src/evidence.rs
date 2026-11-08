@@ -325,9 +325,9 @@ mod tests {
             quote: "Solicita-se resposta até 30/11/2026.".into(),
             claim: "Prazo transcrito".into(),
         };
-        validate(&[source.clone()], &[citation.clone()]).unwrap();
+        validate(std::slice::from_ref(&source), &[citation.clone()]).unwrap();
         citation.quote = "O prazo é 15/11/2026 e é obrigatório".into();
-        assert!(validate(&[source.clone()], &[citation.clone()]).is_err());
+        assert!(validate(std::slice::from_ref(&source), &[citation.clone()]).is_err());
         citation.source_id = "C99".into();
         assert!(validate(&[source], &[citation]).is_err());
     }

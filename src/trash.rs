@@ -1,4 +1,6 @@
-//! Reversible local deletion. Protected payloads and links remain in place.
+//! The trash: reversible deletion of documents, versions, tasks and
+//! attachments (payloads and links stay in place), restoration, and the
+//! permanent purge, on request or after the retention chosen by the person.
 use crate::{model::Capture, protection, storage::Store, tasks::Task};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -386,6 +388,8 @@ impl Store {
             .optional()?;
         Ok(value.and_then(|v| v.trim().parse().ok()).unwrap_or(0))
     }
+    /// Sets the retention of this computer. Not synchronized: in a team, only
+    /// the main computer purges, with its own value.
     pub fn set_trash_retention_days(&mut self, days: u32) -> Result<()> {
         ensure!(days <= 3660, "Prazo da lixeira grande demais (máximo de 10 anos).");
         self.conn.execute(
@@ -514,6 +518,10 @@ impl Store {
         tx.commit()?;
         Ok(document)
     }
+    /// Moves an item to the trash (reversible), unless `deletion_plan` finds a
+    /// blocker. Trashing the version in use promotes another one. Returns the
+    /// document the item belongs to; on a client computer it is sent to the
+    /// main one.
     pub fn trash_item(&mut self, target: Target) -> Result<i64> {
         if let Some(cfg) = self.client_config()? {
             match self.remote_mutate(

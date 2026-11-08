@@ -400,8 +400,7 @@ impl SaiopImportPreview {
 }
 
 pub fn normalize_reference(raw: &str) -> String {
-    raw.trim()
-        .split_whitespace()
+    raw.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_uppercase()
@@ -657,7 +656,7 @@ impl Store {
                     kind: "entrada".into(),
                     detail: format!("Ligado ao documento {} importado do SIGADOC", capture.document_number),
                 });
-                self.save_saiop_attendance(&unlinked, version)?;
+                self.save_saiop_attendance_by(&unlinked, version, false)?;
                 return Ok(());
             }
             let mut att = SaiopAttendance::new_manual();
@@ -694,7 +693,11 @@ impl Store {
         result
     }
 
+    /// Every atendimento, newest first, memoized until the library changes.
     pub fn list_saiop_attendances(&self) -> Result<Vec<SaiopAttendance>> {
+        self.cached("saiop_attendances", || self.list_saiop_attendances_uncached())
+    }
+    fn list_saiop_attendances_uncached(&self) -> Result<Vec<SaiopAttendance>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, batch_id, source_row, document_id, payload
              FROM saiop_attendances
@@ -757,10 +760,24 @@ impl Store {
         }
     }
 
+    /// Saves an atendimento typed or changed by a person (it becomes
+    /// "edited", so undoing its spreadsheet import keeps it). Goes through
+    /// `record_mutation`; on a client computer it is sent to the main one.
     pub fn save_saiop_attendance(
         &mut self,
         attendance: &SaiopAttendance,
         expected_version: Option<i64>,
+    ) -> Result<i64> {
+        self.save_saiop_attendance_by(attendance, expected_version, true)
+    }
+
+    /// `by_person: false` is for changes the program makes by itself (linking
+    /// an imported document): they do not mark the row as edited.
+    fn save_saiop_attendance_by(
+        &mut self,
+        attendance: &SaiopAttendance,
+        expected_version: Option<i64>,
+        by_person: bool,
     ) -> Result<i64> {
         ensure!(
             !attendance.reference_raw.trim().is_empty() || !attendance.subject.trim().is_empty(),
@@ -803,7 +820,9 @@ impl Store {
         next.subject = next.subject.trim().to_owned();
         next.assignee = next.assignee.trim().to_owned();
         next.updated_at = now.clone();
-        next.human_edited = true;
+        if by_person {
+            next.human_edited = true;
+        }
 
         if next.id > 0 {
             let existing_blob: Vec<u8> = tx
@@ -945,6 +964,15 @@ impl Store {
         path: &Path,
         tramitado_keep_open: bool,
     ) -> Result<SaiopImportPreview> {
+        let size = std::fs::metadata(path)
+            .with_context(|| format!("Não foi possível ler a planilha em {}", path.display()))?
+            .len();
+        ensure!(
+            size <= MAX_XLSX_FILE_BYTES,
+            "A planilha tem {} MB; o limite é {} MB. Salve uma cópia só com a aba PROCESSOS.",
+            size / (1024 * 1024),
+            MAX_XLSX_FILE_BYTES / (1024 * 1024)
+        );
         let bytes = std::fs::read(path)
             .with_context(|| format!("Não foi possível ler a planilha em {}", path.display()))?;
         let file_name = path
@@ -1272,7 +1300,10 @@ impl Store {
         )
     }
 
-    pub fn commit_saiop_import_raw(
+    /// Writes an import batch here, without team routing: called by
+    /// `commit_saiop_import` and by the main computer for its clients.
+    /// Refuses a file already imported (same SHA-256).
+    pub(crate) fn commit_saiop_import_raw(
         &mut self,
         file_name: &str,
         file_sha256: &str,
@@ -1390,7 +1421,10 @@ impl Store {
         Ok(batch)
     }
 
-    /// Reverte um lote importado, removendo os atendimentos que não sofreram edição manual posterior e preservando os editados.
+    /// Undoes an imported batch for good: deletes the rows nobody touched and
+    /// keeps (detached from the batch) those edited, turned into tasks or
+    /// holding attachments, as decided by `kept_on_undo`. Returns
+    /// (removed, kept). On a client computer it is sent to the main one.
     pub fn undo_saiop_batch(&mut self, batch_id: i64) -> Result<(usize, usize)> {
         if let Some(cfg) = self.client_config()? {
             return match self.remote_mutate(
@@ -1424,13 +1458,7 @@ impl Store {
         let mut preserved = 0usize;
         for (id, blob) in rows {
             let att: SaiopAttendance = serde_json::from_slice(&unseal(&blob)?)?;
-            let attachments: i64 = tx.query_row(
-                "SELECT count(*) FROM attachments a WHERE a.owner_kind='saiop' AND a.owner_id=?1
-                   AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='attachment' AND t.item_id=a.id)",
-                params![id],
-                |r| r.get(0),
-            )?;
-            if att.human_edited || !att.task_ids.is_empty() || attachments > 0 {
+            if kept_on_undo(&tx, id, &att)? {
                 preserved += 1;
                 tx.execute(
                     "UPDATE saiop_attendances SET batch_id = NULL WHERE id = ?1",
@@ -1599,13 +1627,13 @@ impl Store {
         Ok(())
     }
 
-    /// What `undo_saiop_batch` would do, without doing it.
+    /// What `undo_saiop_batch` would do, as (removed, kept), without doing it.
     pub fn undo_saiop_batch_plan(&self, batch_id: i64) -> Result<(usize, usize)> {
         let mut removed = 0;
         let mut preserved = 0;
         for att in self.list_saiop_attendances()? {
             if att.batch_id == Some(batch_id) {
-                if att.human_edited || !att.task_ids.is_empty() {
+                if kept_on_undo(&self.conn, att.id, &att)? {
                     preserved += 1;
                 } else {
                     removed += 1;
@@ -1614,6 +1642,22 @@ impl Store {
         }
         Ok((removed, preserved))
     }
+}
+
+/// Whether undoing a spreadsheet import keeps this atendimento instead of
+/// deleting it: someone edited it, made a task from it or attached files to
+/// it. The preview and the undo itself both ask here, so they never disagree.
+fn kept_on_undo(conn: &rusqlite::Connection, id: i64, att: &SaiopAttendance) -> Result<bool> {
+    if att.human_edited || !att.task_ids.is_empty() {
+        return Ok(true);
+    }
+    let attachments: i64 = conn.query_row(
+        "SELECT count(*) FROM attachments a WHERE a.owner_kind='saiop' AND a.owner_id=?1
+           AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='attachment' AND t.item_id=a.id)",
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(attachments > 0)
 }
 
 // ============================================================================
@@ -1999,8 +2043,13 @@ fn unescape_xml(raw: &str) -> String {
     out
 }
 
+/// Largest .xlsx accepted, and the most its parts may add up to unpacked.
+const MAX_XLSX_FILE_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_XLSX_EXPANDED_BYTES: usize = 256 * 1024 * 1024;
+
 /// Lê entradas de um arquivo ZIP (`.xlsx`) a partir do Central Directory e descompacta blocos Stored (0) ou Deflate (8).
 fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
+    let mut total = 0usize;
     ensure!(bytes.len() >= 22, "Arquivo .xlsx truncado ou inválido.");
     // Localiza End of Central Directory (EOCD) signature 0x06054b50
     let min_eocd = bytes.len().saturating_sub(65557);
@@ -2076,6 +2125,12 @@ fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
         );
         let comp_slice = &bytes[data_start..data_start + comp_size];
 
+        total += uncomp_size;
+        ensure!(
+            total <= MAX_XLSX_EXPANDED_BYTES,
+            "A planilha descompactada passa de {} MB; divida o arquivo ou salve só a aba PROCESSOS.",
+            MAX_XLSX_EXPANDED_BYTES / (1024 * 1024)
+        );
         let decoded = match method {
             0 => comp_slice.to_vec(),
             8 => inflate_raw(comp_slice, uncomp_size)?,
@@ -2179,6 +2234,12 @@ impl HuffmanTree {
     }
 }
 
+/// A ZIP entry that inflates beyond the size it declares is refused: it is
+/// either damaged or built to exhaust memory (a "zip bomb").
+const INFLATE_OVERFLOW: &str = "A planilha tem uma parte compactada maior do que declara; o arquivo parece danificado.";
+
+/// Inflates one Deflate stream, never producing more than `expected_size`
+/// bytes (the size the ZIP directory declares).
 fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
     const LEN_BASE: [usize; 29] = [
         3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115,
@@ -2221,6 +2282,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                     reader.byte_pos + len <= reader.data.len(),
                     "Dados Stored truncados."
                 );
+                ensure!(out.len() + len <= expected_size, "{INFLATE_OVERFLOW}");
                 out.extend_from_slice(&reader.data[reader.byte_pos..reader.byte_pos + len]);
                 reader.byte_pos += len;
             }
@@ -2255,15 +2317,15 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                                     .last()
                                     .context("Repetição Huffman sem comprimento anterior.")?;
                                 let repeat = reader.read_bits(2)? as usize + 3;
-                                all_lens.extend(std::iter::repeat(prev).take(repeat));
+                                all_lens.extend(std::iter::repeat_n(prev, repeat));
                             }
                             17 => {
                                 let repeat = reader.read_bits(3)? as usize + 3;
-                                all_lens.extend(std::iter::repeat(0).take(repeat));
+                                all_lens.extend(std::iter::repeat_n(0, repeat));
                             }
                             18 => {
                                 let repeat = reader.read_bits(7)? as usize + 11;
-                                all_lens.extend(std::iter::repeat(0).take(repeat));
+                                all_lens.extend(std::iter::repeat_n(0, repeat));
                             }
                             _ => bail!("Símbolo inválido na árvore de comprimentos."),
                         }
@@ -2277,6 +2339,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                 loop {
                     let sym = lit_tree.decode(&mut reader)? as usize;
                     if sym < 256 {
+                        ensure!(out.len() < expected_size, "{INFLATE_OVERFLOW}");
                         out.push(sym as u8);
                     } else if sym == 256 {
                         break;
@@ -2293,6 +2356,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                             distance > 0 && distance <= out.len(),
                             "Distância LZ77 fora da janela."
                         );
+                        ensure!(out.len() + length <= expected_size, "{INFLATE_OVERFLOW}");
                         for _ in 0..length {
                             let b = out[out.len() - distance];
                             out.push(b);
@@ -2605,12 +2669,22 @@ impl SaiopPanel {
             }
         });
         ui.horizontal_wrapped(|ui| {
+            // On a connected computer the import is recorded by the main
+            // one, with its own setting: the box would have no effect here.
+            let on_client = store
+                .load_intranet_config()
+                .is_ok_and(|cfg| cfg.mode == crate::intranet::IntranetMode::Client);
             let mut auto = store.auto_attendance_enabled().unwrap_or(true);
-            if ui
-                .checkbox(&mut auto, "Criar atendimento ao importar do SIGADOC")
-                .on_hover_text("Na primeira importação de cada documento do SIGADOC, registra aqui a entrada dele no gabinete: referência, assunto, data, responsável e ligação ao documento. Documentos juntados a outro não entram. Você pode editar ou excluir o atendimento depois.")
-                .changed()
-            {
+            let response = ui.add_enabled(
+                !on_client,
+                egui::Checkbox::new(&mut auto, "Criar atendimento ao importar do SIGADOC"),
+            );
+            let response = if on_client {
+                response.on_disabled_hover_text("Definido no computador principal: é ele que registra as importações da equipe.")
+            } else {
+                response.on_hover_text("Na primeira importação de cada documento do SIGADOC, registra aqui a entrada dele no gabinete: referência, assunto, data, responsável e ligação ao documento. Documentos juntados a outro não entram. Você pode editar ou excluir o atendimento depois.")
+            };
+            if response.changed() {
                 if let Err(e) = store.set_auto_attendance(auto) {
                     self.set_notice(format!("Não foi possível salvar a preferência: {e}"), true);
                 }
@@ -3983,6 +4057,17 @@ mod tests {
     }
 
     #[test]
+    fn inflating_never_produces_more_than_the_declared_size() {
+        // One final stored block of 8 bytes.
+        let data = b"PLANILHA";
+        let mut stream = vec![0x01, 8, 0, !8u8, 0xff];
+        stream.extend_from_slice(data);
+        assert_eq!(inflate_raw(&stream, 8).unwrap(), data);
+        let error = inflate_raw(&stream, 4).unwrap_err().to_string();
+        assert!(error.contains("maior do que declara"), "{error}");
+    }
+
+    #[test]
     fn deleting_an_attendance_removes_it_with_its_attachments() {
         let dir = TempDir::new().unwrap();
         let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
@@ -4007,6 +4092,9 @@ mod tests {
                 .is_err(),
             "attachments of atendimentos do not go to the trash"
         );
+        // An atendimento without a document has no document id to log.
+        store.update_attachment_description(second, "foto do ofício").unwrap();
+        assert_eq!(store.list_attachments(owner).unwrap()[1].description, "foto do ofício");
         store.delete_attachment(second).unwrap();
         assert_eq!(store.list_attachments(owner).unwrap().len(), 1);
 

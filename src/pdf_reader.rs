@@ -459,7 +459,7 @@ mod persistence_tests {
             data_base64: base64::engine::general_purpose::STANDARD
                 .encode(include_bytes!("../tests/fixtures/document.pdf")),
         };
-        let receipt = store.import_bundle(&capture, &[file.clone()]).unwrap();
+        let receipt = store.import_bundle(&capture, std::slice::from_ref(&file)).unwrap();
         let id = store.list_files(receipt.capture_id).unwrap()[0].id;
         let text = PageText {
             text: "OCR_CONFIDENCIAL_TESTE".into(),

@@ -421,17 +421,17 @@ fn group_joined<'a>(docs: &[&'a DocumentSummary]) -> Vec<(&'a DocumentSummary, u
         }
         out.push((doc, depth));
         for child in children.get(&doc.id).into_iter().flatten() {
-            place(*child, depth + 1, children, placed, out);
+            place(child, depth + 1, children, placed, out);
         }
     }
     let mut placed = BTreeSet::new();
     let mut out = Vec::with_capacity(docs.len());
     for doc in docs.iter().filter(|d| parent_of(d).is_none()) {
-        place(*doc, 0, &children, &mut placed, &mut out);
+        place(doc, 0, &children, &mut placed, &mut out);
     }
     // Defensive: a cycle of juntadas has no root; keep every document listed.
     for doc in docs {
-        place(*doc, 0, &children, &mut placed, &mut out);
+        place(doc, 0, &children, &mut placed, &mut out);
     }
     out
 }
@@ -2247,8 +2247,8 @@ impl PonteApp {
             {
                 self.manual_form.open_new();
             }
-            if count_overdue > 0 && !self.filters_open {
-                if ui
+            if count_overdue > 0 && !self.filters_open
+                && ui
                     .add(egui::Button::new(RichText::new(format!("⚠ {count_overdue} atrasado(s)")).color(ERROR).size(12.0)).small())
                     .on_hover_text("Mostrar só documentos com tarefa atrasada")
                     .clicked()
@@ -2256,7 +2256,6 @@ impl PonteApp {
                     self.doc_task_filter = DocTaskFilter::Overdue;
                     self.filters_open = true;
                 }
-            }
             if (filters_active || !self.query.is_empty()) && ui.small_button("Limpar").clicked() {
                 self.doc_task_filter = DocTaskFilter::All;
                 self.doc_priority_filter = DocPriorityFilter::All;
@@ -3371,7 +3370,6 @@ impl PonteApp {
             ui,
             &mut self.store,
             &detail.capture,
-            &export_capture,
             &editor.body,
             &editor.kind,
             &detail.drafts,

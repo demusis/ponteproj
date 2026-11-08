@@ -1,3 +1,5 @@
+//! PDFs imported together with a capture (`import_bundle`): limits, sealed
+//! storage and export.
 use crate::{
     model::{Capture, ImportReceipt, MAX_CAPTURE_TEXT_BYTES},
     protection,
@@ -267,7 +269,7 @@ mod tests {
         let first = store.import_capture(&capture).unwrap();
         let mut next = capture.clone();
         next.request_id = uuid::Uuid::new_v4().to_string();
-        let receipt = store.import_bundle(&next, &[file.clone()]).unwrap();
+        let receipt = store.import_bundle(&next, std::slice::from_ref(&file)).unwrap();
         assert_ne!(receipt.capture_id, first.capture_id);
         assert_eq!(store.list_files(receipt.capture_id).unwrap().len(), 1);
         assert_eq!(store.list_tasks().unwrap().len(), 1);
@@ -280,7 +282,7 @@ mod tests {
         assert_eq!(store.list_documents("MARCADOR_PDF_TESTE").unwrap().len(), 1);
         assert!(
             store
-                .import_bundle(&next, &[file.clone()])
+                .import_bundle(&next, std::slice::from_ref(&file))
                 .unwrap()
                 .duplicate
         );

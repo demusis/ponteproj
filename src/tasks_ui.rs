@@ -1,3 +1,5 @@
+//! The Tarefas panel: list views, the task form, dependency marks and
+//! attachments of a task.
 use crate::{storage::Store, tasks::Task};
 use eframe::egui::{self, Color32, RichText};
 
@@ -89,6 +91,9 @@ fn chain_row(ui: &mut egui::Ui, task: &Task, open: &mut Option<Task>) {
 /// Something the person asked for while another task edit was still unsaved.
 /// The panel never honours it by itself: the app asks what to do with the
 /// pending edit first and then calls `focus_task` / `start_new`.
+// One intent at a time is held while the app asks what to do with an
+// unsaved edit; its size does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
     /// Open this task in the form.

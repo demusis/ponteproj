@@ -1,6 +1,11 @@
-//! Compartilhamento simples na intranet entre computadores Windows (Modo Anfitrião e Modo Cliente).
-//! Nenhum banco SQLite é aberto em pasta de rede: cada estação mantém seu arquivo local protegido por DPAPI
-//! e sincroniza/opera via HTTP JSON com o processo `ponteproj.exe` do computador anfitrião na intranet.
+//! Working on more than one computer. Four modes: only this computer, main
+//! computer of the team, connected to the main computer (HTTP JSON on the
+//! local network) and shared folder (an encrypted transport file, see
+//! `sharedfolder`). No SQLite file is ever opened from a network or synced
+//! folder: each computer keeps its own DPAPI-sealed library. Changes travel
+//! as `IntranetMutation`s; when the other side is out of reach they wait in
+//! the offline queue, and edits made on both sides become conflicts the
+//! person resolves field by field.
 
 use crate::{
     dossier::LinkPayload,
@@ -36,6 +41,8 @@ use url::Url;
 
 pub const DEFAULT_PORT: u16 = 7878;
 const MAX_HTTP_BODY: usize = 28 * 1024 * 1024;
+/// Request line plus headers of one team request.
+const MAX_HTTP_HEADER: u64 = 16 * 1024;
 const MAX_TEAM_EVENTS: i64 = 500;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,7 +78,9 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Network configuration of this computer. `Debug` is written by hand so
+/// the cabinet key and the folder passphrase never reach logs or test output.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntranetConfig {
     pub mode: IntranetMode,
     pub member_name: String,
@@ -98,6 +107,27 @@ pub struct IntranetConfig {
     /// Identity of the library lineage adopted from (or given to) the folders.
     #[serde(default)]
     pub folder_lineage: String,
+}
+
+impl std::fmt::Debug for IntranetConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secret = |value: &str| if value.is_empty() { "" } else { "<oculto>" };
+        f.debug_struct("IntranetConfig")
+            .field("mode", &self.mode)
+            .field("member_name", &self.member_name)
+            .field("bind_addr", &self.bind_addr)
+            .field("host_url", &self.host_url)
+            .field("cabinet_token", &secret(&self.cabinet_token))
+            .field("auto_start_host", &self.auto_start_host)
+            .field("synced_revision", &self.synced_revision)
+            .field("last_sync_at", &self.last_sync_at)
+            .field("folder_files", &self.folder_files)
+            .field("folder_key", &secret(&self.folder_key))
+            .field("remember_folder_key", &self.remember_folder_key)
+            .field("folder_writer", &self.folder_writer)
+            .field("folder_lineage", &self.folder_lineage)
+            .finish()
+    }
 }
 
 impl IntranetConfig {
@@ -230,7 +260,7 @@ pub fn parse_connection_code(text: &str) -> Option<(String, String)> {
         .unwrap_or(query.len());
     let mut host = None;
     let mut key = None;
-    for (name, value) in url::form_urlencoded::parse(query[..end].as_bytes()) {
+    for (name, value) in url::form_urlencoded::parse(&query.as_bytes()[..end]) {
         match name.as_ref() {
             "host" => host = Some(value.into_owned()),
             "chave" => key = Some(value.into_owned()),
@@ -530,6 +560,9 @@ pub struct CabinetSnapshot {
     pub attachments: Vec<AttachmentRow>,
 }
 
+// Captures and file bundles make some variants large. A change is built,
+// sent and stored once, so boxing them would only add noise at every call.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum IntranetMutation {
     ImportCapture {
@@ -704,6 +737,8 @@ enum RpcError {
     Rejected(String),
 }
 
+// A request carries a whole change; it is built and sent once.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum RpcRequest {
     Ping,
@@ -760,6 +795,13 @@ fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+/// Records one change to the library. Must run inside the write
+/// transaction of every change: checks `expected_version` (fails with the
+/// "conflito de edição" message when another computer saved first), bumps
+/// the item and library versions and logs a team event (the newest 500 are
+/// kept). Each argument is a separate field of the team log, so they stay
+/// separate parameters.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn record_mutation(
     tx: &Connection,
     actor: &str,
@@ -896,7 +938,12 @@ impl Store {
         Ok(())
     }
 
+    /// Network configuration of this computer, memoized until the library
+    /// changes (the status bar reads it on every frame).
     pub fn load_intranet_config(&self) -> Result<IntranetConfig> {
+        self.cached("intranet_config", || self.load_intranet_config_uncached())
+    }
+    fn load_intranet_config_uncached(&self) -> Result<IntranetConfig> {
         let blob: Option<Vec<u8>> = self
             .conn
             .query_row(
@@ -1302,6 +1349,9 @@ impl Store {
         })
     }
 
+    /// Replaces this library with a snapshot of the main computer (or of a
+    /// shared folder). PDFs and attachments missing here are fetched through
+    /// the two closures and checked by hash; those already present are kept.
     pub fn apply_snapshot<F, G>(
         &mut self,
         snapshot: &CabinetSnapshot,
@@ -1645,6 +1695,9 @@ impl Store {
         Ok(())
     }
 
+    /// Applies one change here, as `actor`, without forwarding it anywhere.
+    /// Used by the main computer for its clients and when replaying the
+    /// offline queue or a shared folder.
     pub fn execute_mutation(
         &mut self,
         actor: &str,
@@ -2262,6 +2315,9 @@ impl Store {
         Ok(out)
     }
 
+    /// Sends a change to the main computer. When it cannot be reached, or in
+    /// shared-folder mode, the change is applied here and queued to be sent
+    /// later. A refusal (conflict, invalid data) comes back as an error.
     pub(crate) fn remote_mutate(
         &mut self,
         cfg: &IntranetConfig,
@@ -2498,7 +2554,12 @@ impl Store {
         Ok(())
     }
 
+    /// Changes saved here and not yet sent, oldest first; memoized until the
+    /// library changes.
     pub fn list_offline_outbox(&self) -> Result<Vec<OutboxEntry>> {
+        self.cached("offline_outbox", || self.list_offline_outbox_uncached())
+    }
+    fn list_offline_outbox_uncached(&self) -> Result<Vec<OutboxEntry>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id,created_at,payload FROM offline_outbox ORDER BY id ASC")?;
@@ -2524,7 +2585,12 @@ impl Store {
         Ok(out)
     }
 
+    /// Editing conflicts waiting for a decision; memoized until the library
+    /// changes.
     pub fn list_sync_conflicts(&self) -> Result<Vec<SyncConflict>> {
+        self.cached("sync_conflicts", || self.list_sync_conflicts_uncached())
+    }
+    fn list_sync_conflicts_uncached(&self) -> Result<Vec<SyncConflict>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id,created_at,payload FROM offline_conflicts ORDER BY id ASC")?;
@@ -2637,6 +2703,7 @@ impl Store {
     /// - a text changed on both sides keeps both texts;
     /// - a scalar changed on both sides keeps the local value and records the
     ///   host value in the item itself, so nothing is lost silently.
+    ///
     /// Without an ancestor (entries queued by older versions) every differing
     /// field counts as changed on both sides.
     fn build_merged_mutation(
@@ -3560,8 +3627,13 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
     stream.set_write_timeout(Some(Duration::from_secs(20)))?;
 
     let mut reader = BufReader::new(stream.try_clone()?);
+    // The request line and headers are read through a bounded window and
+    // within one overall deadline: a peer that sends an endless line, or one
+    // byte at a time, cannot grow memory or hold the server indefinitely.
+    let headers_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut head = (&mut reader).take(MAX_HTTP_HEADER);
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
+    if head.read_line(&mut request_line)? == 0 {
         return Ok(());
     }
     let parts: Vec<&str> = request_line.split_whitespace().collect();
@@ -3580,9 +3652,14 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
     let mut content_length = 0usize;
     let mut auth_token = String::new();
     loop {
+        ensure!(
+            std::time::Instant::now() < headers_deadline,
+            "Cabeçalhos HTTP enviados devagar demais; conexão encerrada."
+        );
         let mut line = String::new();
-        let read = reader.read_line(&mut line)?;
+        let read = head.read_line(&mut line)?;
         if read == 0 || line == "\r\n" || line == "\n" {
+            ensure!(head.limit() > 0, "Cabeçalhos HTTP grandes demais.");
             break;
         }
         if let Some((name, value)) = line.split_once(':') {
@@ -3921,12 +3998,12 @@ impl IntranetPanel {
         self.last_sync_request = None;
     }
 
-    pub fn initialize(&mut self, store: &mut Store, db_path: &PathBuf) {
+    pub fn initialize(&mut self, store: &mut Store, db_path: &std::path::Path) {
         if let Ok(cfg) = store.load_intranet_config() {
             self.draft = cfg.clone();
             self.loaded = true;
             if cfg.mode == IntranetMode::Host && cfg.auto_start_host && self.server.is_none() {
-                match HostServer::start(db_path.clone(), &cfg.bind_addr) {
+                match HostServer::start(db_path.to_path_buf(), &cfg.bind_addr) {
                     Ok(srv) => {
                         self.status_summary = format!(
                             "Anfitrião ativo em {} • Integrante: {}",
@@ -3976,7 +4053,7 @@ impl IntranetPanel {
         &mut self,
         ui: &mut egui::Ui,
         store: &mut Store,
-        db_path: &PathBuf,
+        db_path: &std::path::Path,
         refresh_needed: &mut bool,
     ) {
         ui.strong("Eu, em mais de um computador");
@@ -4140,7 +4217,7 @@ impl IntranetPanel {
 
     /// Non-blocking: collects the outcome of the previous background sync and,
     /// when due, posts the next request. Returns true when the library changed.
-    pub fn refresh_client(&mut self, store: &mut Store, db_path: &PathBuf) -> bool {
+    pub fn refresh_client(&mut self, store: &mut Store, db_path: &std::path::Path) -> bool {
         let Ok(cfg) = store.load_intranet_config() else {
             return false;
         };
@@ -4184,7 +4261,7 @@ impl IntranetPanel {
         }
         if !self.sync_in_flight && due {
             if self.sync.is_none() {
-                match SyncWorker::start(db_path.clone(), self.repaint.clone()) {
+                match SyncWorker::start(db_path.to_path_buf(), self.repaint.clone()) {
                     Ok(worker) => self.sync = Some(worker),
                     Err(e) => {
                         self.offline = true;
@@ -4369,7 +4446,7 @@ impl IntranetPanel {
         &mut self,
         ctx: &egui::Context,
         store: &mut Store,
-        db_path: &PathBuf,
+        db_path: &std::path::Path,
     ) -> bool {
         if !self.open {
             return false;
@@ -4454,7 +4531,7 @@ impl IntranetPanel {
                                 }
                             } else if ui.button("Salvar e ficar disponível agora").clicked() {
                                 match self.save_draft(store) {
-                                    Ok(()) => match HostServer::start(db_path.clone(), &self.draft.bind_addr) {
+                                    Ok(()) => match HostServer::start(db_path.to_path_buf(), &self.draft.bind_addr) {
                                         Ok(srv) => {
                                             self.message = format!(
                                                 "Disponível em {}. Copie o código de conexão e envie aos colegas.",
@@ -4859,6 +4936,19 @@ impl IntranetPanel {
 mod tests {
     use super::*;
     use crate::model::sample_capture;
+
+    #[test]
+    fn debug_output_of_the_configuration_hides_the_secrets() {
+        let config = IntranetConfig {
+            cabinet_token: "ponte-chave-secreta".into(),
+            folder_key: "senha-da-pasta".into(),
+            member_name: "MARIA".into(),
+            ..IntranetConfig::default()
+        };
+        let shown = format!("{config:?}");
+        assert!(shown.contains("MARIA") && shown.contains("<oculto>"), "{shown}");
+        assert!(!shown.contains("ponte-chave-secreta") && !shown.contains("senha-da-pasta"), "{shown}");
+    }
 
     #[test]
     fn host_and_client_sync_mutations_detect_conflicts_and_support_failover() {

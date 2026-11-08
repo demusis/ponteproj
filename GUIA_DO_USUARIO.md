@@ -110,7 +110,7 @@ Um atendimento é uma **passagem** de um documento ou de uma demanda pelo gabine
 - **Criar tarefa** gera uma tarefa do documento ligado; por isso só fica ativo com um documento ligado.
 - **Anexos e linha do tempo:** a ficha aceita arquivos seus e registra cada mudança de situação.
 - **Excluir** um atendimento é definitivo, com confirmação. Não há Lixeira para atendimentos.
-- **Fila ▾** agrupa os atendimentos (prazo vencido, vence hoje, sem responsável…). **Filtros ▾** abre responsável, origem, destino e situação.
+- **Fila**, a lista suspensa no alto do painel, agrupa os atendimentos (prazo vencido, vence hoje, sem responsável…). **Filtros ▾** abre responsável, origem, destino e situação.
 - **Planilha:** **Importar planilha…** lê a aba PROCESSOS de um arquivo .xlsx, mostra uma prévia e importa só as linhas novas. A importação pode ser desfeita.
 
 ## 8. Mais de um computador
@@ -146,7 +146,7 @@ Em **Menu ▾ ▸ Rede e equipe**. Trocar de modo nunca apaga dados.
 | A IA diz que o documento não coube na janela do modelo | Analise sem as fontes extras ou escolha outro provedor. |
 | A cota do ChatGPT acabou | Veja o saldo em ChatGPT ▸ Configurações ▸ Uso, espere a renovação ou troque de provedor. |
 | O colega não conecta ao computador principal | O principal precisa estar com o Ponte aberto, na mesma rede, com a porta 7878 liberada. |
-| "Não foi possível abrir os dados deste perfil Windows" | O acervo é de outra conta do Windows. Entre com a conta que fez a instalação. |
+| "Não foi possível proteger/abrir os dados deste perfil Windows" | O acervo é de outra conta do Windows. Entre com a conta que fez a instalação. |
 | Excluí algo sem querer | Menu ▾ ▸ Lixeira ▸ **Restaurar**. |
 
 A lista completa de mensagens e soluções está na seção "Solução de problemas" de <https://github.com/demusis/ponteproj>. A versão instalada aparece em **Menu ▾ ▸ Sobre o Ponte**.

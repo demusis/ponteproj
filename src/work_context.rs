@@ -1,3 +1,5 @@
+//! Per-document work context (purpose, sender, priority, extra sources),
+//! shown in the Resumo tab and sent to the AI with the document.
 use crate::{protection, storage::Store};
 use anyhow::{ensure, Result};
 use rusqlite::{params, OptionalExtension};
@@ -88,7 +90,12 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+    /// Work context of a document (empty when none was saved), memoized until
+    /// the library changes.
     pub fn load_work_context(&self, document_id: i64) -> Result<WorkContext> {
+        self.cached(&format!("work_context\u{1}{document_id}"), || self.load_work_context_uncached(document_id))
+    }
+    fn load_work_context_uncached(&self, document_id: i64) -> Result<WorkContext> {
         let blob: Option<Vec<u8>> = self
             .conn
             .query_row(

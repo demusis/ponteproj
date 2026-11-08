@@ -502,13 +502,13 @@ impl Store {
         Ok(id)
     }
 
-    /// Active attachments of one document or task, oldest first.
+    /// Active attachments of one document, task or atendimento, oldest first.
     pub fn list_attachments(&self, owner: Owner) -> Result<Vec<AttachmentMeta>> {
         list_active(&self.conn, owner)
     }
 
-    /// Number of active attachments per owner id of one kind ("task" or
-    /// "document"), for badges in lists.
+    /// Number of active attachments per owner id of one kind ("document",
+    /// "task" or "saiop"), for badges in lists.
     pub fn attachment_counts(&self, owner_kind: &str) -> Result<BTreeMap<i64, usize>> {
         let mut statement = self.conn.prepare(
             "SELECT a.owner_id, count(*) FROM attachments a
@@ -544,20 +544,8 @@ impl Store {
         Ok((meta, data))
     }
 
-    /// Owner and document of an attachment, even when in the trash.
-    pub fn attachment_owner(&self, id: i64) -> Result<(Owner, i64)> {
-        let (kind, owner_id, document): (String, i64, i64) = self
-            .conn
-            .query_row(
-                "SELECT owner_kind,owner_id,document_id FROM attachments WHERE id=?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?
-            .context("Anexo não encontrado.")?;
-        Ok((Owner::parse(&kind, owner_id)?, document))
-    }
-
+    /// Changes the description of an attachment. Goes through
+    /// `record_mutation`; on a client computer it is sent to the main one.
     pub fn update_attachment_description(&mut self, id: i64, description: &str) -> Result<()> {
         validate_description(description)?;
         if let Some(cfg) = self.client_config()? {
@@ -574,8 +562,9 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (owner, document): (Owner, i64) = {
-            let (kind, owner_id, document): (String, i64, i64) = tx
+        // The document is NULL for an atendimento that stands alone.
+        let (owner, document): (Owner, Option<i64>) = {
+            let (kind, owner_id, document): (String, i64, Option<i64>) = tx
                 .query_row(
                     "SELECT owner_kind,owner_id,document_id FROM attachments WHERE id=?1",
                     [id],
@@ -605,7 +594,7 @@ impl Store {
             id,
             None,
             "update_attachment",
-            Some(document),
+            document,
             &format!("Descrição do anexo “{}” alterada", meta.name),
         )?;
         tx.commit()?;

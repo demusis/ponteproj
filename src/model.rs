@@ -1,3 +1,5 @@
+//! What the browser extension sends (`Capture`), its validation and limits,
+//! and the summary and detail types the interface shows.
 use anyhow::{bail, ensure, Context, Result};
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};

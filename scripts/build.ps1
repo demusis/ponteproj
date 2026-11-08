@@ -4,6 +4,9 @@
 Verifica, testa ou compila o PonteProj no Windows.
 .PARAMETER Action
 Check, Test, Release ou All. O padrao Release produz target/release/ponteproj.exe.
+Lint roda o clippy em todo o codigo (avisos viram erro); Format confere a
+formatacao com rustfmt sem alterar arquivos. LintFix e FormatFix aplicam as
+correcoes automaticas do clippy e do rustfmt (alteram arquivos).
 .PARAMETER ToolsDirectory
 Pasta opcional de ferramentas portateis contendo cargo, rustup e o conjunto
 MinGW completo em mingw/w64devkit/bin. Sem ela, usa Cargo/Rust do PATH.
@@ -14,7 +17,7 @@ MinGW completo em mingw/w64devkit/bin. Sem ela, usa Cargo/Rust do PATH.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [ValidateSet('Check', 'Test', 'Release', 'All', 'AiSmoke', 'ReaderSmoke', 'GroundedSmoke')]
+    [ValidateSet('Check', 'Test', 'Release', 'All', 'Lint', 'LintFix', 'Format', 'FormatFix', 'AiSmoke')]
     [string]$Action = 'Release',
     [string]$ToolsDirectory
 )
@@ -106,8 +109,10 @@ $cargoArguments = @{
     'Check' = @('check', '--all-targets', '--locked')
     'Test' = @('test', '--all-targets', '--locked')
     'Release' = @('build', '--release', '--locked')
-    'GroundedSmoke' = @('run', '--example', 'grounded_smoke', '--locked')
-    'ReaderSmoke' = @('run', '--example', 'reader_smoke', '--locked')
+    'Lint' = @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')
+    'Format' = @('fmt', '--all', '--check')
+    'LintFix' = @('clippy', '--fix', '--allow-dirty', '--allow-staged', '--all-targets', '--locked')
+    'FormatFix' = @('fmt', '--all')
     'AiSmoke' = @('test', '--lib', '--locked', 'live_context_smoke', '--', '--ignored', '--nocapture')
 }
 foreach ($step in $actions) {

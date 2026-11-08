@@ -42,7 +42,10 @@ fn run() -> Result<()> {
                 .take(native::MAX_FRAME as u64 + 1)
                 .read_to_end(&mut bytes)?;
             if bytes.len() > native::MAX_FRAME {
-                bail!("Arquivo de captura excede 1 MiB");
+                bail!(
+                    "Arquivo de captura excede {} MiB",
+                    native::MAX_FRAME / (1024 * 1024)
+                );
             }
             let capture: Capture = serde_json::from_slice(&bytes)
                 .map_err(|_| anyhow::anyhow!("JSON de captura inválido"))?;

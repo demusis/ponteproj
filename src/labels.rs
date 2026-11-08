@@ -456,6 +456,6 @@ mod tests {
         assert_eq!(file_size(13_000_000), "12,4 MB");
         assert_eq!(file_size(25 * 1024 * 1024), "25 MB");
         assert_eq!(file_size(9 * 1024 * 1024 + 512 * 1024), "9,5 MB");
-        assert_eq!(elapsed("1990-01-01T00:00:00Z").unwrap().contains("dias"), true);
+        assert!(elapsed("1990-01-01T00:00:00Z").unwrap().contains("dias"));
     }
 }

@@ -131,13 +131,11 @@ impl DraftTools {
         ui: &mut egui::Ui,
         store: &mut Store,
         capture: &Capture,
-        export_capture: &Capture,
         current_body: &str,
         current_kind: &str,
         drafts: &[crate::model::DraftVersion],
     ) -> Option<(String, String, String)> {
         let mut chosen = None;
-        let _ = export_capture;
         ui.collapsing("Modelos pessoais de minuta",|ui|{
             ui.small("Variáveis aceitas: {{numero_documento}}, {{assunto}}, {{destinatario}}, {{providencia}}, {{prazo}}.").on_hover_text("Modelos são versões locais protegidas. Campos desconhecidos devem ser preenchidos e conferidos.");
             match store.personal_templates(){Ok(templates)=>{for (id,template) in templates{ui.horizontal_wrapped(|ui|{
