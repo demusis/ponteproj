@@ -70,6 +70,8 @@ impl AccountForm {
 #[derive(Default)]
 pub struct MailPanel {
     pub open: bool,
+    /// Top of the window contents this frame (see the message list height).
+    contents_top: f32,
     accounts: Vec<MailAccount>,
     accounts_loaded: bool,
     selected: Option<String>,
@@ -349,6 +351,9 @@ impl MailPanel {
     }
 
     fn contents(&mut self, ui: &mut egui::Ui, store: &mut Store, state: MailBusy) -> MailAction {
+        // Where the contents start, to measure what is above the list
+        // independently of the outer scroll position.
+        self.contents_top = ui.cursor().top();
         let busy = state != MailBusy::Free;
         let mut action = MailAction::None;
 
@@ -745,9 +750,22 @@ impl MailPanel {
                         .collect();
                 }
             });
+            // The list takes the height the window has left, keeping room
+            // for the import button and the result lines below it; it never
+            // gets shorter than a few rows.
+            let row = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
+            let below = ui.spacing().interact_size.y
+                + ui.spacing().item_spacing.y * 2.0
+                + row * self.summary.len() as f32
+                + 8.0;
+            // The window's visible height minus what is above the list, both
+            // independent of the outer scroll (inside it the available height
+            // is unbounded), so the list does not resize while scrolling.
+            let visible = ui.clip_rect().height() - (ui.cursor().top() - self.contents_top);
+            let list_height = (visible - below).max(row * 6.0);
             egui::ScrollArea::vertical()
                 .id_salt("mail_messages")
-                .max_height(300.0)
+                .max_height(list_height)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     egui::Grid::new("mail_messages_grid")

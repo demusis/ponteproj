@@ -15,6 +15,9 @@ pub const MAX_CAPTURE_PACKET_BYTES: usize = 1024 * 1024;
 /// is `ponte://manual/<number>`; the identity hash uses that origin, so a
 /// manual record can never merge with a real document.
 pub const MANUAL_PREFIX: &str = "MANUAL-";
+/// E-mails imported into the Ponte are manual records with a numbering of
+/// their own (`EMAIL-AAAA/NNNN`), so a reader sees what they are.
+pub const EMAIL_PREFIX: &str = "EMAIL-";
 pub const MANUAL_ORIGIN: &str = "ponte://manual/";
 /// Number of a manual record created on a connected computer while the main
 /// one is out of reach; the main computer assigns the final number.
@@ -22,14 +25,29 @@ pub const MANUAL_PENDING: &str = "MANUAL-PENDENTE";
 pub const MANUAL_ADAPTER: &str = "manual-v1";
 
 pub fn is_manual_number(number: &str) -> bool {
-    number.trim().to_uppercase().starts_with(MANUAL_PREFIX)
+    let upper = number.trim().to_uppercase();
+    upper.starts_with(MANUAL_PREFIX) || upper.starts_with(EMAIL_PREFIX)
 }
 
-/// `MANUAL-AAAA/NNNN`.
+/// An imported e-mail (`EMAIL-AAAA/NNNN`).
+pub fn is_email_number(number: &str) -> bool {
+    number.trim().to_uppercase().starts_with(EMAIL_PREFIX)
+}
+
+/// The numbering a manual record gets: e-mails their own.
+pub fn manual_prefix_for(capture: &Capture) -> &'static str {
+    if capture.metadata.get("manual_kind").map(String::as_str) == Some("email") {
+        EMAIL_PREFIX
+    } else {
+        MANUAL_PREFIX
+    }
+}
+
+/// `MANUAL-AAAA/NNNN` or `EMAIL-AAAA/NNNN`.
 pub fn valid_manual_number(number: &str) -> bool {
     static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
     let pattern = PATTERN.get_or_init(|| {
-        regex::Regex::new(r"^MANUAL-(?:19|20)[0-9]{2}/[0-9]{1,8}$")
+        regex::Regex::new(r"^(?:MANUAL|EMAIL)-(?:19|20)[0-9]{2}/[0-9]{1,8}$")
             .expect("constant manual pattern")
     });
     pattern.is_match(&number.trim().to_uppercase())
@@ -150,6 +168,10 @@ pub struct DocumentSummary {
     /// Created by hand in the Ponte, not imported from the SIGADOC.
     #[serde(default)]
     pub manual: bool,
+    /// An e-mail brought into the Ponte (a manual record of kind e-mail,
+    /// whatever its number).
+    #[serde(default)]
+    pub email: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

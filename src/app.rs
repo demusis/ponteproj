@@ -333,6 +333,16 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
             "Os modelos pessoais antigos não puderam ser convertidos: {error}"
         )),
     }
+    // E-mails imported by 0.22–0.23 (numbered MANUAL-) get their own numbering.
+    match crate::storage::renumber_imported_emails(&mut app.store) {
+        Ok(0) => {}
+        Ok(count) => app.message(format!(
+            "{count} e-mail(s) importado(s) antes desta versão passaram a ter número próprio (EMAIL-ano/sequência)."
+        )),
+        Err(error) => app.error(format!(
+            "Os e-mails importados não puderam receber número próprio: {error}"
+        )),
+    }
     app.load_ai_config();
     app.refresh();
     if open_templates {
@@ -946,7 +956,7 @@ impl PonteApp {
                     )
                 } else {
                     format!(
-                        "E-mail “{}” importado como registro manual, com {} anexo(s).",
+                        "E-mail “{}” importado, com {} anexo(s).",
                         result.subject, result.attachments_added
                     )
                 };
@@ -1072,7 +1082,7 @@ impl PonteApp {
             }
             if ui
                 .button("+ Importar e-mail (.eml)…")
-                .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro manual do tipo E-mail recebido, com os anexos. Nada é lido da sua conta de e-mail.")
+                .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro do tipo E-mail recebido (número EMAIL-ano/sequência), com os anexos. Nada é lido da sua conta de e-mail.")
                 .clicked()
             {
                 self.import_eml_dialog();
@@ -2331,7 +2341,7 @@ impl PonteApp {
                     for (uid, bytes) in fetched {
                         let outcome = bytes.and_then(|bytes| {
                             self.store
-                                .import_eml_bytes(&bytes)
+                                .import_mail_bytes(&bytes, crate::mail::MailSource::Account)
                                 .map_err(|e| e.to_string())
                         });
                         if let Ok(import) = &outcome {
@@ -2525,7 +2535,7 @@ impl PonteApp {
                     }
                     if ui
                         .button("Importar e-mail (.eml)…")
-                        .on_hover_text("Um e-mail salvo como arquivo vira um registro manual com os anexos.")
+                        .on_hover_text("Um e-mail salvo como arquivo vira um registro do tipo E-mail recebido, com os anexos.")
                         .clicked()
                     {
                         import_mail = true;
@@ -2858,7 +2868,12 @@ impl PonteApp {
                         }
                         pill(ui, badge_text, badge_fg, badge_bg, 11.5);
                         if document.manual {
-                            pill(ui, "Manual", MANUAL_FG, MANUAL_BG, 11.5);
+                            let kind = if document.email {
+                                "E-mail"
+                            } else {
+                                "Manual"
+                            };
+                            pill(ui, kind, MANUAL_FG, MANUAL_BG, 11.5);
                         }
                         if let Some(text) = &joined {
                             pill(ui, text, JOINED_FG, JOINED_BG, 11.5);
@@ -2929,7 +2944,12 @@ impl PonteApp {
                     ui.label(RichText::new(badge_text).size(12.5).color(badge_fg).strong());
                 });
             if detail.summary.manual {
-                pill(ui, "Registro manual", MANUAL_FG, MANUAL_BG, 12.5);
+                let kind = if detail.summary.email {
+                    "E-mail importado"
+                } else {
+                    "Registro manual"
+                };
+                pill(ui, kind, MANUAL_FG, MANUAL_BG, 12.5);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
@@ -3442,7 +3462,54 @@ impl PonteApp {
             ui.label(format!("Motivo: {}", analysis.reason));
             if !analysis.suggested_actions.is_empty() {
                 ui.strong("Providências sugeridas — revisão necessária");
+                // A suggestion already turned into a task of this document
+                // is shown folded, with the task, so it is not prepared twice
+                // by mistake (another one can still be prepared on purpose).
+                let document_tasks: Vec<crate::tasks::Task> = self
+                    .store
+                    .list_tasks()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|t| t.document_id == detail.summary.id)
+                    .collect();
                 for suggestion in &analysis.suggested_actions {
+                    if let Some(task) = document_tasks
+                        .iter()
+                        .find(|t| t.action == suggestion.action)
+                    {
+                        ui.group(|ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.colored_label(
+                                    SUCCESS,
+                                    format!(
+                                        "✓ {} — tarefa criada: {}",
+                                        suggestion.action, task.title
+                                    ),
+                                );
+                                if ui.small_button("Abrir tarefa").clicked() {
+                                    self.navigate(Leave::OpenTask(task.clone()));
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !stale,
+                                        egui::Button::new("Preparar outra").small(),
+                                    )
+                                    .on_hover_text(
+                                        "Cria mais uma tarefa com esta mesma providência.",
+                                    )
+                                    .clicked()
+                                {
+                                    self.navigate(Leave::Suggestion {
+                                        document_id: detail.summary.id,
+                                        suggestion: suggestion.clone(),
+                                        priority: analysis.priority.clone(),
+                                    });
+                                }
+                            });
+                        });
+                        continue;
+                    }
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
                         ui.strong(&suggestion.action);
@@ -5407,6 +5474,7 @@ mod tests {
             priority: "normal".into(),
             analysis_stale: false,
             manual: false,
+            email: false,
             is_joined: parent.is_some(),
             joined_to_number: parent.map(|(_, n)| n.to_owned()),
             joined_to_id: parent.map(|(p, _)| p).filter(|p| *p > 0),

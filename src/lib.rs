@@ -23,6 +23,7 @@ pub mod storage;
 pub mod suggestion;
 pub mod tasks;
 pub mod tasks_ui;
+pub mod template_bundle;
 pub mod templates_ui;
 pub mod work_context;
 pub mod work_templates;

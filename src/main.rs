@@ -53,6 +53,29 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string(&receipt)?);
             Ok(())
         }
+        Some("--import-templates") => {
+            let file = args
+                .get(1)
+                .context("Informe o caminho do arquivo .json de modelos")?;
+            let publish = args.iter().skip(2).any(|a| a == "--publicar");
+            let bundle = ponteproj::template_bundle::read_bundle(std::path::Path::new(file))?;
+            let report =
+                Store::open(&paths::db_path()?)?.import_template_bundle(&bundle, publish)?;
+            println!(
+                "{} instrução(ões) e {} modelo(s) criados{}.",
+                report.blocks_created,
+                report.templates_created,
+                if publish {
+                    " e publicados"
+                } else {
+                    " como rascunho"
+                }
+            );
+            for kept in &report.kept {
+                println!("Mantido como estava: {kept}");
+            }
+            Ok(())
+        }
         Some("--list") => {
             let store = Store::open(&paths::db_path()?)?;
             println!(
@@ -110,7 +133,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("--help") => {
-            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
+            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --import-templates ARQUIVO.json [--publicar]\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
             Ok(())
         }
         Some(_) => bail!("Argumento desconhecido. Use --help."),

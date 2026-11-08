@@ -735,7 +735,22 @@ impl TemplatesPanel {
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.strong("Instruções (biblioteca)");
+                ui.horizontal(|ui| {
+                    ui.strong("Instruções (biblioteca)");
+                    ui.label("ⓘ").on_hover_text(
+                        "Instruções são orientações para a IA que valem para vários modelos, \
+                         escritas uma vez e reaproveitadas: \"Use linguagem simples\", \
+                         \"Cite a norma aplicável\", \"Não prometa prazos\". Crie e publique a \
+                         instrução aqui; depois, no modelo, aba Instruções, inclua-a como \
+                         obrigatória (sempre vai), opcional (você marca ao gerar) ou condicional \
+                         (vale só no caso descrito). Mudar a instrução não altera minutas já feitas.",
+                    );
+                });
+                ui.label(
+                    RichText::new("Orientações reutilizáveis que os modelos podem incluir.")
+                        .small()
+                        .weak(),
+                );
                 self.block_list(ui, store, member);
             });
     }

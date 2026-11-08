@@ -992,7 +992,12 @@ pub fn template_reply(capture: &Capture, kind: &str) -> String {
 /// Manual records have no official page behind them; the model must not
 /// pretend otherwise.
 fn manual_note(capture: &Capture) -> &'static str {
-    if capture.is_manual() {
+    if crate::model::is_email_number(&capture.document_number)
+        || (capture.is_manual()
+            && capture.metadata.get("manual_kind").map(String::as_str) == Some("email"))
+    {
+        " O documento é um E-MAIL RECEBIDO, guardado no Ponte com os anexos (a origem está em imported_from), sem página do SIGADOC: não presuma tramitação, assinatura, situação oficial ou número de processo; o número EMAIL-… é interno do Ponte. Não o chame de registro manual."
+    } else if capture.is_manual() {
         " O documento é um REGISTRO MANUAL criado pela própria pessoa no Ponte (ligação, memorando, e-mail ou papel), sem página do SIGADOC: não presuma tramitação, assinatura, situação oficial ou número de processo; o número MANUAL-… é interno do Ponte."
     } else {
         ""

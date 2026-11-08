@@ -140,7 +140,11 @@ impl ManualFields {
             references: vec![],
             coverage: Coverage {
                 adapter: MANUAL_ADAPTER.into(),
-                recognized: vec!["registro manual".into()],
+                recognized: vec![if self.kind == "email" {
+                    "e-mail importado".into()
+                } else {
+                    "registro manual".into()
+                }],
                 pending: vec![],
             },
         }

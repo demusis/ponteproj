@@ -3931,10 +3931,15 @@ fn preserve_original_base_version(
 fn mutation_label(mutation: &IntranetMutation) -> String {
     match mutation {
         IntranetMutation::ImportCapture { capture } if capture.is_manual() => {
-            if capture.document_number == crate::model::MANUAL_PENDING {
-                "Registro manual novo".to_owned()
-            } else {
-                format!("Registro manual {}", capture.document_number)
+            let email = capture.metadata.get("manual_kind").map(String::as_str) == Some("email");
+            match (
+                email,
+                capture.document_number == crate::model::MANUAL_PENDING,
+            ) {
+                (true, true) => "E-mail importado".to_owned(),
+                (true, false) => format!("E-mail {}", capture.document_number),
+                (false, true) => "Registro manual novo".to_owned(),
+                (false, false) => format!("Registro manual {}", capture.document_number),
             }
         }
         IntranetMutation::ImportCapture { capture } => {

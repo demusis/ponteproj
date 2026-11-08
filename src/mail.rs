@@ -886,6 +886,25 @@ fn record_text(parsed: &ParsedMail) -> (String, Option<String>) {
     )
 }
 
+/// How a message reached the Ponte (kept in the record, read by people and
+/// by the AI).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailSource {
+    /// A `.eml` file chosen by the person.
+    File,
+    /// Downloaded from the person's mailbox (IMAP).
+    Account,
+}
+
+impl MailSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            MailSource::File => "arquivo .eml",
+            MailSource::Account => "conta de e-mail (IMAP)",
+        }
+    }
+}
+
 /// Result of importing one `.eml`.
 #[derive(Clone, Debug)]
 pub struct MailImport {
@@ -923,6 +942,11 @@ impl Store {
     }
 
     pub fn import_eml_bytes(&mut self, bytes: &[u8]) -> Result<MailImport> {
+        self.import_mail_bytes(bytes, MailSource::File)
+    }
+
+    /// Imports one message, recording where it came from.
+    pub fn import_mail_bytes(&mut self, bytes: &[u8], source: MailSource) -> Result<MailImport> {
         let parsed = parse(bytes)?;
         let (text, clipped) = record_text(&parsed);
         let digest = content_digest(&text, &parsed.attachments);
@@ -958,7 +982,7 @@ impl Store {
                 extra.insert(key.to_owned(), clip_bytes(value, MAX_META_BYTES));
             }
         }
-        extra.insert("imported_from".to_owned(), "arquivo .eml".to_owned());
+        extra.insert("imported_from".to_owned(), source.label().to_owned());
         extra.insert("mail_digest".to_owned(), digest.clone());
         let actor = self.active_actor();
         let capture = fields.capture_with(
@@ -1174,6 +1198,88 @@ iVBORw0KGgo=\r\n\
     }
 
     #[test]
+    fn emails_numbered_as_manual_records_are_renumbered_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        // A plain manual record and an e-mail as 0.22–0.23 numbered it.
+        let plain = crate::manual::ManualFields {
+            kind: "ligacao".into(),
+            title: "Ligação do gabinete".into(),
+            origin: "Gabinete".into(),
+            document_date: "2026-11-03".into(),
+            text: "Pedido por telefone.".into(),
+        };
+        let plain = store.create_manual_document(&plain).unwrap();
+        let mail = store.import_eml_bytes(SAMPLE.as_bytes()).unwrap();
+        let id = mail.receipt.document_id;
+        let year = chrono::Local::now().format("%Y").to_string();
+        let old_number = format!("MANUAL-{year}/0002");
+        {
+            let detail = store.load_document(id).unwrap();
+            let old = crate::storage::tests_support::renumber_for_test(
+                &store,
+                id,
+                &detail.capture,
+                &old_number,
+            );
+            assert!(old);
+        }
+        assert_eq!(
+            store.load_document(id).unwrap().capture.document_number,
+            old_number
+        );
+        // Another old e-mail, in the trash: left as it is, and no failure.
+        let other = SAMPLE.replace("To: gabinete@", "To: outro@");
+        let trashed_id = store
+            .import_eml_bytes(other.as_bytes())
+            .unwrap()
+            .receipt
+            .document_id;
+        let trashed_capture = store.load_document(trashed_id).unwrap().capture;
+        assert!(crate::storage::tests_support::renumber_for_test(
+            &store,
+            trashed_id,
+            &trashed_capture,
+            &format!("MANUAL-{year}/0003"),
+        ));
+        store
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Document,
+                id: trashed_id,
+            })
+            .unwrap();
+        assert_eq!(
+            crate::storage::renumber_imported_emails(&mut store).unwrap(),
+            1
+        );
+        let detail = store.load_document(id).unwrap();
+        assert_eq!(detail.capture.document_number, format!("EMAIL-{year}/0001"));
+        assert_eq!(
+            detail.capture.source_url,
+            format!("{}EMAIL-{year}/0001", crate::model::MANUAL_ORIGIN)
+        );
+        assert_eq!(
+            store.list_attachments(Owner::Document(id)).unwrap().len(),
+            1
+        );
+        // The plain one keeps its number; nothing runs twice.
+        assert!(store
+            .load_document(plain.document_id)
+            .unwrap()
+            .capture
+            .document_number
+            .starts_with("MANUAL-"));
+        assert_eq!(
+            crate::storage::renumber_imported_emails(&mut store).unwrap(),
+            0
+        );
+        // Importing the same message again finds the renumbered record.
+        let again = store.import_eml_bytes(SAMPLE.as_bytes()).unwrap();
+        assert!(again.already_imported);
+        assert_eq!(again.receipt.document_id, id);
+    }
+
+    #[test]
     fn a_different_message_with_a_known_message_id_never_joins_the_record() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
@@ -1210,6 +1316,15 @@ iVBORw0KGgo=\r\n\
         );
         let detail = store.load_document(first.receipt.document_id).unwrap();
         assert!(detail.capture.is_manual());
+        // E-mails have a numbering of their own.
+        assert!(
+            crate::model::is_email_number(&detail.capture.document_number),
+            "{}",
+            detail.capture.document_number
+        );
+        assert!(crate::model::valid_manual_number(
+            &detail.capture.document_number
+        ));
         assert_eq!(detail.capture.title, "Pedido de material de escritório");
         assert_eq!(detail.capture.metadata["manual_kind"], "email");
         assert_eq!(detail.capture.metadata["document_type"], "E-mail recebido");

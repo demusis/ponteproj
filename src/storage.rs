@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const SCHEMA_VERSION: i64 = 12;
+pub(crate) const SCHEMA_VERSION: i64 = 13;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -353,7 +353,10 @@ impl Store {
                 files.is_empty(),
                 "Registro manual não leva PDFs importados."
             );
-            assigned = with_manual_number(capture, &next_manual_number(&tx)?);
+            assigned = with_manual_number(
+                capture,
+                &next_manual_number(&tx, crate::model::manual_prefix_for(capture))?,
+            );
             &assigned
         } else {
             capture
@@ -639,6 +642,8 @@ impl Store {
             // Requires the whole library; filled by list_documents/joined_children.
             joined_children_count: 0,
             manual: capture.is_manual(),
+            email: capture.is_manual()
+                && capture.metadata.get("manual_kind").map(String::as_str) == Some("email"),
             id,
             document_number: capture.document_number.clone(),
             title: capture.title.clone(),
@@ -1087,12 +1092,24 @@ fn identity_hash_for_number(number: &str) -> Vec<u8> {
     Sha256::digest(format!("{origin}\n{number}").as_bytes()).to_vec()
 }
 
-/// Next free `MANUAL-AAAA/NNNN` for this year, looking at every document
-/// (trashed ones included, so a number is never reused). Runs inside the
-/// import transaction, so two creations cannot pick the same number.
-fn next_manual_number(tx: &rusqlite::Transaction<'_>) -> Result<String> {
-    let year = chrono::Local::now().format("%Y").to_string();
-    let prefix = format!("{MANUAL_PREFIX}{year}/");
+/// Next free `MANUAL-AAAA/NNNN` (or `EMAIL-…`, per `kind_prefix`) for this
+/// year, looking at every document (trashed ones included, so a number is
+/// never reused). Runs inside the import transaction, so two creations
+/// cannot pick the same number.
+fn next_manual_number(tx: &rusqlite::Transaction<'_>, kind_prefix: &str) -> Result<String> {
+    next_manual_number_in(tx, kind_prefix, None)
+}
+
+/// Same, in a given year (the current one when `None`).
+fn next_manual_number_in(
+    tx: &rusqlite::Transaction<'_>,
+    kind_prefix: &str,
+    year: Option<&str>,
+) -> Result<String> {
+    let year = year
+        .map(str::to_owned)
+        .unwrap_or_else(|| chrono::Local::now().format("%Y").to_string());
+    let prefix = format!("{kind_prefix}{year}/");
     let mut statement = tx
         .prepare("SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id")?;
     let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
@@ -1111,6 +1128,161 @@ fn next_manual_number(tx: &rusqlite::Transaction<'_>) -> Result<String> {
         }
     }
     Ok(format!("{prefix}{:04}", highest + 1))
+}
+
+/// E-mails imported before they had a numbering of their own (0.22–0.23)
+/// get an `EMAIL-` number, once. Only where numbers are given (a computer
+/// alone or the main one); the others receive the result with the library.
+/// Every version of the record is renumbered; the record stays the same
+/// document (same id, notes, tasks and attachments).
+pub(crate) fn renumber_imported_emails(store: &mut Store) -> Result<usize> {
+    let done: bool = store.conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM work_template_settings WHERE key='email_numbers' AND value='1')",
+        [],
+        |r| r.get(0),
+    )?;
+    // Only a library used alone: in a team, other computers (and their
+    // queued edits) still know the old number, and an edit arriving with it
+    // would become a second record. There the old number stays and the
+    // record still shows as an e-mail.
+    let alone = store
+        .load_intranet_config()
+        .map(|c| c.mode == crate::intranet::IntranetMode::Local)
+        .unwrap_or(false);
+    if done || !alone {
+        return Ok(0);
+    }
+    let actor = store.active_actor();
+    let tx = store
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let latest: Vec<(i64, Vec<u8>)> = {
+        let mut statement = tx.prepare(
+            "SELECT d.id,c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id ORDER BY d.id",
+        )?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let mut renumbered = 0;
+    for (document_id, payload) in latest {
+        let capture: Capture = decode(&payload)?;
+        if !capture.is_manual()
+            || crate::model::manual_prefix_for(&capture) != crate::model::EMAIL_PREFIX
+            || !capture
+                .document_number
+                .to_uppercase()
+                .starts_with(MANUAL_PREFIX)
+            || capture.document_number == MANUAL_PENDING
+        {
+            continue;
+        }
+        // Anything of it in the trash stays as it is (the trash keeps items
+        // unchanged until restored or removed).
+        let trashed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM trash WHERE (kind='document' AND item_id=?1)
+                OR (kind='capture' AND item_id IN (SELECT id FROM captures WHERE document_id=?1)))",
+            [document_id],
+            |r| r.get(0),
+        )?;
+        if trashed {
+            continue;
+        }
+        // The year of the old number is kept.
+        let year = capture
+            .document_number
+            .get(MANUAL_PREFIX.len()..MANUAL_PREFIX.len() + 4)
+            .filter(|y| y.bytes().all(|b| b.is_ascii_digit()))
+            .map(str::to_owned);
+        let number = next_manual_number_in(&tx, crate::model::EMAIL_PREFIX, year.as_deref())?;
+        let versions: Vec<(i64, Vec<u8>)> = {
+            let mut statement =
+                tx.prepare("SELECT id,payload FROM captures WHERE document_id=?1")?;
+            let rows = statement
+                .query_map([document_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let mut identity = None;
+        for (capture_id, payload) in versions {
+            let old: Capture = decode(&payload)?;
+            let mut new = with_manual_number(&old, &number);
+            // Older versions wrote "arquivo .eml" for every e-mail, also the
+            // ones downloaded from the mailbox: the true part is kept.
+            if new.metadata.get("imported_from").map(String::as_str) == Some("arquivo .eml") {
+                new.metadata
+                    .insert("imported_from".to_owned(), "e-mail".to_owned());
+            }
+            new.coverage.recognized = vec!["e-mail importado".to_owned()];
+            identity = Some(identity_hash(&new));
+            tx.execute(
+                "UPDATE captures SET payload=?1,content_hash=?2 WHERE id=?3",
+                params![encode(&new)?, content_hash(&new)?, capture_id],
+            )?;
+        }
+        if let Some(identity) = identity {
+            tx.execute(
+                "UPDATE documents SET identity_hash=?1 WHERE id=?2",
+                params![identity, document_id],
+            )?;
+        }
+        crate::intranet::record_mutation(
+            &tx,
+            &actor,
+            "document",
+            document_id,
+            None,
+            "renumber_email",
+            Some(document_id),
+            &format!(
+                "E-mail {} renumerado como {number}",
+                capture.document_number
+            ),
+        )?;
+        renumbered += 1;
+    }
+    tx.execute(
+        "INSERT INTO work_template_settings(key,value) VALUES('email_numbers','1')
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(renumbered)
+}
+
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use super::*;
+    /// Gives a document the number an older version would have given it.
+    pub(crate) fn renumber_for_test(
+        store: &Store,
+        document_id: i64,
+        capture: &Capture,
+        number: &str,
+    ) -> bool {
+        let old = with_manual_number(capture, number);
+        store
+            .conn
+            .execute(
+                "UPDATE captures SET payload=?1,content_hash=?2 WHERE document_id=?3",
+                params![
+                    encode(&old).unwrap(),
+                    content_hash(&old).unwrap(),
+                    document_id
+                ],
+            )
+            .unwrap()
+            > 0
+            && store
+                .conn
+                .execute(
+                    "UPDATE documents SET identity_hash=?1 WHERE id=?2",
+                    params![identity_hash(&old), document_id],
+                )
+                .unwrap()
+                > 0
+    }
 }
 
 fn with_manual_number(capture: &Capture, number: &str) -> Capture {
