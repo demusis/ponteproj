@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ground">#F4F6F7</color>
+    <!-- Only the window behind the Compose content: same ground color, no title bar. -->
+    <style name="Theme.Ponte" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/ground</item>
+        <item name="android:colorAccent">#185461</item>
+    </style>
+</resources>

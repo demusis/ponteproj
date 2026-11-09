@@ -2,13 +2,17 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (0.2.0)
+## O que faz (0.3.0)
 
-- **Documentos:** lista com busca; ficha com tipo, data, origem, nota (editável), resumo da análise, tarefas, PDFs e anexos (abertos no leitor do celular) e o texto completo.
-- **Tarefas:** atrasadas, para hoje, próximas, sem prazo e concluídas; concluir, reabrir e criar tarefa simples num documento. Abre direto nas tarefas quando há atrasadas ou do dia.
-- **Registro por foto:** fotografar um papel e criar um registro manual com a foto anexada (redimensionada, abaixo do limite de anexos).
-- **E-mail:** a mesma importação por IMAP do computador (contas, pastas, filtro, mensagens marcadas).
-- **Sincronização:** ao abrir e pelo botão, só no Wi-Fi por padrão; frase-senha guardada pelo Android Keystore e liberada pela digital ou PIN (Android 9 ou mais novo).
+Três áreas numa barra no rodapé — **Tarefas**, **Documentos** e **E-mail** — e telas próprias para cada coisa que se abre (ficha, texto, nota, nova tarefa, registro por foto, ajustes). Tema claro e escuro, seguindo o aparelho.
+
+- **Tarefas:** atrasadas, para hoje, próximas, sem prazo e concluídas; marcar conclui na hora, com "Desfazer"; tocar no texto abre a ficha do documento.
+- **Documentos:** busca e filtros (todos, com tarefa, e-mails, registros); ficha com tarefas, nota, resumo da análise, PDFs e anexos (abertos no leitor do celular); o texto completo abre numa tela de leitura.
+- **Registro por foto:** o botão abre a câmera; depois, um formulário curto cria o registro manual com a foto anexada (redimensionada, abaixo do limite de anexos).
+- **E-mail:** a mesma importação por IMAP do computador (contas, pastas, filtro, mensagens marcadas), com o resultado mostrado na própria lista.
+- **Sincronização:** ao abrir e pelo botão, só no Wi-Fi por padrão; frase-senha guardada pelo Android Keystore e liberada pela digital ou PIN (Android 9 ou mais novo). Na primeira vez, um passo a passo pede o arquivo, a frase-senha e faz a primeira sincronização.
+
+A interface é feita com Jetpack Compose e Material 3. Cada tela é uma função do seu estado; `gradle recordPaparazziDebug` desenha todas elas no computador, com dados de exemplo, em `mobile/android/app/src/test/snapshots/images` (sem celular nem emulador).
 
 ## O que este protótipo provou (09/11/2026)
 
@@ -27,11 +31,11 @@ O app do Drive no celular trabalha com uma cópia em cache: o celular pode grava
 Ferramentas (portáteis, sem administrador) em `%LOCALAPPDATA%\Programs\PonteProj\devtools\android`: JDK 17, Android SDK 34 com NDK r26d e Gradle 8.7; o Rust com o alvo `aarch64-linux-android`.
 
 ```
-bash mobile/build-android.sh            # núcleo (arm64) + APK de depuração
+bash mobile/build-android.sh            # núcleo (arm64) + APK
 bash mobile/build-android.sh --rust-only
 ```
 
-O APK sai em `mobile/android/app/build/outputs/apk/debug/app-debug.apk`; instale-o no celular (por arquivo, permitindo "instalar apps desconhecidos", ou com `adb install -r`).
+O APK sai em `mobile/android/app/build/outputs/apk/release/app-release.apk` (reduzido pelo R8 e assinado com a mesma chave de depuração das versões anteriores, para instalar por cima sem perder o acervo do aparelho); instale-o no celular (por arquivo, permitindo "instalar apps desconhecidos", ou com `adb install -r`).
 
 ## Acervo de teste no computador
 

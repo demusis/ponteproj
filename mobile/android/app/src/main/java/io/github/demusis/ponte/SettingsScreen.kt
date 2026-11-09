@@ -1,124 +1,219 @@
 package io.github.demusis.ponte
 
-import android.provider.OpenableColumns
-import android.text.Editable
-import android.text.InputType
-import android.text.TextWatcher
-import android.view.View
-import android.widget.CheckBox
-import android.widget.ScrollView
-import android.widget.TextView
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
-/** Settings: Drive file, passphrase options, mobile data, start over. */
-internal class SettingsScreen(private val a: MainActivity) : Screen {
-    private val ui = a.ui
-    private val scroll = ScrollView(a)
-    private val box = ui.vbox(12)
-    private val fileInfo: TextView = ui.text("Nenhum arquivo escolhido.", 13f, Colors.GRAY)
-    private val pass = ui.edit("Frase-senha")
-    private val remember = CheckBox(a)
-    private var settingBox = false
-
-    override val view: View get() = scroll
-
-    init {
-        scroll.addView(box)
-        box.addView(ui.text("Ajustes", 20f, bold = true))
-
-        box.addView(ui.heading("Arquivo no Drive"))
-        box.addView(ui.button("Escolher o arquivo ponte-sync.ponte no Drive") { a.pickFile() }, ui.wide())
-        box.addView(fileInfo, ui.wide())
-
-        box.addView(ui.heading("Frase-senha"))
-        pass.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        pass.isSaveEnabled = false // never kept in saved instance state
-        pass.setText(SyncRunner.passphrase)
-        pass.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, x: Int, y: Int, z: Int) {}
-            override fun onTextChanged(s: CharSequence?, x: Int, y: Int, z: Int) {}
-            override fun afterTextChanged(s: Editable?) {
-                SyncRunner.passphrase = s?.toString() ?: ""
+/** Ajustes: the Drive file, the passphrase, mobile data, e-mail accounts, starting over. */
+@Composable
+internal fun SettingsScreen(
+    state: SettingsState,
+    onBack: () -> Unit,
+    onPickFile: () -> Unit,
+    onPassphrase: (String) -> Unit,
+    onRemember: (Boolean) -> Unit,
+    onForget: () -> Unit,
+    onMobile: (Boolean) -> Unit,
+    onAddAccount: () -> Unit,
+    onEditAccount: (MailAccount) -> Unit,
+    onReset: () -> Unit
+) {
+    val c = Ponte.colors
+    DetailScaffold(title = "Ajustes", onBack = onBack) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            if (state.keyBroken) {
+                Notice(
+                    "A chave deste aparelho não pôde ser lida. Para voltar a usar o aplicativo, " +
+                        "recomece o acervo deste aparelho (“Recomeçar o acervo deste aparelho”, no fim desta tela)."
+                )
             }
-        })
-        box.addView(pass, ui.wide())
 
-        if (Secrets.supported()) {
-            remember.text = "Lembrar a frase-senha (liberada pela digital ou PIN)"
-            setRemember(Secrets.isRemembered(a))
-            remember.setOnCheckedChangeListener { _, on -> if (!settingBox) onRememberChanged(on) }
-            box.addView(remember, ui.wide())
-        }
-        box.addView(ui.button("Esquecer frase-senha") { forgetPassphrase() }, ui.wide())
+            SectionLabel("Sincronização")
+            PonteCard {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Arquivo no Drive", style = FieldLabelStyle, color = c.secondary)
+                            if (state.fileName.isEmpty()) {
+                                Text("Nenhum arquivo escolhido", fontSize = 15.sp, color = c.muted)
+                            } else {
+                                Text(
+                                    state.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text,
+                                    maxLines = 2, overflow = TextOverflow.Ellipsis
+                                )
+                                if (state.fileSize >= 0) Text(formatSize(state.fileSize), fontSize = 13.sp, color = c.muted)
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = onPickFile, modifier = Modifier.heightIn(min = 48.dp),
+                            border = BorderStroke(1.dp, c.outline),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = c.accent)
+                        ) { Text(if (state.fileName.isEmpty()) "Escolher arquivo" else "Trocar arquivo", fontSize = 14.sp) }
+                    }
 
-        box.addView(ui.heading("Rede"))
-        val mobile = CheckBox(a).apply {
-            text = "Sincronizar também nos dados móveis"
-            isChecked = a.prefs.getBoolean("mobile_ok", false)
-            setOnCheckedChangeListener { _, on -> a.prefs.edit().putBoolean("mobile_ok", on).apply() }
-        }
-        box.addView(mobile, ui.wide())
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        LabeledField(
+                            "Frase-senha", state.passphrase, onPassphrase, password = true,
+                            placeholder = if (state.remembered) "••••••••" else "Digite a frase-senha"
+                        )
+                        if (state.remembered) {
+                            Text("Guardada neste aparelho. Digite só para trocar.", fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                        }
+                    }
 
-        if (SyncRunner.keyBroken) {
-            box.addView(ui.heading("Chave do aparelho"))
-            box.addView(ui.text("Não foi possível abrir a chave deste aparelho.", color = Colors.RED))
-            box.addView(ui.button("Recomeçar o acervo deste aparelho") { a.confirmReset() }, ui.wide())
-        }
-        refresh()
-    }
+                    if (state.canRemember) {
+                        SwitchRow(
+                            "Guardar a frase-senha neste aparelho",
+                            "Fica protegida e só abre com a sua digital ou o PIN do celular.",
+                            state.remembered, onRemember
+                        )
+                        if (state.remembered) {
+                            TextButton(
+                                onClick = onForget, modifier = Modifier.heightIn(min = 48.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                                colors = ButtonDefaults.textButtonColors(contentColor = c.accent)
+                            ) { Text("Esquecer a frase-senha", fontSize = 15.sp) }
+                        }
+                    }
 
-    private fun setRemember(on: Boolean) {
-        settingBox = true
-        remember.isChecked = on
-        settingBox = false
-    }
+                    SwitchRow(
+                        "Sincronizar também com dados móveis",
+                        "Por padrão, a sincronização espera pelo Wi-Fi.",
+                        state.mobileData, onMobile
+                    )
 
-    private fun onRememberChanged(on: Boolean) {
-        if (on) {
-            val p = SyncRunner.passphrase
-            if (p.isEmpty()) {
-                a.toast("Digite a frase-senha primeiro.")
-                setRemember(false)
-                return
-            }
-            Secrets.remember(a, p) { ok, msg ->
-                if (!ok) setRemember(false)
-                a.toast(msg)
-            }
-        } else {
-            Secrets.forget(a)
-        }
-    }
-
-    private fun forgetPassphrase() {
-        SyncRunner.passphrase = ""
-        pass.setText("")
-        Secrets.forget(a)
-        if (Secrets.supported()) setRemember(false)
-        a.toast("Frase-senha esquecida.")
-    }
-
-    override fun refresh() {
-        val uri = a.fileUri ?: return
-        fileInfo.text = "Arquivo escolhido."
-        val resolver = a.contentResolver
-        // The provider may hit the network: query off the UI thread.
-        Thread {
-            val t = try {
-                var s = "Arquivo escolhido."
-                resolver.query(uri, null, null, null, null)?.use { c ->
-                    if (c.moveToFirst()) {
-                        val n = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        val z = c.getColumnIndex(OpenableColumns.SIZE)
-                        val name = if (n >= 0) c.getString(n) else "(sem nome)"
-                        val size = if (z >= 0 && !c.isNull(z)) c.getLong(z) else -1L
-                        s = "Arquivo: " + name + (if (size >= 0) " (" + size + " bytes)" else "")
+                    if (state.pending) {
+                        Notice("Há mudanças feitas neste aparelho esperando para ir ao Drive.", Tone.WARNING)
+                    }
+                    if (state.lastStatus.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Última sincronização", style = FieldLabelStyle, color = c.secondary)
+                            Text(
+                                state.lastStatus, fontSize = 14.sp, lineHeight = 20.sp,
+                                color = if (state.lastStatusError) c.error else c.text
+                            )
+                        }
                     }
                 }
-                s
-            } catch (_: Throwable) {
-                "Arquivo escolhido (não foi possível ler os detalhes)."
             }
-            a.runOnUiThread { try { fileInfo.text = t } catch (_: Throwable) { } }
-        }.start()
+
+            SectionLabel("Contas de e-mail", Modifier.padding(top = 8.dp))
+            PonteCard {
+                Column {
+                    for (a in state.accounts) {
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 64.dp)
+                                .clickable(onClickLabel = "Editar a conta") { onEditAccount(a) }
+                                .padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    a.label, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    "${a.user} · ${a.host}", fontSize = 13.sp, color = c.muted,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null, tint = c.muted)
+                        }
+                        Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(1.dp).background(c.divider))
+                    }
+                    TextButton(
+                        onClick = onAddAccount,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 4.dp),
+                        colors = ButtonDefaults.textButtonColors(contentColor = c.accent)
+                    ) {
+                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Text("Adicionar conta", Modifier.padding(start = 8.dp).weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+
+            SectionLabel("Sobre", Modifier.padding(top = 8.dp))
+            PonteCard {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Ponte de bolso", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
+                    if (state.version.isNotEmpty()) Text("Versão ${state.version}", fontSize = 14.sp, color = c.muted)
+                }
+            }
+
+            SectionLabel("Recomeçar o acervo deste aparelho", Modifier.padding(top = 8.dp), color = c.error)
+            PonteCard {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Apaga a cópia do acervo guardada neste aparelho e a frase-senha guardada. " +
+                            "Nada é apagado no computador nem no Drive: na próxima sincronização, tudo volta para cá.",
+                        style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, lineHeight = 20.sp, color = c.secondary
+                    )
+                    OutlinedButton(
+                        onClick = onReset, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        shape = RoundedCornerShape(24.dp),
+                        border = BorderStroke(1.dp, c.error),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = c.error)
+                    ) { Text("Recomeçar…", fontSize = 15.sp, fontWeight = FontWeight.Medium) }
+                }
+            }
+            Box(Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun SwitchRow(title: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val c = Ponte.colors
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontSize = 15.sp, color = c.text)
+            Text(hint, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+        }
+        Switch(
+            checked = checked, onCheckedChange = null,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = c.onAccent, checkedTrackColor = c.accent,
+                uncheckedThumbColor = c.secondary, uncheckedTrackColor = c.chip, uncheckedBorderColor = c.outline
+            )
+        )
     }
 }

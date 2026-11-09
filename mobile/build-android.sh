@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the Android prototype: the Rust core (aarch64) and the debug APK.
+# Builds Ponte de bolso: the Rust core (aarch64) and the APK (shrunk, signed with the debug key).
 # Toolchain: the portable one installed next to the Ponte devtools.
 set -e
 DEV=/c/Users/CARLO/AppData/Local/Programs/PonteProj/devtools
@@ -41,5 +41,5 @@ export JAVA_HOME="$(cygpath -w "$A/jdk")" ANDROID_HOME="$(cygpath -w "$A/sdk")"
 export PATH="$A/jdk/bin:$PATH"
 cd "$REPO/mobile/android"
 printf 'sdk.dir=%s\n' "$(cygpath -m "$A/sdk")" > local.properties
-"$A/gradle/bin/gradle" --no-daemon assembleDebug
-ls -la app/build/outputs/apk/debug/*.apk
+"$A/gradle/bin/gradle" --no-daemon assembleRelease
+ls -la app/build/outputs/apk/release/*.apk

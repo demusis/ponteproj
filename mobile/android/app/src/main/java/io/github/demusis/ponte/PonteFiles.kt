@@ -10,7 +10,6 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
-import android.widget.Toast
 import java.io.File
 import java.io.FileNotFoundException
 
@@ -94,7 +93,7 @@ class PonteFiles : ContentProvider() {
 /** Exports a PDF/attachment into cacheDir/compartilhar and opens it with another app. */
 internal fun openExported(a: MainActivity, kind: String, id: Long, captureId: Long) {
     val dir = File(a.cacheDir, PonteFiles.DIR_SHARED)
-    Toast.makeText(a, "Preparando o arquivo...", Toast.LENGTH_SHORT).show()
+    Controller.say("Preparando o arquivo…")
     SyncRunner.background({
         dir.mkdirs()
         val old = System.currentTimeMillis() - 5L * 60 * 1000
@@ -119,12 +118,12 @@ internal fun openExported(a: MainActivity, kind: String, id: Long, captureId: Lo
             act.startActivity(i)
         } catch (_: ActivityNotFoundException) {
             val ext = res.first.substringAfterLast('.', "")
-            Toast.makeText(
-                act, "Nenhum aplicativo neste aparelho abre arquivos" + (if (ext.isEmpty()) "." else " .$ext."),
-                Toast.LENGTH_LONG
-            ).show()
+            Controller.say(
+                "Nenhum aplicativo neste aparelho abre arquivos" + (if (ext.isEmpty()) "." else " .$ext."),
+                long = true
+            )
         } catch (e: Throwable) {
-            Toast.makeText(act, e.message ?: e.toString(), Toast.LENGTH_LONG).show()
+            Controller.say(e.message ?: e.toString(), long = true)
         }
-    }, { Toast.makeText(MainActivity.live ?: a, it, Toast.LENGTH_LONG).show() })
+    }, { Controller.say(it, long = true) })
 }

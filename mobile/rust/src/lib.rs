@@ -157,7 +157,8 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_sync<'local>(
     })
 }
 
-/// The documents of the library, newest first, with their notes.
+/// The documents of the library, newest first, with their notes and what the
+/// list shows of each: type, date, where it came from, open tasks, attachments.
 #[no_mangle]
 pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listDocuments<'local>(
     mut env: JNIEnv<'local>,
@@ -165,17 +166,46 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listDocuments<'loc
 ) -> jstring {
     answer(&mut env, |_| {
         with_store(|store| {
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            // Open tasks by document: how many, and the earliest due date.
+            let mut open = std::collections::HashMap::<i64, (usize, String)>::new();
+            for task in store.list_tasks()?.iter().filter(|t| t.status != "concluida") {
+                let entry = open.entry(task.document_id).or_default();
+                entry.0 += 1;
+                if !task.due_date.is_empty() && (entry.1.is_empty() || task.due_date < entry.1) {
+                    entry.1 = task.due_date.clone();
+                }
+            }
             let mut documents = Vec::new();
             for summary in store.list_documents("")? {
-                // A note that cannot be read is told, never shown as empty
-                // (editing an "empty" note would replace the real one).
+                let (open_tasks, due) = open.get(&summary.id).cloned().unwrap_or_default();
                 let mut entry = json!({
                     "id": summary.id,
                     "number": summary.document_number,
                     "title": summary.title,
+                    "manual": summary.manual,
+                    "email": summary.email,
+                    "email_from": summary.email_from,
+                    "open_tasks": open_tasks,
+                    "task_due_label": ponteproj::labels::date(&due),
+                    "task_overdue": !due.is_empty() && due.as_str() < today.as_str(),
+                    "task_due_today": due == today,
+                    "attachments": store
+                        .list_attachments(ponteproj::attachments::Owner::Document(summary.id))
+                        .map(|list| list.len())
+                        .unwrap_or(0),
                 });
+                // A note that cannot be read is told, never shown as empty
+                // (editing an "empty" note would replace the real one).
                 match store.load_document(summary.id) {
-                    Ok(detail) => entry["note"] = json!(detail.note),
+                    Ok(detail) => {
+                        let meta = &detail.capture.metadata;
+                        let field = |key: &str| meta.get(key).cloned().unwrap_or_default();
+                        entry["note"] = json!(detail.note);
+                        entry["type"] = json!(field("document_type"));
+                        entry["date"] = json!(ponteproj::labels::date(&field("document_date")));
+                        entry["origin"] = json!(field("origin"));
+                    }
                     Err(error) => entry["note_error"] = json!(format!("{error:#}")),
                 }
                 documents.push(entry);
@@ -526,6 +556,14 @@ fn account_of(store: &Store, uid: &str, password: &str) -> Result<ponteproj::ima
     Ok(account)
 }
 
+fn filter_key(filter: ponteproj::imap::Filter) -> &'static str {
+    match filter {
+        ponteproj::imap::Filter::Flagged => "estrela",
+        ponteproj::imap::Filter::Unseen => "nao_lidas",
+        ponteproj::imap::Filter::All => "todas",
+    }
+}
+
 fn filter_of(value: &str) -> ponteproj::imap::Filter {
     match value {
         "estrela" => ponteproj::imap::Filter::Flagged,
@@ -546,7 +584,8 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listMailAccounts<'
                 .into_iter()
                 .map(|a| json!({"uid": a.uid, "name": a.name, "host": a.host, "port": a.port,
                                 "user": a.user, "remember": a.remember,
-                                "has_password": !a.password.is_empty(), "folder": a.folder}))
+                                "has_password": !a.password.is_empty(), "folder": a.folder,
+                                "filter": filter_key(a.filter), "last_used": a.last_used}))
                 .collect::<Vec<_>>();
             Ok(json!({ "accounts": accounts }))
         })

@@ -1,364 +1,280 @@
 package io.github.demusis.ponte
 
-import android.app.AlertDialog
-import android.graphics.Color
-import android.text.InputType
-import android.view.View
-import android.widget.ArrayAdapter
-import android.widget.CheckBox
-import android.widget.ScrollView
-import android.widget.Spinner
-import android.widget.TextView
-import org.json.JSONArray
-import org.json.JSONObject
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Mail
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
-/** Passwords typed for this session (not remembered on the device). Memory only. */
-internal object MailSession {
-    val passwords = HashMap<String, String>()
+/** The E-mail area (inside MainShell): account, folder, filter, messages and the import bar. */
+@Composable
+internal fun MailScreen(
+    state: MailState,
+    onAccount: (String) -> Unit,
+    onFolder: (String) -> Unit,
+    onFilter: (String) -> Unit,
+    onToggle: (Long) -> Unit,
+    onImport: () -> Unit,
+    onReload: () -> Unit,
+    onAddAccount: () -> Unit,
+    onPassword: () -> Unit
+) {
+    val c = Ponte.colors
+    if (state.loading) {
+        LoadingBox(modifier = Modifier.fillMaxSize())
+        return
+    }
+    val account = state.account
+    if (account == null) {
+        EmptyState(
+            title = "Nenhuma conta de e-mail",
+            text = "Adicione uma conta para trazer mensagens ao acervo.",
+            icon = Icons.Outlined.Mail,
+            action = { PrimaryButton("Adicionar conta", onAddAccount) }
+        )
+        return
+    }
+
+    val showList = !state.needsPassword && state.listed && state.messages.isNotEmpty()
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            Column(Modifier.padding(start = 16.dp, top = 4.dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Selector(
+                        description = "Conta", value = account.label,
+                        options = state.accounts.map { it.uid to it.label }, selected = account.uid,
+                        onSelect = onAccount, enabled = !state.busy, modifier = Modifier.weight(1f)
+                    )
+                    Selector(
+                        description = "Pasta", value = state.folderLabel(),
+                        options = state.folders.map { it.raw to it.name }, selected = state.folder,
+                        onSelect = onFolder, enabled = !state.busy, modifier = Modifier.weight(1.25f)
+                    )
+                    IconButton(onClick = onReload, enabled = !state.busy) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = "Atualizar a lista", tint = if (state.busy) c.muted else c.accent)
+                    }
+                }
+                FilterChips(
+                    options = listOf("todas" to "Todas", "estrela" to "Com estrela", "nao_lidas" to "Não lidas"),
+                    selected = state.filter, onSelect = { if (!state.busy) onFilter(it) },
+                    modifier = Modifier.padding(end = 8.dp).padding(vertical = 6.dp)
+                )
+            }
+            if (state.busy) {
+                LinearProgressIndicator(
+                    Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(3.dp),
+                    color = c.accent, trackColor = c.chip
+                )
+                if (state.info.isNotEmpty()) InfoLine(state.info, c.secondary)
+            } else if (state.info.isNotEmpty()) {
+                if (state.infoError) Notice(state.info, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                else InfoLine(state.info, c.secondary)
+            }
+
+            when {
+                state.needsPassword -> EmptyState(
+                    title = "Falta a senha de app",
+                    text = "A senha de app desta conta não fica guardada neste aparelho. Digite-a para ver as mensagens.",
+                    action = { PrimaryButton("Digitar a senha de app", onPassword, enabled = !state.busy) }
+                )
+                state.listed && state.messages.isEmpty() -> EmptyState(
+                    title = "Nenhuma mensagem",
+                    text = "Não há mensagens em “${state.folderLabel()}”" + when (state.filter) {
+                        "estrela" -> " com estrela."
+                        "nao_lidas" -> " não lidas."
+                        else -> "."
+                    },
+                    icon = Icons.Outlined.Mail
+                )
+                !state.listed && !state.busy && !state.infoError -> EmptyState(
+                    title = "Mensagens ainda não listadas",
+                    text = "A lista não é buscada sozinha fora do Wi-Fi.",
+                    action = { PrimaryButton("Listar mensagens", onReload) }
+                )
+                showList -> LazyColumn(
+                    Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = PaddingValues(
+                        start = 16.dp, top = 8.dp, end = 16.dp,
+                        bottom = if (state.checked.isNotEmpty()) 88.dp else 16.dp
+                    )
+                ) {
+                    itemsIndexed(state.messages, key = { _, m -> m.uid }) { i, m ->
+                        val first = i == 0
+                        val last = i == state.messages.lastIndex
+                        val shape = RoundedCornerShape(
+                            topStart = if (first) 16.dp else 0.dp, topEnd = if (first) 16.dp else 0.dp,
+                            bottomStart = if (last) 16.dp else 0.dp, bottomEnd = if (last) 16.dp else 0.dp
+                        )
+                        Column(Modifier.background(c.surface, shape)) {
+                            MessageRow(m, m.uid in state.checked, !state.busy) { onToggle(m.uid) }
+                            if (!last) Box(Modifier.padding(start = 52.dp).fillMaxWidth().height(1.dp).background(c.divider))
+                        }
+                    }
+                }
+            }
+        }
+
+        if (state.checked.isNotEmpty() && showList) {
+            val n = state.checked.size
+            Row(
+                Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 16.dp, bottom = 12.dp).fillMaxWidth()
+                    .background(c.contrastBar, RoundedCornerShape(30.dp))
+                    .padding(start = 18.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    if (n == 1) "1 marcada" else "$n marcadas", Modifier.weight(1f),
+                    fontSize = 14.sp, color = c.onContrastBar
+                )
+                Button(
+                    onClick = onImport, enabled = !state.busy,
+                    modifier = Modifier.height(44.dp), shape = RoundedCornerShape(22.dp),
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = c.onContrastBar, contentColor = c.contrastBar,
+                        disabledContainerColor = c.onContrastBar.copy(alpha = 0.35f), disabledContentColor = c.contrastBar
+                    )
+                ) { Text(if (state.busy) "Importando…" else "Importar", fontSize = 14.sp, fontWeight = FontWeight.Bold) }
+            }
+        }
+    }
 }
 
-/** E-mail import: accounts, account form, and the browse/import flow. */
-internal class MailScreen(private val a: MainActivity) : Screen {
-    private val ui = a.ui
-    private val scroll = ScrollView(a)
-    private val box = ui.vbox(12)
+@Composable
+private fun InfoLine(text: String, color: Color) {
+    Text(
+        text, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+        style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, color = color
+    )
+}
 
-    private var mode = 0 // 0 accounts, 1 form, 2 browse
-    private var busy = false
-    private var info: TextView = ui.text("", 13f, Colors.GRAY)
-
-    // browse state
-    private var account: JSONObject? = null
-    private var folders: List<Pair<String, String>> = emptyList()
-    private var messages: List<JSONObject> = emptyList()
-    private val checked = HashSet<Long>()
-    private var folderSpinner: Spinner? = null
-    private var filterSpinner: Spinner? = null
-    private var listBox = ui.vbox()
-    private var resultBox = ui.vbox()
-    private var importBtn = ui.button("") {}
-    private var listedFolder = ""
-
-    override val view: View get() = scroll
-
-    init {
-        scroll.addView(box)
-        showAccounts()
-    }
-
-    override fun refresh() {
-        if (mode == 0) showAccounts()
-    }
-
-    override fun onBack(): Boolean {
-        if (mode != 0) {
-            showAccounts()
-            return true
-        }
-        return false
-    }
-
-    private fun setInfo(msg: String, error: Boolean = false) {
-        info.text = msg
-        info.setTextColor(if (error) Colors.RED else Colors.GRAY)
-    }
-
-    /** Runs a network call on the shared worker with a progress line. */
-    private fun <T> net(label: String, work: () -> T, ok: (T) -> Unit) = netOn(false, label, work, ok)
-
-    private fun <T> netServer(label: String, work: () -> T, ok: (T) -> Unit) = netOn(true, label, work, ok)
-
-    private fun <T> netOn(server: Boolean, label: String, work: () -> T, ok: (T) -> Unit) {
-        if (busy) return
-        busy = true
-        setInfo(label)
-        val done = { r: T -> busy = false; setInfo(""); ok(r) }
-        val fail = { m: String ->
-            busy = false
-            val acc = account
-            if (mode == 2 && acc != null && !acc.optBoolean("has_password")) {
-                MailSession.passwords.remove(acc.s("uid")) // maybe wrong: ask again next time
+/** Compact field-like button that opens a menu (account, folder). */
+@Composable
+private fun Selector(
+    description: String,
+    value: String,
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
+    enabled: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val c = Ponte.colors
+    var open by remember { mutableStateOf(false) }
+    Box(modifier) {
+        Surface(
+            onClick = { open = true }, enabled = enabled,
+            shape = RoundedCornerShape(12.dp), color = c.surface, border = BorderStroke(1.dp, c.outline),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+        ) {
+            Row(
+                Modifier.padding(start = 14.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    value, Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                    color = if (enabled) c.text else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Icon(Icons.Outlined.ExpandMore, contentDescription = description, tint = c.secondary, modifier = Modifier.size(18.dp))
             }
-            setInfo(m, true)
         }
-        if (server) SyncRunner.backgroundNetwork(work, done, fail) else SyncRunner.background(work, done, fail)
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for ((key, label) in options) {
+                DropdownMenuItem(
+                    text = { Text(label, fontSize = 16.sp, fontWeight = if (key == selected) FontWeight.SemiBold else FontWeight.Normal) },
+                    onClick = { open = false; onSelect(key) }
+                )
+            }
+        }
     }
+}
 
-    // ------------------------------------------------------------ accounts
-
-    private fun showAccounts() {
-        mode = 0
-        box.removeAllViews()
-        box.addView(ui.text("E-mail", 20f, bold = true))
-        info = ui.text("", 13f, Colors.GRAY)
-        box.addView(info, ui.wide())
-        box.addView(ui.button("Nova conta") { showForm(null) }, ui.wide())
-        setInfo("Carregando...")
-        SyncRunner.background({ Api.mailAccounts() }, { list ->
-            if (mode != 0) return@background
-            setInfo(if (list.isEmpty()) "Nenhuma conta cadastrada." else "")
-            for (acc in list) box.addView(accountRow(acc))
-        }, { if (mode == 0) setInfo(it, true) })
-    }
-
-    private fun accountRow(acc: JSONObject): View {
-        val col = ui.vbox()
-        col.setPadding(0, ui.dp(8), 0, ui.dp(8))
-        col.addView(ui.text(acc.s("name").ifEmpty { acc.s("user") }, 16f, bold = true))
-        col.addView(ui.text(acc.s("user") + " · " + acc.s("host"), 12f, Colors.GRAY))
-        val row = ui.hbox()
-        val open = ui.button("Abrir") { showBrowse(acc) }
-        val edit = ui.button("Editar") { showForm(acc) }
-        val del = ui.button("Excluir") { confirmDelete(acc) }
-        for (b in listOf(open, edit, del)) row.addView(b, ui.weighted())
-        col.addView(row, ui.wide())
-        return col
-    }
-
-    private fun confirmDelete(acc: JSONObject) {
-        AlertDialog.Builder(a)
-            .setTitle("Excluir a conta?")
-            .setMessage(acc.s("name").ifEmpty { acc.s("user") } + "\nOs documentos já importados continuam no acervo.")
-            .setPositiveButton("Excluir") { _, _ ->
-                val uid = acc.s("uid")
-                net("Excluindo...", { Api.deleteMailAccount(uid) }) {
-                    MailSession.passwords.remove(uid)
-                    showAccounts()
+@Composable
+private fun MessageRow(m: MailMessage, checked: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val c = Ponte.colors
+    val sender = m.from.substringBefore('<').trim().trim('"').ifEmpty { m.from.trim('<', '>', ' ') }
+    val subject = m.subject.ifBlank { "(sem assunto)" }
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 64.dp)
+            .then(if (m.imported || !enabled) Modifier else Modifier.clickable(onClick = onClick))
+            .padding(end = 14.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {
+            if (!m.imported) {
+                Checkbox(
+                    checked = checked, onCheckedChange = null, enabled = enabled,
+                    colors = CheckboxDefaults.colors(
+                        checkedColor = c.accent, checkmarkColor = c.onAccent, uncheckedColor = c.secondary,
+                        disabledCheckedColor = c.muted, disabledUncheckedColor = c.muted
+                    )
+                )
+            }
+        }
+        Column(Modifier.weight(1f).alpha(if (m.imported) 0.6f else 1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    sender, Modifier.weight(1f), fontSize = 15.sp,
+                    fontWeight = if (m.imported) FontWeight.Medium else FontWeight.SemiBold,
+                    color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                if (m.flagged) {
+                    Icon(Icons.Filled.Star, contentDescription = "Com estrela", tint = c.warning, modifier = Modifier.size(16.dp))
                 }
+                Text(m.date, fontSize = 12.sp, color = c.muted, maxLines = 1)
             }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    // ------------------------------------------------------------ form
-
-    private fun showForm(acc: JSONObject?) {
-        mode = 1
-        box.removeAllViews()
-        box.addView(ui.text(if (acc == null) "Nova conta" else "Editar conta", 20f, bold = true))
-        info = ui.text("", 13f, Colors.GRAY)
-        box.addView(info, ui.wide())
-        val name = ui.edit("Nome", acc?.s("name") ?: "")
-        val host = ui.edit("Servidor", acc?.s("host") ?: "imap.gmail.com")
-        val port = ui.edit("Porta", (acc?.optInt("port", 993) ?: 993).toString()).apply {
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }
-        val user = ui.edit("Usuário (e-mail)", acc?.s("user") ?: "").apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
-        }
-        val pw = ui.edit(
-            if (acc != null && acc.optBoolean("has_password")) "Senha de app (vazio mantém a guardada)"
-            else "Senha de app"
-        ).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            isSaveEnabled = false
-        }
-        val remember = CheckBox(a).apply {
-            text = "Lembrar a senha neste aparelho"
-            isChecked = acc?.optBoolean("remember") ?: false
-        }
-        for (v in listOf(name, host, port, user, pw, remember)) box.addView(v, ui.wide())
-        box.addView(
-            ui.text(
-                "Gmail: use uma senha de app (Conta Google ▸ Segurança ▸ Verificação em duas etapas ▸ Senhas de app).",
-                12f, Colors.GRAY
-            ), ui.wide()
-        )
-        box.addView(ui.button("Salvar") {
-            val u = user.text.toString().trim()
-            val h = host.text.toString().trim()
-            if (u.isEmpty() || h.isEmpty()) {
-                setInfo("Informe o servidor e o usuário.", true)
-                return@button
-            }
-            val password = pw.text.toString()
-            val json = JSONObject()
-                .put("uid", acc?.s("uid") ?: "")
-                .put("name", name.text.toString().trim().ifEmpty { u })
-                .put("host", h)
-                .put("port", port.text.toString().toIntOrNull() ?: 993)
-                .put("user", u)
-                .put("password", password)
-                .put("remember", remember.isChecked)
-                .put("folder", acc?.s("folder", "INBOX") ?: "INBOX")
-                .toString()
-            net("Salvando...", { Api.saveMailAccount(json) }) { uid ->
-                if (password.isNotEmpty() && !remember.isChecked && uid.isNotEmpty()) {
-                    MailSession.passwords[uid] = password
-                }
-                showAccounts()
-            }
-        }, ui.wide())
-        box.addView(ui.button("Cancelar") { showAccounts() }, ui.wide())
-    }
-
-    // ------------------------------------------------------------ browse / import
-
-    /** Password for the account: remembered (""), kept for the session, or asked now. */
-    private fun withPassword(acc: JSONObject, then: (String) -> Unit) {
-        if (acc.optBoolean("has_password")) { then(""); return }
-        val uid = acc.s("uid")
-        MailSession.passwords[uid]?.let { then(it); return }
-        val input = ui.edit("Senha de app").apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
-        AlertDialog.Builder(a)
-            .setTitle("Senha da conta")
-            .setMessage(acc.s("user"))
-            .setView(input)
-            .setPositiveButton("OK") { _, _ ->
-                val p = input.text.toString()
-                if (p.isNotEmpty()) {
-                    MailSession.passwords[uid] = p
-                    then(p)
-                }
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    private fun pwFor(acc: JSONObject) =
-        if (acc.optBoolean("has_password")) "" else (MailSession.passwords[acc.s("uid")] ?: "")
-
-    private fun showBrowse(acc: JSONObject) {
-        withPassword(acc) { buildBrowse(acc) }
-    }
-
-    private fun buildBrowse(acc: JSONObject) {
-        mode = 2
-        account = acc
-        folders = emptyList()
-        messages = emptyList()
-        checked.clear()
-        box.removeAllViews()
-        box.addView(ui.text(acc.s("name").ifEmpty { acc.s("user") }, 20f, bold = true))
-        box.addView(ui.text(acc.s("user"), 12f, Colors.GRAY))
-        info = ui.text("", 13f, Colors.GRAY)
-        box.addView(info, ui.wide())
-        box.addView(ui.button("Listar pastas") { listFolders(acc) }, ui.wide())
-
-        folderSpinner = Spinner(a)
-        filterSpinner = Spinner(a).apply {
-            adapter = ArrayAdapter(
-                a, android.R.layout.simple_spinner_dropdown_item,
-                listOf("Todas", "Com estrela", "Não lidas")
+            Text(
+                subject, fontSize = 14.sp, lineHeight = 19.sp, color = c.secondary,
+                maxLines = 2, overflow = TextOverflow.Ellipsis
             )
-        }
-        box.addView(folderSpinner, ui.wide())
-        box.addView(filterSpinner, ui.wide())
-        box.addView(ui.button("Listar mensagens") { listMessages(acc) }, ui.wide())
-
-        listBox = ui.vbox()
-        importBtn = ui.button("Importar 0 marcadas") { importChecked(acc) }
-        importBtn.visibility = View.GONE
-        resultBox = ui.vbox()
-        box.addView(listBox, ui.wide())
-        box.addView(importBtn, ui.wide())
-        box.addView(resultBox, ui.wide())
-        box.addView(ui.button("Voltar às contas") { showAccounts() }, ui.wide())
-    }
-
-    private fun listFolders(acc: JSONObject) {
-        val pw = pwFor(acc)
-        netServer(SERVER_MSG, { Api.mailFolders(acc.s("uid"), pw) }) { list ->
-            folders = list.map { it.s("raw") to it.s("name").ifEmpty { it.s("raw") } }
-            val sp = folderSpinner ?: return@netServer
-            sp.adapter = ArrayAdapter(a, android.R.layout.simple_spinner_dropdown_item, folders.map { it.second })
-            val want = acc.s("folder", "INBOX")
-            val i = folders.indexOfFirst { it.first == want || it.second == want }
-            if (i >= 0) sp.setSelection(i)
-            if (folders.isEmpty()) setInfo("Nenhuma pasta encontrada.")
-        }
-    }
-
-    private fun listMessages(acc: JSONObject) {
-        val idx = folderSpinner?.selectedItemPosition ?: -1
-        val folder = folders.getOrNull(idx)?.first
-        if (folder == null) {
-            setInfo("Toque em \"Listar pastas\" e escolha uma pasta.", true)
-            return
-        }
-        val filter = when (filterSpinner?.selectedItemPosition) { 1 -> "estrela"; 2 -> "nao_lidas"; else -> "todas" }
-        val pw = pwFor(acc)
-        netServer(SERVER_MSG, { Api.mailMessages(acc.s("uid"), pw, folder, filter) }) { list ->
-            listedFolder = folder
-            messages = list
-            checked.clear()
-            resultBox.removeAllViews()
-            renderMessages()
-            if (list.isEmpty()) setInfo("Nenhuma mensagem.")
-        }
-    }
-
-    private fun renderMessages() {
-        listBox.removeAllViews()
-        for (m in messages) {
-            val uid = m.optLong("uid")
-            val imported = m.optBoolean("imported")
-            val label = (if (m.optBoolean("flagged")) "★ " else "") + m.s("date") + "\n" +
-                m.s("from") + "\n" + m.s("subject").ifEmpty { "(sem assunto)" } +
-                (if (imported) "\njá no acervo" else "")
-            val cb = CheckBox(a).apply {
-                text = label
-                textSize = 13f
-                isChecked = uid in checked
-                if (imported) setTextColor(Color.GRAY)
-                setOnCheckedChangeListener { _, on ->
-                    if (on) checked.add(uid) else checked.remove(uid)
-                    updateImportButton()
-                }
+            if (m.error != null) {
+                Text(m.error, fontSize = 12.sp, lineHeight = 16.sp, color = c.error)
             }
-            listBox.addView(cb, ui.wide())
-        }
-        updateImportButton()
-    }
-
-    private fun updateImportButton() {
-        importBtn.text = "Importar " + checked.size + " marcadas"
-        importBtn.visibility = if (messages.isEmpty()) View.GONE else View.VISIBLE
-        importBtn.isEnabled = checked.isNotEmpty()
-    }
-
-    private fun importChecked(acc: JSONObject) {
-        if (checked.isEmpty()) return
-        if (!a.networkAllowed()) {
-            setInfo("Sem Wi-Fi: importação adiada. Para usar dados móveis, ative em Ajustes.")
-            return
-        }
-        val pw = pwFor(acc)
-        val folder = listedFolder
-        val ids = checked.toList()
-        val arr = JSONArray().also { j -> ids.forEach { j.put(it) } }.toString()
-        netServer(SERVER_MSG, {
-            val r = Api.importMail(acc.s("uid"), pw, folder, arr)
-            SyncRunner.refreshDocs()
-            r
-        }) { results ->
-            resultBox.removeAllViews()
-            resultBox.addView(ui.heading("Resultado"))
-            val done = HashSet<Long>()
-            for (r in results) {
-                val ok = r.optBoolean("ok")
-                val subject = r.s("subject").ifEmpty { "(sem assunto)" }
-                val line = if (ok) {
-                    done.add(r.optLong("uid"))
-                    "✓ $subject — " +
-                        (if (r.optBoolean("already")) "já estava no acervo" else r.optInt("attachments").toString() + " anexo(s)")
-                } else {
-                    "✗ $subject: " + r.s("error", "erro")
-                }
-                resultBox.addView(ui.text(line, 13f, if (ok) Colors.GREEN else Colors.RED), ui.wide())
+            if (m.imported) {
+                Pill("Já no acervo", Tone.SUCCESS, Modifier.padding(top = 2.dp))
             }
-            messages = messages.map {
-                if (it.optLong("uid") in done) JSONObject(it.toString()).put("imported", true) else it
-            }
-            checked.clear()
-            renderMessages()
-            (MainActivity.live ?: a).requestSync(null)
         }
-    }
-
-    private companion object {
-        const val SERVER_MSG = "Conversando com o servidor de e-mail…"
     }
 }

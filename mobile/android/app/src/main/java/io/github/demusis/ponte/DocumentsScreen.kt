@@ -1,78 +1,187 @@
 package io.github.demusis.ponte
 
-import android.graphics.Color
-import android.text.Editable
-import android.text.TextWatcher
-import android.view.View
-import android.view.ViewGroup
-import android.widget.BaseAdapter
-import android.widget.LinearLayout
-import android.widget.ListView
-import android.widget.TextView
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.SearchOff
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.text.Normalizer
 
-/** Searchable list of documents. */
-internal class DocumentsScreen(private val a: MainActivity) : Screen {
-    private val ui = a.ui
-    private var shown: List<Doc> = emptyList()
-    private val adapter = DocAdapter()
-    private val search = ui.edit("Buscar por número ou título")
-    private val empty = ui.text("", 13f, Colors.GRAY)
-    override val view = ui.vbox()
+private fun fold(s: String): String =
+    Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").lowercase()
 
-    init {
-        search.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(s: Editable?) = filter()
-        })
-        view.addView(search, ui.wide())
-        view.addView(ui.button("+ Registro por foto") { a.showPhoto() }, ui.wide())
-        view.addView(empty, ui.wide())
-        val list = ListView(a).apply {
-            adapter = this@DocumentsScreen.adapter
-            setOnItemClickListener { _, _, pos, _ ->
-                shown.getOrNull(pos)?.let { a.showDocument(it.id) }
+/** The Documentos area (inside MainShell): search, filters, the list and the photo button. */
+@Composable
+internal fun DocumentsScreen(
+    docs: List<Doc>,
+    query: String,
+    onQuery: (String) -> Unit,
+    filter: DocFilter,
+    onFilter: (DocFilter) -> Unit,
+    onOpen: (Long) -> Unit,
+    onPhoto: () -> Unit
+) {
+    val c = Ponte.colors
+    val shown = remember(docs, query, filter) {
+        val q = fold(query.trim())
+        docs.filter { d ->
+            val byFilter = when (filter) {
+                DocFilter.ALL -> true
+                DocFilter.WITH_TASK -> d.openTasks > 0
+                DocFilter.EMAILS -> d.email
+                DocFilter.RECORDS -> d.manual
+            }
+            byFilter && (q.isEmpty() || fold("${d.number} ${d.title} ${d.origin} ${d.emailFrom}").contains(q))
+        }
+    }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 104.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item(key = "search") {
+                OutlinedTextField(
+                    value = query, onValueChange = onQuery,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 4.dp),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    placeholder = { Text("Buscar por número, título ou origem", color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, tint = c.secondary) },
+                    trailingIcon = if (query.isEmpty()) null else ({
+                        IconButton(onClick = { onQuery("") }) {
+                            Icon(Icons.Outlined.Close, contentDescription = "Limpar a busca", tint = c.secondary)
+                        }
+                    }),
+                    shape = RoundedCornerShape(28.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = c.surface, unfocusedContainerColor = c.surface,
+                        focusedBorderColor = c.accent, unfocusedBorderColor = c.outline,
+                        focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent
+                    )
+                )
+            }
+            item(key = "filters") {
+                FilterChips(
+                    DocFilter.values().map { it.name to it.label }, filter.name,
+                    { k -> onFilter(DocFilter.valueOf(k)) },
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp)
+                )
+            }
+            if (docs.isEmpty()) {
+                item(key = "none") {
+                    EmptyState(
+                        "Nenhum documento neste aparelho.",
+                        text = "Toque em sincronizar para trazer o acervo do computador.",
+                        icon = Icons.Outlined.Description
+                    )
+                }
+            } else if (shown.isEmpty()) {
+                item(key = "nomatch") {
+                    EmptyState(
+                        "Nada encontrado",
+                        text = "Nenhum documento combina com a busca e o filtro escolhidos.",
+                        icon = Icons.Outlined.SearchOff,
+                        action = {
+                            TextButton(onClick = { onQuery(""); onFilter(DocFilter.ALL) }) {
+                                Text("Limpar busca e filtros", color = c.accent, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    )
+                }
+            } else {
+                items(shown, key = { it.id }) { d ->
+                    DocCard(d, { onOpen(d.id) }, Modifier.padding(horizontal = 16.dp))
+                }
             }
         }
-        view.addView(list, ui.fill())
-        filter()
+        ExtendedFloatingActionButton(
+            onClick = onPhoto,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+            containerColor = c.accent, contentColor = c.onAccent,
+            elevation = FloatingActionButtonDefaults.elevation(2.dp, 2.dp, 2.dp, 2.dp),
+            icon = { Icon(Icons.Outlined.PhotoCamera, contentDescription = null) },
+            text = { Text("Registro por foto", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
+        )
     }
+}
 
-    override fun refresh() = filter()
-
-    private fun filter() {
-        val q = search.text.toString().trim().lowercase()
-        val all = SyncRunner.docs
-        shown = if (q.isEmpty()) all else all.filter {
-            it.number.lowercase().contains(q) || it.title.lowercase().contains(q)
-        }
-        empty.text = if (shown.isEmpty()) "Nenhum documento." else ""
-        empty.visibility = if (shown.isEmpty()) View.VISIBLE else View.GONE
-        adapter.notifyDataSetChanged()
-    }
-
-    private inner class DocAdapter : BaseAdapter() {
-        override fun getCount() = shown.size
-        override fun getItem(position: Int) = shown[position]
-        override fun getItemId(position: Int) = shown[position].id
-
-        // Two-line row: "number — title" and a smaller note preview.
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-            val d = shown[position]
-            val row = (convertView as? LinearLayout) ?: LinearLayout(a).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(ui.dp(4), ui.dp(8), ui.dp(4), ui.dp(8))
-                addView(TextView(context).apply { textSize = 16f })
-                addView(TextView(context).apply {
-                    textSize = 12f
-                    setTextColor(Color.GRAY)
-                    maxLines = 2
-                })
+@Composable
+private fun DocCard(d: Doc, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = Ponte.colors
+    PonteCard(modifier, onClick) {
+        Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (d.type.isNotEmpty()) Tag(d.type, Tone.ACCENT, Modifier.widthIn(max = 200.dp))
+                Spacer(Modifier.weight(1f))
+                if (d.date.isNotEmpty()) Text(d.date, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1)
             }
-            (row.getChildAt(0) as TextView).text = d.number + " — " + d.title
-            (row.getChildAt(1) as TextView).text =
-                if (d.noteError != null) "(nota indisponível: " + d.noteError + ")" else d.note
-            return row
+            Text(
+                d.title.ifEmpty { "Sem título" },
+                fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = c.text,
+                maxLines = 2, overflow = TextOverflow.Ellipsis
+            )
+            val sub = if (d.email && d.emailFrom.isNotEmpty()) d.emailFrom else d.number.ifEmpty { d.origin }
+            if (sub.isNotEmpty()) {
+                Text(sub, style = MaterialTheme.typography.bodySmall, color = c.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (d.openTasks > 0 || d.attachments > 0) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (d.openTasks > 0) {
+                        val n = if (d.openTasks == 1) "1 tarefa" else "${d.openTasks} tarefas"
+                        val label = if (d.taskDueLabel.isNotEmpty()) "$n · ${d.taskDueLabel}" else n
+                        Pill(label, if (d.taskOverdue) Tone.ERROR else if (d.taskDueToday) Tone.WARNING else Tone.NEUTRAL, Modifier.widthIn(max = 260.dp))
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (d.attachments > 0) {
+                        Icon(Icons.Outlined.AttachFile, contentDescription = "Anexos", tint = c.muted, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(2.dp))
+                        Text("${d.attachments}", style = MaterialTheme.typography.bodySmall, color = c.muted)
+                    }
+                }
+            }
+            d.noteError?.let {
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(Icons.Outlined.WarningAmber, contentDescription = null, tint = c.warning, modifier = Modifier.size(16.dp).padding(top = 2.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = c.warning, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
     }
 }

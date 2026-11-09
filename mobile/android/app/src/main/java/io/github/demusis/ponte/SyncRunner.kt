@@ -26,7 +26,25 @@ internal data class Doc(
     val number: String,
     val title: String,
     val note: String,
-    val noteError: String?
+    val noteError: String?,
+    /** "Ofício", "Papel"… May be empty. */
+    val type: String = "",
+    /** dd/mm/aaaa, or empty. */
+    val date: String = "",
+    val origin: String = "",
+    /** A record made by hand or by photo (not captured from the SIGADOC). */
+    val manual: Boolean = false,
+    /** Came from an e-mail message. */
+    val email: Boolean = false,
+    val emailFrom: String = "",
+    /** How many tasks are open. */
+    val openTasks: Int = 0,
+    /** dd/mm/aaaa of the earliest open due date, or empty. */
+    val taskDueLabel: String = "",
+    val taskOverdue: Boolean = false,
+    val taskDueToday: Boolean = false,
+    /** How many attachments. */
+    val attachments: Int = 0
 )
 
 /** Raised when the core answers {"ok":false}. */
@@ -165,7 +183,14 @@ internal object SyncRunner {
         return (0 until arr.length()).map {
             val d = arr.getJSONObject(it)
             val err = if (d.has("note_error")) d.optString("note_error", "erro desconhecido") else null
-            Doc(d.getLong("id"), d.optString("number"), d.optString("title"), d.optString("note"), err)
+            Doc(
+                d.getLong("id"), d.optString("number"), d.optString("title"), d.optString("note"), err,
+                type = d.optString("type"), date = d.optString("date"), origin = d.optString("origin"),
+                manual = d.optBoolean("manual"), email = d.optBoolean("email"),
+                emailFrom = d.optString("email_from"), openTasks = d.optInt("open_tasks"),
+                taskDueLabel = d.optString("task_due_label"), taskOverdue = d.optBoolean("task_overdue"),
+                taskDueToday = d.optBoolean("task_due_today"), attachments = d.optInt("attachments")
+            )
         }
     }
 

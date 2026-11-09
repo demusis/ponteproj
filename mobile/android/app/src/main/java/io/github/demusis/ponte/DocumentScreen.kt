@@ -1,155 +1,265 @@
 package io.github.demusis.ponte
 
-import android.app.AlertDialog
-import android.graphics.Color
-import android.view.Gravity
-import android.view.View
-import android.widget.ScrollView
-import org.json.JSONObject
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.PictureAsPdf
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
-/** One document: data, note, analysis summary, tasks, files, attachments and text. */
-internal class DocumentScreen(private val a: MainActivity, private val docId: Long) : Screen {
-    private val ui = a.ui
-    private val scroll = ScrollView(a)
-    private val box = ui.vbox(12)
-    private var textOpen = false
-
-    override val view: View get() = scroll
-
-    init {
-        scroll.addView(box)
-        box.addView(ui.text("Carregando...", color = Colors.GRAY))
-        refresh()
+/** The ficha of a document: heading, analysis, tasks, note, files and the way to its text. */
+@Composable
+internal fun DocumentScreen(
+    state: DocumentState,
+    syncing: Boolean,
+    onBack: () -> Unit,
+    onSync: () -> Unit,
+    onToggleTask: (TaskItem) -> Unit,
+    onNewTask: () -> Unit,
+    onEditNote: () -> Unit,
+    onOpenFile: (FileItem) -> Unit,
+    onReadText: () -> Unit
+) {
+    val c = Ponte.colors
+    val doc = state.doc
+    DetailScaffold(
+        title = doc?.number?.takeIf { it.isNotBlank() } ?: "Documento",
+        onBack = onBack,
+        actions = {
+            IconButton(onClick = onSync, enabled = !syncing) {
+                Icon(Icons.Outlined.Sync, contentDescription = "Sincronizar", tint = if (syncing) c.muted else c.text)
+            }
+        }
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            if (syncing) {
+                LinearProgressIndicator(Modifier.fillMaxWidth(), color = c.accent, trackColor = c.chip)
+            }
+            when {
+                state.loading -> LoadingBox()
+                state.error != null -> Notice(state.error, modifier = Modifier.padding(16.dp))
+                doc != null -> FichaBody(doc, onToggleTask, onNewTask, onEditNote, onOpenFile, onReadText)
+            }
+        }
     }
+}
 
-    override fun refresh() {
-        SyncRunner.background({ Api.document(docId) }, { build(it) }, {
-            box.removeAllViews()
-            box.addView(ui.text(it, color = Colors.RED))
-        })
-    }
+@Composable
+private fun FichaBody(
+    doc: DocDetail,
+    onToggleTask: (TaskItem) -> Unit,
+    onNewTask: () -> Unit,
+    onEditNote: () -> Unit,
+    onOpenFile: (FileItem) -> Unit,
+    onReadText: () -> Unit
+) {
+    val c = Ponte.colors
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Header
+        Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (doc.type.isNotBlank() || doc.date.isNotBlank()) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (doc.type.isNotBlank()) Tag(doc.type, modifier = Modifier.weight(1f, fill = false))
+                    if (doc.date.isNotBlank()) Text(doc.date, style = MaterialTheme.typography.bodySmall, color = c.muted)
+                }
+            }
+            if (doc.title.isNotBlank()) {
+                Text(doc.title, fontSize = 22.sp, lineHeight = 29.sp, fontWeight = FontWeight.SemiBold, color = c.text)
+            }
+            if (doc.origin.isNotBlank()) {
+                Text(doc.origin, style = MaterialTheme.typography.bodyMedium, color = c.secondary)
+            }
+        }
 
-    private fun line(label: String, value: String) {
-        if (value.isNotEmpty()) box.addView(ui.text("$label: $value"))
-    }
-
-    private fun build(o: JSONObject) {
-        box.removeAllViews()
-        box.addView(ui.text(o.s("number") + " — " + o.s("title"), 20f, bold = true))
-        line("Tipo", o.s("type"))
-        line("Data", o.s("date"))
-        if (o.optBoolean("email") && o.s("email_from").isNotEmpty()) {
-            line("Origem", "De: " + o.s("email_from"))
-        } else {
-            line("Origem", o.s("origin"))
+        // Tasks: open first
+        val tasks = doc.tasks.sortedBy { it.done }
+        PonteCard {
+            Column(Modifier.padding(start = 8.dp, top = 14.dp, end = 12.dp, bottom = 8.dp)) {
+                SectionLabel("Tarefas", Modifier.padding(start = 8.dp, bottom = 4.dp))
+                if (tasks.isEmpty()) {
+                    Text(
+                        "Nenhuma tarefa neste documento.", Modifier.padding(start = 8.dp, top = 4.dp, bottom = 4.dp),
+                        style = MaterialTheme.typography.bodyMedium, color = c.muted
+                    )
+                }
+                for (t in tasks) {
+                    TaskRow(t, t.actionLabel, onToggle = { onToggleTask(t) })
+                }
+                CardButton("Nova tarefa", Icons.Outlined.Add, onNewTask)
+            }
         }
 
         // Note
-        box.addView(ui.heading("Nota"))
-        val note = o.s("note")
-        box.addView(ui.text(if (note.isEmpty()) "(sem nota)" else note, color = if (note.isEmpty()) Colors.GRAY else Color.BLACK))
-        box.addView(ui.button("Editar nota") { editNote(note) })
+        PonteCard {
+            Column(Modifier.padding(start = 16.dp, top = 14.dp, end = 8.dp, bottom = 8.dp)) {
+                SectionLabel("Nota", Modifier.offset(x = (-4).dp).padding(bottom = 6.dp))
+                if (doc.note.isBlank()) {
+                    Text("Sem nota", Modifier.padding(end = 8.dp), style = MaterialTheme.typography.bodyMedium, color = c.muted)
+                } else {
+                    Text(doc.note.trim(), Modifier.padding(end = 8.dp), fontSize = 16.sp, lineHeight = 23.sp, color = c.text)
+                }
+                CardButton(
+                    if (doc.note.isBlank()) "Escrever nota" else "Editar nota", Icons.Outlined.Edit, onEditNote,
+                    Modifier.offset(x = (-8).dp).padding(top = 4.dp)
+                )
+            }
+        }
 
         // Analysis
-        val an = o.optJSONObject("analysis")
-        if (an != null) {
-            box.addView(ui.heading("Resumo da análise"))
-            box.addView(ui.text(an.s("summary")))
-            line("Prioridade", an.s("priority"))
-            line("Motivo", an.s("reason"))
-            line("Prazo", an.s("deadline"))
-            val sug = an.optJSONArray("suggested").objs()
-            if (sug.isNotEmpty()) {
-                box.addView(ui.text("Ações sugeridas:", bold = true))
-                for (s in sug) {
-                    val reason = s.s("reason")
-                    box.addView(ui.text("• " + s.s("action") + (if (reason.isNotEmpty()) " — $reason" else "")))
+        val an = doc.analysis
+        if (an != null && (an.summary.isNotBlank() || an.priority.isNotBlank() || an.deadline.isNotBlank() ||
+                an.reason.isNotBlank() || an.suggested.isNotEmpty())
+        ) {
+            PonteCard {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SectionLabel("Resumo da análise", Modifier.offset(x = (-4).dp))
+                    if (an.summary.isNotBlank()) {
+                        Text(an.summary, fontSize = 16.sp, lineHeight = 23.sp, color = c.text)
+                    }
+                    if (an.priority.isNotBlank() || an.deadline.isNotBlank()) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (an.priority.isNotBlank()) {
+                                val tone = when (an.priority.trim().lowercase()) {
+                                    "alta" -> Tone.ERROR
+                                    "média", "media" -> Tone.WARNING
+                                    else -> Tone.NEUTRAL
+                                }
+                                Pill("Prioridade ${an.priority.trim().lowercase()}", tone)
+                            }
+                            if (an.deadline.isNotBlank()) {
+                                Text(
+                                    "Prazo: ${an.deadline}", Modifier.weight(1f, fill = false),
+                                    style = MaterialTheme.typography.bodySmall, color = c.secondary
+                                )
+                            }
+                        }
+                    }
+                    if (an.reason.isNotBlank()) {
+                        Text(an.reason, style = MaterialTheme.typography.bodyMedium, color = c.secondary)
+                    }
+                    if (an.suggested.isNotEmpty()) {
+                        HorizontalDivider(color = c.divider)
+                        Text("Ações sugeridas", style = MaterialTheme.typography.labelMedium, color = c.muted)
+                        for (s in an.suggested) {
+                            Row {
+                                Text("•", Modifier.width(16.dp), color = c.muted)
+                                Text(
+                                    if (s.reason.isBlank()) s.action else "${s.action} — ${s.reason}",
+                                    style = MaterialTheme.typography.bodyMedium, color = c.text
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Tasks
-        box.addView(ui.heading("Tarefas"))
-        val tasks = o.optJSONArray("tasks").objs()
-        if (tasks.isEmpty()) box.addView(ui.text("Nenhuma tarefa.", color = Colors.GRAY))
-        for (t in tasks) box.addView(taskRow(t))
-        box.addView(ui.button("+ Nova tarefa") { showNewTaskDialog(a, docId) })
-
         // Files
-        val files = o.optJSONArray("files").objs()
-        if (files.isNotEmpty()) {
-            box.addView(ui.heading("Arquivos"))
-            for (f in files) {
-                val label = f.s("label", "PDF") + " (" + formatSize(f.optLong("size")) + ")"
-                box.addView(ui.button(label) {
-                    openExported(a, "pdf", f.optLong("id"), f.optLong("capture_id"))
-                }, ui.wide())
-            }
-        }
-        val atts = o.optJSONArray("attachments").objs()
-        if (atts.isNotEmpty()) {
-            box.addView(ui.heading("Anexos"))
-            for (t in atts) {
-                val label = t.s("name") + " (" + formatSize(t.optLong("size")) + ")"
-                box.addView(ui.button(label) { openExported(a, "attachment", t.optLong("id"), 0L) }, ui.wide())
-                val d = t.s("description")
-                if (d.isNotEmpty()) box.addView(ui.text(d, 12f, Colors.GRAY))
+        if (doc.files.isNotEmpty()) {
+            PonteCard {
+                Column(Modifier.padding(top = 14.dp, bottom = 6.dp)) {
+                    SectionLabel("Arquivos e anexos", Modifier.padding(start = 12.dp, bottom = 4.dp))
+                    for (f in doc.files) FileRow(f) { onOpenFile(f) }
+                }
             }
         }
 
-        // Text (collapsed by default)
-        box.addView(ui.heading("Texto do documento"))
-        val body = ui.text(o.s("text").ifEmpty { "(sem texto)" }).apply {
-            setTextIsSelectable(true)
-            visibility = if (textOpen) View.VISIBLE else View.GONE
+        // Text preview
+        if (doc.text.isNotBlank()) {
+            PonteCard {
+                Column(Modifier.padding(start = 16.dp, top = 14.dp, end = 8.dp, bottom = 8.dp)) {
+                    SectionLabel("Texto", Modifier.offset(x = (-4).dp).padding(bottom = 6.dp))
+                    Text(
+                        doc.text.trim(), Modifier.padding(end = 8.dp),
+                        style = MaterialTheme.typography.bodyMedium, lineHeight = 21.sp, color = c.secondary,
+                        maxLines = 6, overflow = TextOverflow.Ellipsis
+                    )
+                    CardButton("Ler o texto completo", null, onReadText, Modifier.offset(x = (-8).dp).padding(top = 4.dp))
+                }
+            }
         }
-        val toggle = ui.button(if (textOpen) "Ocultar o texto" else "Mostrar o texto") {}
-        toggle.setOnClickListener {
-            textOpen = !textOpen
-            body.visibility = if (textOpen) View.VISIBLE else View.GONE
-            toggle.text = if (textOpen) "Ocultar o texto" else "Mostrar o texto"
-        }
-        box.addView(toggle, ui.wide())
-        box.addView(body, ui.wide())
     }
+}
 
-    private fun taskRow(t: JSONObject): View {
-        val done = t.s("status") == "concluida"
-        val row = ui.hbox()
-        val btn = ui.button(if (done) "☑" else "☐") { confirmToggle(t, done) }
-        row.addView(btn)
-        val col = ui.vbox()
-        col.addView(ui.text(t.s("title"), 15f, bold = !done, color = if (done) Colors.GRAY else Color.BLACK))
-        val extra = listOf(t.s("action_label"), t.s("due_label")).filter { it.isNotEmpty() }.joinToString(" · ")
-        val overdue = t.optBoolean("overdue") && !done
-        if (extra.isNotEmpty()) col.addView(ui.text(extra, 12f, if (overdue) Colors.RED else Colors.GRAY))
-        row.addView(col, ui.weighted())
-        return row
-    }
-
-    private fun confirmToggle(t: JSONObject, done: Boolean) {
-        AlertDialog.Builder(a)
-            .setTitle(if (done) "Reabrir a tarefa?" else "Concluir a tarefa?")
-            .setMessage(t.s("title"))
-            .setPositiveButton(if (done) "Reabrir" else "Concluir") { _, _ ->
-                a.changeTask(t.optLong("id"), !done)
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    private fun editNote(current: String) {
-        val input = ui.edit("Nota", current, multiline = true).apply {
-            minLines = 4
-            gravity = Gravity.TOP or Gravity.START
+/** Text button at the foot of a card, aligned with the card text. */
+@Composable
+private fun CardButton(text: String, icon: ImageVector?, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = Ponte.colors
+    Row(
+        modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(8.dp)).clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = c.accent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
         }
-        AlertDialog.Builder(a)
-            .setTitle("Nota")
-            .setView(input)
-            .setPositiveButton("Salvar e sincronizar") { _, _ ->
-                a.requestSync(Pair(docId, input.text.toString()))
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
+        Text(text, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.accent)
+    }
+}
+
+private fun fileIcon(f: FileItem): ImageVector {
+    val n = f.name.lowercase()
+    return when {
+        f.kind == "pdf" || n.endsWith(".pdf") -> Icons.Outlined.PictureAsPdf
+        listOf(".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic").any { n.endsWith(it) } -> Icons.Outlined.Image
+        else -> Icons.Outlined.AttachFile
+    }
+}
+
+@Composable
+private fun FileRow(f: FileItem, onClick: () -> Unit) {
+    val c = Ponte.colors
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(40.dp).background(c.chip, RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+            Icon(fileIcon(f), contentDescription = null, tint = c.secondary, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(f.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val sub = listOf(formatSize(f.size), f.description).filter { it.isNotBlank() }.joinToString(" · ")
+            Text(sub, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }

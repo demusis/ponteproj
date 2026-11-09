@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ground">#0F1518</color>
+    <style name="Theme.Ponte" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ground</item>
+        <item name="android:colorAccent">#7CC4D2</item>
+    </style>
+</resources>
