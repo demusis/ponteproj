@@ -201,3 +201,516 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_saveNote<'local>(
         })
     })
 }
+
+// ---------------------------------------------------------------------------
+// Version 2: the document file, tasks, a record from a photo, e-mail.
+// Everything is built on the same Store functions the desktop uses.
+
+/// JSON text of a JNI string parameter.
+fn json_arg(env: &mut JNIEnv, value: &JString) -> Result<Value> {
+    serde_json::from_str(&text(env, value)?).context("Dados inválidos vindos do aplicativo.")
+}
+
+fn task_json(task: &ponteproj::tasks::Task, numbers: &std::collections::HashMap<i64, String>) -> Value {
+    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let open = task.status != "concluida";
+    json!({
+        "id": task.id,
+        "document_id": task.document_id,
+        "document_number": numbers.get(&task.document_id).cloned().unwrap_or_default(),
+        "title": task.title,
+        "action": task.action,
+        "action_label": ponteproj::tasks::action_label(&task.action),
+        "status": task.status,
+        "status_label": ponteproj::tasks::status_label(&task.status),
+        "priority": task.priority,
+        "due_date": task.due_date,
+        "due_label": ponteproj::labels::date(&task.due_date),
+        "overdue": open && !task.due_date.is_empty() && task.due_date.as_str() < today.as_str(),
+        "due_today": open && task.due_date == today,
+        "notes": task.notes,
+    })
+}
+
+fn document_numbers(store: &Store) -> Result<std::collections::HashMap<i64, String>> {
+    Ok(store
+        .list_documents("")?
+        .into_iter()
+        .map(|d| (d.id, d.document_number))
+        .collect())
+}
+
+/// Everything the document screen shows.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_getDocument<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    document_id: jlong,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            let detail = store.load_document(document_id)?;
+            let meta = &detail.capture.metadata;
+            let field = |key: &str| meta.get(key).cloned().unwrap_or_default();
+            let files = store
+                .list_files(detail.summary.latest_capture_id)?
+                .into_iter()
+                .map(|f| json!({"id": f.id, "label": f.label, "size": f.size,
+                                "capture_id": detail.summary.latest_capture_id}))
+                .collect::<Vec<_>>();
+            let attachments = store
+                .list_attachments(ponteproj::attachments::Owner::Document(document_id))?
+                .into_iter()
+                .map(|a| json!({"id": a.id, "name": a.name, "kind": a.kind, "size": a.size,
+                                "description": a.description}))
+                .collect::<Vec<_>>();
+            let numbers = document_numbers(store)?;
+            let tasks = store
+                .list_tasks()?
+                .iter()
+                .filter(|t| t.document_id == document_id)
+                .map(|t| task_json(t, &numbers))
+                .collect::<Vec<_>>();
+            let analysis = detail.analysis.as_ref().map(|a| {
+                json!({
+                    "summary": a.summary,
+                    "priority": a.priority,
+                    "reason": a.reason,
+                    "deadline": a.deadline_candidate,
+                    "suggested": a.suggested_actions.iter()
+                        .map(|s| json!({"action": s.action, "reason": s.reason}))
+                        .collect::<Vec<_>>(),
+                })
+            });
+            Ok(json!({
+                "id": document_id,
+                "number": detail.summary.document_number,
+                "title": detail.summary.title,
+                "manual": detail.summary.manual,
+                "email": detail.summary.email,
+                "email_from": detail.summary.email_from,
+                "type": field("document_type"),
+                "date": field("document_date"),
+                "origin": field("origin"),
+                "text": detail.capture.text,
+                "note": detail.note,
+                "analysis": analysis,
+                "files": files,
+                "attachments": attachments,
+                "tasks": tasks,
+            }))
+        })
+    })
+}
+
+/// Writes a document PDF (`kind` "pdf", with its capture) or an attachment
+/// (`kind` "attachment") into `dest_dir` (the app cache) and answers its path,
+/// so the app can hand it to the phone's viewer.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_exportFile<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    kind: JString<'local>,
+    id: jlong,
+    capture_id: jlong,
+    dest_dir: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let kind = text(env, &kind)?;
+        let dir = PathBuf::from(text(env, &dest_dir)?);
+        with_store(|store| {
+            let (name, bytes) = match kind.as_str() {
+                "pdf" => (format!("documento-{id}.pdf"), store.pdf_bytes(id, capture_id)?),
+                "attachment" => {
+                    let (meta, bytes) = store.attachment_bytes(id)?;
+                    (meta.name, bytes)
+                }
+                other => anyhow::bail!("Tipo de arquivo desconhecido: {other}"),
+            };
+            // Only a plain file name lands in the app's folder.
+            let safe: String = name
+                .chars()
+                .map(|c| if c.is_alphanumeric() || " .-_()".contains(c) { c } else { '_' })
+                .collect();
+            let safe = if safe.trim().is_empty() { format!("arquivo-{id}") } else { safe };
+            // Long names would pass the file system's limit: cut, keeping
+            // the extension the viewer needs.
+            let safe = if safe.chars().count() > 120 {
+                let (stem, ext) = match safe.rfind('.') {
+                    Some(dot) if safe.len() - dot <= 10 => (&safe[..dot], &safe[dot..]),
+                    _ => (safe.as_str(), ""),
+                };
+                format!("{}{ext}", stem.chars().take(110).collect::<String>())
+            } else {
+                safe
+            };
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join(&safe);
+            std::fs::write(&path, &bytes)?;
+            let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+                Some("pdf") => "application/pdf",
+                Some("jpg") | Some("jpeg") => "image/jpeg",
+                Some("png") => "image/png",
+                Some("txt") => "text/plain",
+                Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                Some("eml") => "message/rfc822",
+                _ => "application/octet-stream",
+            };
+            Ok(json!({"path": path.display().to_string(), "name": safe, "mime": mime}))
+        })
+    })
+}
+
+/// Open tasks first (overdue, then due today, then by date), concluded last.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listTasks<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            let numbers = document_numbers(store)?;
+            let tasks = store
+                .list_tasks()?
+                .iter()
+                .map(|t| task_json(t, &numbers))
+                .collect::<Vec<_>>();
+            Ok(json!({ "tasks": tasks }))
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_completeTask<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    task_id: jlong,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            store.complete_task(task_id)?;
+            Ok(json!({}))
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_reopenTask<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    task_id: jlong,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            store.reopen_task(task_id)?;
+            Ok(json!({}))
+        })
+    })
+}
+
+/// A new task on a document: `{"document_id":1,"title":"...","action":"responder","due_date":"AAAA-MM-DD"}`.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createTask<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    task_json_text: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = json_arg(env, &task_json_text)?;
+        with_store(|store| {
+            let document_id = input["document_id"].as_i64().context("Documento da tarefa ausente.")?;
+            let mut task = ponteproj::tasks::Task::new(document_id);
+            task.title = input["title"].as_str().unwrap_or("").trim().to_owned();
+            if let Some(action) = input["action"].as_str().filter(|a| !a.is_empty()) {
+                task.action = action.to_owned();
+            }
+            task.due_date = input["due_date"].as_str().unwrap_or("").trim().to_owned();
+            let id = store.save_task(&task)?;
+            Ok(json!({ "id": id }))
+        })
+    })
+}
+
+/// The task actions and the kinds of manual record, for the app's choices.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_choices<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        let actions = ponteproj::tasks::ACTIONS
+            .iter()
+            .map(|a| json!({"key": a, "label": ponteproj::tasks::action_label(a)}))
+            .collect::<Vec<_>>();
+        let kinds = ponteproj::manual::KINDS
+            .iter()
+            .map(|(key, label)| json!({"key": key, "label": label}))
+            .collect::<Vec<_>>();
+        Ok(json!({"actions": actions, "manual_kinds": kinds}))
+    })
+}
+
+/// A manual record made from a photo of a paper:
+/// `{"kind":"papel","title":"...","origin":"...","date":"AAAA-MM-DD","text":"..."}`
+/// plus the JPEG at `image_path`, attached to it.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createPhotoRecord<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    fields_json: JString<'local>,
+    image_path: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = json_arg(env, &fields_json)?;
+        let image = PathBuf::from(text(env, &image_path)?);
+        let bytes = std::fs::read(&image).context("A foto não pôde ser lida.")?;
+        // Checked before the record exists, so a photo that cannot be
+        // attached never leaves a record without it.
+        anyhow::ensure!(!bytes.is_empty(), "A foto está vazia.");
+        anyhow::ensure!(
+            bytes.len() <= ponteproj::attachments::MAX_ATTACHMENT_BYTES,
+            "A foto passa do limite de anexos ({} MB).",
+            ponteproj::attachments::MAX_ATTACHMENT_BYTES / (1024 * 1024)
+        );
+        with_store(|store| {
+            let str_of = |key: &str| input[key].as_str().unwrap_or("").trim().to_owned();
+            let title = str_of("title");
+            let mut text = str_of("text");
+            if text.is_empty() {
+                text = format!("Registro feito no celular a partir de uma foto: {title}.");
+            }
+            let fields = ponteproj::manual::ManualFields {
+                kind: if str_of("kind").is_empty() { "papel".into() } else { str_of("kind") },
+                title,
+                origin: str_of("origin"),
+                document_date: str_of("date"),
+                text,
+            };
+            let receipt = store.create_manual_document(&fields)?;
+            let name = format!(
+                "foto-{}.jpg",
+                chrono::Local::now().format("%Y-%m-%d-%H%M%S")
+            );
+            if let Err(error) = store.add_attachment(
+                ponteproj::attachments::Owner::Document(receipt.document_id),
+                &name,
+                "Foto tirada no celular",
+                &bytes,
+            ) {
+                // No record without its photo: the new one goes to the
+                // trash (recoverable there) and the person can try again.
+                let _ = store.trash_item(ponteproj::trash::Target {
+                    kind: ponteproj::trash::Kind::Document,
+                    id: receipt.document_id,
+                });
+                return Err(error.context("A foto não pôde ser anexada; o registro não foi criado."));
+            }
+            Ok(json!({ "document_id": receipt.document_id }))
+        })
+    })
+}
+
+// -- e-mail (IMAP), as in the desktop "Importar do e-mail" ------------------
+
+fn account_of(store: &Store, uid: &str, password: &str) -> Result<ponteproj::imap::MailAccount> {
+    let mut account = store
+        .list_mail_accounts()?
+        .into_iter()
+        .find(|a| a.uid == uid)
+        .context("Conta de e-mail não encontrada.")?;
+    if account.password.is_empty() {
+        account.password = password.to_owned();
+    }
+    anyhow::ensure!(!account.password.is_empty(), "Digite a senha de app desta conta.");
+    Ok(account)
+}
+
+fn filter_of(value: &str) -> ponteproj::imap::Filter {
+    match value {
+        "estrela" => ponteproj::imap::Filter::Flagged,
+        "nao_lidas" => ponteproj::imap::Filter::Unseen,
+        _ => ponteproj::imap::Filter::All,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listMailAccounts<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            let accounts = store
+                .list_mail_accounts()?
+                .into_iter()
+                .map(|a| json!({"uid": a.uid, "name": a.name, "host": a.host, "port": a.port,
+                                "user": a.user, "remember": a.remember,
+                                "has_password": !a.password.is_empty(), "folder": a.folder}))
+                .collect::<Vec<_>>();
+            Ok(json!({ "accounts": accounts }))
+        })
+    })
+}
+
+/// `{"uid":"" (new) or "...","name","host","port","user","password","remember","folder"}`.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_saveMailAccount<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    account_json: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = json_arg(env, &account_json)?;
+        with_store(|store| {
+            let str_of = |key: &str| input[key].as_str().unwrap_or("").to_owned();
+            let mut account = ponteproj::imap::MailAccount {
+                uid: str_of("uid"),
+                name: str_of("name").trim().to_owned(),
+                host: str_of("host").trim().to_owned(),
+                port: u16::try_from(input["port"].as_u64().unwrap_or(993))
+                    .ok()
+                    .filter(|p| *p > 0)
+                    .context("Porta inválida (use um número entre 1 e 65535; no Gmail, 993).")?,
+                user: str_of("user").trim().to_owned(),
+                password: str_of("password"),
+                remember: input["remember"].as_bool().unwrap_or(false),
+                folder: if str_of("folder").is_empty() { "INBOX".into() } else { str_of("folder") },
+                ..Default::default()
+            };
+            // Editing without retyping the password keeps the stored one.
+            if account.password.is_empty() && !account.uid.is_empty() {
+                if let Some(stored) = store.list_mail_accounts()?.into_iter().find(|a| a.uid == account.uid) {
+                    account.password = stored.password;
+                }
+            }
+            let saved = store.save_mail_account(&account)?;
+            Ok(json!({ "uid": saved.uid }))
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_deleteMailAccount<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    uid: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let uid = text(env, &uid)?;
+        with_store(|store| {
+            store.delete_mail_account(&uid)?;
+            Ok(json!({}))
+        })
+    })
+}
+
+/// The folders of an account. The network exchange runs without holding the
+/// library, so the app stays usable meanwhile.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listMailFolders<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    uid: JString<'local>,
+    password: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let uid = text(env, &uid)?;
+        let password = text(env, &password)?;
+        let account = with_store(|store| account_of(store, &uid, &password))?;
+        let folders = ponteproj::imap::list_folders(&account, &ponteproj::ai::Reporter::silent())?
+            .into_iter()
+            .filter(|f| !f.no_select)
+            .map(|f| json!({"raw": f.raw, "name": f.name}))
+            .collect::<Vec<_>>();
+        Ok(json!({ "folders": folders }))
+    })
+}
+
+/// The newest messages of a folder (`filter`: "todas", "estrela", "nao_lidas"),
+/// each marked when it is already in the library.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listMailMessages<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    uid: JString<'local>,
+    password: JString<'local>,
+    folder: JString<'local>,
+    filter: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let uid = text(env, &uid)?;
+        let password = text(env, &password)?;
+        let folder = text(env, &folder)?;
+        let filter = filter_of(&text(env, &filter)?);
+        let account = with_store(|store| account_of(store, &uid, &password))?;
+        let messages = ponteproj::imap::list_messages(
+            &account,
+            &folder,
+            filter,
+            100,
+            &ponteproj::ai::Reporter::silent(),
+        )?;
+        let listed = with_store(|store| {
+            let _ = store.remember_mail_choice(&uid, &folder, filter);
+            Ok(messages
+                .iter()
+                .map(|m| {
+                    let imported = matches!(store.mail_already_imported(&m.message_id), Ok(Some(_)));
+                    json!({"uid": m.uid, "from": m.from, "subject": m.subject, "date": m.date,
+                           "size": m.size, "flagged": m.flagged, "imported": imported})
+                })
+                .collect::<Vec<_>>())
+        })?;
+        Ok(json!({ "messages": listed }))
+    })
+}
+
+/// Downloads the chosen messages (uids as a JSON array) and imports each as
+/// an "E-mail recebido" record with its attachments.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_importMail<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    uid: JString<'local>,
+    password: JString<'local>,
+    folder: JString<'local>,
+    uids_json: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let uid = text(env, &uid)?;
+        let password = text(env, &password)?;
+        let folder = text(env, &folder)?;
+        let uids: Vec<u32> = serde_json::from_value(json_arg(env, &uids_json)?)
+            .context("Lista de mensagens inválida.")?;
+        let account = with_store(|store| account_of(store, &uid, &password))?;
+        let fetched = ponteproj::imap::fetch_messages(
+            &account,
+            &folder,
+            &uids,
+            &ponteproj::ai::Reporter::silent(),
+        )?;
+        let source = ponteproj::mail::MailSource::Account {
+            name: account.name.clone(),
+            address: account.user.trim().to_owned(),
+        };
+        let results = with_store(|store| {
+            Ok(fetched
+                .into_iter()
+                .map(|(message_uid, bytes)| {
+                    match bytes.and_then(|b| {
+                        store.import_mail_bytes(&b, &source).map_err(|e| format!("{e:#}"))
+                    }) {
+                        Ok(done) => json!({"uid": message_uid, "ok": true,
+                                           "subject": done.subject,
+                                           "already": done.already_imported,
+                                           "attachments": done.attachments_added,
+                                           "notes": done.notes}),
+                        Err(error) => json!({"uid": message_uid, "ok": false, "error": error}),
+                    }
+                })
+                .collect::<Vec<_>>())
+        })?;
+        Ok(json!({ "results": results }))
+    })
+}

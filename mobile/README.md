@@ -2,6 +2,14 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
+## O que faz (0.2.0)
+
+- **Documentos:** lista com busca; ficha com tipo, data, origem, nota (editável), resumo da análise, tarefas, PDFs e anexos (abertos no leitor do celular) e o texto completo.
+- **Tarefas:** atrasadas, para hoje, próximas, sem prazo e concluídas; concluir, reabrir e criar tarefa simples num documento. Abre direto nas tarefas quando há atrasadas ou do dia.
+- **Registro por foto:** fotografar um papel e criar um registro manual com a foto anexada (redimensionada, abaixo do limite de anexos).
+- **E-mail:** a mesma importação por IMAP do computador (contas, pastas, filtro, mensagens marcadas).
+- **Sincronização:** ao abrir e pelo botão, só no Wi-Fi por padrão; frase-senha guardada pelo Android Keystore e liberada pela digital ou PIN (Android 9 ou mais novo).
+
 ## O que este protótipo provou (09/11/2026)
 
 - O mesmo núcleo em Rust do Ponte roda no celular (`libponte_mobile.so`), sem a interface do computador (o Ponte compila com `--no-default-features`).
