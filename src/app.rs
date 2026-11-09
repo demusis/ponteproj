@@ -407,6 +407,24 @@ fn install_symbol_fallback(ctx: &egui::Context) {
 
 const JOINED_FG: Color32 = Color32::from_rgb(88, 64, 138);
 const JOINED_BG: Color32 = Color32::from_rgb(237, 232, 248);
+/// The sender of an e-mail for the document list: the address first, then
+/// the name ("Funadesp <f@x.br>" → "f@x.br · Funadesp").
+fn sender_line(from: &str) -> String {
+    let from = from.trim();
+    match (from.rfind('<'), from.rfind('>')) {
+        (Some(open), Some(close)) if open < close => {
+            let address = from[open + 1..close].trim();
+            let name = from[..open].trim().trim_matches('"').trim();
+            if name.is_empty() || name.eq_ignore_ascii_case(address) {
+                address.to_owned()
+            } else {
+                format!("{address} · {name}")
+            }
+        }
+        _ => from.to_owned(),
+    }
+}
+
 /// "Manual" pill: amber, unlike the purple of juntada and the task badges.
 const MANUAL_FG: Color32 = Color32::from_rgb(122, 78, 10);
 const MANUAL_BG: Color32 = Color32::from_rgb(252, 240, 214);
@@ -1286,7 +1304,7 @@ impl PonteApp {
                 self.saiop_open = false;
                 self.tasks_open = false;
             }
-            PendingTarget::Mail => self.mail.open = true,
+            PendingTarget::Mail => self.mail.open_full(),
             PendingTarget::Suggestion => self.suggestion_open = true,
             PendingTarget::Settings => self.settings_open = true,
             PendingTarget::Network => self.intranet.open = true,
@@ -2333,7 +2351,10 @@ impl PonteApp {
                 Err(error) => self.error(format!("Backup não concluído: {error}")),
             },
             WorkResult::MailFolders(result) => self.mail.accept_folders(result),
-            WorkResult::MailMessages(result) => self.mail.accept_messages(result),
+            WorkResult::MailMessages(result) => {
+                self.mail.accept_messages(result);
+                self.mail.remember_choice(&mut self.store);
+            }
             WorkResult::MailFetched(result) => match result {
                 Ok(fetched) => {
                     let mut outcomes = Vec::with_capacity(fetched.len());
@@ -2546,7 +2567,7 @@ impl PonteApp {
                         .on_hover_text("Lista as mensagens de uma conta de e-mail (Gmail com senha de app, por exemplo) e importa as que você marcar. Só leitura: nada é marcado, movido ou apagado na conta.")
                         .clicked()
                     {
-                        self.mail.open = true;
+                        self.mail.open_full();
                         ui.close();
                     }
                     if self.intranet.folder_mode(&self.store) {
@@ -2689,6 +2710,18 @@ impl PonteApp {
             {
                 self.manual_form.open_new();
             }
+            if ui
+                .add(egui::Button::new("✉ E-mails").small())
+                .on_hover_text("Lista as mensagens da sua conta de e-mail na última pasta e filtro usados (por exemplo, as com estrela), para marcar e importar. A configuração fica em Menu ▾ ▸ Importar do e-mail (IMAP)…")
+                .clicked()
+            {
+                let busy = match &self.worker {
+                    None => crate::mail_ui::MailBusy::Free,
+                    Some(worker) if worker.kind == WorkKind::Mail => crate::mail_ui::MailBusy::Mail,
+                    Some(_) => crate::mail_ui::MailBusy::Other,
+                };
+                self.mail.open_quick(&self.store, busy);
+            }
             if count_overdue > 0 && !self.filters_open
                 && ui
                     .add(egui::Button::new(RichText::new(format!("⚠ {count_overdue} atrasado(s)")).color(ERROR).size(12.0)).small())
@@ -2827,10 +2860,17 @@ impl PonteApp {
                         0.0
                     };
                     let editing = self.editors.get(&document.id).is_some_and(Editor::dirty);
-                    let number = if editing {
-                        format!("{} • edição", document.document_number)
+                    // An e-mail is recognized by who sent it, not by its
+                    // internal number (which stays in the hover and the ficha).
+                    let heading = if document.email && !document.email_from.trim().is_empty() {
+                        sender_line(&document.email_from)
                     } else {
                         document.document_number.clone()
+                    };
+                    let number = if editing {
+                        format!("{heading} • edição")
+                    } else {
+                        heading
                     };
                     let summary = summaries.get(&document.id).cloned().unwrap_or_default();
                     let (badge_text, badge_fg, badge_bg) = summary.badge();
@@ -2854,6 +2894,15 @@ impl PonteApp {
                                 .min_size(egui::vec2(ui.available_width(), 60.0))
                                 .selected(self.selected_id == Some(document.id)),
                         );
+                        let response = if document.email {
+                            response.on_hover_text(format!(
+                                "{} • importado em {}",
+                                document.document_number,
+                                crate::labels::datetime(&document.added_at)
+                            ))
+                        } else {
+                            response
+                        };
                         if response.clicked() {
                             selected = Some(document.id);
                         }
@@ -2874,6 +2923,12 @@ impl PonteApp {
                                 "Manual"
                             };
                             pill(ui, kind, MANUAL_FG, MANUAL_BG, 11.5);
+                        }
+                        if document.email && !document.added_at.is_empty() {
+                            ui.small(format!(
+                                "importado em {}",
+                                crate::labels::datetime(&document.added_at)
+                            ));
                         }
                         if let Some(text) = &joined {
                             pill(ui, text, JOINED_FG, JOINED_BG, 11.5);
@@ -5475,6 +5530,8 @@ mod tests {
             analysis_stale: false,
             manual: false,
             email: false,
+            email_from: String::new(),
+            added_at: String::new(),
             is_joined: parent.is_some(),
             joined_to_number: parent.map(|(_, n)| n.to_owned()),
             joined_to_id: parent.map(|(p, _)| p).filter(|p| *p > 0),
@@ -5752,5 +5809,21 @@ mod tests {
                 "accepted unsafe URL: {rejected}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod sender_tests {
+    use super::sender_line;
+
+    #[test]
+    fn e_mail_cards_show_address_then_name() {
+        assert_eq!(
+            sender_line("\"Funadesp\" <funadesp.oficial@yahoo.com.br>"),
+            "funadesp.oficial@yahoo.com.br · Funadesp"
+        );
+        assert_eq!(sender_line("a@b.br"), "a@b.br");
+        assert_eq!(sender_line("<a@b.br>"), "a@b.br");
+        assert_eq!(sender_line("João Silva <j@x.br>"), "j@x.br · João Silva");
     }
 }

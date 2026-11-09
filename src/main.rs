@@ -71,6 +71,9 @@ fn run() -> Result<()> {
                     " como rascunho"
                 }
             );
+            for published in &report.published {
+                println!("Publicado (já estava no acervo): {published}");
+            }
             for kept in &report.kept {
                 println!("Mantido como estava: {kept}");
             }

@@ -172,6 +172,12 @@ pub struct DocumentSummary {
     /// whatever its number).
     #[serde(default)]
     pub email: bool,
+    /// For an e-mail: the sender as the message had it ("Nome <endereço>").
+    #[serde(default)]
+    pub email_from: String,
+    /// When the document entered the library (its first version, RFC 3339).
+    #[serde(default)]
+    pub added_at: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

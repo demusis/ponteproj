@@ -60,9 +60,17 @@ pub struct MailAccount {
     pub password: String,
     #[serde(default)]
     pub remember: bool,
-    /// Folder opened by default ("INBOX", "[Gmail]/Com estrela", a label).
+    /// Folder opened by default ("INBOX", "[Gmail]/Com estrela", a label):
+    /// the last one listed, as the server names it.
     #[serde(default = "default_folder")]
     pub folder: String,
+    /// The last filter used.
+    #[serde(default)]
+    pub filter: Filter,
+    /// When the account was last listed (RFC 3339): the "E-mails" shortcut
+    /// opens the most recent one.
+    #[serde(default)]
+    pub last_used: String,
 }
 
 /// The password never shows in debug output.
@@ -80,6 +88,8 @@ impl std::fmt::Debug for MailAccount {
             )
             .field("remember", &self.remember)
             .field("folder", &self.folder)
+            .field("filter", &self.filter)
+            .field("last_used", &self.last_used)
             .finish()
     }
 }
@@ -155,9 +165,10 @@ pub struct Folder {
 }
 
 /// Which messages of a folder to list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Filter {
     /// The newest messages.
+    #[default]
     All,
     /// Starred (IMAP `\Flagged`).
     Flagged,
@@ -201,6 +212,15 @@ pub struct MessageSummary {
 
 // ---------------------------------------------------------------------------
 // Modified UTF-7 (RFC 3501 §5.1.3) for folder names.
+
+/// A folder name for people: the inbox in Portuguese, the others decoded.
+pub fn folder_display_name(raw: &str) -> String {
+    if raw.eq_ignore_ascii_case("INBOX") {
+        "Caixa de entrada".to_owned()
+    } else {
+        utf7_decode(raw)
+    }
+}
 
 fn utf7_decode(raw: &str) -> String {
     let mut out = String::new();
@@ -950,6 +970,35 @@ impl Store {
         Ok(stored)
     }
 
+    /// Remembers the folder and filter just listed, and when, without
+    /// touching anything else (the password stays as it was stored).
+    pub fn remember_mail_choice(&mut self, uid: &str, folder: &str, filter: Filter) -> Result<()> {
+        ensure!(
+            !folder.is_empty() && folder.len() <= 500 && !folder.chars().any(char::is_control),
+            "Nome de pasta inválido."
+        );
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM mail_accounts WHERE uid=?1",
+                [uid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(blob) = blob else {
+            return Ok(());
+        };
+        let mut account: MailAccount = serde_json::from_slice(&unseal(&blob)?)?;
+        account.folder = folder.to_owned();
+        account.filter = filter;
+        account.last_used = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE mail_accounts SET payload=?1 WHERE uid=?2",
+            params![seal(&serde_json::to_vec(&account)?)?, uid],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_mail_account(&mut self, uid: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM mail_accounts WHERE uid=?1", [uid])?;
@@ -1076,8 +1125,25 @@ mod tests {
             password: "abcd efgh ijkl mnop".into(),
             remember: false,
             folder: "INBOX".into(),
+            ..Default::default()
         };
         let saved = store.save_mail_account(&account).unwrap();
+        // The last folder and filter are remembered; nothing else changes.
+        store
+            .remember_mail_choice(&saved.uid, "[Gmail]/Com estrela", Filter::Flagged)
+            .unwrap();
+        let listed = store.list_mail_accounts().unwrap();
+        assert_eq!(listed[0].folder, "[Gmail]/Com estrela");
+        assert_eq!(listed[0].filter, Filter::Flagged);
+        assert!(!listed[0].last_used.is_empty() && listed[0].password.is_empty());
+        assert!(store
+            .remember_mail_choice(
+                &saved.uid,
+                "INBOX
+X",
+                Filter::All
+            )
+            .is_err());
         assert!(!saved.uid.is_empty());
         assert_eq!(
             saved.password, "abcd efgh ijkl mnop",
@@ -1132,6 +1198,7 @@ mod live_tests {
             password: "irrelevante".into(),
             remember: false,
             folder: "INBOX".into(),
+            ..Default::default()
         };
         let mut session = Session::connect(&account, Arc::default()).unwrap();
         // A wrong app password is refused with the friendly explanation.

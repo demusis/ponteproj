@@ -4,7 +4,10 @@
 //! checked before anything is saved; everything arrives personal and as a
 //! draft unless publishing is asked for; an instruction with the same name
 //! is reused and a template with the same name and kind is left alone, so
-//! importing the same file twice changes nothing.
+//! importing the same file twice changes nothing. Asked to publish, items of
+//! the file already in the library as drafts are published too (instructions
+//! before templates), so a set imported as drafts can be published later
+//! with the same file; archived items stay archived.
 use crate::storage::Store;
 use crate::work_templates::{
     detect_variables, BlockMode, BlockRef, InstructionBlock, Reference, Section, Status,
@@ -67,6 +70,8 @@ pub struct BundleReport {
     pub templates_created: usize,
     /// Items already in the library, left as they were.
     pub kept: Vec<String>,
+    /// Drafts already in the library, published on request.
+    pub published: Vec<String>,
 }
 
 fn mode_of(reference: &BundleRef) -> Result<BlockMode> {
@@ -105,6 +110,26 @@ pub fn read_bundle(path: &std::path::Path) -> Result<Bundle> {
 }
 
 impl Store {
+    /// The first instruction of `version` without a published version (a
+    /// template cannot be published before its instructions).
+    fn unpublished_block(
+        &self,
+        version: Option<&crate::work_templates::TemplateVersion>,
+    ) -> Result<Option<String>> {
+        let Some(version) = version else {
+            return Ok(None);
+        };
+        let blocks = self.list_blocks()?;
+        for reference in &version.block_refs {
+            match blocks.iter().find(|b| b.uid == reference.block_uid) {
+                Some(b) if b.published_version().is_some() && b.status != Status::Archived => {}
+                Some(b) => return Ok(Some(b.name.clone())),
+                None => return Ok(Some(reference.block_uid.clone())),
+            }
+        }
+        Ok(None)
+    }
+
     pub fn import_template_bundle(
         &mut self,
         bundle: &Bundle,
@@ -151,9 +176,19 @@ impl Store {
                 .find(|b| b.name.trim() == block.name.trim())
             {
                 uids.insert(block.key.as_str(), found.uid.clone());
-                report
-                    .kept
-                    .push(format!("Instrução \"{}\" (já existia)", block.name.trim()));
+                // Only a draft never published: an edit made to a published
+                // instruction is the person's, not this file's.
+                if publish && found.status == Status::Draft {
+                    self.set_block_status(&found.uid, Status::Published, None)
+                        .with_context(|| format!("Publicar a instrução \"{}\"", found.name))?;
+                    report
+                        .published
+                        .push(format!("Instrução \"{}\"", found.name.trim()));
+                } else {
+                    report
+                        .kept
+                        .push(format!("Instrução \"{}\" (já existia)", block.name.trim()));
+                }
                 continue;
             }
             let mut saved = self
@@ -175,13 +210,29 @@ impl Store {
 
         let existing = self.list_templates()?;
         for template in &bundle.templates {
-            if existing
+            if let Some(found) = existing
                 .iter()
-                .any(|t| t.name.trim() == template.name.trim() && t.kind == template.kind)
+                .find(|t| t.name.trim() == template.name.trim() && t.kind == template.kind)
             {
-                report
-                    .kept
-                    .push(format!("Modelo \"{}\" (já existia)", template.name.trim()));
+                if publish && found.status == Status::Draft {
+                    match self.unpublished_block(found.draft_version())? {
+                        Some(block) => report.kept.push(format!(
+                            "Modelo \"{}\" (não publicado: a instrução \"{block}\" não está publicada)",
+                            found.name.trim()
+                        )),
+                        None => {
+                            self.set_template_status(&found.uid, Status::Published, None)
+                                .with_context(|| format!("Publicar o modelo \"{}\"", found.name))?;
+                            report
+                                .published
+                                .push(format!("Modelo \"{}\"", found.name.trim()));
+                        }
+                    }
+                } else {
+                    report
+                        .kept
+                        .push(format!("Modelo \"{}\" (já existia)", template.name.trim()));
+                }
                 continue;
             }
             let mut block_refs = Vec::new();
@@ -219,8 +270,16 @@ impl Store {
                 .save_template(&draft, None)
                 .with_context(|| format!("Modelo \"{}\"", template.name))?;
             if publish {
-                self.set_template_status(&saved.uid, Status::Published, None)
-                    .with_context(|| format!("Publicar o modelo \"{}\"", template.name))?;
+                match self.unpublished_block(saved.draft_version())? {
+                    Some(block) => report.kept.push(format!(
+                        "Modelo \"{}\" criado como rascunho: a instrução \"{block}\" não está publicada",
+                        template.name.trim()
+                    )),
+                    None => {
+                        self.set_template_status(&saved.uid, Status::Published, None)
+                            .with_context(|| format!("Publicar o modelo \"{}\"", template.name))?;
+                    }
+                }
             }
             report.templates_created += 1;
         }
@@ -259,6 +318,13 @@ mod tests {
         let again = store.import_template_bundle(&bundle, false).unwrap();
         assert_eq!((again.blocks_created, again.templates_created), (0, 0));
         assert_eq!(again.kept.len(), 2);
+        // The same file with publishing: the drafts already there go live.
+        let published = store.import_template_bundle(&bundle, true).unwrap();
+        assert_eq!(published.published.len(), 2);
+        assert_eq!(store.list_templates().unwrap()[0].status, Status::Published);
+        assert_eq!(store.list_blocks().unwrap()[0].status, Status::Published);
+        let once_more = store.import_template_bundle(&bundle, true).unwrap();
+        assert!(once_more.published.is_empty() && once_more.kept.len() == 2);
         // Published on request, instructions first.
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();

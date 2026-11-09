@@ -70,6 +70,16 @@ impl AccountForm {
 #[derive(Default)]
 pub struct MailPanel {
     pub open: bool,
+    /// The short window of the "E-mails" button: only the message list of
+    /// the last account, folder and filter used.
+    quick: bool,
+    /// A listing asked for by the "E-mails" button: account, folder and
+    /// filter. It becomes a request (and the folder it will fill is set)
+    /// only when nothing else is running.
+    pending: Option<(MailAccount, String, Filter)>,
+    /// The folder and filter of the listing in progress, remembered in the
+    /// account once it succeeds.
+    remember: Option<(String, String, Filter)>,
     /// Top of the window contents this frame (see the message list height).
     contents_top: f32,
     accounts: Vec<MailAccount>,
@@ -119,6 +129,83 @@ fn truncate(text: &str, max: usize) -> String {
 impl MailPanel {
     pub fn dirty(&self) -> bool {
         self.form.as_ref().is_some_and(AccountForm::dirty)
+    }
+
+    /// The full window (accounts, folders, filter, messages).
+    pub fn open_full(&mut self) {
+        self.open = true;
+        self.quick = false;
+        self.pending = None;
+    }
+
+    /// The "E-mails" button: lists at once the messages of the account used
+    /// last, in its last folder and filter. Without an account or a
+    /// password for this session, the full window opens instead, saying
+    /// what is missing.
+    pub fn open_quick(&mut self, store: &Store, busy: MailBusy) {
+        // An exchange with the mailbox is under way (a listing or a download
+        // from the full window): the window only shows it; changing account,
+        // folder or filter now would mix its answer with another request.
+        // An account being edited stays in front, too.
+        if busy == MailBusy::Mail || self.form.is_some() {
+            self.open = true;
+            return;
+        }
+        self.open = true;
+        self.reload_accounts(store);
+        // The account listed last; with none listed yet, the one selected.
+        let selected = self.selected.clone();
+        let Some(account) = self
+            .accounts
+            .iter()
+            .max_by_key(|a| (a.last_used.clone(), Some(&a.uid) == selected.as_ref()))
+            .cloned()
+        else {
+            self.quick = false;
+            self.set_notice("Cadastre uma conta de e-mail para começar.", false);
+            return;
+        };
+        if self.selected.as_deref() != Some(account.uid.as_str()) {
+            self.selected = Some(account.uid.clone());
+            self.reset_mailbox();
+        }
+        let Some(effective) = self.effective_account().filter(|a| !a.password.is_empty()) else {
+            self.quick = false;
+            self.set_notice(
+                "Digite a senha de app desta conta (ou marque para lembrá-la neste computador).",
+                true,
+            );
+            return;
+        };
+        self.quick = true;
+        self.notice = None;
+        self.folder_raw = account.folder.clone();
+        self.filter = Some(account.filter);
+        self.pending = Some((effective, account.folder, account.filter));
+    }
+
+    /// A listing of `folder`, remembered in the account when it succeeds.
+    fn list_action(&mut self, account: MailAccount, folder: String, filter: Filter) -> MailAction {
+        self.listing_folder = Some(folder.clone());
+        self.remember = Some((account.uid.clone(), folder.clone(), filter));
+        MailAction::ListMessages {
+            account,
+            folder,
+            filter,
+        }
+    }
+
+    /// After a successful listing, the account keeps its folder and filter.
+    pub fn remember_choice(&mut self, store: &mut Store) {
+        if let Some((uid, folder, filter)) = self.remember.take() {
+            if let Err(e) = store.remember_mail_choice(&uid, &folder, filter) {
+                self.set_notice(format!("Não foi possível lembrar a pasta: {e}"), true);
+            } else if let Some(account) = self.accounts.iter_mut().find(|a| a.uid == uid) {
+                account.folder = folder;
+                account.filter = filter;
+                account.last_used = chrono::Utc::now().to_rfc3339();
+            }
+        }
     }
 
     fn set_notice(&mut self, msg: impl Into<String>, error: bool) {
@@ -213,7 +300,11 @@ impl MailPanel {
                 self.imported.clear();
                 self.pending_check = true;
             }
-            Err(e) => self.set_notice(e, true),
+            Err(e) => {
+                self.remember = None;
+                self.listing_folder = None;
+                self.set_notice(e, true);
+            }
         }
     }
 
@@ -326,7 +417,19 @@ impl MailPanel {
         }
         let mut open = true;
         let mut action = MailAction::None;
-        egui::Window::new("Importar do e-mail")
+        // A listing asked for while something else ran goes now.
+        if busy == MailBusy::Free {
+            if let Some((account, folder, filter)) = self.pending.take() {
+                action = self.list_action(account, folder, filter);
+            }
+        }
+        let title = if self.quick {
+            "E-mails"
+        } else {
+            "Importar do e-mail"
+        };
+        egui::Window::new(title)
+            .id(egui::Id::NULL.with("mail_window"))
             .open(&mut open)
             .default_size([820.0, 600.0])
             .resizable(true)
@@ -334,7 +437,14 @@ impl MailPanel {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        action = self.contents(ui, store, busy);
+                        let shown = if self.quick {
+                            self.quick_contents(ui, busy)
+                        } else {
+                            self.contents(ui, store, busy)
+                        };
+                        if !matches!(shown, MailAction::None) {
+                            action = shown;
+                        }
                     });
             });
         if !open {
@@ -345,6 +455,8 @@ impl MailPanel {
                 );
             } else {
                 self.open = false;
+                // Nothing asked for is sent after the window is closed.
+                self.pending = None;
             }
         }
         action
@@ -398,6 +510,64 @@ impl MailPanel {
                     action = a;
                 }
             }
+        }
+        action
+    }
+
+    /// The short window: one line saying where the list comes from, then
+    /// the list itself.
+    fn quick_contents(&mut self, ui: &mut egui::Ui, state: MailBusy) -> MailAction {
+        self.contents_top = ui.cursor().top();
+        let busy = state != MailBusy::Free;
+        let mut action = MailAction::None;
+        if let Some((msg, error)) = self.notice.clone() {
+            ui.colored_label(if error { ERROR } else { SUCCESS }, msg);
+        }
+        match state {
+            MailBusy::Free => {}
+            MailBusy::Mail => {
+                ui.colored_label(WARNING, "Buscando as mensagens…");
+            }
+            MailBusy::Other => {
+                ui.colored_label(
+                    WARNING,
+                    "Aguarde a operação em andamento; a lista vem em seguida.",
+                );
+            }
+        }
+        let account = self.effective_account();
+        let filter = self.filter.unwrap_or_default();
+        ui.horizontal_wrapped(|ui| {
+            let name = account.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+            ui.strong(name);
+            ui.label("·");
+            ui.label(crate::imap::folder_display_name(&self.folder_raw));
+            ui.label("·");
+            ui.label(filter.label());
+            if ui
+                .add_enabled(!busy && account.is_some(), egui::Button::new("⟳ Atualizar"))
+                .clicked()
+            {
+                if let Some(a) = account.clone() {
+                    let folder = self.folder_raw.clone();
+                    action = self.list_action(a, folder, filter);
+                }
+            }
+            if ui
+                .add_enabled(!busy, egui::Button::new("Trocar pasta ou conta…"))
+                .on_hover_text("Abre a janela completa: contas, pastas e filtro.")
+                .clicked()
+            {
+                self.quick = false;
+            }
+        });
+        ui.separator();
+        if self.messages_loaded {
+            if let a @ MailAction::Fetch { .. } = self.messages_section(ui, busy) {
+                action = a;
+            }
+        } else if !busy && self.notice.is_some() {
+            ui.label("A lista não pôde ser lida. Use Atualizar ou Trocar pasta ou conta…");
         }
         action
     }
@@ -583,7 +753,7 @@ impl MailPanel {
                                 "A senha fica guardada, selada, no acervo deste computador. Sem marcar, ela é pedida a cada sessão.",
                             );
                         ui.end_row();
-                        ui.label("Pasta padrão");
+                        ui.label("Pasta (a última listada)");
                         ui.add(egui::TextEdit::singleline(&mut form.account.folder).desired_width(300.0));
                         ui.end_row();
                     });
@@ -666,6 +836,7 @@ impl MailPanel {
                 ui.label("Salve uma conta para começar.");
             }
         });
+        let mut list_request = None;
         if !self.folders.is_empty() {
             let filter = self.filter.get_or_insert(Filter::All);
             let current = self
@@ -709,17 +880,15 @@ impl MailPanel {
                     .clicked()
                 {
                     if let Some(a) = account.clone() {
-                        self.listing_folder = Some(self.folder_raw.clone());
-                        action = MailAction::ListMessages {
-                            account: a,
-                            folder: self.folder_raw.clone(),
-                            filter: *filter,
-                        };
+                        list_request = Some((a, self.folder_raw.clone(), *filter));
                     }
                 }
             });
             if folder_changed {
                 self.clear_messages();
+            }
+            if let Some((a, folder, filter)) = list_request {
+                action = self.list_action(a, folder, filter);
             }
             ui.small("Listadas as 100 mais recentes.");
         }

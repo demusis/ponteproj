@@ -644,6 +644,19 @@ impl Store {
             manual: capture.is_manual(),
             email: capture.is_manual()
                 && capture.metadata.get("manual_kind").map(String::as_str) == Some("email"),
+            email_from: capture
+                .metadata
+                .get("mail_from")
+                .cloned()
+                .unwrap_or_default(),
+            added_at: self
+                .conn
+                .query_row(
+                    "SELECT min(created_at) FROM captures WHERE document_id=?1",
+                    [id],
+                    |r| r.get::<_, Option<String>>(0),
+                )?
+                .unwrap_or_default(),
             id,
             document_number: capture.document_number.clone(),
             title: capture.title.clone(),
