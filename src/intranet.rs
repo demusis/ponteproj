@@ -2743,6 +2743,17 @@ impl Store {
     /// Sends a change to the main computer. When it cannot be reached, or in
     /// shared-folder mode, the change is applied here and queued to be sent
     /// later. A refusal (conflict, invalid data) comes back as an error.
+    /// How many changes wait to be sent and when the newest was made
+    /// (RFC 3339), without opening them: cheap enough for every frame.
+    pub(crate) fn offline_outbox_status(&self) -> Result<(usize, String)> {
+        let (count, newest): (i64, Option<String>) = self.conn.query_row(
+            "SELECT count(*),max(created_at) FROM offline_outbox",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok((count as usize, newest.unwrap_or_default()))
+    }
+
     pub(crate) fn remote_mutate(
         &mut self,
         cfg: &IntranetConfig,
@@ -4955,6 +4966,13 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(4);
 /// that long to carry a file anyway. Opening the Ponte and "Sincronizar
 /// agora" do not wait.
 const FOLDER_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// A change made here goes to the folders without waiting for the five
+/// minutes: once nothing has changed for this long (changes made in a row
+/// travel together)...
+const FOLDER_CHANGE_QUIET: Duration = Duration::from_secs(30);
+/// ...and no sooner than this after the previous exchange, so steady
+/// editing does not rewrite (and upload) the whole file every few seconds.
+const FOLDER_CHANGE_MIN_GAP: Duration = Duration::from_secs(2 * 60);
 
 impl IntranetPanel {
     /// Lets the background thread wake the window when a sync finishes.
@@ -5202,7 +5220,10 @@ impl IntranetPanel {
         if !self.folder_mode(store) {
             return 0;
         }
-        store.list_offline_outbox().map(|v| v.len()).unwrap_or(0)
+        store
+            .offline_outbox_status()
+            .map(|(count, _)| count)
+            .unwrap_or(0)
     }
 
     pub fn host_running(&self) -> bool {
@@ -5246,9 +5267,21 @@ impl IntranetPanel {
         } else {
             SYNC_INTERVAL
         };
-        let due = self
-            .last_sync_request
-            .is_none_or(|at| at.elapsed() >= interval);
+        let elapsed = self.last_sync_request.map(|at| at.elapsed());
+        // After a failed exchange (folder out of reach, passphrase,
+        // copy not arrived yet) the five-minute rhythm returns: retrying
+        // would read the whole file again for nothing.
+        let changes_waiting = cfg.mode == IntranetMode::SharedFolder
+            && !self.offline
+            && elapsed.is_some_and(|e| e >= FOLDER_CHANGE_MIN_GAP)
+            && store.offline_outbox_status().is_ok_and(|(count, newest)| {
+                count > 0
+                    && chrono::DateTime::parse_from_rfc3339(&newest).is_ok_and(|t| {
+                        chrono::Utc::now().signed_duration_since(t)
+                            >= chrono::Duration::from_std(FOLDER_CHANGE_QUIET).unwrap_or_default()
+                    })
+            });
+        let due = elapsed.is_none_or(|e| e >= interval) || changes_waiting;
         if cfg.mode == IntranetMode::SharedFolder
             && self.replace_confirmation.is_some()
             && !self.manual_sync
@@ -5261,6 +5294,8 @@ impl IntranetPanel {
                 match SyncWorker::start(db_path.to_path_buf(), self.repaint.clone()) {
                     Ok(worker) => self.sync = Some(worker),
                     Err(e) => {
+                        // Counted as an attempt, so the next one waits too.
+                        self.last_sync_request = Some(Instant::now());
                         self.offline = true;
                         self.status_summary = e.to_string();
                         return false;

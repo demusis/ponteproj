@@ -26,6 +26,25 @@ pub struct Bundle {
     pub blocks: Vec<BundleBlock>,
     #[serde(default)]
     pub templates: Vec<BundleTemplate>,
+    /// Past cases for the templates, named by template. They always arrive
+    /// as "não conferido": only a person approves an example.
+    #[serde(default)]
+    pub examples: Vec<BundleExample>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BundleExample {
+    /// Name of the template (in this file or already in the library).
+    pub template: String,
+    pub title: String,
+    pub demand: String,
+    pub reply: String,
+    #[serde(default)]
+    pub explanation: String,
+    #[serde(default)]
+    pub comments: Vec<String>,
+    #[serde(default)]
+    pub origin: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +87,7 @@ pub struct BundleRef {
 pub struct BundleReport {
     pub blocks_created: usize,
     pub templates_created: usize,
+    pub examples_created: usize,
     /// Items already in the library, left as they were.
     pub kept: Vec<String>,
     /// Drafts already in the library, published on request.
@@ -147,6 +167,26 @@ impl Store {
                 !block.name.trim().is_empty() && !block.text.trim().is_empty(),
                 "Instrução \"{}\" sem nome ou sem texto.",
                 block.key
+            );
+        }
+        for example in &bundle.examples {
+            ensure!(
+                bundle
+                    .templates
+                    .iter()
+                    .any(|t| t.name.trim() == example.template.trim())
+                    || self
+                        .list_templates()?
+                        .iter()
+                        .any(|t| t.name.trim() == example.template.trim()),
+                "O exemplo \"{}\" cita o modelo \"{}\", que não está no arquivo nem no acervo.",
+                example.title,
+                example.template
+            );
+            ensure!(
+                !example.title.trim().is_empty() && !example.reply.trim().is_empty(),
+                "Exemplo sem título ou sem resposta (modelo \"{}\").",
+                example.template
             );
         }
         for template in &bundle.templates {
@@ -283,6 +323,49 @@ impl Store {
             }
             report.templates_created += 1;
         }
+
+        // Examples last, once their templates exist; one with the same title
+        // in the same template is left alone.
+        let templates = self.list_templates()?;
+        for example in &bundle.examples {
+            let template = templates
+                .iter()
+                .find(|t| t.name.trim() == example.template.trim())
+                .with_context(|| {
+                    format!(
+                        "O exemplo \"{}\" cita o modelo \"{}\", que não existe.",
+                        example.title, example.template
+                    )
+                })?;
+            let present = self.examples_of(&template.uid)?;
+            if present
+                .iter()
+                .any(|e| e.title.trim() == example.title.trim())
+            {
+                report.kept.push(format!(
+                    "Exemplo \"{}\" em \"{}\" (já existia)",
+                    example.title.trim(),
+                    template.name
+                ));
+                continue;
+            }
+            self.save_example(
+                &crate::work_templates::Example {
+                    template_uid: template.uid.clone(),
+                    title: example.title.trim().to_owned(),
+                    demand: example.demand.trim().to_owned(),
+                    reply: example.reply.trim().to_owned(),
+                    explanation: example.explanation.trim().to_owned(),
+                    comments: example.comments.clone(),
+                    origin: example.origin.trim().to_owned(),
+                    status: crate::work_templates::ExampleStatus::Unverified,
+                    ..Default::default()
+                },
+                None,
+            )
+            .with_context(|| format!("Exemplo \"{}\"", example.title))?;
+            report.examples_created += 1;
+        }
         Ok(report)
     }
 }
@@ -299,7 +382,8 @@ mod tests {
         "criteria":["Responde a todos os pedidos"],
         "references":[{"label":"LGPD","locator":"Lei 13.709/2018","note":""}],
         "blocks":[{"key":"tom","mode":"obrigatoria"}],
-        "source_notes":["x.md"]}]
+        "source_notes":["x.md"]}],
+      "examples":[{"template":"Ofício de resposta","title":"Pedido de dados","demand":"Solicito informações.","reply":"Em atenção ao ofício, informo.","explanation":"Curto e direto.","comments":["não reutilizar fatos"],"origin":"Caso típico"}]
     }"#;
 
     #[test]
@@ -309,6 +393,13 @@ mod tests {
         let bundle: Bundle = serde_json::from_str(BUNDLE).unwrap();
         let report = store.import_template_bundle(&bundle, false).unwrap();
         assert_eq!((report.blocks_created, report.templates_created), (1, 1));
+        assert_eq!(report.examples_created, 1);
+        let template_uid = store.list_templates().unwrap()[0].uid.clone();
+        let examples = store.examples_of(&template_uid).unwrap();
+        assert_eq!(
+            examples[0].status,
+            crate::work_templates::ExampleStatus::Unverified
+        );
         let template = &store.list_templates().unwrap()[0];
         assert_eq!(template.status, Status::Draft);
         let version = template.versions.last().unwrap();
@@ -317,14 +408,15 @@ mod tests {
         // Twice: nothing new.
         let again = store.import_template_bundle(&bundle, false).unwrap();
         assert_eq!((again.blocks_created, again.templates_created), (0, 0));
-        assert_eq!(again.kept.len(), 2);
+        assert_eq!(again.kept.len(), 3);
+        assert_eq!(again.examples_created, 0);
         // The same file with publishing: the drafts already there go live.
         let published = store.import_template_bundle(&bundle, true).unwrap();
         assert_eq!(published.published.len(), 2);
         assert_eq!(store.list_templates().unwrap()[0].status, Status::Published);
         assert_eq!(store.list_blocks().unwrap()[0].status, Status::Published);
         let once_more = store.import_template_bundle(&bundle, true).unwrap();
-        assert!(once_more.published.is_empty() && once_more.kept.len() == 2);
+        assert!(once_more.published.is_empty() && once_more.kept.len() == 3);
         // Published on request, instructions first.
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();

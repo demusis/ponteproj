@@ -5232,6 +5232,7 @@ impl eframe::App for PonteApp {
                     }
                 });
             } else {
+                ui.horizontal(|ui| {
                 let (color, short, full) = self.network_status();
                 let response = ui
                     .add(
@@ -5245,6 +5246,24 @@ impl eframe::App for PonteApp {
                 if response.clicked() {
                     self.intranet.open = true;
                 }
+                // Shared folders: the exchange at hand, beside its status.
+                if self.intranet.folder_mode(&self.store) {
+                    let unsent = self.intranet.unsent_folder_changes(&self.store);
+                    let label = if unsent > 0 {
+                        format!("⟳ Sincronizar ({unsent} a enviar)")
+                    } else {
+                        "⟳ Sincronizar".to_owned()
+                    };
+                    if ui
+                        .add(egui::Button::new(RichText::new(label).size(12.0)).small())
+                        .on_hover_text("Lê as pastas compartilhadas e grava o que mudou aqui, agora. Sem clicar, o Ponte faz isso ao abrir, a cada 5 minutos e, depois de alterações suas, em até cerca de 2 minutos.")
+                        .clicked()
+                    {
+                        self.intranet.request_full_sync();
+                        self.refresh();
+                    }
+                }
+                });
             }
             if let Some(suggestion) = &self.suggestion {
                 ui.horizontal(|ui| {

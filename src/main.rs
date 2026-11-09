@@ -61,16 +61,24 @@ fn run() -> Result<()> {
             let bundle = ponteproj::template_bundle::read_bundle(std::path::Path::new(file))?;
             let report =
                 Store::open(&paths::db_path()?)?.import_template_bundle(&bundle, publish)?;
-            println!(
-                "{} instrução(ões) e {} modelo(s) criados{}.",
-                report.blocks_created,
-                report.templates_created,
-                if publish {
-                    " e publicados"
-                } else {
-                    " como rascunho"
-                }
-            );
+            if !bundle.blocks.is_empty() || !bundle.templates.is_empty() {
+                println!(
+                    "{} instrução(ões) e {} modelo(s) criados{}.",
+                    report.blocks_created,
+                    report.templates_created,
+                    if publish {
+                        " e publicados"
+                    } else {
+                        " como rascunho"
+                    }
+                );
+            }
+            if report.examples_created > 0 {
+                println!(
+                    "{} exemplo(s) criados como não conferidos: aprove-os na área Modelos para que a IA os use.",
+                    report.examples_created
+                );
+            }
             for published in &report.published {
                 println!("Publicado (já estava no acervo): {published}");
             }
