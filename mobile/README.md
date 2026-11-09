@@ -10,9 +10,9 @@ Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pa
 - O acervo do celular fica selado com AES-256-GCM; a chave é guardada cifrada pelo Android Keystore.
 - O celular só considera uma alteração entregue depois de reler o arquivo no Drive e conferir; até lá, guarda a cópia em `pendente.ponte` e a reenvia na sincronização seguinte.
 
-## Limite conhecido (precisa ser resolvido antes do uso real)
+## Gravação sobre uma versão antiga (resolvido na 0.24.0)
 
-O app do Drive no celular trabalha com uma cópia em cache. Se o computador gravar o arquivo e o celular ainda não tiver recebido essa versão, o celular pode sobrescrevê-la. A correção é no núcleo de sincronização (valendo também para o computador): manter cada alteração enviada na fila até que o `applied` de uma cópia lida mostre que ela chegou.
+O app do Drive no celular trabalha com uma cópia em cache: o celular pode gravar o arquivo a partir de uma versão que o computador já tinha substituído. Desde a 0.24.0, cada participante guarda a última cópia que gravou (`acervo.sqlite3-guarda.ponte`) e a lê junto com a da pasta; o que foi sobrescrito volta na sincronização seguinte. Computador e celular precisam estar na 0.24.0 ou posterior.
 
 ## Como montar
 

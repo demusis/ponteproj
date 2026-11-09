@@ -1130,6 +1130,13 @@ impl Store {
 
     pub fn save_intranet_config(&mut self, config: &IntranetConfig) -> Result<()> {
         write_intranet_config(&self.conn, config)?;
+        // Out of the shared-folder mode, this computer's copy of the library
+        // (passphrase-protected) has no use and is not left behind.
+        if config.mode != IntranetMode::SharedFolder {
+            if let Some(path) = self.guard_copy_path() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
         // With nothing waiting to be sent, this library matches the team's
         // (or starts a shared copy): its numbers become the reference.
         crate::idmap::reset_frame_if_settled(&self.conn)?;
@@ -2286,6 +2293,14 @@ impl Store {
             "Nenhuma pasta está acessível agora ({}). Conecte o pendrive ou espere a nuvem ficar disponível.",
             report.unreachable.join("; ")
         );
+        // This computer's own last written copy, kept beside the library:
+        // if another member overwrites the folder copy from an old base
+        // (a phone whose Drive app served a cached file, two computers
+        // writing at once), what this computer wrote comes back from here.
+        let guard_path = self.guard_copy_path();
+        let guard_header = guard_path
+            .as_ref()
+            .and_then(|path| sharedfolder::read_header(path).ok().flatten());
         let lineage = if !cfg.folder_lineage.trim().is_empty() {
             cfg.folder_lineage.clone()
         } else {
@@ -2306,16 +2321,60 @@ impl Store {
                 copy.path.display()
             );
         }
+        // The guard copy counts only as this computer's last write: same
+        // library, written by this computer, not older than the last
+        // exchange (a guard whose write failed is stale and would roll
+        // changes back). Anything else is removed and written again.
+        let guard_trusted = guard_header.as_ref().is_some_and(|h| {
+            h.lineage == lineage
+                && h.writer == cfg.folder_writer
+                && h.revision >= cfg.synced_revision
+                && h.schema_version <= crate::storage::SCHEMA_VERSION
+        });
+        if guard_header.is_some() && !guard_trusted {
+            if let Some(path) = &guard_path {
+                let _ = std::fs::remove_file(path);
+            }
+        }
         copies.sort_by(|a, b| {
             (b.header.revision, &b.header.written_at)
                 .cmp(&(a.header.revision, &a.header.written_at))
         });
         let outbox = self.list_offline_outbox()?;
+        // Its body is read only when someone wrote after it (the newest
+        // folder copy is not this very copy): the usual exchange with
+        // nothing new pays for the header alone.
+        let guard: Option<sharedfolder::Copy> = match (&guard_path, &guard_header) {
+            (Some(path), Some(header)) if guard_trusted => {
+                let same = copies.first().is_some_and(|best| {
+                    best.header.revision == header.revision
+                        && best.header.writer == header.writer
+                        && best.header.written_at == header.written_at
+                });
+                if same || copies.is_empty() {
+                    None
+                } else {
+                    sharedfolder::read(path, key).ok().flatten()
+                }
+            }
+            _ => None,
+        };
         let first_write = copies.is_empty();
         let mut joining = false;
         if let Some(best) = copies.first() {
+            // Older than what this computer last wrote: either the cloud has
+            // not delivered that write yet (the folder copy is part of what
+            // this computer wrote: wait), or someone wrote over it from an
+            // old base (it carries changes this computer never saw: merge,
+            // the guard copy brings back what was lost).
+            let overwritten = guard.as_ref().is_some_and(|g| {
+                best.payload
+                    .applied
+                    .iter()
+                    .any(|uid| !g.payload.applied.contains(uid))
+            });
             ensure!(
-                best.header.revision >= cfg.synced_revision,
+                best.header.revision >= cfg.synced_revision || overwritten,
                 "A pasta ainda não recebeu a versão mais recente (revisão {} na pasta, {} neste computador). Espere a nuvem terminar de sincronizar e tente de novo.",
                 best.header.revision,
                 cfg.synced_revision
@@ -2335,6 +2394,17 @@ impl Store {
                 );
             }
         }
+        // The guard copy joins the copies read (never as a folder, never in
+        // place of an empty folder): its changes missing from the newest
+        // copy are merged like any other.
+        let guard_missing = guard_path.is_some() && !guard_trusted;
+        if let Some(copy) = guard {
+            copies.push(copy);
+            copies.sort_by(|a, b| {
+                (b.header.revision, &b.header.written_at)
+                    .cmp(&(a.header.revision, &a.header.written_at))
+            });
+        }
         // Changes other copies carry that the newest one never received.
         let best_applied: std::collections::BTreeSet<String> = copies
             .first()
@@ -2351,7 +2421,7 @@ impl Store {
                         && !copy.payload.journal.iter().any(|e| &e.uid == *uid)
                 })
                 .count();
-            if missing_from_journal > 0 {
+            if missing_from_journal > 0 && guard_path.as_deref() != Some(copy.path.as_path()) {
                 report.notes.push(format!(
                     "{}: {missing_from_journal} alteração(ões) antigas não puderam ser recuperadas (diário já compactado).",
                     copy.path.display()
@@ -2371,7 +2441,8 @@ impl Store {
             .iter()
             .skip(1)
             .any(|c| copies[0].header.revision > c.header.revision)
-            || !absent.is_empty();
+            || !absent.is_empty()
+            || guard_missing;
         if !first_write
             && outbox.is_empty()
             && foreign.is_empty()
@@ -2395,6 +2466,7 @@ impl Store {
             outbox,
             first_write,
             joining,
+            guard_path.as_deref(),
             &temp_path,
             reporter,
             report,
@@ -2417,6 +2489,7 @@ impl Store {
         outbox: Vec<OutboxEntry>,
         first_write: bool,
         joining: bool,
+        guard_path: Option<&std::path::Path>,
         temp_path: &std::path::Path,
         reporter: &crate::ai::Reporter,
         mut report: FolderSyncReport,
@@ -2492,7 +2565,11 @@ impl Store {
                     continue;
                 }
                 let source = &copies[index];
-                let from = source.path.display().to_string();
+                let from = if guard_path == Some(source.path.as_path()) {
+                    "deste computador".to_owned()
+                } else {
+                    format!("da pasta {}", source.path.display())
+                };
                 // That copy may have numbered new items differently.
                 let ids = crate::idmap::IdMap::from_journal(
                     source
@@ -2537,7 +2614,7 @@ impl Store {
                             id: 0,
                             created_at: entry.created_at.clone(),
                             actor: entry.actor.clone(),
-                            label: format!("[da pasta {}] {}", from, entry.label),
+                            label: format!("[{}] {}", from, entry.label),
                             mutation: remapped.unwrap_or_else(|_| entry.mutation.clone()),
                             base: entry.base.as_ref().map(|base| {
                                 ids.remap(base, &source.payload.snapshot, None)
@@ -2684,6 +2761,9 @@ impl Store {
             first_write || report.pushed > 0 || report.merged_foreign > 0 || report.conflicts > 0;
         let mut targets: Vec<PathBuf> = absent.to_vec();
         for copy in copies {
+            if guard_path == Some(copy.path.as_path()) {
+                continue;
+            }
             // A copy already at this exact state is left alone.
             if changed_content || copy.header.revision < revision {
                 targets.push(copy.path.clone());
@@ -2707,6 +2787,15 @@ impl Store {
             );
         }
         report.notes.extend(failures);
+        // Only now, with the folders written, does this become this
+        // computer's last write.
+        if let Some(path) = guard_path {
+            if let Err(error) = sharedfolder::write(path, key, &request, &payload, &blobs) {
+                report.notes.push(format!(
+                    "A cópia de segurança deste computador não foi gravada: {error}"
+                ));
+            }
+        }
 
         // The library, the queue that was sent, its conflicts, the settings
         // and the journal of the copy now matched change together: an
@@ -2769,6 +2858,14 @@ impl Store {
         }
         report.revision = revision;
         Ok(report)
+    }
+
+    /// Where this library keeps its own last written transport copy: beside
+    /// the library file, so every library (and every test) has its own.
+    /// `None` for a library without a file (in memory).
+    fn guard_copy_path(&self) -> Option<PathBuf> {
+        let db = self.conn.path().filter(|p| !p.is_empty())?;
+        Some(PathBuf::from(format!("{db}-guarda.ponte")))
     }
 
     /// Conflicts of an exchange whose last step was undone (a change made
@@ -6451,6 +6548,88 @@ mod tests {
             folder_key: "senha-de-teste-123".into(),
             ..IntranetConfig::default()
         }
+    }
+
+    #[test]
+    fn a_folder_copy_overwritten_from_an_old_base_heals_from_the_guard_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = dir.path().join("Drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        let files = vec![drive.display().to_string()];
+        let reporter = crate::ai::Reporter::silent();
+        let key = "senha-de-teste-123";
+        let sync = |store: &mut Store| {
+            let cfg = store.load_intranet_config().unwrap();
+            store.sync_with_folders(&cfg, key, false, &reporter)
+        };
+
+        // A: two documents and the first copy; B joins.
+        let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        a.save_intranet_config(&folder_config("Casa", files.clone()))
+            .unwrap();
+        let one = a.import_capture(&crate::model::sample_capture()).unwrap();
+        let mut other = crate::model::sample_capture();
+        other.request_id = uuid::Uuid::new_v4().to_string();
+        other.document_number = "SEFAZ-PRO-2026/00999".into();
+        other.source_url = other.source_url.replace("00001", "00999");
+        let two = a.import_capture(&other).unwrap();
+        sync(&mut a).unwrap();
+        let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+        b.save_intranet_config(&folder_config("Celular", files.clone()))
+            .unwrap();
+        sync(&mut b).unwrap();
+        let old_copy = std::fs::read(&drive).unwrap();
+
+        // 1. Same revision: A writes a note; B, from a cached (old) copy,
+        // writes another one over it.
+        a.save_note(one.document_id, "Nota de A").unwrap();
+        sync(&mut a).unwrap();
+        std::fs::write(&drive, &old_copy).unwrap();
+        b.save_note(two.document_id, "Nota de B").unwrap();
+        sync(&mut b).unwrap();
+        let report = sync(&mut a).unwrap();
+        assert_eq!(
+            report.conflicts,
+            0,
+            "{:?}",
+            a.list_sync_conflicts().unwrap()
+        );
+        assert_eq!(a.load_document(one.document_id).unwrap().note, "Nota de A");
+        assert_eq!(a.load_document(two.document_id).unwrap().note, "Nota de B");
+        sync(&mut b).unwrap();
+        assert_eq!(
+            b.load_document(one.document_id).unwrap().note,
+            "Nota de A",
+            "A's note came back to the folder"
+        );
+
+        // 2. Two revisions behind: A writes twice, B overwrites from an even
+        // older copy. Before, A waited forever; now it merges.
+        let older = std::fs::read(&drive).unwrap();
+        a.save_note(one.document_id, "A, segunda").unwrap();
+        sync(&mut a).unwrap();
+        a.save_note(one.document_id, "A, terceira").unwrap();
+        sync(&mut a).unwrap();
+        std::fs::write(&drive, &older).unwrap();
+        // B's own guard copy is as old as that file here.
+        b.save_note(two.document_id, "B, segunda").unwrap();
+        sync(&mut b).unwrap();
+        sync(&mut a).unwrap();
+        assert_eq!(
+            a.load_document(one.document_id).unwrap().note,
+            "A, terceira"
+        );
+        assert_eq!(a.load_document(two.document_id).unwrap().note, "B, segunda");
+
+        // 3. Only the cloud lagging: the folder shows an older copy with
+        // nothing new in it. A waits, as before.
+        let lagging = std::fs::read(&drive).unwrap();
+        a.save_note(one.document_id, "A, quarta").unwrap();
+        sync(&mut a).unwrap();
+        std::fs::write(&drive, &lagging).unwrap();
+        let error = sync(&mut a).unwrap_err().to_string();
+        assert!(error.contains("ainda não recebeu"), "{error}");
+        assert_eq!(a.load_document(one.document_id).unwrap().note, "A, quarta");
     }
 
     #[test]

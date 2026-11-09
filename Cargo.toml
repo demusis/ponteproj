@@ -1,6 +1,6 @@
 [package]
 name = "ponteproj"
-version = "0.23.6"
+version = "0.24.0"
 edition = "2021"
 description = "Assistente local SIGADOC com captura pelo navegador"
 authors = ["Carlo Ralph De Musis", "João Gabriel Bezerra Estrela"]
