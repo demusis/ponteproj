@@ -2,16 +2,19 @@
 //! decides whether to open the window, serve the browser extension or run a
 //! command-line option.
 pub mod ai;
+#[cfg(feature = "desktop")]
 pub mod app;
 pub mod attachments;
 pub mod chatgpt;
 pub mod export;
 pub mod files;
 pub mod guide;
+#[cfg(feature = "desktop")]
 pub mod help_ui;
 pub mod idmap;
 pub mod imap;
 pub mod mail;
+#[cfg(feature = "desktop")]
 pub mod mail_ui;
 pub mod manual;
 pub mod model;
@@ -23,8 +26,10 @@ pub mod sharedfolder;
 pub mod storage;
 pub mod suggestion;
 pub mod tasks;
+#[cfg(feature = "desktop")]
 pub mod tasks_ui;
 pub mod template_bundle;
+#[cfg(feature = "desktop")]
 pub mod templates_ui;
 pub mod work_context;
 pub mod work_templates;
@@ -44,8 +49,10 @@ pub mod intranet;
 
 pub mod saiop;
 
+#[cfg(feature = "desktop")]
 pub mod icon;
 
 pub mod labels;
 
+#[cfg(feature = "desktop")]
 pub mod windows_ui;

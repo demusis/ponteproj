@@ -3,7 +3,9 @@ use crate::{model::Capture, protection, storage::Store};
 use anyhow::{ensure, Context, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "desktop")]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -224,6 +226,7 @@ pub fn detect_juntada(capture: &Capture) -> Option<JuntadaInfo> {
     })
 }
 
+#[cfg(feature = "desktop")]
 pub fn show_history(ui: &mut eframe::egui::Ui, capture: &Capture, document: i64) {
     use eframe::egui;
     ui.group(|ui|{
@@ -563,6 +566,7 @@ pub fn changed_metadata(
         })
         .collect()
 }
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 struct LinkDraft {
     target: Option<i64>,
@@ -570,11 +574,13 @@ struct LinkDraft {
     reason: String,
     message: String,
 }
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 pub struct DossierPanel {
     trash_requested: Option<crate::trash::Target>,
     drafts: BTreeMap<i64, LinkDraft>,
 }
+#[cfg(feature = "desktop")]
 impl DossierPanel {
     pub fn take_trash_request(&mut self) -> Option<crate::trash::Target> {
         self.trash_requested.take()

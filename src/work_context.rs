@@ -151,6 +151,7 @@ impl Store {
         Ok(())
     }
 }
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 pub struct ContextPanel {
     drafts: std::collections::BTreeMap<i64, (WorkContext, WorkContext)>,
@@ -158,6 +159,7 @@ pub struct ContextPanel {
     message: String,
     reveal: Option<i64>,
 }
+#[cfg(feature = "desktop")]
 impl ContextPanel {
     pub fn reveal(&mut self, id: i64) {
         self.reveal = Some(id);
@@ -268,6 +270,7 @@ impl ContextPanel {
     }
 }
 
+#[cfg(feature = "desktop")]
 /// Renders the context that was sent to the AI (stored as JSON by
 /// `analysis_text`) field by field, never as raw JSON.
 pub fn show_analysis_context(ui: &mut eframe::egui::Ui, human_context: &str) {
@@ -356,6 +359,7 @@ pub fn metadata_label(key: &str) -> &str {
         other => other,
     }
 }
+#[cfg(feature = "desktop")]
 pub fn provenance(ui: &mut eframe::egui::Ui, detail: &crate::model::DocumentDetail) {
     use eframe::egui;
     let metadata = &detail.capture.metadata;

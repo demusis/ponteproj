@@ -3,6 +3,7 @@
 //! and `apply` are kept for the tests of that migration and are not called by the UI.
 use crate::{model::Capture, protection, storage::Store};
 use anyhow::{ensure, Result};
+#[cfg(feature = "desktop")]
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
@@ -109,11 +110,13 @@ pub fn export(capture: &Capture, body: &str) -> Result<std::path::PathBuf> {
         .write_all(text.as_bytes())?;
     Ok(path)
 }
+#[cfg(feature = "desktop")]
 /// The side-by-side comparison window of two draft texts.
 #[derive(Default)]
 pub struct DraftTools {
     comparison: Option<(String, String, String)>,
 }
+#[cfg(feature = "desktop")]
 impl DraftTools {
     /// Opens the side-by-side comparison window.
     pub fn open_comparison(&mut self, label: String, before: String, after: String) {

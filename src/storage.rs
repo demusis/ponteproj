@@ -1142,7 +1142,7 @@ fn next_manual_number_in(
     }
     Ok(format!("{prefix}{:04}", highest + 1))
 }
-
+#[cfg(any(feature = "desktop", test))]
 /// E-mails imported before they had a numbering of their own (0.22–0.23)
 /// get an `EMAIL-` number, once. Only where numbers are given (a computer
 /// alone or the main one); the others receive the result with the library.

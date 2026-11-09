@@ -22,10 +22,13 @@ use crate::{
 use anyhow::{bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{SecondsFormat, Utc};
+#[cfg(feature = "desktop")]
 use eframe::egui;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "desktop")]
+use std::sync::mpsc;
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Read, Write},
@@ -33,7 +36,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -2827,6 +2830,7 @@ impl Store {
         Ok(out)
     }
 
+    #[cfg(any(feature = "desktop", test))]
     /// How many changes wait to be sent and when the newest was made
     /// (RFC 3339), without opening them: cheap enough for every frame.
     pub(crate) fn offline_outbox_status(&self) -> Result<(usize, String)> {
@@ -4922,12 +4926,14 @@ fn write_http_json(stream: &mut TcpStream, status: u16, body: &RpcResponse) -> R
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 /// Result of one synchronization run on the background thread.
 struct SyncOutcome {
     result: std::result::Result<SyncDone, String>,
     manual: bool,
 }
 
+#[cfg(feature = "desktop")]
 /// Long-lived thread with its own database connection. The interface never
 /// waits for the network: it posts a request and reads the outcome later.
 /// One request to the background synchronization.
@@ -4940,6 +4946,7 @@ struct SyncRequest {
     allow_replace: bool,
 }
 
+#[cfg(feature = "desktop")]
 struct SyncWorker {
     requests: mpsc::Sender<SyncRequest>,
     outcomes: mpsc::Receiver<SyncOutcome>,
@@ -4947,6 +4954,7 @@ struct SyncWorker {
     progress: mpsc::Receiver<String>,
 }
 
+#[cfg(feature = "desktop")]
 impl SyncWorker {
     fn start(db_path: PathBuf, repaint: Option<egui::Context>) -> Result<Self> {
         let (request_tx, request_rx) = mpsc::channel::<SyncRequest>();
@@ -4993,12 +5001,14 @@ impl SyncWorker {
     }
 }
 
+#[cfg(feature = "desktop")]
 /// What a finished synchronization reports back to the window.
 pub struct SyncDone {
     pub changed: bool,
     pub summary: String,
 }
 
+#[cfg(feature = "desktop")]
 fn run_sync(
     store: &mut Store,
     request: &SyncRequest,
@@ -5030,6 +5040,7 @@ fn run_sync(
     }
 }
 
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 pub struct IntranetPanel {
     pub open: bool,
@@ -5063,19 +5074,24 @@ pub struct IntranetPanel {
     connection_code_input: String,
 }
 
+#[cfg(feature = "desktop")]
 const SYNC_INTERVAL: Duration = Duration::from_secs(4);
+#[cfg(feature = "desktop")]
 /// Shared folders are re-read every few minutes; the cloud client needs
 /// that long to carry a file anyway. Opening the Ponte and "Sincronizar
 /// agora" do not wait.
 const FOLDER_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+#[cfg(feature = "desktop")]
 /// A change made here goes to the folders without waiting for the five
 /// minutes: once nothing has changed for this long (changes made in a row
 /// travel together)...
 const FOLDER_CHANGE_QUIET: Duration = Duration::from_secs(30);
+#[cfg(feature = "desktop")]
 /// ...and no sooner than this after the previous exchange, so steady
 /// editing does not rewrite (and upload) the whole file every few seconds.
 const FOLDER_CHANGE_MIN_GAP: Duration = Duration::from_secs(2 * 60);
 
+#[cfg(feature = "desktop")]
 impl IntranetPanel {
     /// Lets the background thread wake the window when a sync finishes.
     pub fn attach_repaint(&mut self, ctx: &egui::Context) {

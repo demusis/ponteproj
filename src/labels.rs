@@ -196,6 +196,7 @@ pub fn parse_typed_date(text: &str) -> Option<String> {
     None
 }
 
+#[cfg(feature = "desktop")]
 /// Text field for a date. The person sees and types `dd/mm/aaaa`; the backing
 /// string keeps `AAAA-MM-DD` (or the raw text when invalid, so that saving is
 /// refused with a clear message instead of silently keeping an old value).
@@ -257,6 +258,7 @@ pub fn date_field(
     response
 }
 
+#[cfg(feature = "desktop")]
 const MONTHS: [&str; 12] = [
     "Janeiro",
     "Fevereiro",
@@ -271,6 +273,7 @@ const MONTHS: [&str; 12] = [
     "Novembro",
     "Dezembro",
 ];
+#[cfg(feature = "desktop")]
 const WEEKDAYS: [&str; 7] = ["D", "S", "T", "Q", "Q", "S", "S"];
 
 /// The weeks of a month as rows of seven cells, Sunday first, `None` where
@@ -302,6 +305,7 @@ pub fn month_grid(year: i32, month: u32) -> Vec<[Option<u32>; 7]> {
     rows
 }
 
+#[cfg(feature = "desktop")]
 /// Calendar shown under the 📅 button: month and year to browse, weekday
 /// headings, one button per day; today and the chosen date stand out.
 /// Returns the ISO date when a day is clicked.

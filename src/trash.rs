@@ -685,6 +685,7 @@ impl Store {
         Ok(document)
     }
 }
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 pub struct Panel {
     pub open: bool,
@@ -713,6 +714,7 @@ pub struct Change {
     pub document: i64,
     pub restored: bool,
 }
+#[cfg(feature = "desktop")]
 impl Panel {
     pub fn request(&mut self, target: Target) {
         self.pending = Some(target);

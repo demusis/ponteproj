@@ -6,11 +6,13 @@
 //! The converter understands only what the guide uses: headings, paragraphs,
 //! bullet and numbered lists (with one nested level), tables, quotes, rules
 //! and, inside a line, bold, italics, code and links.
+#[cfg(feature = "desktop")]
 use anyhow::{Context, Result};
+#[cfg(feature = "desktop")]
 use std::path::PathBuf;
 
 pub const GUIDE: &str = include_str!("../GUIA_DO_USUARIO.md");
-
+#[cfg(feature = "desktop")]
 /// Writes the guide as a web page in the data folder and opens it with the
 /// program the person uses for web pages.
 pub fn open() -> Result<PathBuf> {

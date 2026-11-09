@@ -1,10 +1,15 @@
 //! Native Windows PDF rendering and optional OCR, entirely in memory.
 use crate::{protection, storage::Store};
-use anyhow::{ensure, Context, Result};
+#[cfg(all(windows, feature = "desktop"))]
+use anyhow::Context;
+use anyhow::{ensure, Result};
+#[cfg(all(windows, feature = "desktop"))]
 use eframe::egui;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+#[cfg(all(windows, feature = "desktop"))]
 use std::sync::mpsc::{self, Receiver};
+#[cfg(all(windows, feature = "desktop"))]
 use windows::{
     Data::Pdf::{PdfDocument, PdfPageRenderOptions},
     Storage::Streams::{DataReader, DataWriter, InMemoryRandomAccessStream},
@@ -117,17 +122,21 @@ impl Store {
             .map(|(_, text)| text))
     }
 }
+#[cfg(all(windows, feature = "desktop"))]
 struct Runtime;
+#[cfg(all(windows, feature = "desktop"))]
 impl Drop for Runtime {
     fn drop(&mut self) {
         unsafe { RoUninitialize() }
     }
 }
+#[cfg(all(windows, feature = "desktop"))]
 pub struct Rendered {
     pub image: egui::ColorImage,
     pub pages: u32,
     pub ocr: Option<std::result::Result<PageText, String>>,
 }
+#[cfg(all(windows, feature = "desktop"))]
 pub fn render(bytes: &[u8], index: u32, width: u32, ocr: bool) -> Result<Rendered> {
     ensure!(
         bytes.len() <= crate::files::MAX_FILE_BYTES
@@ -234,6 +243,7 @@ pub fn render(bytes: &[u8], index: u32, width: u32, ocr: bool) -> Result<Rendere
     })
 }
 /// Where the PDF bytes come from.
+#[cfg(all(windows, feature = "desktop"))]
 #[derive(Clone, Copy)]
 enum Source {
     /// A PDF downloaded with an import (`files` table). OCR is saved per page.
@@ -241,6 +251,7 @@ enum Source {
     /// A file attached by a person. OCR is shown but not saved.
     Attachment(i64),
 }
+#[cfg(all(windows, feature = "desktop"))]
 struct Selection {
     source: Source,
     label: String,
@@ -250,6 +261,7 @@ struct Selection {
     texture: Option<egui::TextureHandle>,
     text: Option<PageText>,
 }
+#[cfg(all(windows, feature = "desktop"))]
 #[derive(Default)]
 pub struct PdfPanel {
     selection: Option<Selection>,
@@ -257,6 +269,7 @@ pub struct PdfPanel {
     open: bool,
     message: String,
 }
+#[cfg(all(windows, feature = "desktop"))]
 impl PdfPanel {
     pub fn busy(&self) -> bool {
         self.job.is_some()
@@ -423,6 +436,7 @@ impl PdfPanel {
         }
     }
 }
+#[cfg(all(windows, feature = "desktop"))]
 #[cfg(test)]
 mod tests {
     #[test]

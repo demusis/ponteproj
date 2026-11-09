@@ -1,0 +1,23 @@
+[package]
+name = "ponte_mobile"
+version = "0.1.0"
+edition = "2021"
+description = "Núcleo do Ponte para o protótipo Android (Ponte de bolso), chamado por JNI"
+license = "MIT"
+publish = false
+
+[lib]
+name = "ponte_mobile"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The same core as the desktop Ponte, without the window.
+ponteproj = { path = "../..", default-features = false }
+jni = { version = "0.21", default-features = false }
+serde_json = "1"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = 2
+strip = true

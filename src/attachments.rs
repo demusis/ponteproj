@@ -689,6 +689,7 @@ fn list_active(conn: &rusqlite::Connection, owner: Owner) -> Result<Vec<Attachme
         .collect()
 }
 
+#[cfg(feature = "desktop")]
 /// The "Anexos" block shown in the document tab and in the task form.
 #[derive(Default)]
 pub struct AttachmentsPanel {
@@ -703,6 +704,7 @@ pub struct AttachmentsPanel {
     confirm_delete: Option<i64>,
 }
 
+#[cfg(feature = "desktop")]
 impl AttachmentsPanel {
     /// PDF attachment the person asked to read in the Ponte: (id, label).
     pub fn take_pdf_request(&mut self) -> Option<(i64, String)> {

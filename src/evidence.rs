@@ -2,7 +2,9 @@
 use crate::storage::Store;
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "desktop")]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
@@ -226,6 +228,7 @@ impl Store {
         })
     }
 }
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 struct Draft {
     documents: BTreeSet<i64>,
@@ -233,10 +236,12 @@ struct Draft {
     selected: BTreeSet<String>,
     message: String,
 }
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 pub struct SourcesPanel {
     drafts: BTreeMap<i64, Draft>,
 }
+#[cfg(feature = "desktop")]
 impl SourcesPanel {
     pub fn forget_document(&mut self, id: i64) {
         self.drafts.remove(&id);

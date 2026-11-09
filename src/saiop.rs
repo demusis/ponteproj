@@ -10,6 +10,7 @@ use crate::{
 };
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Utc};
+#[cfg(feature = "desktop")]
 use eframe::egui::{self, Color32, RichText};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -17,8 +18,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+#[cfg(feature = "desktop")]
 const ACCENT: Color32 = Color32::from_rgb(24, 84, 97);
+#[cfg(feature = "desktop")]
 const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
+#[cfg(feature = "desktop")]
 const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
 
 pub const STATUS_OPTIONS: &[(&str, &str)] = &[
@@ -2614,6 +2618,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
 
 // ============================================================================
 
+#[cfg(feature = "desktop")]
 /// A titled block of the atendimento form: label on the left, field on the
 /// right, one row per field.
 fn form_section(
@@ -2632,6 +2637,7 @@ fn form_section(
 // Interface gráfica "Atendimentos" (Controle do gabinete do SAIOP)
 // ============================================================================
 
+#[cfg(feature = "desktop")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SaiopQueue {
     All,
@@ -2647,6 +2653,7 @@ pub enum SaiopQueue {
     NeedsReview,
 }
 
+#[cfg(feature = "desktop")]
 impl SaiopQueue {
     fn label(self) -> &'static str {
         match self {
@@ -2665,6 +2672,7 @@ impl SaiopQueue {
     }
 }
 
+#[cfg(feature = "desktop")]
 /// Sortable columns of the grid.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SaiopSort {
@@ -2678,6 +2686,7 @@ enum SaiopSort {
     Destination,
 }
 
+#[cfg(feature = "desktop")]
 impl SaiopSort {
     fn title(self) -> &'static str {
         match self {
@@ -2720,6 +2729,7 @@ impl SaiopSort {
     }
 }
 
+#[cfg(feature = "desktop")]
 pub struct SaiopPanel {
     query: String,
     assignee_filter: String,
@@ -2761,6 +2771,7 @@ pub struct SaiopPanel {
     open_task: Option<Task>,
 }
 
+#[cfg(feature = "desktop")]
 impl Default for SaiopPanel {
     fn default() -> Self {
         Self {
@@ -2799,6 +2810,7 @@ impl Default for SaiopPanel {
     }
 }
 
+#[cfg(feature = "desktop")]
 impl SaiopPanel {
     pub fn dirty(&self) -> bool {
         self.editor != self.saved_snapshot
