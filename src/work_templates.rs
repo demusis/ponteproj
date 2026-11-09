@@ -705,7 +705,7 @@ fn validate_version(version: &TemplateVersion) -> Result<()> {
     Ok(())
 }
 
-fn validate_template(template: &WorkTemplate) -> Result<()> {
+pub(crate) fn validate_template(template: &WorkTemplate) -> Result<()> {
     ensure!(!template.name.trim().is_empty(), "Dê um nome ao modelo.");
     ensure_text(&template.name, MAX_NAME, "O nome")?;
     ensure_text(&template.purpose, MAX_SHORT_TEXT, "A finalidade")?;
@@ -725,7 +725,7 @@ fn validate_template(template: &WorkTemplate) -> Result<()> {
     validate_version(version)
 }
 
-fn validate_block(block: &InstructionBlock) -> Result<()> {
+pub(crate) fn validate_block(block: &InstructionBlock) -> Result<()> {
     ensure!(!block.name.trim().is_empty(), "Dê um nome à instrução.");
     ensure_text(&block.name, MAX_NAME, "O nome")?;
     ensure_text(&block.topic, MAX_NAME, "O tema")?;
@@ -742,7 +742,7 @@ fn validate_block(block: &InstructionBlock) -> Result<()> {
     Ok(())
 }
 
-fn validate_example(example: &Example) -> Result<()> {
+pub(crate) fn validate_example(example: &Example) -> Result<()> {
     ensure_uid(&example.template_uid)?;
     ensure!(!example.title.trim().is_empty(), "Dê um título ao exemplo.");
     ensure_text(&example.title, MAX_NAME, "O título")?;
@@ -2408,7 +2408,21 @@ impl Store {
         for (_, template) in old {
             let name: String = template.name.trim().chars().take(MAX_NAME / 2).collect();
             let key = (name, template.kind.clone());
-            let body = template.body.replace("\r\n", "\n").replace('\r', "\n");
+            // Other control characters (a form feed pasted from a PDF) are
+            // refused by the new rules: they become spaces.
+            let body: String = template
+                .body
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .chars()
+                .map(|c| {
+                    if c.is_control() && c != '\n' && c != '\t' {
+                        ' '
+                    } else {
+                        c
+                    }
+                })
+                .collect();
             match groups.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, bodies)) => bodies.push(body),
                 None => groups.push((key, vec![body])),
@@ -2464,11 +2478,16 @@ impl Store {
                 Err(error) => problems.push(format!("\"{name}\": {error:#}")),
             }
         }
-        self.conn.execute(
-            "INSERT INTO work_template_settings(key,value) VALUES('migrated_personal','1')
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [],
-        )?;
+        // Done only when nothing failed: a group that could not be saved (a
+        // busy library, the main computer out of reach) is tried again at
+        // the next opening; the ones already created are recognized.
+        if problems.is_empty() {
+            self.conn.execute(
+                "INSERT INTO work_template_settings(key,value) VALUES('migrated_personal','1')
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [],
+            )?;
+        }
         Ok((created, problems))
     }
 

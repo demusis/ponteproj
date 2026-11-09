@@ -648,6 +648,26 @@ impl Store {
     }
 }
 
+/// Content digests of every attachment of `owner`, those in the trash too.
+pub(crate) fn hashes_including_trash(
+    conn: &rusqlite::Connection,
+    owner: Owner,
+) -> Result<Vec<String>> {
+    let mut statement =
+        conn.prepare("SELECT metadata FROM attachments WHERE owner_kind=?1 AND owner_id=?2")?;
+    let rows = statement
+        .query_map(params![owner.kind(), owner.id()], |r| {
+            r.get::<_, Vec<u8>>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|blob| {
+            let meta: AttachmentMeta = serde_json::from_slice(&protection::unseal(&blob)?)?;
+            Ok(meta.sha256)
+        })
+        .collect()
+}
+
 fn list_active(conn: &rusqlite::Connection, owner: Owner) -> Result<Vec<AttachmentMeta>> {
     let mut statement = conn.prepare(
         "SELECT a.id, a.metadata FROM attachments a

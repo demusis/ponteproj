@@ -263,7 +263,7 @@ pub fn fit_examples(ranked: impl IntoIterator<Item = Example>) -> Vec<Example> {
     chosen
 }
 
-fn sha256_hex(text: &str) -> String {
+pub(crate) fn sha256_hex(text: &str) -> String {
     Sha256::digest(text.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -466,7 +466,13 @@ pub fn assemble(base_system: &str, req: &DraftRequest) -> Result<Assembled> {
         system_sha256: sha256_hex(&system),
         system_bytes: trusted_bytes,
         data_bytes,
-        conflicts_shown: conflicts.iter().map(Conflict::describe).collect(),
+        // As many as a generation record may keep (64, each up to 4 KiB);
+        // the window shows them all.
+        conflicts_shown: conflicts
+            .iter()
+            .take(64)
+            .map(|c| clip_file_text(&c.describe(), 4000).0)
+            .collect(),
         outcome: Outcome::Accepted,
         ..Default::default()
     };

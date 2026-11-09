@@ -872,18 +872,78 @@ struct StoredDraftPayload {
 /// Why a replacement of the library was rolled back: a change was queued
 /// meanwhile (by the window or by the process serving the browser) on the
 /// library about to be replaced. The next synchronization redoes it.
+/// What a main computer before 0.23.6 answers to a message it cannot read:
+/// from an older version, it does not know a newer kind of change. From
+/// 0.23.6 on, the answer names the version (`host_cannot_read`), so a
+/// message that a current main computer cannot read is a plain refusal.
+const HOST_TOO_OLD: &str = "Formato de mensagem incompatível com o anfitrião.";
+
+fn host_cannot_read() -> String {
+    format!(
+        "Formato de mensagem incompatível com o anfitrião (Ponte {}).",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 const QUEUE_GREW: &str =
     "Uma alteração foi feita durante a sincronização; ela será concluída na próxima.";
 
 /// Inside the transaction that replaces the library: nothing may be queued
 /// besides the changes that were sent (`sent`), or its numbers would refer
 /// to a library that no longer exists.
-fn ensure_queue_settled(conn: &Connection, sent: &[i64]) -> Result<()> {
-    let queued = conn
-        .prepare("SELECT id FROM offline_outbox")?
-        .query_map([], |r| r.get::<_, i64>(0))?
+fn ensure_queue_settled(conn: &Connection, sent: &[(i64, String)]) -> Result<()> {
+    for queued in queued_identities(conn)? {
+        ensure!(sent.contains(&queued), "{QUEUE_GREW}");
+    }
+    Ok(())
+}
+
+/// Number and uid of every queued change. A change merged into a queued row
+/// (the same item edited again) keeps the number but gets a new uid, so the
+/// pair tells a row that was sent from one rewritten while it was sent.
+fn queued_identities(conn: &Connection) -> Result<Vec<(i64, String)>> {
+    let rows = conn
+        .prepare("SELECT id,created_at,payload FROM offline_outbox")?
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+            ))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    ensure!(queued.iter().all(|id| sent.contains(id)), "{QUEUE_GREW}");
+    rows.into_iter()
+        .map(|(id, created_at, blob)| {
+            let entry: OutboxEntry = serde_json::from_slice(&unseal(&blob)?)?;
+            Ok((id, outbox_uid(&entry.uid, &created_at, id)))
+        })
+        .collect()
+}
+
+/// The uid of a queued change; rows queued by older versions get the same
+/// stand-in as `list_offline_outbox`.
+fn outbox_uid(uid: &str, created_at: &str, id: i64) -> String {
+    if uid.is_empty() {
+        format!("legacy-{created_at}-{id}")
+    } else {
+        uid.to_owned()
+    }
+}
+
+/// Removes a queued change that was sent, unless it was rewritten meanwhile
+/// (then it holds a newer edit and goes with the next exchange).
+fn delete_sent_outbox(conn: &Connection, id: i64, uid: &str) -> Result<()> {
+    delete_sent_outboxes(conn, &[(id, uid.to_owned())])
+}
+
+/// The same for several changes, reading the queue once.
+fn delete_sent_outboxes(conn: &Connection, sent: &[(i64, String)]) -> Result<()> {
+    let queued = queued_identities(conn)?;
+    for (id, uid) in sent {
+        if queued.iter().any(|(q, q_uid)| q == id && q_uid == uid) {
+            conn.execute("DELETE FROM offline_outbox WHERE id=?1", params![id])?;
+        }
+    }
     Ok(())
 }
 
@@ -2100,7 +2160,7 @@ impl Store {
                         let mut conflict =
                             build_sync_conflict(&entry, &reason, host_frame.as_deref());
                         conflict.unresolved = true;
-                        self.finish_outbox_entry(entry.id, &learned, Some(&conflict))?;
+                        self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
                         pushed_offline = true;
                         continue;
                     }
@@ -2117,14 +2177,14 @@ impl Store {
                     }) => {
                         let there = crate::idmap::created_ids(&*snapshot, &sent.mutation, &reply)?;
                         let learned = ids.learn(&entry.created, Some(&there));
-                        self.finish_outbox_entry(entry.id, &learned, None)?;
+                        self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
                         host_frame = Some(snapshot);
                         pushed_offline = true;
                     }
                     Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
                         let learned = ids.learn(&entry.created, None);
                         let conflict = build_sync_conflict(&sent, &message, host_frame.as_deref());
-                        self.finish_outbox_entry(entry.id, &learned, Some(&conflict))?;
+                        self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
                         pushed_offline = true;
                     }
                     Ok(_) => {
@@ -2361,7 +2421,7 @@ impl Store {
         use crate::sharedfolder::{self, JournalEntry, Payload, WriteRequest};
         let mut applied: std::collections::BTreeSet<String> = Default::default();
         let mut journal: Vec<JournalEntry> = Vec::new();
-        let mut processed_outbox: Vec<i64> = Vec::new();
+        let mut processed_outbox: Vec<(i64, String)> = Vec::new();
         // Recorded only once the exchange succeeds: until then they refer to
         // a copy that may never be written.
         let mut conflicts: Vec<SyncConflict> = Vec::new();
@@ -2382,7 +2442,7 @@ impl Store {
                     revision: 0,
                     created: entry.created.clone(),
                 });
-                processed_outbox.push(entry.id);
+                processed_outbox.push((entry.id, entry.uid.clone()));
             }
             report.created = true;
         } else {
@@ -2514,7 +2574,7 @@ impl Store {
                 &applied,
             ));
             for entry in &outbox {
-                processed_outbox.push(entry.id);
+                processed_outbox.push((entry.id, entry.uid.clone()));
                 if applied.contains(&entry.uid) {
                     // Already in the copy (an exchange that could not finish
                     // here): what it created there is in the journal.
@@ -2617,7 +2677,8 @@ impl Store {
             writer_name: cfg.member_name.trim(),
             schema_version: crate::storage::SCHEMA_VERSION,
         };
-        let changed_content = first_write || report.pushed > 0 || report.merged_foreign > 0;
+        let changed_content =
+            first_write || report.pushed > 0 || report.merged_foreign > 0 || report.conflicts > 0;
         let mut targets: Vec<PathBuf> = absent.to_vec();
         for copy in copies {
             // A copy already at this exact state is left alone.
@@ -2661,9 +2722,7 @@ impl Store {
                 )?;
             }
             ensure_queue_settled(tx, &processed_outbox)?;
-            for id in &processed_outbox {
-                tx.execute("DELETE FROM offline_outbox WHERE id=?1", params![id])?;
-            }
+            delete_sent_outboxes(tx, &processed_outbox)?;
             write_intranet_config(tx, &updated)?;
             if !replaced {
                 // First copy, made from this library: its numbers are the
@@ -2675,12 +2734,16 @@ impl Store {
         if let Some(store) = &temp {
             reporter.step("Atualizando o acervo deste computador…");
             let before = self.version_map()?;
-            self.apply_snapshot_and(
+            let applied_here = self.apply_snapshot_and(
                 &final_snapshot,
                 |file_id, capture_id| store.pdf_bytes(file_id, capture_id),
                 |id| store.attachment_bytes(id).map(|(_, bytes)| bytes),
                 finish,
-            )?;
+            );
+            if let Err(error) = applied_here {
+                self.keep_conflicts(&conflicts)?;
+                return Err(error);
+            }
             for (kind, id, meta) in &final_snapshot.item_versions {
                 if kind == "cabinet" {
                     continue;
@@ -2694,18 +2757,42 @@ impl Store {
             report.changed = true;
         } else {
             let tx = self.conn.transaction()?;
-            finish(&tx)?;
+            if let Err(error) = finish(&tx) {
+                drop(tx);
+                self.keep_conflicts(&conflicts)?;
+                return Err(error);
+            }
             tx.commit()?;
         }
         report.revision = revision;
         Ok(report)
     }
 
+    /// Conflicts of an exchange whose last step was undone (a change made
+    /// meanwhile): the copy in the folders already counts the conflicting
+    /// changes as handled, so the conflicts are kept now or never shown.
+    fn keep_conflicts(&mut self, conflicts: &[SyncConflict]) -> Result<()> {
+        if conflicts.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        for conflict in conflicts {
+            tx.execute(
+                "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
+                params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Removes a queued change that was sent (or refused), storing the
-    /// numbers it taught and its conflict in the same transaction.
+    /// numbers it taught and its conflict in the same transaction. A row
+    /// rewritten while it was sent (a newer edit) stays queued.
     fn finish_outbox_entry(
         &mut self,
         entry_id: i64,
+        entry_uid: &str,
         learned: &[(crate::idmap::IdKind, i64, Option<i64>)],
         conflict: Option<&SyncConflict>,
     ) -> Result<()> {
@@ -2717,7 +2804,7 @@ impl Store {
                 params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
             )?;
         }
-        tx.execute("DELETE FROM offline_outbox WHERE id=?1", params![entry_id])?;
+        delete_sent_outbox(&tx, entry_id, entry_uid)?;
         tx.commit()?;
         Ok(())
     }
@@ -2740,9 +2827,6 @@ impl Store {
         Ok(out)
     }
 
-    /// Sends a change to the main computer. When it cannot be reached, or in
-    /// shared-folder mode, the change is applied here and queued to be sent
-    /// later. A refusal (conflict, invalid data) comes back as an error.
     /// How many changes wait to be sent and when the newest was made
     /// (RFC 3339), without opening them: cheap enough for every frame.
     pub(crate) fn offline_outbox_status(&self) -> Result<(usize, String)> {
@@ -2754,6 +2838,9 @@ impl Store {
         Ok((count as usize, newest.unwrap_or_default()))
     }
 
+    /// Sends a change to the main computer. When it cannot be reached, or in
+    /// shared-folder mode, the change is applied here and queued to be sent
+    /// later. A refusal (conflict, invalid data) comes back as an error.
     pub(crate) fn remote_mutate(
         &mut self,
         cfg: &IntranetConfig,
@@ -2798,7 +2885,14 @@ impl Store {
                 ) {
                     // The change is on the main computer; this copy catches up
                     // with the next synchronization, after the queued change.
-                    Err(error) if error.to_string() == QUEUE_GREW => Ok(reply),
+                    // A number the main computer gave does not exist in this
+                    // copy yet: it is never handed back as if it did.
+                    Err(error) if error.to_string() == QUEUE_GREW => match reply {
+                        MutationReply::Unit => Ok(reply),
+                        _ => bail!(
+                            "A alteração foi gravada no computador principal e aparece aqui na próxima sincronização; não a repita."
+                        ),
+                    },
                     Err(error) => Err(error),
                     Ok(()) => Ok(reply),
                 }
@@ -3130,7 +3224,7 @@ impl Store {
             item.created_at = created_at;
             if item.uid.is_empty() {
                 // Queued by an older version: a stable stand-in identity.
-                item.uid = format!("legacy-{}-{}", item.created_at, id);
+                item.uid = outbox_uid("", &item.created_at, id);
             }
             out.push(item);
         }
@@ -4343,19 +4437,32 @@ fn send_rpc_classified(
             ))
         })?;
     let status = response.status();
+    if status.is_server_error() {
+        // Busy or failing for a moment (library locked, too many
+        // connections), whatever the body says or even if it was cut off:
+        // the change waits and is sent again later; it is not a refusal of
+        // the change itself.
+        return Err(RpcError::Unreachable(
+            match response.json::<RpcResponse>() {
+                Ok(RpcResponse::Error { message }) => message,
+                _ => format!("O computador anfitrião falhou (HTTP {}).", status.as_u16()),
+            },
+        ));
+    }
     let rpc: RpcResponse = response.json().map_err(|e| {
         RpcError::Rejected(format!(
             "Resposta inválida recebida do computador anfitrião: {e}"
         ))
     })?;
-    if status.is_server_error() {
-        // Busy or failing for a moment (library locked, too many
-        // connections): the change waits and is sent again later; it is not
-        // a refusal of the change itself.
-        return Err(RpcError::Unreachable(match rpc {
-            RpcResponse::Error { message } => message,
-            _ => format!("O computador anfitrião falhou (HTTP {}).", status.as_u16()),
-        }));
+    if let RpcResponse::Error { message } = &rpc {
+        if message == HOST_TOO_OLD {
+            // A main computer on an older version does not know this kind
+            // of change: it waits here, queued, until that computer is
+            // updated, instead of becoming a conflict and being lost.
+            return Err(RpcError::Unreachable(
+                "O computador principal está numa versão anterior do Ponte e ainda não reconhece esta alteração; atualize-o. A alteração continua guardada aqui.".into(),
+            ));
+        }
     }
     if !status.is_success() {
         if let RpcResponse::Error { message } = rpc {
@@ -4728,12 +4835,7 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
     }
     let rpc_req: RpcRequest = match serde_json::from_slice(body) {
         Ok(r) => r,
-        Err(_) => {
-            return (
-                400,
-                error("Formato de mensagem incompatível com o anfitrião.".into()),
-            )
-        }
+        Err(_) => return (400, error(host_cannot_read())),
     };
     match process_rpc(&mut store, &host_cfg, rpc_req) {
         Ok(resp) => (200, resp),
@@ -6967,14 +7069,14 @@ mod tests {
         here.save_intranet_config(&folder_config("Casa", vec![folder]))
             .unwrap();
         let receipt = here.import_capture(&sample_capture()).unwrap();
-        let queued: Vec<i64> = here
+        let queued: Vec<(i64, String)> = here
             .list_offline_outbox()
             .unwrap()
             .iter()
-            .map(|e| e.id)
+            .map(|e| (e.id, e.uid.clone()))
             .collect();
         assert_eq!(queued.len(), 1);
-        let replace = |store: &mut Store, sent: &[i64]| {
+        let replace = |store: &mut Store, sent: &[(i64, String)]| {
             store.apply_snapshot_and(
                 &copy,
                 |_, _| unreachable!(),
@@ -6987,8 +7089,20 @@ mod tests {
         assert_eq!(error, QUEUE_GREW);
         assert_eq!(here.list_documents("").unwrap().len(), 1, "rolled back");
         assert!(here.load_document(receipt.document_id).is_ok());
+        // A row rewritten while it was sent (new uid) is neither settled
+        // nor deleted: it holds a newer edit.
+        let (id, uid) = queued[0].clone();
+        delete_sent_outbox(&here.conn, id, "outra-versao").unwrap();
+        assert_eq!(here.offline_outbox_status().unwrap().0, 1);
+        assert_eq!(
+            replace(&mut here, &[(id, "outra-versao".into())])
+                .unwrap_err()
+                .to_string(),
+            QUEUE_GREW
+        );
         // Once it was among the changes sent, the replacement goes through.
         replace(&mut here, &queued).unwrap();
+        let _ = uid;
         assert!(here.list_documents("").unwrap().is_empty());
     }
 

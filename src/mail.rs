@@ -1049,14 +1049,19 @@ impl Store {
         let already_imported = receipt.effective_outcome() != ImportOutcome::Imported;
         // Files already there (by content) are skipped quietly, so a second
         // import completes what a first one could not attach.
-        let present = self
-            .list_attachments(Owner::Document(receipt.document_id))
-            .unwrap_or_default();
+        // Every file the record ever had counts, those in the Lixeira too: a
+        // re-import completes what was never stored, never brings back
+        // what the person threw away.
+        let present = crate::attachments::hashes_including_trash(
+            &self.conn,
+            Owner::Document(receipt.document_id),
+        )
+        .unwrap_or_default();
         let mut added = 0usize;
         let mut skipped = Vec::new();
         for attachment in parsed.attachments.iter().filter(|_| may_attach) {
             let sha256 = format!("{:x}", Sha256::digest(&attachment.data));
-            if present.iter().any(|a| a.sha256 == sha256) {
+            if present.contains(&sha256) {
                 continue;
             }
             let description = clip_bytes(&format!("Anexo do e-mail ({})", attachment.mime), 200);

@@ -198,6 +198,11 @@ pub struct SaiopAttendance {
     pub updated_at: String,
     #[serde(default)]
     pub human_edited: bool,
+    /// A spreadsheet row that a SIGADOC import later linked to its
+    /// document: it is that document's atendimento now, so undoing the
+    /// spreadsheet keeps it.
+    #[serde(default)]
+    pub linked_by_import: bool,
     #[serde(default)]
     pub events: Vec<SaiopEvent>,
 }
@@ -262,6 +267,7 @@ impl SaiopAttendance {
             created_at: now.clone(),
             updated_at: now,
             human_edited: true,
+            linked_by_import: false,
             events: Vec::new(),
         }
     }
@@ -696,6 +702,7 @@ impl Store {
                         capture.document_number
                     ),
                 });
+                unlinked.linked_by_import = true;
                 self.save_saiop_attendance_by(&unlinked, version, false)?;
                 return Ok(());
             }
@@ -1396,6 +1403,7 @@ impl Store {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 human_edited: false,
+                linked_by_import: false,
                 events: vec![SaiopEvent {
                     when: now.clone(),
                     actor: self.active_actor(),
@@ -1843,9 +1851,6 @@ impl Store {
     }
 }
 
-/// Whether undoing a spreadsheet import keeps this atendimento instead of
-/// deleting it: someone edited it, made a task from it or attached files to
-/// it. The preview and the undo itself both ask here, so they never disagree.
 /// One atendimento as stored, read inside a transaction.
 fn load_attendance_tx(conn: &rusqlite::Connection, id: i64) -> Result<SaiopAttendance> {
     let (batch_id, source_row, document_id, blob) = conn
@@ -1872,8 +1877,13 @@ fn load_attendance_tx(conn: &rusqlite::Connection, id: i64) -> Result<SaiopAtten
     Ok(att)
 }
 
+/// Whether undoing a spreadsheet import keeps this atendimento instead of
+/// deleting it: someone edited it, made a task from it or attached files to
+/// it, or a SIGADOC import linked it to its document (nothing would create
+/// that document's atendimento again). The preview and the undo itself both
+/// ask here, so they never disagree.
 fn kept_on_undo(conn: &rusqlite::Connection, id: i64, att: &SaiopAttendance) -> Result<bool> {
-    if att.human_edited || !att.task_ids.is_empty() {
+    if att.human_edited || att.linked_by_import || !att.task_ids.is_empty() {
         return Ok(true);
     }
     let attachments: i64 = conn.query_row(

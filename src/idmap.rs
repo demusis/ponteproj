@@ -435,11 +435,14 @@ impl IdMap {
             });
             // The first translation of a number stays: later changes only
             // find the item again (an import of the same document), and a
-            // lookup there may name another member's item.
-            if self.entries.contains_key(&key)
-                || (target.is_none()
-                    && !(self.watermark.is_empty() || self.is_new(created.kind, created.id)))
-            {
+            // lookup there may name another member's item. A number that
+            // existed before this computer went offline (at or below the
+            // watermark) is shared history with the same number everywhere:
+            // it is never translated, whatever a lookup on the main computer
+            // finds in that slot now (the item may have been removed there).
+            let shared_history =
+                !self.watermark.is_empty() && !self.is_new(created.kind, created.id);
+            if self.entries.contains_key(&key) || shared_history {
                 continue;
             }
             self.entries.insert(key, target);
@@ -903,6 +906,25 @@ mod tests {
             entries: BTreeMap::new(),
             watermark: watermark.iter().copied().collect(),
         }
+    }
+
+    #[test]
+    fn numbers_from_before_going_offline_are_never_translated() {
+        let mut ids = map(&[(IdKind::Document, 100), (IdKind::Task, 100)]);
+        // A re-import of document 10 reports its triage task 40 (shared
+        // history); there the slot now holds another task, 77.
+        let learned = ids.learn(
+            &[CreatedId::new(IdKind::Task, "triage", 40)],
+            Some(&[CreatedId::new(IdKind::Task, "triage", 77)]),
+        );
+        assert!(learned.is_empty());
+        assert!(!ids.entries.contains_key(&(IdKind::Task, 40)));
+        // A task created here (above the watermark) is translated.
+        let learned = ids.learn(
+            &[CreatedId::new(IdKind::Task, "triage", 105)],
+            Some(&[CreatedId::new(IdKind::Task, "triage", 130)]),
+        );
+        assert_eq!(learned, vec![(IdKind::Task, 105, Some(130))]);
     }
 
     #[test]
