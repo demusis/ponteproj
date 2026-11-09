@@ -379,7 +379,7 @@ impl TaskPanel {
 
         ui.horizontal_wrapped(|ui| {
             ui.heading("Tarefas");
-            ui.label(RichText::new("ⓘ").color(MUTED)).on_hover_text(
+            crate::help_ui::help(ui,
                 "Cada documento importado recebe uma tarefa de triagem. As tarefas são locais: concluir aqui não tramita nem assina nada no SIGADOC.",
             );
             let new_label = match selected_document {
@@ -907,7 +907,8 @@ impl TaskPanel {
         ui.horizontal_wrapped(|ui| {
             ui.label("Prazo:");
             crate::labels::date_field(ui, ("task-due", task.id), &mut task.due_date);
-            ui.label(RichText::new("ⓘ").color(MUTED)).on_hover_text(
+            crate::help_ui::help(
+                ui,
                 "Deixe vazio se não houver prazo confirmado. Anote a origem em “Mais detalhes”.",
             );
         });
@@ -937,7 +938,7 @@ impl TaskPanel {
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.strong("Cadeia de dependências");
-                    ui.label(RichText::new("ⓘ").color(MUTED)).on_hover_text(
+                    crate::help_ui::help(ui,
                         "Tudo o que vem antes desta tarefa (em qualquer nível) e tudo o que espera por ela. Para mudar as dependências diretas, use “Mais detalhes ▸ Depende de outras tarefas”.",
                     );
                 });
@@ -963,8 +964,7 @@ impl TaskPanel {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Lembrar a partir de:");
                     crate::labels::date_field(ui, ("task-reminder", task_id), &mut task.reminder_date);
-                    ui.label(RichText::new("ⓘ").color(MUTED))
-                        .on_hover_text("Lembrete local, mostrado na visão “Lembretes” enquanto o Ponte estiver aberto.");
+                    crate::help_ui::help(ui, "Lembrete local, mostrado na visão “Lembretes” enquanto o Ponte estiver aberto.");
                 });
                 ui.label("Resultado (número da resposta, data de envio, observações)");
                 ui.add(

@@ -2868,8 +2868,7 @@ impl SaiopPanel {
 
         ui.horizontal_wrapped(|ui| {
             ui.heading("Atendimentos");
-            ui.label(RichText::new("ⓘ").color(Color32::from_rgb(120, 130, 140)))
-                .on_hover_text(format!(
+            crate::help_ui::help(ui, format!(
                     "Controle operacional do gabinete (SAIOP). {} atendimento(s) no total, {} referência(s) distinta(s).",
                     all_items.len(),
                     distinct_refs.len()

@@ -103,6 +103,8 @@ pub struct MailPanel {
     /// Uids whose Message-ID is already in the library (computed once).
     imported: BTreeSet<u32>,
     summary: Vec<(Color32, String)>,
+    /// The outcome of the last import in one line (text, all went well).
+    result: Option<(String, bool)>,
     /// Warning lines about messages left out of the running import (too
     /// large); they join the result list when the import answers.
     skipped_lines: Vec<String>,
@@ -247,6 +249,7 @@ impl MailPanel {
         self.checked.clear();
         self.imported.clear();
         self.summary.clear();
+        self.result = None;
         self.skipped_lines.clear();
     }
 
@@ -380,19 +383,30 @@ impl MailPanel {
                 }
             }
         }
-        if failed == 0 {
-            let text = if ok == 1 {
-                "1 mensagem importada.".to_string()
-            } else {
-                format!("{ok} mensagens importadas.")
-            };
-            self.set_notice(text, false);
-        } else {
-            self.set_notice(
-                format!("{ok} importada(s), {failed} com erro. Veja a lista abaixo."),
+        // The outcome goes where the person is looking, above the list
+        // (see `result_block`), not in the notice line at the top.
+        self.notice = None;
+        self.result = Some(if failed == 0 {
+            (
+                if ok == 1 {
+                    "✓ 1 mensagem importada.".to_string()
+                } else {
+                    format!("✓ {ok} mensagens importadas.")
+                },
                 true,
-            );
-        }
+            )
+        } else if ok == 0 {
+            (
+                if failed == 1 {
+                    "✗ A mensagem não foi importada.".to_string()
+                } else {
+                    format!("✗ Nenhuma das {failed} mensagens foi importada.")
+                },
+                false,
+            )
+        } else {
+            (format!("⚠ {ok} importada(s), {failed} com erro."), false)
+        });
     }
 
     fn refresh_imported(&mut self, store: &Store) {
@@ -897,8 +911,47 @@ impl MailPanel {
 
     // -- 3. Messages ------------------------------------------------------
 
+    /// The outcome of the last import, in one coloured line with the details
+    /// below it, above the message list so it is always in sight.
+    fn result_block(&mut self, ui: &mut egui::Ui) {
+        let Some((headline, ok)) = self.result.clone() else {
+            return;
+        };
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(headline).strong().color(if ok {
+                    SUCCESS
+                } else {
+                    ERROR
+                }));
+                if ui
+                    .small_button("✕")
+                    .on_hover_text("Fechar o resultado")
+                    .clicked()
+                {
+                    self.result = None;
+                    self.summary.clear();
+                }
+            });
+            if !self.summary.is_empty() {
+                egui::ScrollArea::vertical()
+                    .id_salt("mail_result")
+                    .max_height(110.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (color, line) in &self.summary {
+                            ui.colored_label(*color, line);
+                        }
+                    });
+            }
+        });
+        ui.add_space(4.0);
+    }
+
     fn messages_section(&mut self, ui: &mut egui::Ui, busy: bool) -> MailAction {
         let mut action = MailAction::None;
+        self.result_block(ui);
         ui.strong("Mensagens");
         if self.messages.is_empty() {
             ui.label("Nenhuma mensagem encontrada com esse filtro.");
@@ -923,10 +976,7 @@ impl MailPanel {
             // for the import button and the result lines below it; it never
             // gets shorter than a few rows.
             let row = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
-            let below = ui.spacing().interact_size.y
-                + ui.spacing().item_spacing.y * 2.0
-                + row * self.summary.len() as f32
-                + 8.0;
+            let below = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 2.0 + 8.0;
             // The window's visible height minus what is above the list, both
             // independent of the outer scroll (inside it the available height
             // is unbounded), so the list does not resize while scrolling.
@@ -1035,6 +1085,11 @@ impl MailPanel {
                         if uids.is_empty() {
                             self.summary.clear();
                             self.summary.push((WARNING, line));
+                            self.result = Some((
+                                "⚠ Nada foi importado: as mensagens marcadas são grandes demais."
+                                    .into(),
+                                false,
+                            ));
                         } else {
                             self.skipped_lines.push(line);
                         }
@@ -1047,13 +1102,6 @@ impl MailPanel {
                         };
                     }
                 }
-            }
-        }
-        if !self.summary.is_empty() {
-            ui.separator();
-            ui.strong("Resultado da importação");
-            for (color, line) in &self.summary {
-                ui.colored_label(*color, line);
             }
         }
         action

@@ -8,6 +8,7 @@ pub mod chatgpt;
 pub mod export;
 pub mod files;
 pub mod guide;
+pub mod help_ui;
 pub mod idmap;
 pub mod imap;
 pub mod mail;

@@ -540,7 +540,7 @@ impl TemplatesPanel {
 
         ui.horizontal(|ui| {
             ui.heading("Modelos de trabalho");
-            ui.label("ⓘ").on_hover_text(
+            crate::help_ui::help(ui,
                 "Modelos guardam estrutura, instruções, exemplos e referências. Os publicados \
                  ficam disponíveis no editor de minutas; os compartilhados valem para toda a equipe.",
             );
@@ -737,7 +737,7 @@ impl TemplatesPanel {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.strong("Instruções (biblioteca)");
-                    ui.label("ⓘ").on_hover_text(
+                    crate::help_ui::help(ui,
                         "Instruções são orientações para a IA que valem para vários modelos, \
                          escritas uma vez e reaproveitadas: \"Use linguagem simples\", \
                          \"Cite a norma aplicável\", \"Não prometa prazos\". Crie e publique a \

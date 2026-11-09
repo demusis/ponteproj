@@ -615,8 +615,7 @@ impl DossierPanel {
         let mut open = None;
         ui.horizontal(|ui| {
             ui.strong("Vínculos entre documentos");
-            ui.label(eframe::egui::RichText::new("ⓘ").color(eframe::egui::Color32::from_rgb(120, 130, 140)))
-                .on_hover_text("Vínculos confirmados por você ou criados automaticamente quando a página mostra juntada explícita (“Juntado ao documento”). Não substituem a consulta da tramitação oficial no SIGADOC.");
+            crate::help_ui::help(ui, "Vínculos confirmados por você ou criados automaticamente quando a página mostra juntada explícita (“Juntado ao documento”). Não substituem a consulta da tramitação oficial no SIGADOC.");
         });
         let documents = match store.list_documents("") {
             Ok(v) => v,
@@ -729,8 +728,7 @@ impl DossierPanel {
         ui.separator();
         ui.horizontal(|ui| {
             ui.strong("Versões importadas");
-            ui.label(eframe::egui::RichText::new("ⓘ").color(eframe::egui::Color32::from_rgb(120, 130, 140)))
-                .on_hover_text("Cada importação do mesmo documento fica guardada. A comparação mostra o que mudou entre importações; não comprova alteração do documento oficial.");
+            crate::help_ui::help(ui, "Cada importação do mesmo documento fica guardada. A comparação mostra o que mudou entre importações; não comprova alteração do documento oficial.");
         });
         match store.capture_versions(document) {
             Ok(versions) => {

@@ -519,8 +519,7 @@ fn library_panel(window_width: f32) -> egui::Panel {
 
 /// Small "ⓘ" that explains on hover, instead of a permanent paragraph.
 fn info(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new("ⓘ").color(Color32::from_rgb(120, 130, 140)))
-        .on_hover_text(text);
+    crate::help_ui::help(ui, text);
 }
 
 struct Editor {
@@ -645,7 +644,10 @@ enum WorkResult {
     MailFolders(std::result::Result<Vec<crate::imap::Folder>, String>),
     MailMessages(std::result::Result<Vec<crate::imap::MessageSummary>, String>),
     /// Raw messages by uid, to be imported on the window's thread.
-    MailFetched(std::result::Result<crate::imap::Fetched, String>),
+    MailFetched(
+        std::result::Result<crate::imap::Fetched, String>,
+        crate::mail::MailSource,
+    ),
 }
 
 /// What the background worker is doing; the screen adapts buttons to it.
@@ -1046,6 +1048,11 @@ impl PonteApp {
                 folder,
                 uids,
             } => {
+                // The records say in which account the messages arrived.
+                let source = crate::mail::MailSource::Account {
+                    name: account.name.clone(),
+                    address: account.user.trim().to_owned(),
+                };
                 self.spawn(
                     format!("Baixando {} mensagem(ns)", uids.len()),
                     WorkKind::Mail,
@@ -1053,6 +1060,7 @@ impl PonteApp {
                         WorkResult::MailFetched(
                             crate::imap::fetch_messages(&account, &folder, &uids, &reporter)
                                 .map_err(|e| format!("{e:#}")),
+                            source,
                         )
                     },
                     ctx,
@@ -2355,14 +2363,14 @@ impl PonteApp {
                 self.mail.accept_messages(result);
                 self.mail.remember_choice(&mut self.store);
             }
-            WorkResult::MailFetched(result) => match result {
+            WorkResult::MailFetched(result, source) => match result {
                 Ok(fetched) => {
                     let mut outcomes = Vec::with_capacity(fetched.len());
                     let mut last_document = None;
                     for (uid, bytes) in fetched {
                         let outcome = bytes.and_then(|bytes| {
                             self.store
-                                .import_mail_bytes(&bytes, crate::mail::MailSource::Account)
+                                .import_mail_bytes(&bytes, &source)
                                 .map_err(|e| e.to_string())
                         });
                         if let Ok(import) = &outcome {
@@ -3843,6 +3851,26 @@ impl PonteApp {
                 ui.separator();ui.label(format!("Data documental: {}",metadata.get("document_date").map(String::as_str).unwrap_or("não disponível na captura")));
                 if let Some(value)=metadata.get("medium"){ui.separator();ui.label(value);}
             });
+            if detail.summary.email {
+                // Where the e-mail arrived: the account it was downloaded
+                // from, or (from a .eml file, or imported before this was
+                // kept) the addresses it was sent to.
+                let account = metadata.get("mail_account").filter(|a| !a.trim().is_empty());
+                let line = match (account, metadata.get("mail_account_name")) {
+                    (Some(address), Some(name)) if !name.trim().is_empty() => {
+                        format!("Recebido na conta: {name} ({address})")
+                    }
+                    (Some(address), _) => format!("Recebido na conta: {address}"),
+                    (None, _) => match metadata.get("mail_to").filter(|t| !t.trim().is_empty()) {
+                        Some(to) => format!("Destinatário: {to}"),
+                        None => "Conta de recebimento: não registrada".to_owned(),
+                    },
+                };
+                ui.add(egui::Label::new(line).wrap());
+                if let Some(from) = metadata.get("mail_from").filter(|f| !f.trim().is_empty()) {
+                    ui.add(egui::Label::new(format!("Remetente: {from}")).wrap());
+                }
+            }
             if let Some(value)=metadata.get("document_model"){ui.add(egui::Label::new(format!("Modelo do SIGADOC: {value}")).wrap());}
             if let Some(value)=metadata.get("via_status"){ui.add(egui::Label::new(format!("Situação no SIGADOC: {value}")).wrap());}
             ui.label(format!("Finalidade local salva: {}",crate::work_context::purpose_label(&detail.work_context.purpose)));

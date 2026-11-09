@@ -706,10 +706,9 @@ impl AttachmentsPanel {
     }
 
     pub fn show(&mut self, ui: &mut eframe::egui::Ui, store: &mut Store, owner: Owner, busy: bool) {
-        use eframe::egui::{self, Color32, RichText};
+        use eframe::egui::{self, Color32};
         const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
         const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
-        const MUTED: Color32 = Color32::from_rgb(120, 130, 140);
 
         let list = match store.list_attachments(owner) {
             Ok(list) => list,
@@ -735,7 +734,7 @@ impl AttachmentsPanel {
             } else {
                 "Excluir um anexo o leva para a Lixeira, de onde pode ser restaurado."
             };
-            ui.label(RichText::new("ⓘ").color(MUTED)).on_hover_text(format!(
+            crate::help_ui::help(ui, format!(
                 "Até {MAX_PER_OWNER} anexos de até {} cada. Tipos aceitos: {ACCEPTED_TYPES_TEXT}. Programas, scripts, atalhos e arquivos compactados não são aceitos. {on_delete}",
                 labels::file_size(MAX_ATTACHMENT_BYTES as u64)
             ));

@@ -888,19 +888,20 @@ fn record_text(parsed: &ParsedMail) -> (String, Option<String>) {
 
 /// How a message reached the Ponte (kept in the record, read by people and
 /// by the AI).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MailSource {
     /// A `.eml` file chosen by the person.
     File,
-    /// Downloaded from the person's mailbox (IMAP).
-    Account,
+    /// Downloaded from one of the person's mailboxes (IMAP): the name they
+    /// gave it and its address, kept so the record says where it arrived.
+    Account { name: String, address: String },
 }
 
 impl MailSource {
-    pub fn label(self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
             MailSource::File => "arquivo .eml",
-            MailSource::Account => "conta de e-mail (IMAP)",
+            MailSource::Account { .. } => "conta de e-mail (IMAP)",
         }
     }
 }
@@ -942,11 +943,11 @@ impl Store {
     }
 
     pub fn import_eml_bytes(&mut self, bytes: &[u8]) -> Result<MailImport> {
-        self.import_mail_bytes(bytes, MailSource::File)
+        self.import_mail_bytes(bytes, &MailSource::File)
     }
 
     /// Imports one message, recording where it came from.
-    pub fn import_mail_bytes(&mut self, bytes: &[u8], source: MailSource) -> Result<MailImport> {
+    pub fn import_mail_bytes(&mut self, bytes: &[u8], source: &MailSource) -> Result<MailImport> {
         let parsed = parse(bytes)?;
         let (text, clipped) = record_text(&parsed);
         let digest = content_digest(&text, &parsed.attachments);
@@ -983,6 +984,20 @@ impl Store {
             }
         }
         extra.insert("imported_from".to_owned(), source.label().to_owned());
+        if let MailSource::Account { name, address } = source {
+            if !address.trim().is_empty() {
+                extra.insert(
+                    "mail_account".to_owned(),
+                    clip_bytes(address.trim(), MAX_META_BYTES),
+                );
+            }
+            if !name.trim().is_empty() {
+                extra.insert(
+                    "mail_account_name".to_owned(),
+                    clip_bytes(name.trim(), MAX_META_BYTES),
+                );
+            }
+        }
         extra.insert("mail_digest".to_owned(), digest.clone());
         let actor = self.active_actor();
         let capture = fields.capture_with(
@@ -1277,6 +1292,35 @@ iVBORw0KGgo=\r\n\
         let again = store.import_eml_bytes(SAMPLE.as_bytes()).unwrap();
         assert!(again.already_imported);
         assert_eq!(again.receipt.document_id, id);
+    }
+
+    #[test]
+    fn a_message_from_the_mailbox_records_the_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let source = MailSource::Account {
+            name: "Gmail pessoal".into(),
+            address: "pessoa@gmail.com".into(),
+        };
+        let done = store.import_mail_bytes(SAMPLE.as_bytes(), &source).unwrap();
+        let metadata = store
+            .load_document(done.receipt.document_id)
+            .unwrap()
+            .capture
+            .metadata;
+        assert_eq!(metadata["mail_account"], "pessoa@gmail.com");
+        assert_eq!(metadata["mail_account_name"], "Gmail pessoal");
+        assert_eq!(metadata["imported_from"], "conta de e-mail (IMAP)");
+        // From a file there is no account, only the recipients.
+        let other = SAMPLE.replace("To: gabinete@", "To: outro@");
+        let file = store.import_eml_bytes(other.as_bytes()).unwrap();
+        let metadata = store
+            .load_document(file.receipt.document_id)
+            .unwrap()
+            .capture
+            .metadata;
+        assert!(!metadata.contains_key("mail_account"));
+        assert_eq!(metadata["imported_from"], "arquivo .eml");
     }
 
     #[test]

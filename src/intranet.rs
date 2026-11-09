@@ -5511,8 +5511,7 @@ impl IntranetPanel {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.small("A equipe trabalha no mesmo acervo usando um dos computadores do gabinete como principal, na rede interna.");
-                    ui.label(egui::RichText::new("ⓘ").color(egui::Color32::from_rgb(120, 130, 140)))
-                        .on_hover_text("Nada vai para a nuvem. Cada computador guarda a sua cópia protegida do acervo e conversa com o principal pela rede interna, com um código de acesso do gabinete.");
+                    crate::help_ui::help(ui, "Nada vai para a nuvem. Cada computador guarda a sua cópia protegida do acervo e conversa com o principal pela rede interna, com um código de acesso do gabinete.");
                 });
                 ui.separator();
 
