@@ -395,6 +395,13 @@ impl PonteApp {
                 input.consume_key(Modifiers::NONE, Key::Escape),
             )
         });
+        // Enter never opens a row of an older text: it searches first.
+        let enter = if enter && self.global_search.query != self.global_search.searched {
+            self.global_search.run(&self.store, &self.today.index);
+            false
+        } else {
+            enter
+        };
         let total = self.global_search.results.total();
         let mut moved = false;
         if up || down {
@@ -521,8 +528,11 @@ impl PonteApp {
             Pick::Attendance(id) => {
                 if self.saiop.focus_attendance(&self.store, id) {
                     self.navigate(Leave::Saiop);
-                } else {
+                } else if self.saiop.dirty() {
                     self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
+                } else {
+                    self.refresh();
+                    self.message("Este atendimento não está mais disponível.");
                 }
             }
         }

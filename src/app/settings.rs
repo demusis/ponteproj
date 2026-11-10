@@ -440,7 +440,7 @@ impl PonteApp {
                 }
                 widgets::small_muted(
                     ui,
-                    "Feche o Ponte antes de instalar. O instalador guarda uma cópia do acervo antes de atualizar.",
+                    "Feche o Ponte antes de instalar. O instalador guarda uma cópia de segurança do acervo antes de atualizar.",
                 );
             }
         });

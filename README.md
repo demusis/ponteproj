@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.27.0 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.28.0 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.27.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.28.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -78,7 +78,7 @@ O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o
 
 ### Atualizar e desinstalar
 
-- **Atualizar:** feche o Ponte e rode o instalador novo. Seus dados são mantidos. A extensão da loja se atualiza sozinha.
+- **Atualizar:** feche o Ponte e rode o instalador novo. Seus dados são mantidos. A extensão da loja se atualiza sozinha. Para saber se há versão nova, use **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** ([10.6](#106-o-que-sai-do-computador)); o Ponte não baixa nem instala nada sozinho.
 - **Desinstalar:** em *Configurações ▸ Aplicativos instalados* do Windows. Os seus dados **não** são apagados; eles ficam em `%LOCALAPPDATA%\PonteProj`.
 - **Outra pessoa no mesmo computador:** cada conta do Windows instala o Ponte para si e tem o próprio acervo. Uma conta não vê os dados da outra.
 
@@ -126,7 +126,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Barra lateral (esquerda):** escolhe a área. **Hoje** (Ctrl+1) é a tela em que o Ponte abre; com o acervo vazio, abre em Documentos, na tela inicial com o card **Primeiros passos** ([seção 1](#1-instalar-em-5-minutos)). **Documentos** (Ctrl+2) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+3) é a lista de tarefas. **Atendimentos** (Ctrl+4) é o controle do gabinete. **Modelos** (Ctrl+5) é a área dos modelos de trabalho ([seção 9.5](#95-modelos-de-trabalho)). Um número vermelho em **Hoje** (tarefas atrasadas ou para hoje, mais atendimentos com prazo vencido ou para hoje) e em **Tarefas** (só as tarefas atrasadas ou para hoje) mostra o que pede atenção. Embaixo ficam **Ajustes** e **Ajuda**, que abre o guia curto.
+- **Barra lateral (esquerda):** no alto, **Buscar** (Ctrl+K) procura em todo o acervo (veja **Buscar em todo o acervo**, abaixo). Em seguida, escolhe a área. **Hoje** (Ctrl+1) é a tela em que o Ponte abre; com o acervo vazio, abre em Documentos, na tela inicial com o card **Primeiros passos** ([seção 1](#1-instalar-em-5-minutos)). **Documentos** (Ctrl+2) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+3) é a lista de tarefas. **Atendimentos** (Ctrl+4) é o controle do gabinete. **Modelos** (Ctrl+5) é a área dos modelos de trabalho ([seção 9.5](#95-modelos-de-trabalho)). Um número vermelho em **Hoje** (tarefas atrasadas ou para hoje, mais atendimentos com prazo vencido ou para hoje) e em **Tarefas** (só as tarefas atrasadas ou para hoje) mostra o que pede atenção. Embaixo ficam **Ajustes** e **Ajuda**, que abre o guia curto.
 - **Hoje:** a tela do começo do dia (veja abaixo, em **A área Hoje**).
 - **Documentos:** a lista fica à esquerda e a ficha do documento selecionado, à direita. A lista de documentos existe só nesta área.
 - **Tarefas e Atendimentos abrem com tudo.** Não seguem o documento selecionado em Documentos. Para ver só os de um documento, veja [6.1](#61-a-área-tarefas) e [7.2](#72-ver-só-os-de-um-documento).
@@ -136,6 +136,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | Atalho | O que faz |
 |---|---|
 | **Ctrl+1** a **Ctrl+5** | Ir para Hoje, Documentos, Tarefas, Atendimentos e Modelos |
+| **Ctrl+K** | Abrir a busca em todo o acervo (documentos, tarefas e atendimentos), de qualquer área |
 | **Ctrl+F** | Ir para a busca da área; a partir de outras áreas, para a busca de documentos |
 | **Ctrl+N** | Criar: registro manual (em Hoje e Documentos), nova tarefa do documento selecionado (em Tarefas), nova entrada (em Atendimentos) |
 | **Ctrl+S** | Salvar o que está em edição: tarefa, atendimento, notas do documento, modelo ou configuração de IA. Em Notas e minutas, salva a nota ou, estando a nota já salva, uma nova versão da minuta |
@@ -157,7 +158,7 @@ Na área **Modelos**, **Ctrl+F** (buscar modelo), **Ctrl+N** (**Novo modelo**), 
 | **Cópia de segurança e exportação** | **Fazer cópia agora**, onde as cópias ficam (**Abrir pasta**) e **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) |
 | **Lixeira** | Restaurar itens excluídos e definir o prazo de limpeza |
 | **Aparência** | Tema: *Como o Windows*, *Claro* ou *Escuro*; **Tamanho do texto**: *Normal*, *Grande* ou *Maior* |
-| **Sobre o Ponte** | Versão, **Guia do usuário**, **Autores e licença…** e endereço do projeto |
+| **Sobre o Ponte** | Versão, **Guia do usuário**, **Verificar se há versão nova** ([10.6](#106-o-que-sai-do-computador)), **Autores e licença…** e endereço do projeto |
 
 **A área Hoje.** Reúne, numa tela só, o que pede atenção no dia, sem precisar abrir cada área. Faixas no alto contam as tarefas atrasadas, as tarefas para hoje e os atendimentos com prazo vencido ou para hoje. Abaixo ficam:
 
@@ -167,6 +168,10 @@ Na área **Modelos**, **Ctrl+F** (buscar modelo), **Ctrl+N** (**Novo modelo**), 
 - **Documentos recentes:** os últimos documentos trabalhados; um clique abre a ficha.
 
 Quando nada está atrasado nem para hoje, a tela diz *Nenhuma tarefa atrasada ou para hoje*. Ao concluir uma tarefa por aqui, o aviso do canto inferior direito traz **Desfazer**, por alguns segundos.
+
+**Calendário de prazos.** No alto de Hoje, os botões **Lista** e **Calendário** trocam a visão. O calendário mostra o mês com as tarefas e os atendimentos que têm prazo: vermelho é atraso, âmbar é para hoje, azul está no prazo, e os atendimentos levam um ícone. As setas trocam de mês e **Hoje** volta ao mês atual. Clique num item para abri-lo; clique em "+N", ou num dia com itens, para listar os desse dia sob o calendário (**Fechar** esconde a lista). Tarefas concluídas e atendimentos encerrados não aparecem.
+
+**Buscar em todo o acervo.** **Buscar**, no alto da barra lateral, ou **Ctrl+K**, abre uma caixa de busca sobre qualquer área. Digite pelo menos duas letras: o Ponte procura em documentos (número, assunto, texto, notas e PDFs), tarefas e atendimentos, e agrupa os resultados em **Documentos**, **Tarefas** e **Atendimentos**, com até 8 de cada e uma linha "e mais N" quando há outros. Nas tarefas e nos atendimentos, a busca ignora maiúsculas e acentos. As setas movem o destaque, **Enter** (ou o clique) abre o item, levando à ficha, à tarefa ou ao atendimento, e **Esc** fecha. A busca da própria área (**Ctrl+F**) continua como antes.
 
 **Datas:** todo campo de data aceita digitar `dd/mm/aaaa` ou escolher no calendário, pelo ícone de calendário. O calendário abre o mês, com os dias da semana (D S T Q Q S S), setas ◀ ▶ para trocar de mês, hoje em destaque e os atalhos **Hoje** e **Limpar**. Uma data inválida, como `31/02/2026`, fica marcada em vermelho.
 
@@ -287,7 +292,7 @@ Outras marcas do cartão: **Manual** (registro manual), `📎 N juntado(s)` (o d
 | **Notas e minutas** | **Notas** e **Minuta**. Com a janela larga, as notas ficam à esquerda e a minuta à direita; com a janela estreita, a nota mostra as primeiras linhas, com **Editar nota** (e **Recolher**). A minuta tem três passos. **1. Partir de:** **Tipo**, **Modelo de trabalho** e **Começar por um modelo**. **2. Pedir à IA (opcional):** **Pedido desta minuta** e os botões **Gerar com IA**, **Completar** e **Revisar**. **3. Texto:** o editor, **Salvar nova versão**, **Copiar**, **Exportar (RTF)**, **Comparar com versão ▾** e **Guardar como modelo**. Abaixo ficam as versões salvas, cada uma com **Material utilizado** quando foi gerada com IA. |
 | **Mais** | Vínculos entre documentos (automáticos ou feitos por você); versões importadas, com comparação; o que foi importado e os links encontrados na página; dados técnicos, com as datas escritas como dd/mm/aaaa hh:mm. |
 
-O alto da ficha mostra o número, as etiquetas de situação, a situação de juntada (com **Abrir documento principal**), **Abrir no SIGADOC** e o botão **⋯** (**Mais ações**), à direita, que traz **Excluir…** (o documento vai para a Lixeira).
+O alto da ficha mostra o número, as etiquetas de situação, a situação de juntada (com **Abrir documento principal**), **Abrir no SIGADOC** e o botão **⋯** (**Mais ações**), à direita, que traz **Imprimir ou salvar a ficha…** ([5.7](#57-imprimir-ou-salvar-a-ficha)) e **Excluir…** (o documento vai para a Lixeira).
 
 ### 5.4 Importar de novo o mesmo documento
 
@@ -325,7 +330,7 @@ Em equipe, o número é dado pelo computador principal. Se ele estiver fora de a
 
 ### 5.6 Anexos
 
-Arquivos do seu computador podem ser juntados a um **documento** (Documento ▸ Anexos), a uma **tarefa** (na ficha dela) ou a um **atendimento** (na ficha dele). Tarefa e atendimento precisam estar salvos antes. Clique em **Anexar arquivo…** e escolha o arquivo. Ele passa a fazer parte do acervo, cifrado, e aparece para a equipe.
+Arquivos do seu computador podem ser juntados a um **documento** (Documento ▸ Anexos), a uma **tarefa** (na ficha dela) ou a um **atendimento** (na ficha dele). Tarefa e atendimento precisam estar salvos antes. Clique em **Anexar arquivo…** e escolha o arquivo. Ele passa a fazer parte do acervo, cifrado, e aparece para a equipe. Também dá para **arrastar** arquivos do Explorador de Arquivos do Windows e soltá-los sobre a janela do Ponte, vários de uma vez, desde que haja um único bloco **Anexos** na tela (veja abaixo).
 
 | Regra | Valor |
 |---|---|
@@ -336,7 +341,21 @@ Arquivos do seu computador podem ser juntados a um **documento** (Documento ▸ 
 
 O tipo é conferido também pelo conteúdo, não só pela extensão. Quando um arquivo é recusado, a mensagem diz o motivo e o que fazer, por exemplo: *"O arquivo tem 12,4 MB; o limite é 8 MB. Para reduzir: salve o PDF com compressão… ou divida o documento em partes"*.
 
+**Arrastar e soltar.** Vale o mesmo limite do botão (8 MB por arquivo, 20 por item) e os mesmos tipos aceitos e recusados; cada arquivo é conferido e o aviso resume quantos foram anexados e por que algum foi recusado. **Pastas são recusadas**: solte os arquivos. Se os arquivos passam do limite de 20, os que sobram ficam de fora, com aviso. O Windows não informa em que ponto da janela o arquivo foi solto, então só um bloco **Anexos** na tela pode receber: com dois ou mais blocos **Anexos** visíveis ao mesmo tempo, o Ponte pede para usar **Anexar arquivo…** do bloco desejado.
+
 Cada anexo tem uma **descrição** opcional e os botões **Ler no Ponte** (PDF) ou **Abrir** (demais tipos, no programa padrão do Windows, a partir de uma cópia temporária apagada ao fechar o Ponte) e **Salvar como…**. Para excluir: em documentos e tarefas, **Excluir…** manda para a Lixeira; em atendimentos, **Apagar de vez…** apaga definitivamente, com confirmação, porque atendimentos não têm Lixeira.
+
+### 5.7 Imprimir ou salvar a ficha
+
+Para levar a ficha de um documento para uma reunião, um processo em papel ou um PDF: no alto da ficha, **⋯ ▸ Imprimir ou salvar a ficha…**. O Ponte pergunta onde guardar o arquivo (o nome sugerido é `Ficha ORG-OFI-2026_00431.html`, com o número do documento), cria **uma página** (arquivo `.html`) e a abre no navegador. De lá, imprima com **Ctrl+P** ou escolha **Salvar como PDF** no lugar da impressora.
+
+**A página traz:** número, título, origem e datas; **Dados do documento**; a **Análise** por IA, com o aviso *Análise feita com apoio de IA. Confira na fonte.* (e, se for o caso, o aviso de que ela é anterior às últimas alterações); as **Tarefas** e os **Atendimentos** do documento; a **Nota**, como está na tela; o texto do documento; **Arquivos e anexos** (só a lista, com os tamanhos) e o **Histórico de tramitação**.
+
+**A página não traz:** os arquivos em si (os PDFs importados e os anexos continuam no Ponte) nem a **minuta**.
+
+Se a nota na tela ainda não foi salva, a página sai com o texto que está na tela, e o aviso do Ponte diz que ela não foi salva no Ponte.
+
+**Atenção:** a página salva é uma **cópia fora do acervo protegido**: quem abrir o arquivo lê o conteúdo, sem a proteção da sua conta do Windows. Guarde-a, ou apague-a, com o mesmo cuidado que teria com o próprio documento, e não a deixe em pasta que outras pessoas leem sem necessidade.
 
 ---
 
@@ -738,6 +757,19 @@ Excluir documento, tarefa, anexo ou versão importada pede confirmação e manda
 
 Formato: UTF-8, separador `;`, datas `AAAA-MM-DD` e uma coluna "Mês" para séries mensais. **Não saem** textos de documentos, notas, minutas, observações nem anexos. Os arquivos abrem no Excel e servem de entrada para painéis: marque a coluna `ID` como identificador para reimportar sem duplicar.
 
+### 10.6 O que sai do computador
+
+Por padrão, nada. O que pode sair, e só por escolha sua:
+
+| O quê | Quando | Para onde |
+|---|---|---|
+| Texto do documento, notas e fontes | A cada clique em **Analisar** ou **Gerar com IA**, nas opções de IA em nuvem ([9.1](#91-onde-a-ia-roda)) | Ollama Cloud, o servidor informado ou a OpenAI |
+| O acervo, cifrado com a sua senha | Na pasta compartilhada, ao sincronizar ([8.2](#82-uma-pessoa-dois-computadores-pasta-compartilhada)) | A pasta que você indicou |
+| A página da ficha ([5.7](#57-imprimir-ou-salvar-a-ficha)) | Ao escolher **Imprimir ou salvar a ficha…** | O arquivo `.html` na pasta que você escolheu, **fora do acervo protegido** |
+| Uma consulta à página de versões no GitHub | Só quando você clica em **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** | `github.com/demusis/ponteproj`, sem nenhum dado do acervo |
+
+**Verificar se há versão nova.** O Ponte não procura atualização sozinho: a consulta só acontece nesse clique. Ele pergunta ao GitHub qual é a versão mais recente publicada, sem enviar nada do acervo, compara com a instalada e mostra uma destas respostas: *Você já tem a versão mais recente*, *Há uma versão nova* (com a data de publicação, quando houver) ou um aviso de falha (sem internet, o GitHub não respondeu ou a resposta não pôde ser entendida), com **Tentar de novo**. Se há versão nova, **Abrir a página de download** abre a página da versão no navegador. O Ponte não baixa nem instala nada: **feche o Ponte antes de instalar**; o instalador faz uma cópia de segurança do acervo antes de atualizar ([seção 1](#atualizar-e-desinstalar)).
+
 ---
 
 ## 11. Solução de problemas
@@ -798,7 +830,7 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 Não. Ele só lê a página que você abriu. Assinar, tramitar e despachar continuam no SIGADOC.
 
 **Preciso de internet?**
-Só para acessar o SIGADOC e, se quiser, para a IA em nuvem ou a pasta compartilhada. O aplicativo em si funciona sem internet.
+Só para acessar o SIGADOC e, se quiser, para a IA em nuvem, a pasta compartilhada ou **Verificar se há versão nova** (só quando você clica; veja [10.6](#106-o-que-sai-do-computador)). O aplicativo em si funciona sem internet.
 
 **Posso usar em dois computadores?**
 Sim, pelo modo pasta compartilhada ([8.2](#82-uma-pessoa-dois-computadores-pasta-compartilhada)). Copiar o arquivo do acervo de um para o outro não funciona.
@@ -822,7 +854,7 @@ Ajustes ▸ Lixeira ▸ **Restaurar**. Por padrão a Lixeira nunca é esvaziada.
 O arquivo da pasta não pode ser aberto sem ela. O acervo de cada computador continua intacto: escolha uma pasta nova, crie outra senha e sincronize de novo a partir do computador mais atualizado.
 
 **Onde vejo a versão instalada?**
-Em **Ajustes ▸ Sobre o Ponte**, ou no ícone da extensão.
+Em **Ajustes ▸ Sobre o Ponte**, ou no ícone da extensão. Lá também está **Verificar se há versão nova**.
 
 ---
 
@@ -854,7 +886,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/files.rs`, `src/pdf_reader.rs` | PDFs importados; leitor e OCR do Windows |
 | `src/dossier.rs` | Vínculos entre documentos, versões importadas, detecção de juntada |
 | `src/manual.rs` | Registros manuais |
-| `src/attachments.rs` | Anexos de documentos, tarefas e atendimentos |
+| `src/attachments.rs` | Anexos de documentos, tarefas e atendimentos, inclusive os arquivos arrastados do Explorador |
 | `src/tasks.rs`, `src/tasks_ui.rs` | Tarefas, dependências, painel |
 | `src/saiop.rs` | Atendimentos: modelo, importador `.xlsx` (leitor ZIP/XML próprio), painel |
 | `src/trash.rs` | Lixeira, restauração e limpeza por prazo |
@@ -873,6 +905,9 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/imap.rs` | Cliente IMAP mínimo sobre TLS (`rustls`, raízes Mozilla): LIST, EXAMINE, UID SEARCH, UID FETCH com literais, só leitura; contas seladas só neste computador; nomes de pasta em UTF-7 modificado |
 | `src/mail_ui.rs` | Contas, pasta e filtro, lista das mensagens e importação das marcadas: dentro de Ajustes ▸ E-mail e na janela "Importar do e-mail" (atalho de Documentos ▸ Novo) |
 | `src/export.rs` | Exportação CSV |
+| `src/app/search.rs` | Busca em todo o acervo (Ctrl+K): documentos, tarefas e atendimentos, com resultados agrupados e teclado |
+| `src/ficha_export.rs` | A ficha como página `.html` única, para imprimir ou salvar em PDF (**Imprimir ou salvar a ficha…**) |
+| `src/update_check.rs` | **Verificar se há versão nova**: consulta, só a pedido, a última versão publicada no GitHub; não envia dados do acervo, não baixa nem instala |
 | `src/guide.rs` | Guia do usuário: `GUIA_DO_USUARIO.md` embutido e convertido em página para o navegador |
 | `src/windows_ui.rs`, `src/paths.rs` | Seletores de arquivo, verificação do registro do host, pastas de dados |
 | `src/icon.rs`, `build.rs`, `assets/` | Ícone da janela e do executável |
@@ -933,7 +968,7 @@ node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tes
 
 Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
-Hoje são 159 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
+Hoje são 184 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 

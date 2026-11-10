@@ -181,7 +181,9 @@ fn parse_version(text: &str) -> Result<(u64, u64, u64)> {
 /// the fixed releases page.
 pub fn safe_release_url(url: &str) -> String {
     let ok = url.starts_with(RELEASES_PREFIX)
-        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+        && url[RELEASES_PREFIX.len()..]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
         && !url[RELEASES_PREFIX.len()..].contains("..");
     if ok {
         url.to_owned()
@@ -301,6 +303,8 @@ mod tests {
             "https://github.com/outro/ponteproj/releases/tag/v1",
             "https://github.com.evil.example/demusis/ponteproj/releases/x",
             "https://github.com/demusis/ponteproj/releases/../../x",
+            "https://github.com/demusis/ponteproj/releases/%2e%2e/%2e%2e/outro/repo",
+            "https://github.com/demusis/ponteproj/releases/tag/v1?x=1",
             "https://github.com/demusis/ponteproj/releases/a b",
             "javascript:alert(1)",
             "",

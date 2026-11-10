@@ -614,6 +614,7 @@ fn calendar_view(
         .data(|d| d.get_temp::<String>(day_id()))
         .unwrap_or_default();
 
+    let shown = (year, month);
     ui.horizontal(|ui| {
         if widgets::icon_button(ui, icon::LEFT, "Mês anterior").clicked() {
             (year, month) = shift_month((year, month), -1);
@@ -636,6 +637,10 @@ fn calendar_view(
     });
     ui.add_space(S1);
 
+    if (year, month) != shown {
+        // The day list belongs to the month that was on show.
+        selected.clear();
+    }
     let weeks = month_weeks(year, month);
     let by_day = items_by_day(&data.dated_tasks, &data.dated_attendances, &today_iso);
     let width = ui.available_width();

@@ -760,7 +760,7 @@ fn drop_target(blocks: usize) -> DropTarget {
 }
 
 #[cfg(feature = "desktop")]
-const AMBIGUOUS_DROP: &str = "Solte o arquivo usando o botão Anexar arquivo… do bloco desejado.";
+const AMBIGUOUS_DROP: &str = "Para anexar, use o botão Anexar arquivo… do bloco desejado.";
 #[cfg(feature = "desktop")]
 const FOLDER_REFUSAL: &str = "Pastas não podem ser anexadas; solte os arquivos.";
 
@@ -869,7 +869,9 @@ impl AttachmentsPanel {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
-        let cannot_receive = if busy {
+        let cannot_receive = if !ui.is_enabled() {
+            Some("Responda à pergunta aberta antes de anexar.")
+        } else if busy {
             Some("Aguarde a operação em andamento.")
         } else if full {
             Some("Limite de anexos atingido. Exclua um anexo para abrir espaço.")

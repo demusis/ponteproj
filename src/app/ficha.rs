@@ -1624,6 +1624,7 @@ impl PonteApp {
                 .cloned()
                 .unwrap_or_default(),
             imported_at: detail.capture.captured_at.clone(),
+            manual: detail.summary.manual,
             priority: detail.summary.priority.clone(),
             task_status: task_status.to_owned(),
             generated_at: chrono::Local::now().format("%d/%m/%Y %H:%M").to_string(),
@@ -1698,13 +1699,28 @@ impl PonteApp {
             "Ficha {}.html",
             crate::attachments::sanitize_file_name(&detail.summary.document_number)
         );
-        let Some(path) = crate::windows_ui::save_file(
+        let Some(mut path) = crate::windows_ui::save_file(
             "Salvar a ficha",
             &suggested,
             &[("Página da web", "*.html")],
         ) else {
             return;
         };
+        // The page is always a web page: with another ending Windows could
+        // open it with something else, or run it.
+        let is_page = path.extension().is_some_and(|ending| {
+            ending.eq_ignore_ascii_case("html") || ending.eq_ignore_ascii_case("htm")
+        });
+        if !is_page {
+            path.as_mut_os_string().push(".html");
+            if path.exists() {
+                self.error(format!(
+                    "Já existe um arquivo chamado {}. Escolha outro nome.",
+                    path.display()
+                ));
+                return;
+            }
+        }
         if let Err(error) = std::fs::write(&path, crate::ficha_export::html(&page)) {
             self.error(format!("Não foi possível salvar a ficha: {error}"));
             return;

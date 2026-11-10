@@ -78,6 +78,8 @@ pub struct FichaPage {
     pub document_date: String,
     /// Import time (RFC 3339).
     pub imported_at: String,
+    /// Typed in the Ponte, not imported.
+    pub manual: bool,
     /// Priority key, or empty.
     pub priority: String,
     /// Task situation of the document in words, or empty.
@@ -176,7 +178,12 @@ pub fn html(page: &FichaPage) -> String {
     }
     if !page.imported_at.trim().is_empty() {
         dates.push(format!(
-            "Importado em: {}",
+            "{}: {}",
+            if page.manual {
+                "Registrado em"
+            } else {
+                "Importado em"
+            },
             esc(&labels::datetime(&page.imported_at))
         ));
     }
@@ -390,6 +397,7 @@ mod tests {
             origin_line: "Importado do SIGADOC · importação nº 2".into(),
             document_date: "2026-03-10".into(),
             imported_at: "2026-03-12T14:30:00-04:00".into(),
+            manual: false,
             priority: "alta".into(),
             task_status: "1 pendente".into(),
             generated_at: "10/11/2026 09:15".into(),
