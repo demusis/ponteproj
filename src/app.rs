@@ -1537,7 +1537,8 @@ impl PonteApp {
                 widgets::card(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = S2;
                     widgets::section(ui, "Algo que não está no SIGADOC?");
-                    ui.add(egui::Label::new("Uma ligação, um memorando, um e-mail ou um papel podem virar um registro manual, marcado como tal e com tarefas, notas e anexos como qualquer documento.").wrap());
+                    ui.add(egui::Label::new("Uma ligação, um memorando ou um papel podem virar um registro manual, marcado como tal e com tarefas, notas e anexos como qualquer documento.").wrap());
+                    ui.add(egui::Label::new("E-mails entram prontos, com os anexos: direto da sua conta de e-mail (o Ponte lista as mensagens e importa as que você marcar, sem alterar nada na conta) ou de um arquivo .eml salvo.").wrap());
                     ui.horizontal_wrapped(|ui| {
                         if ui
                             .add(widgets::primary(format!("{} Criar registro manual…", icon::PLUS)))
@@ -1546,7 +1547,21 @@ impl PonteApp {
                             self.manual_form.open_new();
                         }
                         if ui
-                            .add(widgets::secondary(format!("{} Importar e-mail de um arquivo (.eml)…", icon::MAIL)))
+                            .add(widgets::secondary(format!("{} Importar da conta de e-mail…", icon::MAIL)))
+                            .on_hover_text("Lista as mensagens da sua conta de e-mail (Gmail com senha de app, por exemplo) para marcar e importar. Só leitura: nada é marcado, movido ou apagado na conta. Na primeira vez, o Ponte pede os dados da conta; depois, eles ficam em Ajustes ▸ E-mail.")
+                            .clicked()
+                        {
+                            let busy = match &self.worker {
+                                None => crate::mail_ui::MailBusy::Free,
+                                Some(worker) if worker.kind == WorkKind::Mail => {
+                                    crate::mail_ui::MailBusy::Mail
+                                }
+                                Some(_) => crate::mail_ui::MailBusy::Other,
+                            };
+                            self.mail.open_quick(&self.store, busy);
+                        }
+                        if ui
+                            .add(widgets::secondary("Importar e-mail de um arquivo (.eml)…"))
                             .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro do tipo E-mail recebido (número EMAIL-ano/sequência), com os anexos. Nada é lido da sua conta de e-mail.")
                             .clicked()
                         {
@@ -3289,7 +3304,7 @@ impl PonteApp {
                 let mut import_eml = false;
                 Self::settings_card(
                     ui,
-                    "As contas ficam guardadas no acervo deste computador. O Ponte só lê a caixa de e-mail: nada é marcado como lido, movido ou apagado na conta.",
+                    "O Ponte se conecta à sua conta de e-mail (IMAP), lista as mensagens de uma pasta e importa as que você marcar, com os anexos, como registros do tipo E-mail recebido. Para cadastrar uma conta, informe o servidor de e-mail, o usuário e a senha; no Gmail, use uma senha de app. As contas ficam guardadas no acervo deste computador. O Ponte só lê a caixa de e-mail: nada é marcado como lido, movido ou apagado na conta.",
                     |ui| {
                         open_mail = ui
                             .add(primary(format!("{} Contas e importação", icon::MAIL)))
