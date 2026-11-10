@@ -2353,9 +2353,14 @@ impl PonteApp {
                     self.mail.accept_imports(outcomes);
                     if imported > 0 {
                         self.refresh();
-                        if let Some(id) = last_document {
-                            // Through the guard: an unsaved task is never hidden.
-                            self.navigate(Leave::Select(id));
+                        // From Ajustes ▸ E-mail the person stays there, where the
+                        // result of each message is listed; from the quick window
+                        // the imported document opens.
+                        if self.area != Area::Settings {
+                            if let Some(id) = last_document {
+                                // Through the guard: an unsaved task is never hidden.
+                                self.navigate(Leave::Select(id));
+                            }
                         }
                         self.message(if imported == 1 {
                             "1 mensagem importada como e-mail.".to_owned()
@@ -2679,7 +2684,7 @@ impl PonteApp {
                 self.about_open = false;
             } else if self.consult.is_some() {
                 self.consult = None;
-            } else if self.manual_form.open || self.mail.open {
+            } else if self.manual_form.open || self.mail.is_window_open() {
                 // Their own buttons close them (they may hold unsaved work).
             } else {
                 match self.area {

@@ -6417,7 +6417,8 @@ impl IntranetPanel {
                                     url,
                                     false,
                                     format!(
-                                        "Não foi possível conectar: {e}. Confira se o computador principal está ligado com o Ponte aberto, se o endereço e a chave estão certos e se os dois computadores estão na mesma rede."
+                                        "Não foi possível conectar: {}. Confira se o computador principal está ligado com o Ponte aberto, se o endereço e a chave estão certos e se os dois computadores estão na mesma rede.",
+                                        e.to_string().trim_end_matches('.')
                                     ),
                                 ));
                             }

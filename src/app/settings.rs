@@ -202,7 +202,8 @@ impl PonteApp {
                 let mut backup = false;
                 let mut export = false;
                 let mut copy_backup = false;
-                let folder = crate::paths::data_dir().ok().map(|dir| dir.join("backups"));
+                // Beside the library file; nothing is created or looked up on disk here.
+                let folder = self.db_path.parent().map(|dir| dir.join("backups"));
                 let last_copy = self
                     .backup_path
                     .as_ref()

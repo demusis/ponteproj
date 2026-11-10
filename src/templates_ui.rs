@@ -412,10 +412,8 @@ impl TemplatesPanel {
         } else if self.template_dirty() {
             self.save_template(store);
             true
-        } else if self.block_dirty() {
-            self.save_block(store);
-            true
         } else {
+            // An instruction edited on another tab is saved there, in view.
             false
         }
     }

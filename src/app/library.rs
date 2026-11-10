@@ -627,11 +627,13 @@ impl PonteApp {
     /// and the other ways to bring a document in.
     pub(super) fn welcome(&mut self, ui: &mut egui::Ui) {
         let status = self.install_status();
+        // The whole library (memoized), not the list narrowed by the search.
+        let all_documents = self.store.list_documents("").unwrap_or_default();
         let inputs = FirstSteps {
             bridge_ok: status.browser_bridge_ok(),
-            has_sigadoc_document: self.documents.iter().any(|d| !d.manual),
+            has_sigadoc_document: all_documents.iter().any(|d| !d.manual),
         };
-        let library_empty = self.documents.is_empty();
+        let library_empty = all_documents.is_empty();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {

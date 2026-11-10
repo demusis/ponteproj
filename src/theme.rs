@@ -415,6 +415,9 @@ pub fn install(ctx: &egui::Context, appearance: Appearance) {
     ctx.style_mut_of(Theme::Light, |style| style_for(style, &LIGHT, false));
     ctx.style_mut_of(Theme::Dark, |style| style_for(style, &DARK, true));
     set_appearance(ctx, appearance);
+    // The size of everything is the setting in Ajustes ▸ Aparência; egui's own
+    // Ctrl +/- zoom would change it without the setting knowing.
+    ctx.options_mut(|options| options.zoom_with_keyboard = false);
 }
 
 pub fn set_appearance(ctx: &egui::Context, appearance: Appearance) {

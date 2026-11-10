@@ -1517,24 +1517,24 @@ impl PonteApp {
     /// "Salvar nova versão" is enabled. True when it saved or tried to.
     #[allow(dead_code)] // wired by the shortcut handler in app.rs
     pub(super) fn key_save_ficha(&mut self) -> bool {
-        if self.tab != Tab::Notes {
-            return false;
-        }
         let Some(id) = self.selected_id else {
             return false;
         };
         let Some(editor) = self.editors.get(&id) else {
             return false;
         };
-        if editor.note_dirty() {
+        // The note is saved from any tab; on Notas e minutas the text of the
+        // minuta goes too, so one Ctrl+S leaves nothing unsaved in view.
+        let note = editor.note_dirty();
+        let draft =
+            self.tab == Tab::Notes && editor.draft_dirty() && !editor.body.trim().is_empty();
+        if note {
             self.save_note(id);
-            true
-        } else if editor.draft_dirty() && !editor.body.trim().is_empty() {
-            self.save_draft(id);
-            true
-        } else {
-            false
         }
+        if draft {
+            self.save_draft(id);
+        }
+        note || draft
     }
 
     /// The notes card. `compact` (narrow tab) shows the first lines of the
