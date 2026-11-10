@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -18,14 +20,42 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
 
+    // The release key lives outside the project, in the owner's profile
+    // (`~/.ponte-assinatura/assinatura.properties`, or the file named by
+    // PONTE_ASSINATURA): the key file, the file holding its password and the
+    // alias. Neither the key nor the password is ever in the repository.
+    // Where that folder does not exist (another machine, the checks on
+    // GitHub), the build falls back to the debug key and says so.
+    val signingFile = file(
+        System.getenv("PONTE_ASSINATURA")
+            ?: (System.getProperty("user.home") + "/.ponte-assinatura/assinatura.properties")
+    )
+    val ownKey = signingFile.isFile
+    signingConfigs {
+        if (ownKey) {
+            create("ponte") {
+                val props = Properties().apply { signingFile.inputStream().use { load(it) } }
+                val secret = file(props.getProperty("storePasswordFile")).readText().trim()
+                storeFile = file(props.getProperty("storeFile"))
+                storeType = "PKCS12"
+                storePassword = secret
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = secret
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // Shrunk and optimized, but signed with the same (debug) key as the earlier
-            // versions, so it installs over them without losing the local library.
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (ownKey) {
+                signingConfigs.getByName("ponte")
+            } else {
+                logger.warn("Ponte de bolso: chave própria não encontrada; APK assinado com a chave de depuração.")
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
