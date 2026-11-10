@@ -42,6 +42,8 @@ Os dados ficam só na sua conta do Windows, cifrados. Outra conta no mesmo compu
 2. No canto inferior direito da página, clique em **Importar para o assistente**.
 3. A mensagem *Importado* aparece e o Ponte abre o documento.
 
+O painel avisa antes do clique: **Já está no Ponte — importado em…** (com **Abrir no Ponte** e o botão **Importar de novo**) ou **Ainda não está no Ponte**. Se o Ponte não responde, o aviso aparece ali mesmo, com **Tentar de novo**. O atalho **Alt+Shift+I** faz o mesmo que o botão (pode ser trocado em chrome://extensions/shortcuts). Com o Ponte já aberto, a importação traz a janela existente para a frente, no documento; não abre outra.
+
 Na primeira importação o Ponte cria três coisas: o **documento**, uma **tarefa de triagem** e um **atendimento** "Em análise".
 
 **Importar de novo** nunca duplica. Se o documento não mudou, nada é gravado e a extensão avisa em laranja. Se mudou (despacho novo, anexo novo), o Ponte guarda uma **nova versão** e mantém as anteriores em **Mais ▸ Versões importadas**.
