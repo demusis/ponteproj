@@ -542,8 +542,15 @@ impl Store {
     }
 
     /// Number of active attachments per owner id of one kind ("document",
-    /// "task" or "saiop"), for badges in lists.
+    /// "task" or "saiop"), for badges in lists. The lists ask on every frame,
+    /// so the answer is memoized until the library changes.
     pub fn attachment_counts(&self, owner_kind: &str) -> Result<BTreeMap<i64, usize>> {
+        self.cached(&format!("attachment_counts\u{1}{owner_kind}"), || {
+            self.attachment_counts_uncached(owner_kind)
+        })
+    }
+
+    fn attachment_counts_uncached(&self, owner_kind: &str) -> Result<BTreeMap<i64, usize>> {
         let mut statement = self.conn.prepare(
             "SELECT a.owner_id, count(*) FROM attachments a
              WHERE a.owner_kind=?1

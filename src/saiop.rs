@@ -2826,7 +2826,7 @@ impl SaiopQueue {
 
 #[cfg(feature = "desktop")]
 /// Sortable columns of the grid.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SaiopSort {
     Reference,
     Subject,
@@ -2848,8 +2848,21 @@ impl SaiopSort {
             Self::Entry => "Entrada",
             Self::Status => "Situação",
             Self::Due => "Prazo",
-            Self::Age => "Idade / Espera",
+            Self::Age => "Tempo",
             Self::Destination => "Destino / Saída",
+        }
+    }
+    /// Width the column asks for (the subject: its minimum).
+    fn width(self) -> f32 {
+        match self {
+            Self::Reference => 175.0,
+            Self::Subject => 170.0,
+            Self::Assignee => 120.0,
+            Self::Entry => 90.0,
+            Self::Status => 180.0,
+            Self::Due => 140.0,
+            Self::Age => 110.0,
+            Self::Destination => 150.0,
         }
     }
     /// A key that sorts naturally for this column.
@@ -2882,6 +2895,66 @@ impl SaiopSort {
 }
 
 #[cfg(feature = "desktop")]
+/// What the two numbers of the "Tempo" column mean.
+const TIME_HELP: &str = "Dias desde a entrada • dias fora do setor, aguardando resposta";
+
+#[cfg(feature = "desktop")]
+/// The columns of the table for the width it has, in display order, with the
+/// width each asks for (the subject's is its minimum: it takes what is left).
+/// Referência, Assunto, Situação and Prazo always show; then, as room allows,
+/// Responsável, Entrada, Tempo and Destino / Saída, in this order.
+fn visible_columns(width: f32) -> Vec<(SaiopSort, f32)> {
+    let mut shown = vec![
+        SaiopSort::Reference,
+        SaiopSort::Subject,
+        SaiopSort::Status,
+        SaiopSort::Due,
+    ];
+    let mut used: f32 = shown.iter().map(|c| c.width()).sum();
+    for extra in [
+        SaiopSort::Assignee,
+        SaiopSort::Entry,
+        SaiopSort::Age,
+        SaiopSort::Destination,
+    ] {
+        if used + extra.width() > width {
+            break;
+        }
+        used += extra.width();
+        shown.push(extra);
+    }
+    [
+        SaiopSort::Reference,
+        SaiopSort::Subject,
+        SaiopSort::Assignee,
+        SaiopSort::Entry,
+        SaiopSort::Status,
+        SaiopSort::Due,
+        SaiopSort::Age,
+        SaiopSort::Destination,
+    ]
+    .into_iter()
+    .filter(|c| shown.contains(c))
+    .map(|c| (c, c.width()))
+    .collect()
+}
+
+#[cfg(feature = "desktop")]
+/// What an empty table has to say (see `SaiopPanel::table`).
+struct EmptyCtx {
+    /// Atendimentos in the whole library.
+    total: usize,
+    /// Number of the document the list is narrowed to, when it is.
+    document: Option<(i64, String)>,
+    /// Atendimentos of that document.
+    in_document: usize,
+    /// The search text, trimmed.
+    query: String,
+    /// The other active filters, named for the person.
+    active: Vec<String>,
+}
+
+#[cfg(feature = "desktop")]
 pub struct SaiopPanel {
     query: String,
     assignee_filter: String,
@@ -2908,13 +2981,16 @@ pub struct SaiopPanel {
     new_event_note: String,
     message: String,
     error: bool,
-    /// Document selected in the library, when there is one: the list follows
-    /// it (like the Tarefas panel) and new entries are linked to it.
+    /// Document selected in the library, when there is one: new entries are
+    /// linked to it and the person may narrow the list to it.
     context_document: Option<(i64, String)>,
+    /// The list is narrowed to this document's atendimentos, only when the
+    /// person asked (never inherited from the library).
     document_filter: Option<i64>,
-    /// The person asked for every atendimento; selecting another document
-    /// in the library narrows the list again.
-    show_all_documents: bool,
+    /// The next frame gives the keyboard focus to the search box.
+    focus_search: bool,
+    /// The next frame gives the keyboard focus to the ficha's first field.
+    focus_ficha: bool,
     /// "Anexos" block of the atendimento being edited.
     attachments: crate::attachments::AttachmentsPanel,
     /// "Excluir…" was clicked for this atendimento; waiting for confirmation.
@@ -2954,7 +3030,8 @@ impl Default for SaiopPanel {
             error: false,
             context_document: None,
             document_filter: None,
-            show_all_documents: false,
+            focus_search: false,
+            focus_ficha: false,
             attachments: Default::default(),
             confirm_delete: None,
             open_task: None,
@@ -2975,16 +3052,141 @@ impl SaiopPanel {
     }
 
     /// Tells the panel which document the library has open (id and number).
-    /// Called by the app before `show`.
+    /// Called by the app before `show`. It only pre-links a new entry and
+    /// offers "Só os de …": the list is never narrowed by it.
     pub fn set_context_document(&mut self, document: Option<(i64, String)>) {
-        let changed = document.as_ref().map(|d| d.0) != self.context_document.as_ref().map(|d| d.0);
-        if changed {
-            self.show_all_documents = false;
-        }
-        if !self.show_all_documents {
-            self.document_filter = document.as_ref().map(|d| d.0);
-        }
         self.context_document = document;
+    }
+
+    /// Shows every atendimento again (ends the narrowing to one document).
+    pub fn clear_document_filter(&mut self) {
+        self.document_filter = None;
+    }
+
+    /// Escape: closes the import window when it is idle, else the ficha when
+    /// it has no unsaved changes. True when it did something or when
+    /// something is open that could not be closed.
+    pub fn key_escape(&mut self) -> bool {
+        if self.import_open {
+            if self.import_preview.is_none() && self.pending_undo.is_none() {
+                self.import_open = false;
+            }
+            return true;
+        }
+        if self.editor.is_some() {
+            if !self.dirty() {
+                self.close_ficha();
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Ctrl+S: with a ficha open and unsaved, what "Salvar" does. True when
+    /// a save was attempted.
+    pub fn key_save(&mut self, store: &mut Store) -> bool {
+        let unsaved = self.editor.as_ref().is_some_and(|e| e.id == 0) || self.dirty();
+        if self.editor.is_none() || !unsaved {
+            return false;
+        }
+        self.save_current(store);
+        true
+    }
+
+    /// Ctrl+F: the next frame puts the keyboard in the search box.
+    pub fn key_find(&mut self) {
+        self.focus_search = true;
+    }
+
+    /// Ctrl+N: what "Nova entrada" does. True when handled.
+    pub fn key_new(&mut self, store: &Store) -> bool {
+        self.new_entry(store, self.context_document.clone());
+        true
+    }
+
+    /// The atendimento in the ficha, when it is saved.
+    pub fn open_attendance_id(&self) -> Option<i64> {
+        self.editor.as_ref().filter(|e| e.id > 0).map(|e| e.id)
+    }
+
+    fn close_ficha(&mut self) {
+        self.confirm_delete = None;
+        self.editor = None;
+        self.saved_snapshot = None;
+        self.selected_id = None;
+        self.focus_ficha = false;
+    }
+
+    /// "Nova entrada": a blank ficha, linked to `document` when given.
+    fn new_entry(&mut self, store: &Store, document: Option<(i64, String)>) {
+        if self.dirty() {
+            self.set_notice(
+                "Salve ou descarte o atendimento em edição antes de iniciar outro.",
+                true,
+            );
+            return;
+        }
+        let mut fresh = SaiopAttendance::new_manual();
+        if let Ok(cfg) = store.load_intranet_config() {
+            fresh.assignee = cfg.member_name;
+        }
+        // With a document, the new entry is a passage of that document:
+        // linked, with its number ("Desligar" undoes it).
+        if let Some((id, number)) = document {
+            fresh.document_id = Some(id);
+            fresh.reference_norm = normalize_reference(&number);
+            fresh.reference_raw = number;
+        }
+        self.load_into_editor(store, fresh);
+    }
+
+    /// Clears the search, the filters and the queue (not the narrowing to a
+    /// document: that has its own "Ver todos").
+    fn clear_filters(&mut self) {
+        self.query.clear();
+        self.assignee_filter.clear();
+        self.origin_filter.clear();
+        self.dest_filter.clear();
+        self.status_filter.clear();
+        self.queue = SaiopQueue::All;
+    }
+
+    /// The setting "Criar atendimento ao importar do SIGADOC", for Ajustes.
+    /// Saves on change.
+    pub fn auto_attendance_setting(ui: &mut egui::Ui, store: &mut Store) {
+        // On a connected computer the import is recorded by the main one,
+        // with its own setting: the box would have no effect here.
+        let on_client = store
+            .load_intranet_config()
+            .is_ok_and(|cfg| cfg.mode == crate::intranet::IntranetMode::Client);
+        let mut auto = store.auto_attendance_enabled().unwrap_or(true);
+        let response = ui.add_enabled(
+            !on_client,
+            egui::Checkbox::new(
+                &mut auto,
+                RichText::new("Criar atendimento ao importar do SIGADOC")
+                    .size(theme::SIZE_SMALL)
+                    .color(c().muted),
+            ),
+        );
+        let response = if on_client {
+            response.on_disabled_hover_text("Definido no computador principal: é ele que registra as importações da equipe. Sem conexão, a cópia local segue a configuração daqui até a próxima sincronização.")
+        } else {
+            response.on_hover_text("Na primeira importação de cada documento do SIGADOC, registra aqui a entrada dele no gabinete: referência, assunto, data, responsável e ligação ao documento. Documentos juntados a outro não entram. Você pode editar ou excluir o atendimento depois.")
+        };
+        let error_id = ui.make_persistent_id("saiop-auto-attendance-error");
+        if response.changed() {
+            let message = match store.set_auto_attendance(auto) {
+                Ok(()) => String::new(),
+                Err(e) => format!("Não foi possível salvar a preferência: {e}"),
+            };
+            ui.data_mut(|d| d.insert_temp(error_id, message));
+        }
+        let error: String = ui.data(|d| d.get_temp(error_id)).unwrap_or_default();
+        if !error.is_empty() {
+            let (fg, _) = Tone::Danger.colors();
+            ui.label(RichText::new(error).size(theme::SIZE_SMALL).color(fg));
+        }
     }
 
     fn set_notice(&mut self, msg: impl Into<String>, error: bool) {
@@ -3016,6 +3218,7 @@ impl SaiopPanel {
         self.selected_id = if att.id > 0 { Some(att.id) } else { None };
         self.saved_snapshot = Some(att.clone());
         self.editor = Some(att);
+        self.focus_ficha = true;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, store: &mut Store) -> Option<i64> {
@@ -3024,9 +3227,10 @@ impl SaiopPanel {
         let all_items = match store.list_saiop_attendances() {
             Ok(list) => list,
             Err(e) => {
-                widgets::muted(
+                notice_line(
                     ui,
-                    format!("Não foi possível carregar os atendimentos: {e}"),
+                    &format!("Não foi possível carregar os atendimentos: {e}"),
+                    Tone::Danger,
                 );
                 return None;
             }
@@ -3077,26 +3281,9 @@ impl SaiopPanel {
                     .on_hover_text("Registra um atendimento novo. Com um documento aberto, o atendimento já vem ligado a ele.")
                     .clicked()
                 {
-                    if self.dirty() {
-                        self.set_notice(
-                            "Salve ou descarte o atendimento em edição antes de iniciar outro.",
-                            true,
-                        );
-                    } else {
-                        let mut fresh = SaiopAttendance::new_manual();
-                        if let Ok(cfg) = store.load_intranet_config() {
-                            fresh.assignee = cfg.member_name;
-                        }
-                        // With a document open in the library, the new entry is a
-                        // passage of that document: linked, with its number
-                        // (whatever the list filter; "Desligar" undoes it).
-                        if let Some((id, number)) = self.context_document.clone() {
-                            fresh.document_id = Some(id);
-                            fresh.reference_norm = normalize_reference(&number);
-                            fresh.reference_raw = number;
-                        }
-                        self.load_into_editor(store, fresh);
-                    }
+                    // With a document open in the library, the new entry is a
+                    // passage of that document (whatever the list filter).
+                    self.new_entry(store, self.context_document.clone());
                 }
                 if ui
                     .add(widgets::secondary("Importar planilha"))
@@ -3268,50 +3455,41 @@ impl SaiopPanel {
                 );
                 reserve += 130.0;
             }
-            if self.context_document.is_some() {
-                reserve += 330.0;
-            }
-            let clearable = advanced_active || !self.query.is_empty() || self.queue != SaiopQueue::All;
+            let clearable =
+                advanced_active || !self.query.is_empty() || self.queue != SaiopQueue::All;
             if clearable {
                 reserve += 70.0;
             }
             let width = (ui.available_width() - reserve).max(160.0);
-            widgets::search(ui, &mut self.query, "Buscar referência, assunto ou observação", width);
+            let search = widgets::search(
+                ui,
+                &mut self.query,
+                "Buscar referência, assunto ou observação",
+                width,
+            );
+            if self.focus_search {
+                self.focus_search = false;
+                search.request_focus();
+            }
             if widgets::chip(
                 ui,
                 self.filters_open || advanced_active,
                 format!(
                     "{} Filtros {}",
                     icon::FILTER,
-                    if self.filters_open { icon::UP } else { icon::DOWN }
+                    if self.filters_open {
+                        icon::UP
+                    } else {
+                        icon::DOWN
+                    }
                 ),
             )
             .clicked()
             {
                 self.filters_open = !self.filters_open;
             }
-            if let Some((context_id, context_number)) = self.context_document.clone() {
-                let only = self.document_filter == Some(context_id);
-                if widgets::chip(ui, only, format!("Só {context_number}"))
-                    .on_hover_text("A lista mostra só os atendimentos do documento aberto. Uma nova entrada já vem ligada a ele.")
-                    .clicked()
-                    && !only
-                {
-                    self.document_filter = Some(context_id);
-                    self.show_all_documents = false;
-                }
-                if widgets::chip(ui, !only, "Todos os atendimentos").clicked() && only {
-                    self.document_filter = None;
-                    self.show_all_documents = true;
-                }
-            }
             if clearable && ui.add(widgets::quiet("Limpar")).clicked() {
-                self.query.clear();
-                self.assignee_filter.clear();
-                self.origin_filter.clear();
-                self.dest_filter.clear();
-                self.status_filter.clear();
-                self.queue = SaiopQueue::All;
+                self.clear_filters();
             }
         });
         if self.filters_open || advanced_active {
@@ -3364,7 +3542,64 @@ impl SaiopPanel {
                         );
                     });
                 });
+                // Offered, never imposed: the document open in the library.
+                if let (Some((context_id, context_number)), None) =
+                    (self.context_document.clone(), self.document_filter)
+                {
+                    ui.add_space(S1);
+                    if ui
+                        .add(widgets::quiet(format!("Só os de {context_number}")))
+                        .on_hover_text(
+                            "Mostra só os atendimentos do documento aberto em Documentos.",
+                        )
+                        .clicked()
+                    {
+                        self.document_filter = Some(context_id);
+                    }
+                }
             });
+        }
+
+        // The list is narrowed to one document: said plainly, with the way out.
+        if let Some(document) = self.document_filter {
+            let number = all_items
+                .iter()
+                .find(|a| a.document_id == Some(document) && !a.reference_raw.is_empty())
+                .map(|a| a.reference_raw.clone())
+                .or_else(|| {
+                    self.context_document
+                        .as_ref()
+                        .filter(|d| d.0 == document)
+                        .map(|d| d.1.clone())
+                });
+            let p = c();
+            egui::Frame::new()
+                .fill(p.primary_soft)
+                .stroke(egui::Stroke::new(1.0, p.primary))
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let text = match &number {
+                            Some(n) => format!("Mostrando só os atendimentos de {n}"),
+                            None => "Mostrando só os atendimentos de um documento".to_owned(),
+                        };
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(text)
+                                    .font(theme::font_strong(theme::SIZE_BODY))
+                                    .color(p.primary),
+                            )
+                            .truncate(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(widgets::quiet("Ver todos")).clicked() {
+                                self.clear_document_filter();
+                            }
+                        });
+                    });
+                });
         }
 
         let q_norm = self.query.trim().to_lowercase();
@@ -3409,16 +3644,69 @@ impl SaiopPanel {
                 in_queue(att, self.queue)
             })
             .collect();
-        let sort = self.sort;
+        // The columns depend on the room the table has; a sorted column that
+        // is hidden falls back to "Entrada" (without forgetting the choice).
+        let columns = visible_columns(ui.available_width() - 12.0);
+        let (sort, ascending) = if columns.iter().any(|(col, _)| *col == self.sort) {
+            (self.sort, self.sort_ascending)
+        } else {
+            (SaiopSort::Entry, false)
+        };
         filtered.sort_by_cached_key(|att| sort.key(att, today));
-        if !self.sort_ascending {
+        if !ascending {
             filtered.reverse();
         }
 
         // ---- Table -----------------------------------------------------------
-        let below = 62.0;
+        let empty = EmptyCtx {
+            total: all_items.len(),
+            document: self.document_filter.map(|id| {
+                let number = all_items
+                    .iter()
+                    .find(|a| a.document_id == Some(id) && !a.reference_raw.is_empty())
+                    .map(|a| a.reference_raw.clone())
+                    .or_else(|| {
+                        self.context_document
+                            .as_ref()
+                            .filter(|d| d.0 == id)
+                            .map(|d| d.1.clone())
+                    })
+                    .unwrap_or_default();
+                (id, number)
+            }),
+            in_document: self
+                .document_filter
+                .map(|id| {
+                    all_items
+                        .iter()
+                        .filter(|a| a.document_id == Some(id))
+                        .count()
+                })
+                .unwrap_or(0),
+            query: self.query.trim().to_owned(),
+            active: {
+                let mut active = Vec::new();
+                if self.queue != SaiopQueue::All {
+                    active.push(format!("fila “{}”", self.queue.label()));
+                }
+                if !self.status_filter.is_empty() {
+                    active.push(format!("situação “{}”", status_label(&self.status_filter)));
+                }
+                if !self.assignee_filter.trim().is_empty() {
+                    active.push(format!("responsável “{}”", self.assignee_filter.trim()));
+                }
+                if !self.origin_filter.trim().is_empty() {
+                    active.push(format!("recebido de “{}”", self.origin_filter.trim()));
+                }
+                if !self.dest_filter.trim().is_empty() {
+                    active.push(format!("enviado para “{}”", self.dest_filter.trim()));
+                }
+                active
+            },
+        };
+        let below = 30.0;
         let table_height = (ui.available_height() - below).max(120.0);
-        self.table(ui, store, &filtered, today, table_height);
+        self.table(ui, store, &filtered, &columns, &empty, today, table_height);
 
         let count_text = if filtered.len() != all_items.len() {
             format!(
@@ -3434,74 +3722,48 @@ impl SaiopPanel {
         };
         widgets::small_muted(ui, count_text);
 
-        // Quiet setting, kept within reach.
-        // On a connected computer the import is recorded by the main
-        // one, with its own setting: the box would have no effect here.
-        let on_client = store
-            .load_intranet_config()
-            .is_ok_and(|cfg| cfg.mode == crate::intranet::IntranetMode::Client);
-        let mut auto = store.auto_attendance_enabled().unwrap_or(true);
-        let response = ui.add_enabled(
-            !on_client,
-            egui::Checkbox::new(
-                &mut auto,
-                RichText::new("Criar atendimento ao importar do SIGADOC")
-                    .size(theme::SIZE_SMALL)
-                    .color(c().muted),
-            ),
-        );
-        let response = if on_client {
-            response.on_disabled_hover_text("Definido no computador principal: é ele que registra as importações da equipe. Sem conexão, a cópia local segue a configuração daqui até a próxima sincronização.")
-        } else {
-            response.on_hover_text("Na primeira importação de cada documento do SIGADOC, registra aqui a entrada dele no gabinete: referência, assunto, data, responsável e ligação ao documento. Documentos juntados a outro não entram. Você pode editar ou excluir o atendimento depois.")
-        };
-        if response.changed() {
-            if let Err(e) = store.set_auto_attendance(auto) {
-                self.set_notice(format!("Não foi possível salvar a preferência: {e}"), true);
-            }
-        }
-
         open_document
     }
 
     /// The table of atendimentos, in one card.
+    #[allow(clippy::too_many_arguments)]
     fn table(
         &mut self,
         ui: &mut egui::Ui,
         store: &Store,
         filtered: &[&SaiopAttendance],
+        columns: &[(SaiopSort, f32)],
+        empty: &EmptyCtx,
         today: NaiveDate,
         height: f32,
     ) {
         use egui::{pos2, vec2, Rect, Sense, Stroke, UiBuilder};
         let p = c();
-        let columns = [
-            (SaiopSort::Reference, 195.0),
-            (SaiopSort::Subject, 240.0),
-            (SaiopSort::Assignee, 110.0),
-            (SaiopSort::Entry, 100.0),
-            (SaiopSort::Status, 190.0),
-            (SaiopSort::Due, 150.0),
-            (SaiopSort::Age, 120.0),
-            (SaiopSort::Destination, 160.0),
-        ];
         let min_total: f32 = columns.iter().map(|(_, w)| w).sum();
+        // What the header marks: the sorted column, or "Entrada" when the
+        // chosen one is hidden.
+        let (sorted_by, sorted_ascending) = if columns.iter().any(|(col, _)| *col == self.sort) {
+            (self.sort, self.sort_ascending)
+        } else {
+            (SaiopSort::Entry, false)
+        };
         widgets::card_frame()
             .inner_margin(egui::Margin::ZERO)
             .show(ui, |ui| {
-                let avail = ui.available_width();
-                // The subject takes whatever the window has to spare.
-                let extra = (avail - min_total).max(0.0);
-                let widths: Vec<f32> = columns
-                    .iter()
-                    .map(|(col, w)| if *col == SaiopSort::Subject { w + extra } else { *w })
-                    .collect();
-                let total = widths.iter().sum::<f32>();
-                egui::ScrollArea::both()
+                ui.set_width(ui.available_width());
+                egui::ScrollArea::vertical()
                     .id_salt("saiop-grid-scroll")
                     .auto_shrink([false, true])
                     .max_height(height)
                     .show(ui, |ui| {
+                        // The subject takes whatever the table has to spare.
+                        let avail = ui.available_width();
+                        let extra = (avail - min_total).max(0.0);
+                        let widths: Vec<f32> = columns
+                            .iter()
+                            .map(|(col, w)| if *col == SaiopSort::Subject { w + extra } else { *w })
+                            .collect();
+                        let total = widths.iter().sum::<f32>();
                         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                         // Header row
                         let (head, _) = ui.allocate_exact_size(vec2(total, 36.0), Sense::hover());
@@ -3514,25 +3776,29 @@ impl SaiopPanel {
                                     .max_rect(cell)
                                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                             );
-                            let arrow = if self.sort == *column {
-                                format!(" {}", if self.sort_ascending { icon::UP } else { icon::DOWN })
+                            let arrow = if sorted_by == *column {
+                                format!(" {}", if sorted_ascending { icon::UP } else { icon::DOWN })
                             } else {
                                 String::new()
                             };
-                            let clicked = child
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new(format!("{}{arrow}", column.title()))
-                                            .font(theme::font_strong(theme::SIZE_SMALL))
-                                            .color(p.muted),
-                                    )
-                                    .frame(false),
+                            let header = child.add(
+                                egui::Button::new(
+                                    RichText::new(format!("{}{arrow}", column.title()))
+                                        .font(theme::font_strong(theme::SIZE_SMALL))
+                                        .color(p.muted),
                                 )
-                                .on_hover_text("Ordenar por esta coluna")
-                                .clicked();
+                                .frame(false),
+                            );
+                            let header = if *column == SaiopSort::Age {
+                                header.on_hover_text(format!("{TIME_HELP}. Clique para ordenar."))
+                            } else {
+                                header.on_hover_text("Ordenar por esta coluna")
+                            };
+                            let clicked = header.clicked();
                             if clicked {
-                                if self.sort == *column {
-                                    self.sort_ascending = !self.sort_ascending;
+                                if sorted_by == *column {
+                                    self.sort = *column;
+                                    self.sort_ascending = !sorted_ascending;
                                 } else {
                                     self.sort = *column;
                                     self.sort_ascending =
@@ -3603,7 +3869,18 @@ impl SaiopPanel {
                                             .selectable(false),
                                         );
                                     }
-                                    SaiopSort::Subject => text(&mut child, att.subject.clone(), p.text),
+                                    SaiopSort::Subject => {
+                                        let r = child.add(
+                                            egui::Label::new(
+                                                RichText::new(att.subject.clone()).color(p.text),
+                                            )
+                                            .truncate()
+                                            .selectable(false),
+                                        );
+                                        if !att.subject.is_empty() {
+                                            r.on_hover_text(att.subject.clone());
+                                        }
+                                    }
                                     SaiopSort::Assignee => {
                                         if att.assignee.is_empty() {
                                             text(&mut child, "—".to_owned(), p.muted);
@@ -3643,7 +3920,7 @@ impl SaiopPanel {
                                                 .truncate()
                                                 .selectable(false),
                                         );
-                                        r.on_hover_text("Dias desde a entrada • dias fora, aguardando retorno");
+                                        r.on_hover_text(TIME_HELP);
                                     }
                                     SaiopSort::Destination => {
                                         let t = if att.sent_to.is_empty() {
@@ -3667,15 +3944,65 @@ impl SaiopPanel {
                             }
                         }
                         if filtered.is_empty() {
+                            ui.spacing_mut().item_spacing = vec2(S2, S2);
                             ui.add_space(S4);
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.add_space(S4);
-                                widgets::muted(ui, "Nenhum atendimento nesta fila ou busca.");
+                                self.empty_state(ui, store, empty);
                             });
                             ui.add_space(S4);
                         }
                     });
             });
+    }
+
+    /// What the empty table says, and the way out of it.
+    fn empty_state(&mut self, ui: &mut egui::Ui, store: &Store, empty: &EmptyCtx) {
+        let only_search = !empty.query.is_empty() && empty.active.is_empty();
+        if empty.total == 0 {
+            widgets::muted(
+                ui,
+                "Ainda não há atendimentos. Registre uma nova entrada ou importe a planilha do controle.",
+            );
+        } else if let Some((id, number)) = empty.document.clone().filter(|_| empty.in_document == 0)
+        {
+            widgets::muted(ui, "Este documento não tem atendimentos.");
+            if ui.add(widgets::quiet("Ver todos")).clicked() {
+                self.clear_document_filter();
+            }
+            if !self.dirty()
+                && ui
+                    .add(widgets::quiet("Nova entrada"))
+                    .on_hover_text("Registra um atendimento já ligado a este documento.")
+                    .clicked()
+            {
+                self.new_entry(store, Some((id, number)));
+            }
+        } else if only_search && empty.document.is_none() {
+            widgets::muted(
+                ui,
+                format!("Nenhum atendimento encontrado para “{}”.", empty.query),
+            );
+            if ui.add(widgets::quiet("Limpar a busca")).clicked() {
+                self.query.clear();
+            }
+        } else {
+            let mut active = Vec::new();
+            if !empty.query.is_empty() {
+                active.push(format!("busca “{}”", empty.query));
+            }
+            active.extend(empty.active.iter().cloned());
+            if let Some((_, number)) = &empty.document {
+                active.push(format!("só os de {number}"));
+            }
+            widgets::muted(ui, format!("Nenhum atendimento com {}.", active.join(", ")));
+            if ui.add(widgets::quiet("Limpar filtros")).clicked() {
+                self.clear_filters();
+            }
+            if empty.document.is_some() && ui.add(widgets::quiet("Ver todos")).clicked() {
+                self.clear_document_filter();
+            }
+        }
     }
 
     /// "Importar planilha do controle": file, preview, commit, earlier imports.
@@ -4138,10 +4465,7 @@ impl SaiopPanel {
                 }
             }
         } else if close_clicked {
-            self.confirm_delete = None;
-            self.editor = None;
-            self.saved_snapshot = None;
-            self.selected_id = None;
+            self.close_ficha();
         } else if revert_clicked {
             self.editor = self.saved_snapshot.clone();
         } else if create_task_clicked {
@@ -4183,6 +4507,7 @@ impl SaiopPanel {
                             if let Some(reloaded) = updated_list.into_iter().find(|a| a.id == ed.id)
                             {
                                 self.load_into_editor(store, reloaded);
+                                self.focus_ficha = false;
                             }
                         }
                         match created {
@@ -4202,20 +4527,27 @@ impl SaiopPanel {
                 }
             }
         } else if save_clicked {
-            match store.save_saiop_attendance(&ed, self.base_version) {
-                Ok(saved_id) => {
-                    if let Ok(updated_list) = store.list_saiop_attendances() {
-                        if let Some(reloaded) = updated_list.into_iter().find(|a| a.id == saved_id)
-                        {
-                            self.load_into_editor(store, reloaded);
-                        }
+            self.save_current(store);
+        }
+    }
+
+    /// "Salvar": writes the ficha's atendimento and reloads it as saved.
+    fn save_current(&mut self, store: &mut Store) {
+        let Some(ed) = self.editor.clone() else {
+            return;
+        };
+        match store.save_saiop_attendance(&ed, self.base_version) {
+            Ok(saved_id) => {
+                if let Ok(updated_list) = store.list_saiop_attendances() {
+                    if let Some(reloaded) = updated_list.into_iter().find(|a| a.id == saved_id) {
+                        self.load_into_editor(store, reloaded);
+                        // The person is in the ficha already: no focus jump.
+                        self.focus_ficha = false;
                     }
-                    self.set_notice("Atendimento salvo.", false);
                 }
-                Err(e) => {
-                    self.set_notice(format!("Não foi possível salvar o atendimento: {e}"), true)
-                }
+                self.set_notice("Atendimento salvo.", false);
             }
+            Err(e) => self.set_notice(format!("Não foi possível salvar o atendimento: {e}"), true),
         }
     }
 
@@ -4340,8 +4672,12 @@ impl SaiopPanel {
                         "É o número do documento ligado. Para mudar, desligue do documento.",
                     );
                 } else {
-                    ui.add(egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY))
+                    let field = ui
+                        .add(egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY))
                         .on_hover_text("Número do processo ou documento, ou um código provisório. Informe a referência ou o assunto.");
+                    if std::mem::take(&mut self.focus_ficha) {
+                        field.request_focus();
+                    }
                 }
             });
             // Link with an imported document
@@ -4385,7 +4721,13 @@ impl SaiopPanel {
                 }
             }
             labeled(ui, "Assunto", |ui| {
-                ui.add(egui::TextEdit::singleline(&mut ed.subject).desired_width(f32::INFINITY));
+                let field = ui
+                    .add(egui::TextEdit::singleline(&mut ed.subject).desired_width(f32::INFINITY));
+                // Linked to a document the reference is fixed: this is the
+                // first field to type in.
+                if ed.document_id.is_some() && std::mem::take(&mut self.focus_ficha) {
+                    field.request_focus();
+                }
             });
             labeled(ui, "Entrada", |ui| {
                 crate::labels::date_field(ui, ("saiop-entry", ed_id), &mut ed.entry_date);
@@ -5122,10 +5464,98 @@ mod tests {
     }
 }
 
+#[cfg(all(test, feature = "desktop"))]
+mod panel_tests {
+    use super::*;
+
+    fn shown(width: f32) -> Vec<SaiopSort> {
+        visible_columns(width).into_iter().map(|(c, _)| c).collect()
+    }
+
+    #[test]
+    fn opens_unfiltered_even_when_a_context_document_is_set() {
+        let mut panel = SaiopPanel::default();
+        panel.set_context_document(Some((7, "ORG-OFI-2026/00431".to_owned())));
+        assert_eq!(panel.document_filter, None);
+        panel.set_context_document(Some((8, "ORG-OFI-2026/00398".to_owned())));
+        assert_eq!(panel.document_filter, None);
+        panel.document_filter = Some(8);
+        panel.clear_document_filter();
+        assert_eq!(panel.document_filter, None);
+    }
+
+    #[test]
+    fn columns_follow_the_width_in_priority_order() {
+        use SaiopSort::*;
+        // Narrow: only the four that always show.
+        assert_eq!(shown(100.0), vec![Reference, Subject, Status, Due]);
+        assert_eq!(shown(700.0), vec![Reference, Subject, Status, Due]);
+        // Room for Responsável, then Entrada, then Tempo, then Destino.
+        assert_eq!(
+            shown(800.0),
+            vec![Reference, Subject, Assignee, Status, Due]
+        );
+        assert_eq!(
+            shown(900.0),
+            vec![Reference, Subject, Assignee, Entry, Status, Due]
+        );
+        assert_eq!(
+            shown(1000.0),
+            vec![Reference, Subject, Assignee, Entry, Status, Due, Age]
+        );
+        assert_eq!(
+            shown(1400.0),
+            vec![
+                Reference,
+                Subject,
+                Assignee,
+                Entry,
+                Status,
+                Due,
+                Age,
+                Destination
+            ]
+        );
+        // The fixed widths never exceed a width that holds them all.
+        let total: f32 = visible_columns(1400.0).iter().map(|(_, w)| w).sum();
+        assert!(total <= 1400.0);
+    }
+
+    #[test]
+    fn escape_does_not_close_an_unsaved_ficha() {
+        let mut panel = SaiopPanel::default();
+        assert!(!panel.key_escape());
+        let att = SaiopAttendance::new_manual();
+        panel.saved_snapshot = Some(att.clone());
+        panel.editor = Some(att);
+        // Open and clean: closes.
+        assert!(panel.key_escape());
+        assert!(panel.editor.is_none());
+        // Open and edited: stays, and says something is open.
+        let att = SaiopAttendance::new_manual();
+        panel.saved_snapshot = Some(att.clone());
+        let mut edited = att;
+        edited.subject = "Assunto alterado".to_owned();
+        panel.editor = Some(edited);
+        assert!(panel.dirty());
+        assert!(panel.key_escape());
+        assert!(panel.editor.is_some());
+        assert!(panel.dirty());
+    }
+}
+
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
-pub const SHOTS: &[&str] = &["lista", "aberto", "filtros", "importar"];
+pub const SHOTS: &[&str] = &[
+    "lista",
+    "aberto",
+    "filtros",
+    "importar",
+    "filtrada",
+    "vazia-busca",
+    "estreita",
+];
 
 #[cfg(feature = "shots")]
 impl SaiopPanel {
@@ -5141,6 +5571,29 @@ impl SaiopPanel {
             }
             "filtros" => self.filters_open = true,
             "importar" => self.import_open = true,
+            "filtrada" => {
+                if let Ok(docs) = store.list_documents("") {
+                    if let Some(doc) = docs
+                        .into_iter()
+                        .find(|d| d.document_number == "ORG-OFI-2026/00431")
+                    {
+                        self.context_document = Some((doc.id, doc.document_number));
+                        self.document_filter = Some(doc.id);
+                    }
+                }
+            }
+            "vazia-busca" => self.query = "parecer jurídico".to_owned(),
+            "estreita" => {
+                // The ficha takes room from the table; the sort is on a
+                // column that does not fit, so "Entrada" is marked.
+                self.sort = SaiopSort::Destination;
+                self.sort_ascending = true;
+                if let Ok(list) = store.list_saiop_attendances() {
+                    if let Some(first) = list.into_iter().next() {
+                        self.load_into_editor(store, first);
+                    }
+                }
+            }
             _ => {}
         }
     }

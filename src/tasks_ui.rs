@@ -135,6 +135,175 @@ fn two_columns(
     });
 }
 
+/// Orders of the list inside each group.
+const SORTS: [&str; 3] = ["Prazo", "Prioridade", "Documento"];
+
+type DocumentIndex<'a> = std::collections::HashMap<i64, &'a crate::model::DocumentSummary>;
+type Contexts = std::collections::BTreeMap<i64, crate::work_context::WorkContext>;
+
+/// What the library held at the last load, kept between frames.
+#[derive(Default)]
+struct Loaded {
+    tasks: Vec<Task>,
+    documents: Vec<crate::model::DocumentSummary>,
+    attachment_counts: std::collections::BTreeMap<i64, usize>,
+    contexts: Contexts,
+}
+
+/// The rules that narrow the list besides the chosen view.
+struct Scope<'a> {
+    document: Option<i64>,
+    /// Search text, already in lower case; empty means no search.
+    query: &'a str,
+    show_done: bool,
+    today: &'a str,
+    week: &'a str,
+}
+
+/// True when the task belongs to the document filter and the search text.
+fn in_scope(
+    task: &Task,
+    document: Option<&crate::model::DocumentSummary>,
+    context: Option<&crate::work_context::WorkContext>,
+    scope: &Scope,
+) -> bool {
+    if scope.document.is_some_and(|id| task.document_id != id) {
+        return false;
+    }
+    if !scope.show_done && task.status == "concluida" {
+        return false;
+    }
+    if scope.query.is_empty() {
+        return true;
+    }
+    let extra = context
+        .map(|c| {
+            format!(
+                "{} {} {} {} {}",
+                c.subjects, c.document_type, c.purpose, c.process_number, c.sender
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "{} {} {} {extra} {} {} {} {}",
+        task.title,
+        document.map(|d| d.document_number.as_str()).unwrap_or(""),
+        document.map(|d| d.title.as_str()).unwrap_or(""),
+        task.status,
+        task.priority,
+        task.action,
+        task.assignee
+    )
+    .to_lowercase()
+    .contains(scope.query)
+}
+
+/// True when the task belongs to the view with this index of `VIEWS`.
+fn in_view(
+    view: usize,
+    task: &Task,
+    context: Option<&crate::work_context::WorkContext>,
+    deps: &crate::tasks::Dependencies,
+    scope: &Scope,
+) -> bool {
+    let pending = task.status != "concluida";
+    let due = task.due_date.as_str();
+    match view {
+        1 => pending && context.is_none_or(|c| c.purpose == "nao definido"),
+        2 => pending && !due.is_empty() && due == scope.today,
+        3 => pending && !due.is_empty() && due >= scope.today && due <= scope.week,
+        4 => pending && !due.is_empty() && due < scope.today,
+        5 => task.status == "aguardando",
+        6 => {
+            pending && !task.reminder_date.is_empty() && task.reminder_date.as_str() <= scope.today
+        }
+        7 => pending && due.is_empty(),
+        8 => pending && !deps.is_blocked(task.id),
+        _ => true,
+    }
+}
+
+/// Counts shown on the chips: what each view would list under the current
+/// document filter and search. Order: Todas, Hoje, Próximos 7 dias, Atrasadas.
+fn view_counts(
+    tasks: &[Task],
+    documents: &DocumentIndex,
+    contexts: &Contexts,
+    deps: &crate::tasks::Dependencies,
+    scope: &Scope,
+) -> [usize; 4] {
+    let mut counts = [0; 4];
+    for task in tasks {
+        let context = contexts.get(&task.document_id);
+        if !in_scope(
+            task,
+            documents.get(&task.document_id).copied(),
+            context,
+            scope,
+        ) {
+            continue;
+        }
+        for (slot, view) in [0, 2, 3, 4].into_iter().enumerate() {
+            if in_view(view, task, context, deps, scope) {
+                counts[slot] += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// Reorders a list already in dependency order for the chosen sort; the sort
+/// is stable, so ties keep the dependency order.
+fn sort_tasks<'a>(
+    mut tasks: Vec<&'a Task>,
+    sort: usize,
+    documents: &DocumentIndex,
+) -> Vec<&'a Task> {
+    match sort {
+        1 => tasks.sort_by_key(|t| match t.priority.as_str() {
+            "urgente" => 0,
+            "alta" => 1,
+            "normal" | "" => 2,
+            _ => 3,
+        }),
+        2 => tasks.sort_by_key(|t| {
+            documents
+                .get(&t.document_id)
+                .map(|d| d.document_number.to_lowercase())
+                .unwrap_or_default()
+        }),
+        _ => {}
+    }
+    tasks
+}
+
+/// The sentence of an empty list, from why it is empty.
+fn empty_text(query: &str, narrowed: bool, no_tasks: bool, view: usize, show_done: bool) -> String {
+    if !query.trim().is_empty() {
+        return format!("Nenhuma tarefa encontrada para “{}”.", query.trim());
+    }
+    if narrowed {
+        return "Este documento não tem tarefas nesta visão.".to_owned();
+    }
+    if no_tasks {
+        return "Ainda não há tarefas. Cada documento importado ganha uma tarefa de triagem."
+            .to_owned();
+    }
+    match view {
+        1 => "Nenhuma tarefa a triar.",
+        2 => "Nenhuma tarefa para hoje.",
+        3 => "Nenhuma tarefa nos próximos 7 dias.",
+        4 => "Nenhuma tarefa atrasada.",
+        5 => "Nenhuma tarefa aguardando.",
+        6 => "Nenhum lembrete vencido.",
+        7 => "Nenhuma tarefa sem prazo.",
+        8 => "Nenhuma tarefa pronta para fazer.",
+        _ if show_done => "Nenhuma tarefa.",
+        _ => "Nenhuma tarefa em aberto. Marque “Mostrar concluídas” para ver as concluídas.",
+    }
+    .to_owned()
+}
+
 /// What the list needs to draw its rows.
 struct ListEnv<'a> {
     tasks: &'a [Task],
@@ -522,13 +691,19 @@ pub struct TaskPanel {
     message: String,
     message_is_error: bool,
     view: usize,
+    /// The list is narrowed to this document only when the person asked for
+    /// it; the area otherwise opens with every task.
     document_filter: Option<i64>,
-    /// The list follows the document open in the library (default) until
-    /// the person asks for every document; selecting another document in
-    /// the library brings the filter back.
-    show_all_documents: bool,
-    /// Document the library had selected at the last frame, to notice a change.
-    last_selected_document: Option<i64>,
+    /// Order of the list inside each group (index of `SORTS`).
+    sort: usize,
+    /// What the store returned at the last frame (its reads are memoized).
+    data: Loaded,
+    load_error: Option<String>,
+    /// Give the keyboard focus to the search box / the title at the next frame.
+    focus_search: bool,
+    focus_title: bool,
+    /// The task as it was before the last conclusion, until the app takes it.
+    concluded: Option<Task>,
     trash_requested: Option<crate::trash::Target>,
     /// "Anexos" block of the task being edited.
     attachments: crate::attachments::AttachmentsPanel,
@@ -643,9 +818,27 @@ impl TaskPanel {
         }
     }
 
+    /// Narrows the list to one document (asked for by the person, e.g. the
+    /// ficha's "Ver todas").
     pub fn focus_document(&mut self, id: i64) {
         self.document_filter = Some(id);
-        self.show_all_documents = false;
+        self.view = 0;
+        self.query.clear();
+    }
+    /// Shows the tasks of every document again.
+    pub fn clear_document_filter(&mut self) {
+        self.document_filter = None;
+    }
+    /// Document the list is narrowed to, if any.
+    pub fn document_filter(&self) -> Option<i64> {
+        self.document_filter
+    }
+    /// Keeps a document filter only when it already covers this document, so
+    /// the task about to open stays in the list.
+    fn keep_filter_for(&mut self, document_id: i64) {
+        if self.document_filter.is_some_and(|id| id != document_id) {
+            self.document_filter = None;
+        }
         self.view = 0;
         self.query.clear();
     }
@@ -654,14 +847,12 @@ impl TaskPanel {
         if self.dirty() {
             return false;
         }
-        self.document_filter = Some(document_id);
-        self.show_all_documents = false;
-        self.view = 0;
-        self.query.clear();
+        self.keep_filter_for(document_id);
         self.draft = Some(Task::new(document_id));
         self.original = None;
         self.base_version = None;
         self.message.clear();
+        self.focus_title = true;
         true
     }
     pub fn focus_task(&mut self, task: &Task) -> bool {
@@ -671,14 +862,63 @@ impl TaskPanel {
                 .as_ref()
                 .is_some_and(|draft| draft.id == task.id && draft.document_id == task.document_id);
         }
-        self.document_filter = Some(task.document_id);
-        self.show_all_documents = false;
-        self.view = 0;
-        self.query.clear();
+        self.keep_filter_for(task.document_id);
         self.draft = Some(task.clone());
         self.original = Some(task.clone());
         self.base_version = None;
+        self.focus_title = true;
         true
+    }
+    /// Esc: closes the task panel when nothing would be lost. True when it
+    /// did something or when the panel is open but cannot be closed now.
+    pub fn key_escape(&mut self) -> bool {
+        if self.draft.is_none() {
+            return false;
+        }
+        if !self.dirty() && !self.attachments.dirty() {
+            self.close_form();
+        }
+        true
+    }
+    /// Ctrl+S: what "Salvar" does, when it is available. True when a save
+    /// was attempted.
+    pub fn key_save(&mut self, store: &mut Store) -> bool {
+        let Some(task) = &self.draft else {
+            return false;
+        };
+        if !(self.dirty() || task.id == 0) {
+            return false;
+        }
+        let _ = self.save_draft(store);
+        true
+    }
+    /// Ctrl+F: the search box takes the keyboard focus at the next frame.
+    pub fn key_find(&mut self) {
+        self.focus_search = true;
+    }
+    /// Ctrl+N: what "Nova tarefa" does for this document. False when there is
+    /// no document to attach the task to.
+    pub fn key_new(&mut self, selected_document: Option<i64>) -> bool {
+        let Some(id) = selected_document else {
+            return false;
+        };
+        if !self.start_new(id) {
+            self.blocked = Some(Intent::New(id));
+        }
+        true
+    }
+    /// The task as it was before the last conclusion (returned once), so the
+    /// app can offer "Desfazer".
+    pub fn take_concluded(&mut self) -> Option<Task> {
+        self.concluded.take()
+    }
+    /// Reopens a task just concluded, the way "Reabrir" does.
+    pub fn undo_conclude(&mut self, store: &mut Store, task_id: i64) -> Result<(), String> {
+        self.apply_status_change(store, task_id, false)
+    }
+    /// The task in the panel; a new, unsaved one has no id.
+    pub fn open_task_id(&self) -> Option<i64> {
+        self.draft.as_ref().map(|t| t.id).filter(|id| *id > 0)
     }
 
     /// Opens a task from the list, keeping the current view and filter.
@@ -694,6 +934,7 @@ impl TaskPanel {
         self.draft = Some(task.clone());
         self.base_version = store.item_version("task", task.id).ok().map(|v| v.version);
         self.message.clear();
+        self.focus_title = true;
         true
     }
 
@@ -727,6 +968,7 @@ impl TaskPanel {
         );
         self.draft = Some(task);
         self.original = None;
+        self.focus_title = true;
         self.notice(
             "Revise e salve para criar a tarefa. Nada foi enviado ao SIGADOC.",
             false,
@@ -755,146 +997,63 @@ impl TaskPanel {
         selected_document: Option<i64>,
     ) -> Option<i64> {
         let mut open = None;
-        // By default the list is the open document's; the person can widen it,
-        // but picking another document in the library narrows it again.
-        if selected_document != self.last_selected_document {
-            self.last_selected_document = selected_document;
-            if selected_document.is_some() {
-                self.show_all_documents = false;
-            }
+        self.reload(store);
+        if let Some(error) = self.load_error.clone() {
+            let (fg, bg) = Tone::Danger.colors();
+            egui::Frame::new()
+                .fill(bg)
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::symmetric(S3 as i8, S2 as i8))
+                .outer_margin(egui::Margin::same(S4 as i8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(error).color(fg));
+                    });
+                });
+            return None;
         }
-        if !self.show_all_documents {
-            if let Some(id) = selected_document {
-                if self.document_filter != Some(id) {
-                    self.document_filter = Some(id);
-                }
-            }
-        }
-        let tasks = match store.list_tasks() {
-            Ok(t) => t,
-            Err(e) => {
-                ui.label(format!("Não foi possível ler as tarefas: {e}"));
-                return None;
-            }
-        };
-        let documents = store.list_documents("").unwrap_or_default();
+        let data = std::mem::take(&mut self.data);
+        let tasks = &data.tasks;
+        let documents = &data.documents;
+        let contexts = &data.contexts;
+        let index: DocumentIndex = documents.iter().map(|d| (d.id, d)).collect();
         let number_of = |id: i64| {
-            documents
-                .iter()
-                .find(|d| d.id == id)
+            index
+                .get(&id)
                 .map(|d| d.document_number.as_str())
                 .unwrap_or("documento não disponível")
         };
-
-        let contexts: std::collections::BTreeMap<_, _> = documents
-            .iter()
-            .filter_map(|d| store.load_work_context(d.id).ok().map(|c| (d.id, c)))
-            .collect();
         let today = chrono::Local::now().date_naive();
         let today_text = today.format("%Y-%m-%d").to_string();
         let week_text = (today + chrono::Duration::days(7))
             .format("%Y-%m-%d")
             .to_string();
-        let belongs = |task: &&Task| self.document_filter.is_none_or(|id| task.document_id == id);
-        let pending_count = tasks
-            .iter()
-            .filter(belongs)
-            .filter(|t| t.status != "concluida")
-            .count();
-        let overdue_count = tasks.iter().filter(belongs).filter(|t| t.overdue()).count();
-        let today_count = tasks
-            .iter()
-            .filter(belongs)
-            .filter(|t| {
-                t.status != "concluida" && !t.due_date.is_empty() && t.due_date == today_text
-            })
-            .count();
-        let week_count = tasks
-            .iter()
-            .filter(belongs)
-            .filter(|t| {
-                t.status != "concluida"
-                    && !t.due_date.is_empty()
-                    && t.due_date >= today_text
-                    && t.due_date <= week_text
-            })
-            .count();
-        // "Todas" counts what that view lists: pending tasks, plus the
-        // concluded ones when "Mostrar concluídas" is on.
-        let all_count = if self.show_done {
-            tasks.iter().filter(belongs).count()
-        } else {
-            pending_count
+        let deps = crate::tasks::Dependencies::new(tasks);
+        let query_lower = self.query.trim().to_lowercase();
+        let scope = Scope {
+            document: self.document_filter,
+            query: &query_lower,
+            show_done: self.show_done,
+            today: &today_text,
+            week: &week_text,
         };
-        let deps = crate::tasks::Dependencies::new(&tasks);
+        // The chips count what each view would list right now.
+        let [all_count, today_count, week_count, overdue_count] =
+            view_counts(tasks, &index, contexts, &deps, &scope);
         let visible: Vec<&Task> = tasks
             .iter()
             .filter(|task| {
-                if self
-                    .document_filter
-                    .is_some_and(|id| task.document_id != id)
-                {
-                    return false;
-                }
-                if !self.show_done && task.status == "concluida" {
-                    return false;
-                }
                 let context = contexts.get(&task.document_id);
-                let pending = task.status != "concluida";
-                let matches = match self.view {
-                    1 => pending && context.is_none_or(|c| c.purpose == "nao definido"),
-                    2 => pending && !task.due_date.is_empty() && task.due_date == today_text,
-                    3 => {
-                        pending
-                            && !task.due_date.is_empty()
-                            && task.due_date >= today_text
-                            && task.due_date <= week_text
-                    }
-                    4 => task.overdue(),
-                    5 => task.status == "aguardando",
-                    6 => {
-                        pending
-                            && !task.reminder_date.is_empty()
-                            && task.reminder_date <= today_text
-                    }
-                    7 => pending && task.due_date.is_empty(),
-                    8 => pending && !deps.is_blocked(task.id),
-                    _ => true,
-                };
-                if !matches {
-                    return false;
-                }
-                if self.query.trim().is_empty() {
-                    return true;
-                }
-                let document = documents.iter().find(|d| d.id == task.document_id);
-                let extra = context
-                    .map(|c| {
-                        format!(
-                            "{} {} {} {} {}",
-                            c.subjects, c.document_type, c.purpose, c.process_number, c.sender
-                        )
-                    })
-                    .unwrap_or_default();
-                format!(
-                    "{} {} {} {extra} {} {} {} {}",
-                    task.title,
-                    document.map(|d| d.document_number.as_str()).unwrap_or(""),
-                    document.map(|d| d.title.as_str()).unwrap_or(""),
-                    task.status,
-                    task.priority,
-                    task.action,
-                    task.assignee
-                )
-                .to_lowercase()
-                .contains(&self.query.to_lowercase())
+                in_scope(task, index.get(&task.document_id).copied(), context, &scope)
+                    && in_view(self.view, task, context, &deps, &scope)
             })
             .collect();
         // Each task after the ones it depends on; ties keep the usual order.
-        let visible = deps.order(&visible);
+        // Another sort is applied on top of that, keeping it for ties.
+        let visible = sort_tasks(deps.order(&visible), self.sort, &index);
 
         let mut out = RowOut::default();
-        let attachment_counts = store.attachment_counts("task").unwrap_or_default();
 
         // The task form is the side panel on the right; the rest is the area.
         if self.draft.is_some() {
@@ -903,7 +1062,7 @@ impl TaskPanel {
                 .resizable(false)
                 .frame(egui::Frame::new().fill(c().surface))
                 .show(ui, |ui| {
-                    if let Some(id) = self.show_form(ui, store, &tasks, &documents) {
+                    if let Some(id) = self.show_form(ui, store, tasks, documents) {
                         open = Some(id);
                     }
                 });
@@ -938,11 +1097,15 @@ impl TaskPanel {
                                 }
                             }
                         }
-                        widgets::search(ui, &mut self.query, "Buscar tarefa ou documento", 280.0);
+                        let search =
+                            widgets::search(ui, &mut self.query, "Buscar tarefa ou documento", 280.0);
+                        if std::mem::take(&mut self.focus_search) {
+                            search.request_focus();
+                        }
                     });
                 });
                 // Second row: the views as chips, and the checkbox on the right.
-                let checkbox_width = 170.0;
+                let checkbox_width = 330.0;
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
                         egui::vec2((ui.available_width() - checkbox_width).max(200.0), 0.0),
@@ -974,33 +1137,73 @@ impl TaskPanel {
                                     }
                                 }
                             });
-                            // Which documents the list covers.
-                            if let Some(id) = self.document_filter {
-                                widgets::chip(ui, true, format!("Só {}", number_of(id)))
-                                    .on_hover_text("A lista mostra só as tarefas do documento aberto.");
-                                if widgets::chip(ui, false, "Todos os documentos").clicked() {
-                                    self.document_filter = None;
-                                    self.show_all_documents = true;
+                            // A discreet way to narrow the list to the document
+                            // open in Documentos.
+                            if let (None, Some(id)) = (self.document_filter, selected_document) {
+                                if ui
+                                    .add(widgets::quiet(format!("Só as de {}", number_of(id))))
+                                    .on_hover_text("Mostra só as tarefas do documento aberto em Documentos.")
+                                    .clicked()
+                                {
+                                    self.document_filter = Some(id);
                                 }
-                            } else {
-                                if let Some(id) = selected_document {
-                                    if widgets::chip(ui, false, format!("Só {}", number_of(id)))
-                                        .on_hover_text("Volta a mostrar apenas as tarefas do documento aberto.")
-                                        .clicked()
-                                    {
-                                        self.document_filter = Some(id);
-                                        self.show_all_documents = false;
-                                    }
-                                }
-                                widgets::chip(ui, true, "Todos os documentos");
                             }
                         },
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                         ui.add_space(S1);
                         ui.checkbox(&mut self.show_done, "Mostrar concluídas");
+                        egui::ComboBox::from_id_salt("task-sort")
+                            .selected_text(format!("Ordenar: {}", SORTS[self.sort.min(2)]))
+                            .show_ui(ui, |ui| {
+                                for (index, name) in SORTS.iter().enumerate() {
+                                    ui.selectable_value(&mut self.sort, index, *name);
+                                }
+                            })
+                            .response
+                            .on_hover_text("Ordem das tarefas dentro de cada grupo.");
                     });
                 });
+                // Band that says the list is narrowed to one document.
+                if let Some(id) = self.document_filter {
+                    let title = index.get(&id).map(|d| d.title.as_str()).unwrap_or("");
+                    let text = if title.is_empty() {
+                        format!("Mostrando só as tarefas de {}", number_of(id))
+                    } else {
+                        format!("Mostrando só as tarefas de {} — {title}", number_of(id))
+                    };
+                    egui::Frame::new()
+                        .fill(c().primary_soft)
+                        .stroke(egui::Stroke::new(1.0, c().primary))
+                        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                        .inner_margin(egui::Margin::symmetric(S3 as i8, S2 as i8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.add(widgets::quiet("Ver todas")).clicked() {
+                                            self.document_filter = None;
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(text)
+                                                            .font(theme::font_strong(theme::SIZE_BODY))
+                                                            .color(c().text),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        });
+                }
                 if !self.message.is_empty() {
                     let (fg, bg) = if self.message_is_error { Tone::Danger } else { Tone::Ok }.colors();
                     let text = self.message.clone();
@@ -1038,10 +1241,10 @@ impl TaskPanel {
                     })
                     .unwrap_or_default();
                 let env = ListEnv {
-                    tasks: &tasks,
-                    documents: &documents,
+                    tasks,
+                    documents,
                     deps: &deps,
-                    attachment_counts: &attachment_counts,
+                    attachment_counts: &data.attachment_counts,
                     focus_before: &focus_before,
                     focus_after: &focus_after,
                     today: &today_text,
@@ -1083,8 +1286,27 @@ impl TaskPanel {
                 list_scroll.show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         if visible.is_empty() {
-                            ui.add_space(S2);
-                            widgets::muted(ui, "Nenhuma tarefa nesta lista.");
+                            let text = empty_text(
+                                &self.query,
+                                self.document_filter.is_some(),
+                                tasks.is_empty(),
+                                self.view,
+                                self.show_done,
+                            );
+                            ui.add_space(S4 * 2.0);
+                            ui.vertical_centered(|ui| {
+                                ui.spacing_mut().item_spacing.y = S2;
+                                widgets::muted(ui, text);
+                                if !self.query.trim().is_empty() {
+                                    if ui.add(widgets::quiet("Limpar a busca")).clicked() {
+                                        self.query.clear();
+                                    }
+                                } else if self.document_filter.is_some()
+                                    && ui.add(widgets::quiet("Ver todas")).clicked()
+                                {
+                                    self.document_filter = None;
+                                }
+                            });
                         }
                         for (index, group) in groups.iter().enumerate() {
                             if group.is_empty() {
@@ -1107,9 +1329,11 @@ impl TaskPanel {
                                         // A task hangs from the one it waits
                                         // for only when that one is above it
                                         // in this same group.
-                                        let nested = group[..position]
-                                            .iter()
-                                            .any(|above| task.dependencies.contains(&above.id));
+                                        // Only the default order keeps them together.
+                                        let nested = self.sort == 0
+                                            && group[..position]
+                                                .iter()
+                                                .any(|above| task.dependencies.contains(&above.id));
                                         // Controls keep the task's own id, so a
                                         // click never lands on a neighbour when
                                         // the list changes under the pointer.
@@ -1137,12 +1361,40 @@ impl TaskPanel {
             }
         }
         if let Some(id) = out.complete {
-            self.apply_status_change(store, id, true);
+            let _ = self.apply_status_change(store, id, true);
         }
         if let Some(id) = out.reopen {
-            self.apply_status_change(store, id, false);
+            let _ = self.apply_status_change(store, id, false);
         }
+        self.data = data;
         open
+    }
+
+    /// Reads the library again: tasks, documents, attachment counts and the
+    /// work context of each document. A failure is kept to be shown.
+    fn reload(&mut self, store: &Store) {
+        let read = store.list_tasks().and_then(|tasks| {
+            let documents = store.list_documents("")?;
+            Ok((tasks, documents))
+        });
+        match read {
+            Ok((tasks, documents)) => {
+                let contexts = documents
+                    .iter()
+                    .filter_map(|d| store.load_work_context(d.id).ok().map(|c| (d.id, c)))
+                    .collect();
+                self.data = Loaded {
+                    tasks,
+                    documents,
+                    attachment_counts: store.attachment_counts("task").unwrap_or_default(),
+                    contexts,
+                };
+                self.load_error = None;
+            }
+            Err(e) => {
+                self.load_error = Some(format!("Não foi possível ler as tarefas: {e}"));
+            }
+        }
     }
 
     /// Closes the form of a task nobody has changed.
@@ -1205,16 +1457,20 @@ impl TaskPanel {
                         .on_disabled_hover_text("Salve ou cancele as alterações antes de fechar.");
                 });
             });
-            widgets::small_muted(
-                ui,
-                format!(
-                    "Documento: {}",
-                    documents
-                        .iter()
-                        .find(|d| d.id == document_id)
-                        .map(|d| d.document_number.as_str())
-                        .unwrap_or("não disponível")
-                ),
+            let document = documents.iter().find(|d| d.id == document_id);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(match document {
+                        Some(d) if !d.title.trim().is_empty() => {
+                            format!("Documento: {} — {}", d.document_number, d.title.trim())
+                        }
+                        Some(d) => format!("Documento: {}", d.document_number),
+                        None => "Documento: não disponível".to_owned(),
+                    })
+                    .size(theme::SIZE_SMALL)
+                    .color(c().muted),
+                )
+                .wrap(),
             );
             ui.horizontal_wrapped(|ui| {
                 if ui
@@ -1277,6 +1533,7 @@ impl TaskPanel {
                 });
             });
 
+        let focus_title = std::mem::take(&mut self.focus_title);
         let Some(task) = &mut self.draft else {
             return None;
         };
@@ -1298,7 +1555,12 @@ impl TaskPanel {
                         ui.set_width(ui.available_width());
                         ui.spacing_mut().item_spacing.y = S1;
                         widgets::field_label(ui, "Título");
-                        ui.add(egui::TextEdit::singleline(&mut task.title).desired_width(f32::INFINITY));
+                        let title_edit = ui.add(
+                            egui::TextEdit::singleline(&mut task.title).desired_width(f32::INFINITY),
+                        );
+                        if focus_title {
+                            title_edit.request_focus();
+                        }
                         ui.add_space(S2);
                         two_columns(
                             ui,
@@ -1628,7 +1890,7 @@ impl TaskPanel {
             self.discard_draft();
         }
         if conclude {
-            self.apply_status_change(store, task_id, true);
+            let _ = self.apply_status_change(store, task_id, true);
         }
         if close && !self.dirty() && !self.attachments.dirty() {
             self.close_form();
@@ -1636,7 +1898,20 @@ impl TaskPanel {
         open
     }
 
-    fn apply_status_change(&mut self, store: &mut Store, id: i64, complete: bool) {
+    fn apply_status_change(
+        &mut self,
+        store: &mut Store,
+        id: i64,
+        complete: bool,
+    ) -> Result<(), String> {
+        let before = if complete {
+            store
+                .list_tasks()
+                .ok()
+                .and_then(|tasks| tasks.into_iter().find(|t| t.id == id))
+        } else {
+            None
+        };
         let result = if complete {
             store.complete_task(id)
         } else {
@@ -1644,6 +1919,9 @@ impl TaskPanel {
         };
         match result {
             Ok(updated) => {
+                if complete {
+                    self.concluded = before;
+                }
                 if self.draft.as_ref().is_some_and(|t| t.id == id) {
                     self.draft = Some(updated.clone());
                     self.original = Some(updated.clone());
@@ -1659,13 +1937,15 @@ impl TaskPanel {
                     text.push_str(&note);
                 }
                 self.notice(text, false);
+                Ok(())
             }
             Err(e) => {
                 let text = format!(
                     "Não foi possível {} a tarefa: {e}",
                     if complete { "concluir" } else { "reabrir" }
                 );
-                self.notice(text, true);
+                self.notice(text.clone(), true);
+                Err(text)
             }
         }
     }
@@ -1674,6 +1954,146 @@ impl TaskPanel {
 #[cfg(test)]
 mod navigation_tests {
     use super::*;
+
+    fn task(id: i64, document: i64, due: &str, status: &str) -> Task {
+        let mut t = Task::new(document);
+        t.id = id;
+        t.title = format!("Tarefa {id}");
+        t.due_date = due.into();
+        t.status = status.into();
+        if status == "concluida" {
+            t.completed_at = Some("2026-11-01T10:00:00".into());
+        }
+        t
+    }
+
+    fn scope<'a>(document: Option<i64>, query: &'a str, show_done: bool) -> Scope<'a> {
+        Scope {
+            document,
+            query,
+            show_done,
+            today: "2026-11-10",
+            week: "2026-11-17",
+        }
+    }
+
+    #[test]
+    fn chip_counts_follow_the_list_and_match_the_rail_badge() {
+        let tasks = vec![
+            task(1, 1, "2026-11-05", "pendente"),
+            task(2, 1, "2026-11-10", "pendente"),
+            task(3, 2, "2026-11-10", "em analise"),
+            task(4, 2, "2026-11-12", "pendente"),
+            task(5, 2, "", "pendente"),
+            task(6, 1, "2026-11-01", "concluida"),
+        ];
+        let deps = crate::tasks::Dependencies::new(&tasks);
+        let documents = DocumentIndex::new();
+        let contexts = Contexts::new();
+        let none = scope(None, "", false);
+        let [all, today, week, overdue] = view_counts(&tasks, &documents, &contexts, &deps, &none);
+        assert_eq!([all, today, week, overdue], [5, 2, 3, 1]);
+        // Same rule the rail badge uses: open, with a deadline up to today.
+        let badge = tasks
+            .iter()
+            .filter(|t| {
+                t.completed_at.is_none()
+                    && !t.due_date.is_empty()
+                    && t.due_date.as_str() <= "2026-11-10"
+            })
+            .count();
+        assert_eq!(overdue + today, badge);
+        // Narrowed to one document.
+        let narrowed = scope(Some(2), "", false);
+        assert_eq!(
+            view_counts(&tasks, &documents, &contexts, &deps, &narrowed),
+            [3, 1, 2, 0]
+        );
+        // Concluded tasks count in "Todas" only when shown.
+        let with_done = scope(None, "", true);
+        assert_eq!(
+            view_counts(&tasks, &documents, &contexts, &deps, &with_done)[0],
+            6
+        );
+        // A search narrows every count (title "Tarefa 4").
+        let searching = scope(None, "tarefa 4", false);
+        assert_eq!(
+            view_counts(&tasks, &documents, &contexts, &deps, &searching),
+            [1, 0, 1, 0]
+        );
+    }
+
+    #[test]
+    fn opens_unfiltered_even_when_a_document_is_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("tasks-ui-open.sqlite3")).unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let mut panel = TaskPanel::default();
+        // `show` no longer reads the selected document into the filter (a
+        // drawing test is not possible without a window), so a fresh panel
+        // that loads the library has no filter.
+        panel.reload(&store);
+        assert_eq!(panel.document_filter(), None);
+        assert!(!panel.data.tasks.is_empty(), "the list holds every task");
+        panel.focus_document(document);
+        assert_eq!(panel.document_filter(), Some(document));
+        panel.clear_document_filter();
+        assert_eq!(panel.document_filter(), None);
+    }
+
+    #[test]
+    fn escape_never_closes_a_dirty_task() {
+        let mut panel = TaskPanel::default();
+        assert!(!panel.key_escape(), "nothing open: Esc is not ours");
+        let mut open = Task::new(1);
+        open.id = 10;
+        assert!(panel.focus_task(&open));
+        assert!(panel.key_escape());
+        assert!(panel.draft.is_none(), "a clean panel closes");
+        assert!(panel.focus_task(&open));
+        panel.draft.as_mut().unwrap().notes = "ainda escrevendo".into();
+        assert!(panel.key_escape(), "handled, even though it stays open");
+        assert!(panel.draft.is_some());
+        assert!(panel.dirty());
+        assert_eq!(panel.open_task_id(), Some(10));
+        assert!(!panel.key_new(None));
+        assert!(panel.key_new(Some(1)));
+        assert_eq!(panel.take_blocked(), Some(Intent::New(1)));
+    }
+
+    #[test]
+    fn conclusion_is_recorded_once_and_can_be_undone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("tasks-ui-undo.sqlite3")).unwrap();
+        store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let id = store.list_tasks().unwrap()[0].id;
+        let mut panel = TaskPanel::default();
+        panel.apply_status_change(&mut store, id, true).unwrap();
+        let before = panel.take_concluded().expect("recorded");
+        assert_eq!((before.id, before.status.as_str()), (id, "pendente"));
+        assert!(panel.take_concluded().is_none(), "returned once");
+        assert_eq!(store.list_tasks().unwrap()[0].status, "concluida");
+        panel.undo_conclude(&mut store, id).unwrap();
+        assert_eq!(store.list_tasks().unwrap()[0].status, "pendente");
+        assert!(panel.undo_conclude(&mut store, id).is_err());
+    }
+
+    #[test]
+    fn empty_lists_say_why() {
+        assert!(empty_text("ofício", false, false, 0, false).contains("“ofício”"));
+        assert!(empty_text("", true, false, 0, false).contains("Este documento"));
+        assert!(empty_text("", false, true, 0, false).starts_with("Ainda não há tarefas"));
+        assert_eq!(
+            empty_text("", false, false, 4, false),
+            "Nenhuma tarefa atrasada."
+        );
+    }
+
     #[test]
     fn navigation_filters_without_losing_unsaved_task() {
         let mut panel = TaskPanel::default();
@@ -1761,16 +2181,48 @@ mod navigation_tests {
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
-pub const SHOTS: &[&str] = &["lista", "aberta", "nova", "concluidas", "detalhes"];
+pub const SHOTS: &[&str] = &[
+    "lista",
+    "aberta",
+    "nova",
+    "concluidas",
+    "detalhes",
+    "filtrada",
+    "vazia-busca",
+    "vazia-lembrete",
+    "vazia-documento",
+];
 
 #[cfg(feature = "shots")]
 impl TaskPanel {
     /// Puts the panel in the state called `view` (see `SHOTS`).
     pub fn shots_open(&mut self, store: &mut crate::storage::Store, view: &str) {
         let tasks = store.list_tasks().unwrap_or_default();
-        self.show_all_documents = true;
         self.document_filter = None;
         match view {
+            "filtrada" => {
+                let target = store
+                    .list_documents("")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|d| d.document_number == "ORG-OFI-2026/00431");
+                if let Some(document) = target {
+                    self.focus_document(document.id);
+                }
+            }
+            "vazia-busca" => self.query = "parecer jurídico".into(),
+            "vazia-lembrete" => self.view = 6,
+            "vazia-documento" => {
+                let target = store
+                    .list_documents("")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|d| d.document_number == "ORG-OFI-2026/00398");
+                if let Some(document) = target {
+                    self.focus_document(document.id);
+                    self.view = 4;
+                }
+            }
             "aberta" => {
                 if let Some(task) = tasks.iter().find(|t| t.overdue()) {
                     self.open_task(task, store);
@@ -1784,8 +2236,6 @@ impl TaskPanel {
                     .find(|d| d.document_number == "ORG-OFI-2026/00431");
                 if let Some(document) = target {
                     self.start_new(document.id);
-                    self.show_all_documents = true;
-                    self.document_filter = None;
                 }
             }
             "concluidas" => {

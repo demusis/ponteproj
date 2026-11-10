@@ -386,6 +386,8 @@ pub fn sync(ctx: &egui::Context) {
 pub mod icon {
     pub const DOCUMENTS: &str = "\u{e710}";
     pub const DOCUMENT: &str = "\u{e23a}";
+    pub const TODAY: &str = "\u{e712}";
+    pub const CIRCLE: &str = "\u{e18a}";
     pub const TASKS: &str = "\u{e184}";
     pub const ATTENDANCES: &str = "\u{e4aa}";
     pub const TEMPLATES: &str = "\u{e6d6}";

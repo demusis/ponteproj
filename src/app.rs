@@ -6,6 +6,8 @@ use crate::storage::Store;
 use crate::theme::{self, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
 use anyhow::{Context, Result};
+
+mod today;
 use eframe::egui::{self, Color32, RichText};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -417,6 +419,10 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     }
     app.load_ai_config();
     app.refresh();
+    // An empty library opens on the welcome screen, not on an empty day.
+    if app.documents.is_empty() {
+        app.area = Area::Documents;
+    }
     if open_templates {
         app.area = Area::Templates;
     }
@@ -786,6 +792,7 @@ fn group_joined<'a>(docs: &[&'a DocumentSummary]) -> Vec<(&'a DocumentSummary, u
 /// The areas of the window, chosen in the rail on the left.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Area {
+    Today,
     Documents,
     Tasks,
     Saiop,
@@ -807,6 +814,7 @@ fn window_size() -> [f32; 2] {
 enum SettingsSection {
     Team,
     Mail,
+    Import,
     Ai,
     Backup,
     Trash,
@@ -815,9 +823,10 @@ enum SettingsSection {
 }
 
 impl SettingsSection {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Team,
         Self::Mail,
+        Self::Import,
         Self::Ai,
         Self::Backup,
         Self::Trash,
@@ -829,6 +838,7 @@ impl SettingsSection {
         match self {
             Self::Team => "Equipe e sincronização",
             Self::Mail => "E-mail",
+            Self::Import => "Importação do SIGADOC",
             Self::Ai => "Inteligência artificial",
             Self::Backup => "Cópia de segurança e exportação",
             Self::Trash => "Lixeira",
@@ -843,6 +853,7 @@ impl SettingsSection {
                 "Como este computador compartilha o acervo com outros computadores e com o celular."
             }
             Self::Mail => "Contas de e-mail para importar mensagens como registros.",
+            Self::Import => "O que o Ponte faz quando um documento é importado pelo navegador.",
             Self::Ai => "Opcional. Onde a análise e as minutas são geradas.",
             Self::Backup => "Guardar uma cópia do acervo e levar os dados para planilhas.",
             Self::Trash => "O que foi excluído fica aqui por um tempo e pode ser restaurado.",
@@ -855,6 +866,7 @@ impl SettingsSection {
         match self {
             Self::Team => icon::TEAM,
             Self::Mail => icon::MAIL,
+            Self::Import => icon::DOWNLOAD,
             Self::Ai => icon::AI,
             Self::Backup => icon::DATABASE,
             Self::Trash => icon::TRASH,
@@ -1104,6 +1116,26 @@ struct Notice {
     text: String,
     error: bool,
     since: Instant,
+    /// One button on the notice ("Desfazer") and what it does.
+    action: Option<(String, NoticeAction)>,
+}
+
+/// What the button of a notice does.
+#[derive(Clone)]
+enum NoticeAction {
+    /// Undo "concluir": the task goes back to what it was.
+    ReopenTask(i64),
+    /// Undo "excluir": the item comes back from the Lixeira.
+    Restore(crate::trash::Target),
+}
+
+/// Where the person was before a document was opened for them, so the ficha
+/// can offer the way back.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReturnTo {
+    Today,
+    Task(i64),
+    Attendance(i64),
 }
 
 /// Success notices leave by themselves; errors stay until closed.
@@ -1132,6 +1164,8 @@ enum PendingTarget {
 /// they decide whether to save, discard or stay.
 #[derive(Clone)]
 enum Leave {
+    /// The "Hoje" screen.
+    Today,
     /// The "Atendimentos" screen.
     Saiop,
     /// The "Modelos" screen.
@@ -1199,6 +1233,14 @@ struct PonteApp {
     intranet: crate::intranet::IntranetPanel,
     /// The area on screen (the rail on the left chooses it).
     area: Area,
+    /// What the "Hoje" area shows, read on each refresh.
+    today: today::TodayData,
+    /// The way back offered on the ficha, and the one waiting for the next
+    /// document to be opened.
+    return_to: Option<ReturnTo>,
+    return_after_select: Option<ReturnTo>,
+    /// Ctrl+F asked for the search box of the document list.
+    focus_search: bool,
     /// Open tasks that are late or due today, shown on the rail.
     task_badge: usize,
     appearance: crate::theme::Appearance,
@@ -1280,7 +1322,11 @@ impl PonteApp {
             saiop: Default::default(),
             intranet: Default::default(),
             // The welcome screen (or the opened document) is the first thing seen.
-            area: Area::Documents,
+            area: Area::Today,
+            today: Default::default(),
+            return_to: None,
+            return_after_select: None,
+            focus_search: false,
             task_badge: 0,
             appearance: load_appearance(),
             settings_section: SettingsSection::Team,
@@ -1631,6 +1677,17 @@ impl PonteApp {
             text: text.into(),
             error: false,
             since: Instant::now(),
+            action: None,
+        });
+    }
+
+    /// A success notice with one button, such as "Desfazer".
+    fn message_with_action(&mut self, text: impl Into<String>, label: &str, action: NoticeAction) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            error: false,
+            since: Instant::now(),
+            action: Some((label.to_owned(), action)),
         });
     }
 
@@ -1639,7 +1696,32 @@ impl PonteApp {
             text: text.into(),
             error: true,
             since: Instant::now(),
+            action: None,
         });
+    }
+
+    /// The button of a notice was pressed.
+    fn run_notice_action(&mut self, action: NoticeAction) {
+        match action {
+            NoticeAction::ReopenTask(id) => match self.store.reopen_task(id) {
+                Ok(_) => {
+                    self.refresh();
+                    self.message("Tarefa reaberta.");
+                }
+                Err(error) => self.error(format!("Não foi possível reabrir a tarefa: {error}")),
+            },
+            NoticeAction::Restore(target) => match self.store.restore_item(target.clone()) {
+                Ok(document) => {
+                    self.apply_trash_change(crate::trash::Change {
+                        target,
+                        document,
+                        restored: true,
+                    });
+                    self.refresh();
+                }
+                Err(error) => self.error(format!("Não foi possível restaurar: {error}")),
+            },
+        }
     }
 
     /// Everything unsaved or still running, with where to go to deal with it.
@@ -1822,6 +1904,7 @@ impl PonteApp {
                 self.area = Area::Templates;
             }
             Leave::Settings => self.area = Area::Settings,
+            Leave::Today => self.area = Area::Today,
             Leave::Documents => {
                 self.area = Area::Documents;
             }
@@ -2141,20 +2224,8 @@ impl PonteApp {
             )),
         }
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        self.task_badge = self
-            .store
-            .list_tasks()
-            .map(|tasks| {
-                tasks
-                    .iter()
-                    .filter(|t| {
-                        t.completed_at.is_none()
-                            && !t.due_date.is_empty()
-                            && t.due_date.as_str() <= today.as_str()
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
+        self.today = today::TodayData::load(&self.store, &today);
+        self.task_badge = self.today.pending_tasks();
         if let Some(id) = self.selected_id {
             self.reload(id);
         }
@@ -2219,6 +2290,7 @@ impl PonteApp {
     }
 
     fn select(&mut self, id: i64) {
+        self.return_to = self.return_after_select.take();
         self.area = Area::Documents;
         self.selected_id = Some(id);
         self.detail = None;
@@ -3087,6 +3159,20 @@ impl PonteApp {
                     .color(p.rail_on),
             );
             ui.add_space(10.0);
+            let today_badge = self.today.pending_tasks() + self.today.attendances.len();
+            if rail_item(
+                ui,
+                icon::TODAY,
+                "Hoje",
+                self.area == Area::Today,
+                today_badge,
+                false,
+            )
+            .on_hover_text("O que pede atenção agora: tarefas atrasadas e de hoje, atendimentos com prazo vencido. (Ctrl+1)")
+            .clicked()
+            {
+                self.navigate(Leave::Today);
+            }
             let notes_dirty = self.editors.values().any(Editor::dirty);
             if rail_item(
                 ui,
@@ -3096,7 +3182,7 @@ impl PonteApp {
                 0,
                 notes_dirty,
             )
-            .on_hover_text("Documentos importados e registros, com a ficha de cada um. (Ctrl+1)")
+            .on_hover_text("Documentos importados e registros, com a ficha de cada um. (Ctrl+2)")
             .clicked()
             {
                 self.navigate(Leave::Documents);
@@ -3110,10 +3196,10 @@ impl PonteApp {
                 self.tasks.dirty(),
             );
             let tasks = if self.tasks.dirty() {
-                tasks.on_hover_text("Há uma tarefa com alterações não salvas. (Ctrl+2)")
+                tasks.on_hover_text("Há uma tarefa com alterações não salvas. (Ctrl+3)")
             } else if self.task_badge > 0 {
                 tasks.on_hover_text(format!(
-                    "{} ou para hoje. (Ctrl+2)",
+                    "{} ou para hoje. (Ctrl+3)",
                     plural(
                         self.task_badge,
                         "tarefa atrasada",
@@ -3121,7 +3207,7 @@ impl PonteApp {
                     )
                 ))
             } else {
-                tasks.on_hover_text("Tarefas de todos os documentos. (Ctrl+2)")
+                tasks.on_hover_text("Tarefas de todos os documentos. (Ctrl+3)")
             };
             if tasks.clicked() {
                 self.go_tasks();
@@ -3134,7 +3220,7 @@ impl PonteApp {
                 0,
                 self.saiop.dirty(),
             )
-            .on_hover_text("Controle de entradas e prazos do setor. (Ctrl+3)")
+            .on_hover_text("Controle de entradas e prazos do setor. (Ctrl+4)")
             .clicked()
             {
                 self.navigate(Leave::Saiop);
@@ -3147,7 +3233,7 @@ impl PonteApp {
                 0,
                 self.templates.dirty(),
             )
-            .on_hover_text("Modelos de trabalho: estrutura, instruções, exemplos e referências para as minutas. (Ctrl+4)")
+            .on_hover_text("Modelos de trabalho: estrutura, instruções, exemplos e referências para as minutas. (Ctrl+5)")
             .clicked()
             {
                 self.navigate(Leave::Templates);
@@ -3177,18 +3263,93 @@ impl PonteApp {
         });
     }
 
-    /// Ctrl+1 to Ctrl+4 change the area, like the rail.
+    /// The keyboard, in one place. Ctrl+1 to Ctrl+5 change the area, like the
+    /// rail; Ctrl+F goes to the search of the area; Ctrl+N creates; Ctrl+S
+    /// saves what is being edited; Esc closes the window or panel in front.
+    /// Nothing here discards unsaved work: each key goes through the same
+    /// path as the button it stands for.
     fn shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
         let pressed = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, key));
         if pressed(Key::Num1) {
-            self.navigate(Leave::Documents);
+            self.navigate(Leave::Today);
         } else if pressed(Key::Num2) {
-            self.go_tasks();
+            self.navigate(Leave::Documents);
         } else if pressed(Key::Num3) {
-            self.navigate(Leave::Saiop);
+            self.go_tasks();
         } else if pressed(Key::Num4) {
+            self.navigate(Leave::Saiop);
+        } else if pressed(Key::Num5) {
             self.navigate(Leave::Templates);
+        } else if pressed(Key::F) {
+            match self.area {
+                Area::Tasks => self.tasks.key_find(),
+                Area::Saiop => self.saiop.key_find(),
+                Area::Documents => self.focus_search = true,
+                Area::Today | Area::Templates | Area::Settings => {
+                    self.focus_search = true;
+                    self.navigate(Leave::Documents);
+                }
+            }
+        } else if pressed(Key::N) {
+            match self.area {
+                Area::Tasks => {
+                    if !self.tasks.key_new(self.selected_id) {
+                        self.message(
+                            "Para criar uma tarefa, selecione antes um documento em Documentos.",
+                        );
+                    }
+                }
+                Area::Saiop => {
+                    self.saiop.key_new(&self.store);
+                }
+                Area::Today | Area::Documents => self.manual_form.open_new(),
+                Area::Templates | Area::Settings => {}
+            }
+        } else if pressed(Key::S) {
+            match self.area {
+                Area::Tasks => {
+                    self.tasks.key_save(&mut self.store);
+                }
+                Area::Saiop => {
+                    self.saiop.key_save(&mut self.store);
+                }
+                Area::Documents => {
+                    if let Some(id) = self.selected_id {
+                        if self.editors.get(&id).is_some_and(Editor::note_dirty) {
+                            self.save_note(id);
+                        }
+                    }
+                }
+                Area::Settings => {
+                    if self.settings_section == SettingsSection::Ai
+                        && self.ai_config_dirty()
+                        && self.save_ai_config()
+                    {
+                        self.message("Configuração de IA salva.");
+                    }
+                }
+                Area::Today | Area::Templates => {}
+            }
+        } else if !egui::Popup::is_any_open(ctx)
+            && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            // A window in front closes first; then the panel of the area.
+            if self.about_open {
+                self.about_open = false;
+            } else if self.consult.is_some() {
+                self.consult = None;
+            } else {
+                match self.area {
+                    Area::Tasks => {
+                        self.tasks.key_escape();
+                    }
+                    Area::Saiop => {
+                        self.saiop.key_escape();
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -3210,6 +3371,45 @@ impl PonteApp {
         match self.area {
             Area::Tasks | Area::Saiop | Area::Settings => egui::Margin::ZERO,
             _ => egui::Margin::symmetric(20, 14),
+        }
+    }
+
+    /// On the ficha: the way back to where the person came from.
+    fn return_bar(&mut self, ui: &mut egui::Ui) {
+        let Some(origin) = self.return_to else {
+            return;
+        };
+        let label = match origin {
+            ReturnTo::Today => "Voltar a Hoje",
+            ReturnTo::Task(_) => "Voltar à tarefa",
+            ReturnTo::Attendance(_) => "Voltar ao atendimento",
+        };
+        if !ui
+            .add(widgets::quiet(format!("{} {label}", icon::BACK)))
+            .clicked()
+        {
+            return;
+        }
+        match origin {
+            ReturnTo::Today => self.navigate(Leave::Today),
+            ReturnTo::Task(id) => {
+                let task = self
+                    .store
+                    .list_tasks()
+                    .ok()
+                    .and_then(|tasks| tasks.into_iter().find(|t| t.id == id));
+                match task {
+                    Some(task) => self.navigate(Leave::OpenTask(task)),
+                    None => self.go_tasks(),
+                }
+            }
+            ReturnTo::Attendance(id) => {
+                if self.saiop.focus_attendance(&self.store, id) {
+                    self.navigate(Leave::Saiop);
+                } else {
+                    self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
+                }
+            }
         }
     }
 
@@ -3384,6 +3584,12 @@ impl PonteApp {
                     self.import_eml_dialog();
                 }
             }
+            SettingsSection::Import => {
+                widgets::card(ui, |ui| {
+                    widgets::section(ui, "Atendimentos");
+                    crate::saiop::SaiopPanel::auto_attendance_setting(ui, &mut self.store);
+                });
+            }
             SettingsSection::Ai => self.ai_settings(ui),
             SettingsSection::Backup => {
                 let idle = self.worker.is_none();
@@ -3549,6 +3755,9 @@ impl PonteApp {
             search_width,
         )
         .accessible_name("Buscar documentos no acervo");
+        if std::mem::take(&mut self.focus_search) {
+            response.request_focus();
+        }
         if response.changed() {
             self.search_changed = Some(Instant::now());
         }
@@ -3857,6 +4066,7 @@ impl PonteApp {
     }
 
     fn document(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
+        self.return_bar(ui);
         let id = detail.summary.id;
         let p = theme::c();
         let doc_tasks = self.store.list_tasks().unwrap_or_default();
@@ -6439,11 +6649,15 @@ impl PonteApp {
                 Kind::Task => self.tasks.forget_task(change.target.id),
                 Kind::Attachment => {}
             }
-            self.message(if change.target.kind == Kind::Attachment {
-                "Anexo movido para a Lixeira. É possível restaurá-lo em Ajustes ▸ Lixeira."
-            } else {
-                "Item movido para a Lixeira. É possível restaurá-lo em Ajustes ▸ Lixeira."
-            });
+            self.message_with_action(
+                if change.target.kind == Kind::Attachment {
+                    "Anexo movido para a Lixeira."
+                } else {
+                    "Item movido para a Lixeira."
+                },
+                "Desfazer",
+                NoticeAction::Restore(change.target.clone()),
+            );
         } else {
             if self.selected_id == Some(change.document) {
                 self.reload(change.document);
@@ -6767,12 +6981,23 @@ impl eframe::App for PonteApp {
             .notice
             .as_ref()
             .is_some_and(|n| !n.error && n.since.elapsed() > NOTICE_LIFETIME);
+        let mut pressed = None;
         if let Some(notice) = &self.notice {
-            dismiss |= crate::widgets::toast(&ctx, &notice.text, notice.error, None)
-                != crate::widgets::ToastAction::None;
+            let label = notice.action.as_ref().map(|(label, _)| label.as_str());
+            match crate::widgets::toast(&ctx, &notice.text, notice.error, label) {
+                crate::widgets::ToastAction::None => {}
+                crate::widgets::ToastAction::Close => dismiss = true,
+                crate::widgets::ToastAction::Action => {
+                    pressed = notice.action.as_ref().map(|(_, action)| action.clone());
+                    dismiss = true;
+                }
+            }
         }
         if dismiss {
             self.notice = None;
+        }
+        if let Some(action) = pressed {
+            self.run_notice_action(action);
         }
         if self.area == Area::Documents {
             library_panel(ui.max_rect().width())
@@ -6793,7 +7018,9 @@ impl eframe::App for PonteApp {
             )
             .show(ui, |ui| {
             ui.add_enabled_ui(enabled, |ui| {
-                if self.area == Area::Settings {
+                if self.area == Area::Today {
+                    self.today_area(ui);
+                } else if self.area == Area::Settings {
                     self.settings_area(ui);
                 } else if self.area == Area::Templates {
                     let open_document = self.detail.as_ref().map(|d| {
@@ -6840,6 +7067,8 @@ impl eframe::App for PonteApp {
                     });
                     self.saiop.set_context_document(context);
                     if let Some(id) = self.saiop.show(ui, &mut self.store) {
+                        self.return_after_select =
+                            self.saiop.open_attendance_id().map(ReturnTo::Attendance);
                         self.select(id);
                     }
                     if let Some(task) = self.saiop.take_open_task() {
@@ -6850,7 +7079,17 @@ impl eframe::App for PonteApp {
                         }
                     }
                 } else if self.area == Area::Tasks {
-                    if let Some(id) = self.tasks.show(ui, &mut self.store, self.selected_id) { self.navigate(Leave::Select(id)); }
+                    if let Some(id) = self.tasks.show(ui, &mut self.store, self.selected_id) {
+                        self.return_after_select = self.tasks.open_task_id().map(ReturnTo::Task);
+                        self.navigate(Leave::Select(id));
+                    }
+                    if let Some(task) = self.tasks.take_concluded() {
+                        self.message_with_action(
+                            format!("Tarefa concluída: {}", task.title),
+                            "Desfazer",
+                            NoticeAction::ReopenTask(task.id),
+                        );
+                    }
                     if let Some(intent) = self.tasks.take_blocked() {
                         self.navigate(match intent {
                             crate::tasks_ui::Intent::Open(task) => Leave::OpenTask(task),
@@ -6908,6 +7147,7 @@ impl eframe::App for PonteApp {
 #[cfg(feature = "shots")]
 impl PonteApp {
     const TOUR: &'static [&'static str] = &[
+        "hoje",
         "documentos-inicio",
         "documentos-filtros",
         "ficha-resumo",
@@ -7006,6 +7246,10 @@ impl PonteApp {
         let name = name.strip_prefix("escuro-").unwrap_or(name);
         let document = self.tour_document();
         match name {
+            "hoje" => {
+                self.refresh();
+                self.area = Area::Today;
+            }
             "documentos-inicio" => {
                 self.area = Area::Documents;
                 self.selected_id = None;
