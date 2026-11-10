@@ -990,7 +990,6 @@ struct PonteApp {
     /// The search across the whole library (Ctrl+K).
     global_search: search::GlobalSearch,
     /// "Is there a newer version?" in Ajustes ▸ Sobre o Ponte.
-    #[allow(dead_code)] // until the settings screen uses it
     update: crate::update_check::UpdateState,
     /// Open tasks that are late or due today, shown on the rail.
     task_badge: usize,

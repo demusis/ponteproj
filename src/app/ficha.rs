@@ -69,6 +69,85 @@ pub(super) fn allowed_sigadoc_url(raw_url: &str) -> bool {
     })
 }
 
+/// The "Arquivos" row of the "Dados do documento" card.
+fn files_row(detail: &DocumentDetail, files: usize) -> (&'static str, String) {
+    (
+        "Arquivos",
+        format!(
+            "{} • {} caracteres de texto • {}",
+            plural(files, "PDF", "PDFs"),
+            detail.capture.text.chars().count(),
+            plural(detail.capture.references.len(), "referência", "referências")
+        ),
+    )
+}
+
+/// The label/value rows of the "Dados do documento" card, before the files row.
+fn summary_rows(detail: &DocumentDetail) -> Vec<(&'static str, String)> {
+    let metadata = &detail.capture.metadata;
+    let none = "não disponível na importação";
+    let mut rows: Vec<(&str, String)> = vec![
+        (
+            "Tipo",
+            metadata
+                .get("document_type")
+                .cloned()
+                .unwrap_or_else(|| none.into()),
+        ),
+        (
+            "Data documental",
+            metadata
+                .get("document_date")
+                .cloned()
+                .unwrap_or_else(|| none.into()),
+        ),
+    ];
+    if let Some(value) = metadata.get("medium") {
+        rows.push(("Suporte", value.clone()));
+    }
+    if detail.summary.email {
+        // Where the e-mail arrived: the account it was downloaded
+        // from, or (from a .eml file, or imported before this was
+        // kept) the addresses it was sent to.
+        let account = metadata
+            .get("mail_account")
+            .filter(|a| !a.trim().is_empty());
+        match (account, metadata.get("mail_account_name")) {
+            (Some(address), Some(name)) if !name.trim().is_empty() => {
+                rows.push(("Recebido na conta", format!("{name} ({address})")));
+            }
+            (Some(address), _) => rows.push(("Recebido na conta", address.clone())),
+            (None, _) => match metadata.get("mail_to").filter(|t| !t.trim().is_empty()) {
+                Some(to) => rows.push(("Destinatário", to.clone())),
+                None => rows.push(("Conta de recebimento", "não registrada".to_owned())),
+            },
+        }
+        if let Some(from) = metadata.get("mail_from").filter(|f| !f.trim().is_empty()) {
+            rows.push(("Remetente", from.clone()));
+        }
+    }
+    if let Some(value) = metadata.get("document_model") {
+        rows.push(("Modelo do SIGADOC", value.clone()));
+    }
+    if let Some(value) = metadata.get("via_status") {
+        rows.push(("Situação no SIGADOC", value.clone()));
+    }
+    rows.push((
+        "Finalidade",
+        crate::work_context::purpose_label(&detail.work_context.purpose).to_owned(),
+    ));
+    if !detail.work_context.subjects.trim().is_empty() {
+        rows.push(("Assuntos", detail.work_context.subjects.clone()));
+    }
+    if !detail.work_context.priority.is_empty() {
+        rows.push((
+            "Prioridade local",
+            crate::tasks::priority_label(&detail.work_context.priority).to_owned(),
+        ));
+    }
+    rows
+}
+
 impl PonteApp {
     /// On the ficha: the way back to where the person came from.
     pub(super) fn return_bar(&mut self, ui: &mut egui::Ui) {
@@ -159,10 +238,24 @@ impl PonteApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut delete = false;
+                let mut export = false;
                 let can_delete = self.worker.is_none();
                 egui::containers::menu::MenuButton::from_button(widgets::secondary(icon::MORE))
                     .ui(ui, |ui| {
                         ui.set_min_width(150.0);
+                        // Exporting only reads what is in memory and in the
+                        // library, so it stays available during a background job.
+                        if ui
+                            .add(egui::Button::new(format!(
+                                "{} Imprimir ou salvar a ficha…",
+                                icon::EXPORT
+                            )))
+                            .on_hover_text("Gera uma página com a ficha deste documento e abre no navegador, de onde pode ser impressa ou salva em PDF. O arquivo fica na pasta que você escolher.")
+                            .clicked()
+                        {
+                            export = true;
+                            ui.close();
+                        }
                         let item = egui::Button::new(
                             RichText::new("Excluir…")
                                 .color(if can_delete { p.danger } else { p.muted }),
@@ -174,6 +267,9 @@ impl PonteApp {
                     })
                     .0
                     .on_hover_text("Mais ações");
+                if export {
+                    self.export_ficha(detail);
+                }
                 if delete {
                     self.request_trash(crate::trash::Target {
                         kind: crate::trash::Kind::Document,
@@ -493,84 +589,10 @@ impl PonteApp {
                 info(ui,"Os dados oficiais são um retrato do momento da importação. Finalidade, assuntos e prioridade locais não alteram o SIGADOC.");
             },
             |ui| {
-                let none = "não disponível na importação";
-                let mut rows: Vec<(&str, String)> = vec![
-                    (
-                        "Tipo",
-                        metadata
-                            .get("document_type")
-                            .cloned()
-                            .unwrap_or_else(|| none.into()),
-                    ),
-                    (
-                        "Data documental",
-                        metadata
-                            .get("document_date")
-                            .cloned()
-                            .unwrap_or_else(|| none.into()),
-                    ),
-                ];
-                if let Some(value) = metadata.get("medium") {
-                    rows.push(("Suporte", value.clone()));
-                }
-                if detail.summary.email {
-                    // Where the e-mail arrived: the account it was downloaded
-                    // from, or (from a .eml file, or imported before this was
-                    // kept) the addresses it was sent to.
-                    let account = metadata
-                        .get("mail_account")
-                        .filter(|a| !a.trim().is_empty());
-                    match (account, metadata.get("mail_account_name")) {
-                        (Some(address), Some(name)) if !name.trim().is_empty() => {
-                            rows.push(("Recebido na conta", format!("{name} ({address})")));
-                        }
-                        (Some(address), _) => rows.push(("Recebido na conta", address.clone())),
-                        (None, _) => match metadata.get("mail_to").filter(|t| !t.trim().is_empty())
-                        {
-                            Some(to) => rows.push(("Destinatário", to.clone())),
-                            None => {
-                                rows.push(("Conta de recebimento", "não registrada".to_owned()))
-                            }
-                        },
-                    }
-                    if let Some(from) = metadata.get("mail_from").filter(|f| !f.trim().is_empty()) {
-                        rows.push(("Remetente", from.clone()));
-                    }
-                }
-                if let Some(value) = metadata.get("document_model") {
-                    rows.push(("Modelo do SIGADOC", value.clone()));
-                }
-                if let Some(value) = metadata.get("via_status") {
-                    rows.push(("Situação no SIGADOC", value.clone()));
-                }
-                rows.push((
-                    "Finalidade",
-                    crate::work_context::purpose_label(&detail.work_context.purpose).to_owned(),
-                ));
-                if !detail.work_context.subjects.trim().is_empty() {
-                    rows.push(("Assuntos", detail.work_context.subjects.clone()));
-                }
-                if !detail.work_context.priority.is_empty() {
-                    rows.push((
-                        "Prioridade local",
-                        crate::tasks::priority_label(&detail.work_context.priority).to_owned(),
-                    ));
-                }
+                let mut rows = summary_rows(detail);
                 match self.store.list_files(detail.summary.latest_capture_id) {
                     Ok(files) => {
-                        rows.push((
-                            "Arquivos",
-                            format!(
-                                "{} • {} caracteres de texto • {}",
-                                plural(files.len(), "PDF", "PDFs"),
-                                detail.capture.text.chars().count(),
-                                plural(
-                                    detail.capture.references.len(),
-                                    "referência",
-                                    "referências"
-                                )
-                            ),
-                        ));
+                        rows.push(files_row(detail, files.len()));
                         facts(ui, ("doc-facts", detail.summary.id), &rows);
                         if let Some(value) = metadata.get("classification") {
                             let code = value.split(" - ").next().unwrap_or(value);
@@ -1510,6 +1532,194 @@ impl PonteApp {
                 }
             });
         }
+    }
+
+    /// Gathers what the ficha shows into the page of the printable export.
+    /// The note is taken as it is on screen; the minuta is not included.
+    fn ficha_page(&self, detail: &DocumentDetail) -> crate::ficha_export::FichaPage {
+        use crate::ficha_export as fx;
+        let id = detail.summary.id;
+        let today_iso = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let all_tasks = self.store.list_tasks().unwrap_or_default();
+        let task_summary = DocTaskStatusSummary::from_tasks(&all_tasks, id, &today_iso);
+        let (task_status, _) = task_summary.pill_parts();
+        let editor = self.editors.get(&id);
+        let note = editor
+            .map(|e| e.note.clone())
+            .unwrap_or_else(|| detail.note.clone());
+        let note_dirty = editor.is_some_and(|e| e.note_dirty());
+        let stale =
+            detail.summary.analysis_stale || self.work_context.document_dirty(id) || note_dirty;
+        let mut rows: Vec<fx::Row> = summary_rows(detail)
+            .into_iter()
+            .map(|(label, value)| fx::Row {
+                label: label.to_owned(),
+                value,
+            })
+            .collect();
+        if let Ok(files) = self.store.list_files(detail.summary.latest_capture_id) {
+            let (label, value) = files_row(detail, files.len());
+            rows.push(fx::Row {
+                label: label.to_owned(),
+                value,
+            });
+        }
+        let files = self
+            .store
+            .list_files(detail.summary.latest_capture_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| fx::FileLine {
+                name: f.label,
+                size: f.size as u64,
+            })
+            .collect();
+        let origin_line = if detail.summary.manual {
+            let kind = if detail.summary.email {
+                "E-mail importado"
+            } else {
+                "Registro manual"
+            };
+            let by = detail
+                .capture
+                .metadata
+                .get("registered_by")
+                .cloned()
+                .unwrap_or_else(|| "esta equipe".into());
+            format!("{kind} · criado no Ponte por {by}")
+        } else {
+            format!(
+                "Importado do SIGADOC · importação nº {}",
+                detail.summary.latest_capture_id
+            )
+        };
+        let history = crate::dossier::movements(&detail.capture)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| fx::MovementLine {
+                date: m.date,
+                event: m.event,
+                details: [
+                    m.scope,
+                    m.registered_unit,
+                    m.registered_person,
+                    m.attendant_unit,
+                    m.attendant_person,
+                    m.description,
+                ]
+                .into_iter()
+                .filter(|part| !part.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" · "),
+            })
+            .collect();
+        fx::FichaPage {
+            number: detail.summary.document_number.clone(),
+            title: detail.summary.title.clone(),
+            origin_line,
+            document_date: detail
+                .capture
+                .metadata
+                .get("document_date")
+                .cloned()
+                .unwrap_or_default(),
+            imported_at: detail.capture.captured_at.clone(),
+            priority: detail.summary.priority.clone(),
+            task_status: task_status.to_owned(),
+            generated_at: chrono::Local::now().format("%d/%m/%Y %H:%M").to_string(),
+            rows,
+            analysis: detail.analysis.as_ref().map(|a| fx::AnalysisBlock {
+                summary: a.summary.clone(),
+                priority: a.priority.clone(),
+                reason: a.reason.clone(),
+                deadline_candidate: a.deadline_candidate.clone(),
+                subjects: a.subjects.clone(),
+                actions: a
+                    .suggested_actions
+                    .iter()
+                    .map(|s| fx::ActionLine {
+                        action: crate::labels::task_action(&s.action).to_owned(),
+                        reason: s.reason.clone(),
+                        evidence: s.evidence.clone(),
+                    })
+                    .collect(),
+                stale,
+            }),
+            tasks: all_tasks
+                .iter()
+                .filter(|t| t.document_id == id)
+                .map(|t| fx::TaskLine {
+                    title: t.title.clone(),
+                    status: t.status.clone(),
+                    priority: t.priority.clone(),
+                    due_date: t.due_date.clone(),
+                    assignee: t.assignee.clone(),
+                })
+                .collect(),
+            attendances: self
+                .store
+                .list_saiop_attendances()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|a| a.document_id == Some(id))
+                .map(|a| fx::AttendanceLine {
+                    reference: if a.reference_raw.is_empty() {
+                        a.subject.clone()
+                    } else {
+                        a.reference_raw.clone()
+                    },
+                    status: crate::saiop::status_label(&a.status).to_owned(),
+                    due_date: a.due_date.clone(),
+                    assignee: a.assignee.clone(),
+                })
+                .collect(),
+            note,
+            text: detail.capture.text.clone(),
+            text_title: if detail.summary.manual {
+                "Texto do registro"
+            } else {
+                "Texto importado"
+            }
+            .to_owned(),
+            files,
+            history,
+            minuta: None,
+        }
+    }
+
+    /// "Imprimir ou salvar a ficha…": writes the page where the person
+    /// chooses and opens it in the browser. The only place document content
+    /// leaves the library, and only by this explicit choice.
+    fn export_ficha(&mut self, detail: &DocumentDetail) {
+        let id = detail.summary.id;
+        let page = self.ficha_page(detail);
+        let note_dirty = self.editors.get(&id).is_some_and(|e| e.note_dirty());
+        let suggested = format!(
+            "Ficha {}.html",
+            crate::attachments::sanitize_file_name(&detail.summary.document_number)
+        );
+        let Some(path) = crate::windows_ui::save_file(
+            "Salvar a ficha",
+            &suggested,
+            &[("Página da web", "*.html")],
+        ) else {
+            return;
+        };
+        if let Err(error) = std::fs::write(&path, crate::ficha_export::html(&page)) {
+            self.error(format!("Não foi possível salvar a ficha: {error}"));
+            return;
+        }
+        let mut text = format!("Ficha salva em {}.", path.display());
+        if crate::windows_ui::open_with_default_app(&path).is_err() {
+            if let Some(parent) = path.parent() {
+                crate::windows_ui::reveal_in_explorer(parent);
+            }
+            text.push_str(" Não foi possível abrir no navegador; o arquivo foi mostrado na pasta.");
+        }
+        if note_dirty {
+            text.push_str(" A nota ainda não foi salva no Ponte.");
+        }
+        self.message(text);
     }
 
     /// Saves from the keyboard (Ctrl+S) on the Notas e minutas tab: the note

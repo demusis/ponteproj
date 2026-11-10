@@ -8,6 +8,9 @@ use eframe::egui;
 impl PonteApp {
     const TOUR: &'static [&'static str] = &[
         "hoje",
+        "busca",
+        "busca-tarefas",
+        "hoje-calendario",
         "documentos-inicio",
         "documentos-filtros",
         "ficha-resumo",
@@ -26,6 +29,8 @@ impl PonteApp {
         "ajustes-copia",
         "ajustes-aparencia",
         "ajustes-importacao",
+        "ajustes-sobre",
+        "ajustes-sobre-versao-nova",
         "janela-rede",
         "janela-ia",
         "janela-email",
@@ -97,6 +102,9 @@ impl PonteApp {
         self.consult = None;
         self.filters_open = false;
         self.notice = None;
+        self.global_search.open = false;
+        self.update.last = None;
+        super::today::shots_calendar(ctx, false);
         let dark = name.starts_with("escuro-");
         crate::theme::set_appearance(
             ctx,
@@ -112,6 +120,28 @@ impl PonteApp {
             "hoje" => {
                 self.refresh();
                 self.area = Area::Today;
+            }
+            "busca" | "busca-tarefas" => {
+                self.refresh();
+                self.area = Area::Today;
+                self.global_search
+                    .shots_open(if name == "busca" { "or" } else { "veículos" });
+            }
+            "ajustes-sobre" | "ajustes-sobre-versao-nova" => {
+                self.area = Area::Settings;
+                self.settings_section = super::SettingsSection::About;
+                if name == "ajustes-sobre-versao-nova" {
+                    self.update.last = Some(crate::update_check::Outcome::Newer {
+                        latest: "9.9.9".to_owned(),
+                        url: crate::update_check::FALLBACK_URL.to_owned(),
+                        published: "01/01/2027".to_owned(),
+                    });
+                }
+            }
+            "hoje-calendario" => {
+                self.refresh();
+                self.area = Area::Today;
+                super::today::shots_calendar(ctx, true);
             }
             "documentos-inicio" => {
                 self.area = Area::Documents;

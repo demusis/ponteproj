@@ -354,6 +354,102 @@ impl PonteApp {
                 if guide {
                     self.open_guide();
                 }
+                self.update_card(ui, ctx);
+            }
+        }
+    }
+
+    /// The "Atualização" card of Sobre o Ponte. The check runs only when the
+    /// person clicks; nothing is downloaded or installed by the app.
+    fn update_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use crate::update_check::{self, Outcome};
+        update_check::poll(&mut self.update);
+        let running = self.update.running();
+        let result = self.update.last.clone();
+        let mut check = false;
+        let mut open: Option<String> = None;
+        ui.add_space(S2);
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Atualização");
+            widgets::muted(
+                ui,
+                format!("Versão instalada: {}", env!("CARGO_PKG_VERSION")),
+            );
+            ui.add_space(S1);
+            ui.horizontal(|ui| {
+                let label = if matches!(result, Some(Outcome::Failed(_))) {
+                    "Tentar de novo"
+                } else {
+                    "Verificar se há versão nova"
+                };
+                check = ui
+                    .add_enabled(!running, widgets::secondary(label))
+                    .clicked();
+                if running {
+                    ui.spinner();
+                    widgets::muted(ui, "Consultando…");
+                }
+            });
+            widgets::small_muted(
+                ui,
+                "Só ao clicar, o Ponte consulta a página de versões no GitHub (github.com/demusis/ponteproj). Nada do acervo é enviado.",
+            );
+            let Some(result) = &result else { return };
+            ui.add_space(S2);
+            let (tone, glyph, text) = match result {
+                Outcome::UpToDate { latest } => (
+                    Tone::Ok,
+                    icon::CHECK,
+                    format!("Você já tem a versão mais recente ({latest})."),
+                ),
+                Outcome::Newer {
+                    latest, published, ..
+                } => (
+                    Tone::Info,
+                    icon::INFO,
+                    if published.is_empty() {
+                        format!("Há uma versão nova: {latest}.")
+                    } else {
+                        format!("Há uma versão nova: {latest}, publicada em {published}.")
+                    },
+                ),
+                Outcome::Failed(message) => (Tone::Danger, icon::WARNING, message.clone()),
+            };
+            let (fg, bg) = tone.colors();
+            egui::Frame::new()
+                .fill(bg)
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(glyph).size(18.0).color(fg));
+                        ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                    });
+                });
+            if let Outcome::Newer { url, .. } = result {
+                ui.add_space(S2);
+                if ui
+                    .add(widgets::primary(format!(
+                        "{} Abrir a página de download",
+                        icon::DOWNLOAD
+                    )))
+                    .clicked()
+                {
+                    open = Some(update_check::safe_release_url(url));
+                }
+                widgets::small_muted(
+                    ui,
+                    "Feche o Ponte antes de instalar. O instalador guarda uma cópia do acervo antes de atualizar.",
+                );
+            }
+        });
+        if check {
+            update_check::start(&mut self.update, ctx);
+        }
+        if let Some(url) = open {
+            if let Err(error) = crate::windows_ui::open_url(&url) {
+                self.error(format!("Não foi possível abrir a página: {error:#}"));
             }
         }
     }

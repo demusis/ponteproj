@@ -717,6 +717,90 @@ pub struct AttachmentsPanel {
     confirm_delete: Option<i64>,
 }
 
+/// Per-pass bookkeeping of the attachments blocks, kept in egui temp memory
+/// (one value shared by every block of the window).
+#[cfg(feature = "desktop")]
+#[derive(Clone, Default)]
+struct DropFrame {
+    /// Pass this record describes.
+    pass: u64,
+    /// Blocks drawn so far in `pass`.
+    count: usize,
+    /// Blocks drawn in the previous pass (0 when that pass was not the one
+    /// right before this one).
+    prev: usize,
+    /// Pass whose dropped files were already taken by a block.
+    handled: Option<u64>,
+}
+
+/// What a drop of files from Windows Explorer does, decided by how many
+/// attachments blocks are on screen. Windows gives the application no
+/// pointer position during a drag from another program (winit's
+/// `DragOver` ignores the point and sends no `CursorMoved`; egui-winit only
+/// forwards `HoveredFile`/`DroppedFile`), so the target cannot be chosen by
+/// the pointer: only a single block can safely receive.
+#[cfg(feature = "desktop")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DropTarget {
+    /// No attachments block is on screen.
+    Nobody,
+    /// The only block receives the files.
+    Block,
+    /// Two or more blocks: the person must use the button of one of them.
+    Ambiguous,
+}
+
+#[cfg(feature = "desktop")]
+fn drop_target(blocks: usize) -> DropTarget {
+    match blocks {
+        0 => DropTarget::Nobody,
+        1 => DropTarget::Block,
+        _ => DropTarget::Ambiguous,
+    }
+}
+
+#[cfg(feature = "desktop")]
+const AMBIGUOUS_DROP: &str = "Solte o arquivo usando o botão Anexar arquivo… do bloco desejado.";
+#[cfg(feature = "desktop")]
+const FOLDER_REFUSAL: &str = "Pastas não podem ser anexadas; solte os arquivos.";
+
+/// Message for a drop of `outcomes` (file name and result, in order) plus
+/// `skipped` files left out because the count limit was reached; the flag is
+/// true for an error. One file keeps the message of the dialog path.
+#[cfg(feature = "desktop")]
+fn drop_summary(outcomes: &[(String, Result<String, String>)], skipped: usize) -> (String, bool) {
+    if let ([(_, result)], 0) = (outcomes, skipped) {
+        return match result {
+            Ok(text) => (text.clone(), false),
+            Err(text) => (text.clone(), true),
+        };
+    }
+    let attached = outcomes.iter().filter(|(_, r)| r.is_ok()).count();
+    let mut parts = Vec::new();
+    if skipped > 0 {
+        let done = match attached {
+            0 => "Nenhum anexado".to_owned(),
+            1 => "1 anexado".to_owned(),
+            n => format!("{n} anexados"),
+        };
+        parts.push(format!(
+            "{done}; os demais passam do limite de {MAX_PER_OWNER} anexos."
+        ));
+    } else if attached > 0 {
+        parts.push(if attached == 1 {
+            "1 anexado.".to_owned()
+        } else {
+            format!("{attached} anexados.")
+        });
+    }
+    for (name, result) in outcomes {
+        if let Err(text) = result {
+            parts.push(format!("“{name}”: {text}"));
+        }
+    }
+    (parts.join(" "), skipped > 0 || attached < outcomes.len())
+}
+
 #[cfg(feature = "desktop")]
 impl AttachmentsPanel {
     /// PDF attachment the person asked to read in the Ponte: (id, label).
@@ -759,6 +843,56 @@ impl AttachmentsPanel {
             }
         };
         let full = list.len() >= MAX_PER_OWNER;
+        // Files dragged over the window / dropped on it (native: paths only).
+        let ctx = ui.ctx().clone();
+        let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        let pass = ctx.cumulative_pass_nr();
+        let state_id = egui::Id::unique("ponte-attachments-drop");
+        let mut state: DropFrame = ctx.data_mut(|d| d.get_temp(state_id)).unwrap_or_default();
+        if state.pass != pass {
+            state.prev = if state.pass + 1 == pass {
+                state.count
+            } else {
+                0
+            };
+            state.pass = pass;
+            state.count = 0;
+        }
+        state.count += 1;
+        // Blocks seen so far, or in the previous pass (blocks drawn later in
+        // this pass are not known yet; frames are continuous during a drag).
+        let target = drop_target(state.count.max(state.prev));
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        let cannot_receive = if busy {
+            Some("Aguarde a operação em andamento.")
+        } else if full {
+            Some("Limite de anexos atingido. Exclua um anexo para abrir espaço.")
+        } else {
+            None
+        };
+        if hovering {
+            ctx.request_repaint();
+        }
+        if !dropped.is_empty() && state.handled != Some(pass) {
+            match (target, cannot_receive) {
+                (DropTarget::Ambiguous, _) => self.notice(AMBIGUOUS_DROP, true),
+                (_, Some(reason)) => {
+                    state.handled = Some(pass);
+                    self.notice(reason, true);
+                }
+                _ => {
+                    state.handled = Some(pass);
+                    self.attach_dropped(store, owner, &dropped);
+                }
+            }
+        }
+        ctx.data_mut(|d| d.insert_temp(state_id, state));
         let mut pick = false;
         ui.horizontal_wrapped(|ui| {
             widgets::small_muted(ui, format!("{} de {MAX_PER_OWNER} anexos", list.len()));
@@ -811,7 +945,31 @@ impl AttachmentsPanel {
                 self.message.clear();
             }
         }
-        if list.is_empty() {
+        if hovering {
+            ui.add_space(theme::S1);
+            let (text, active) = match (target, cannot_receive) {
+                (DropTarget::Ambiguous, _) => (AMBIGUOUS_DROP, false),
+                (_, Some(reason)) => (reason, false),
+                _ => ("Solte aqui para anexar", true),
+            };
+            let p = theme::c();
+            let color = if active { p.primary } else { p.muted };
+            egui::Frame::new()
+                .fill(if active { p.primary_soft } else { p.sunken })
+                .stroke(egui::Stroke::new(if active { 1.5 } else { 1.0 }, color))
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::symmetric(12, 16))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new(text)
+                                .font(theme::font_strong(theme::SIZE_BODY))
+                                .color(color),
+                        );
+                    });
+                });
+        } else if list.is_empty() {
             ui.add_space(theme::S1);
             widgets::small_muted(
                 ui,
@@ -975,6 +1133,15 @@ impl AttachmentsPanel {
 
     /// Reads the chosen file and attaches it, with guidance on every refusal.
     fn attach(&mut self, store: &mut Store, owner: Owner, path: &Path) {
+        match Self::attach_file(store, owner, path) {
+            Ok(text) => self.notice(text, false),
+            Err(text) => self.notice(text, true),
+        }
+    }
+
+    /// The attach path shared by the dialog and by drops: limits, checks and
+    /// store call. Gives the message for the person either way.
+    fn attach_file(store: &mut Store, owner: Owner, path: &Path) -> Result<String, String> {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -982,32 +1149,46 @@ impl AttachmentsPanel {
         // Check the size before reading, so a huge file is refused at once.
         match std::fs::metadata(path) {
             Ok(info) if info.len() > MAX_ATTACHMENT_BYTES as u64 => {
-                self.notice(size_message(&name, info.len()), true);
-                return;
+                return Err(size_message(&name, info.len()));
             }
             Ok(_) => {}
-            Err(error) => {
-                self.notice(format!("Não foi possível ler “{name}”: {error}"), true);
-                return;
-            }
+            Err(error) => return Err(format!("Não foi possível ler “{name}”: {error}")),
         }
         let data = match std::fs::read(path) {
             Ok(data) => data,
-            Err(error) => {
-                self.notice(format!("Não foi possível ler “{name}”: {error}"), true);
-                return;
-            }
+            Err(error) => return Err(format!("Não foi possível ler “{name}”: {error}")),
         };
         match store.add_attachment(owner, &name, "", &data) {
-            Ok(_) => self.notice(
-                format!(
-                    "Anexado: “{name}” ({}). Se quiser, escreva uma descrição.",
-                    labels::file_size(data.len() as u64)
-                ),
-                false,
-            ),
-            Err(error) => self.notice(error.to_string(), true),
+            Ok(_) => Ok(format!(
+                "Anexado: “{name}” ({}). Se quiser, escreva uma descrição.",
+                labels::file_size(data.len() as u64)
+            )),
+            Err(error) => Err(error.to_string()),
         }
+    }
+
+    /// Attaches files dropped from Windows Explorer, one by one in order.
+    fn attach_dropped(&mut self, store: &mut Store, owner: Owner, paths: &[PathBuf]) {
+        let mut outcomes: Vec<(String, Result<String, String>)> = Vec::new();
+        let mut skipped = 0;
+        for (index, path) in paths.iter().enumerate() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if path.is_dir() {
+                outcomes.push((name, Err(FOLDER_REFUSAL.to_owned())));
+                continue;
+            }
+            let count = store.list_attachments(owner).map_or(0, |l| l.len());
+            if count >= MAX_PER_OWNER {
+                skipped = paths[index..].iter().filter(|p| !p.is_dir()).count();
+                break;
+            }
+            outcomes.push((name, Self::attach_file(store, owner, path)));
+        }
+        let (text, error) = drop_summary(&outcomes, skipped);
+        self.notice(text, error);
     }
 }
 
@@ -1141,6 +1322,46 @@ mod tests {
         // Separators and reserved characters become "_"; leading dots and spaces go.
         assert_eq!(sanitize_file_name("  ../ofi:cio?.pdf "), "_ofi_cio_.pdf");
         assert_eq!(sanitize_file_name("..."), "anexo");
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn drop_goes_to_a_block_only_when_it_is_the_only_one() {
+        assert_eq!(drop_target(0), DropTarget::Nobody);
+        assert_eq!(drop_target(1), DropTarget::Block);
+        assert_eq!(drop_target(2), DropTarget::Ambiguous);
+        assert_eq!(drop_target(5), DropTarget::Ambiguous);
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn drop_summary_reports_counts_limit_and_failures() {
+        let ok = |n: &str| (n.to_owned(), Ok(format!("Anexado: “{n}”.")));
+        let bad = |n: &str, e: &str| (n.to_owned(), Err(e.to_owned()));
+        assert_eq!(
+            drop_summary(&[ok("a.pdf")], 0),
+            ("Anexado: “a.pdf”.".to_owned(), false)
+        );
+        assert_eq!(
+            drop_summary(&[bad("a.pdf", "Vazio.")], 0),
+            ("Vazio.".to_owned(), true)
+        );
+        assert_eq!(
+            drop_summary(&[ok("a.pdf"), ok("b.pdf")], 0),
+            ("2 anexados.".to_owned(), false)
+        );
+        let (text, error) = drop_summary(&[ok("a.pdf"), bad("b.pdf", "Vazio.")], 0);
+        assert_eq!(text, "1 anexado. “b.pdf”: Vazio.");
+        assert!(error);
+        let (text, error) = drop_summary(&[ok("a.pdf"), ok("b.pdf")], 3);
+        assert_eq!(text, "2 anexados; os demais passam do limite de 20 anexos.");
+        assert!(error);
+        let (text, _) = drop_summary(&[bad("pasta", FOLDER_REFUSAL), ok("a.pdf")], 0);
+        assert!(text.contains("“pasta”: Pastas não podem ser anexadas; solte os arquivos."));
+        assert_eq!(
+            drop_summary(&[bad("pasta", FOLDER_REFUSAL)], 0).0,
+            FOLDER_REFUSAL
+        );
     }
 
     #[test]
