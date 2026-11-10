@@ -11,6 +11,7 @@
   </header>
   <p id="status" class="status" role="status" aria-live="polite">Verificando a ligação com o Ponte…</p>
   <p id="hint"></p>
+  <p id="old" class="small" hidden>Atualize o Ponte para a versão mais recente para ver na página se o documento já foi importado.</p>
   <button id="check" type="button">Verificar de novo</button>
   <details id="help">
     <summary>Se não estiver ligado</summary>
@@ -20,6 +21,7 @@
       <li>Se ainda não ligar, informe ao suporte o código desta extensão: <code id="extension-id"></code> <button id="copy-id" type="button" class="link">copiar</button>.</li>
     </ol>
   </details>
+  <p id="shortcut" class="small">Atalho: Alt+Shift+I — pode ser trocado em chrome://extensions/shortcuts</p>
   <p class="small">A extensão só lê a ficha do documento aberto e nunca a sua senha. Nada vai para a internet: tudo fica no Ponte deste computador.</p>
   <script src="popup.js"></script>
 </body>

@@ -11,7 +11,7 @@ O Edge instala extensões da Chrome Web Store sem passo extra (basta permitir "e
 
 ## 1. Publicar uma nova versão da extensão
 
-1. Aumente `"version"` em `extension\manifest.json` e em `extension\package.json` (a loja exige número maior que o publicado; hoje: 0.1.11).
+1. Aumente `"version"` em `extension\manifest.json` e em `extension\package.json` (a loja exige número maior que o publicado; hoje: 0.2.0).
 2. Gere o pacote: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-X.Y.Z.zip` (sem o campo `key`, como a loja exige).
 3. No painel, abra o item **Ponte • Assistente SIGADOC** → aba **Pacote** (*Package*) → **Enviar novo pacote** (*Upload new package*) → escolha o `.zip`.
 4. Se mudou algum texto da ficha, ajuste nas abas **Ficha da loja** (*Store listing*), **Práticas de privacidade** e **Distribuição**. O **Resumo** vem do campo `description` do manifesto e não é editável no painel: para mudá-lo, mude o manifesto e envie um pacote novo.
@@ -34,7 +34,7 @@ Ponte é um assistente documental para quem trabalha com o SIGADOC. Ele roda no 
 
 O QUE A EXTENSÃO FAZ
 
-Em cada documento aberto no SIGADOC (www.sigadoc.mt.gov.br) aparece o botão "Importar para o assistente". Ao clicar, o Ponte recebe o texto do documento, os PDFs anexos e o histórico de tramitação. Se o mesmo documento for importado de novo mais tarde, o Ponte guarda a nova versão e mostra o que mudou; se nada mudou, avisa e não duplica.
+Em cada documento aberto no SIGADOC (www.sigadoc.mt.gov.br) aparece o botão "Importar para o assistente". Ao clicar, o Ponte recebe o texto do documento, os PDFs anexos e o histórico de tramitação. Se o mesmo documento for importado de novo mais tarde, o Ponte guarda a nova versão e mostra o que mudou; se nada mudou, avisa e não duplica. Antes mesmo de clicar, o painel mostra se o documento já está no Ponte e permite abri-lo. Atalho do teclado para importar: Alt+Shift+I (pode ser trocado em chrome://extensions/shortcuts).
 
 O QUE VOCÊ FAZ NO PONTE
 
@@ -74,6 +74,7 @@ Enviar o documento aberto no SIGADOC ao aplicativo Ponte instalado no computador
 
 **Justificativa das permissões:**
 - `nativeMessaging` — é o único meio de entregar o documento ao aplicativo Ponte, que roda no computador do usuário. A extensão não tem outro destino de dados.
+- `storage` — usado só como memória da sessão (`chrome.storage.session`), para repetir uma importação sem baixar os arquivos de novo quando o navegador interrompe a extensão. Nada é gravado em disco; a cópia some quando a importação termina ou o navegador fecha.
 - Permissão de host `https://www.sigadoc.mt.gov.br/*` — a extensão precisa ler a página do documento aberto no SIGADOC (texto, lista de PDFs e histórico) para montar a importação. Nenhuma outra página é acessada.
 - Não há código remoto: todo o código está no pacote.
 
@@ -88,7 +89,8 @@ Enviar o documento aberto no SIGADOC ao aplicativo Ponte instalado no computador
 
 - 2026-11-03: item criado e enviado para análise com a 0.1.8. Publicado como não listado.
 - 2026-11-05: a extensão da loja só passou a funcionar com o Ponte 0.19.3: versões anteriores do programa não reconheciam o ID da loja e fechavam sem responder ("Não recebemos a confirmação do Ponte").
-- Próximo envio: 0.1.11 (`dist\ponte-extensao-webstore-0.1.11.zip`) — descrição nova e mensagens de erro específicas para cada falha de ligação com o Ponte.
+- 0.1.11: descrição nova e mensagens de erro específicas para cada falha de ligação com o Ponte.
+- Próximo envio: 0.2.0 (`dist\ponte-extensao-webstore-0.2.0.zip`) — o painel mostra, antes do clique, se o documento já está no Ponte e permite abri-lo (exige o Ponte 0.29 ou mais novo; com um Ponte antigo a importação funciona como antes); atalho Alt+Shift+I; PDFs baixados até 3 por vez; nova permissão `storage` (memória da sessão, justificativa acima); textos revisados. Atualizar também a ficha da loja (descrição acima) e a política de privacidade pública (`PRIVACIDADE.md`).
 
 ## Alternativa: política do órgão (sem loja)
 

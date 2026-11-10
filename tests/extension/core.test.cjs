@@ -8,7 +8,7 @@ const vm = require("node:vm");
 const Core = require("../../extension/capture-core.js");
 const UUID = "51ab5b2e-9e1b-40ee-9e60-1de2aaacaa72";
 function capture(changes = {}) {
-  return { schema_version: 1, request_id: UUID, source_url: Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=SEPLAG-PRO-2026%2F01234", document_number: "SEPLAG-PRO-2026/01234", title: "Aquisição de material", captured_at: "2026-11-01T12:00:00.000Z", text: "Texto de origem.", metadata: {}, references: [], coverage: { adapter: Core.ADAPTER, recognized: ["Campo explícito"], pending: ["DOM autenticado não validado"] }, ...changes };
+  return { schema_version: 1, request_id: UUID, source_url: Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=ORG-PRO-2026%2F01234", document_number: "ORG-PRO-2026/01234", title: "Aquisição de material", captured_at: "2026-11-01T12:00:00.000Z", text: "Texto de origem.", metadata: {}, references: [], coverage: { adapter: Core.ADAPTER, recognized: ["Campo explícito"], pending: ["DOM autenticado não validado"] }, ...changes };
 }
 function receipt(requestId = UUID) { return { protocol_version: 1, ok: true, request_id: requestId, document_id: 1, capture_id: 2, duplicate: false, message: "Salvo", ui_opened: false }; }
 test("manifest uses fixed public key/ID, restricted isolated MV3, no external messages", () => {
@@ -18,35 +18,35 @@ test("manifest uses fixed public key/ID, restricted isolated MV3, no external me
   const digest = crypto.createHash("sha256").update(Buffer.from(manifest.key, "base64")).digest().subarray(0, 16).toString("hex");
   assert.equal(digest.replace(/[0-9a-f]/g, char => String.fromCharCode(97 + parseInt(char, 16))), "ecllnakmppjinmednoikimbpnbgbimhg");
   assert.equal(manifest.manifest_version, 3);
-  assert.deepEqual(manifest.permissions, ["nativeMessaging"]);
+  assert.deepEqual([...manifest.permissions].sort(), ["nativeMessaging", "storage"]);
   assert.deepEqual(manifest.host_permissions, [Core.ORIGIN + "/*"]);
   assert.equal(manifest.content_scripts[0].world, "ISOLATED");
   assert.equal(manifest.content_scripts[0].all_frames, false);
   assert.equal(manifest.externally_connectable, undefined);
 });
 test("URL sanitizer keeps only official document-number parameters and exact HTTPS host", () => {
-  const url = Core.cleanUrl(Core.ORIGIN + "/siga;jsessionid=private/doc?token=secret&PHPSESSID=secret&sigla=SEPLAG-PRO-2026%2F01234&documento=opaque-session&code=auth#secret");
-  assert.equal(url, Core.ORIGIN + "/siga/doc?sigla=SEPLAG-PRO-2026%2F01234");
+  const url = Core.cleanUrl(Core.ORIGIN + "/siga;jsessionid=private/doc?token=secret&PHPSESSID=secret&sigla=ORG-PRO-2026%2F01234&documento=opaque-session&code=auth#secret");
+  assert.equal(url, Core.ORIGIN + "/siga/doc?sigla=ORG-PRO-2026%2F01234");
   for (const url of ["http://www.sigadoc.mt.gov.br/", "https://sigadoc.mt.gov.br/", "https://www.sigadoc.mt.gov.br.attacker.test/", "https://user:password@www.sigadoc.mt.gov.br/", "javascript:alert(1)", "https://www.sigadoc.mt.gov.br:444/"]) assert.equal(Core.allowedOrigin(url), false);
 });
 test("capture validation rejects invented identity, unknown keys, secrets in URLs and invalid calendar dates", () => {
   assert.equal(Core.validateCapture(capture()).request_id, UUID);
-  for (const changes of [{ document_number: "Sem número 2026" }, { document_number: "SEPLAG-PRO-2026/99999" }, { title: "" }, { request_id: "random" }, { source_url: Core.ORIGIN + "/?token=secret" }, { metadata: { password: "secret" } }, { captured_at: "2026-02-31T12:00:00Z" }, { extra: true }]) assert.throws(() => Core.validateCapture(capture(changes)), Core.CaptureError);
-  assert.equal(Core.documentNumber("Documento nº SEPLAG-PRO-2026/01234"), "SEPLAG-PRO-2026/01234");
+  for (const changes of [{ document_number: "Sem número 2026" }, { document_number: "ORG-PRO-2026/99999" }, { title: "" }, { request_id: "random" }, { source_url: Core.ORIGIN + "/?token=secret" }, { metadata: { password: "secret" } }, { captured_at: "2026-02-31T12:00:00Z" }, { extra: true }]) assert.throws(() => Core.validateCapture(capture(changes)), Core.CaptureError);
+  assert.equal(Core.documentNumber("Documento nº ORG-PRO-2026/01234"), "ORG-PRO-2026/01234");
   assert.equal(Core.documentNumber("12345/2026"), "12345/2026");
   assert.equal(Core.documentNumber("Resultado de pesquisa 2026"), null);
 });
 test("SIGA via sigla preserves source identity and matches its canonical base only on exibir", () => {
-  const source = Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=SEPLAG-PRO-2026%2F01234-A";
+  const source = Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=ORG-PRO-2026%2F01234-A";
   const via = capture({ source_url: source });
   assert.equal(Core.cleanUrl(source + "&linkVolta=history.back()&token=secret"), source);
-  assert.equal(Core.validateCapture(via).document_number, "SEPLAG-PRO-2026/01234");
+  assert.equal(Core.validateCapture(via).document_number, "ORG-PRO-2026/01234");
   assert.equal(Core.identity(via), Core.identity(capture()));
-  assert.equal(Core.documentNumber("SEPLAG-PRO-2026/01234-A"), null);
+  assert.equal(Core.documentNumber("ORG-PRO-2026/01234-A"), null);
   for (const source_url of [
-    Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=SEPLAG-PRO-2026%2F99999-A",
-    Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=SEPLAG-PRO-2026%2F01234-AB",
-    Core.ORIGIN + "/outra-rota?sigla=SEPLAG-PRO-2026%2F01234-A"
+    Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=ORG-PRO-2026%2F99999-A",
+    Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=ORG-PRO-2026%2F01234-AB",
+    Core.ORIGIN + "/outra-rota?sigla=ORG-PRO-2026%2F01234-A"
   ]) assert.throws(() => Core.validateCapture(capture({ source_url })), Core.CaptureError);
 });
 test("UTF-8 text and full native envelope limits reject without truncation", () => {
@@ -109,18 +109,48 @@ test("new document receives a distinct request and mismatched host ack never suc
   const session = new Core.ImportSession(async value => { sent.push(value); return receipt("wrong-request"); });
   assert.equal((await session.run(capture())).result.error.code, "HOST_SCHEMA");
   const nextId = crypto.randomUUID();
-  await session.run(capture({ request_id: nextId, document_number: "SEPLAG-PRO-2026/01235", source_url: Core.ORIGIN + "/doc?sigla=SEPLAG-PRO-2026%2F01235" }));
+  await session.run(capture({ request_id: nextId, document_number: "ORG-PRO-2026/01235", source_url: Core.ORIGIN + "/doc?sigla=ORG-PRO-2026%2F01235" }));
   assert.equal(sent[1].request_id, nextId);
 });
-function workerFixture(filesApi) {
-  let listener;
-  const calls = [];
-  const chrome = { runtime: { id: "ecllnakmppjinmednoikimbpnbgbimhg", getURL: name => "chrome-extension://ecllnakmppjinmednoikimbpnbgbimhg/" + name, onMessage: { addListener: value => { listener = value; } }, sendNativeMessage: (host, request, callback) => { calls.push({ host, request }); callback(request.action === "ping" ? { protocol_version: 1, ok: true } : receipt(request.capture.request_id)); } } };
-  const context = { chrome, importScripts: () => {}, PonteCapture: Core, PonteFiles: filesApi, setTimeout, clearTimeout };
+function workerFixture(filesApi, options = {}) {
+  let listener, commandListener;
+  const calls = [], tabMessages = [];
+  const store = options.store || {};
+  const defaultReply = request => {
+    if (request.action === "ping") return { protocol_version: 1, ok: true, app_version: "0.29.0", actions: ["lookup", "open_document"] };
+    if (request.action === "lookup") return { protocol_version: 1, ok: true, found: false };
+    if (request.action === "open_document") return { protocol_version: 1, ok: true, document_id: request.document_id, ui_opened: true };
+    return receipt(request.capture.request_id);
+  };
+  const chrome = {
+    runtime: {
+      id: "ecllnakmppjinmednoikimbpnbgbimhg", lastError: null,
+      getURL: name => "chrome-extension://ecllnakmppjinmednoikimbpnbgbimhg/" + name,
+      onMessage: { addListener: value => { listener = value; } },
+      sendNativeMessage: (host, request, callback) => {
+        calls.push({ host, request });
+        const custom = options.native ? options.native(request, calls.length) : undefined;
+        if (custom && custom.nativeError) { chrome.runtime.lastError = { message: custom.nativeError }; callback(undefined); chrome.runtime.lastError = null; return; }
+        callback(custom === undefined ? defaultReply(request) : custom);
+      }
+    },
+    // chrome.storage.session stand-in: memory only, shared between workers through options.store.
+    storage: { session: {
+      get: async key => { if (options.storageThrows) throw new Error("storage unavailable"); return key in store ? { [key]: JSON.parse(JSON.stringify(store[key])) } : {}; },
+      set: async value => { if (options.storageThrows) throw new Error("QUOTA_BYTES quota exceeded"); Object.assign(store, JSON.parse(JSON.stringify(value))); }
+    } },
+    commands: { onCommand: { addListener: value => { commandListener = value; } } },
+    tabs: {
+      query: (_, callback) => callback(options.tabs || []),
+      sendMessage: (id, message, opts, callback) => { tabMessages.push({ id, message, opts }); if (callback) callback(); }
+    }
+  };
+  const context = { chrome, importScripts: () => {}, PonteCapture: Core, PonteFiles: filesApi, setTimeout, clearTimeout, JSON, Promise };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../../extension/background.js"), "utf8"), context);
   const sender = { id: chrome.runtime.id, frameId: 0, url: Core.ORIGIN + "/doc", tab: { id: 7, url: Core.ORIGIN + "/doc" } };
   const invoke = (message, who = sender) => new Promise(resolve => listener(message, who, resolve));
-  return { invoke, calls, sender, chrome };
+  const command = name => commandListener(name);
+  return { invoke, calls, sender, chrome, store, tabMessages, command };
 }
 test("worker checks sender origin/frame/action/schema before every native call", async () => {
   const worker = workerFixture();
@@ -162,6 +192,188 @@ test("worker keeps downloaded bundle immutable for retry and rejects changed req
 test("history metadata cannot nominate a different document or destination",()=>{
   const value=capture({metadata:{movement_source:Core.ORIGIN+"/sigaex/app/expediente/doc/exibirAntigo?sigla=OUTRO202601234"}});
   assert.throws(()=>Core.validateCapture(value),/eventos divergente/);
-  value.metadata.movement_source=Core.ORIGIN+"/sigaex/app/expediente/doc/exibirAntigo?sigla=SEPLAGPRO202601234";
+  value.metadata.movement_source=Core.ORIGIN+"/sigaex/app/expediente/doc/exibirAntigo?sigla=ORGPRO202601234";
   assert.doesNotThrow(()=>Core.validateCapture(value));
+});
+
+const plainOf = value => JSON.parse(JSON.stringify(value));
+const NUMBER = "ORG-OFI-2026/00431";
+test("manifest 0.2.0: only nativeMessaging and storage, same key and hosts, one shortcut command", () => {
+  const read = name => JSON.parse(fs.readFileSync(path.join(__dirname, "../../extension/" + name), "utf8"));
+  const manifest = read("manifest.json");
+  assert.equal(manifest.version, "0.2.0");
+  assert.equal(read("package.json").version, "0.2.0");
+  assert.deepEqual([...manifest.permissions].sort(), ["nativeMessaging", "storage"]);
+  assert.deepEqual(manifest.host_permissions, [Core.ORIGIN + "/*"]);
+  assert.deepEqual(manifest.content_scripts[0].matches, [Core.ORIGIN + "/*"]);
+  assert.equal(manifest.commands.importar.suggested_key.default, "Alt+Shift+I");
+  assert.equal(manifest.commands.importar.description, "Importar o documento aberto para o Ponte");
+  assert.deepEqual(Object.keys(manifest.commands), ["importar"]);
+});
+test("source never touches persistent storage, eval, innerHTML or logging", () => {
+  for (const name of ["background.js", "content.js", "files.js", "history.js", "popup.js", "capture-core.js"]) {
+    const source = fs.readFileSync(path.join(__dirname, "../../extension/" + name), "utf8");
+    assert.ok(!/storage\.(local|sync)|\beval\(|new Function|innerHTML|console\./.test(source), name);
+  }
+});
+test("lookup and open are accepted only from the content script of the SIGADOC top frame", async () => {
+  const worker = workerFixture();
+  const lookup = { action: "ponte.lookup", document_number: NUMBER };
+  const popup = { id: worker.chrome.runtime.id, url: worker.chrome.runtime.getURL("popup.html") };
+  for (const who of [popup, { ...worker.sender, url: "https://attacker.test/" }, { ...worker.sender, frameId: 1 }, { ...worker.sender, tab: { id: 7, url: "https://attacker.test/" } }, { ...worker.sender, id: "other-extension" }]) {
+    assert.equal((await worker.invoke(lookup, who)).error.code, "SENDER_DENIED");
+    assert.equal((await worker.invoke({ action: "ponte.open", document_id: 5 }, who)).error.code, "SENDER_DENIED");
+  }
+  // Extra fields are refused, not forwarded.
+  assert.equal((await worker.invoke({ ...lookup, native_action: "open_app" })).error.code, "SENDER_DENIED");
+  assert.equal((await worker.invoke({ action: "ponte.open", document_id: 5, extra: 1 })).error.code, "SENDER_DENIED");
+  assert.equal(worker.calls.length, 0);
+});
+test("lookup builds the native message from scratch and returns only checked fields", async () => {
+  const worker = workerFixture(undefined, { native: request => request.action === "lookup" ? { protocol_version: 1, ok: true, found: true, document_id: 123, imported_at: "10/11/2026 14:30", secret: "x", path: "C:\\dados" } : undefined });
+  const answer = await worker.invoke({ action: "ponte.lookup", document_number: NUMBER });
+  assert.deepEqual(plainOf(answer), { protocol_version: 1, ok: true, found: true, document_id: 123, imported_at: "10/11/2026 14:30" });
+  assert.deepEqual(plainOf(worker.calls.map(call => call.request)), [{ protocol_version: 1, action: "lookup", document_number: NUMBER }]);
+  assert.equal(worker.calls[0].host, "com.ponteproj.assistente");
+  assert.deepEqual(plainOf(await workerFixture().invoke({ action: "ponte.lookup", document_number: NUMBER })), { protocol_version: 1, ok: true, found: false });
+});
+test("lookup and open refuse bad inputs before calling the native host", async () => {
+  const worker = workerFixture();
+  for (const document_number of ["", "x".repeat(201), 5, null, undefined, { a: 1 }, "A\u0000B"]) assert.equal((await worker.invoke({ action: "ponte.lookup", document_number })).error.code, "INVALID_REQUEST", String(document_number));
+  for (const document_id of [0, -1, 1.5, "7", null, 2 ** 53, Infinity, NaN]) assert.equal((await worker.invoke({ action: "ponte.open", document_id })).error.code, "INVALID_REQUEST", String(document_id));
+  assert.equal(worker.calls.length, 0);
+  assert.equal((await worker.invoke({ action: "ponte.lookup", document_number: "x".repeat(200) })).ok, true);
+  assert.deepEqual(plainOf(await worker.invoke({ action: "ponte.open", document_id: 123 })), { protocol_version: 1, ok: true, document_id: 123, ui_opened: true });
+  assert.deepEqual(plainOf(worker.calls.map(call => call.request).slice(1)), [{ protocol_version: 1, action: "open_document", document_id: 123 }]);
+});
+test("answers of an old Ponte and of unknown documents are passed on in words; malformed ones are refused", async () => {
+  const refusal = (code, message) => ({ protocol_version: 1, ok: false, error: { code, message } });
+  let reply;
+  const worker = workerFixture(undefined, { native: () => reply });
+  reply = refusal("unsupported_action", "Ação desconhecida.");
+  assert.deepEqual((await worker.invoke({ action: "ponte.lookup", document_number: NUMBER })).error, { code: "unsupported_action", message: "Ação desconhecida." });
+  reply = refusal("unknown_document", "Este documento não está mais no acervo.");
+  assert.deepEqual((await worker.invoke({ action: "ponte.open", document_id: 9 })).error, { code: "unknown_document", message: "Este documento não está mais no acervo." });
+  for (const bad of [{ protocol_version: 1, ok: true }, { protocol_version: 1, ok: true, found: true }, { protocol_version: 1, ok: true, found: true, document_id: 0 }, { protocol_version: 2, ok: true, found: false }, null]) {
+    reply = bad === null ? { ok: "yes" } : bad;
+    assert.equal((await worker.invoke({ action: "ponte.lookup", document_number: NUMBER })).error.code, "HOST_SCHEMA");
+  }
+  reply = { protocol_version: 1, ok: true, document_id: "7" };
+  assert.equal((await worker.invoke({ action: "ponte.open", document_id: 7 })).error.code, "HOST_SCHEMA");
+  const unreachable = workerFixture(undefined, { native: () => ({ nativeError: "Specified native messaging host not found." }) });
+  assert.equal((await unreachable.invoke({ action: "ponte.lookup", document_number: NUMBER })).error.code, "HOST_MISSING");
+});
+test("ping reports the actions of the Ponte; an old Ponte reports none", async () => {
+  const popupOf = worker => ({ id: worker.chrome.runtime.id, url: worker.chrome.runtime.getURL("popup.html") });
+  const current = workerFixture();
+  assert.deepEqual(plainOf(await current.invoke({ action: "ponte.ping" }, popupOf(current))), { protocol_version: 1, ok: true, app_version: "0.29.0", actions: ["lookup", "open_document"] });
+  const old = workerFixture(undefined, { native: () => ({ protocol_version: 1, ok: true, app_version: "0.28.0" }) });
+  assert.deepEqual(plainOf(await old.invoke({ action: "ponte.ping" }, popupOf(old))), { protocol_version: 1, ok: true, app_version: "0.28.0", actions: [] });
+  assert.deepEqual(plainOf(old.calls[0].request), { protocol_version: 1, action: "ping" });
+});
+test("status texts for each case are pure functions of the answers", () => {
+  const ok = { protocol_version: 1, ok: true, actions: ["lookup", "open_document"] };
+  const found = Core.checkOutcome(ok, { ok: true, found: true, document_id: 123, imported_at: "10/11/2026 14:30" });
+  assert.deepEqual(Core.statusView(found), { text: "Já está no Ponte — importado em 10/11/2026 14:30.", tone: "success", retry: false, open: true, importLabel: "Importar de novo" });
+  assert.equal(Core.statusView(Core.checkOutcome({ ...ok, actions: ["lookup"] }, { ok: true, found: true, document_id: 1, imported_at: "" })).open, false);
+  assert.equal(Core.statusView(Core.checkOutcome({ ...ok, actions: ["lookup"] }, { ok: true, found: true, document_id: 1, imported_at: "" })).text, "Já está no Ponte.");
+  const missing = Core.statusView(Core.checkOutcome(ok, { ok: true, found: false }));
+  assert.deepEqual([missing.text, missing.open, missing.importLabel], ["", false, "Importar para o assistente"]);
+  const oldView = Core.statusView(Core.checkOutcome({ ok: true }, null));
+  assert.deepEqual([oldView.text, oldView.open, oldView.retry, oldView.importLabel], ["Atualize o Ponte para ver se o documento já foi importado.", false, false, "Importar para o assistente"]);
+  assert.equal(Core.checkOutcome({ ok: true, actions: [] }, null).kind, "old");
+  assert.equal(Core.checkOutcome(ok, { ok: false, error: { code: "invalid_request", message: "x" } }).kind, "old");
+  assert.equal(Core.checkOutcome(ok, { ok: false, error: { code: "unsupported_action", message: "x" } }).kind, "old");
+  const missingHost = Core.statusView(Core.checkOutcome(Core.nativeError("Specified native messaging host not found."), null));
+  assert.deepEqual([missingHost.tone, missingHost.retry, missingHost.open], ["warning", true, false]);
+  assert.match(missingHost.text, /^O Ponte não foi encontrado neste computador\. Abra o Ponte uma vez/);
+  // The generic "click Repetir" text makes no sense before any click.
+  const lost = Core.statusView(Core.checkOutcome(Core.nativeError(""), null));
+  assert.equal(lost.text, "O Ponte não respondeu. Abra o Ponte e tente de novo.");
+  assert.equal(Core.statusView(Core.checkOutcome(null, null)).retry, true);
+  assert.equal(Core.checkOutcome(ok, { ok: false, error: { code: "library_locked", message: "O acervo está fechado." } }).message, "O acervo está fechado.");
+  assert.equal(Core.statusView(null).text, "");
+  assert.equal(Core.statusView(Core.checkOutcome(ok, { ok: true })).text, "");
+});
+test("plural of files not downloaded is written out", () => {
+  assert.equal(Core.filesNotDownloaded(1), "1 arquivo não baixado");
+  assert.equal(Core.filesNotDownloaded(2), "2 arquivos não baixados");
+  assert.equal(Core.filesNotDownloaded(10), "10 arquivos não baixados");
+  assert.ok(!/\(s\)/.test(fs.readFileSync(path.join(__dirname, "../../extension/content.js"), "utf8")));
+});
+test("user-visible texts say importação, not captura", () => {
+  const failures = [{ ...capture(), schema_version: 2 }, { ...capture(), request_id: "x" }, { ...capture(), captured_at: "x" }].map(value => { try { Core.validateCapture(value); } catch (error) { return error.message; } });
+  for (const message of failures) assert.ok(message && !/captura/i.test(message), message);
+  const text = fs.readFileSync(path.join(__dirname, "../../extension/popup.html"), "utf8") + fs.readFileSync(path.join(__dirname, "../../extension/popup.js"), "utf8");
+  assert.ok(!/captura|capturar/i.test(text));
+});
+function bundleMessage(id = UUID) {
+  return { action: "ponte.import_capture", capture: capture({ request_id: id, references: [{ url: Core.ORIGIN + "/test.pdf", label: "PDF", kind: "original" }] }) };
+}
+function countingFiles(extra = "") {
+  const state = { downloads: 0 };
+  state.api = { prepare: async value => { state.downloads++; return { protocol_version: 1, action: "import_bundle", capture: value, files: [{ url: Core.ORIGIN + "/test.pdf", data_base64: "JVBERi0=" + extra }] }; } };
+  return state;
+}
+test("retry data survives a stopped service worker through session storage only", async () => {
+  const store = {};
+  const first = countingFiles();
+  const worker = workerFixture(first.api, { store, native: () => ({ nativeError: "Native host has exited." }) });
+  assert.equal((await worker.invoke(bundleMessage())).ok, false);
+  assert.equal(first.downloads, 1);
+  assert.equal(store["ponte.bundles"].length, 1);
+  // A new worker (the old one was stopped) retries without downloading again, and delivers.
+  const second = countingFiles();
+  const restarted = workerFixture(second.api, { store });
+  const result = await restarted.invoke(bundleMessage());
+  assert.equal(result.ok, true);
+  assert.equal(second.downloads, 0);
+  assert.equal(restarted.calls[0].request.action, "import_bundle");
+  assert.equal(restarted.calls[0].request.files[0].data_base64, "JVBERi0=");
+  // Delivered: nothing is kept any more, and a changed page is still refused.
+  assert.deepEqual(store["ponte.bundles"], []);
+  const changed = bundleMessage();
+  changed.capture.text = "Alterado";
+  assert.equal((await workerFixture(countingFiles().api, { store: { "ponte.bundles": [{ key: UUID, snapshot: JSON.stringify(bundleMessage().capture), packet: { capture: {}, files: [] } }] } }).invoke(changed)).error.code, "REQUEST_CHANGED");
+});
+test("only the last two bundles are kept in session storage", async () => {
+  const store = {};
+  const worker = workerFixture(countingFiles().api, { store, native: () => ({ nativeError: "Native host has exited." }) });
+  const ids = [UUID, crypto.randomUUID(), crypto.randomUUID()];
+  for (const id of ids) await worker.invoke(bundleMessage(id));
+  assert.deepEqual(store["ponte.bundles"].map(item => item.key), ids.slice(1));
+});
+test("a bundle too big for session storage is not stored and the retry downloads again", async () => {
+  const store = {};
+  const first = countingFiles("A".repeat(9 * 1024 * 1024));
+  const worker = workerFixture(first.api, { store, native: () => ({ nativeError: "Native host has exited." }) });
+  assert.equal((await worker.invoke(bundleMessage())).ok, false);
+  assert.equal(store["ponte.bundles"], undefined);
+  // Same worker: the in-memory fast path still avoids a second download.
+  assert.equal((await worker.invoke(bundleMessage())).ok, false);
+  assert.equal(first.downloads, 1);
+  const second = countingFiles();
+  assert.equal((await workerFixture(second.api, { store }).invoke(bundleMessage())).ok, true);
+  assert.equal(second.downloads, 1);
+});
+test("session storage that fails never breaks the import", async () => {
+  const state = countingFiles();
+  const worker = workerFixture(state.api, { storageThrows: true });
+  assert.equal((await worker.invoke(bundleMessage())).ok, true);
+  assert.equal((await worker.invoke(bundleMessage())).ok, true);
+  assert.equal(state.downloads, 1);
+  assert.equal((await workerFixture(countingFiles().api, { storageThrows: true }).invoke(bundleMessage())).ok, true);
+});
+test("the keyboard command reaches only an active SIGADOC tab", async () => {
+  const sigadoc = [{ id: 5, url: Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=x" }];
+  const worker = workerFixture(undefined, { tabs: sigadoc });
+  worker.command("importar");
+  assert.deepEqual(plainOf(worker.tabMessages), [{ id: 5, message: { action: "ponte.shortcut_import" }, opts: { frameId: 0 } }]);
+  worker.command("outro");
+  assert.equal(worker.tabMessages.length, 1);
+  for (const tabs of [[{ id: 6, url: "https://example.org/" }], [{ id: 6, url: "https://www.sigadoc.mt.gov.br.attacker.test/" }], [{ id: 6 }], [], [{ url: Core.ORIGIN + "/" }]]) {
+    const other = workerFixture(undefined, { tabs });
+    other.command("importar");
+    assert.equal(other.tabMessages.length, 0, JSON.stringify(tabs));
+  }
 });

@@ -16,6 +16,7 @@
   const TITLE_LABELS = new Set(["assunto", "titulo", "descricao", "descricao do documento"]);
   const META_LABELS = { "tipo": "document_type", "tipo de documento": "document_type", "tipo do documento": "document_type", "classificacao": "classification", "data": "document_date", "data do documento": "document_date", "origem": "origin", "de": "origin", "para": "recipient", "destinatario": "recipient", "interessado": "interested_party", "remetente": "sender", "enviado por": "sender", "data de envio": "sent_at", "data de recebimento": "received_at", "recebido em": "received_at", "processo vinculado": "process_number", "numero do processo": "process_number", "processo": "process_number", "cadastrante": "registered_by", "especie": "document_type", "modelo": "document_model", "suporte": "medium" };
   const NUMBER_RE = /^(?:(?:[A-Z][A-Z0-9]{1,19}[-/]){1,4}(?:19|20)\d{2}[-/]\d{1,12}(?:[-/]\d{1,8})?|\d{1,12}[/.-](?:19|20)\d{2}|(?:19|20)\d{2}[/.-]\d{1,12}|\d{7}-\d{2}\.(?:19|20)\d{2}\.\d\.\d{2}\.\d{4})$/;
+  const UNRECOGNIZED_TEXT = "O Ponte não reconheceu esta página do SIGADOC. O site pode ter mudado; avise quem cuida do Ponte.";
   class CaptureError extends Error {
     constructor(code, message) { super(message); this.name = "CaptureError"; this.code = code; }
   }
@@ -178,6 +179,7 @@
     if (!siga112 && sourceSiglas.some(value => !documentNumber(value) && documentQueryNumber(value))) fail("DOCUMENT_IDENTITY", "A página ainda não terminou de carregar ou está num formato que a extensão não reconhece. Aguarde e tente de novo.");
     const numberNodes = Array.from(root.querySelectorAll("[data-document-number]" )).filter(node => eligible(node, root));
     const numbers = unique([siga112?.number, ...numberNodes.map(node => documentNumber(node.getAttribute("data-document-number") || safeText(node))), ...fields.filter(field => NUMBER_LABELS.has(field.key) && !(siga112 && field.key.includes("processo"))).map(field => documentNumber(field.value))]);
+    if (!numbers.length && new URL(sourceUrl).pathname === SIGA_DETAIL_PATH) fail("PAGE_NOT_RECOGNIZED", UNRECOGNIZED_TEXT);
     if (numbers.length !== 1) fail("DOCUMENT_IDENTITY", numbers.length ? "A página mostra mais de um número de documento. Abra a ficha de um único documento." : "Não encontrei o número oficial do documento nesta página. Abra a ficha do documento no SIGADOC.");
     validateUrlIdentity(sourceUrl, numbers[0]);
     const titles = unique([siga112?.title, ...Array.from(root.querySelectorAll("[data-document-title]")).filter(node => eligible(node, root)).map(node => normalize(scrubInlineUrls(node.getAttribute("data-document-title") || safeText(node)))), ...fields.filter(field => TITLE_LABELS.has(field.key)).map(field => field.value)]);
@@ -185,7 +187,8 @@
     if (!title || title.length < 3 || title.length > 500 || title === numbers[0] || /^(?:login|pesquisa|consulta|resultados?|lista de documentos)$/i.test(title)) fail("DOCUMENT_TITLE", "Não foi possível identificar o assunto do documento com segurança. Confira a ficha no SIGADOC.");
     if (titles.some(value => value !== title)) fail("DOCUMENT_TITLE", "O assunto aparece de formas diferentes nesta página. Confira no SIGADOC antes de importar.");
     const recognized = ["Número oficial em campo explícito", "Assunto/título em campo explícito"];
-    const pending = [siga112 ? "Extração integral da ficha SIGA v11.2 e de arquivos ainda pendente de validação" : "Adaptador heurístico: DOM autenticado real de outras estruturas do SIGADOC ainda não validado", "Não verifica assinatura, autenticidade, permissões ou tramitação"];
+    const pending = ["Autenticidade, assinatura e permissões não são verificadas: o Ponte guarda o que o SIGADOC mostra"];
+    if (!siga112) pending.unshift("Adaptador heurístico: estruturas do SIGADOC além da ficha já inspecionada ainda não foram validadas em páginas reais");
     if (siga112) recognized.push("Estrutura de metadados SIGA v11.2 inspecionada: H2 oficial e p#descricao com rótulo explícito");
     const metadata = {};
     if (siga112?.classification) { metadata.classification = siga112.classification; recognized.push("Classificação em parágrafo com rótulo explícito"); }
@@ -231,7 +234,7 @@
           if (people.every(code=>/^[A-Z][A-Z0-9]{1,31}$/.test(code) && /\d/.test(code)) && people.join('; ').length <= 4000) {
             metadata.access_people = people.join('; ');
             recognized.push('Pessoas/códigos explicitamente listados no nível de acesso');
-          } else pending.push('Lista do nível de acesso não capturada: formato não reconhecido ou limite excedido; confira na origem');
+          } else pending.push('Lista do nível de acesso não importada: formato não reconhecido ou limite excedido; confira na origem');
         }
         if (value) recognized.push('Nível de acesso visível, incluindo rótulo em negrito ou aninhado');
       }
@@ -249,7 +252,7 @@
     }
     const outerTextNodes = textNodes.filter(node => !textNodes.some(other => other !== node && other.contains(node)));
     const text = outerTextNodes.map(safeText).filter(Boolean).join("\n\n");
-    if (text) { recognized.push("Texto visível em área documental reconhecida"); if (siga112) pending[0] = "Texto visível capturado; PDFs e arquivos anexos ainda não foram baixados"; }
+    if (text) recognized.push("Texto visível em área documental reconhecida");
     else pending.push("Texto documental não localizado em área reconhecida; corpo geral da página não foi copiado");
     if (root.querySelector("iframe, object, embed")) pending.push("Conteúdo em iframe, PDF ou objeto incorporado não foi extraído");
     const references = [];
@@ -307,7 +310,8 @@
         if (display !== text && !recognized.includes(note)) recognized.push(note);
       }
     }
-    if (references.length) { recognized.push("Links documentais classificados por rótulo/contexto"); pending.push("Originais, anexos e antecedentes são apenas referências: nenhum arquivo foi baixado nem lido"); }
+    if (references.length) recognized.push("Links documentais classificados por rótulo/contexto");
+    if (references.some(ref => ["antecedent", "reference"].includes(ref.kind))) pending.push("Antecedentes e documentos relacionados entram só como referência (link); o conteúdo deles não é importado");
     if (stripped) pending.push("Parâmetros de URL desconhecidos/sensíveis e fragmentos removidos; alguns links podem exigir reabertura no SIGADOC");
     const historyLink = doc.querySelector("a#ver-mais[href]");
     if (historyLink) {
@@ -319,7 +323,9 @@
         }
       } catch { /* optional source must match exact document */ }
     }
-    return { source_url: cleanUrl(sourceUrl), document_number: numbers[0], title, text, metadata, references, coverage: { adapter: ADAPTER, recognized, pending: unique(pending) } };
+    // A real document page whose content area was not found: the site layout may have changed.
+    const layoutUnrecognized = new URL(sourceUrl).pathname === SIGA_DETAIL_PATH && !text;
+    return { source_url: cleanUrl(sourceUrl), document_number: numbers[0], title, text, metadata, references, layout_unrecognized: layoutUnrecognized, coverage: { adapter: ADAPTER, recognized, pending: unique(pending) } };
   }
   function buildCapture(snapshot, uuid = () => crypto.randomUUID(), now = () => new Date().toISOString()) {
     const capture = { schema_version: 1, request_id: uuid(), source_url: snapshot.source_url, document_number: snapshot.document_number, title: snapshot.title, captured_at: now(), text: snapshot.text, metadata: snapshot.metadata, references: snapshot.references, coverage: snapshot.coverage };
@@ -328,14 +334,14 @@
   }
   function validString(value, min, max) { return typeof value === "string" && value.length >= min && value.length <= max && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value); }
   function validateCapture(capture) {
-    if (!exactKeys(capture, ["schema_version", "request_id", "source_url", "document_number", "title", "captured_at", "text", "metadata", "references", "coverage"]) || capture.schema_version !== 1) fail("CAPTURE_SCHEMA", "Formato da captura incompatível (schema_version 1 exigido).");
-    if (typeof capture.request_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(capture.request_id)) fail("REQUEST_ID", "A captura não possui um UUID criptográfico válido.");
+    if (!exactKeys(capture, ["schema_version", "request_id", "source_url", "document_number", "title", "captured_at", "text", "metadata", "references", "coverage"]) || capture.schema_version !== 1) fail("CAPTURE_SCHEMA", "Formato da importação incompatível (schema_version 1 exigido).");
+    if (typeof capture.request_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(capture.request_id)) fail("REQUEST_ID", "A importação não tem um identificador válido.");
     if (!validString(capture.source_url, 1, 2048) || cleanUrl(capture.source_url) !== capture.source_url) fail("SOURCE_URL", "URL de origem inválida ou com parâmetros não permitidos.");
     if (!validString(capture.document_number, 5, 120) || documentNumber(capture.document_number) !== capture.document_number) fail("DOCUMENT_IDENTITY", "Número oficial do documento inválido.");
     validateUrlIdentity(capture.source_url, capture.document_number);
     if (!validString(capture.title, 3, 500) || normalize(capture.title) !== capture.title) fail("DOCUMENT_TITLE", "Título do documento inválido.");
-    if (typeof capture.captured_at !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(capture.captured_at) || !Number.isFinite(Date.parse(capture.captured_at))) fail("CAPTURE_DATE", "Data UTC da captura inválida.");
-    if (new Date(capture.captured_at).toISOString().replace(".000Z", "Z") !== capture.captured_at.replace(".000Z", "Z")) fail("CAPTURE_DATE", "Data UTC da captura inválida.");
+    if (typeof capture.captured_at !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(capture.captured_at) || !Number.isFinite(Date.parse(capture.captured_at))) fail("CAPTURE_DATE", "Data UTC da leitura inválida.");
+    if (new Date(capture.captured_at).toISOString().replace(".000Z", "Z") !== capture.captured_at.replace(".000Z", "Z")) fail("CAPTURE_DATE", "Data UTC da leitura inválida.");
     if (typeof capture.text !== "string") fail("CAPTURE_SCHEMA", "Texto documental inválido.");
     if (bytes(capture.text) > MAX_TEXT_BYTES) fail("TEXT_TOO_LARGE", "O texto deste documento é grande demais para importar de uma vez (limite de 500 KB). Nada foi importado.");
     if (!plain(capture.metadata) || Object.entries(capture.metadata).some(([key, value]) => !META_KEYS.includes(key) || !validString(value, 1, key === "movement_history" ? 60000 : 4000) || (key === "movement_history" && bytes(value) > 60000))) fail("CAPTURE_SCHEMA", "Metadados não reconhecidos ou grandes demais.");
@@ -385,6 +391,41 @@
     const detail = message ? ` (Detalhe do navegador: ${message.slice(0, 160)})` : "";
     return errorResult("HOST_CONNECTION", `Não recebemos a confirmação do Ponte. Clique em Repetir: nada será duplicado.${detail}`);
   }
+  // "1 arquivo não baixado" / "3 arquivos não baixados".
+  function filesNotDownloaded(count) { return count === 1 ? "1 arquivo não baixado" : `${count} arquivos não baixados`; }
+  const OLD_PONTE_HINT = "Atualize o Ponte para ver se o documento já foi importado.";
+  // Turns the answers of "ping" and "lookup" into one outcome the panel can show.
+  // `lookup` is null when it was not asked (Ponte unreachable or too old).
+  function checkOutcome(ping, lookup) {
+    if (!plain(ping) || ping.ok !== true) {
+      const error = plain(ping) && plain(ping.error) ? ping.error : {};
+      return { kind: "unreachable", code: typeof error.code === "string" ? error.code : "", message: typeof error.message === "string" ? error.message : "" };
+    }
+    const actions = Array.isArray(ping.actions) ? ping.actions.filter(value => typeof value === "string") : [];
+    if (!actions.includes("lookup")) return { kind: "old" };
+    const canOpen = actions.includes("open_document");
+    if (!plain(lookup)) return { kind: "hidden" };
+    if (lookup.ok !== true) {
+      const error = plain(lookup.error) ? lookup.error : {};
+      if (["invalid_request", "unsupported_action"].includes(error.code)) return { kind: "old" };
+      return { kind: "unreachable", code: typeof error.code === "string" ? error.code : "", message: typeof error.message === "string" ? error.message : "" };
+    }
+    if (lookup.found === true && Number.isSafeInteger(lookup.document_id) && lookup.document_id > 0) return { kind: "found", document_id: lookup.document_id, imported_at: typeof lookup.imported_at === "string" ? lookup.imported_at : "", canOpen };
+    if (lookup.found === false) return { kind: "missing", canOpen };
+    return { kind: "hidden" };
+  }
+  // What the panel shows before any click. text === "" means: show nothing.
+  function statusView(outcome) {
+    const none = { text: "", tone: "", retry: false, open: false, importLabel: "Importar para o assistente" };
+    if (!outcome) return none;
+    if (outcome.kind === "unreachable") {
+      const generic = ["HOST_CONNECTION", "HOST_TIMEOUT", ""].includes(outcome.code) || !outcome.message;
+      return { ...none, tone: "warning", retry: true, text: generic ? "O Ponte não respondeu. Abra o Ponte e tente de novo." : outcome.message };
+    }
+    if (outcome.kind === "old") return { ...none, tone: "note", text: OLD_PONTE_HINT };
+    if (outcome.kind === "found") return { ...none, tone: "success", open: outcome.canOpen === true, importLabel: "Importar de novo", text: outcome.imported_at ? `Já está no Ponte — importado em ${outcome.imported_at}.` : "Já está no Ponte." };
+    return none;
+  }
   class ImportSession {
     constructor(send) { this.send = send; this.capture = null; this.state = "idle"; this.inFlight = null; }
     run(candidate) {
@@ -407,6 +448,6 @@
       return this.inFlight;
     }
   }
-  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, importOutcome, identity, errorResult, nativeError, ImportSession, bytes, exactKeys };
+  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, importOutcome, identity, errorResult, filesNotDownloaded, checkOutcome, statusView, UNRECOGNIZED_TEXT, OLD_PONTE_HINT, nativeError, ImportSession, bytes, exactKeys };
 });
 

@@ -4,7 +4,7 @@
   else root.PonteFiles = api;
 })(globalThis, function() {
   'use strict';
-  const MAX_FILE = 8 * 1024 * 1024, MAX_TOTAL = 16 * 1024 * 1024;
+  const MAX_FILE = 8 * 1024 * 1024, MAX_TOTAL = 16 * 1024 * 1024, MAX_FILES = 10, PARALLEL = 3;
   function downloadable(ref, Core) {
     if (!['original','attachment'].includes(ref.kind) || Core.cleanUrl(ref.url) !== ref.url) return false;
     const url = new URL(ref.url);
@@ -44,16 +44,33 @@
   async function prepare(capture, Core, fetcher = fetch) {
     const copy = JSON.parse(JSON.stringify(capture)), files = [];
     const refs = [...new Map(capture.references.filter(r => ['original','attachment'].includes(r.kind)).map(r => [r.url,r])).values()];
-    let total = 0;
-    for (const [index,ref] of refs.entries()) {
-      if (index >= 10) { copy.coverage.pending.push('Demais arquivos não baixados: limite de 10 PDFs por importação'); break; }
-      try {
-        const file = await download(ref, Core, fetcher);
-        if (total + file.size > MAX_TOTAL) throw new Error('Total de PDFs excede 16 MiB');
-        total += file.size; delete file.size; files.push(file);
-      } catch (error) { copy.coverage.pending.push(`${ref.label}: ${error.message}`); }
+    const wanted = refs.slice(0, MAX_FILES), results = new Array(wanted.length);
+    // At most PARALLEL downloads at a time; once the finished files already
+    // exceed the total limit, no further download is started.
+    let next = 0, finished = 0, stop = false;
+    async function lane() {
+      while (!stop && next < wanted.length) {
+        const index = next++;
+        try {
+          const file = await download(wanted[index], Core, fetcher);
+          results[index] = {file}; finished += file.size;
+          if (finished > MAX_TOTAL) stop = true;
+        } catch (error) { results[index] = {error}; }
+      }
     }
+    await Promise.all(Array.from({length:Math.min(PARALLEL, wanted.length)}, lane));
+    // The result keeps the order of the page and applies the total limit in that order.
+    let total = 0;
+    wanted.forEach((ref, index) => {
+      const entry = results[index];
+      if (!entry) { copy.coverage.pending.push(`${ref.label}: Total de PDFs excede 16 MiB`); return; }
+      if (entry.error) { copy.coverage.pending.push(`${ref.label}: ${entry.error.message}`); return; }
+      const file = entry.file;
+      if (total + file.size > MAX_TOTAL) { copy.coverage.pending.push(`${ref.label}: Total de PDFs excede 16 MiB`); return; }
+      total += file.size; delete file.size; files.push(file);
+    });
+    if (refs.length > MAX_FILES) copy.coverage.pending.push('Demais arquivos não baixados: limite de 10 PDFs por importação');
     return {protocol_version:1, action:'import_bundle', capture:copy, files};
   }
-  return {downloadable, download, prepare, MAX_FILE, MAX_TOTAL};
+  return {downloadable, download, prepare, MAX_FILE, MAX_TOTAL, MAX_FILES, PARALLEL};
 });

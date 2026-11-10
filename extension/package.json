@@ -1,6 +1,6 @@
 {
   "name": "ponteproj-sigadoc-extension",
-  "version": "0.1.11",
+  "version": "0.2.0",
   "private": true,
   "description": "Extensão MV3 SIGADOC; sem dependências de produção",
   "scripts": { "test": "node --test ../tests/extension/core.test.cjs ../tests/extension/dom.test.cjs ../tests/extension/files.test.cjs" },

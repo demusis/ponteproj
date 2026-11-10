@@ -13,7 +13,7 @@ const fixture = fs.readFileSync(path.join(__dirname, "fixture.html"), "utf8");
 const siga112Fixture = fs.readFileSync(path.join(__dirname, "fixture-siga112.html"), "utf8");
 const corePath = path.join(__dirname, "../../extension/capture-core.js");
 const contentPath = path.join(__dirname, "../../extension/content.js");
-const URL = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibir?sigla=SEPLAG-PRO-2026%2F01234&access_token=source-secret#fragmento";
+const URL = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibir?sigla=ORG-PRO-2026%2F01234&access_token=source-secret#fragmento";
 before(async () => {
   if (playwright) browser = await playwright.chromium.launch({ headless: true, channel: process.env.PONTEPROJ_BROWSER_CHANNEL || "chrome" });
 });
@@ -50,7 +50,8 @@ test("SIGA v11.2 fictional metadata fixture captures H2/description/classificati
   assert.equal(capture.text, "");
   assert.equal(capture.references.length, 0);
   assert.ok(capture.coverage.recognized.some(value => value.includes("SIGA v11.2 inspecionada")));
-  assert.ok(capture.coverage.pending.some(value => value.includes("Extração integral")));
+  assert.ok(!capture.coverage.pending.some(value => /PDFs e arquivos anexos ainda não|Extração integral/.test(value)));
+  assert.ok(capture.coverage.pending.some(value => value.includes("Autenticidade, assinatura e permissões")));
   assert.ok(!JSON.stringify(capture).includes("secret"));
   assert.ok(!JSON.stringify(capture).includes("Voltar"));
   assert.ok(!JSON.stringify(capture).includes("nao-capturar"));
@@ -105,7 +106,7 @@ test("SIGA v11.2 refuses mismatched via, junk suffix, other route and missing/ex
     [siga112Fixture.replace("<h2>", "<h3>").replace("</h2>", "</h3>"), path + "?sigla=TESTE-OFI-2026%2F00042-A"],
     [siga112Fixture.replace("</h2>", "</h2><h2>TESTE-OFI-2026/00043</h2>"), path + "?sigla=TESTE-OFI-2026%2F00042-A"],
     [siga112Fixture.replace("<p id=\"descricao\">", "<p id=\"descricao\" hidden>"), path + "?sigla=TESTE-OFI-2026%2F00042-A"],
-    [fixture, path + "?SIGLA=SEPLAG-PRO-2026%2F01234-A"]
+    [fixture, path + "?SIGLA=ORG-PRO-2026%2F01234-A"]
   ]) {
     const page = await pageFor(html, url);
     assert.equal(await page.evaluate(() => { try { PonteCapture.extractDocument(document, location.href); return "accepted"; } catch { return "rejected"; } }), "rejected");
@@ -115,7 +116,7 @@ test("SIGA v11.2 refuses mismatched via, junk suffix, other route and missing/ex
 test("synthetic DOM adapter extracts explicit fields, excludes secrets, distinguishes links from files", options, async () => {
   const page = await pageFor();
   const capture = await page.evaluate(() => PonteCapture.buildCapture(PonteCapture.extractDocument(document, location.href)));
-  assert.equal(capture.document_number, "SEPLAG-PRO-2026/01234");
+  assert.equal(capture.document_number, "ORG-PRO-2026/01234");
   assert.equal(capture.title, "Aquisição de material de expediente");
   assert.equal(capture.metadata.document_type, "Processo administrativo");
   assert.equal(capture.metadata.origin, "Unidade de exemplo");
@@ -125,17 +126,19 @@ test("synthetic DOM adapter extracts explicit fields, excludes secrets, distingu
   assert.ok(!JSON.stringify(capture).includes("secret"));
   assert.ok(!capture.text.includes("Ficha de documento"));
   assert.ok(!Object.hasOwn(capture, "files"));
-  assert.ok(capture.coverage.pending.some(value => value.includes("nenhum arquivo")));
-  assert.ok(capture.coverage.pending.some(value => value.includes("DOM autenticado real")));
+  assert.ok(!capture.coverage.pending.some(value => value.includes("nenhum arquivo foi baixado")));
+  assert.ok(capture.coverage.pending.some(value => value.includes("Antecedentes e documentos relacionados")));
+  assert.ok(capture.coverage.pending.some(value => value.includes("estruturas do SIGADOC além da ficha")));
   assert.ok(capture.coverage.pending.some(value => value.includes("iframe")));
   await page.close();
 });
 test("login, lists, unknown or conflicting identity are refused; no raw-body fallback", options, async () => {
   for (const [html, url, expected] of [
     ['<main><input type="password" value="password-secret"></main>', URL, "LOGIN_PAGE"],
-    ['<main><h1>Resultados da pesquisa</h1><dl><dt>Documento</dt><dd>SEPLAG-PRO-2026/01234</dd><dt>Assunto</dt><dd>Resultado de pesquisa</dd></dl></main>', URL, "LIST_PAGE"],
-    ['<main><h1>Qualquer página</h1><p>SEPLAG-PRO-2026/01234</p><p>Título possível</p></main>', URL, "DOCUMENT_IDENTITY"],
-    [fixture.replace('</dl>', '<dt>Processo</dt><dd>SEPLAG-PRO-2026/99999</dd></dl>'), URL, "DOCUMENT_IDENTITY"],
+    ['<main><h1>Resultados da pesquisa</h1><dl><dt>Documento</dt><dd>ORG-PRO-2026/01234</dd><dt>Assunto</dt><dd>Resultado de pesquisa</dd></dl></main>', URL, "LIST_PAGE"],
+    ['<main><h1>Qualquer página</h1><p>ORG-PRO-2026/01234</p><p>Título possível</p></main>', URL, "PAGE_NOT_RECOGNIZED"],
+    ['<main><h1>Qualquer página</h1><p>ORG-PRO-2026/01234</p><p>Título possível</p></main>', "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/outra?sigla=ORG-PRO-2026%2F01234", "DOCUMENT_IDENTITY"],
+    [fixture.replace('</dl>', '<dt>Processo</dt><dd>ORG-PRO-2026/99999</dd></dl>'), URL, "DOCUMENT_IDENTITY"],
     [fixture.replace('<main ', '<div hidden><main ').replace('</main>', '</main></div>'), URL, "UNRECOGNIZED_PAGE"],
     [fixture, "https://www.sigadoc.mt.gov.br/login", "LOGIN_PAGE"]
   ]) {
@@ -143,20 +146,28 @@ test("login, lists, unknown or conflicting identity are refused; no raw-body fal
     assert.equal(await page.evaluate(() => { try { PonteCapture.extractDocument(document, location.href); return "accepted"; } catch (error) { return error.code; } }), expected);
     await page.close();
   }
-  const page = await pageFor('<main data-document-detail><dl><dt>Documento</dt><dd>SEPLAG-PRO-2026/01234</dd><dt>Assunto</dt><dd>Assunto reconhecido</dd></dl><p>Texto fora de área documental; não copiar</p></main>');
+  const page = await pageFor('<main data-document-detail><dl><dt>Documento</dt><dd>ORG-PRO-2026/01234</dd><dt>Assunto</dt><dd>Assunto reconhecido</dd></dl><p>Texto fora de área documental; não copiar</p></main>');
   const snapshot = await page.evaluate(() => PonteCapture.extractDocument(document, location.href));
   assert.equal(snapshot.text, "");
   assert.ok(snapshot.coverage.pending.some(value => value.includes("corpo geral")));
   await page.close();
 });
-async function instrumentContent(page) {
-  await page.evaluate(() => {
+async function instrumentContent(page, native = {}) {
+  await page.evaluate(config => {
     const attach = Element.prototype.attachShadow;
     Element.prototype.attachShadow = function (options) { const result = attach.call(this, options); window.__testShadow = result; return result; };
     window.__requests = [];
     window.__callbacks = [];
-    window.chrome = { runtime: { lastError: null, sendMessage: (message, callback) => { window.__requests.push(message.capture); window.__callbacks.push(callback); } } };
-  });
+    // Answers of the fake Ponte to the status check; a test may replace them (or "hang").
+    window.__calls = [];
+    window.__native = { ping: { protocol_version: 1, ok: true, app_version: "0.29.0", actions: ["lookup", "open_document"] }, lookup: { protocol_version: 1, ok: true, found: false }, open: { protocol_version: 1, ok: true, document_id: 1, ui_opened: true }, ...config };
+    window.chrome = { runtime: { id: "test-extension", lastError: null, onMessage: { addListener: listener => { window.__onMessage = listener; } }, sendMessage: (message, callback) => {
+      if (message.action === "ponte.import_capture") { window.__requests.push(message.capture); window.__callbacks.push(callback); return; }
+      window.__calls.push(message);
+      const reply = { "ponte.ping": window.__native.ping, "ponte.lookup": window.__native.lookup, "ponte.open": window.__native.open }[message.action];
+      if (reply !== "hang") setTimeout(() => callback(reply), 0);
+    } } };
+  }, native);
   await page.addScriptTag({ path: contentPath });
 }
 test("injection remains single across DOM changes; async acknowledgment stays tied to captured document", options, async () => {
@@ -167,13 +178,13 @@ test("injection remains single across DOM changes; async acknowledgment stays ti
   await page.evaluate(() => window.__testShadow.querySelector("button").click());
   assert.equal(await page.evaluate(() => window.__requests.length), 1);
   assert.ok(!(await page.evaluate(() => window.__testShadow.querySelector('[role="status"]').textContent)).includes("Captura salva"));
-  await page.evaluate(() => { document.getElementById("official-number").textContent = "SEPLAG-PRO-2026/01235"; document.getElementById("official-title").textContent = "Segundo documento"; history.pushState({}, "", "/doc?sigla=SEPLAG-PRO-2026%2F01235"); });
+  await page.evaluate(() => { document.getElementById("official-number").textContent = "ORG-PRO-2026/01235"; document.getElementById("official-title").textContent = "Segundo documento"; history.pushState({}, "", "/doc?sigla=ORG-PRO-2026%2F01235"); });
   await page.waitForTimeout(300);
   await page.evaluate(() => window.__callbacks.shift()({ protocol_version: 1, ok: true, request_id: window.__requests[0].request_id, document_id: 1, capture_id: 1, duplicate: false, message: "Salvo", ui_opened: false }));
   await page.waitForTimeout(50);
   const text = await page.evaluate(() => window.__testShadow.querySelector('[role="status"]').textContent);
-  assert.ok(text.startsWith("SEPLAG-PRO-2026/01234:"), text);
-  assert.equal(await page.evaluate(() => window.__requests[0].document_number), "SEPLAG-PRO-2026/01234");
+  assert.ok(text.startsWith("ORG-PRO-2026/01234:"), text);
+  assert.equal(await page.evaluate(() => window.__requests[0].document_number), "ORG-PRO-2026/01234");
   assert.equal(await page.locator("#ponteproj-import-assistente").count(), 1);
   await page.waitForTimeout(400);
   assert.equal(await page.evaluate(() => window.__requests.length), 1);
@@ -252,7 +263,7 @@ test("history fetch uses exact source, no redirects, bounded response and partia
   const page=await pageFor();await page.addScriptTag({path:path.join(__dirname,"../../extension/history.js")});
   const result=await page.evaluate(async html=>{
     const capture=PonteCapture.buildCapture(PonteCapture.extractDocument(document,location.href));
-    capture.metadata.movement_source="https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibirAntigo?sigla=SEPLAGPRO202601234";
+    capture.metadata.movement_source="https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibirAntigo?sigla=ORGPRO202601234";
     let options;
     await PonteHistory.enrich(capture, async (_, opts)=>{options={credentials:opts.credentials,redirect:opts.redirect};return new Response(html.replaceAll("TESTE-OFI-2026/00042",capture.document_number),{headers:{"content-type":"text/html"}});});
     const first=JSON.parse(JSON.stringify(capture));delete capture.metadata.movement_history;
@@ -293,5 +304,136 @@ test("sidebar access captures bold/nested level and explicit people without mixi
 test("access list with unknown structure is explicitly pending instead of silently partial",options,async()=>{
   const page=await pageFor(siga112Fixture.replace('</body>','<div id="collapseNivelAcesso"><b>Limitado entre pessoas</b><ul><li>TESTE123400</li><li>Formato desconhecido</li></ul></div></body>'),'https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibir?sigla=TESTE-OFI-2026%2F00042-A');
   const capture=await page.evaluate(()=>PonteCapture.buildCapture(PonteCapture.extractDocument(document,location.href)));
-  assert.equal(capture.metadata.access_level,'Limitado entre pessoas');assert.equal(capture.metadata.access_people,undefined);assert.ok(capture.coverage.pending.some(p=>p.includes('Lista do nível de acesso não capturada')));await page.close();
+  assert.equal(capture.metadata.access_level,'Limitado entre pessoas');assert.equal(capture.metadata.access_people,undefined);assert.ok(capture.coverage.pending.some(p=>p.includes('Lista do nível de acesso não importada')));await page.close();
+});
+
+const FOUND = { protocol_version: 1, ok: true, found: true, document_id: 123, imported_at: "10/11/2026 14:30" };
+const panelState = page => page.evaluate(() => {
+  const root = window.__testShadow, shown = selector => { const el = root.querySelector(selector); return !!el && !el.hidden; };
+  return { line: shown(".ponte") ? root.querySelector(".ponte span").textContent : "", retry: shown(".ponte button.link"), open: shown(".open-row"), openNote: shown(".open-note") ? root.querySelector(".open-note").textContent : "", layout: shown(".layout"), button: root.querySelector("button").textContent, disabled: root.querySelector("button").disabled, calls: window.__calls.map(call => call.action) };
+});
+test("status before any click: document not in the Ponte shows the normal button and asks only once", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page);
+  await page.waitForTimeout(900);
+  let state = await panelState(page);
+  assert.deepEqual(state.calls, ["ponte.ping", "ponte.lookup"]);
+  assert.equal(await page.evaluate(() => window.__calls[1].document_number), "ORG-PRO-2026/01234");
+  assert.deepEqual([state.line, state.open, state.button], ["", false, "Importar para o assistente"]);
+  // DOM noise does not start new checks; the same document is not asked again.
+  await page.evaluate(() => { document.querySelector(".document-text p").textContent = "Outro texto"; });
+  await page.waitForTimeout(1200);
+  assert.equal((await panelState(page)).calls.length, 2);
+  // Another document (the page is dynamic) is asked once more.
+  await page.evaluate(() => { document.getElementById("official-number").textContent = "ORG-PRO-2026/01235"; history.pushState({}, "", "/doc?sigla=ORG-PRO-2026%2F01235"); });
+  await page.waitForTimeout(1000);
+  state = await panelState(page);
+  assert.equal(state.calls.length, 4);
+  assert.equal(await page.evaluate(() => window.__calls[3].document_number), "ORG-PRO-2026/01235");
+  await page.close();
+});
+test("status before any click: a document already in the Ponte says so and can be opened", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { lookup: FOUND });
+  await page.waitForTimeout(900);
+  const state = await panelState(page);
+  assert.equal(state.line, "Já está no Ponte — importado em 10/11/2026 14:30.");
+  assert.deepEqual([state.open, state.button, state.disabled, state.retry], [true, "Importar de novo", false, false]);
+  await page.evaluate(() => { window.__native.open = { protocol_version: 1, ok: false, error: { code: "unknown_document", message: "Este documento não está mais no acervo do Ponte." } }; });
+  await page.evaluate(() => window.__testShadow.querySelector(".open-row button").click());
+  await page.waitForTimeout(100);
+  assert.deepEqual(await page.evaluate(() => window.__calls.at(-1)), { action: "ponte.open", document_id: 123 });
+  assert.equal((await panelState(page)).openNote, "Este documento não está mais no acervo do Ponte.");
+  await page.close();
+});
+test("status before any click: Ponte unreachable warns, keeps the button usable and retries on request", options, async () => {
+  const unreachable = { protocol_version: 1, ok: false, error: { code: "HOST_MISSING", message: "O Ponte não foi encontrado neste computador. Abra o Ponte uma vez e reinicie o navegador." } };
+  const page = await pageFor();
+  await instrumentContent(page, { ping: unreachable });
+  await page.waitForTimeout(900);
+  let state = await panelState(page);
+  assert.ok(state.line.startsWith("O Ponte não foi encontrado neste computador."), state.line);
+  assert.deepEqual([state.retry, state.open, state.disabled, state.button], [true, false, false, "Importar para o assistente"]);
+  assert.deepEqual(state.calls, ["ponte.ping"]);
+  await page.evaluate(found => { window.__native.ping = { protocol_version: 1, ok: true, actions: ["lookup", "open_document"] }; window.__native.lookup = found; }, FOUND);
+  await page.evaluate(() => window.__testShadow.querySelector(".ponte button.link").click());
+  await page.waitForTimeout(900);
+  state = await panelState(page);
+  assert.equal(state.line, "Já está no Ponte — importado em 10/11/2026 14:30.");
+  assert.equal(state.retry, false);
+  await page.close();
+});
+test("status before any click: an old Ponte only gets a discreet hint and no open link", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: { protocol_version: 1, ok: true, app_version: "0.28.0" } });
+  await page.waitForTimeout(900);
+  const state = await panelState(page);
+  assert.equal(state.line, "Atualize o Ponte para ver se o documento já foi importado.");
+  assert.deepEqual([state.retry, state.open, state.button, state.disabled], [false, false, "Importar para o assistente", false]);
+  assert.deepEqual(state.calls, ["ponte.ping"]);
+  await page.close();
+});
+test("status check that takes more than 5 s just hides the status line", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: "hang" });
+  await page.waitForTimeout(6000);
+  const state = await panelState(page);
+  assert.deepEqual([state.line, state.retry, state.disabled], ["", false, false]);
+  assert.deepEqual(state.calls, ["ponte.ping"]);
+  await page.close();
+});
+test("after an import the status is asked again and the receipt gets an open link", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page);
+  await page.waitForTimeout(900);
+  await page.evaluate(() => window.__testShadow.querySelector("button").click());
+  await page.evaluate(found => { window.__native.lookup = found; }, FOUND);
+  await page.evaluate(() => window.__callbacks.shift()({ protocol_version: 1, ok: true, request_id: window.__requests[0].request_id, document_id: 123, capture_id: 1, duplicate: false, outcome: "imported", message: "Salvo", ui_opened: true, file_notes: ["a.pdf: x", "b.pdf: y"] }));
+  await page.waitForTimeout(900);
+  const state = await panelState(page);
+  assert.deepEqual(state.calls, ["ponte.ping", "ponte.lookup", "ponte.ping", "ponte.lookup"]);
+  const text = await page.evaluate(() => window.__testShadow.querySelector('[role="status"]').textContent);
+  assert.ok(text.startsWith("Importado. O Ponte abriu o documento."), text);
+  assert.ok(text.includes("2 arquivos não baixados: a.pdf: x; b.pdf: y"), text);
+  assert.deepEqual([state.open, state.line, state.button], [true, "", "Importar de novo"]);
+  await page.evaluate(() => window.__testShadow.querySelector(".open-row button").click());
+  await page.waitForTimeout(100);
+  assert.deepEqual(await page.evaluate(() => window.__calls.at(-1)), { action: "ponte.open", document_id: 123 });
+  await page.close();
+});
+test("keyboard shortcut acts like the button, only from the extension and never twice at once", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page);
+  await page.evaluate(() => window.__onMessage({ action: "ponte.shortcut_import" }, { id: "another-extension" }));
+  await page.evaluate(() => window.__onMessage({ action: "ponte.shortcut_import" }, { id: "test-extension", tab: { id: 1 } }));
+  await page.evaluate(() => window.__onMessage({ action: "ponte.shortcut_import", extra: true }, { id: "test-extension" }));
+  assert.equal(await page.evaluate(() => window.__requests.length), 0);
+  await page.evaluate(() => window.__onMessage({ action: "ponte.shortcut_import" }, { id: "test-extension" }));
+  await page.evaluate(() => window.__onMessage({ action: "ponte.shortcut_import" }, { id: "test-extension" }));
+  assert.equal(await page.evaluate(() => window.__requests.length), 1);
+  assert.equal((await panelState(page)).disabled, true);
+  await page.close();
+  // Outside a document page the button is disabled and nothing is sent.
+  const other = await pageFor("<main><h1>Qualquer página</h1></main>", "https://www.sigadoc.mt.gov.br/sigaex/app/principal");
+  await instrumentContent(other);
+  await other.evaluate(() => window.__onMessage({ action: "ponte.shortcut_import" }, { id: "test-extension" }));
+  assert.equal(await other.evaluate(() => window.__requests.length), 0);
+  assert.equal((await panelState(other)).calls.length, 0);
+  await other.close();
+});
+test("a document page whose content area is not found says so; list pages and complete pages do not", options, async () => {
+  let page = await pageFor("<main data-document-detail><dl><dt>Documento</dt><dd>ORG-PRO-2026/01234</dd><dt>Assunto</dt><dd>Assunto reconhecido</dd></dl></main>");
+  await instrumentContent(page);
+  assert.equal(await page.evaluate(() => { const el = window.__testShadow.querySelector(".layout"); return !el.hidden && el.textContent; }), "O Ponte não reconheceu esta página do SIGADOC. O site pode ter mudado; avise quem cuida do Ponte.");
+  await page.close();
+  page = await pageFor();
+  await instrumentContent(page);
+  assert.equal((await panelState(page)).layout, false);
+  await page.close();
+  page = await pageFor("<main><h1>Resultados da pesquisa</h1><dl><dt>Documento</dt><dd>ORG-PRO-2026/01234</dd><dt>Assunto</dt><dd>Resultado de pesquisa</dd></dl></main>");
+  await instrumentContent(page);
+  const state = await panelState(page);
+  assert.deepEqual([state.layout, state.disabled], [false, true]);
+  assert.match(await page.evaluate(() => window.__testShadow.querySelector(".identity").textContent), /Abra um documento/);
+  await page.close();
 });
