@@ -107,6 +107,36 @@ pub struct TemplatesPanel {
     test_selected: BTreeSet<String>,
     test_guidance: String,
     test_result: Option<Result<Preview, String>>,
+    /// Text of the search box above the list.
+    search: String,
+    /// Focus the search box on the next frame (Ctrl+F).
+    focus_search: bool,
+    /// "New template" asked by the keyboard; started on the next frame.
+    pending_new: bool,
+}
+
+/// Lowercase without accents, for comparing names.
+fn fold(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            c => c,
+        })
+        .collect()
+}
+
+/// True when `name` contains `query`, ignoring case and accents. An empty
+/// query matches everything.
+fn name_matches(name: &str, query: &str) -> bool {
+    let query = fold(query.trim());
+    query.is_empty() || fold(name).contains(&query)
 }
 
 fn json<T: serde::Serialize>(value: &T) -> String {
@@ -366,6 +396,60 @@ impl TemplatesPanel {
             || self.example_dirty()
             || self.attachments.dirty()
             || self.file_review.is_some()
+    }
+
+    /// Ctrl+F: focus the search box of the list on the next frame.
+    pub fn key_find(&mut self) {
+        self.focus_search = true;
+    }
+
+    /// Ctrl+S: does what the visible "Salvar rascunho" does. True when a
+    /// save was attempted.
+    pub fn key_save(&mut self, store: &mut Store) -> bool {
+        if self.tab == Tab::Blocks && self.block_dirty() {
+            self.save_block(store);
+            true
+        } else if self.template_dirty() {
+            self.save_template(store);
+            true
+        } else if self.block_dirty() {
+            self.save_block(store);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Ctrl+N: what "Novo modelo" does. With unsaved changes it refuses with
+    /// the usual message; otherwise the new template opens on the next frame.
+    pub fn key_new(&mut self) -> bool {
+        if self.dirty() {
+            self.notice(
+                "Salve ou descarte as alterações antes de trocar de modelo.",
+                true,
+            );
+        } else {
+            self.pending_new = true;
+        }
+        true
+    }
+
+    /// Esc: closes an open inline form or confirmation. True when it closed
+    /// something.
+    pub fn key_escape(&mut self) -> bool {
+        let open = self.dup_name.is_some()
+            || self.confirm.is_some()
+            || self.confirm_discard_template
+            || self.confirm_discard_block
+            || self.confirm_discard_example
+            || self.confirm_reextract.is_some();
+        self.dup_name = None;
+        self.confirm = None;
+        self.confirm_discard_template = false;
+        self.confirm_discard_block = false;
+        self.confirm_discard_example = false;
+        self.confirm_reextract = None;
+        open
     }
 
     fn template_dirty(&self) -> bool {
@@ -671,6 +755,9 @@ impl TemplatesPanel {
         open_document: Option<(i64, String, Capture)>,
     ) -> TemplatesAction {
         self.refresh(store);
+        if std::mem::take(&mut self.pending_new) {
+            self.start_new(store);
+        }
         let member = store
             .load_intranet_config()
             .map(|c| c.member_name)
@@ -746,6 +833,11 @@ impl TemplatesPanel {
                         {
                             self.start_new(store);
                         }
+                        let width = ui.available_width();
+                        let found = widgets::search(ui, &mut self.search, "Buscar modelo", width);
+                        if std::mem::take(&mut self.focus_search) {
+                            found.request_focus();
+                        }
                         ui.add_space(theme::S1);
                         widgets::field_label(ui, "Tipo");
                         let current = if self.filter_kind.is_empty() {
@@ -789,8 +881,18 @@ impl TemplatesPanel {
                 let mut pick: Option<WorkTemplate> = None;
                 let selected = self.edit.as_ref().map(|t| t.uid.clone());
                 let mut shown = 0;
+                let block_hits = self
+                    .blocks
+                    .iter()
+                    .filter(|b| {
+                        b.visible_to(member)
+                            && (self.show_archived || b.status != Status::Archived)
+                            && name_matches(&b.name, &self.search)
+                    })
+                    .count();
                 for (i, t) in self.templates.iter().enumerate() {
-                    if !t.visible_to(member)
+                    if !name_matches(&t.name, &self.search)
+                        || !t.visible_to(member)
                         || (!self.filter_kind.is_empty() && t.kind != self.filter_kind)
                         || (!self.show_archived && t.status == Status::Archived)
                         || (self.only_mine && owner_key(&t.owner) != mine)
@@ -820,10 +922,25 @@ impl TemplatesPanel {
                     }
                 }
                 if shown == 0 {
+                    let searching = !self.search.trim().is_empty();
                     egui::Frame::new()
                         .inner_margin(egui::Margin::symmetric(16, 12))
                         .show(ui, |ui| {
-                            widgets::small_muted(ui, "Nenhum modelo para mostrar.");
+                            ui.set_width(ui.available_width());
+                            if searching && block_hits == 0 {
+                                widgets::muted(
+                                    ui,
+                                    format!(
+                                        "Nenhum modelo encontrado para \"{}\".",
+                                        self.search.trim()
+                                    ),
+                                );
+                                if ui.add(widgets::quiet("Limpar a busca")).clicked() {
+                                    self.search.clear();
+                                }
+                            } else if !searching {
+                                widgets::small_muted(ui, "Nenhum modelo para mostrar.");
+                            }
                         });
                 }
                 if let Some(t) = pick {
@@ -877,7 +994,10 @@ impl TemplatesPanel {
         let mut pick: Option<InstructionBlock> = None;
         let selected = self.block_edit.as_ref().map(|b| b.uid.clone());
         for (i, b) in self.blocks.iter().enumerate() {
-            if !b.visible_to(member) || (!self.show_archived && b.status == Status::Archived) {
+            if !name_matches(&b.name, &self.search)
+                || !b.visible_to(member)
+                || (!self.show_archived && b.status == Status::Archived)
+            {
                 continue;
             }
             let is_sel = selected.as_deref() == Some(b.uid.as_str());
@@ -1001,16 +1121,29 @@ impl TemplatesPanel {
             .id_salt("tpl_right")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.set_max_width(FORM_WIDTH);
-                ui.spacing_mut().item_spacing.y = theme::S3;
-                match self.tab {
-                    Tab::Structure => self.tab_structure(ui),
-                    Tab::Blocks => self.tab_blocks(ui, store, member),
-                    Tab::Examples => self.tab_examples(ui, store),
-                    Tab::References => self.tab_references(ui),
-                    Tab::Test => self.tab_test(ui, store, doc),
-                }
-                ui.add_space(theme::S4);
+                // Room on both sides so card borders are not cut by the
+                // scroll area and the scroll bar does not cover them.
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 2,
+                        right: 14,
+                        top: 2,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        // `set_max_width` sets, it does not clamp: never
+                        // widen past the room there is.
+                        ui.set_max_width(ui.available_width().min(FORM_WIDTH));
+                        ui.spacing_mut().item_spacing.y = theme::S3;
+                        match self.tab {
+                            Tab::Structure => self.tab_structure(ui),
+                            Tab::Blocks => self.tab_blocks(ui, store, member),
+                            Tab::Examples => self.tab_examples(ui, store),
+                            Tab::References => self.tab_references(ui),
+                            Tab::Test => self.tab_test(ui, store, doc),
+                        }
+                        ui.add_space(theme::S4);
+                    });
             });
         action
     }
@@ -1082,29 +1215,38 @@ impl TemplatesPanel {
                 );
             },
             |ui| {
-                if stored.is_some() {
-                    if ui.add(widgets::danger("Apagar de vez…")).clicked() {
-                        do_delete = true;
-                    }
-                    ui.add_space(theme::S3);
-                    let (label, wanted) = if archived {
-                        ("Desarquivar", Status::Published)
-                    } else {
-                        ("Arquivar", Status::Archived)
-                    };
-                    if ui.add(widgets::quiet(label)).clicked() {
-                        do_status = Some(wanted);
-                    }
-                }
-                if ui
-                    .add_enabled(
-                        stored.is_some(),
-                        widgets::secondary(format!("{} Duplicar…", icon::COPY)),
-                    )
-                    .clicked()
-                {
-                    do_dup = true;
-                }
+                let (button, _) =
+                    egui::containers::menu::MenuButton::from_button(widgets::secondary(icon::MORE))
+                        .ui(ui, |ui| {
+                            ui.set_min_width(190.0);
+                            if ui
+                                .add_enabled(
+                                    stored.is_some(),
+                                    egui::Button::new(format!("{} Duplicar…", icon::COPY)),
+                                )
+                                .clicked()
+                            {
+                                do_dup = true;
+                                ui.close();
+                            }
+                            if stored.is_some() {
+                                let (label, wanted) = if archived {
+                                    ("Desarquivar", Status::Published)
+                                } else {
+                                    ("Arquivar", Status::Archived)
+                                };
+                                if ui.button(label).clicked() {
+                                    do_status = Some(wanted);
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui.add(widgets::danger("Apagar de vez…")).clicked() {
+                                    do_delete = true;
+                                    ui.close();
+                                }
+                            }
+                        });
+                button.on_hover_text("Mais ações");
             },
         );
         ui.add_space(theme::S1);
@@ -2295,7 +2437,7 @@ impl TemplatesPanel {
                 widgets::section(ui, "Testar o modelo");
                 widgets::muted(
                     ui,
-                    "Abra um documento na área Documentos para testar o modelo com ele.",
+                    "Nenhum documento aberto. O teste usa o documento selecionado na área Documentos.",
                 );
             });
             return;
@@ -2323,7 +2465,15 @@ impl TemplatesPanel {
         let mut build = false;
         widgets::card(ui, |ui| {
             widgets::section(ui, "Testar o modelo");
-            widgets::muted(ui, format!("Documento: {}", doc.1));
+            let title = doc.2.title.trim();
+            widgets::muted(
+                ui,
+                if title.is_empty() {
+                    format!("Documento: {}", doc.1)
+                } else {
+                    format!("Documento: {} — {title}", doc.1)
+                },
+            );
             widgets::small_muted(ui, "Nada é enviado à IA nesta prévia.");
             ui.add_space(theme::S2);
             if !optional.is_empty() {
@@ -2490,6 +2640,8 @@ pub const SHOTS: &[&str] = &[
     "testar",
     "rascunho",
     "instrucao",
+    "busca",
+    "busca-vazia",
 ];
 
 #[cfg(feature = "shots")]
@@ -2508,6 +2660,8 @@ impl TemplatesPanel {
         };
         match view {
             "lista" => {}
+            "busca" => self.search = "informacoes".into(),
+            "busca-vazia" => self.search = "parecer jurídico".into(),
             "rascunho" => {
                 if let Some(t) = find(self, "Encaminhamento a setor") {
                     self.load_template(store, t, false);
@@ -2556,5 +2710,63 @@ impl TemplatesPanel {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_filter_ignores_case_and_accents() {
+        assert!(name_matches(
+            "Resposta a pedido de informações",
+            "INFORMACOES"
+        ));
+        assert!(name_matches("Resposta a pedido de informações", " pedido "));
+        assert!(name_matches("Orientação", "orientacao"));
+        assert!(name_matches("Qualquer", ""));
+        assert!(name_matches("Qualquer", "   "));
+        assert!(!name_matches("Encaminhamento a setor", "informacoes"));
+    }
+
+    #[test]
+    fn escape_closes_inline_forms_only_when_open() {
+        let mut panel = TemplatesPanel::default();
+        assert!(!panel.key_escape());
+        panel.dup_name = Some("Cópia de Modelo A".into());
+        assert!(panel.key_escape());
+        assert!(panel.dup_name.is_none());
+        assert!(!panel.key_escape());
+        panel.confirm = Some(Confirm::Template);
+        panel.confirm_discard_template = true;
+        assert!(panel.key_escape());
+        assert!(panel.confirm.is_none() && !panel.confirm_discard_template);
+    }
+
+    #[test]
+    fn new_is_refused_with_unsaved_changes() {
+        let mut panel = TemplatesPanel::default();
+        assert!(panel.key_new());
+        assert!(panel.pending_new);
+        assert!(!panel.error);
+
+        let mut panel = TemplatesPanel::default();
+        let mut t = WorkTemplate::new("Modelo A", "resposta", "Texto");
+        t.scope = Scope::Personal;
+        panel.edit = Some(t);
+        // Never saved: counts as unsaved work.
+        assert!(panel.dirty());
+        assert!(panel.key_new());
+        assert!(!panel.pending_new);
+        assert!(panel.error);
+        assert!(panel.message.contains("Salve ou descarte"));
+    }
+
+    #[test]
+    fn find_requests_focus() {
+        let mut panel = TemplatesPanel::default();
+        panel.key_find();
+        assert!(panel.focus_search);
     }
 }

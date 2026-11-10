@@ -211,6 +211,55 @@ impl Appearance {
     }
 }
 
+/// How big everything is drawn, chosen in Ajustes ▸ Aparência.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextSize {
+    Normal,
+    Large,
+    Larger,
+}
+
+impl TextSize {
+    pub const ALL: [Self; 3] = [Self::Normal, Self::Large, Self::Larger];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Large => "grande",
+            Self::Larger => "maior",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Self {
+        match key {
+            "grande" => Self::Large,
+            "maior" => Self::Larger,
+            _ => Self::Normal,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+            Self::Large => "Grande",
+            Self::Larger => "Maior",
+        }
+    }
+
+    fn factor(self) -> f32 {
+        match self {
+            Self::Normal => 1.0,
+            Self::Large => 1.12,
+            Self::Larger => 1.25,
+        }
+    }
+}
+
+/// Texts, icons and spacing grow together, like the zoom of a browser.
+pub fn set_text_size(ctx: &egui::Context, size: TextSize) {
+    ctx.set_zoom_factor(size.factor());
+}
+
 fn windows_font(file: &str) -> Option<Vec<u8>> {
     let windows = std::env::var_os("WINDIR")?;
     std::fs::read(PathBuf::from(windows).join("Fonts").join(file)).ok()

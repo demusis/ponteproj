@@ -1,0 +1,649 @@
+//! The settings area: sections, AI configuration and the ChatGPT sign-in.
+use super::{pill, save_appearance, Area, ChatGptLogin, Leave, PonteApp, SettingsSection};
+use crate::ai::{self, AiProvider, ModelInfo};
+use crate::chatgpt;
+use crate::theme::{self, icon, S1, S2, S3};
+use crate::widgets::{self, Tone};
+use eframe::egui::{self, RichText};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
+
+impl PonteApp {
+    /// One block of the Ajustes area: what it is for, and its buttons.
+    fn settings_card(ui: &mut egui::Ui, text: &str, add: impl FnOnce(&mut egui::Ui)) {
+        widgets::card(ui, |ui| {
+            if !text.is_empty() {
+                ui.add(egui::Label::new(RichText::new(text).color(theme::c().muted)).wrap());
+                ui.add_space(S1);
+            }
+            ui.horizontal_wrapped(add);
+        });
+    }
+
+    /// One line of the list of sections, on the left of Ajustes.
+    fn settings_nav_item(ui: &mut egui::Ui, glyph: &str, label: &str, selected: bool) -> bool {
+        let p = theme::c();
+        let size = egui::vec2(ui.available_width(), 36.0);
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if ui.is_rect_visible(rect) {
+            if selected {
+                ui.painter().rect_filled(rect, 6.0, p.primary_soft);
+            } else if response.hovered() {
+                ui.painter().rect_filled(rect, 6.0, p.sunken);
+            }
+            let color = if selected { p.primary } else { p.text };
+            ui.painter().text(
+                egui::pos2(rect.left() + 12.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                glyph,
+                theme::font(18.0),
+                if selected { p.primary } else { p.muted },
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + 40.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                if selected {
+                    theme::font_strong(theme::SIZE_BODY)
+                } else {
+                    theme::font(theme::SIZE_BODY)
+                },
+                color,
+            );
+        }
+        response.clicked()
+    }
+
+    /// Goes to a section of Ajustes. Leaving the AI section saves it first;
+    /// an invalid AI configuration keeps the person there.
+    fn open_settings(&mut self, section: SettingsSection) {
+        let leaving_ai = self.area == Area::Settings
+            && self.settings_section == SettingsSection::Ai
+            && section != SettingsSection::Ai;
+        if leaving_ai && !self.leave_ai_settings() {
+            return;
+        }
+        self.settings_section = section;
+        if self.area != Area::Settings {
+            self.navigate(Leave::Settings);
+        }
+    }
+
+    /// Other parts of the app still ask for the old windows by raising their
+    /// flags (status bar, "Ir para", the tour): each request becomes a visit
+    /// to the section of Ajustes that now holds that content.
+    pub(super) fn route_settings_requests(&mut self) {
+        if self.intranet.open {
+            self.intranet.open = false;
+            self.open_settings(SettingsSection::Team);
+        }
+        if self.trash.open {
+            self.trash.open = false;
+            self.open_settings(SettingsSection::Trash);
+        }
+        if self.settings_open {
+            self.settings_open = false;
+            self.open_settings(SettingsSection::Ai);
+        }
+    }
+
+    /// The Ajustes area: what used to be scattered in the "Menu".
+    pub(super) fn settings_area(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let p = theme::c();
+        egui::Panel::left("settings-nav")
+            .exact_size(264.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(p.surface)
+                    .inner_margin(egui::Margin::symmetric(10, 14)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    widgets::heading(ui, "Ajustes");
+                });
+                ui.add_space(S2);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                let mut chosen = None;
+                for section in SettingsSection::ALL {
+                    if Self::settings_nav_item(
+                        ui,
+                        section.icon(),
+                        section.label(),
+                        self.settings_section == section,
+                    ) {
+                        chosen = Some(section);
+                    }
+                }
+                if let Some(section) = chosen {
+                    self.open_settings(section);
+                }
+            });
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(p.bg)
+                    .inner_margin(egui::Margin::symmetric(24, 16)),
+            )
+            .show(ui, |ui| {
+                let section = self.settings_section;
+                widgets::heading(ui, section.label());
+                widgets::muted(ui, section.summary());
+                ui.add_space(S2);
+                egui::ScrollArea::vertical()
+                    .id_salt(("settings-section", section.label()))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_max_width(820.0);
+                        self.settings_section_body(ui, &ctx, section);
+                        ui.add_space(S3);
+                    });
+            });
+    }
+
+    fn settings_section_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        section: SettingsSection,
+    ) {
+        use crate::widgets::{primary, secondary};
+        match section {
+            SettingsSection::Team => {
+                if self.intranet.ui(ui, &mut self.store, &self.db_path) {
+                    self.refresh();
+                }
+            }
+            SettingsSection::Mail => {
+                let mut open_mail = false;
+                let mut import_eml = false;
+                Self::settings_card(
+                    ui,
+                    "O Ponte se conecta à sua conta de e-mail (IMAP), lista as mensagens de uma pasta e importa as que você marcar, com os anexos, como registros do tipo E-mail recebido. Para cadastrar uma conta, informe o servidor de e-mail, o usuário e a senha; no Gmail, use uma senha de app. As contas ficam guardadas no acervo deste computador. O Ponte só lê a caixa de e-mail: nada é marcado como lido, movido ou apagado na conta.",
+                    |ui| {
+                        open_mail = ui
+                            .add(primary(format!("{} Contas e importação", icon::MAIL)))
+                            .clicked();
+                        import_eml = ui
+                            .add(secondary("Importar e-mail de um arquivo (.eml)…"))
+                            .on_hover_text("Um e-mail salvo como arquivo vira um registro do tipo E-mail recebido, com os anexos.")
+                            .clicked();
+                    },
+                );
+                if open_mail {
+                    self.mail.open_full();
+                }
+                if import_eml {
+                    self.import_eml_dialog();
+                }
+            }
+            SettingsSection::Import => {
+                widgets::card(ui, |ui| {
+                    widgets::section(ui, "Atendimentos");
+                    crate::saiop::SaiopPanel::auto_attendance_setting(ui, &mut self.store);
+                });
+            }
+            SettingsSection::Ai => self.ai_settings(ui),
+            SettingsSection::Backup => {
+                let idle = self.worker.is_none();
+                let has_backup = self.backup_path.is_some();
+                let mut backup = false;
+                let mut export = false;
+                let mut copy_backup = false;
+                widgets::section(ui, "Cópia de segurança");
+                Self::settings_card(
+                    ui,
+                    "Guarda uma cópia protegida do acervo na pasta “backups” deste computador. Ela só abre na mesma conta do Windows.",
+                    |ui| {
+                        backup = ui
+                            .add_enabled(idle, primary("Fazer cópia agora"))
+                            .clicked();
+                        if has_backup {
+                            copy_backup = ui
+                                .add(widgets::quiet("Copiar o caminho da última cópia"))
+                                .clicked();
+                        }
+                    },
+                );
+                ui.add_space(S3);
+                widgets::section(ui, "Exportação");
+                Self::settings_card(
+                    ui,
+                    "Grava documentos, tarefas e atendimentos em três arquivos .csv (sem textos, notas ou anexos), prontos para os painéis do CERES ou para o Excel.",
+                    |ui| {
+                        export = ui
+                            .add_enabled(idle, secondary("Exportar dados para CSV…"))
+                            .clicked();
+                    },
+                );
+                if backup {
+                    self.backup(ctx);
+                }
+                if export {
+                    self.export_csv(ctx);
+                }
+                if copy_backup {
+                    if let Some(path) = &self.backup_path {
+                        ctx.copy_text(path.display().to_string());
+                        self.message("Caminho copiado.");
+                    }
+                }
+            }
+            SettingsSection::Trash => {
+                let busy = self.worker.is_some()
+                    || self.pdf_reader.busy()
+                    || self.exit_confirm
+                    || self.replacement.is_some();
+                if let Some(change) = self.trash.ui(ui, &mut self.store, busy) {
+                    self.apply_trash_change(change);
+                }
+            }
+            SettingsSection::Appearance => {
+                let mut chosen = self.appearance;
+                widgets::card(ui, |ui| {
+                    widgets::field_label(ui, "Tema");
+                    ui.horizontal(|ui| {
+                        for option in [
+                            theme::Appearance::System,
+                            theme::Appearance::Light,
+                            theme::Appearance::Dark,
+                        ] {
+                            if widgets::chip(ui, chosen == option, option.label()).clicked() {
+                                chosen = option;
+                            }
+                        }
+                    });
+                });
+                if chosen != self.appearance {
+                    self.appearance = chosen;
+                    theme::set_appearance(ctx, chosen);
+                    save_appearance(chosen, self.text_size);
+                }
+                ui.add_space(S3);
+                let mut size = self.text_size;
+                widgets::card(ui, |ui| {
+                    widgets::field_label(ui, "Tamanho do texto");
+                    ui.horizontal(|ui| {
+                        for option in theme::TextSize::ALL {
+                            if widgets::chip(ui, size == option, option.label()).clicked() {
+                                size = option;
+                            }
+                        }
+                    });
+                    widgets::small_muted(
+                        ui,
+                        "Aumenta as letras, os ícones e os botões de todo o Ponte.",
+                    );
+                });
+                if size != self.text_size {
+                    self.text_size = size;
+                    theme::set_text_size(ctx, size);
+                    save_appearance(self.appearance, size);
+                }
+            }
+            SettingsSection::About => {
+                let mut about = false;
+                let mut guide = false;
+                Self::settings_card(
+                    ui,
+                    &format!(
+                        "Ponte {} • Assistente documental. Os dados ficam neste computador, protegidos pela sua conta do Windows.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    |ui| {
+                        guide = ui
+                            .add(primary(format!("{} Guia do usuário", icon::BOOK)))
+                            .on_hover_text("Abre o guia no navegador. Funciona sem internet.")
+                            .clicked();
+                        about = ui.add(secondary("Autores e licença…")).clicked();
+                    },
+                );
+                if about {
+                    self.about_open = true;
+                }
+                if guide {
+                    self.open_guide();
+                }
+            }
+        }
+    }
+
+    /// The "Inteligência artificial" section of Ajustes. Leaving the section
+    /// saves what was changed (see `leave_ai_settings`).
+    fn ai_settings(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        let mut save = false;
+        let mut refresh = false;
+        let mut provider_changed = false;
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Onde a IA funciona");
+            ui.horizontal_wrapped(|ui| {
+                let before = self.ai.provider;
+                ui.radio_value(&mut self.ai.provider, AiProvider::Local, "Ollama neste computador")
+                    .on_hover_text("Modelo instalado neste computador. Nada sai deste computador.");
+                ui.radio_value(&mut self.ai.provider, AiProvider::Cloud, "Ollama Cloud")
+                    .on_hover_text("Modelos grandes nos servidores da Ollama (ollama.com), com a chave da sua conta.");
+                ui.radio_value(&mut self.ai.provider, AiProvider::Remote, "Outro servidor")
+                    .on_hover_text("Servidor do órgão que funciona como o Ollama. O endereço deve começar com https.");
+                ui.radio_value(&mut self.ai.provider, AiProvider::ChatGpt, "ChatGPT (assinatura)")
+                    .on_hover_text("Usa a cota da sua assinatura ChatGPT Plus ou Pro, entrando com a sua conta. Os textos vão para os servidores da OpenAI.");
+                provider_changed = before != self.ai.provider;
+            });
+            ui.add_space(4.0);
+            match self.ai.provider {
+                AiProvider::ChatGpt => {
+                    ui.group(|ui| {
+                        ui.set_width(ui.available_width());
+                        ui.colored_label(crate::theme::warning(), "⚠ Nesta opção, os dados saem do seu computador e do órgão.");
+                        ui.label("A cada clique em “Analisar” ou “Gerar com IA”, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados aos servidores da OpenAI, nos Estados Unidos, sob os termos e a política de privacidade da OpenAI. Nada é enviado ao importar, só quando você clica. Use apenas com documentos que podem sair do órgão; avalie sigilo e LGPD antes.");
+                        ui.small("O Ponte não recebe acesso às suas conversas, à memória nem à cobrança do ChatGPT. O uso é descontado da cota da sua assinatura (Plus ou Pro); o limite por aplicativo pode ser ajustado em ChatGPT ▸ Configurações ▸ Uso. Quando a cota acaba, o Ponte avisa e não usa outro provedor por conta própria.");
+                    });
+                    ui.add_space(4.0);
+                    let signed_in = self.ai.chatgpt.signed_in();
+                    let sharing = self.ai.chatgpt.sharing();
+                    let account = self.ai.chatgpt.account_label.clone();
+                    let in_progress = self.chatgpt_login.is_some();
+                    ui.horizontal_wrapped(|ui| {
+                        if in_progress {
+                            ui.spinner();
+                            ui.label("Aguardando a autorização no navegador…");
+                            if ui.button("Cancelar").clicked() {
+                                self.cancel_chatgpt_login();
+                            }
+                        } else if signed_in {
+                            ui.label(format!("Conectado: {account}"));
+                            if sharing {
+                                ui.colored_label(crate::theme::success(), "✓ uso do plano liberado");
+                            } else {
+                                ui.colored_label(crate::theme::warning(), "⚠ sem permissão de uso do plano");
+                            }
+                            if ui.button("Entrar de novo…").on_hover_text("Abre o navegador para renovar a autorização ou liberar o uso do plano.").clicked() {
+                                self.start_chatgpt_login(ctx);
+                            }
+                            if ui.button("Sair").on_hover_text("Apaga a sessão deste computador e pede à OpenAI que a encerre.").clicked() {
+                                self.chatgpt_sign_out();
+                            }
+                        } else {
+                            if ui.button("Entrar com o ChatGPT…").on_hover_text("Abre o navegador na página da OpenAI. Entre com a conta da sua assinatura e autorize o Ponte, inclusive o uso do plano.").clicked() {
+                                self.start_chatgpt_login(ctx);
+                            }
+                            if !account.is_empty() {
+                                ui.small(format!("última conta: {account}"));
+                            }
+                        }
+                    });
+                    if let Some(login) = &self.chatgpt_login {
+                        let url = login.authorize_url.clone();
+                        ui.horizontal_wrapped(|ui| {
+                            ui.small("Se o navegador não abriu, copie o endereço e cole nele:");
+                            if ui.small_button("Copiar endereço").clicked() {
+                                ctx.copy_text(url);
+                            }
+                        });
+                    }
+                    if let Some(error) = &self.chatgpt_login_error {
+                        ui.colored_label(crate::theme::error(), format!("✗ {error}"));
+                    }
+                    ui.small("Requer assinatura ChatGPT Plus ou Pro (conta gratuita entra, mas não libera o uso do plano). O login é feito no navegador, em auth.openai.com, e retorna ao Ponte neste computador.");
+                }
+                AiProvider::Local => {
+                    let label = ui.label("Endereço do Ollama");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai.local_url)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label.id);
+                    ui.small("Padrão: http://127.0.0.1:11434. Instale o Ollama em ollama.com/download e baixe um modelo (ex.: ollama pull qwen3:4b-instruct).");
+                }
+                AiProvider::Cloud => {
+                    ui.label(format!("Endereço: {} (fixo)", ai::CLOUD_URL));
+                    let label = ui.label("Chave da sua conta");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai.cloud_key)
+                            .password(true)
+                            .hint_text("cole aqui a chave gerada em ollama.com")
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label.id);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.small("Crie a chave em");
+                        ui.hyperlink_to(
+                            RichText::new("ollama.com/settings/keys").small(),
+                            "https://ollama.com/settings/keys",
+                        );
+                        ui.small("(conta gratuita por uso ou plano mensal).");
+                    });
+                    ui.colored_label(crate::theme::warning(), "Os textos enviados à IA saem deste computador para os servidores da Ollama (EUA, com possível roteamento pela Europa). A Ollama declara não registrar nem treinar com os dados.");
+                }
+                AiProvider::Remote => {
+                    let label = ui.label("Endereço do servidor (HTTPS)");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai.remote_url)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label.id);
+                    let label = ui.label("Chave do servidor (opcional)");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai.remote_token)
+                            .password(true)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label.id);
+                    ui.colored_label(
+                        crate::theme::warning(),
+                        "Os textos enviados à IA saem deste computador para esse servidor.",
+                    );
+                }
+            }
+            ui.add_space(6.0);
+            ui.strong("Modelo de IA");
+            let listed = self.models_match_current() && !self.models.is_empty();
+            ui.horizontal_wrapped(|ui| {
+                if listed {
+                    let models = self.models.clone();
+                    let current = self.ai.model().trim().to_owned();
+                    let selected = models
+                        .iter()
+                        .find(|m| m.name == current)
+                        .map(ModelInfo::label)
+                        .unwrap_or_else(|| {
+                            if current.is_empty() {
+                                "Escolha um modelo".into()
+                            } else {
+                                current.clone()
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("ai-model")
+                        .selected_text(selected)
+                        .width(320.0)
+                        .show_ui(ui, |ui| {
+                            let model = self.ai.model_mut();
+                            for info in &models {
+                                ui.selectable_value(model, info.name.clone(), info.label());
+                            }
+                        });
+                } else {
+                    let model = self.ai.model_mut();
+                    ui.add(
+                        egui::TextEdit::singleline(model)
+                            .hint_text("nome do modelo")
+                            .desired_width(320.0),
+                    );
+                }
+                let fetching = self.model_fetch.is_some();
+                let button = egui::Button::new(if listed {
+                    "↻ Atualizar lista"
+                } else {
+                    "Listar modelos do servidor"
+                });
+                if ui
+                    .add_enabled(!fetching, button)
+                    .on_hover_text(
+                        "Consulta o servidor configurado e lista os modelos que ele oferece.",
+                    )
+                    .clicked()
+                {
+                    refresh = true;
+                }
+                if fetching {
+                    ui.spinner();
+                    ui.small("consultando…");
+                }
+            });
+            if let Some(error) = &self.models_error {
+                ui.colored_label(crate::theme::warning(), format!("⚠ {error}"));
+            } else if listed {
+                ui.small(if self.models.len() == 1 {
+                    "1 modelo oferecido por este servidor.".to_owned()
+                } else {
+                    format!(
+                        "{} modelos oferecidos por este servidor.",
+                        self.models.len()
+                    )
+                });
+            } else if self.model_fetch.is_none() {
+                ui.small(
+                    "Clique em “Listar modelos do servidor” para escolher entre os disponíveis.",
+                );
+            }
+            ui.add_space(6.0);
+            let remember_label = if self.ai.provider == AiProvider::ChatGpt {
+                "Guardar a sessão do ChatGPT neste computador"
+            } else {
+                "Guardar a chave neste computador"
+            };
+            ui.checkbox(&mut self.ai.remember_keys, remember_label)
+                .on_hover_text("A configuração fica no acervo, protegida pela sua conta do Windows. Desmarcada, a chave (ou a sessão do ChatGPT) vale só até fechar o Ponte.");
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let dirty = self.ai_config_dirty();
+                if ui.add_enabled(dirty, widgets::primary("Salvar")).clicked() {
+                    save = true;
+                }
+                if dirty {
+                    pill(ui, "Não salvo", Tone::Warn);
+                    widgets::small_muted(ui, "Também é salvo ao sair desta seção.");
+                } else {
+                    widgets::small_muted(ui, "Configuração salva.");
+                }
+            });
+            ui.separator();
+            widgets::small_muted(ui, "O servidor só é acessado ao listar modelos, analisar ou gerar uma sugestão. O aplicativo não solicita sua senha do SIGADOC.");
+            widgets::small_muted(ui, "A análise é salva no acervo. A sugestão de minuta só é salva por sua ação explícita.");
+        });
+        if provider_changed {
+            self.models_error = None;
+            if !self.models_match_current() {
+                self.fetch_models(ctx);
+            }
+        }
+        if refresh {
+            self.models_for = None;
+            self.fetch_models(ctx);
+        }
+        if save && self.save_ai_config() {
+            self.message("Configuração de IA salva.");
+        }
+    }
+
+    /// Leaving the AI section saves what was changed, as closing its window
+    /// used to. False when the configuration is invalid: the person stays.
+    pub(super) fn leave_ai_settings(&mut self) -> bool {
+        if !self.ai_config_dirty() {
+            return true;
+        }
+        if self.save_ai_config() {
+            self.message("Configuração de IA salva.");
+            true
+        } else {
+            false
+        }
+    }
+
+    /// True when the listed models came from the provider and endpoint now
+    /// configured (otherwise the list is stale and is not shown).
+    pub(super) fn models_match_current(&self) -> bool {
+        self.models_for.as_ref().is_some_and(|(provider, base)| {
+            *provider == self.ai.provider
+                && base.trim_end_matches('/') == self.ai.base_url().trim().trim_end_matches('/')
+        })
+    }
+
+    /// Opens the browser on OpenAI's sign-in page and waits, in the
+    /// background, for the authorization to come back to the local port.
+    fn start_chatgpt_login(&mut self, ctx: &egui::Context) {
+        if self.chatgpt_login.is_some() {
+            return;
+        }
+        self.chatgpt_login_error = None;
+        if self.ai.chatgpt_host_id.trim().is_empty() {
+            self.ai.chatgpt_host_id = chatgpt::new_host_id();
+        }
+        let login = match chatgpt::Login::start(&self.ai.chatgpt_host_id, Some(&self.ai.chatgpt)) {
+            Ok(login) => login,
+            Err(error) => {
+                self.chatgpt_login_error = Some(error.to_string());
+                return;
+            }
+        };
+        let authorize_url = login.authorize_url.clone();
+        if let Err(error) = crate::windows_ui::open_url(&authorize_url) {
+            self.chatgpt_login_error = Some(error.to_string());
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        match std::thread::Builder::new()
+            .name("ponte-chatgpt-login".into())
+            .spawn(move || {
+                let result = login
+                    .wait(&flag, chatgpt::LOGIN_TIMEOUT, crate::windows_ui::open_url)
+                    .map_err(|e| e.to_string());
+                let _ = sender.send(result);
+                repaint.request_repaint();
+            }) {
+            Ok(_) => {
+                self.chatgpt_login = Some(ChatGptLogin {
+                    receiver,
+                    cancel,
+                    authorize_url,
+                });
+            }
+            Err(error) => {
+                self.chatgpt_login_error =
+                    Some(format!("Não foi possível iniciar o login: {error}"));
+            }
+        }
+    }
+
+    fn cancel_chatgpt_login(&mut self) {
+        if let Some(login) = self.chatgpt_login.take() {
+            login.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Forgets the tokens here and asks OpenAI to revoke them (in the
+    /// background; the local part never waits for the network).
+    fn chatgpt_sign_out(&mut self) {
+        let session = self.ai.chatgpt.clone();
+        self.set_chatgpt_session(session.without_tokens());
+        self.models_for = None;
+        self.models.clear();
+        if self.save_ai_config() {
+            self.message("Sessão do ChatGPT encerrada neste computador. Se quiser, confira em ChatGPT ▸ Configurações ▸ Aplicativos conectados.");
+        }
+        if session.signed_in() {
+            let _ = std::thread::Builder::new()
+                .name("ponte-chatgpt-signout".into())
+                .spawn(move || {
+                    let _ = chatgpt::sign_out(&session);
+                });
+        }
+    }
+}
