@@ -70,6 +70,10 @@ pub mod shots;
 #[cfg(any(test, feature = "shots"))]
 pub mod shots_data;
 
+/// Choosing a document by searching for it.
+#[cfg(feature = "desktop")]
+pub mod doc_picker;
+
 /// One window per library.
 #[cfg(feature = "desktop")]
 pub mod single_instance;

@@ -2968,7 +2968,8 @@ pub struct SaiopPanel {
     import_open: bool,
     sort: SaiopSort,
     sort_ascending: bool,
-    link_number: String,
+    /// "Ligar a um documento": the search that finds it.
+    link_picker: crate::doc_picker::DocumentPicker,
     selected_id: Option<i64>,
     editor: Option<SaiopAttendance>,
     saved_snapshot: Option<SaiopAttendance>,
@@ -3015,7 +3016,7 @@ impl Default for SaiopPanel {
             import_open: false,
             sort: SaiopSort::Entry,
             sort_ascending: false,
-            link_number: String::new(),
+            link_picker: Default::default(),
             selected_id: None,
             editor: None,
             saved_snapshot: None,
@@ -4686,34 +4687,22 @@ impl SaiopPanel {
                     ed.document_id = None;
                 }
             } else {
-                ui.horizontal(|ui| {
-                    let width = (ui.available_width() - 150.0).max(80.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.link_number)
-                            .hint_text("número do documento importado")
-                            .desired_width(width),
-                    );
-                    if ui
-                        .add(widgets::secondary("Ligar a documento"))
-                        .on_hover_text("Liga este atendimento a um documento já importado, pelo número oficial.")
-                        .clicked()
-                    {
-                        let wanted = normalize_reference(&self.link_number);
-                        match store.list_documents("") {
-                            Ok(docs) => match docs.into_iter().find(|d| normalize_reference(&d.document_number) == wanted) {
-                                Some(doc) => {
-                                    // The linked document's number becomes the reference.
-                                    ed.document_id = Some(doc.id);
-                                    ed.reference_norm = normalize_reference(&doc.document_number);
-                                    ed.reference_raw = doc.document_number;
-                                    self.link_number.clear();
-                                }
-                                None => self.set_notice(format!("Nenhum documento importado com o número {}.", self.link_number.trim()), true),
-                            },
-                            Err(e) => self.set_notice(format!("Não foi possível consultar o acervo: {e}"), true),
-                        }
-                    }
-                });
+                // Nobody knows a document's number by heart: the person
+                // searches and picks.
+                widgets::field_label(ui, "Ligar a um documento do acervo");
+                if let Some(doc) =
+                    self.link_picker
+                        .show(ui, store, "Buscar por número, assunto ou texto")
+                {
+                    // The linked document's number becomes the reference.
+                    ed.document_id = Some(doc.id);
+                    ed.reference_norm = normalize_reference(&doc.document_number);
+                    ed.reference_raw = doc.document_number;
+                }
+                widgets::small_muted(
+                    ui,
+                    "Opcional. Escolha o documento na lista; a referência passa a ser o número dele.",
+                );
                 if let Some(url) = ed.composed_sigadoc_url() {
                     ui.hyperlink_to("Abrir no SIGADOC", url).on_hover_text(
                         "Endereço montado a partir da referência; confira na página.",
@@ -5554,6 +5543,7 @@ pub const SHOTS: &[&str] = &[
     "importar",
     "filtrada",
     "vazia-busca",
+    "ligar",
     "estreita",
 ];
 
@@ -5583,6 +5573,23 @@ impl SaiopPanel {
                 }
             }
             "vazia-busca" => self.query = "parecer jurídico".to_owned(),
+            "ligar" => {
+                // An atendimento not linked yet, with the search already typed.
+                if let Ok(list) = store.list_saiop_attendances() {
+                    let pick = list
+                        .iter()
+                        .position(|a| a.document_id.is_none())
+                        .unwrap_or(0);
+                    if let Some(att) = list.into_iter().nth(pick) {
+                        self.load_into_editor(store, att);
+                    }
+                }
+                // Shown as not linked yet, so the search is on screen.
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.document_id = None;
+                }
+                self.link_picker.shots_query(store, "veículos");
+            }
             "estreita" => {
                 // The ficha takes room from the table; the sort is on a
                 // column that does not fit, so "Entrada" is marked.
