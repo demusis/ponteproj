@@ -93,6 +93,7 @@ class PonteFiles : ContentProvider() {
 /** Exports a PDF/attachment into cacheDir/compartilhar and opens it with another app. */
 internal fun openExported(a: MainActivity, kind: String, id: Long, captureId: Long) {
     val dir = File(a.cacheDir, PonteFiles.DIR_SHARED)
+    val epoch = Controller.lockEpoch
     Controller.say("Preparando o arquivo…")
     SyncRunner.background({
         dir.mkdirs()
@@ -110,12 +111,19 @@ internal fun openExported(a: MainActivity, kind: String, id: Long, captureId: Lo
         Pair(safe, mime)
     }, { res ->
         val act = MainActivity.live ?: a
+        if (Controller.locked || Controller.lockEpoch != epoch) {
+            // The app locked while the file was being prepared: nothing opens over the lock
+            // screen, and the file is not kept.
+            File(dir, res.first).delete()
+            return@background
+        }
         try {
             val i = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(PonteFiles.uriFor(PonteFiles.DIR_SHARED, res.first), res.second)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             act.startActivity(i)
+            Controller.noteExternalOpen()
         } catch (_: ActivityNotFoundException) {
             val ext = res.first.substringAfterLast('.', "")
             Controller.say(

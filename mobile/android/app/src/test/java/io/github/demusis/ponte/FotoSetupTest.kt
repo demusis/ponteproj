@@ -52,6 +52,10 @@ class FotoSetupTest {
         SetupState(step = 1, fileName = "ponte-sync.ponte", canRemember = false), "2_frase_sem_biometria"
     )
 
+    @Test fun setupFraseAndroidAntigo() = setup(
+        SetupState(step = 1, fileName = "ponte-sync.ponte", canRemember = false, oldAndroid = true), "2_frase_android_antigo"
+    )
+
     @Test fun setupSincronizando() = setup(SetupState(step = 2, fileName = "ponte-sync.ponte", syncing = true), "3_sincronizando")
 
     @Test fun setupPronto() = setup(SetupState(step = 2, fileName = "ponte-sync.ponte", status = synced, done = true), "3_pronto")

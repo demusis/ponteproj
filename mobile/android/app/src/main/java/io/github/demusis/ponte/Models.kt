@@ -295,7 +295,15 @@ internal data class SettingsState(
     val version: String = "",
     /** Full text of the last sync status. */
     val lastStatus: String = "",
-    val lastStatusError: Boolean = false
+    val lastStatusError: Boolean = false,
+    /** The phone has a secure screen lock, so the app lock can be used. */
+    val lockAvailable: Boolean = true,
+    /** The app lock is on (always false when [lockAvailable] is false). */
+    val lockOn: Boolean = false,
+    /** [LockDelay.key] of the chosen time. */
+    val lockDelay: String = LockDelay.DEFAULT.key,
+    /** Screenshots and the preview in the recent apps are blocked. */
+    val secureScreen: Boolean = true
 )
 
 internal data class AccountFormState(
@@ -312,6 +320,8 @@ internal data class SetupState(
     val fileName: String = "",
     val passphrase: String = "",
     val canRemember: Boolean = true,
+    /** When [canRemember] is false: the Android is older than 9 (else the phone has no screen lock). */
+    val oldAndroid: Boolean = false,
     val remember: Boolean = false,
     val syncing: Boolean = false,
     /** Result of the first sync (empty before it ran). */

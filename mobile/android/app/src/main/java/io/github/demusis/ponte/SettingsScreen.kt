@@ -46,6 +46,9 @@ internal fun SettingsScreen(
     onRemember: (Boolean) -> Unit,
     onForget: () -> Unit,
     onMobile: (Boolean) -> Unit,
+    onLock: (Boolean) -> Unit,
+    onLockDelay: (String) -> Unit,
+    onSecureScreen: (Boolean) -> Unit,
     onAddAccount: () -> Unit,
     onEditAccount: (MailAccount) -> Unit,
     onReset: () -> Unit
@@ -167,6 +170,35 @@ internal fun SettingsScreen(
                 }
             }
 
+            SectionLabel("Segurança", Modifier.padding(top = 8.dp))
+            PonteCard {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    if (!state.lockAvailable) {
+                        Notice(
+                            "Este celular não tem bloqueio de tela. Defina um PIN, padrão ou digital nas " +
+                                "configurações do Android para proteger o Ponte de bolso.",
+                            Tone.WARNING
+                        )
+                    }
+                    SwitchRow(
+                        "Bloquear o Ponte de bolso",
+                        "Pede a digital ou o bloqueio de tela do celular para abrir.",
+                        state.lockOn, onLock, enabled = state.lockAvailable
+                    )
+                    if (state.lockOn) {
+                        ChoiceField(
+                            "Pedir de novo", LockDelay.values().map { Choice(it.key, it.label) },
+                            state.lockDelay, onLockDelay
+                        )
+                    }
+                    SwitchRow(
+                        "Impedir capturas de tela",
+                        "Também esconde o conteúdo na lista de aplicativos recentes.",
+                        state.secureScreen, onSecureScreen
+                    )
+                }
+            }
+
             SectionLabel("Sobre", Modifier.padding(top = 8.dp))
             PonteCard {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -197,19 +229,21 @@ internal fun SettingsScreen(
 }
 
 @Composable
-private fun SwitchRow(title: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun SwitchRow(
+    title: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit, enabled: Boolean = true
+) {
     val c = Ponte.colors
     Row(
         Modifier.fillMaxWidth().heightIn(min = 48.dp)
-            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange),
+            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, fontSize = 15.sp, color = c.text)
+            Text(title, fontSize = 15.sp, color = if (enabled) c.text else c.muted)
             Text(hint, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
         }
         Switch(
-            checked = checked, onCheckedChange = null,
+            checked = checked, onCheckedChange = null, enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = c.onAccent, checkedTrackColor = c.accent,
                 uncheckedThumbColor = c.secondary, uncheckedTrackColor = c.chip, uncheckedBorderColor = c.outline

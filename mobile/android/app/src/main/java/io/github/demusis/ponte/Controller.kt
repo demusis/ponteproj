@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.compose.material3.SnackbarDuration
@@ -97,6 +98,9 @@ internal sealed class AppDialog {
  */
 internal object Controller {
     private const val SERVER_MSG = "Conversando com o servidor de e-mail…"
+    private const val K_LOCK = "lock_on"
+    private const val K_LOCK_AFTER = "lock_after"
+    private const val K_SECURE = "secure_screen"
 
     private lateinit var app: Context
     private val prefs get() = app.getSharedPreferences("ponte", Context.MODE_PRIVATE)
@@ -157,6 +161,15 @@ internal object Controller {
         lastSync = prefs.getLong("last_sync", 0L)
         val fresh = saved == null
         if (fresh) cleanTemp()
+        if (!started) {
+            // A new process always starts behind the lock (if the lock is in force), and nothing
+            // handed to other apps in an earlier run is kept. Photos of a form that is coming
+            // back from the saved state are the exception.
+            locked = LockPolicy.shouldLock(lockSetting(), deviceSecure(), lockDelay(), null, coldStart = true)
+            if (locked) lockEpoch++
+            val b = saved?.getBundle("photo")
+            cleanHandedFiles(setOfNotNull(b?.getString("photo"), b?.getString("new")))
+        }
         if (!SyncRunner.ready && !SyncRunner.keyBroken && !SyncRunner.running.get()) {
             SyncRunner.startInit(a, false)
         }
@@ -205,7 +218,7 @@ internal object Controller {
         stack.clear()
         s.getStringArrayList("stack")?.mapNotNull { Route.parse(it) }?.forEach { stack.add(it) }
         // The first setup starts over (the passphrase is never saved).
-        if (Route.Setup in stack) setup = SetupState(canRemember = Secrets.supported())
+        if (Route.Setup in stack) setup = newSetup()
         for (r in stack.toList()) {
             when (r) {
                 is Route.Document -> documentId = r.id
@@ -249,7 +262,7 @@ internal object Controller {
         }
         if (fileUri == null) {
             if (stack.isEmpty()) {
-                setup = SetupState(canRemember = Secrets.supported())
+                setup = newSetup()
                 stack.add(Route.Setup)
             }
             return
@@ -270,6 +283,186 @@ internal object Controller {
                 photo = photo.copy(kinds = k)
             }
         })
+    }
+
+    private fun newSetup() = SetupState(
+        canRemember = Secrets.supported() && deviceSecure(), oldAndroid = !Secrets.supported()
+    )
+
+    // ---------------------------------------------------------------- app lock
+    //
+    // An access gate in the interface, not encryption: while [locked] nothing of the library is
+    // composed (see AppRoot) and no message, prompt or file is handed out. The library on disk
+    // is sealed by its own Keystore key either way. It keeps out someone who picks up the phone
+    // with the app open or recently used; it does not help against someone who knows the phone's
+    // PIN or against a rooted phone. "Locked" and the time spent away live in memory only.
+
+    /** The lock screen replaces everything. A new process starts locked (see [attach]). */
+    var locked by mutableStateOf(false)
+        private set
+
+    /** Grows at every lock: work started before a lock knows the files it made may be gone. */
+    var lockEpoch = 0
+        private set
+
+    private var backgroundAt = -1L
+    private var unlockBusy = false
+    private var autoPrompted = false
+    private var openedExternally = false
+    private var externalStopped = false
+
+    private fun deviceSecure() = AppLock.deviceSecure(app)
+
+    /** The saved switch; never chosen yet means "on when the phone has a screen lock". */
+    private fun lockSetting() =
+        if (prefs.contains(K_LOCK)) prefs.getBoolean(K_LOCK, true) else LockPolicy.defaultEnabled(deviceSecure())
+
+    private fun lockDelay() = LockDelay.fromKey(prefs.getString(K_LOCK_AFTER, null))
+    fun secureScreen() = prefs.getBoolean(K_SECURE, true)
+
+    /** The Activity came to the front (not for a rotation: it is not stopped then). */
+    fun onActivityStart() {
+        val t = backgroundAt
+        backgroundAt = -1L
+        if (externalStopped) {
+            // Back from the app that opened a file: it is no longer in front.
+            externalStopped = false
+            openedExternally = false
+            cleanHandedFiles()
+        }
+        if (locked) {
+            // The phone's screen lock was removed meanwhile: the app must still open.
+            if (!LockPolicy.active(lockSetting(), deviceSecure())) unlocked()
+            return
+        }
+        val away = if (t < 0) null else SystemClock.elapsedRealtime() - t
+        if (LockPolicy.shouldLock(lockSetting(), deviceSecure(), lockDelay(), away, coldStart = false)) lockNow()
+    }
+
+    /**
+     * The Activity left the front. A rotation or similar is not leaving; neither is the system
+     * prompt of the lock itself. Trips the app started (file picker, camera, a viewer) count as
+     * time away like any other.
+     */
+    fun onActivityStop(changingConfiguration: Boolean) {
+        if (changingConfiguration) return
+        if (openedExternally) externalStopped = true
+        if (unlockBusy || Secrets.busy) return
+        backgroundAt = SystemClock.elapsedRealtime()
+        autoPrompted = false
+    }
+
+    fun onActivityResumed() {
+        // The prompt appears by itself once each time the lock screen is in front.
+        if (locked && !autoPrompted && !unlockBusy) {
+            autoPrompted = true
+            main.post { requestUnlock() }
+        }
+    }
+
+    fun onActivityDestroyed() {
+        AppLock.cancel()
+        unlockBusy = false
+    }
+
+    private fun lockNow() {
+        locked = true
+        lockEpoch++
+        autoPrompted = false
+        snackbar.currentSnackbarData?.dismiss()
+        cleanHandedFiles()
+    }
+
+    private fun unlocked() {
+        if (!locked) return
+        locked = false
+        render()
+    }
+
+    /**
+     * Asks the person to unlock. When a sync is waiting for the stored passphrase on Android 11+,
+     * the prompt IS the one that releases the passphrase (a successful release counts as
+     * unlocking), so opening the app asks once. Otherwise the plain screen-lock prompt.
+     */
+    fun requestUnlock() {
+        if (!locked || unlockBusy) return
+        val a = activity ?: return
+        if (!activityInFront()) return
+        if (!LockPolicy.active(lockSetting(), deviceSecure())) {
+            unlocked()
+            return
+        }
+        unlockBusy = true
+        val title = "Desbloquear o Ponte de bolso"
+        val syncDue = idleTask != null && fileUri != null && !SyncRunner.keyBroken
+        if (LockPolicy.unlockReleasesPassphrase(
+                android.os.Build.VERSION.SDK_INT, Secrets.isRemembered(app), SyncRunner.passphrase.isNotEmpty(), syncDue
+            )
+        ) {
+            Secrets.unlock(a, title) { pass, _ ->
+                unlockBusy = false
+                if (pass != null) {
+                    SyncRunner.passphrase = pass
+                    unlocked()
+                }
+            }
+        } else {
+            AppLock.verify(a, title, { unlockBusy = false; unlocked() }, { unlockBusy = false })
+        }
+    }
+
+    /** Turning the lock off needs the screen lock first; turning it on does not. */
+    fun setLockEnabled(on: Boolean) {
+        if (on) {
+            if (deviceSecure()) prefs.edit().putBoolean(K_LOCK, true).apply()
+            updateSettings()
+            return
+        }
+        val a = activity
+        if (!deviceSecure()) {
+            // Nothing to prove with: the lock is not in force anyway.
+            prefs.edit().putBoolean(K_LOCK, false).apply()
+            updateSettings()
+            return
+        }
+        if (a == null || unlockBusy) return
+        unlockBusy = true
+        AppLock.verify(a, "Desligar o bloqueio", {
+            unlockBusy = false
+            prefs.edit().putBoolean(K_LOCK, false).apply()
+            updateSettings()
+        }, { unlockBusy = false })
+    }
+
+    fun setLockDelay(key: String) {
+        prefs.edit().putString(K_LOCK_AFTER, LockDelay.fromKey(key).key).apply()
+        updateSettings()
+    }
+
+    fun setSecureScreen(on: Boolean) {
+        prefs.edit().putBoolean(K_SECURE, on).apply()
+        activity?.applySecure(on)
+        updateSettings()
+    }
+
+    /** An exported file was handed to a viewer: when the person is back, it is deleted. */
+    fun noteExternalOpen() {
+        openedExternally = true
+    }
+
+    /**
+     * Deletes what was handed to other apps: every exported file, and the photos of forms that
+     * are not in progress. Photos of the "Registro por foto" being filled stay (or the whole
+     * folder while it is being saved) until the record is created or the form is closed.
+     */
+    private fun cleanHandedFiles(keep: Set<String> = setOfNotNull(photoPath, newPath)) {
+        try {
+            File(app.cacheDir, PonteFiles.DIR_SHARED).listFiles()?.forEach { if (it.isFile) it.delete() }
+            File(app.cacheDir, PonteFiles.DIR_PHOTOS).listFiles()?.forEach {
+                if (it.isFile && LockPolicy.mayDeletePhoto(it.absolutePath, keep, photo.saving)) it.delete()
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     // ---------------------------------------------------------------- shell
@@ -324,10 +517,13 @@ internal object Controller {
     }
 
     /** True while the Activity is on screen (a system prompt can be shown over it). */
-    private fun inFront(): Boolean {
+    private fun activityInFront(): Boolean {
         val a = activity ?: return false
         return !a.isFinishing && !a.isDestroyed && a.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
     }
+
+    /** In front and not locked: the only time the sync may ask for the stored passphrase. */
+    private fun inFront() = activityInFront() && !locked
 
     private fun runEnded() {
         val text = SyncRunner.statusText
@@ -350,7 +546,8 @@ internal object Controller {
 
     /** A short message at the bottom, optionally with one action ("Desfazer"). */
     fun say(message: String, action: String? = null, long: Boolean = false, onAction: (() -> Unit)? = null) {
-        if (message.isBlank()) return
+        // Nothing is said over the lock screen: messages may carry document names.
+        if (message.isBlank() || locked) return
         scope.launch {
             snackbar.currentSnackbarData?.dismiss()
             val r = snackbar.showSnackbar(
@@ -1115,7 +1312,11 @@ internal object Controller {
             pending = SyncRunner.pendingFile(app).exists(),
             version = version(),
             lastStatus = SyncRunner.statusText,
-            lastStatusError = SyncRunner.statusError
+            lastStatusError = SyncRunner.statusError,
+            lockAvailable = deviceSecure(),
+            lockOn = LockPolicy.active(lockSetting(), deviceSecure()),
+            lockDelay = lockDelay().key,
+            secureScreen = secureScreen()
         )
     }
 
@@ -1286,7 +1487,7 @@ internal object Controller {
     /** Leaves the first setup (finished, or put off: Ajustes has the same choices). */
     fun finishSetup() {
         stack.remove(Route.Setup)
-        setup = SetupState(canRemember = Secrets.supported())
+        setup = newSetup()
         tab = 0
         shell = shell.copy(tab = 0)
         refreshTasks()

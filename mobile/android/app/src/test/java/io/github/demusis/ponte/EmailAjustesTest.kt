@@ -42,7 +42,7 @@ class EmailAjustesTest {
     @Test fun emailSemContaEscuro() = mail(MailState(loading = false), "sem_conta_escuro", dark = true)
 
     private fun settings(state: SettingsState, name: String, dark: Boolean = false) =
-        paparazzi.shot(name, dark) { SettingsScreen(state, {}, {}, {}, {}, {}, {}, {}, {}, {}) }
+        paparazzi.shot(name, dark) { SettingsScreen(state, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}) }
 
     @Test fun ajustes() = settings(Samples.settings, "claro")
 

@@ -2,6 +2,7 @@ package io.github.demusis.ponte
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -18,7 +19,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         live = this
         Controller.attach(this, savedInstanceState)
+        applySecure(Controller.secureScreen())
         setContent { PonteTheme { AppRoot() } }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        live = this
+        Controller.onActivityStart()
     }
 
     override fun onResume() {
@@ -26,6 +34,7 @@ class MainActivity : ComponentActivity() {
         live = this
         SyncRunner.listener = { Controller.render() }
         Controller.render()
+        Controller.onActivityResumed()
     }
 
     override fun onPause() {
@@ -33,8 +42,23 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
 
+    override fun onStop() {
+        Controller.onActivityStop(isChangingConfigurations)
+        super.onStop()
+    }
+
+    /**
+     * No screenshots and no preview in the recent apps list while on (the default): the system
+     * blanks the window for both. Applied at start and again when the switch changes.
+     */
+    fun applySecure(on: Boolean) {
+        if (on) window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
     override fun onDestroy() {
         if (live === this) live = null
+        Controller.onActivityDestroyed()
         super.onDestroy()
     }
 
@@ -50,12 +74,14 @@ class MainActivity : ComponentActivity() {
         when (requestCode) {
             REQ_PICK -> if (resultCode == RESULT_OK) data?.data?.let { Controller.onFilePicked(it) }
             REQ_PHOTO -> Controller.onCamera(resultCode == RESULT_OK)
+            REQ_UNLOCK -> AppLock.onResult(resultCode == RESULT_OK)
         }
     }
 
     companion object {
         const val REQ_PICK = 1
         const val REQ_PHOTO = 2
+        const val REQ_UNLOCK = 3
 
         /** The Activity on screen, for what needs one (pickers, fingerprint prompt). */
         @Volatile

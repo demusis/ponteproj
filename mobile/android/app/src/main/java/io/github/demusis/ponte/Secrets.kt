@@ -27,7 +27,8 @@ internal object Secrets {
     private const val IV = "pp_iv"
 
     /** UI thread only: a prompt is on screen. */
-    private var busy = false
+    var busy = false
+        private set
 
     fun supported() = Build.VERSION.SDK_INT >= 28
 
@@ -136,7 +137,9 @@ internal object Secrets {
     }
 
     /** Decrypts the stored passphrase. result(pass, null) or result(null, message). */
-    fun unlock(activity: Activity, result: (String?, String?) -> Unit) {
+    fun unlock(
+        activity: Activity, title: String = "Liberar a frase-senha", result: (String?, String?) -> Unit
+    ) {
         if (!isRemembered(activity)) { result(null, "Nenhuma frase-senha guardada."); return }
         if (busy) { result(null, "Aguarde a verificação em andamento."); return }
         busy = true
@@ -149,7 +152,7 @@ internal object Secrets {
                 ?: throw UnrecoverableKeyException("key missing")
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
-            prompt(activity, cipher, "Liberar a frase-senha", { c ->
+            prompt(activity, cipher, title, { c ->
                 busy = false
                 try {
                     result(String(c.doFinal(ct), Charsets.UTF_8), null)

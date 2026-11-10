@@ -47,7 +47,15 @@ internal fun AppRoot() {
         known = keys
     }
 
-    SafeBackHandler(enabled = c.canGoBack()) { c.back() }
+    // On the lock screen Back leaves the app (it does not unlock).
+    SafeBackHandler(enabled = c.canGoBack() && !c.locked) { c.back() }
+
+    // While locked nothing of the library is composed: only the lock screen. The state holder
+    // above stays, so what each screen remembers (drafts, scroll) is kept and comes back.
+    if (c.locked) {
+        LockScreen(onUnlock = c::requestUnlock)
+        return
+    }
 
     Box(Modifier.fillMaxSize().background(Ponte.colors.ground)) {
         if (top == null) {
@@ -121,6 +129,7 @@ private fun RouteScreen(route: Route) {
             state = c.settings, onBack = c::back, onPickFile = c::pickFile,
             onPassphrase = c::setPassphrase, onRemember = c::setRemember, onForget = c::forgetPassphrase,
             onMobile = c::setMobileData,
+            onLock = c::setLockEnabled, onLockDelay = c::setLockDelay, onSecureScreen = c::setSecureScreen,
             onAddAccount = { c.openAccount(null) }, onEditAccount = { c.openAccount(it) },
             onReset = c::askReset
         )

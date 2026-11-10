@@ -199,7 +199,13 @@ private fun StepPassphrase(state: SetupState, onPassphrase: (String) -> Unit, on
         }
     } else {
         Text(
-            "Este celular não tem bloqueio de tela, então a frase-senha será pedida a cada sincronização.",
+            if (state.oldAndroid) {
+                "Neste Android a frase-senha não pode ficar guardada com a digital; será preciso digitá-la em Ajustes " +
+                    "cada vez que o aplicativo for aberto."
+            } else {
+                "Este celular não tem bloqueio de tela, então a frase-senha não pode ficar guardada; será preciso " +
+                    "digitá-la em Ajustes cada vez que o aplicativo for aberto."
+            },
             fontSize = 13.sp, lineHeight = 18.sp, color = c.muted
         )
     }
