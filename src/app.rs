@@ -386,10 +386,35 @@ pub fn run(initial_document: Option<i64>) -> Result<()> {
 /// Opens the window, on a document or on the "Modelos" area.
 pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Result<()> {
     let db_path = crate::paths::db_path()?;
+    // One window per library: a second start hands its request to the window
+    // already open and leaves. If that window does not answer, this start
+    // opens its own, as older versions always did.
+    let data_dir = crate::paths::data_dir()?;
+    #[cfg(feature = "shots")]
+    let alone = crate::shots::active();
+    #[cfg(not(feature = "shots"))]
+    let alone = false;
+    let window = if alone {
+        None
+    } else {
+        let guard = crate::single_instance::acquire(&data_dir);
+        if guard.is_none() {
+            let request = match initial_document {
+                Some(id) => crate::single_instance::Request::Document(id),
+                None if open_templates => crate::single_instance::Request::Templates,
+                None => crate::single_instance::Request::Focus,
+            };
+            if crate::single_instance::hand_over(&data_dir, request) {
+                return Ok(());
+            }
+        }
+        guard
+    };
     let store = Store::open(&db_path).context("Não foi possível abrir o acervo protegido")?;
     // Temporary copies of attachments opened in other programs do not outlive a session.
     crate::attachments::clear_temp_dir();
     let mut app = PonteApp::new(store, db_path);
+    app.requests_dir = window.is_some().then_some(data_dir);
     app.intranet.initialize(&mut app.store, &app.db_path);
     // Personal templates of versions before 0.20 become work templates.
     match app.store.migrate_personal_templates() {
@@ -473,7 +498,10 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
             Ok(Box::new(app))
         }),
     )
-    .map_err(|error| anyhow::anyhow!("Não foi possível iniciar a janela: {error}"))
+    .map_err(|error| anyhow::anyhow!("Não foi possível iniciar a janela: {error}"))?;
+    // Held until the window closes.
+    drop(window);
+    Ok(())
 }
 
 /// A pill in the colours of a tone (kept as the name the screens already use).
@@ -1018,6 +1046,10 @@ struct PonteApp {
     query: String,
     search_changed: Option<Instant>,
     last_refresh: Instant,
+    /// Where other starts leave their requests (open a document, come to
+    /// the front); `None` when this window does not answer for the library.
+    requests_dir: Option<std::path::PathBuf>,
+    requests_checked: Instant,
     /// Last automatic sweep of the trash (at start and once a day).
     last_trash_purge: Option<Instant>,
     tab: Tab,
@@ -1101,6 +1133,8 @@ impl PonteApp {
             query: String::new(),
             search_changed: None,
             last_refresh: Instant::now(),
+            requests_dir: None,
+            requests_checked: Instant::now(),
             last_trash_purge: None,
             tab: Tab::Overview,
             settings_open: false,
@@ -2913,6 +2947,39 @@ impl PonteApp {
     }
 }
 
+impl PonteApp {
+    /// Another start of the Ponte (the extension after an import, the Start
+    /// menu) asked this window to come to the front, maybe on a document.
+    fn answer_other_starts(&mut self, ctx: &egui::Context) {
+        if self.requests_checked.elapsed() < Duration::from_millis(250) {
+            return;
+        }
+        self.requests_checked = Instant::now();
+        let Some(request) = self
+            .requests_dir
+            .as_deref()
+            .and_then(crate::single_instance::take_request)
+        else {
+            return;
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+            egui::UserAttentionType::Informational,
+        ));
+        match request {
+            crate::single_instance::Request::Focus => {}
+            crate::single_instance::Request::Templates => self.navigate(Leave::Templates),
+            crate::single_instance::Request::Document(id) => {
+                // The library may have just received it from the extension.
+                self.refresh();
+                // Through the guard: unsaved work is never hidden.
+                self.navigate(Leave::Select(id));
+            }
+        }
+    }
+}
+
 impl eframe::App for PonteApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         crate::attachments::clear_temp_dir();
@@ -2925,6 +2992,7 @@ impl eframe::App for PonteApp {
         self.poll_worker();
         self.poll_models();
         self.poll_chatgpt_login(&ctx);
+        self.answer_other_starts(&ctx);
         if self.chatgpt_sync_pending && self.worker.is_none() && self.model_fetch.is_none() {
             self.chatgpt_sync_pending = false;
             self.sync_chatgpt_session();

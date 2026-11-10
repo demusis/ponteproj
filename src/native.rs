@@ -25,6 +25,20 @@ struct Request {
     action: String,
     capture: Option<Capture>,
     files: Option<Vec<crate::files::FileInput>>,
+    /// `lookup`: the number shown on the page.
+    document_number: Option<String>,
+    /// `open_document`: the local id a lookup or an import returned.
+    document_id: Option<i64>,
+}
+
+/// What this Ponte answers besides importing; the extension reads it from
+/// the `ping` to know whether the Ponte is recent enough.
+pub const ACTIONS: [&str; 2] = ["lookup", "open_document"];
+
+/// Numbers are compared as the library does: without spaces, in capitals.
+fn same_number(a: &str, b: &str) -> bool {
+    let fold = |text: &str| text.split_whitespace().collect::<String>().to_uppercase();
+    fold(a) == fold(b)
 }
 
 /// Whether the browser launched us for one of the Ponte's own extensions:
@@ -100,7 +114,8 @@ pub fn error(code: &str, message: &str) -> Value {
     json!({"protocol_version": PROTOCOL_VERSION, "ok": false, "error": {"code": code, "message": message}})
 }
 
-/// Handles one request frame (`ping`, `import_capture`, `import_bundle`).
+/// Handles one request frame (`ping`, `lookup`, `open_document`,
+/// `import_capture`, `import_bundle`).
 /// Returns the reply and, when something was stored, the document to open.
 /// Requests may reach `MAX_FRAME` (PDFs travel inside); replies stay small.
 pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
@@ -127,9 +142,68 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
     }
     match request.action.as_str() {
         "ping" => (
-            json!({"protocol_version":1,"ok":true,"app_version":env!("CARGO_PKG_VERSION"),"message":"O Ponte está disponível"}),
+            json!({"protocol_version":1,"ok":true,"app_version":env!("CARGO_PKG_VERSION"),"actions":ACTIONS,"message":"O Ponte está disponível"}),
             None,
         ),
+        // Is the document on the page already in the library? Read only.
+        "lookup" => {
+            let Some(number) = request
+                .document_number
+                .as_deref()
+                .map(str::trim)
+                .filter(|number| !number.is_empty() && number.len() <= 200)
+            else {
+                return (
+                    error(
+                        "missing_number",
+                        "A consulta não traz o número do documento.",
+                    ),
+                    None,
+                );
+            };
+            match store.list_documents("") {
+                Ok(documents) => {
+                    match documents
+                        .iter()
+                        .find(|d| !d.manual && same_number(&d.document_number, number))
+                    {
+                        Some(found) => (
+                            json!({"protocol_version":1,"ok":true,"found":true,"document_id":found.id,"imported_at":crate::labels::datetime(&found.last_seen_at)}),
+                            None,
+                        ),
+                        None => (json!({"protocol_version":1,"ok":true,"found":false}), None),
+                    }
+                }
+                Err(err) => (
+                    error(
+                        "lookup_failed",
+                        &format!("O Ponte não conseguiu consultar o acervo: {err}"),
+                    ),
+                    None,
+                ),
+            }
+        }
+        // Show a document the library already has.
+        "open_document" => {
+            let known = request.document_id.filter(|id| {
+                store
+                    .list_documents("")
+                    .is_ok_and(|documents| documents.iter().any(|d| d.id == *id))
+            });
+            match known {
+                Some(id) => (
+                    json!({"protocol_version":1,"ok":true,"document_id":id}),
+                    Some(id),
+                ),
+                None => (
+                    error(
+                        "unknown_document",
+                        "Este documento não está mais no acervo do Ponte.",
+                    ),
+                    None,
+                ),
+            }
+        }
         "import_capture" | "import_bundle" => {
             let Some(capture) = request.capture else {
                 return (
@@ -264,6 +338,58 @@ mod tests {
         let payload = read_frame(&mut bytes.as_slice()).unwrap().unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&payload).unwrap(), value);
     }
+    fn ask(store: &mut Store, request: Value) -> (Value, Option<i64>) {
+        handle_request(&serde_json::to_vec(&request).unwrap(), store)
+    }
+
+    #[test]
+    fn lookup_and_open_answer_about_the_library_without_changing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let (ping, _) = ask(&mut store, json!({"protocol_version":1,"action":"ping"}));
+        assert_eq!(ping["actions"], json!(["lookup", "open_document"]));
+
+        let capture = crate::model::sample_capture();
+        let number = capture.document_number.clone();
+        let (missing, open) = ask(
+            &mut store,
+            json!({"protocol_version":1,"action":"lookup","document_number":number}),
+        );
+        assert_eq!(missing["found"], false);
+        assert_eq!(open, None);
+
+        let id = store.import_capture(&capture).unwrap().document_id;
+        // Spaces and capitals do not matter, as in the library.
+        let typed = format!(" {} ", number.to_lowercase());
+        let (found, open) = ask(
+            &mut store,
+            json!({"protocol_version":1,"action":"lookup","document_number":typed}),
+        );
+        assert_eq!(found["found"], true);
+        assert_eq!(found["document_id"], id);
+        assert!(found["imported_at"]
+            .as_str()
+            .is_some_and(|when| !when.is_empty()));
+        // A lookup never opens the window.
+        assert_eq!(open, None);
+
+        let (reply, open) = ask(
+            &mut store,
+            json!({"protocol_version":1,"action":"open_document","document_id":id}),
+        );
+        assert_eq!(reply["ok"], true);
+        assert_eq!(open, Some(id));
+        let (reply, open) = ask(
+            &mut store,
+            json!({"protocol_version":1,"action":"open_document","document_id":id + 99}),
+        );
+        assert_eq!(reply["error"]["code"], "unknown_document");
+        assert_eq!(open, None);
+        let (reply, _) = ask(&mut store, json!({"protocol_version":1,"action":"lookup"}));
+        assert_eq!(reply["error"]["code"], "missing_number");
+        assert_eq!(store.list_documents("").unwrap().len(), 1);
+    }
+
     #[test]
     fn rejects_partial_and_oversized_frames() {
         assert!(read_frame(&mut [1u8, 0].as_slice()).is_err());

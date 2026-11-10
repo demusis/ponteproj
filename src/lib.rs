@@ -70,6 +70,10 @@ pub mod shots;
 #[cfg(any(test, feature = "shots"))]
 pub mod shots_data;
 
+/// One window per library.
+#[cfg(feature = "desktop")]
+pub mod single_instance;
+
 /// The ficha as a printable page.
 pub mod ficha_export;
 
