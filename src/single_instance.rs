@@ -65,11 +65,24 @@ fn open_exclusive(path: &Path) -> std::io::Result<File> {
     options.open(path)
 }
 
-/// The window of this library, when no other is open.
-pub fn acquire(data_dir: &Path) -> Option<Guard> {
-    open_exclusive(&data_dir.join(LOCK_FILE))
-        .ok()
-        .map(|lock| Guard { _lock: lock })
+/// What a start found about the window of this library.
+pub enum Window {
+    /// No other window: this start is the window.
+    Mine(Guard),
+    /// Another window holds the library.
+    Other,
+    /// The lock could not be used (permissions, a locked folder): this start
+    /// opens its window as older versions did, without answering requests.
+    Unknown,
+}
+
+pub fn acquire(data_dir: &Path) -> Window {
+    match open_exclusive(&data_dir.join(LOCK_FILE)) {
+        Ok(lock) => Window::Mine(Guard { _lock: lock }),
+        // ERROR_SHARING_VIOLATION: the file is open in another process.
+        Err(error) if cfg!(windows) && error.raw_os_error() == Some(32) => Window::Other,
+        Err(_) => Window::Unknown,
+    }
 }
 
 fn request_path(data_dir: &Path) -> PathBuf {
@@ -98,12 +111,18 @@ pub fn hand_over(data_dir: &Path, request: Request) -> bool {
     false
 }
 
-/// The request another start left, if any; taking it removes it.
+/// The request another start left, if any; taking it removes it. A request
+/// that cannot be taken away is not acted on (it would be acted on forever).
 pub fn take_request(data_dir: &Path) -> Option<Request> {
     let path = request_path(data_dir);
-    let text = std::fs::read_to_string(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    Request::decode(&text)
+    if !path.exists() {
+        return None;
+    }
+    let taken = data_dir.join(format!("{REQUEST_FILE}.lido.{}", std::process::id()));
+    std::fs::rename(&path, &taken).ok()?;
+    let text = std::fs::read_to_string(&taken);
+    let _ = std::fs::remove_file(&taken);
+    Request::decode(&text.ok()?)
 }
 
 #[cfg(test)]
@@ -143,10 +162,10 @@ mod tests {
     fn only_one_window_holds_the_library() {
         let dir = tempfile::tempdir().unwrap();
         let first = acquire(dir.path());
-        assert!(first.is_some());
-        assert!(acquire(dir.path()).is_none());
+        assert!(matches!(first, Window::Mine(_)));
+        assert!(matches!(acquire(dir.path()), Window::Other));
         drop(first);
-        assert!(acquire(dir.path()).is_some());
+        assert!(matches!(acquire(dir.path()), Window::Mine(_)));
     }
 
     #[test]

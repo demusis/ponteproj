@@ -397,18 +397,21 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     let window = if alone {
         None
     } else {
-        let guard = crate::single_instance::acquire(&data_dir);
-        if guard.is_none() {
-            let request = match initial_document {
-                Some(id) => crate::single_instance::Request::Document(id),
-                None if open_templates => crate::single_instance::Request::Templates,
-                None => crate::single_instance::Request::Focus,
-            };
-            if crate::single_instance::hand_over(&data_dir, request) {
-                return Ok(());
+        match crate::single_instance::acquire(&data_dir) {
+            crate::single_instance::Window::Mine(guard) => Some(guard),
+            crate::single_instance::Window::Other => {
+                let request = match initial_document {
+                    Some(id) => crate::single_instance::Request::Document(id),
+                    None if open_templates => crate::single_instance::Request::Templates,
+                    None => crate::single_instance::Request::Focus,
+                };
+                if crate::single_instance::hand_over(&data_dir, request) {
+                    return Ok(());
+                }
+                None
             }
+            crate::single_instance::Window::Unknown => None,
         }
-        guard
     };
     let store = Store::open(&db_path).context("Não foi possível abrir o acervo protegido")?;
     // Temporary copies of attachments opened in other programs do not outlive a session.

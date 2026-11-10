@@ -71,7 +71,17 @@ async function storedBundles() {
     return Array.isArray(value) ? value.filter(item => item && typeof item.key === "string" && typeof item.snapshot === "string" && item.packet) : [];
   } catch { return []; }
 }
-async function storeBundle(key, snapshot, packet) {
+// One change of the stored list at a time: two tabs importing together
+// must not lose each other's entry.
+let storageTurn = Promise.resolve();
+function inTurn(work) {
+  const run = storageTurn.then(work, work);
+  storageTurn = run.catch(() => {});
+  return run;
+}
+function storeBundle(key, snapshot, packet) { return inTurn(() => storeBundleNow(key, snapshot, packet)); }
+function forgetBundle(key) { return inTurn(() => forgetBundleNow(key)); }
+async function storeBundleNow(key, snapshot, packet) {
   try {
     const entry = { key, snapshot, packet };
     if (JSON.stringify(entry).length > SESSION_BUDGET) return;
@@ -81,7 +91,7 @@ async function storeBundle(key, snapshot, packet) {
     await chrome.storage.session.set({ [SESSION_KEY]: list });
   } catch { /* not stored: a retry downloads the files again */ }
 }
-async function forgetBundle(key) {
+async function forgetBundleNow(key) {
   try {
     const list = (await storedBundles()).filter(item => item.key !== key);
     await chrome.storage.session.set({ [SESSION_KEY]: list });

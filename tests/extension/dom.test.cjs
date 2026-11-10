@@ -319,7 +319,7 @@ test("status before any click: document not in the Ponte shows the normal button
   let state = await panelState(page);
   assert.deepEqual(state.calls, ["ponte.ping", "ponte.lookup"]);
   assert.equal(await page.evaluate(() => window.__calls[1].document_number), "ORG-PRO-2026/01234");
-  assert.deepEqual([state.line, state.open, state.button], ["", false, "Importar para o assistente"]);
+  assert.deepEqual([state.line.trim(), state.open, state.button], ["Ainda não está no Ponte.", false, "Importar para o assistente"]);
   // DOM noise does not start new checks; the same document is not asked again.
   await page.evaluate(() => { document.querySelector(".document-text p").textContent = "Outro texto"; });
   await page.waitForTimeout(1200);

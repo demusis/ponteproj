@@ -35,12 +35,6 @@ struct Request {
 /// the `ping` to know whether the Ponte is recent enough.
 pub const ACTIONS: [&str; 2] = ["lookup", "open_document"];
 
-/// Numbers are compared as the library does: without spaces, in capitals.
-fn same_number(a: &str, b: &str) -> bool {
-    let fold = |text: &str| text.split_whitespace().collect::<String>().to_uppercase();
-    fold(a) == fold(b)
-}
-
 /// Whether the browser launched us for one of the Ponte's own extensions:
 /// the one loaded from the installed folder or the one from the store. The
 /// installer authorizes the same two in the browser; an executable that
@@ -161,19 +155,12 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
                     None,
                 );
             };
-            match store.list_documents("") {
-                Ok(documents) => {
-                    match documents
-                        .iter()
-                        .find(|d| !d.manual && same_number(&d.document_number, number))
-                    {
-                        Some(found) => (
-                            json!({"protocol_version":1,"ok":true,"found":true,"document_id":found.id,"imported_at":crate::labels::datetime(&found.last_seen_at)}),
-                            None,
-                        ),
-                        None => (json!({"protocol_version":1,"ok":true,"found":false}), None),
-                    }
-                }
+            match store.imported_document_by_number(number) {
+                Ok(Some((id, seen))) => (
+                    json!({"protocol_version":1,"ok":true,"found":true,"document_id":id,"imported_at":crate::labels::datetime(&seen)}),
+                    None,
+                ),
+                Ok(None) => (json!({"protocol_version":1,"ok":true,"found":false}), None),
                 Err(err) => (
                     error(
                         "lookup_failed",
@@ -185,11 +172,9 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
         }
         // Show a document the library already has.
         "open_document" => {
-            let known = request.document_id.filter(|id| {
-                store
-                    .list_documents("")
-                    .is_ok_and(|documents| documents.iter().any(|d| d.id == *id))
-            });
+            let known = request
+                .document_id
+                .filter(|id| store.is_active_document(*id));
             match known {
                 Some(id) => (
                     json!({"protocol_version":1,"ok":true,"document_id":id}),
@@ -388,6 +373,30 @@ mod tests {
         let (reply, _) = ask(&mut store, json!({"protocol_version":1,"action":"lookup"}));
         assert_eq!(reply["error"]["code"], "missing_number");
         assert_eq!(store.list_documents("").unwrap().len(), 1);
+        // A record typed in the Ponte is never answered for, whatever the page shows.
+        let (reply, _) = ask(
+            &mut store,
+            json!({"protocol_version":1,"action":"lookup","document_number":"MANUAL-2026/0001"}),
+        );
+        assert_eq!(reply["found"], false);
+        // In the Lixeira: not found, and not opened.
+        store
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Document,
+                id,
+            })
+            .unwrap();
+        let (reply, _) = ask(
+            &mut store,
+            json!({"protocol_version":1,"action":"lookup","document_number":number}),
+        );
+        assert_eq!(reply["found"], false);
+        let (reply, open) = ask(
+            &mut store,
+            json!({"protocol_version":1,"action":"open_document","document_id":id}),
+        );
+        assert_eq!(reply["error"]["code"], "unknown_document");
+        assert_eq!(open, None);
     }
 
     #[test]

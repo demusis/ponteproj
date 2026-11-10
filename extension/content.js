@@ -8,7 +8,7 @@
   host.setAttribute("data-ponteproj-ui", "true");
   const shadow = host.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
-  style.textContent = ":host{all:initial;position:fixed;right:18px;bottom:18px;z-index:2147483646;font:14px/1.45 system-ui,sans-serif;color:#172b45}section{width:min(340px,calc(100vw - 40px));padding:14px;border:1px solid #a9b8cb;border-radius:12px;background:#fff;box-shadow:0 6px 24px #10264033}section.idle{width:min(260px,calc(100vw - 40px));padding:10px 12px;opacity:.9}button{width:100%;border:0;border-radius:7px;background:#1257a6;color:#fff;padding:11px 12px;font:600 14px system-ui;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #d99500;outline-offset:3px}button:disabled{background:#667588;cursor:default}p{margin:9px 0 0;overflow-wrap:anywhere;font-size:12px}.identity{font-weight:600}.idle .identity{margin-top:0;font-weight:500;color:#4c5d72}.idle button,.idle p.status,.idle details{display:none}p.error{color:#9b2c2c}p.success{color:#1d6b3a}p.warning{color:#8a5a00;font-weight:600}a{color:#1257a6}details{margin-top:7px;font-size:11px}summary{cursor:pointer}ul{padding-left:18px}li{margin-top:4px}[hidden]{display:none!important}p.note{color:#52657a}button.link{display:inline;width:auto;padding:0;background:none;color:#1257a6;font:inherit;font-weight:600;text-decoration:underline}button.link:disabled{background:none;color:#667588}.idle p.ponte,.idle p.layout,.idle p.open-row,.idle p.open-note{display:none}";
+  style.textContent = ":host{all:initial;position:fixed;right:18px;bottom:18px;z-index:2147483646;font:14px/1.45 system-ui,sans-serif;color:#172b45}section{width:min(340px,calc(100vw - 40px));padding:14px;border:1px solid #a9b8cb;border-radius:12px;background:#fff;box-shadow:0 6px 24px #10264033}section.idle{width:min(260px,calc(100vw - 40px));padding:10px 12px;opacity:.9}button{width:100%;border:0;border-radius:7px;background:#1257a6;color:#fff;padding:11px 12px;font:600 14px system-ui;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #d99500;outline-offset:3px}button:disabled{background:#667588;cursor:default}p{margin:9px 0 0;overflow-wrap:anywhere;font-size:12px}.identity{font-weight:600}.idle .identity{margin-top:0;font-weight:500;color:#4c5d72}.idle button,.idle p.status,.idle details{display:none}p.error{color:#9b2c2c}p.success{color:#1d6b3a}p.warning{color:#8a5a00;font-weight:600}a{color:#1257a6}details{margin-top:7px;font-size:11px}summary{cursor:pointer}ul{padding-left:18px}li{margin-top:4px}[hidden]{display:none!important}p.note{color:#52657a}button.link{display:inline;width:auto;padding:0;background:none;color:#1257a6;font:inherit;font-weight:600;text-decoration:underline}button.link:disabled{background:none;color:#667588}.idle p.ponte,.idle p.layout,.idle p.open-row,.idle p.open-note,.idle .known{display:none}.known{height:64px;overflow:hidden}";
   const panel = document.createElement("section");
   panel.setAttribute("aria-label", "Importação para o Ponte");
   const button = document.createElement("button");
@@ -52,7 +52,12 @@
   openNote.className = "open-note";
   openNote.setAttribute("aria-live", "polite");
   openNote.hidden = true;
-  panel.append(button, identity, layoutLine, ponteLine, status, openRow, openNote, details);
+  // What the Ponte knows takes the same room whatever the answer, so the
+  // size of the panel tells the page nothing about the library.
+  const known = document.createElement("div");
+  known.className = "known";
+  known.append(ponteLine, openRow);
+  panel.append(button, identity, layoutLine, known, status, openNote, details);
   shadow.append(style, panel);
   let enriching = false;
   let snapshot = null;
@@ -97,10 +102,11 @@
     button.textContent = session.state === "sending" ? "Aguardando o Ponte…" : session.state === "error" && same ? "Repetir importação" : view.importLabel;
     layoutLine.hidden = !(snapshot && snapshot.layout_unrecognized);
     // After an import the receipt says it all; the "already in Ponte" line would repeat it.
-    const showLine = Boolean(snapshot && view.text && !(view.open && importedNow));
+    const missing = Boolean(snapshot && ponteState && ponteState.number === snapshot.document_number && ponteState.outcome.kind === "missing" && !importedNow);
+    const showLine = Boolean(snapshot && (view.text || missing) && !(view.open && importedNow));
     ponteLine.hidden = !showLine;
-    ponteLine.className = `ponte ${view.tone}`.trim();
-    ponteText.textContent = view.text;
+    ponteLine.className = `ponte ${missing ? "note" : view.tone}`.trim();
+    ponteText.textContent = missing ? "Ainda não está no Ponte." : view.text;
     retryLink.hidden = !view.retry;
     const target = openTarget(view);
     openRow.hidden = !target;
@@ -151,8 +157,15 @@
     if (notice && notice.result.ok && sent === Core.identity(snapshot) && Number.isSafeInteger(notice.result.document_id)) return notice.result.document_id;
     return view.open && ponteState?.outcome?.kind === "found" ? ponteState.outcome.document_id : 0;
   }
+  // A page that keeps changing its number cannot make the Ponte answer
+  // more than a few times a minute.
+  const checkTimes = [];
   function queueCheck(force) {
     if (!snapshot || (!force && checkedNumber === snapshot.document_number)) return;
+    const now = Date.now();
+    while (checkTimes.length && now - checkTimes[0] > 60000) checkTimes.shift();
+    if (checkTimes.length >= 10) { checkedNumber = snapshot.document_number; ponteState = { number: checkedNumber, outcome: { kind: "hidden" } }; return; }
+    checkTimes.push(now);
     clearTimeout(checkTimer);
     checkTimer = setTimeout(runCheck, CHECK_DELAY_MS);
   }

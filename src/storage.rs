@@ -1024,6 +1024,29 @@ impl Store {
             .is_some_and(|until| std::time::Instant::now() < until)
     }
 
+    /// For the extension: the active document imported under this official
+    /// number, with the time of its latest version. One indexed read; nothing
+    /// is opened. Records typed in the Ponte are never answered for.
+    pub fn imported_document_by_number(&self, number: &str) -> Result<Option<(i64, String)>> {
+        if crate::model::is_manual_number(number) {
+            return Ok(None);
+        }
+        let hash = identity_hash_for_number(number);
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT d.id,d.last_seen_at FROM documents d WHERE d.identity_hash=?1 AND d.latest_capture_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='document' AND t.item_id=d.id)",
+                [hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Whether this local id is a document of the library, out of the Lixeira.
+    pub fn is_active_document(&self, id: i64) -> bool {
+        require_document(&self.conn, id).is_ok()
+    }
+
     /// Active (not trashed) local document with this official number.
     pub(crate) fn active_document_by_number(&self, number: &str) -> Result<Option<i64>> {
         let hash = identity_hash_for_number(number);
