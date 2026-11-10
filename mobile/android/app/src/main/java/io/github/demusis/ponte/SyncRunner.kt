@@ -211,10 +211,10 @@ internal object SyncRunner {
     }
 
     /** Streams the Drive file into [to] (when given) while hashing it; the limit is enforced as it reads. */
-    private fun readUri(ctx: Context, uri: Uri, to: File?): SyncIo.Digest =
+    private fun readUri(ctx: Context, uri: Uri, to: File?, limit: Long = SyncIo.MAX_BYTES): SyncIo.Digest =
         ctx.contentResolver.openInputStream(uri)!!.use { input ->
-            if (to == null) SyncIo.copyHash(input, null, SyncIo.MAX_BYTES)
-            else to.outputStream().use { out -> SyncIo.copyHash(input, out, SyncIo.MAX_BYTES) }
+            if (to == null) SyncIo.copyHash(input, null, limit)
+            else to.outputStream().use { out -> SyncIo.copyHash(input, out, limit) }
         }
 
     private fun writeUri(ctx: Context, uri: Uri, from: File) {
@@ -248,13 +248,15 @@ internal object SyncRunner {
             var size = original.length
 
             if (r.optBoolean("written")) {
+                // c. the core has already taken what this phone had to send: the
+                // merged copy must survive whatever happens next, so it is kept
+                // before anything else can fail.
+                SyncIo.keep(work, pending)
                 // the core says how long the file it wrote is: anything else is not what it meant
                 if (r.has("bytes") && r.optLong("bytes", -1) != work.length()) {
                     throw CoreException("O arquivo de sincronização gerado está incompleto ou danificado.")
                 }
                 val want = SyncIo.hashFile(work)
-                // c. the merged copy must survive a failed upload: keep it first
-                work.copyTo(pending, overwrite = true)
                 if (!SyncIo.unchanged(original, readUri(ctx, uri, null))) {
                     isError = true
                     message = "O arquivo mudou no Drive durante a sincronização. " +
@@ -264,7 +266,8 @@ internal object SyncRunner {
                     var ok = false
                     for (attempt in 1..2) {
                         writeUri(ctx, uri, work)
-                        if (SyncIo.unchanged(want, readUri(ctx, uri, null))) { ok = true; break }
+                        // read back whatever was written, however long
+                        if (SyncIo.unchanged(want, readUri(ctx, uri, null, Long.MAX_VALUE))) { ok = true; break }
                     }
                     if (ok) {
                         pending.delete()
@@ -408,12 +411,41 @@ internal object SyncIo {
         }
     }
 
-    /** Working files left by a process that died mid-sync. Only the single worker calls this. */
+    /**
+     * Working files left by a process that died mid-sync, and the temporary
+     * files the core leaves beside them when it dies while writing
+     * (`.<name>.tmp-…`). Only the single worker calls this.
+     */
     fun removeStale(dir: File) {
         dir.listFiles()?.forEach {
-            if (it.name.startsWith(WORK_PREFIX) && it.name.endsWith(WORK_SUFFIX)) {
+            val name = it.name
+            if ((name.startsWith(WORK_PREFIX) && name.endsWith(WORK_SUFFIX)) || name.startsWith("." + WORK_PREFIX)) {
                 try { it.delete() } catch (_: Throwable) { }
             }
+        }
+    }
+
+    /**
+     * Keeps [from] as [to] so that [to] is either the old file or the whole
+     * new one, never a part: written beside it, forced to disk, then renamed.
+     */
+    fun keep(from: File, to: File) {
+        val part = File(to.parentFile, to.name + ".parte")
+        try {
+            from.inputStream().use { input ->
+                java.io.FileOutputStream(part).use { out ->
+                    input.copyTo(out, BUFFER)
+                    out.flush()
+                    out.fd.sync()
+                }
+            }
+            if (!part.renameTo(to)) {
+                // Some file systems do not rename over an existing file.
+                to.delete()
+                if (!part.renameTo(to)) throw java.io.IOException("Não foi possível guardar a cópia pendente.")
+            }
+        } finally {
+            part.delete()
         }
     }
 }

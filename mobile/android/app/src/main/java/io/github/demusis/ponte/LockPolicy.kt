@@ -52,8 +52,18 @@ internal object LockPolicy {
      * two) only when that prompt is the system one that takes the device PIN too (Android 11+),
      * a passphrase is stored and not yet in memory, and a sync is about to need it.
      */
-    fun unlockReleasesPassphrase(sdk: Int, stored: Boolean, inMemory: Boolean, syncDue: Boolean) =
-        sdk >= 30 && stored && !inMemory && syncDue
+    fun unlockReleasesPassphrase(
+        sdk: Int, stored: Boolean, inMemory: Boolean, syncDue: Boolean, failedBefore: Boolean = false
+    ) = sdk >= 30 && stored && !inMemory && syncDue && !failedBefore
+
+    /**
+     * The app left the front while a system prompt (its own or a passphrase one) was still
+     * pending: the decision waits for the prompt. A success is a fresh authentication, so no
+     * lock; a failure or cancel decides by the time spent away as usual.
+     */
+    fun lockAfterPrompt(
+        enabled: Boolean, deviceSecure: Boolean, delay: LockDelay, awayMillis: Long?, promptSucceeded: Boolean
+    ) = !promptSucceeded && shouldLock(enabled, deviceSecure, delay, awayMillis, coldStart = false)
 
     /**
      * Files handed to other apps are deleted on lock, at cold start and when the person comes

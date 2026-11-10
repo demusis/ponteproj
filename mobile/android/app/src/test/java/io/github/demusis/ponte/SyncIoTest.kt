@@ -119,4 +119,33 @@ class SyncIoTest {
             assertTrue(pending.exists())
         } finally { dir.deleteRecursively() }
     }
+
+    @Test
+    fun theCoresLeftoverTemporaryFilesAreSweptToo() {
+        val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
+        try {
+            val leftover = File(dir, "." + SyncIo.WORK_PREFIX + "1" + SyncIo.WORK_SUFFIX + ".tmp-abc").also { it.writeText("x") }
+            val other = File(dir, ".outro").also { it.writeText("x") }
+            SyncIo.removeStale(dir)
+            assertFalse(leftover.exists())
+            assertTrue(other.exists())
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test
+    fun keepingThePendingCopyReplacesItWholeAndLeavesNoPart() {
+        val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
+        try {
+            val from = File(dir, "novo").also { it.writeBytes(bytes(200_000)) }
+            val to = File(dir, "pendente.ponte").also { it.writeText("antigo") }
+            SyncIo.keep(from, to)
+            assertArrayEquals(bytes(200_000), to.readBytes())
+            assertTrue(from.exists())
+            assertEquals(listOf("novo", "pendente.ponte"), dir.list()!!.sorted())
+            // A source that cannot be read leaves the old copy as it was.
+            try { SyncIo.keep(File(dir, "ausente"), to); fail("deveria falhar") } catch (_: IOException) { }
+            assertArrayEquals(bytes(200_000), to.readBytes())
+            assertEquals(listOf("novo", "pendente.ponte"), dir.list()!!.sorted())
+        } finally { dir.deleteRecursively() }
+    }
 }

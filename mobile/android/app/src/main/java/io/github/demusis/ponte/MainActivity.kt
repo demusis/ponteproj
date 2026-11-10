@@ -57,8 +57,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // An old instance destroyed after a new one started must not touch the new one's prompt.
+        if (live === this || live == null) Controller.onActivityDestroyed()
         if (live === this) live = null
-        Controller.onActivityDestroyed()
         super.onDestroy()
     }
 

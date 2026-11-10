@@ -30,6 +30,10 @@ internal object Secrets {
     var busy = false
         private set
 
+    /** After a failed [unlock]: the person cancelled (or tapped Cancel), as opposed to a failure. */
+    var lastCancelled = false
+        private set
+
     fun supported() = Build.VERSION.SDK_INT >= 28
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("ponte", Context.MODE_PRIVATE)
@@ -82,7 +86,7 @@ internal object Secrets {
                     BiometricManager.Authenticators.DEVICE_CREDENTIAL
             )
         } else {
-            b.setNegativeButton("Cancelar", exec) { _, _ -> onErr("Cancelado.") }
+            b.setNegativeButton("Cancelar", exec) { _, _ -> lastCancelled = true; onErr("Cancelado.") }
         }
         val cb = object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
@@ -91,6 +95,8 @@ internal object Secrets {
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                // 5 canceled, 10 user canceled, 13 negative button.
+                lastCancelled = errorCode == 5 || errorCode == 10 || errorCode == 13
                 onErr(errString?.toString() ?: "Cancelado.")
             }
         }
@@ -143,6 +149,7 @@ internal object Secrets {
         if (!isRemembered(activity)) { result(null, "Nenhuma frase-senha guardada."); return }
         if (busy) { result(null, "Aguarde a verificação em andamento."); return }
         busy = true
+        lastCancelled = false
         val invalid = "A chave guardada não pôde ser usada (a digital ou o PIN pode ter mudado). Digite a frase-senha de novo."
         try {
             val p = prefs(activity)

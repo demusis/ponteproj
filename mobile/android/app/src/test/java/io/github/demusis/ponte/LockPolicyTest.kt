@@ -81,4 +81,17 @@ class LockPolicyTest {
 
     @Test fun nothingInPhotosIsDeletedWhileSaving() =
         assertFalse(LockPolicy.mayDeletePhoto("/c/fotos/envio-2.jpg", emptySet(), saving = true))
+
+    @Test fun failedKeyPromptIsNeverUsedAgain() =
+        assertFalse(LockPolicy.unlockReleasesPassphrase(34, true, false, true, failedBefore = true))
+
+    @Test fun promptPendingWhenLeaving() {
+        // success: fresh authentication, never locks
+        assertFalse(LockPolicy.lockAfterPrompt(true, true, LockDelay.NOW, 10 * min, promptSucceeded = true))
+        // failure or cancel: decided by the time away
+        assertTrue(LockPolicy.lockAfterPrompt(true, true, LockDelay.NOW, 5, promptSucceeded = false))
+        assertTrue(LockPolicy.lockAfterPrompt(true, true, LockDelay.ONE_MINUTE, 2 * min, promptSucceeded = false))
+        assertFalse(LockPolicy.lockAfterPrompt(true, true, LockDelay.ONE_MINUTE, 10_000, promptSucceeded = false))
+        assertFalse(LockPolicy.lockAfterPrompt(false, true, LockDelay.NOW, 2 * min, promptSucceeded = false))
+    }
 }

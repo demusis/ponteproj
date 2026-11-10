@@ -307,6 +307,9 @@ internal object Controller {
 
     private var backgroundAt = -1L
     private var unlockBusy = false
+    private var deferred = false
+    private var cryptoUnlockFailed = false
+    private var lockNote: String? = null
     private var autoPrompted = false
     private var openedExternally = false
     private var externalStopped = false
@@ -335,8 +338,36 @@ internal object Controller {
             if (!LockPolicy.active(lockSetting(), deviceSecure())) unlocked()
             return
         }
+        if (deferred) {
+            if (unlockBusy || Secrets.busy) {
+                // A prompt is still pending: its answer decides (see promptDone).
+                backgroundAt = t
+                return
+            }
+            deferred = false
+        }
         val away = if (t < 0) null else SystemClock.elapsedRealtime() - t
         if (LockPolicy.shouldLock(lockSetting(), deviceSecure(), lockDelay(), away, coldStart = false)) lockNow()
+    }
+
+    /**
+     * A system prompt of the app (the lock's own or a passphrase one) has answered. When the
+     * app left the front while it was pending, the lock decision was postponed to here: a
+     * success is a fresh authentication (no lock), a failure or cancel decides by the time away.
+     */
+    private fun promptDone(success: Boolean) {
+        if (!deferred) return
+        deferred = false
+        val t = backgroundAt
+        if (success) {
+            backgroundAt = -1L
+            return
+        }
+        if (locked || t < 0) return
+        val away = SystemClock.elapsedRealtime() - t
+        if (LockPolicy.lockAfterPrompt(lockSetting(), deviceSecure(), lockDelay(), away, false)) lockNow()
+        // In front again: this time is spent. Still away: onActivityStart decides later.
+        if (activityInFront()) backgroundAt = -1L
     }
 
     /**
@@ -347,9 +378,20 @@ internal object Controller {
     fun onActivityStop(changingConfiguration: Boolean) {
         if (changingConfiguration) return
         if (openedExternally) externalStopped = true
-        if (unlockBusy || Secrets.busy) return
         backgroundAt = SystemClock.elapsedRealtime()
         autoPrompted = false
+        if (locked) return
+        if (unlockBusy || Secrets.busy) {
+            // The app's own prompt or intent is in front: decide when it answers.
+            deferred = true
+            return
+        }
+        // "Imediatamente": lock now, so neither the first frame on return nor the recents
+        // thumbnail shows content. A file just handed to a viewer is not deleted yet (the
+        // viewer is reading it): that happens when the person is back.
+        if (LockPolicy.shouldLock(lockSetting(), deviceSecure(), lockDelay(), 0L, coldStart = false) &&
+            lockDelay() == LockDelay.NOW
+        ) lockNow(clean = !openedExternally)
     }
 
     fun onActivityResumed() {
@@ -360,22 +402,30 @@ internal object Controller {
         }
     }
 
+    /** Only for the instance that is the live one: an old one must not cancel a newer prompt. */
     fun onActivityDestroyed() {
         AppLock.cancel()
         unlockBusy = false
     }
 
-    private fun lockNow() {
+    /** Back on the lock screen: the app goes to the background, still locked, nothing lost. */
+    fun moveToBack() {
+        activity?.moveTaskToBack(true)
+    }
+
+    private fun lockNow(clean: Boolean = true) {
         locked = true
         lockEpoch++
         autoPrompted = false
         snackbar.currentSnackbarData?.dismiss()
-        cleanHandedFiles()
+        if (clean) cleanHandedFiles()
     }
 
     private fun unlocked() {
         if (!locked) return
         locked = false
+        // Said only now, never over the lock screen.
+        lockNote?.let { lockNote = null; status(it, false) }
         render()
     }
 
@@ -396,14 +446,24 @@ internal object Controller {
         val title = "Desbloquear o Ponte de bolso"
         val syncDue = idleTask != null && fileUri != null && !SyncRunner.keyBroken
         if (LockPolicy.unlockReleasesPassphrase(
-                android.os.Build.VERSION.SDK_INT, Secrets.isRemembered(app), SyncRunner.passphrase.isNotEmpty(), syncDue
+                android.os.Build.VERSION.SDK_INT, Secrets.isRemembered(app), SyncRunner.passphrase.isNotEmpty(),
+                syncDue, cryptoUnlockFailed
             )
         ) {
-            Secrets.unlock(a, title) { pass, _ ->
-                unlockBusy = false
+            Secrets.unlock(a, title) { pass, msg ->
                 if (pass != null) {
+                    unlockBusy = false
                     SyncRunner.passphrase = pass
                     unlocked()
+                } else if (Secrets.lastCancelled) {
+                    unlockBusy = false
+                } else {
+                    // The key prompt failed for another reason (key invalid, fingerprint-only key,
+                    // cipher error): never use it as the unlock again in this process, keep what it
+                    // said for the sync status, and ask with the plain screen-lock prompt at once.
+                    cryptoUnlockFailed = true
+                    if (!msg.isNullOrEmpty()) lockNote = msg
+                    AppLock.verify(a, title, { unlockBusy = false; unlocked() }, { unlockBusy = false })
                 }
             }
         } else {
@@ -431,7 +491,8 @@ internal object Controller {
             unlockBusy = false
             prefs.edit().putBoolean(K_LOCK, false).apply()
             updateSettings()
-        }, { unlockBusy = false })
+            promptDone(true)
+        }, { unlockBusy = false; promptDone(false) })
     }
 
     fun setLockDelay(key: String) {
@@ -641,6 +702,7 @@ internal object Controller {
             return
         }
         Secrets.unlock(a) { pass, msg ->
+            promptDone(pass != null)
             if (pass != null) {
                 SyncRunner.passphrase = pass
                 onOk(pass)
@@ -1304,7 +1366,7 @@ internal object Controller {
             fileName = if (fileUri == null) "" else fileName.ifEmpty { "Arquivo escolhido" },
             fileSize = fileSize,
             passphrase = SyncRunner.passphrase,
-            canRemember = Secrets.supported(),
+            canRemember = Secrets.supported() && (deviceSecure() || Secrets.isRemembered(app)),
             remembered = Secrets.isRemembered(app),
             mobileData = prefs.getBoolean("mobile_ok", false),
             accounts = mail.accounts,
@@ -1404,7 +1466,8 @@ internal object Controller {
             say("Digite a frase-senha primeiro.")
             return
         }
-        Secrets.remember(a, p) { _, msg ->
+        Secrets.remember(a, p) { ok, msg ->
+            promptDone(ok)
             updateSettings()
             say(msg)
         }
@@ -1454,6 +1517,7 @@ internal object Controller {
                 val a = activity
                 if (setup.remember && Secrets.supported() && a != null) {
                     Secrets.remember(a, p) { ok, msg ->
+                        promptDone(ok)
                         if (!ok) {
                             setup = setup.copy(remember = false)
                             say(msg, long = true)

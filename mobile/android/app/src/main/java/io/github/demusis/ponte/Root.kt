@@ -47,8 +47,10 @@ internal fun AppRoot() {
         known = keys
     }
 
-    // On the lock screen Back leaves the app (it does not unlock).
+    // On the lock screen Back does not unlock.
     SafeBackHandler(enabled = c.canGoBack() && !c.locked) { c.back() }
+    // Locked: Back sends the app to the background (not finish), so nothing in progress is lost.
+    SafeBackHandler(enabled = c.locked) { c.moveToBack() }
 
     // While locked nothing of the library is composed: only the lock screen. The state holder
     // above stays, so what each screen remembers (drafts, scroll) is kept and comes back.

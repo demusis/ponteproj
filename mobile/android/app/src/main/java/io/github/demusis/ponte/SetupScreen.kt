@@ -200,11 +200,11 @@ private fun StepPassphrase(state: SetupState, onPassphrase: (String) -> Unit, on
     } else {
         Text(
             if (state.oldAndroid) {
-                "Neste Android a frase-senha não pode ficar guardada com a digital; será preciso digitá-la em Ajustes " +
-                    "cada vez que o aplicativo for aberto."
+                "Neste Android a frase-senha não pode ficar guardada com a digital; será preciso digitá-la de novo " +
+                    "quando o celular reiniciar ou o aplicativo for fechado."
             } else {
                 "Este celular não tem bloqueio de tela, então a frase-senha não pode ficar guardada; será preciso " +
-                    "digitá-la em Ajustes cada vez que o aplicativo for aberto."
+                    "digitá-la de novo quando o celular reiniciar ou o aplicativo for fechado."
             },
             fontSize = 13.sp, lineHeight = 18.sp, color = c.muted
         )
