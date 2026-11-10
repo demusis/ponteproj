@@ -87,12 +87,21 @@ internal fun JSONObject.toAttendance() = AttendanceItem(
     dueChip = s("due_date").let { if (it.isEmpty()) "" else dueChipText(it) }, late = optBoolean("late")
 )
 
-/** "1 tarefa atrasada · 2 para hoje", or "Nada vence hoje." when nothing is late or due today. */
-internal fun todaySummary(late: Int, today: Int): String = when {
-    late > 0 && today > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas") + " · $today para hoje"
-    late > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas")
-    today > 0 -> PhoneWords.plural(today, "tarefa para hoje", "tarefas para hoje")
-    else -> "Nada vence hoje."
+/**
+ * "1 tarefa atrasada · 2 para hoje · 1 atendimento com prazo vencido ou para hoje", or
+ * "Nada vence hoje." when nothing is late, due today or an atendimento with a deadline.
+ */
+internal fun todaySummary(late: Int, today: Int, attendances: Int = 0): String {
+    val tasks = when {
+        late > 0 && today > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas") + " · $today para hoje"
+        late > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas")
+        today > 0 -> PhoneWords.plural(today, "tarefa para hoje", "tarefas para hoje")
+        else -> ""
+    }
+    val att = if (attendances > 0) {
+        PhoneWords.plural(attendances, "atendimento com prazo vencido ou para hoje", "atendimentos com prazo vencido ou para hoje")
+    } else ""
+    return listOf(tasks, att).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "Nada vence hoje." }
 }
 
 /** The checklist of a task (read-only here). */
@@ -108,6 +117,8 @@ internal data class TaskForm(
     val assignee: String,
     val notes: String
 ) {
+    companion object
+
     /** Whether the person changed something compared with [saved] (blanks around names do not count). */
     fun changedFrom(saved: TaskForm): Boolean = changes(saved).isNotEmpty()
 
@@ -342,6 +353,8 @@ internal data class TodayState(
 
 /** The task screen: the task as stored, and what is going on with it. */
 internal data class TaskEditState(
+    /** The task this state is about (the one the screen was opened for). */
+    val id: Long = 0,
     val loading: Boolean = true,
     /** Why the task could not be read. */
     val error: String? = null,
@@ -349,7 +362,11 @@ internal data class TaskEditState(
     /** Saving, concluding or changing the document: buttons wait. */
     val busy: Boolean = false,
     /** Shown above the buttons (a failed save, a changed task). */
-    val formError: String = ""
+    val formError: String = "",
+    /** [formError] says the task changed since it was opened (offers "Ver a versão atual"). */
+    val conflict: Boolean = false,
+    /** Grows when the person asks for the current version: the form is dropped and starts over. */
+    val epoch: Int = 0
 )
 
 internal data class DocumentState(

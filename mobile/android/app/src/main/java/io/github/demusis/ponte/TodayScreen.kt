@@ -49,7 +49,7 @@ internal fun TodayScreen(state: TodayState, onToggle: (TaskItem) -> Unit, onOpen
             }
         } else {
             item(key = "summary") {
-                val line = todaySummary(state.late.size, state.today.size)
+                val line = todaySummary(state.late.size, state.today.size, state.attendances.size)
                 Text(
                     line, Modifier.padding(start = 4.dp, bottom = 4.dp),
                     fontSize = 17.sp, fontWeight = FontWeight.Medium,

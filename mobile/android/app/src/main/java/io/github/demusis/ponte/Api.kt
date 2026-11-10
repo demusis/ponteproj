@@ -40,16 +40,16 @@ internal object Api {
 
     fun task(id: Long): TaskDetail = c(core.getTask(id)).toTaskDetail()
 
-    /** Sends only [changes] (field to value); [version] is the one the task was read with. */
-    fun saveTask(id: Long, version: Long, changes: Map<String, String>) {
+    /** Sends only [changes] (field to value); [version] is the one the form started from. Answers the new version. */
+    fun saveTask(id: Long, version: Long, changes: Map<String, String>): Long {
         val o = JSONObject().put("id", id).put("version", version)
         for ((k, v) in changes) o.put(k, v)
-        c(core.saveTask(o.toString()))
+        return c(core.saveTask(o.toString())).optLong("version")
     }
 
-    fun relinkTask(id: Long, documentId: Long, version: Long) {
-        c(core.relinkTask(id, documentId, version))
-    }
+    /** Answers the new version. */
+    fun relinkTask(id: Long, documentId: Long, version: Long): Long =
+        c(core.relinkTask(id, documentId, version)).optLong("version")
 
     fun choices(): JSONObject {
         choicesCache?.let { return it }

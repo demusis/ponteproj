@@ -119,9 +119,10 @@ private fun RouteScreen(route: Route) {
             onOpenFile = c::openFile, onReadText = c::openText, onOpenTask = { c.openTask(it.id) }
         )
         is Route.EditTask -> TaskScreen(
-            state = c.taskEdit, actions = c.actions, priorities = c.priorities, me = phoneMemberName(),
+            routeId = route.id, state = c.taskEdit, actions = c.actions, priorities = c.priorities,
             onBack = c::back, onSave = c::saveTask, onFinish = c::finishTask,
-            onOpenDocument = { c.openTaskDocument() }, onLink = c::openPicker, onUnlink = c::unlinkTask
+            onOpenDocument = { c.openTaskDocument() }, onLink = c::openPicker, onUnlink = c::unlinkTask,
+            onReload = c::reloadTask
         )
         is Route.Pick -> DocumentPickerScreen(
             docs = c.docs, currentId = c.taskEdit.task?.documentId ?: 0L, busy = c.taskEdit.busy,

@@ -87,7 +87,7 @@ internal sealed class Route {
     }
 }
 
-/** The name this phone gives itself in the library (the "Eu" of the task screen). */
+/** The name this phone gives itself in the library, when it opens it (`init`). */
 internal fun phoneMemberName(): String = "Celular (" + android.os.Build.MODEL + ")"
 
 /** A question or message shown over whatever is on screen. */
@@ -239,6 +239,15 @@ internal object Controller {
         s.getStringArrayList("stack")?.mapNotNull { Route.parse(it) }?.forEach { stack.add(it) }
         // The first setup starts over (the passphrase is never saved).
         if (Route.Setup in stack) setup = newSetup()
+        // One task screen at most: only the top-most one comes back, with the list that belongs to it.
+        val kept = TaskRules.restored(stack.toList())
+        stack.clear()
+        stack.addAll(kept)
+        val editor = stack.lastOrNull { it is Route.EditTask } as Route.EditTask?
+        if (editor != null) {
+            taskGen++
+            taskEdit = TaskEditState(id = editor.id)
+        }
         for (r in stack.toList()) {
             when (r) {
                 is Route.Document -> documentId = r.id
@@ -246,7 +255,7 @@ internal object Controller {
                 is Route.Note -> documentId = r.id
                 is Route.NewTask -> if (r.id > 0) documentId = r.id
                 is Route.EditTask -> loadTask(r.id)
-                is Route.Pick -> loadTask(r.taskId)
+                is Route.Pick -> {}
                 is Route.Account -> loadAccounts { list ->
                     val found = list.firstOrNull { it.uid == r.uid }
                     // An account that no longer exists must not come back as a new one.
@@ -617,6 +626,7 @@ internal object Controller {
         }
         refreshTasks()
         reloadDocument()
+        refreshOpenTask()
         if (SyncRunner.statusError && stack.lastOrNull() != Route.Setup) {
             say(text.lineSequence().firstOrNull() ?: text, long = true)
         }
@@ -896,60 +906,116 @@ internal object Controller {
 
     // ---- the task screen
 
-    /** Opens a task to edit. */
+    /**
+     * Grows whenever the task screen is opened for a task (or restored): an answer that was asked
+     * for an earlier screen is dropped. Together with the task id it says "still the same screen".
+     */
+    private var taskGen = 0
+
+    private fun taskOnScreen(id: Long, gen: Int) =
+        gen == taskGen && taskEdit.id == id && stack.any { it is Route.EditTask && it.id == id }
+
+    /**
+     * Opens a task to edit. There is at most one task screen on the stack: opening another task
+     * (or the same one again, say from a ficha it was already above) replaces it, so Back from the
+     * new one never shows an editor that belongs to another task.
+     */
     fun openTask(id: Long) {
         if (id <= 0) return
         val r = Route.EditTask(id)
         if (stack.lastOrNull() == r) return
         if (actions.isEmpty()) loadChoices()
-        taskEdit = TaskEditState()
-        stack.add(r)
+        val next = TaskRules.withTask(stack.toList(), id)
+        taskGen++
+        taskEdit = TaskEditState(id = id)
+        stack.clear()
+        stack.addAll(next)
         loadTask(id)
     }
 
-    private fun loadTask(id: Long) {
+    /**
+     * Reads the task again. [discard]: the person asked for the current version, so the form starts
+     * over. [clearBusy]: this read ends a change of document that kept the screen waiting.
+     */
+    private fun loadTask(id: Long, discard: Boolean = false, clearBusy: Boolean = false) {
+        val gen = taskGen
         SyncRunner.background({ Api.task(id) }, { d ->
-            if (stack.any { it is Route.EditTask && it.id == id }) taskEdit = TaskEditState(loading = false, task = d)
+            if (taskOnScreen(id, gen)) {
+                taskEdit = taskEdit.copy(
+                    loading = false, error = null, task = d,
+                    busy = taskEdit.busy && !clearBusy,
+                    formError = if (discard) "" else taskEdit.formError,
+                    conflict = !discard && taskEdit.conflict,
+                    epoch = if (discard) taskEdit.epoch + 1 else taskEdit.epoch
+                )
+            }
         }, {
-            if (stack.any { it is Route.EditTask && it.id == id }) taskEdit = TaskEditState(loading = false, error = it)
+            if (taskOnScreen(id, gen)) {
+                taskEdit = if (taskEdit.task?.id == id) taskEdit.copy(busy = taskEdit.busy && !clearBusy, formError = it, conflict = false)
+                else TaskEditState(id = id, loading = false, error = it)
+            }
         }, fail = "Não foi possível abrir a tarefa. Volte e tente de novo.")
     }
 
-    /** Saves what changed in the form; the screen closes when it worked. */
-    fun saveTask(f: TaskForm) = saveTask(f, thenFinish = false)
+    /** "Ver a versão atual": drops what was typed and shows the stored task. */
+    fun reloadTask() {
+        val id = (stack.lastOrNull() as? Route.EditTask)?.id ?: return
+        if (taskEdit.busy) return
+        loadTask(id, discard = true)
+    }
 
-    private fun saveTask(f: TaskForm, thenFinish: Boolean) {
+    /** A sync ended while the task screen is open: it may have brought a newer version. */
+    private fun refreshOpenTask() {
+        val id = (stack.lastOrNull() as? Route.EditTask)?.id ?: return
+        if (!taskEdit.busy && taskEdit.id == id) loadTask(id)
+    }
+
+    /** Applies the answer of a failed change: the conflict gets its own button. */
+    private fun taskFailed(message: String) {
+        taskEdit = taskEdit.copy(busy = false, formError = message, conflict = TaskRules.isConflict(message))
+    }
+
+    /** Saves what changed in the form; the screen closes when it worked. */
+    fun saveTask(s: TaskSave) = saveTask(s, thenFinish = false)
+
+    private fun saveTask(s: TaskSave, thenFinish: Boolean) {
         val t = taskEdit.task ?: return
-        if (taskEdit.busy || f.title.isBlank()) return
-        val changes = f.changes(t.form)
+        if (t.id != s.taskId || taskEdit.busy || s.form.title.isBlank()) return
+        val changes = s.changes
+        val gen = taskGen
         if (changes.isEmpty()) {
+            taskEdit = taskEdit.copy(busy = true)
             stack.remove(Route.EditTask(t.id))
             if (thenFinish) finishNow(t)
             return
         }
-        taskEdit = taskEdit.copy(busy = true, formError = "")
+        taskEdit = taskEdit.copy(busy = true, formError = "", conflict = false)
         SyncRunner.background({
-            Api.saveTask(t.id, t.version, changes)
+            val version = Api.saveTask(t.id, s.version, changes)
             SyncRunner.refreshDocs()
-        }, {
+            version
+        }, { version ->
             docs = SyncRunner.docs
-            taskEdit = TaskEditState(loading = false, task = t.copy(form = f))
-            stack.remove(Route.EditTask(t.id))
+            if (taskOnScreen(t.id, gen)) {
+                taskEdit = taskEdit.copy(task = t.copy(form = s.form, version = version), busy = true)
+                stack.remove(Route.EditTask(t.id))
+            }
             refreshTasks()
             reloadDocument()
             if (thenFinish) finishNow(t) else {
                 say("Tarefa salva.")
                 requestSync(null, auto = true)
             }
-        }, { taskEdit = taskEdit.copy(busy = false, formError = it) },
+        }, { if (taskOnScreen(t.id, gen)) taskFailed(it) },
             fail = "Não foi possível salvar a tarefa. Tente de novo.")
     }
 
     /** Concludes the task (or reopens it, when it was concluded), saving typed changes first. */
-    fun finishTask(f: TaskForm) {
+    fun finishTask(s: TaskSave) {
         val t = taskEdit.task ?: return
-        if (taskEdit.busy || f.title.isBlank()) return
-        if (f.changedFrom(t.form)) saveTask(f, thenFinish = true) else {
+        if (t.id != s.taskId || taskEdit.busy || s.form.title.isBlank()) return
+        if (s.changes.isNotEmpty()) saveTask(s, thenFinish = true) else {
+            taskEdit = taskEdit.copy(busy = true)
             stack.remove(Route.EditTask(t.id))
             finishNow(t)
         }
@@ -980,23 +1046,30 @@ internal object Controller {
     private fun relink(documentId: Long) {
         val t = taskEdit.task ?: return
         if (taskEdit.busy) return
-        taskEdit = taskEdit.copy(busy = true, formError = "")
+        val gen = taskGen
+        taskEdit = taskEdit.copy(busy = true, formError = "", conflict = false)
         SyncRunner.background({
-            Api.relinkTask(t.id, documentId, t.version)
+            val version = Api.relinkTask(t.id, documentId, t.version)
             SyncRunner.refreshDocs()
-        }, {
+            version
+        }, { version ->
             docs = SyncRunner.docs
-            stack.removeAll { it is Route.Pick }
-            taskEdit = taskEdit.copy(busy = false)
-            loadTask(t.id)
+            if (taskOnScreen(t.id, gen)) {
+                stack.removeAll { it is Route.Pick }
+                // Stays busy until the task is read again: a save before that would send the old version.
+                taskEdit = taskEdit.copy(task = t.copy(version = version), busy = true)
+                loadTask(t.id, clearBusy = true)
+            }
             refreshTasks()
             reloadDocument()
             say(if (documentId > 0) "Tarefa vinculada ao documento." else "Tarefa desvinculada do documento.")
             requestSync(null, auto = true)
         }, {
             // The reason is shown on the task screen, under the picker.
-            stack.removeAll { it is Route.Pick }
-            taskEdit = taskEdit.copy(busy = false, formError = it)
+            if (taskOnScreen(t.id, gen)) {
+                stack.removeAll { it is Route.Pick }
+                taskFailed(it)
+            }
         }, fail = "Não foi possível trocar o documento da tarefa. Tente de novo.")
     }
 

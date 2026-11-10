@@ -27,14 +27,18 @@ class HojeTarefaTest {
         TodayScreen(TodayState(loading = false), {}, {})
     }
 
+    @Test fun hojeSoAtendimentos() = paparazzi.shotInShell("so_atendimentos", 0, shell = Samples.shell.copy(badge = 0)) {
+        TodayScreen(TodayState(loading = false, attendances = Samples.attendances), {}, {})
+    }
+
     @Test fun hojeSoProximos() = paparazzi.shotInShell("so_proximos", 0, shell = Samples.shell.copy(badge = 0)) {
         TodayScreen(TodayState(loading = false, upcoming = Samples.todayUpcoming), {}, {})
     }
 
     private fun screen(
-        task: TaskDetail, state: TaskEditState = TaskEditState(loading = false, task = task), me: String = "Celular (Pixel 5)"
+        task: TaskDetail, state: TaskEditState = TaskEditState(id = task.id, loading = false, task = task)
     ): @androidx.compose.runtime.Composable () -> Unit = {
-        TaskScreen(state, Samples.actions, Samples.priorities, me, {}, {}, {}, {}, {}, {})
+        TaskScreen(task.id, state, Samples.actions, Samples.priorities, {}, {}, {}, {}, {}, {}, {})
     }
 
     @Test fun tarefaComDocumento() {
@@ -63,8 +67,8 @@ class HojeTarefaTest {
             screen(
                 Samples.taskLinked,
                 TaskEditState(
-                    loading = false, task = Samples.taskLinked,
-                    formError = "Esta tarefa foi alterada em outro aparelho. Abra-a de novo para ver a versão atual."
+                    id = Samples.taskLinked.id, loading = false, task = Samples.taskLinked,
+                    formError = TaskRules.CHANGED, conflict = true
                 )
             )()
         }

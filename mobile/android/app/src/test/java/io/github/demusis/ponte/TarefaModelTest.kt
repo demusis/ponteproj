@@ -45,6 +45,17 @@ class TarefaModelTest {
         assertEquals("Nada vence hoje.", todaySummary(0, 0))
     }
 
+    @Test fun resumoContaOsAtendimentos() {
+        assertEquals("2 atendimentos com prazo vencido ou para hoje", todaySummary(0, 0, 2))
+        assertEquals("1 atendimento com prazo vencido ou para hoje", todaySummary(0, 0, 1))
+        assertEquals(
+            "1 tarefa atrasada · 2 para hoje · 3 atendimentos com prazo vencido ou para hoje",
+            todaySummary(1, 2, 3)
+        )
+        assertEquals("1 tarefa para hoje · 1 atendimento com prazo vencido ou para hoje", todaySummary(0, 1, 1))
+        assertEquals("Nada vence hoje.", todaySummary(0, 0, 0))
+    }
+
     @Test fun linhaDoDocumento() {
         val d = TaskDetail(1, 101, "ORG-OFI-2026/00431", "Pedido de apoio", saved, false, 2, emptyList())
         assertEquals("ORG-OFI-2026/00431 — Pedido de apoio", d.documentLine)

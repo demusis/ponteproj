@@ -494,7 +494,12 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createTask<'local>
 }
 
 fn create_task(store: &mut Store, input: &Value) -> Result<Value> {
-    let document_id = input["document_id"].as_i64().filter(|id| *id > 0);
+    // Missing or 0: no document. A negative number is a mistake, not "none".
+    let document_id = match input["document_id"].as_i64() {
+        Some(id) if id < 0 => anyhow::bail!("Documento inválido."),
+        Some(id) if id > 0 => Some(id),
+        _ => None,
+    };
     let mut task = ponteproj::tasks::Task::blank(document_id);
     task.title = input["title"].as_str().unwrap_or("").trim().to_owned();
     if let Some(action) = input["action"].as_str().filter(|a| !a.is_empty()) {
@@ -518,7 +523,7 @@ fn valid_due(value: &str) -> Result<String> {
 /// What the phone says when the task changed under the form (the core's text
 /// is written for the computer).
 const TASK_CHANGED: &str =
-    "Esta tarefa foi alterada em outro aparelho. Abra-a de novo para ver a versão atual.";
+    "Esta tarefa foi alterada depois que você a abriu. Abra-a de novo para ver a versão atual.";
 
 fn task_conflict(error: anyhow::Error) -> anyhow::Error {
     if format!("{error:#}").starts_with("Conflito de edição simultânea") {
@@ -599,6 +604,7 @@ fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
 
 /// Moves a task to `document_id`, or (0) takes it out of its document.
 fn relink_task(store: &mut Store, task_id: i64, document_id: i64, version: i64) -> Result<Value> {
+    anyhow::ensure!(document_id >= 0, "Documento inválido.");
     find_task(store, task_id)?;
     store
         .relink_task(task_id, (document_id > 0).then_some(document_id), Some(version))
@@ -1394,6 +1400,74 @@ mod tests {
         }
         assert!(save_task(&mut store, &json!({"id": id, "version": 1, "title": "x"})).is_err());
         assert!(relink_task(&mut store, id, doc, 1).is_err());
+    }
+
+    #[test]
+    fn save_task_needs_a_numeric_version_and_a_valid_action() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let id = add_task(&mut store, Some(doc), "original", "");
+        let v = get_task(&store, id).unwrap()["version"].as_i64().unwrap();
+        assert!(save_task(&mut store, &json!({"id": id, "title": "x"})).is_err(), "no version");
+        assert!(save_task(&mut store, &json!({"id": id, "version": "1", "title": "x"})).is_err(), "text version");
+        assert!(save_task(&mut store, &json!({"id": id, "version": null, "title": "x"})).is_err());
+        assert!(save_task(&mut store, &json!({"id": id, "version": v, "action": "voar"})).is_err());
+        assert!(save_task(&mut store, &json!({"version": v, "title": "x"})).is_err(), "no id");
+        assert_eq!(find_task(&store, id).unwrap().title, "original");
+        assert_eq!(find_task(&store, id).unwrap().action, "triar");
+        assert_eq!(get_task(&store, id).unwrap()["version"].as_i64().unwrap(), v);
+    }
+
+    #[test]
+    fn relink_and_create_refuse_negative_trashed_and_unknown_documents() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let id = add_task(&mut store, Some(doc), "t", "");
+        let v = get_task(&store, id).unwrap()["version"].as_i64().unwrap();
+        let error = relink_task(&mut store, id, -1, v).unwrap_err().to_string();
+        assert_eq!(error, "Documento inválido.");
+        assert!(relink_task(&mut store, id, 99_999, v).is_err(), "unknown document");
+        assert_eq!(find_task(&store, id).unwrap().document_id, Some(doc));
+
+        let mut other = ponteproj::manual::ManualFields {
+            kind: "papel".into(),
+            title: "Outro".into(),
+            origin: String::new(),
+            document_date: String::new(),
+            text: "texto".into(),
+        };
+        other.title = "Documento na lixeira".into();
+        let trashed = store.create_manual_document(&other).unwrap().document_id;
+        store
+            .trash_item(ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id: trashed })
+            .unwrap();
+        assert!(relink_task(&mut store, id, trashed, v).is_err(), "trashed document");
+        assert_eq!(find_task(&store, id).unwrap().document_id, Some(doc));
+
+        let before = store.list_tasks().unwrap().len();
+        assert_eq!(
+            create_task(&mut store, &json!({"document_id": -3, "title": "x"})).unwrap_err().to_string(),
+            "Documento inválido."
+        );
+        assert!(create_task(&mut store, &json!({"document_id": 99_999, "title": "x"})).is_err());
+        assert!(create_task(&mut store, &json!({"document_id": trashed, "title": "x"})).is_err());
+        assert_eq!(store.list_tasks().unwrap().len(), before, "nothing was created");
+    }
+
+    #[test]
+    fn today_leaves_out_tasks_of_a_document_in_the_trash() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        add_task(&mut store, Some(doc), "do documento", "2026-11-09");
+        add_task(&mut store, None, "solta", "2026-11-09");
+        store
+            .trash_item(ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id: doc })
+            .unwrap();
+        let lists = today_lists(&store, "2026-11-10").unwrap();
+        assert_eq!(titles(&lists["late"]), ["solta"]);
     }
 
     #[test]

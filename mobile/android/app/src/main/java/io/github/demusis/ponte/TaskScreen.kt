@@ -25,6 +25,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -50,27 +52,31 @@ internal val DefaultPriorities = listOf(
  */
 @Composable
 internal fun TaskScreen(
+    routeId: Long,
     state: TaskEditState,
     actions: List<Choice>,
     priorities: List<Choice>,
-    me: String,
     onBack: () -> Unit,
-    onSave: (TaskForm) -> Unit,
-    onFinish: (TaskForm) -> Unit,
+    onSave: (TaskSave) -> Unit,
+    onFinish: (TaskSave) -> Unit,
     onOpenDocument: (Long) -> Unit,
     onLink: () -> Unit,
-    onUnlink: () -> Unit
+    onUnlink: () -> Unit,
+    onReload: () -> Unit
 ) {
-    val task = state.task
+    // Only the task this screen was opened for: never the form of one with the data of another.
+    val task = TaskRules.shown(routeId, state)
     if (task == null) {
         DetailScaffold(title = "Tarefa", onBack = onBack, close = true) {
-            val error = state.error
+            val error = state.error.takeIf { state.id == routeId }
             if (error != null) Notice(error, Tone.ERROR, Modifier.padding(16.dp)) else LoadingBox()
         }
         return
     }
-    TaskLoaded(state, task, actions, priorities, me, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink)
+    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload)
 }
+
+private val DraftSaver = Saver<TaskDraft, List<Any>>(save = { it.toList() }, restore = { TaskDraft.fromList(it) })
 
 @Composable
 private fun TaskLoaded(
@@ -78,51 +84,57 @@ private fun TaskLoaded(
     task: TaskDetail,
     actions: List<Choice>,
     priorities: List<Choice>,
-    me: String,
     onBack: () -> Unit,
-    onSave: (TaskForm) -> Unit,
-    onFinish: (TaskForm) -> Unit,
+    onSave: (TaskSave) -> Unit,
+    onFinish: (TaskSave) -> Unit,
     onOpenDocument: (Long) -> Unit,
     onLink: () -> Unit,
-    onUnlink: () -> Unit
+    onUnlink: () -> Unit,
+    onReload: () -> Unit
 ) {
     val c = Ponte.colors
-    val saved = task.form
-    var title by rememberSaveable { mutableStateOf(saved.title) }
-    var action by rememberSaveable { mutableStateOf(saved.action) }
-    var priority by rememberSaveable { mutableStateOf(saved.priority) }
-    var due by rememberSaveable { mutableStateOf(saved.dueDate) }
-    var assignee by rememberSaveable { mutableStateOf(saved.assignee) }
-    var notes by rememberSaveable { mutableStateOf(saved.notes) }
+    // The draft remembers the version it started from; a newer stored task resets it (nothing
+    // typed) or flags a conflict (something typed). See TaskRules.reconcile.
+    var stored by rememberSaveable(stateSaver = DraftSaver) { mutableStateOf(TaskRules.start(task, state.epoch)) }
+    val draft = TaskRules.reconcile(stored, task, state.epoch)
+    LaunchedEffect(draft) { if (draft != stored) stored = draft }
+    val form = draft.form
+    val edit = { change: (TaskForm) -> TaskForm -> stored = draft.copy(form = change(draft.form)) }
     var tried by rememberSaveable { mutableStateOf(false) }
     var asking by rememberSaveable { mutableStateOf(false) }
     var unlinking by rememberSaveable { mutableStateOf(false) }
-    val form = TaskForm(title, action, priority, due, assignee, notes)
-    val changed = form.changedFrom(saved)
+    val changed = draft.changed
+    val conflict = draft.conflict || state.conflict
+    val message = if (draft.conflict) TaskRules.CHANGED else state.formError
     val linked = task.documentId > 0
     val leave = { if (changed) asking = true else onBack() }
     // A task without document has nothing to triage.
-    val shownActions = if (!linked && action != "triar") actions.filter { it.key != "triar" } else actions
-    val titleMissing = title.isBlank()
+    val shownActions = if (!linked && form.action != "triar") actions.filter { it.key != "triar" } else actions
+    val titleMissing = form.title.isBlank()
 
     SafeBackHandler(onBack = leave)
 
     DetailScaffold(
         title = "Tarefa", onBack = leave, close = true,
         footer = {
-            if (state.formError.isNotEmpty()) {
-                Notice(state.formError, Tone.ERROR, Modifier.padding(bottom = 12.dp))
+            if (message.isNotEmpty()) {
+                Notice(message, Tone.ERROR, Modifier.padding(bottom = if (conflict) 4.dp else 12.dp))
+            }
+            if (conflict) {
+                TextButton(onClick = onReload, modifier = Modifier.padding(bottom = 8.dp)) {
+                    Text("Ver a versão atual", color = c.accent, fontWeight = FontWeight.SemiBold)
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 SecondaryButton(
                     if (task.done) "Reabrir" else "Concluir",
-                    onClick = { if (titleMissing) tried = true else onFinish(form) },
-                    modifier = Modifier.weight(1f), enabled = !state.busy
+                    onClick = { if (titleMissing) tried = true else onFinish(draft.toSave(task.id)) },
+                    modifier = Modifier.weight(1f), enabled = !state.busy && !conflict
                 )
                 PrimaryButton(
                     "Salvar",
-                    onClick = { if (titleMissing) tried = true else onSave(form) },
-                    modifier = Modifier.weight(1f), enabled = changed, loading = state.busy
+                    onClick = { if (titleMissing) tried = true else onSave(draft.toSave(task.id)) },
+                    modifier = Modifier.weight(1f), enabled = changed && !conflict, loading = state.busy
                 )
             }
         }
@@ -134,23 +146,21 @@ private fun TaskLoaded(
         ) {
             DocumentLine(task, onOpenDocument)
             LabeledField(
-                "Título", title, { title = it; tried = false },
+                "Título", form.title, { v -> tried = false; edit { it.copy(title = v) } },
                 placeholder = "O que precisa ser feito",
                 error = if (tried && titleMissing) "Informe o título." else "",
                 singleLine = false,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
             )
-            if (shownActions.isNotEmpty()) ChoiceField("Ação", shownActions, action, { action = it })
-            ChoiceField("Prioridade", priorities.ifEmpty { DefaultPriorities }, priority, { priority = it })
-            DateField("Prazo", due, { due = it }, emptyText = "Sem prazo")
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                LabeledField(
-                    "Responsável", assignee, { assignee = it },
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words)
-                )
-            }
+            if (shownActions.isNotEmpty()) ChoiceField("Ação", shownActions, form.action, { v -> edit { it.copy(action = v) } })
+            ChoiceField("Prioridade", priorities.ifEmpty { DefaultPriorities }, form.priority, { v -> edit { it.copy(priority = v) } })
+            DateField("Prazo", form.dueDate, { v -> edit { it.copy(dueDate = v) } }, emptyText = "Sem prazo")
             LabeledField(
-                "Observações", notes, { notes = it },
+                "Responsável", form.assignee, { v -> edit { it.copy(assignee = v) } },
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words)
+            )
+            LabeledField(
+                "Observações", form.notes, { v -> edit { it.copy(notes = v) } },
                 singleLine = false, minLines = 4,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
             )
