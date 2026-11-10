@@ -57,7 +57,7 @@ impl ManualFields {
         );
         ensure!(
             self.origin.len() <= 1000 && !self.origin.chars().any(char::is_control),
-            "Origem grande demais ou com caracteres inválidos."
+            "A origem é grande demais ou tem caracteres inválidos."
         );
         if !self.document_date.trim().is_empty() {
             chrono::NaiveDate::parse_from_str(self.document_date.trim(), "%Y-%m-%d")
@@ -65,7 +65,7 @@ impl ManualFields {
         }
         ensure!(
             self.text.len() <= crate::model::MAX_CAPTURE_TEXT_BYTES,
-            "O texto excede 500 KiB; resuma-o aqui e anexe o arquivo original em Anexos."
+            "O texto é maior que 500 KB; resuma-o aqui e anexe o arquivo original."
         );
         Ok(())
     }

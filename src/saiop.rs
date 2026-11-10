@@ -865,7 +865,7 @@ impl Store {
         for row in rows {
             let (id, batch_id, source_row, doc_id, blob) = row?;
             let mut item: SaiopAttendance = serde_json::from_slice(&unseal(&blob)?)
-                .context("Registro de atendimento SAIOP inválido")?;
+                .context("Não foi possível ler um atendimento: o registro está inválido.")?;
             item.id = id;
             item.batch_id = batch_id;
             item.source_row = source_row.map(|r| r as usize);
@@ -886,7 +886,7 @@ impl Store {
         for row in rows {
             let (id, blob) = row?;
             let mut batch: SaiopImportBatch = serde_json::from_slice(&unseal(&blob)?)
-                .context("Registro de lote SAIOP inválido")?;
+                .context("Não foi possível ler uma importação de planilha: o registro está inválido.")?;
             batch.id = id;
             out.push(batch);
         }
@@ -930,7 +930,7 @@ impl Store {
     ) -> Result<i64> {
         ensure!(
             !attendance.reference_raw.trim().is_empty() || !attendance.subject.trim().is_empty(),
-            "Informe a referência (processo/documento/código provisório) ou o assunto do atendimento."
+            "Informe a referência (processo, documento ou código provisório) ou o assunto do atendimento."
         );
         ensure!(
             STATUS_OPTIONS.iter().any(|(k, _)| *k == attendance.status),
@@ -951,7 +951,7 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(id) => Ok(id),
-                _ => bail!("Resposta inesperada ao salvar atendimento no anfitrião."),
+                _ => bail!("O computador principal respondeu de forma inesperada ao salvar o atendimento."),
             };
         }
 
@@ -1125,7 +1125,7 @@ impl Store {
         tramitado_keep_open: bool,
     ) -> Result<SaiopImportPreview> {
         let size = std::fs::metadata(path)
-            .with_context(|| format!("Não foi possível ler a planilha em {}", path.display()))?
+            .with_context(|| format!("Não foi possível ler a planilha {}.", path.display()))?
             .len();
         ensure!(
             size <= MAX_XLSX_FILE_BYTES,
@@ -1134,7 +1134,7 @@ impl Store {
             MAX_XLSX_FILE_BYTES / (1024 * 1024)
         );
         let bytes = std::fs::read(path)
-            .with_context(|| format!("Não foi possível ler a planilha em {}", path.display()))?;
+            .with_context(|| format!("Não foi possível ler a planilha {}.", path.display()))?;
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -1454,7 +1454,7 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::SaiopBatch(batch) => Ok(batch),
-                _ => bail!("Resposta inesperada ao importar lote no anfitrião."),
+                _ => bail!("O computador principal respondeu de forma inesperada ao importar a planilha."),
             };
         }
         self.commit_saiop_import_raw(
@@ -1494,7 +1494,7 @@ impl Store {
             .optional()?;
         if let Some(existing_id) = duplicate {
             bail!(
-                "Este arquivo (.xlsx) já foi importado no lote #{existing_id} (mesmo hash SHA-256). A reimportação idêntica foi bloqueada para evitar duplicidade."
+                "Esta planilha já foi importada (importação nº {existing_id}). Para não duplicar atendimentos, a importação foi bloqueada."
             );
         }
 
@@ -1597,7 +1597,7 @@ impl Store {
                 crate::intranet::IntranetMutation::UndoSaiopBatch { batch_id },
             )? {
                 crate::intranet::MutationReply::Counts(removed, kept) => Ok((removed, kept)),
-                _ => bail!("Resposta inesperada ao reverter lote no anfitrião."),
+                _ => bail!("O computador principal respondeu de forma inesperada ao desfazer a importação."),
             };
         }
 
@@ -1717,7 +1717,7 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(id) => Ok((id > 0).then_some(id)),
-                _ => bail!("Resposta inesperada ao criar a tarefa do atendimento."),
+                _ => bail!("O computador principal respondeu de forma inesperada ao criar a tarefa do atendimento."),
             };
         }
         self.write_task_for_saiop(attendance_id, task.as_ref(), title, version)
@@ -1776,7 +1776,7 @@ impl Store {
                 crate::intranet::IntranetMutation::DeleteSaiopAttendance { id },
             )? {
                 crate::intranet::MutationReply::Unit => Ok(()),
-                _ => bail!("Resposta inesperada ao excluir o atendimento no anfitrião."),
+                _ => bail!("O computador principal respondeu de forma inesperada ao excluir o atendimento."),
             };
         }
         let actor = self.active_actor();
@@ -1821,7 +1821,7 @@ impl Store {
                     &att.reference_raw
                 },
                 if removed_files > 0 {
-                    format!(" (com {removed_files} anexo(s))")
+                    format!(" (com {})", crate::labels::count(removed_files, "anexo", "anexos"))
                 } else {
                     String::new()
                 }
@@ -1866,7 +1866,7 @@ fn load_attendance_tx(conn: &rusqlite::Connection, id: i64) -> Result<SaiopAtten
         .optional()?
         .context("Atendimento não encontrado no acervo.")?;
     let mut att: SaiopAttendance = serde_json::from_slice(&unseal(&blob)?)
-        .context("Registro de atendimento SAIOP inválido")?;
+        .context("Não foi possível ler um atendimento: o registro está inválido.")?;
     att.id = id;
     att.batch_id = batch_id;
     att.source_row = source_row.map(|r| r as usize);
@@ -1905,7 +1905,7 @@ struct ParsedSheet {
 fn parse_xlsx_processos_sheet(bytes: &[u8]) -> Result<ParsedSheet> {
     let entries = read_zip_entries(bytes)?;
     let shared_strings = if let Some(ss_xml) = entries.get("xl/sharedStrings.xml") {
-        parse_shared_strings(std::str::from_utf8(ss_xml).context("sharedStrings.xml não é UTF-8")?)
+        parse_shared_strings(std::str::from_utf8(ss_xml).context("A planilha está danificada ou não é um arquivo .xlsx válido.")?)
     } else {
         Vec::new()
     };
@@ -1915,10 +1915,10 @@ fn parse_xlsx_processos_sheet(bytes: &[u8]) -> Result<ParsedSheet> {
         .get(&sheet_path)
         .or_else(|| entries.get(sheet_path.trim_start_matches('/')))
         .with_context(|| {
-            format!("Aba '{sheet_name}' ({sheet_path}) não encontrada no arquivo .xlsx")
+            format!("A aba '{sheet_name}' não foi encontrada na planilha.")
         })?;
     let sheet_xml =
-        std::str::from_utf8(sheet_bytes).context("XML da planilha não está em UTF-8 válido")?;
+        std::str::from_utf8(sheet_bytes).context("A planilha está danificada ou não é um arquivo .xlsx válido.")?;
 
     let (headers, rows) = parse_worksheet_xml(&sheet_name, sheet_xml, &shared_strings);
     Ok(ParsedSheet {
@@ -1976,7 +1976,7 @@ fn resolve_processos_sheet_path(entries: &BTreeMap<String, Vec<u8>>) -> Result<(
     if entries.contains_key("xl/worksheets/sheet1.xml") {
         return Ok(("PROCESSOS".into(), "xl/worksheets/sheet1.xml".into()));
     }
-    bail!("Não foi possível localizar nenhuma aba de planilha no arquivo .xlsx.")
+    bail!("Não foi possível encontrar nenhuma aba na planilha.")
 }
 
 fn parse_shared_strings(xml: &str) -> Vec<String> {
@@ -2285,7 +2285,7 @@ const MAX_XLSX_EXPANDED_BYTES: usize = 256 * 1024 * 1024;
 /// Lê entradas de um arquivo ZIP (`.xlsx`) a partir do Central Directory e descompacta blocos Stored (0) ou Deflate (8).
 pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut total = 0usize;
-    ensure!(bytes.len() >= 22, "Arquivo .xlsx truncado ou inválido.");
+    ensure!(bytes.len() >= 22, "A planilha está danificada ou não é um arquivo .xlsx válido.");
     // Localiza End of Central Directory (EOCD) signature 0x06054b50
     let min_eocd = bytes.len().saturating_sub(65557);
     let mut eocd_pos = None;
@@ -2295,7 +2295,7 @@ pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>
             break;
         }
     }
-    let eocd = eocd_pos.context("Assinatura ZIP não encontrada no arquivo .xlsx.")?;
+    let eocd = eocd_pos.context("A planilha está danificada ou não é um arquivo .xlsx válido.")?;
     let total_entries = u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]) as usize;
     let cd_offset = u32::from_le_bytes([
         bytes[eocd + 16],
@@ -2309,7 +2309,7 @@ pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>
     for _ in 0..total_entries {
         ensure!(
             pos + 46 <= bytes.len() && bytes[pos..pos + 4] == [0x50, 0x4b, 0x01, 0x02],
-            "Cabeçalho Central Directory do .xlsx inválido."
+            "A planilha está danificada ou não é um arquivo .xlsx válido."
         );
         let method = u16::from_le_bytes([bytes[pos + 10], bytes[pos + 11]]);
         let comp_size = u32::from_le_bytes([
@@ -2336,7 +2336,7 @@ pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>
 
         ensure!(
             pos + 46 + name_len <= bytes.len(),
-            "Nome de entrada ZIP truncado."
+            "A planilha está danificada ou não é um arquivo .xlsx válido."
         );
         let name = String::from_utf8_lossy(&bytes[pos + 46..pos + 46 + name_len]).into_owned();
         pos += 46 + name_len + extra_len + comment_len;
@@ -2347,7 +2347,7 @@ pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>
         ensure!(
             local_offset + 30 <= bytes.len()
                 && bytes[local_offset..local_offset + 4] == [0x50, 0x4b, 0x03, 0x04],
-            "Cabeçalho local ZIP inválido."
+            "A planilha está danificada ou não é um arquivo .xlsx válido."
         );
         let l_name =
             u16::from_le_bytes([bytes[local_offset + 26], bytes[local_offset + 27]]) as usize;
@@ -2356,7 +2356,7 @@ pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>
         let data_start = local_offset + 30 + l_name + l_extra;
         ensure!(
             data_start + comp_size <= bytes.len(),
-            "Dados da entrada ZIP truncados."
+            "A planilha está danificada ou não é um arquivo .xlsx válido."
         );
         let comp_slice = &bytes[data_start..data_start + comp_size];
 
@@ -2369,7 +2369,7 @@ pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>
         let decoded = match method {
             0 => comp_slice.to_vec(),
             8 => inflate_raw(comp_slice, uncomp_size)?,
-            other => bail!("Método de compressão ZIP não suportado ({other}) em {name}."),
+            _ => bail!("A planilha usa um tipo de compactação que o Ponte não reconhece. Salve-a de novo como .xlsx no Excel."),
         };
         entries.insert(name, decoded);
     }
@@ -2393,7 +2393,7 @@ impl<'a> BitReader<'a> {
     }
 
     fn read_bit(&mut self) -> Result<u16> {
-        ensure!(self.byte_pos < self.data.len(), "Fluxo Deflate truncado.");
+        ensure!(self.byte_pos < self.data.len(), "A planilha está danificada ou não é um arquivo .xlsx válido.");
         let bit = ((self.data[self.byte_pos] >> self.bit_pos) & 1) as u16;
         self.bit_pos += 1;
         if self.bit_pos == 8 {
@@ -2428,7 +2428,7 @@ impl HuffmanTree {
     fn from_lengths(lengths: &[u8]) -> Result<Self> {
         let mut counts = [0u16; 16];
         for &len in lengths {
-            ensure!(len <= 15, "Comprimento Huffman inválido.");
+            ensure!(len <= 15, "A planilha está danificada ou não é um arquivo .xlsx válido.");
             if len > 0 {
                 counts[len as usize] += 1;
             }
@@ -2465,7 +2465,7 @@ impl HuffmanTree {
             first <<= 1;
             code <<= 1;
         }
-        bail!("Código Huffman inválido no fluxo Deflate.")
+        bail!("A planilha está danificada ou não é um arquivo .xlsx válido.")
     }
 }
 
@@ -2507,7 +2507,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                 reader.align_byte();
                 ensure!(
                     reader.byte_pos + 4 <= reader.data.len(),
-                    "Bloco Stored truncado."
+                    "A planilha está danificada ou não é um arquivo .xlsx válido."
                 );
                 let len = u16::from_le_bytes([
                     reader.data[reader.byte_pos],
@@ -2516,7 +2516,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                 reader.byte_pos += 4;
                 ensure!(
                     reader.byte_pos + len <= reader.data.len(),
-                    "Dados Stored truncados."
+                    "A planilha está danificada ou não é um arquivo .xlsx válido."
                 );
                 ensure!(out.len() + len <= expected_size, "{INFLATE_OVERFLOW}");
                 out.extend_from_slice(&reader.data[reader.byte_pos..reader.byte_pos + len]);
@@ -2551,7 +2551,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                             16 => {
                                 let prev = *all_lens
                                     .last()
-                                    .context("Repetição Huffman sem comprimento anterior.")?;
+                                    .context("A planilha está danificada ou não é um arquivo .xlsx válido.")?;
                                 let repeat = reader.read_bits(2)? as usize + 3;
                                 all_lens.extend(std::iter::repeat_n(prev, repeat));
                             }
@@ -2563,7 +2563,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                                 let repeat = reader.read_bits(7)? as usize + 11;
                                 all_lens.extend(std::iter::repeat_n(0, repeat));
                             }
-                            _ => bail!("Símbolo inválido na árvore de comprimentos."),
+                            _ => bail!("A planilha está danificada ou não é um arquivo .xlsx válido."),
                         }
                     }
                     (
@@ -2581,16 +2581,16 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                         break;
                     } else {
                         let len_idx = sym - 257;
-                        ensure!(len_idx < LEN_BASE.len(), "Código de comprimento inválido.");
+                        ensure!(len_idx < LEN_BASE.len(), "A planilha está danificada ou não é um arquivo .xlsx válido.");
                         let length =
                             LEN_BASE[len_idx] + reader.read_bits(LEN_EXTRA[len_idx])? as usize;
                         let dist_sym = dist_tree.decode(&mut reader)? as usize;
-                        ensure!(dist_sym < DIST_BASE.len(), "Código de distância inválido.");
+                        ensure!(dist_sym < DIST_BASE.len(), "A planilha está danificada ou não é um arquivo .xlsx válido.");
                         let distance =
                             DIST_BASE[dist_sym] + reader.read_bits(DIST_EXTRA[dist_sym])? as usize;
                         ensure!(
                             distance > 0 && distance <= out.len(),
-                            "Distância LZ77 fora da janela."
+                            "A planilha está danificada ou não é um arquivo .xlsx válido."
                         );
                         ensure!(out.len() + length <= expected_size, "{INFLATE_OVERFLOW}");
                         for _ in 0..length {
@@ -2600,7 +2600,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                     }
                 }
             }
-            _ => bail!("Tipo de bloco Deflate reservado/inválido."),
+            _ => bail!("A planilha está danificada ou não é um arquivo .xlsx válido."),
         }
         if bfinal == 1 {
             break;
@@ -2655,10 +2655,10 @@ fn due_pill(att: &SaiopAttendance, today: NaiveDate) -> (String, Tone, Option<St
             Some(delta) if delta > 0 => (
                 format!("Vencido · {short}"),
                 Tone::Danger,
-                Some(format!("Vencido há {delta} dia(s)")),
+                Some(format!("Vencido há {}", crate::labels::count(delta as usize, "dia", "dias"))),
             ),
             Some(0) => ("Hoje".to_owned(), Tone::Warn, Some("Vence hoje".to_owned())),
-            Some(delta) => (short, Tone::Info, Some(format!("Vence em {} dia(s)", -delta))),
+            Some(delta) => (short, Tone::Info, Some(format!("Vence em {}", crate::labels::count((-delta) as usize, "dia", "dias")))),
             None => (short, Tone::Info, None),
         }
     } else if !att.due_date_raw.is_empty() {
@@ -2989,7 +2989,7 @@ impl SaiopPanel {
         let all_items = match store.list_saiop_attendances() {
             Ok(list) => list,
             Err(e) => {
-                widgets::muted(ui, format!("Erro ao carregar Atendimentos: {e}"));
+                widgets::muted(ui, format!("Não foi possível carregar os atendimentos: {e}"));
                 return None;
             }
         };
@@ -3024,9 +3024,9 @@ impl SaiopPanel {
         ui.horizontal(|ui| {
             widgets::heading(ui, "Atendimentos");
             crate::help_ui::help(ui, format!(
-                    "Controle operacional do gabinete (SAIOP). {} atendimento(s) no total, {} referência(s) distinta(s).",
-                    all_items.len(),
-                    distinct_refs.len()
+                    "Controle dos atendimentos do gabinete: {} no total, {}.",
+                    crate::labels::count(all_items.len(), "atendimento", "atendimentos"),
+                    crate::labels::count(distinct_refs.len(), "referência distinta", "referências distintas")
                 ));
             ui.add_space(S2);
             widgets::pill(ui, format!("{open_count} em aberto"), Tone::Info);
@@ -3036,7 +3036,7 @@ impl SaiopPanel {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(widgets::primary(format!("{} Nova entrada", icon::PLUS)))
-                    .on_hover_text("Registra um atendimento novo; com um documento aberto na biblioteca, ele já vem ligado a esse documento.")
+                    .on_hover_text("Registra um atendimento novo. Com um documento aberto, o atendimento já vem ligado a ele.")
                     .clicked()
                 {
                     if self.dirty() {
@@ -3085,8 +3085,8 @@ impl SaiopPanel {
                         ui.label(RichText::new(icon::WARNING).size(16.0).color(fg));
                         ui.label(
                             RichText::new(format!(
-                                "{} importação(ões) sem o atendimento automático",
-                                failures.len()
+                                "{} sem o atendimento automático",
+                                crate::labels::count(failures.len(), "importação", "importações")
                             ))
                             .font(theme::font_strong(theme::SIZE_BODY))
                             .color(fg),
@@ -3107,19 +3107,19 @@ impl SaiopPanel {
                                         false,
                                     ),
                                     Err(e) => {
-                                        self.set_notice(format!("Ainda não foi possível: {e:#}"), true)
+                                        self.set_notice(format!("Não foi possível registrar o atendimento: {e:#}"), true)
                                     }
                                 }
                             }
                             if ui
                                 .add(widgets::quiet("Dispensar"))
-                                .on_hover_text("Some o aviso; registre o atendimento à mão, se quiser.")
+                                .on_hover_text("Tira o aviso da tela. Se quiser, registre o atendimento à mão.")
                                 .clicked()
                             {
                                 if let Err(e) =
                                     store.dismiss_auto_attendance_failure(failure.document_id)
                                 {
-                                    self.set_notice(format!("Não foi possível dispensar: {e}"), true);
+                                    self.set_notice(format!("Não foi possível dispensar o aviso: {e}"), true);
                                 }
                             }
                         });
@@ -3193,7 +3193,9 @@ impl SaiopPanel {
             || !self.status_filter.is_empty();
 
         // ---- Queue, search, filters ------------------------------------------
-        ui.horizontal(|ui| {
+        // Wrapped: with the ficha open the row is narrow, and what does not
+        // fit goes to a second line instead of running under the panel.
+        ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_id_salt("saiop-queue")
                 .selected_text(format!(
                     "Fila: {} ({})",
@@ -3253,7 +3255,7 @@ impl SaiopPanel {
             if let Some((context_id, context_number)) = self.context_document.clone() {
                 let only = self.document_filter == Some(context_id);
                 if widgets::chip(ui, only, format!("Só {context_number}"))
-                    .on_hover_text("A lista segue o documento aberto na biblioteca; Nova entrada cria um atendimento ligado a ele.")
+                    .on_hover_text("A lista mostra só os atendimentos do documento aberto. Uma nova entrada já vem ligada a ele.")
                     .clicked()
                     && !only
                 {
@@ -3374,14 +3376,14 @@ impl SaiopPanel {
 
         let count_text = if filtered.len() != all_items.len() {
             format!(
-                "{} de {} atendimento(s) · clique no título da coluna para ordenar",
+                "{} de {}. Clique no título de uma coluna para ordenar.",
                 filtered.len(),
-                all_items.len()
+                crate::labels::count(all_items.len(), "atendimento", "atendimentos")
             )
         } else {
             format!(
-                "{} atendimento(s) · clique no título da coluna para ordenar",
-                all_items.len()
+                "{}. Clique no título de uma coluna para ordenar.",
+                crate::labels::count(all_items.len(), "atendimento", "atendimentos")
             )
         };
         widgets::small_muted(ui, count_text);
@@ -3595,7 +3597,7 @@ impl SaiopPanel {
                                                 .truncate()
                                                 .selectable(false),
                                         );
-                                        r.on_hover_text("Dias desde a entrada • dias aguardando retorno externo");
+                                        r.on_hover_text("Dias desde a entrada • dias fora, aguardando retorno");
                                     }
                                     SaiopSort::Destination => {
                                         let t = if att.sent_to.is_empty() {
@@ -3641,7 +3643,7 @@ impl SaiopPanel {
             .resizable(true)
             .show(ui.ctx(), |ui| {
             ui.spacing_mut().item_spacing.y = S2;
-            widgets::small_muted(ui, "Escolha o arquivo .xlsx do controle do gabinete. A aba PROCESSOS é lida; nada é gravado antes de você confirmar.");
+            widgets::small_muted(ui, "Escolha o arquivo .xlsx do controle do gabinete. A aba PROCESSOS é lida; nada é salvo antes de você confirmar.");
             widgets::overline(ui, "Arquivo", None);
             ui.horizontal(|ui| {
                 if ui.add(widgets::secondary(format!("{} Escolher planilha…", icon::FOLDER))).clicked() {
@@ -3674,15 +3676,15 @@ impl SaiopPanel {
                     Ok(prev) => {
                         self.set_notice(
                             format!(
-                                "Prévia pronta: {} atendimento(s) identificados na aba {}. Confira abaixo antes de confirmar.",
-                                prev.items.len(),
+                                "Prévia pronta: {} na aba {}. Confira abaixo antes de importar.",
+                                crate::labels::count(prev.items.len(), "atendimento encontrado", "atendimentos encontrados"),
                                 prev.sheet_name
                             ),
                             false,
                         );
                         self.import_preview = Some(prev);
                     }
-                    Err(e) => self.set_notice(format!("Falha ao ler planilha: {e}"), true),
+                    Err(e) => self.set_notice(e.to_string(), true),
                 }
             }
 
@@ -3695,19 +3697,19 @@ impl SaiopPanel {
                 let new_rows = prev.new_rows();
                 let repeated_rows = prev.items.len() - new_rows;
                 ui.horizontal_wrapped(|ui| {
-                    widgets::pill(ui, format!("{} linha(s) lida(s)", prev.items.len()), Tone::Neutral);
-                    widgets::pill(ui, format!("{new_rows} nova(s)"), Tone::Ok);
+                    widgets::pill(ui, crate::labels::count(prev.items.len(), "linha lida", "linhas lidas"), Tone::Neutral);
+                    widgets::pill(ui, crate::labels::count(new_rows, "nova", "novas"), Tone::Ok);
                     if repeated_rows > 0 {
-                        widgets::pill(ui, format!("{repeated_rows} já registrada(s) no controle"), Tone::Warn);
+                        widgets::pill(ui, crate::labels::count(repeated_rows, "já registrada", "já registradas"), Tone::Warn);
                     }
                     if prev.flagged_count > 0 {
-                        widgets::pill(ui, format!("{} com alerta para conferir", prev.flagged_count), Tone::Warn);
+                        widgets::pill(ui, crate::labels::count(prev.flagged_count, "com alerta para conferir", "com alerta para conferir"), Tone::Warn);
                     }
                     if prev.linked_documents > 0 {
-                        widgets::pill(ui, format!("{} ligada(s) a documentos importados", prev.linked_documents), Tone::Info);
+                        widgets::pill(ui, format!("{} a documentos importados", crate::labels::count(prev.linked_documents, "ligada", "ligadas")), Tone::Info);
                     }
                     if prev.ignored_formula_rows > 0 {
-                        widgets::small_muted(ui, format!("{} linha(s) vazias ignoradas", prev.ignored_formula_rows));
+                        widgets::small_muted(ui, crate::labels::count(prev.ignored_formula_rows, "linha vazia ignorada", "linhas vazias ignoradas"));
                     }
                 });
                 widgets::card_frame().inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
@@ -3761,7 +3763,7 @@ impl SaiopPanel {
                     let mut to_commit: Option<SaiopImportPreview> = None;
                     if repeated_rows > 0 {
                         if ui
-                            .add_enabled(new_rows > 0, widgets::primary(format!("Importar só as {new_rows} nova(s)")))
+                            .add_enabled(new_rows > 0, widgets::primary(format!("Importar só as novas ({new_rows})")))
                             .clicked()
                         {
                             to_commit = Some(prev.only_new());
@@ -3772,7 +3774,7 @@ impl SaiopPanel {
                         {
                             to_commit = Some(prev.clone());
                         }
-                    } else if ui.add(widgets::primary(format!("Importar {} atendimento(s)", prev.items.len()))).clicked() {
+                    } else if ui.add(widgets::primary(format!("Importar {}", crate::labels::count(prev.items.len(), "atendimento", "atendimentos")))).clicked() {
                         to_commit = Some(prev.clone());
                     }
                     if ui.add(widgets::quiet("Cancelar")).clicked() {
@@ -3783,15 +3785,15 @@ impl SaiopPanel {
                             Ok(batch) => {
                                 self.set_notice(
                                     format!(
-                                        "Importação concluída: {} atendimento(s) de {}.",
-                                        batch.total_rows, batch.file_name
+                                        "Importação concluída: {} de {}.",
+                                        crate::labels::count(batch.total_rows, "atendimento", "atendimentos"), batch.file_name
                                     ),
                                     false,
                                 );
                                 self.import_preview = None;
                                 close_import = true;
                             }
-                            Err(e) => self.set_notice(format!("Importação recusada: {e}"), true),
+                            Err(e) => self.set_notice(format!("Não foi possível importar: {e}"), true),
                         }
                     }
                 });
@@ -3804,11 +3806,11 @@ impl SaiopPanel {
                     for b in batches {
                         ui.horizontal_wrapped(|ui| {
                             widgets::small_muted(ui, format!(
-                                "{} • {} (aba {}) • {} linha(s), {} com alerta • por {}",
+                                "{} • {} (aba {}) • {}, {} com alerta • por {}",
                                 crate::labels::datetime(&b.imported_at),
                                 b.file_name,
                                 b.sheet_name,
-                                b.total_rows,
+                                crate::labels::count(b.total_rows, "linha", "linhas"),
                                 b.flagged_rows,
                                 b.actor
                             ));
@@ -3830,7 +3832,7 @@ impl SaiopPanel {
                                     .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
                                     ui.add(egui::Label::new(RichText::new(format!(
-                                        "Desfazer a importação de {}? {} atendimento(s) serão removidos. {} serão mantidos porque foram editados ou têm tarefa.",
+                                        "Desfazer a importação de {}? Atendimentos removidos: {}. Atendimentos mantidos, por terem sido editados ou terem tarefa: {}.",
                                         pending.file_name, removed, kept
                                     )).color(fg)).wrap());
                                     ui.horizontal(|ui| {
@@ -3838,7 +3840,7 @@ impl SaiopPanel {
                                             match store.undo_saiop_batch(pending.id) {
                                                 Ok((removed, kept)) => self.set_notice(
                                                     format!(
-                                                        "Importação desfeita: {removed} atendimento(s) removidos e {kept} mantidos por terem edição ou tarefa."
+                                                        "Importação desfeita. Atendimentos removidos: {removed}. Mantidos, por terem sido editados ou terem tarefa: {kept}."
                                                     ),
                                                     false,
                                                 ),
@@ -3908,7 +3910,7 @@ impl SaiopPanel {
                                     ui.add(
                                         egui::Label::new(
                                             RichText::new(format!(
-                                                "Excluir o atendimento {}? Não vai para a Lixeira: anexos do atendimento são apagados; tarefas e documento ligado permanecem.",
+                                                "Apagar de vez o atendimento {}? Ele não vai para a Lixeira e seus anexos também são apagados. As tarefas e o documento ligado permanecem.",
                                                 if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
                                             ))
                                             .color(fg),
@@ -3916,7 +3918,7 @@ impl SaiopPanel {
                                         .wrap(),
                                     );
                                     ui.horizontal(|ui| {
-                                        if ui.add(widgets::danger("Excluir de vez")).clicked() {
+                                        if ui.add(widgets::danger("Apagar de vez")).clicked() {
                                             delete_confirmed = true;
                                         }
                                         if ui.add(widgets::secondary("Cancelar")).clicked() {
@@ -3957,9 +3959,9 @@ impl SaiopPanel {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if ui
-                                            .add_enabled(!is_dirty, widgets::danger("Excluir…"))
-                                            .on_hover_text("Apaga o atendimento de vez (não há Lixeira para atendimentos). As tarefas criadas a partir dele continuam nos documentos.")
-                                            .on_disabled_hover_text("Salve ou descarte as alterações antes de excluir.")
+                                            .add_enabled(!is_dirty, widgets::danger("Apagar de vez…"))
+                                            .on_hover_text("Apaga o atendimento sem passar pela Lixeira. As tarefas criadas a partir dele continuam nos documentos.")
+                                            .on_disabled_hover_text("Salve ou descarte as alterações antes de apagar.")
                                             .clicked()
                                         {
                                             self.confirm_delete = Some(ed.id);
@@ -4033,7 +4035,7 @@ impl SaiopPanel {
                                         format!("{same_ref_count} passagens desta referência"),
                                         Tone::Violet,
                                     )
-                                    .on_hover_text("A mesma referência entrou no gabinete mais de uma vez; cada passagem é um atendimento.");
+                                    .on_hover_text("A mesma referência entrou no gabinete mais de uma vez. Cada passagem é um atendimento.");
                                 }
                             }
                             if let Some(doc_id) = ed.document_id {
@@ -4075,13 +4077,13 @@ impl SaiopPanel {
                     self.selected_id = None;
                     self.set_notice(
                         format!(
-                            "Atendimento {} excluído.",
+                            "Atendimento {} apagado.",
                             if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
                         ),
                         false,
                     );
                 }
-                Err(e) => self.set_notice(format!("Não foi possível excluir: {e}"), true),
+                Err(e) => self.set_notice(format!("Não foi possível apagar o atendimento: {e}"), true),
             }
         } else if close_clicked {
             self.confirm_delete = None;
@@ -4108,7 +4110,7 @@ impl SaiopPanel {
                 match store.save_saiop_attendance(&ed, self.base_version) {
                     Ok(_) => true,
                     Err(e) => {
-                        self.set_notice(format!("Salve o atendimento antes de criar a tarefa: {e}"), true);
+                        self.set_notice(format!("Não foi possível salvar o atendimento antes de criar a tarefa: {e}"), true);
                         false
                     }
                 }
@@ -4133,7 +4135,7 @@ impl SaiopPanel {
                         }
                         match created {
                             Some(_) => self.set_notice(
-                                format!("Tarefa criada no painel Tarefas: {title}"),
+                                format!("Tarefa criada na área Tarefas: {title}"),
                                 false,
                             ),
                             None => self.set_notice(
@@ -4157,7 +4159,7 @@ impl SaiopPanel {
                     }
                     self.set_notice("Atendimento salvo.", false);
                 }
-                Err(e) => self.set_notice(format!("Atendimento não salvo: {e}"), true),
+                Err(e) => self.set_notice(format!("Não foi possível salvar o atendimento: {e}"), true),
             }
         }
     }
@@ -4289,7 +4291,7 @@ impl SaiopPanel {
                                 }
                                 None => self.set_notice(format!("Nenhum documento importado com o número {}.", self.link_number.trim()), true),
                             },
-                            Err(e) => self.set_notice(format!("Não foi possível consultar a biblioteca: {e}"), true),
+                            Err(e) => self.set_notice(format!("Não foi possível consultar o acervo: {e}"), true),
                         }
                     }
                 });
@@ -4415,7 +4417,7 @@ impl SaiopPanel {
                             }
                             if ui
                                 .add(widgets::quiet("Abrir"))
-                                .on_hover_text("Abre a tarefa no painel Tarefas.")
+                                .on_hover_text("Abre a tarefa na área Tarefas.")
                                 .clicked()
                             {
                                 self.open_task = Some(task.clone());
@@ -4433,7 +4435,7 @@ impl SaiopPanel {
                         );
                         if ui
                             .add_enabled(can_create, widgets::secondary("Criar tarefa"))
-                            .on_hover_text("Cria, no painel Tarefas, uma tarefa do documento ligado com a prioridade, o prazo e o responsável deste atendimento. Sem título, ela se chama “Analisar atendimento …”.")
+                            .on_hover_text("Cria, na área Tarefas, uma tarefa do documento ligado com a prioridade, o prazo e o responsável deste atendimento. Sem título, ela se chama “Analisar atendimento …”.")
                             .on_disabled_hover_text("Tarefas pertencem a documentos: ligue o atendimento a um documento importado (acima) para criar uma tarefa.")
                             .clicked()
                         {

@@ -39,14 +39,14 @@ impl Store {
                 && !body.trim().is_empty()
                 && body.len() <= 128 * 1024
                 && crate::model::valid_kind(kind),
-            "Nome, tipo ou corpo do modelo inválido."
+            "Nome, tipo ou texto do modelo inválido."
         );
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let count: i64 =
             tx.query_row("SELECT count(*) FROM personal_templates", [], |r| r.get(0))?;
-        ensure!(count < 200, "Limite de 200 versões de modelos pessoais.");
+        ensure!(count < 200, "Limite de 200 versões de modelos pessoais atingido.");
         let value = PersonalTemplate {
             name: name.into(),
             kind: kind.into(),
@@ -93,7 +93,7 @@ fn rtf_text(value: &str) -> String {
 pub fn rich_text(capture: &Capture, body: &str) -> Result<String> {
     ensure!(
         !body.trim().is_empty() && body.len() <= 500 * 1024,
-        "Minuta vazia ou grande demais."
+        "A minuta está vazia ou é grande demais."
     );
     Ok(format!("{{\\rtf1\\ansi\\ansicpg1252\\deff0{{\\fonttbl{{\\f0 Arial;}}}}\\uc1\\paperw11907\\paperh16840\\margl1417\\margr1417\\margt1417\\margb1417\\f0\\fs24\\b MINUTA PARA REVISAO\\b0\\par\nReferencia: {}\\par\nAssunto: {}\\par\\par\n{}\\par\n}}",rtf_text(&capture.document_number),rtf_text(&capture.title),rtf_text(body)))
 }
@@ -130,7 +130,7 @@ impl DraftTools {
                 .default_size([1000.0, 650.0])
                 .show(ctx, |ui| {
                     use crate::{theme, widgets};
-                    widgets::small_muted(ui, "Comparação dos textos no momento em que você abriu esta janela; edições posteriores não alteram esta visualização.");
+                    widgets::small_muted(ui, "Comparação feita no momento em que esta janela foi aberta; edições posteriores não aparecem aqui.");
                     ui.add_space(theme::S2);
                     ui.columns(2, |columns| {
                         widgets::section(&mut columns[0], label.as_str());

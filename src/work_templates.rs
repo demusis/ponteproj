@@ -621,7 +621,7 @@ fn now() -> String {
 fn ensure_uid(uid: &str) -> Result<()> {
     ensure!(
         uid.len() == 32 && uid.bytes().all(|b| b.is_ascii_hexdigit()),
-        "Identificador inválido."
+        "O código do item é inválido."
     );
     Ok(())
 }
@@ -632,7 +632,7 @@ fn ensure_text(value: &str, max: usize, what: &str) -> Result<()> {
             && !value
                 .chars()
                 .any(|c| c.is_control() && c != '\n' && c != '\t'),
-        "{what} excede {} ou contém caracteres de controle.",
+        "{what}: passou do limite de {} ou tem caracteres inválidos.",
         crate::labels::file_size(max as u64)
     );
     Ok(())
@@ -786,7 +786,7 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
     ensure_uid(&record.uid)?;
     ensure!(
         record.document_id > 0 && record.capture_id > 0,
-        "Registro de geração sem documento."
+        "Os dados da geração do texto não indicam o documento."
     );
     if let Some(uid) = &record.template_uid {
         ensure_uid(uid)?;
@@ -796,7 +796,7 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
             && record.example_uids.len() <= MAX_EXAMPLES_PER_TEMPLATE
             && record.sources.len() <= 512
             && record.conflicts_shown.len() <= 64,
-        "Registro de geração grande demais."
+        "Os dados da geração do texto são grandes demais."
     );
     // Names and identifiers are short and clean; long texts are only
     // bounded (they come from the person and the model, pasted text may
@@ -804,7 +804,7 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
     ensure_text(&record.template_name, MAX_NAME, "O nome do modelo")?;
     ensure_text(&record.model, MAX_NAME, "O modelo de IA")?;
     ensure_text(&record.provider, MAX_NAME, "O serviço de IA")?;
-    ensure_text(&record.system_sha256, 64, "O resumo do texto de sistema")?;
+    ensure_text(&record.system_sha256, 64, "O resumo do texto enviado")?;
     ensure!(
         record.request_guidance.len() <= MAX_GUIDANCE,
         "O pedido desta minuta é longo demais."
@@ -812,7 +812,7 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
     for block in &record.blocks {
         ensure_uid(&block.uid)?;
         ensure_text(&block.name, MAX_NAME, "O nome da instrução")?;
-        ensure!(block.mode.len() <= 4096, "Registro de geração inválido.");
+        ensure!(block.mode.len() <= 4096, "Os dados da geração do texto são inválidos.");
     }
     for uid in &record.example_uids {
         ensure_uid(uid)?;
@@ -821,17 +821,17 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
         ensure_text(&source.id, MAX_NAME, "O identificador da fonte")?;
         ensure!(
             source.label.len() <= MAX_SHORT_TEXT,
-            "Registro de geração inválido."
+            "Os dados da geração do texto são inválidos."
         );
     }
     for conflict in &record.conflicts_shown {
         ensure!(
             conflict.len() <= MAX_SHORT_TEXT * 4,
-            "Registro de geração inválido."
+            "Os dados da geração do texto são inválidos."
         );
     }
     if let Outcome::Refused { reason } = &record.outcome {
-        ensure!(reason.len() <= 8 * 1024, "Registro de geração inválido.");
+        ensure!(reason.len() <= 8 * 1024, "Os dados da geração do texto são inválidos.");
     }
     let bytes: usize = record.blocks.iter().map(|b| b.text.len()).sum::<usize>()
         + record.request_guidance.len()
@@ -840,7 +840,7 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
             .iter()
             .map(|c| c.len())
             .sum::<usize>();
-    ensure!(bytes <= 512 * 1024, "Registro de geração grande demais.");
+    ensure!(bytes <= 512 * 1024, "Os dados da geração do texto são grandes demais.");
     Ok(())
 }
 
@@ -1702,7 +1702,7 @@ impl Store {
         }
         ensure!(
             !self.template_in_use(uid)?,
-            "Este modelo foi usado em minutas; arquive-o em vez de excluir, para o histórico continuar legível."
+            "Este modelo foi usado em minutas. Arquive-o em vez de apagar, para o histórico continuar legível."
         );
         let actor = self.active_actor();
         let tx = self
@@ -2064,7 +2064,8 @@ impl Store {
             .collect();
         ensure!(
             users.is_empty(),
-            "Esta instrução é usada pelo(s) modelo(s) {}; arquive-a em vez de excluir.",
+            "Esta instrução é usada {} {}. Arquive-a em vez de apagar.",
+            if users.len() == 1 { "pelo modelo" } else { "pelos modelos" },
             users.join(", ")
         );
         let actor = self.active_actor();
@@ -2302,7 +2303,7 @@ impl Store {
             params![stored.capture_id, stored.document_id],
             |r| r.get(0),
         )?;
-        ensure!(belongs, "A captura não pertence a este documento.");
+        ensure!(belongs, "A importação não pertence a este documento.");
         let existing: Option<(i64, i64)> = tx
             .query_row(
                 "SELECT document_id,capture_id FROM draft_generations WHERE uid=?1",
@@ -2975,7 +2976,7 @@ mod tests {
             .delete_template(&template.uid)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("arquive-o"), "{error}");
+        assert!(error.contains("Arquive-o"), "{error}");
         store
             .set_template_status(&template.uid, Status::Archived, None)
             .unwrap();

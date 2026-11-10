@@ -281,7 +281,7 @@ pub fn validate_token(token: &str) -> Result<()> {
         trimmed.len() >= 16
             && trimmed.len() <= 256
             && !trimmed.chars().any(|c| c.is_control() || c.is_whitespace()),
-        "A chave do gabinete deve ter entre 16 e 256 caracteres, sem espaços."
+        "A chave de acesso do gabinete deve ter entre 16 e 256 caracteres, sem espaços."
     );
     Ok(())
 }
@@ -324,7 +324,7 @@ pub fn validate_bind_addr(raw: &str) -> Result<SocketAddr> {
         .context("Endereço de escuta inválido. Use o formato IP:PORTA (ex.: 0.0.0.0:7878).")?;
     ensure!(
         is_intranet_ip(addr.ip()),
-        "O anfitrião só pode escutar em endereço local ou de intranet privada."
+        "O computador principal só pode receber conexões de endereços da rede interna do órgão."
     );
     Ok(addr)
 }
@@ -333,13 +333,13 @@ pub fn validate_host_url(raw: &str) -> Result<String> {
     let trimmed = raw.trim().trim_end_matches('/');
     ensure!(
         !trimmed.is_empty() && trimmed.len() <= 512,
-        "Informe o endereço do computador anfitrião."
+        "Informe o endereço do computador principal."
     );
     let url = Url::parse(trimmed)
-        .context("Endereço do anfitrião inválido. Exemplo: http://192.168.1.10:7878")?;
+        .context("Endereço do computador principal inválido. Exemplo: http://192.168.1.10:7878")?;
     ensure!(
         matches!(url.scheme(), "http" | "https"),
-        "Use http:// ou https:// no endereço do anfitrião."
+        "O endereço do computador principal deve começar com http:// ou https://."
     );
     ensure!(
         url.username().is_empty()
@@ -347,13 +347,13 @@ pub fn validate_host_url(raw: &str) -> Result<String> {
             && url.query().is_none()
             && url.fragment().is_none()
             && (url.path() == "/" || url.path().is_empty()),
-        "Informe apenas o endereço base do anfitrião (ex.: http://192.168.1.10:7878), sem caminho ou credenciais na URL."
+        "Informe só o endereço do computador principal (ex.: http://192.168.1.10:7878), sem nada depois do número da porta."
     );
-    let host = url.host_str().context("Endereço do anfitrião sem host.")?;
+    let host = url.host_str().context("O endereço do computador principal não indica o computador.")?;
     if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
         ensure!(
             is_allowed_peer_ip(ip),
-            "O endereço IP do anfitrião deve pertencer à rede interna (intranet) ou loopback."
+            "O endereço do computador principal deve ser da rede interna do órgão."
         );
     } else {
         let lower = host.to_ascii_lowercase();
@@ -366,7 +366,7 @@ pub fn validate_host_url(raw: &str) -> Result<String> {
             || lower.ends_with(".gov.br");
         ensure!(
             is_local_name,
-            "Use o IP da máquina na intranet (ex.: 192.168.x.x) ou o nome do computador na rede interna."
+            "Use o número IP do computador na rede interna (ex.: 192.168.1.10) ou o nome dele na rede."
         );
     }
     Ok(trimmed.to_owned())
@@ -883,7 +883,7 @@ const HOST_TOO_OLD: &str = "Formato de mensagem incompatível com o anfitrião."
 
 fn host_cannot_read() -> String {
     format!(
-        "Formato de mensagem incompatível com o anfitrião (Ponte {}).",
+        "O computador principal não entendeu esta mensagem (Ponte {}). Atualize o Ponte nos dois computadores.",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -1600,11 +1600,11 @@ impl Store {
             let bytes = fetch_attachment(row.id)?;
             ensure!(
                 !bytes.is_empty() && bytes.len() <= crate::attachments::MAX_ATTACHMENT_BYTES,
-                "Anexo recebido do computador principal é inválido ou excede o limite."
+                "O anexo recebido do computador principal está danificado ou é grande demais."
             );
             ensure!(
                 format!("{:x}", Sha256::digest(&bytes)) == row.meta.sha256,
-                "Integridade SHA-256 do anexo recebido não confere com o registro do computador principal."
+                "O anexo recebido do computador principal está danificado. Sincronize de novo."
             );
             prepared_attachment_blobs.insert(row.id, seal(&bytes)?);
         }
@@ -1638,12 +1638,12 @@ impl Store {
             let bytes = fetch_pdf(meta.id, meta.capture_id)?;
             ensure!(
                 bytes.starts_with(b"%PDF-") && bytes.len() <= crate::files::MAX_FILE_BYTES,
-                "PDF recebido do anfitrião é inválido ou excede o limite."
+                "O PDF recebido do computador principal está danificado ou é grande demais."
             );
             let actual_sha = format!("{:x}", Sha256::digest(&bytes));
             ensure!(
                 actual_sha == meta.summary.sha256,
-                "Integridade SHA-256 do PDF recebido não confere com o registro do anfitrião."
+                "O PDF recebido do computador principal está danificado. Sincronize de novo."
             );
             prepared_file_blobs.insert(meta.id, seal(&bytes)?);
         }
@@ -1766,7 +1766,7 @@ impl Store {
         for meta in &snapshot.files_meta {
             let payload_blob = prepared_file_blobs
                 .get(&meta.id)
-                .context(" Conteúdo do PDF ausente ao aplicar sincronização.")?;
+                .context("O PDF não veio completo na sincronização. Sincronize de novo.")?;
             tx.execute(
                 "INSERT INTO files(id,capture_id,metadata,payload) VALUES(?1,?2,?3,?4)",
                 params![
@@ -1861,7 +1861,7 @@ impl Store {
         for row in &snapshot.attachments {
             let payload_blob = prepared_attachment_blobs
                 .get(&row.id)
-                .context("Conteúdo de anexo ausente ao aplicar sincronização.")?;
+                .context("O anexo não veio completo na sincronização. Sincronize de novo.")?;
             tx.execute(
                 "INSERT INTO attachments(id,owner_kind,owner_id,document_id,metadata,payload) VALUES(?1,?2,?3,?4,?5,?6)",
                 params![
@@ -2065,7 +2065,7 @@ impl Store {
                 );
                 let data = STANDARD
                     .decode(data_base64.trim())
-                    .context("Anexo recebido com codificação inválida.")?;
+                    .context("O anexo recebido está danificado.")?;
                 self.add_attachment(owner, &name, &description, &data)
                     .map(MutationReply::Id)
             }
@@ -2121,7 +2121,7 @@ impl Store {
         let cfg = self.load_intranet_config()?;
         ensure!(
             cfg.mode == IntranetMode::Client,
-            "A sincronização remota requer o modo Cliente na Intranet."
+            "Este computador não está conectado ao computador principal do gabinete."
         );
         cfg.validate()?;
 
@@ -2198,7 +2198,7 @@ impl Store {
                         pushed_offline = true;
                     }
                     Ok(_) => {
-                        bail!("Resposta inesperada do anfitrião ao sincronizar fila offline.");
+                        bail!("Resposta inesperada do computador principal ao enviar as alterações.");
                     }
                     Err(RpcError::Unreachable(msg)) => {
                         bail!("{msg}");
@@ -2243,7 +2243,7 @@ impl Store {
                 Ok(true)
             }
             RpcResponse::Error { message } => bail!("{message}"),
-            _ => bail!("Resposta inesperada do computador anfitrião durante a sincronização."),
+            _ => bail!("Resposta inesperada do computador principal durante a sincronização."),
         }
     }
 
@@ -2312,7 +2312,7 @@ impl Store {
         for copy in &copies {
             ensure!(
                 copy.header.lineage == lineage,
-                "A pasta {} contém outro acervo, não o deste computador. Remova-a da lista ou aponte para outro arquivo.",
+                "A pasta {} contém outro acervo, não o deste computador. Retire-a da lista ou escolha outro arquivo.",
                 copy.path.display()
             );
             ensure!(
@@ -2389,7 +2389,8 @@ impl Store {
                 let local_documents = self.list_documents("")?.len();
                 ensure!(
                     local_documents == 0,
-                    "[confirmar-substituicao] Este computador nunca trocou com esta pasta e tem {local_documents} documento(s) no acervo. Ao sincronizar pela primeira vez, o acervo daqui será substituído pelo da pasta ({}). Faça um backup antes, se quiser guardá-los.",
+                    "[confirmar-substituicao] Este computador ainda não sincronizou com esta pasta e tem {} no acervo. Ao sincronizar pela primeira vez, o acervo daqui será substituído pelo da pasta ({}). Faça uma cópia de segurança antes, se quiser guardá-los.",
+                    plural(local_documents, "documento", "documentos"),
                     sharedfolder::describe(&best.header)
                 );
             }
@@ -2423,8 +2424,9 @@ impl Store {
                 .count();
             if missing_from_journal > 0 && guard_path.as_deref() != Some(copy.path.as_path()) {
                 report.notes.push(format!(
-                    "{}: {missing_from_journal} alteração(ões) antigas não puderam ser recuperadas (diário já compactado).",
-                    copy.path.display()
+                    "{}: {} antigas não puderam ser recuperadas (o histórico dessa cópia já foi resumido).",
+                    copy.path.display(),
+                    plural(missing_from_journal, "alteração", "alterações")
                 ));
             }
             for entry in &copy.payload.journal {
@@ -2556,8 +2558,8 @@ impl Store {
                 .collect();
             if !foreign.is_empty() {
                 reporter.step(format!(
-                    "Conciliando {} alteração(ões) vindas de outras pastas…",
-                    foreign.len()
+                    "Reunindo {} vindas de outras pastas…",
+                    plural(foreign.len(), "alteração", "alterações")
                 ));
             }
             for (entry, index) in foreign {
@@ -2636,8 +2638,8 @@ impl Store {
             }
             if !outbox.is_empty() {
                 reporter.step(format!(
-                    "Aplicando {} alteração(ões) deste computador…",
-                    outbox.len()
+                    "Aplicando {} deste computador…",
+                    plural(outbox.len(), "alteração", "alterações")
                 ));
             }
             // This computer's numbers, translated into the copy's. This
@@ -2770,7 +2772,7 @@ impl Store {
             }
         }
         if !targets.is_empty() {
-            reporter.step(format!("Gravando em {} pasta(s)…", targets.len()));
+            reporter.step(format!("Gravando em {}…", plural(targets.len(), "pasta", "pastas")));
         }
         let mut failures = Vec::new();
         for path in &targets {
@@ -3001,7 +3003,7 @@ impl Store {
             Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
                 bail!("{message}")
             }
-            Ok(_) => bail!("Resposta inesperada do anfitrião ao gravar alteração."),
+            Ok(_) => bail!("Resposta inesperada do computador principal ao gravar a alteração."),
             Err(RpcError::Unreachable(_)) => {
                 // O computador anfitrião está desligado ou inacessível:
                 // aplica a alteração localmente e enfileira na caixa de saída offline para sincronização mútua posterior!
@@ -3368,7 +3370,7 @@ impl Store {
         let conflict = conflicts
             .into_iter()
             .find(|c| c.id == conflict_id)
-            .context("Choque de sincronização não encontrado.")?;
+            .context("Conflito de edição não encontrado.")?;
 
         // Its numbers mean nothing in the team's library: only redone.
         if conflict.unresolved && resolution != ConflictResolution::KeepHost {
@@ -4134,6 +4136,15 @@ fn preserve_original_base_version(
     }
 }
 
+/// "1 alteração" / "3 alterações".
+fn plural(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("{n} {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
 fn mutation_label(mutation: &IntranetMutation) -> String {
     match mutation {
         IntranetMutation::ImportCapture { capture } if capture.is_manual() => {
@@ -4149,12 +4160,12 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
             }
         }
         IntranetMutation::ImportCapture { capture } => {
-            format!("Captura de {}", capture.document_number)
+            format!("Importação de {}", capture.document_number)
         }
         IntranetMutation::ImportBundle { capture, files } => format!(
-            "Captura de {} com {} PDF(s)",
+            "Importação de {} com {}",
             capture.document_number,
-            files.len()
+            plural(files.len(), "PDF", "PDFs")
         ),
         IntranetMutation::SaveNote { document_id, .. } => {
             format!("Notas do documento #{document_id}")
@@ -4203,12 +4214,12 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
             format!("Contexto do documento #{document_id}")
         }
         IntranetMutation::SavePageText { file_id, page, .. } => {
-            format!("OCR da página {page} (arquivo #{file_id})")
+            format!("Texto lido da página {page} (arquivo #{file_id})")
         }
         IntranetMutation::AddDocumentLink { source, target, .. } => {
             format!("Vínculo entre documentos #{source} e #{target}")
         }
-        IntranetMutation::SetLinkActive { id, .. } => format!("Estado do vínculo #{id}"),
+        IntranetMutation::SetLinkActive { id, .. } => format!("Situação do vínculo #{id}"),
         IntranetMutation::TrashItem { kind, id } => format!(
             "Mover {} #{id} para a lixeira",
             crate::labels::item_kind(kind)
@@ -4221,18 +4232,18 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
         IntranetMutation::SaveSaiopAttendance { attendance, .. } => {
             if attendance.id > 0 {
                 format!(
-                    "Atendimento SAIOP #{}: {}",
+                    "Atendimento #{}: {}",
                     attendance.id, attendance.reference_raw
                 )
             } else {
-                format!("Novo atendimento SAIOP: {}", attendance.reference_raw)
+                format!("Novo atendimento: {}", attendance.reference_raw)
             }
         }
         IntranetMutation::ImportSaiopBatch { file_name, .. } => {
             format!("Importação de planilha {file_name}")
         }
         IntranetMutation::UndoSaiopBatch { batch_id } => {
-            format!("Reversão do lote SAIOP #{batch_id}")
+            format!("Desfazer importação de planilha #{batch_id}")
         }
         IntranetMutation::DeleteSaiopAttendance { id } => {
             format!("Exclusão do atendimento #{id}")
@@ -4284,35 +4295,38 @@ impl FolderSyncReport {
         }
         if self.imported_new > 0 || self.imported_changed > 0 {
             parts.push(format!(
-                "{} item(ns) novo(s) e {} atualizado(s) recebidos",
-                self.imported_new, self.imported_changed
+                "{} e {} recebidos",
+                plural(self.imported_new, "item novo", "itens novos"),
+                plural(self.imported_changed, "atualizado", "atualizados")
             ));
         }
         if self.pushed > 0 {
             parts.push(format!(
-                "{} alteração(ões) deste computador enviada(s)",
-                self.pushed
+                "{} deste computador {}",
+                plural(self.pushed, "alteração", "alterações"),
+                if self.pushed == 1 { "enviada" } else { "enviadas" }
             ));
         }
         if self.merged_foreign > 0 {
             parts.push(format!(
-                "{} alteração(ões) de outras pastas conciliada(s)",
-                self.merged_foreign
+                "{} de outras pastas {}",
+                plural(self.merged_foreign, "alteração", "alterações"),
+                if self.merged_foreign == 1 { "reunida" } else { "reunidas" }
             ));
         }
         if self.conflicts > 0 {
             parts.push(format!(
-                "⚠ {} conflito(s) para você decidir",
-                self.conflicts
+                "⚠ {} para decidir",
+                plural(self.conflicts, "conflito de edição", "conflitos de edição")
             ));
         }
         if !self.written_to.is_empty() {
-            parts.push(format!("gravado em {} pasta(s)", self.written_to.len()));
+            parts.push(format!("gravado em {}", plural(self.written_to.len(), "pasta", "pastas")));
         }
         if !self.unreachable.is_empty() {
             parts.push(format!(
-                "{} pasta(s) fora de alcance",
-                self.unreachable.len()
+                "{} fora de alcance",
+                plural(self.unreachable.len(), "pasta", "pastas")
             ));
         }
         if parts.is_empty() {
@@ -4369,10 +4383,10 @@ fn build_sync_conflict(
                         .max_by_key(|n| n.id)
                 })
                 .map(|n| n.note.clone())
-                .unwrap_or_else(|| "(vazio no anfitrião)".into());
+                .unwrap_or_else(|| "(vazia no computador principal)".into());
             (
-                format!("Nota offline: {}", note.trim()),
-                format!("Nota no anfitrião: {}", host_note.trim()),
+                format!("Nota deste computador: {}", note.trim()),
+                format!("Nota no computador principal: {}", host_note.trim()),
             )
         }
         IntranetMutation::SaveTask { task, .. } => {
@@ -4380,7 +4394,7 @@ fn build_sync_conflict(
                 .and_then(|s| s.tasks.iter().find(|t| t.id == task.id))
                 .map(|t| {
                     format!(
-                        "Título: '{}' | Resp: '{}' | Situação: {} | Notas: '{}'",
+                        "Título: '{}' | Responsável: '{}' | Situação: {} | Notas: '{}'",
                         t.title,
                         t.assignee,
                         crate::tasks::status_label(&t.status),
@@ -4389,7 +4403,7 @@ fn build_sync_conflict(
                 })
                 .unwrap_or_else(|| "(não encontrada no computador principal)".into());
             let local_desc = format!(
-                "Título: '{}' | Resp: '{}' | Situação: {} | Notas: '{}'",
+                "Título: '{}' | Responsável: '{}' | Situação: {} | Notas: '{}'",
                 task.title,
                 task.assignee,
                 crate::tasks::status_label(&task.status),
@@ -4408,7 +4422,7 @@ fn build_sync_conflict(
                         c.purpose, c.subjects, c.notes
                     )
                 })
-                .unwrap_or_else(|| "(sem contexto no anfitrião)".into());
+                .unwrap_or_else(|| "(sem contexto no computador principal)".into());
             let local_desc = format!(
                 "Finalidade: '{}' | Assuntos: '{}' | Notas: '{}'",
                 value.purpose, value.subjects, value.notes
@@ -4424,7 +4438,7 @@ fn build_sync_conflict(
                 })
                 .map(|r| {
                     format!(
-                        "Situação: {} | Resp: '{}' | Obs: '{}'",
+                        "Situação: {} | Responsável: '{}' | Observação: '{}'",
                         crate::saiop::status_label(&r.attendance.status),
                         r.attendance.assignee,
                         r.attendance.observation
@@ -4432,7 +4446,7 @@ fn build_sync_conflict(
                 })
                 .unwrap_or_else(|| "(não localizado no computador principal)".into());
             let local_desc = format!(
-                "Situação: {} | Resp: '{}' | Obs: '{}'",
+                "Situação: {} | Responsável: '{}' | Observação: '{}'",
                 crate::saiop::status_label(&attendance.status),
                 attendance.assignee,
                 attendance.observation
@@ -4441,7 +4455,7 @@ fn build_sync_conflict(
         }
         _ => (
             entry.label.clone(),
-            "Modificado simultaneamente no anfitrião".into(),
+            "Também alterado no computador principal".into(),
         ),
     };
 
@@ -4470,7 +4484,7 @@ pub fn ping_host(cfg: &IntranetConfig) -> Result<(i64, String, usize, usize)> {
             tasks,
         } => Ok((revision, host_member, documents, tasks)),
         RpcResponse::Error { message } => bail!("{message}"),
-        _ => bail!("Resposta inesperada ao verificar o anfitrião."),
+        _ => bail!("Resposta inesperada ao verificar o computador principal."),
     }
 }
 
@@ -4484,9 +4498,9 @@ fn fetch_remote_pdf(cfg: &IntranetConfig, file_id: i64, capture_id: i64) -> Resu
     )? {
         RpcResponse::FileBytes { data_base64 } => STANDARD
             .decode(data_base64.trim())
-            .context("PDF transferido pelo anfitrião está com codificação inválida."),
+            .context("O PDF recebido do computador principal está danificado."),
         RpcResponse::Error { message } => bail!("{message}"),
-        _ => bail!("Resposta inesperada ao transferir PDF do anfitrião."),
+        _ => bail!("Resposta inesperada ao receber o PDF do computador principal."),
     }
 }
 
@@ -4494,9 +4508,9 @@ fn fetch_remote_attachment(cfg: &IntranetConfig, id: i64) -> Result<Vec<u8>> {
     match send_rpc(cfg, &RpcRequest::FetchAttachmentBytes { id })? {
         RpcResponse::FileBytes { data_base64 } => STANDARD
             .decode(data_base64.trim())
-            .context("Anexo transferido pelo computador principal está com codificação inválida."),
+            .context("O anexo recebido do computador principal está danificado."),
         RpcResponse::Error { message } => bail!("{message}"),
-        _ => bail!("Resposta inesperada ao transferir anexo do computador principal."),
+        _ => bail!("Resposta inesperada ao receber o anexo do computador principal."),
     }
 }
 
@@ -4521,7 +4535,7 @@ fn send_rpc_classified(
         .build()
         .map_err(|e| {
             RpcError::Unreachable(format!(
-                "Não foi possível preparar o cliente de intranet: {e}"
+                "Não foi possível preparar a conexão com o computador principal: {e}"
             ))
         })?;
     let response = client
@@ -4534,7 +4548,7 @@ fn send_rpc_classified(
         .send()
         .map_err(|e| {
             RpcError::Unreachable(format!(
-                "Sem conexão com o computador anfitrião em {base}: {e}"
+                "Sem conexão com o computador principal em {base}: {e}"
             ))
         })?;
     let status = response.status();
@@ -4546,13 +4560,13 @@ fn send_rpc_classified(
         return Err(RpcError::Unreachable(
             match response.json::<RpcResponse>() {
                 Ok(RpcResponse::Error { message }) => message,
-                _ => format!("O computador anfitrião falhou (HTTP {}).", status.as_u16()),
+                _ => format!("O computador principal não conseguiu responder (código {}).", status.as_u16()),
             },
         ));
     }
     let rpc: RpcResponse = response.json().map_err(|e| {
         RpcError::Rejected(format!(
-            "Resposta inválida recebida do computador anfitrião: {e}"
+            "Resposta inválida recebida do computador principal: {e}"
         ))
     })?;
     if let RpcResponse::Error { message } = &rpc {
@@ -4570,7 +4584,7 @@ fn send_rpc_classified(
             return Err(RpcError::Rejected(message));
         }
         return Err(RpcError::Rejected(format!(
-            "O computador anfitrião recusou a operação (HTTP {}).",
+            "O computador principal recusou a operação (código {}).",
             status.as_u16()
         )));
     }
@@ -4700,7 +4714,7 @@ impl HostServer {
         let requested = validate_bind_addr(bind_addr)?;
         let listener = TcpListener::bind(requested).with_context(|| {
             format!(
-                "Não foi possível abrir a porta de intranet em {requested}. Verifique se outra janela já está hospedando nesta porta."
+                "Não foi possível abrir a porta {requested} da rede interna. Verifique se outra janela do Ponte já está usando essa porta."
             )
         })?;
         let addr = listener.local_addr()?;
@@ -4744,7 +4758,7 @@ impl HostServer {
                     }
                 }
             })
-            .context("Não foi possível iniciar a thread do anfitrião de intranet.")?;
+            .context("Não foi possível iniciar o computador principal do gabinete.")?;
 
         Ok(Self {
             addr,
@@ -4837,7 +4851,7 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
             &mut stream,
             400,
             &RpcResponse::Error {
-                message: "Requisição HTTP inválida.".into(),
+                message: "Pedido inválido recebido pelo computador principal.".into(),
             },
         );
     }
@@ -4851,7 +4865,7 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
         let read = head.read_line(&mut line)?;
         if read == 0 {
             // Either the peer closed early or the window ran out mid-header.
-            ensure!(head.limit() > 0, "Cabeçalhos HTTP grandes demais.");
+            ensure!(head.limit() > 0, "A mensagem recebida é grande demais.");
             break;
         }
         if line == "\r\n" || line == "\n" {
@@ -4878,7 +4892,7 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
             &mut stream,
             404,
             &RpcResponse::Error {
-                message: "Rota não encontrada no anfitrião do Ponte.".into(),
+                message: "Pedido não reconhecido pelo computador principal do Ponte.".into(),
             },
         );
     }
@@ -4887,7 +4901,7 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
             &mut stream,
             413,
             &RpcResponse::Error {
-                message: "Tamanho da requisição não permitido.".into(),
+                message: "O pedido é grande demais para o computador principal.".into(),
             },
         );
     }
@@ -4901,7 +4915,7 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
     let (status, response) = {
         let path_guard = db_lock
             .lock()
-            .map_err(|_| anyhow::anyhow!("Bloqueio interno do anfitrião"))?;
+            .map_err(|_| anyhow::anyhow!("O computador principal está ocupado. Tente de novo."))?;
         answer_rpc(&path_guard, &auth_token, &body)
     };
     write_http_json(&mut stream, status, &response)
@@ -4915,7 +4929,7 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
         Err(e) => {
             return (
                 500,
-                error(format!("Erro ao abrir acervo do anfitrião: {e}")),
+                error(format!("Não foi possível abrir o acervo do computador principal: {e}")),
             )
         }
     };
@@ -4924,14 +4938,14 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
         Err(e) => {
             return (
                 500,
-                error(format!("Erro ao ler configuração do anfitrião: {e}")),
+                error(format!("Não foi possível ler os ajustes do computador principal: {e}")),
             )
         }
     };
     if !verify_token_constant_time(&host_cfg.cabinet_token, auth_token) {
         return (
             401,
-            error("Token do gabinete inválido ou não autorizado.".into()),
+            error("Chave de acesso do gabinete inválida ou sem autorização.".into()),
         );
     }
     let rpc_req: RpcRequest = match serde_json::from_slice(body) {
@@ -5279,7 +5293,7 @@ impl IntranetPanel {
         widgets::card(ui, |ui| {
             widgets::section(ui, "Eu, em mais de um computador");
             ui.add_space(theme::S1);
-            ui.label("Os computadores trocam o acervo por um arquivo cifrado com a sua senha, guardado nas pastas que você escolher: Google Drive, OneDrive, pendrive, pasta da rede. Pode ser mais de uma pasta; o Ponte usa a cópia mais recente e grava em todas as que alcançar.");
+            ui.label("Os computadores trocam o acervo por um arquivo protegido pela sua senha, guardado nas pastas que você escolher: Google Drive, OneDrive, pendrive, pasta da rede. Pode ser mais de uma pasta; o Ponte usa a cópia mais recente e grava em todas as que alcançar.");
             widgets::small_muted(ui, "Espere a nuvem terminar de sincronizar antes de abrir o Ponte no outro computador. Sem a senha o arquivo não abre em lugar nenhum, nem para os autores do Ponte.");
         });
         ui.add_space(theme::S3);
@@ -5396,7 +5410,7 @@ impl IntranetPanel {
             }
             ui.add_space(theme::S2);
             ui.checkbox(&mut self.draft.remember_folder_key, "Guardar a senha neste computador")
-                .on_hover_text("Fica no acervo, cifrada pela sua conta do Windows. Desmarcada, vale só até fechar o Ponte.");
+                .on_hover_text("Fica guardada neste computador, protegida pela sua conta do Windows. Desmarcada, vale só até fechar o Ponte.");
         });
         ui.add_space(theme::S3);
 
@@ -5661,9 +5675,15 @@ impl IntranetPanel {
                         self.error = false;
                         self.message.clear();
                     } else {
-                        let mut extras = format!(" • {outbox} alteração(ões) aguardando envio");
+                        let mut extras = format!(
+                            " • {} aguardando envio",
+                            plural(outbox, "alteração", "alterações")
+                        );
                         if conflicts > 0 {
-                            extras.push_str(&format!(" • ⚠ {conflicts} conflito(s) de edição"));
+                            extras.push_str(&format!(
+                                " • ⚠ {}",
+                                plural(conflicts, "conflito de edição", "conflitos de edição")
+                            ));
                         }
                         self.status_summary =
                             format!("Pasta compartilhada fora de alcance{extras}");
@@ -5684,11 +5704,15 @@ impl IntranetPanel {
                 let mut suffix = String::new();
                 if conflicts > 0 {
                     suffix.push_str(&format!(
-                        " • ⚠ {conflicts} conflito(s) de edição para decidir"
+                        " • ⚠ {} para decidir",
+                        plural(conflicts, "conflito de edição", "conflitos de edição")
                     ));
                 }
                 if outbox > 0 {
-                    suffix.push_str(&format!(" • {outbox} alteração(ões) a enviar"));
+                    suffix.push_str(&format!(
+                        " • {} a enviar",
+                        plural(outbox, "alteração", "alterações")
+                    ));
                 }
                 self.status_summary = format!(
                     "Conectado ao computador principal ({}) • você: {} • sincronizado agora{suffix}",
@@ -5704,10 +5728,14 @@ impl IntranetPanel {
                 store.note_host_reachability(false);
                 self.last_sync_finished = Some((Instant::now(), false));
                 let mut extras = format!(
-                    " • trabalhando neste computador ({outbox} alteração(ões) aguardando envio)"
+                    " • trabalhando neste computador ({} aguardando envio)",
+                    plural(outbox, "alteração", "alterações")
                 );
                 if conflicts > 0 {
-                    extras.push_str(&format!(" • ⚠ {conflicts} conflito(s) de edição"));
+                    extras.push_str(&format!(
+                                " • ⚠ {}",
+                                plural(conflicts, "conflito de edição", "conflitos de edição")
+                            ));
                 }
                 self.status_summary = format!(
                     "Computador principal fora de alcance ({}){extras}",
@@ -5723,18 +5751,20 @@ impl IntranetPanel {
 
     pub fn banner_text(&self, store: &Store) -> String {
         let Ok(cfg) = store.load_intranet_config() else {
-            return "Biblioteca local • conteúdo protegido para este usuário do Windows".into();
+            return "Acervo local • conteúdo protegido para este usuário do Windows".into();
         };
         let conflicts = store.list_sync_conflicts().map(|v| v.len()).unwrap_or(0);
         let outbox = store.list_offline_outbox().map(|v| v.len()).unwrap_or(0);
         let mut badge = String::new();
         if conflicts > 0 {
             badge.push_str(&format!(
-                " • ⚠ {conflicts} EDIÇÃO(ÕES) EM CONFLITO AGUARDANDO DECISÃO (abra Ajustes ▸ Equipe e sincronização)"
+                " • ⚠ {} aguardando decisão (abra Ajustes ▸ Equipe e sincronização)",
+                plural(conflicts, "edição em conflito", "edições em conflito")
             ));
         } else if outbox > 0 && cfg.mode == IntranetMode::Client {
             badge.push_str(&format!(
-                " • {outbox} alteração(ões) offline aguardando reconexão com o computador principal"
+                " • {} a enviar quando o computador principal voltar a responder",
+                plural(outbox, "alteração", "alterações")
             ));
         }
         match cfg.mode {
@@ -5743,26 +5773,26 @@ impl IntranetPanel {
                     format!("{}{badge}", self.status_summary)
                 } else {
                     let pending = if outbox > 0 {
-                        format!(" • {outbox} alteração(ões) a enviar")
+                        format!(" • {} a enviar", plural(outbox, "alteração", "alterações"))
                     } else {
                         String::new()
                     };
                     format!(
-                        "Pasta compartilhada ({} pasta(s)) • revisão {}{pending}{badge}",
-                        cfg.folder_paths().len(),
+                        "Pasta compartilhada ({}) • revisão {}{pending}{badge}",
+                        plural(cfg.folder_paths().len(), "pasta", "pastas"),
                         cfg.synced_revision
                     )
                 }
             }
             IntranetMode::Local => format!(
-                "Biblioteca local ({}) • conteúdo protegido para este usuário do Windows{badge}",
+                "Acervo local ({}) • conteúdo protegido para este usuário do Windows{badge}",
                 cfg.member_name
             ),
             IntranetMode::Host => {
                 let rev = store.cabinet_revision().unwrap_or(0);
                 if let Some(srv) = &self.server {
                     format!(
-                        "Computador principal ATIVO ({}) • Integrante: {} • Revisão #{rev}{badge}",
+                        "Computador principal ativo ({}) • Integrante: {} • Revisão #{rev}{badge}",
                         srv.local_addr(),
                         cfg.member_name
                     )
@@ -5778,7 +5808,7 @@ impl IntranetPanel {
                     self.status_summary.clone()
                 } else {
                     format!(
-                        "Modo Cliente na Intranet ({}) • Integrante: {}{badge}",
+                        "Computador principal configurado: {} • Integrante: {}{badge}",
                         cfg.host_url, cfg.member_name
                     )
                 }
@@ -6047,7 +6077,8 @@ impl IntranetPanel {
                                     match ping_host(&self.draft) {
                                         Ok((_, host_member, docs, _)) => {
                                             self.message = format!(
-                                                "Código válido: computador principal de {host_member}, com {docs} documento(s). Clique em “Salvar e sincronizar” para começar."
+                                                "Código válido: computador principal de {host_member}, com {}. Clique em “Salvar e sincronizar acervo agora” para começar.",
+                                                plural(docs, "documento", "documentos")
                                             );
                                             self.error = false;
                                             self.offline = false;
@@ -6115,7 +6146,9 @@ impl IntranetPanel {
                         match ping_host(&self.draft) {
                             Ok((_, host_member, docs, tasks)) => {
                                 self.message = format!(
-                                    "Conexão confirmada com o computador principal de {host_member}: {docs} documento(s) e {tasks} tarefa(s)."
+                                    "Conexão confirmada com o computador principal de {host_member}: {} e {}.",
+                                    plural(docs, "documento", "documentos"),
+                                    plural(tasks, "tarefa", "tarefas")
                                 );
                                 self.error = false;
                                 self.offline = false;
@@ -6182,8 +6215,8 @@ impl IntranetPanel {
                 });
                 ui.add_space(theme::S1);
                 ui.label(format!(
-                    "{} conflito(s) de edição: você alterou o item sem conexão e ele também foi alterado no computador principal.",
-                    conflicts.len()
+                    "{}: você alterou o item sem conexão e ele também foi alterado no computador principal.",
+                    plural(conflicts.len(), "conflito de edição", "conflitos de edição")
                 ));
                 ui.add_space(theme::S2);
                 egui::ScrollArea::vertical()
@@ -6273,7 +6306,7 @@ impl IntranetPanel {
                                             let description = match resolution {
                                                 ConflictResolution::Merge => {
                                                     if both_sides > 0 {
-                                                        format!("Combinar: {} campo(s) alterado(s) só de um lado seguem esse lado; {both_sides} alterado(s) dos dois lados ficam com a sua versão (textos são juntados) e o valor do computador principal é anotado no item.", differences.len() - both_sides)
+                                                        format!("Combinar: os campos alterados só de um lado ficam com esse lado ({}); os alterados dos dois lados ({both_sides}) ficam com a sua versão (textos são juntados) e o valor do computador principal é anotado no item.", differences.len() - both_sides)
                                                     } else {
                                                         "Combinar: cada campo fica com o lado que o alterou. Nenhum campo foi alterado dos dois lados.".to_owned()
                                                     }
@@ -6337,7 +6370,7 @@ impl IntranetPanel {
                 });
                 ui.add_space(theme::S1);
                 ui.label(format!(
-                    "{} alteração(ões) gravada(s) localmente enquanto o computador principal estava desligado. Elas serão enviadas automaticamente assim que a conexão voltar.",
+                    "Alterações feitas neste computador enquanto o computador principal estava desligado ({}). Serão enviadas automaticamente quando a conexão voltar.",
                     outbox.len()
                 ));
                 ui.add_space(theme::S2);
@@ -6387,7 +6420,7 @@ impl IntranetPanel {
                         });
                     }
                     Err(e) => {
-                        widgets::muted(ui, format!("Falha ao ler eventos: {e}"));
+                        widgets::muted(ui, format!("Não foi possível ler o histórico: {e}"));
                     }
                 }
             });

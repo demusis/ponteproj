@@ -37,7 +37,7 @@ impl Store {
     pub fn save_page_text(&mut self, file: i64, page: u32, value: &PageText) -> Result<()> {
         ensure!(
             value.text.len() <= 64000 && value.language.len() <= 128 && page < 10000,
-            "Texto OCR excede os limites."
+            "O texto reconhecido passa do tamanho permitido."
         );
         if let Some(cfg) = self.client_config()? {
             self.remote_mutate(
@@ -142,10 +142,10 @@ pub fn render(bytes: &[u8], index: u32, width: u32, ocr: bool) -> Result<Rendere
         bytes.len() <= crate::files::MAX_FILE_BYTES
             && bytes.starts_with(b"%PDF-")
             && (400..=2400).contains(&width),
-        "PDF ou resolução inválida."
+        "PDF ou resolução inválidos."
     );
     unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
-        .context("Não foi possível iniciar o leitor nativo")?;
+        .context("Não foi possível iniciar o leitor de PDF")?;
     let _runtime = Runtime;
     let input = InMemoryRandomAccessStream::new()?;
     let writer = DataWriter::CreateDataWriter(&input.GetOutputStreamAt(0)?)?;
@@ -155,22 +155,22 @@ pub fn render(bytes: &[u8], index: u32, width: u32, ocr: bool) -> Result<Rendere
     input.Seek(0)?;
     let pdf = PdfDocument::LoadFromStreamAsync(&input)?
         .join()
-        .context("Não foi possível abrir o PDF (arquivo protegido por senha ou inválido)")?;
+        .context("Não foi possível abrir o PDF (o arquivo tem senha ou está danificado)")?;
     let pages = pdf.PageCount()?;
     ensure!(
         pages > 0 && pages <= 10000 && index < pages,
-        "Página fora do PDF ou quantidade excessiva de páginas."
+        "Página inexistente no PDF ou PDF com páginas demais."
     );
     let page = pdf.GetPage(index)?;
     let size = page.Size()?;
     ensure!(
         size.Width.is_finite() && size.Height.is_finite() && size.Width > 0.0 && size.Height > 0.0,
-        "Dimensões de página inválidas."
+        "Tamanho de página inválido."
     );
     let height = (width as f64 * size.Height as f64 / size.Width as f64).ceil();
     ensure!(
         (1.0..=6000.0).contains(&height) && width as f64 * height <= 12_000_000.0,
-        "Página excede o limite de renderização; reduza a resolução."
+        "A página é grande demais para exibir; reduza a resolução."
     );
     let options = PdfPageRenderOptions::new()?;
     options.SetDestinationWidth(width)?;
@@ -182,12 +182,12 @@ pub fn render(bytes: &[u8], index: u32, width: u32, ocr: bool) -> Result<Rendere
     let length = output.Size()?;
     ensure!(
         length > 0 && length <= 32 * 1024 * 1024,
-        "Imagem renderizada excede 32 MiB."
+        "A imagem da página passa de 32 MB; reduza a resolução."
     );
     let reader = DataReader::CreateDataReader(&output.GetInputStreamAt(0)?)?;
     ensure!(
         reader.LoadAsync(length as u32)?.join()? == length as u32,
-        "Imagem incompleta."
+        "Não foi possível exibir a página: imagem incompleta."
     );
     let mut png = vec![0; length as usize];
     reader.ReadBytes(&mut png)?;
@@ -195,7 +195,7 @@ pub fn render(bytes: &[u8], index: u32, width: u32, ocr: bool) -> Result<Rendere
     let image = image::load_from_memory_with_format(&png, image::ImageFormat::Png)?.into_rgba8();
     ensure!(
         image.width() <= 2400 && image.height() <= 6000,
-        "Dimensões renderizadas inesperadas."
+        "Não foi possível exibir a página: tamanho inesperado."
     );
     let color = egui::ColorImage::from_rgba_unmultiplied(
         [image.width() as usize, image.height() as usize],
@@ -213,17 +213,17 @@ pub fn render(bytes: &[u8], index: u32, width: u32, ocr: bool) -> Result<Rendere
                 let bitmap = decoder.GetSoftwareBitmapAsync()?.join()?;
                 let bitmap = SoftwareBitmap::Convert(&bitmap, BitmapPixelFormat::Gray8)?;
                 let engine = OcrEngine::TryCreateFromUserProfileLanguages()
-                    .context("Nenhum idioma OCR disponível para o perfil Windows")?;
+                    .context("O Windows não tem idioma instalado para reconhecer texto (OCR)")?;
                 ensure!(
                     bitmap.PixelWidth()? as u32 <= OcrEngine::MaxImageDimension()?
                         && bitmap.PixelHeight()? as u32 <= OcrEngine::MaxImageDimension()?,
-                    "Página excede o limite do OCR do Windows."
+                    "A página é grande demais para o reconhecimento de texto do Windows."
                 );
                 let recognized = engine.RecognizeAsync(&bitmap)?.join()?;
                 let text = recognized.Text()?.to_string();
                 ensure!(
                     text.len() <= 64000,
-                    "Texto OCR excede 64 KB; não foi salvo parcialmente."
+                    "O texto reconhecido passa de 64 KB e não foi salvo."
                 );
                 Ok(PageText {
                     text,
@@ -291,7 +291,7 @@ impl PdfPanel {
     fn open_source(&mut self, store: &Store, source: Source, label: &str, ctx: &egui::Context) {
         if self.job.is_some() {
             self.open = true;
-            self.message = "Aguarde a leitura em andamento antes de abrir outro arquivo.".into();
+            self.message = "Aguarde o fim da leitura em andamento antes de abrir outro arquivo.".into();
             return;
         }
         self.selection = Some(Selection {
@@ -339,7 +339,7 @@ impl PdfPanel {
         self.message = "Lendo página…".into();
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(|| render(&bytes, page, width, ocr))
-                .map_err(|_| "Falha no leitor nativo".to_string())
+                .map_err(|_| "O leitor de PDF falhou".to_string())
                 .and_then(|r| r.map_err(|e| e.to_string()));
             let _ = send.send(result);
             repaint.request_repaint();
@@ -370,20 +370,20 @@ impl PdfPanel {
                                                     &text,
                                                 ) {
                                                     Ok(()) => {
-                                                        self.message="OCR local salvo; confira o texto com a página original.".into();
+                                                        self.message="Texto reconhecido e salvo; confira com a página original.".into();
                                                         selection.text = Some(text);
                                                     }
                                                     Err(e) => {
-                                                        self.message = format!("OCR não salvo: {e}")
+                                                        self.message = format!("Texto reconhecido não salvo: {e}")
                                                     }
                                                 }
                                             }
                                             Source::Attachment(_) => {
-                                                self.message = "OCR de anexo é mostrado apenas nesta janela; não é gravado no acervo.".into();
+                                                self.message = "O texto reconhecido de um anexo aparece só nesta janela e não é salvo no acervo.".into();
                                                 selection.text = Some(text);
                                             }
                                         },
-                                        Err(e) => self.message = format!("OCR indisponível: {e}"),
+                                        Err(e) => self.message = format!("Não foi possível reconhecer o texto: {e}"),
                                     }
                                 }
                             }
@@ -393,7 +393,7 @@ impl PdfPanel {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.job = None;
-                    self.message = "O leitor encerrou sem resultado.".into();
+                    self.message = "O leitor de PDF não devolveu resultado.".into();
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -407,12 +407,12 @@ impl PdfPanel {
         let mut request = None;
         use crate::theme::{self, icon};
         use crate::widgets;
-        egui::Window::new("Leitor PDF local").open(&mut open).default_size([900.0,700.0]).resizable(true).show(ctx,|ui|{
+        egui::Window::new("Leitor de PDF").open(&mut open).default_size([900.0,700.0]).resizable(true).show(ctx,|ui|{
             if let Some(selection) = &mut self.selection {
                 widgets::section(ui, &selection.label);
                 widgets::small_muted(ui, match selection.source {
-                    Source::File { file, capture } => format!("Arquivo local #{file} • versão #{capture} • original preservado"),
-                    Source::Attachment(id) => format!("Anexo #{id} • cópia protegida no acervo"),
+                    Source::File { capture, .. } => format!("PDF importado do SIGADOC (importação nº {capture}) • original preservado"),
+                    Source::Attachment(_) => "Anexo • cópia protegida no acervo".to_owned(),
                 });
                 ui.add_space(theme::S2);
                 ui.horizontal_wrapped(|ui| {
@@ -432,7 +432,7 @@ impl PdfPanel {
                         selection.page += 1;
                         request = Some(false);
                     }
-                    if ui.add_enabled(!busy, widgets::secondary(format!("{} OCR local desta página", icon::SEARCH))).clicked() {
+                    if ui.add_enabled(!busy, widgets::secondary(format!("{} Reconhecer texto da página", icon::SEARCH))).clicked() {
                         request = Some(true);
                     }
                     let previous = selection.width;
@@ -441,7 +441,7 @@ impl PdfPanel {
                         request = Some(false);
                     }
                 });
-                widgets::small_muted(ui, "OCR usa o idioma disponível no perfil Windows. O resultado pode conter erros e não é incorporado automaticamente à análise por IA.");
+                widgets::small_muted(ui, "O reconhecimento de texto (OCR) usa o idioma instalado no Windows. O resultado pode ter erros e não entra sozinho na análise da IA.");
                 if !self.message.is_empty() {
                     widgets::muted(ui, &self.message);
                 }
@@ -454,8 +454,8 @@ impl PdfPanel {
                     }
                 });
                 if let Some(text) = &selection.text {
-                    ui.collapsing(format!("Texto OCR salvo • página {} • {}", selection.page + 1, text.language), |ui| {
-                        widgets::small_muted(ui, format!("Obtido localmente em {}", text.created_at));
+                    ui.collapsing(format!("Texto reconhecido • página {} • {}", selection.page + 1, text.language), |ui| {
+                        widgets::small_muted(ui, format!("Obtido neste computador em {}", text.created_at));
                         let mut value = text.text.as_str();
                         ui.add(egui::TextEdit::multiline(&mut value).desired_rows(8).desired_width(f32::INFINITY));
                     });

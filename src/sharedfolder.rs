@@ -96,7 +96,7 @@ fn random(bytes: usize) -> Result<Vec<u8>> {
     let mut out = vec![0_u8; bytes];
     ring::rand::SystemRandom::new()
         .fill(&mut out)
-        .map_err(|_| anyhow::anyhow!("Não foi possível gerar valores aleatórios."))?;
+        .map_err(|_| anyhow::anyhow!("Não foi possível proteger o arquivo de sincronização."))?;
     Ok(out)
 }
 
@@ -128,7 +128,7 @@ pub fn read_header(path: &Path) -> Result<Option<Header>> {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(error).with_context(|| format!("Não foi possível ler {}", path.display()))
+            return Err(error).with_context(|| format!("Não foi possível ler {}.", path.display()))
         }
     };
     let mut magic = vec![0_u8; MAGIC.len()];
@@ -147,21 +147,21 @@ pub fn read_header(path: &Path) -> Result<Option<Header>> {
     let mut byte = [0_u8; 1];
     loop {
         file.read_exact(&mut byte)
-            .context("Cabeçalho do arquivo de sincronização incompleto.")?;
+            .context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
         if byte[0] == b'\n' {
             break;
         }
         line.push(byte[0]);
         ensure!(
             line.len() <= 64 * 1024,
-            "Cabeçalho do arquivo de sincronização grande demais."
+            "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo."
         );
     }
     let header: Header =
-        serde_json::from_slice(&line).context("Cabeçalho do arquivo de sincronização ilegível.")?;
+        serde_json::from_slice(&line).context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
     ensure!(
         header.format == FORMAT,
-        "O arquivo de sincronização foi gravado em um formato mais novo; atualize o Ponte."
+        "O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte."
     );
     Ok(Some(header))
 }
@@ -174,30 +174,30 @@ pub fn read(path: &Path, password: &str) -> Result<Option<Copy>> {
     let size = std::fs::metadata(path)?.len();
     ensure!(
         size <= MAX_FILE_BYTES,
-        "Arquivo de sincronização excede 512 MiB."
+        "O arquivo de sincronização passa de 512 MB e não pode ser aberto."
     );
     let bytes =
-        std::fs::read(path).with_context(|| format!("Não foi possível ler {}", path.display()))?;
+        std::fs::read(path).with_context(|| format!("Não foi possível ler {}.", path.display()))?;
     let header_end = MAGIC.len()
         + bytes[MAGIC.len()..]
             .iter()
             .position(|b| *b == b'\n')
-            .context("Cabeçalho do arquivo de sincronização incompleto.")?;
+            .context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
     let header_bytes = bytes[MAGIC.len()..header_end].to_vec();
     let mut body = bytes[header_end + 1..].to_vec();
     let salt = STANDARD
         .decode(&header.salt)
-        .context("Sal do arquivo inválido.")?;
+        .context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
     let nonce = STANDARD
         .decode(&header.nonce)
-        .context("Nonce do arquivo inválido.")?;
-    ensure!(nonce.len() == NONCE_BYTES, "Nonce do arquivo inválido.");
+        .context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
+    ensure!(nonce.len() == NONCE_BYTES, "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.");
     let key = ring::aead::LessSafeKey::new(
         ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &derive_key(password, &salt))
-            .map_err(|_| anyhow::anyhow!("Chave de sincronização inválida."))?,
+            .map_err(|_| anyhow::anyhow!("Senha de sincronização inválida."))?,
     );
     let nonce = ring::aead::Nonce::try_assume_unique_for_key(&nonce)
-        .map_err(|_| anyhow::anyhow!("Nonce do arquivo inválido."))?;
+        .map_err(|_| anyhow::anyhow!("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo."))?;
     let plain = key
         .open_in_place(nonce, ring::aead::Aad::from(&header_bytes), &mut body)
         .map_err(|_| anyhow::anyhow!("Senha de sincronização incorreta, ou arquivo danificado ou ainda sendo gravado pela nuvem. Confira a senha e espere a pasta terminar de sincronizar."))?;
@@ -243,20 +243,20 @@ pub fn write(
         nonce: STANDARD.encode(&nonce_bytes),
     };
     let header_bytes = serde_json::to_vec(&header)?;
-    ensure!(!header_bytes.contains(&b'\n'), "Cabeçalho inválido.");
+    ensure!(!header_bytes.contains(&b'\n'), "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.");
     let mut body = pack(payload, blobs)?;
     let key = ring::aead::LessSafeKey::new(
         ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &derive_key(password, &salt))
-            .map_err(|_| anyhow::anyhow!("Chave de sincronização inválida."))?,
+            .map_err(|_| anyhow::anyhow!("Senha de sincronização inválida."))?,
     );
     let nonce = ring::aead::Nonce::try_assume_unique_for_key(&nonce_bytes)
-        .map_err(|_| anyhow::anyhow!("Nonce inválido."))?;
+        .map_err(|_| anyhow::anyhow!("Não foi possível proteger o arquivo de sincronização."))?;
     key.seal_in_place_append_tag(nonce, ring::aead::Aad::from(&header_bytes), &mut body)
-        .map_err(|_| anyhow::anyhow!("Falha ao cifrar o arquivo de sincronização."))?;
+        .map_err(|_| anyhow::anyhow!("Não foi possível proteger o arquivo de sincronização."))?;
     let total = MAGIC.len() as u64 + header_bytes.len() as u64 + 1 + body.len() as u64;
     ensure!(
         total <= MAX_FILE_BYTES,
-        "O acervo excede 512 MiB; a pasta compartilhada não comporta."
+        "O acervo passa de 512 MB e não cabe no arquivo de sincronização."
     );
     let parent = path
         .parent()
@@ -284,7 +284,7 @@ pub fn write(
     if result.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
-    result.with_context(|| format!("Não foi possível gravar {}", path.display()))?;
+    result.with_context(|| format!("Não foi possível gravar {}.", path.display()))?;
     Ok(header)
 }
 
@@ -322,7 +322,7 @@ impl<'a> Cursor<'a> {
     fn take(&mut self, len: usize) -> Result<&'a [u8]> {
         ensure!(
             self.at + len <= self.data.len(),
-            "Arquivo de sincronização truncado."
+            "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo."
         );
         let slice = &self.data[self.at..self.at + len];
         self.at += len;
@@ -344,15 +344,15 @@ fn unpack(plain: &[u8]) -> Result<(Payload, Blobs)> {
     let mut cursor = Cursor { data: plain, at: 0 };
     ensure!(
         cursor.take(1)?[0] == CONTAINER_VERSION,
-        "Conteúdo do arquivo em formato desconhecido."
+        "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo."
     );
     let json_len = cursor.u64()? as usize;
     let payload: Payload = serde_json::from_slice(cursor.take(json_len)?)
-        .context("Conteúdo do arquivo de sincronização ilegível.")?;
+        .context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
     let mut blobs = Blobs::default();
     for section in [&mut blobs.pdfs, &mut blobs.attachments] {
         let count = cursor.u64()? as usize;
-        ensure!(count <= 100_000, "Arquivo de sincronização inconsistente.");
+        ensure!(count <= 100_000, "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.");
         for _ in 0..count {
             let id = cursor.i64()?;
             let len = cursor.u64()? as usize;
@@ -361,7 +361,7 @@ fn unpack(plain: &[u8]) -> Result<(Payload, Blobs)> {
     }
     ensure!(
         cursor.at == plain.len(),
-        "Arquivo de sincronização com dados sobrando."
+        "O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo."
     );
     Ok((payload, blobs))
 }
@@ -459,7 +459,7 @@ mod tests {
         assert!(read_header(&path)
             .unwrap_err()
             .to_string()
-            .contains("atualize"));
+            .contains("Atualize"));
         assert!(
             validate_password("curta").is_err() && validate_password("senha-forte-123").is_ok()
         );

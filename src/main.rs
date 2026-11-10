@@ -16,6 +16,14 @@ fn main() {
     }
 }
 
+fn plural(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(origin) = args
@@ -36,19 +44,19 @@ fn run() -> Result<()> {
         Some("--import-json") => {
             let file = args
                 .get(1)
-                .context("Informe o caminho do JSON de captura")?;
+                .context("Informe o caminho do arquivo de importação")?;
             let mut bytes = Vec::new();
             std::fs::File::open(file)?
                 .take(native::MAX_FRAME as u64 + 1)
                 .read_to_end(&mut bytes)?;
             if bytes.len() > native::MAX_FRAME {
                 bail!(
-                    "Arquivo de captura excede {} MiB",
+                    "O arquivo de importação é maior que {} MB",
                     native::MAX_FRAME / (1024 * 1024)
                 );
             }
             let capture: Capture = serde_json::from_slice(&bytes)
-                .map_err(|_| anyhow::anyhow!("JSON de captura inválido"))?;
+                .map_err(|_| anyhow::anyhow!("O arquivo de importação é inválido"))?;
             let receipt = Store::open(&paths::db_path()?)?.import_capture(&capture)?;
             println!("{}", serde_json::to_string(&receipt)?);
             Ok(())
@@ -56,16 +64,16 @@ fn run() -> Result<()> {
         Some("--import-templates") => {
             let file = args
                 .get(1)
-                .context("Informe o caminho do arquivo .json de modelos")?;
+                .context("Informe o caminho do arquivo de modelos (.json)")?;
             let publish = args.iter().skip(2).any(|a| a == "--publicar");
             let bundle = ponteproj::template_bundle::read_bundle(std::path::Path::new(file))?;
             let report =
                 Store::open(&paths::db_path()?)?.import_template_bundle(&bundle, publish)?;
             if !bundle.blocks.is_empty() || !bundle.templates.is_empty() {
                 println!(
-                    "{} instrução(ões) e {} modelo(s) criados{}.",
-                    report.blocks_created,
-                    report.templates_created,
+                    "{} e {} criados{}.",
+                    plural(report.blocks_created, "instrução", "instruções"),
+                    plural(report.templates_created, "modelo", "modelos"),
                     if publish {
                         " e publicados"
                     } else {
@@ -75,8 +83,12 @@ fn run() -> Result<()> {
             }
             if report.examples_created > 0 {
                 println!(
-                    "{} exemplo(s) criados como não conferidos: aprove-os na área Modelos para que a IA os use.",
-                    report.examples_created
+                    "{} como não conferidos: aprove-os na área Modelos para que a IA os use.",
+                    if report.examples_created == 1 {
+                        "1 exemplo criado".to_owned()
+                    } else {
+                        format!("{} exemplos criados", report.examples_created)
+                    }
                 );
             }
             for published in &report.published {
@@ -124,7 +136,7 @@ fn run() -> Result<()> {
             let bind_addr = config.bind_addr.clone();
             let server = ponteproj::intranet::HostServer::start(db_path, &bind_addr)?;
             println!(
-                "PonteProj Anfitrião na intranet ativo em http://{}\nToken do gabinete: {}",
+                "PonteProj: computador principal ativo na rede interna em http://{}\nChave de acesso do gabinete: {}",
                 server.local_addr(),
                 config.cabinet_token
             );

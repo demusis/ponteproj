@@ -286,11 +286,11 @@ impl Capture {
             .context("Data do registro inválida.")?;
         ensure!(
             date.offset().local_minus_utc() == 0,
-            "Data do registro deve usar UTC."
+            "Data do registro inválida."
         );
         ensure!(
             self.text.len() <= MAX_CAPTURE_TEXT_BYTES,
-            "O texto do registro excede 500 KiB; reduza-o ou anexe o arquivo."
+            "O texto do registro é maior que 500 KB; reduza-o ou anexe o arquivo."
         );
         ensure!(
             self.references.is_empty(),
@@ -301,7 +301,7 @@ impl Capture {
                 && !self.metadata.contains_key("movement_source"),
             "Registro manual não tem histórico de tramitação."
         );
-        ensure!(self.metadata.len() <= 256, "Quantidade de campos excedida.");
+        ensure!(self.metadata.len() <= 256, "Há campos demais no registro.");
         for (key, value) in &self.metadata {
             ensure!(
                 !key.is_empty() && key.len() <= 256 && value.len() <= 64 * 1024,
@@ -316,14 +316,14 @@ impl Capture {
         );
         ensure!(
             serde_json::to_vec(self)?.len() <= MAX_CAPTURE_PACKET_BYTES,
-            "Registro excede 1 MiB."
+            "O registro é maior que 1 MB."
         );
         Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.schema_version == 1, "Versão de captura não suportada.");
-        uuid::Uuid::parse_str(&self.request_id).context("request_id deve ser um UUID válido.")?;
+        ensure!(self.schema_version == 1, "Versão do formato de importação não aceita; atualize o Ponte.");
+        uuid::Uuid::parse_str(&self.request_id).context("Identificador da importação inválido.")?;
         if self.is_manual() {
             return self.validate_manual();
         }
@@ -331,11 +331,11 @@ impl Capture {
         let number = self.document_number.trim();
         ensure!(
             !number.is_empty() && number.len() <= 160,
-            "Número documental ausente ou grande demais."
+            "Número do documento ausente ou grande demais."
         );
         ensure!(
             valid_document_number(number) && !is_manual_number(number),
-            "Número documental inválido; importe uma ficha com identidade oficial reconhecida."
+            "Número do documento inválido; importe uma ficha com número oficial reconhecido."
         );
         for (key, value) in source.query_pairs() {
             if [
@@ -362,14 +362,14 @@ impl Capture {
                     });
                 ensure!(
                     direct_identity || display_copy,
-                    "O número documental não corresponde à identidade presente na URL de origem."
+                    "O número do documento não corresponde ao endereço de origem."
                 );
             }
         }
         let title = self.title.trim();
         ensure!(
             (3..=1000).contains(&title.len()) && !title.chars().any(char::is_control),
-            "Título documental ausente ou inválido."
+            "Título do documento ausente ou inválido."
         );
         let normalized_title = title.to_lowercase();
         ensure!(
@@ -381,34 +381,34 @@ impl Capture {
                 "sigadoc"
             ]
             .contains(&normalized_title.as_str()),
-            "A página não é uma ficha documental reconhecida."
+            "A página não é uma ficha de documento reconhecida."
         );
         let date = DateTime::parse_from_rfc3339(&self.captured_at)
-            .context("captured_at deve ser uma data RFC3339 UTC.")?;
+            .context("Data da importação inválida.")?;
         ensure!(
             date.offset().local_minus_utc() == 0,
-            "captured_at deve usar UTC."
+            "Data da importação inválida."
         );
         ensure!(
             self.text.len() <= MAX_CAPTURE_TEXT_BYTES,
-            "Texto excede 500 KiB; importe uma captura menor, sem truncamento."
+            "O texto é maior que 500 KB; importe um documento menor. Nada é cortado."
         );
         ensure!(
             self.metadata.len() <= 256 && self.references.len() <= 1024,
-            "Quantidade de campos ou referências excedida."
+            "Há campos ou referências demais."
         );
         crate::dossier::movements(self)?;
         for (key, value) in &self.metadata {
             ensure!(
                 !key.is_empty() && key.len() <= 256 && value.len() <= 64 * 1024,
-                "Metadado inválido ou grande demais."
+                "Informação do documento inválida ou grande demais."
             );
         }
         ensure!(
             self.coverage.adapter.len() <= 256
                 && self.coverage.recognized.len() <= 256
                 && self.coverage.pending.len() <= 256,
-            "Cobertura de captura inválida."
+            "Dados de cobertura da importação inválidos."
         );
         for field in self
             .coverage
@@ -428,14 +428,14 @@ impl Capture {
             );
             ensure!(
                 reference.label.len() <= 2000,
-                "Rótulo de referência grande demais."
+                "Nome da referência grande demais."
             );
             validate_sigadoc_url(&reference.url)
-                .context("Referência deve apontar para HTTPS SIGADOC, sem segredo de sessão.")?;
+                .context("A referência deve apontar para uma página do SIGADOC, sem dados de sessão.")?;
         }
         ensure!(
             serde_json::to_vec(self)?.len() <= MAX_CAPTURE_PACKET_BYTES,
-            "Captura excede 1 MiB; importe um pacote menor, sem truncamento."
+            "A importação é maior que 1 MB; importe um conjunto menor. Nada é cortado."
         );
         Ok(())
     }
@@ -443,17 +443,17 @@ impl Capture {
 
 /// Links never transport browser credentials or cross the allowed origin.
 pub fn validate_sigadoc_url(value: &str) -> Result<Url> {
-    ensure!(value.len() <= 8192, "URL de origem grande demais.");
-    let url = Url::parse(value).context("URL de origem inválida.")?;
+    ensure!(value.len() <= 8192, "Endereço de origem grande demais.");
+    let url = Url::parse(value).context("Endereço de origem inválido.")?;
     ensure!(
         url.scheme() == "https"
             && url.host_str() == Some("www.sigadoc.mt.gov.br")
             && url.port_or_known_default() == Some(443),
-        "Origem inválida: use https://www.sigadoc.mt.gov.br/."
+        "Endereço de origem inválido: use https://www.sigadoc.mt.gov.br/."
     );
     ensure!(
         url.username().is_empty() && url.password().is_none() && url.fragment().is_none(),
-        "URL deve estar sem credenciais ou fragmentos."
+        "O endereço não pode conter usuário, senha ou fragmento."
     );
     let path = url.path().to_ascii_lowercase();
     if [
@@ -466,7 +466,7 @@ pub fn validate_sigadoc_url(value: &str) -> Result<Url> {
     .iter()
     .any(|word| path.contains(word))
     {
-        bail!("Página de autenticação não pode ser importada.");
+        bail!("A página de login não pode ser importada.");
     }
     for (key, _) in url.query_pairs() {
         let key = key.to_ascii_lowercase().replace(['_', '-'], "");
@@ -488,7 +488,7 @@ pub fn validate_sigadoc_url(value: &str) -> Result<Url> {
             || ["auth", "sid", "ticket", "apikey"].contains(&key.as_str());
         ensure!(
             !secret,
-            "URL contém parâmetro de sessão ou segredo; remova-o antes de importar."
+            "O endereço contém dados de sessão; remova-os antes de importar."
         );
     }
     Ok(url)

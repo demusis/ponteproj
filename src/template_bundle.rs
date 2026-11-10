@@ -127,11 +127,11 @@ pub fn read_bundle(path: &std::path::Path) -> Result<Bundle> {
         .len();
     ensure!(
         size <= MAX_BUNDLE_BYTES,
-        "O arquivo passa de {} MB.",
+        "O arquivo tem mais de {} MB.",
         MAX_BUNDLE_BYTES / (1024 * 1024)
     );
     let bytes = std::fs::read(path)?;
-    serde_json::from_slice(&bytes).context("O arquivo não é um conjunto de modelos válido (JSON).")
+    serde_json::from_slice(&bytes).context("O arquivo não é um conjunto de modelos válido.")
 }
 
 impl Store {
@@ -382,7 +382,7 @@ impl Store {
                 .iter()
                 .filter(|t| t.visible_to(&me))
                 .find(|t| t.name.trim() == name && t.kind == kind)
-                .context("Modelo do exemplo não encontrado depois de gravado.")?;
+                .context("Modelo do exemplo não encontrado depois de salvo.")?;
             if self
                 .examples_of(&template.uid)?
                 .iter()

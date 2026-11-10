@@ -1071,7 +1071,7 @@ impl TemplatesPanel {
             },
             |ui| {
                 if stored.is_some() {
-                    if ui.add(widgets::danger("Excluir")).clicked() {
+                    if ui.add(widgets::danger("Apagar de vez…")).clicked() {
                         do_delete = true;
                     }
                     ui.add_space(theme::S3);
@@ -1192,7 +1192,7 @@ impl TemplatesPanel {
             match confirm_line(
                 ui,
                 "Descartar todas as alterações não salvas do modelo?",
-                "Sim, descartar",
+                "Descartar",
                 "Cancelar",
             ) {
                 Some(true) => self.discard_template(store),
@@ -1249,8 +1249,8 @@ impl TemplatesPanel {
             ui.add_space(theme::S2);
             match confirm_line(
                 ui,
-                "Excluir este modelo de vez, com exemplos e versões?",
-                "Sim, excluir",
+                "Apagar este modelo de vez, com exemplos e versões? Não há como desfazer.",
+                "Apagar de vez",
                 "Cancelar",
             ) {
                 Some(true) => {
@@ -1266,7 +1266,7 @@ impl TemplatesPanel {
                             self.example_edit = None;
                             self.close_example_files();
                             self.stale = true;
-                            self.notice("Modelo excluído.", false);
+                            self.notice("Modelo apagado.", false);
                         }
                         Err(e) => self.notice(format!("{e:#}"), true),
                     }
@@ -1525,10 +1525,10 @@ impl TemplatesPanel {
         widgets::card(ui, |ui| {
             let Some(b) = self.block_edit.as_mut() else {
                 has_block = false;
-                widgets::section(ui, "Instrução da biblioteca");
+                widgets::section(ui, "Instrução");
                 widgets::muted(
                     ui,
-                    "Escolha uma instrução na lista à esquerda ou crie uma nova.",
+                    "Escolha uma instrução na lista ao lado ou crie uma nova.",
                 );
                 return;
             };
@@ -1539,7 +1539,7 @@ impl TemplatesPanel {
             };
             let draft_number = b.versions.last().map(|v| v.version).unwrap_or(1);
             ui.horizontal(|ui| {
-                widgets::section(ui, "Instrução da biblioteca");
+                widgets::section(ui, "Instrução");
                 if dirty {
                     widgets::pill(
                         ui,
@@ -1588,7 +1588,7 @@ impl TemplatesPanel {
                     }
                 },
                 |ui| {
-                    if stored_status.is_some() && ui.add(widgets::danger("Excluir")).clicked() {
+                    if stored_status.is_some() && ui.add(widgets::danger("Apagar de vez…")).clicked() {
                         do_delete = true;
                     }
                 },
@@ -1598,7 +1598,7 @@ impl TemplatesPanel {
                 discard_answer = confirm_line(
                     ui,
                     "Descartar as alterações não salvas desta instrução?",
-                    "Sim, descartar",
+                    "Descartar",
                     "Cancelar",
                 );
             }
@@ -1606,8 +1606,8 @@ impl TemplatesPanel {
                 ui.add_space(theme::S2);
                 delete_answer = confirm_line(
                     ui,
-                    "Excluir esta instrução de vez?",
-                    "Sim, excluir",
+                    "Apagar esta instrução de vez? Não há como desfazer.",
+                    "Apagar de vez",
                     "Cancelar",
                 );
             }
@@ -1658,7 +1658,7 @@ impl TemplatesPanel {
                         self.block_edit = None;
                         self.block_base.clear();
                         self.stale = true;
-                        self.notice("Instrução excluída.", false);
+                        self.notice("Instrução apagada.", false);
                     }
                     Err(e) => self.notice(format!("{e:#}"), true),
                 }
@@ -1930,7 +1930,7 @@ impl TemplatesPanel {
                 },
                 |ui| {
                     if !is_new {
-                        delete = ui.add(widgets::danger("Excluir")).clicked();
+                        delete = ui.add(widgets::danger("Apagar de vez…")).clicked();
                     }
                 },
             );
@@ -1939,7 +1939,7 @@ impl TemplatesPanel {
                 discard_answer = confirm_line(
                     ui,
                     "Descartar as alterações não salvas deste exemplo?",
-                    "Sim, descartar",
+                    "Descartar",
                     "Cancelar",
                 );
             }
@@ -1947,8 +1947,8 @@ impl TemplatesPanel {
                 ui.add_space(theme::S2);
                 delete_answer = confirm_line(
                     ui,
-                    "Excluir este exemplo de vez?",
-                    "Sim, excluir",
+                    "Apagar este exemplo de vez? Não há como desfazer.",
+                    "Apagar de vez",
                     "Cancelar",
                 );
             }
@@ -1988,7 +1988,7 @@ impl TemplatesPanel {
                         self.example_base.clear();
                         self.close_example_files();
                         self.stale = true;
-                        self.notice("Exemplo excluído.", false);
+                        self.notice("Exemplo apagado.", false);
                     }
                     Err(e) => self.notice(format!("{e:#}"), true),
                 }
@@ -2100,7 +2100,7 @@ impl TemplatesPanel {
         widgets::section(ui, "Arquivos do exemplo");
         widgets::small_muted(
             ui,
-            "Os arquivos mostram à IA a forma de uma resposta real. Só o texto extraído ou conferido de um exemplo aprovado é enviado; os fatos dos arquivos nunca valem para o caso. PDF com texto, .txt e .docx têm extração; PDF digitalizado precisa de OCR, que esta versão não faz para exemplos.",
+            "Os arquivos mostram à IA a forma de uma resposta real. Só o texto extraído ou conferido de um exemplo aprovado é enviado; os fatos dos arquivos nunca valem para o caso. A extração funciona com PDF com texto, .txt e .docx. PDF digitalizado (só imagem) não é lido nesta versão.",
         );
         ui.add_space(theme::S2);
         self.attachments.show(
@@ -2175,8 +2175,8 @@ impl TemplatesPanel {
                 if reviewed {
                     // A person's correction is not thrown away by one click.
                     if self.confirm_reextract == Some(meta.id) {
-                        widgets::small_muted(ui, "Substitui o texto conferido.");
-                        if ui.add(widgets::danger("Confirmar")).clicked() {
+                        widgets::small_muted(ui, "Extrair de novo substitui o texto já conferido.");
+                        if ui.add(widgets::danger("Substituir")).clicked() {
                             extract = Some((meta.id, meta.name.clone()));
                         }
                         if ui.add(widgets::secondary("Cancelar")).clicked() {
@@ -2267,7 +2267,7 @@ impl TemplatesPanel {
                 widgets::section(ui, "Testar o modelo");
                 widgets::muted(
                     ui,
-                    "Abra um documento na Ficha para testar o modelo com ele.",
+                    "Abra um documento na área Documentos para testar o modelo com ele.",
                 );
             });
             return;
@@ -2333,7 +2333,7 @@ impl TemplatesPanel {
                         widgets::pill(
                             ui,
                             format!(
-                                "Tamanho da parte de instruções: {}",
+                                "Tamanho das instruções: {}",
                                 crate::labels::file_size(p.trusted as u64)
                             ),
                             Tone::Neutral,

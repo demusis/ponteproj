@@ -87,7 +87,7 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Receipt(r) => return Ok(r),
-                _ => anyhow::bail!("Resposta inesperada do anfitrião ao importar pacote."),
+                _ => anyhow::bail!("O computador principal respondeu de forma inesperada ao importar os arquivos. Tente de novo."),
             }
         }
         original.validate()?;
@@ -101,11 +101,11 @@ impl Store {
         for (index, input) in sorted.iter().enumerate() {
             ensure!(
                 index == 0 || sorted[index - 1].url != input.url,
-                "Arquivo duplicado no pacote."
+                "Arquivo repetido na importação."
             );
             ensure!(
                 downloadable_url(&input.url),
-                "Rota de arquivo não suportada."
+                "Endereço de arquivo não aceito."
             );
             let reference = original
                 .references
@@ -113,22 +113,22 @@ impl Store {
                 .find(|r| {
                     r.url == input.url && matches!(r.kind.as_str(), "original" | "attachment")
                 })
-                .context("Arquivo não vinculado às referências desta captura.")?;
+                .context("O arquivo não corresponde às referências desta importação.")?;
             ensure!(
                 input.data_base64.len() <= MAX_FILE_BYTES.div_ceil(3) * 4,
-                "PDF excede 8 MiB."
+                "O PDF é maior que 8 MB."
             );
             let data = STANDARD
                 .decode(&input.data_base64)
-                .context("Arquivo codificado incorretamente.")?;
+                .context("Arquivo recebido com defeito.")?;
             total += data.len();
             ensure!(
                 data.len() <= MAX_FILE_BYTES && total <= MAX_TOTAL_BYTES,
-                "Arquivos excedem o limite de tamanho."
+                "Os arquivos passam do tamanho permitido."
             );
             ensure!(
                 data.starts_with(b"%PDF-"),
-                "A resposta não é um PDF; a sessão pode ter expirado."
+                "O SIGADOC não devolveu um PDF; a sessão pode ter expirado. Entre de novo no SIGADOC e importe outra vez."
             );
             let hash = format!("{:x}", Sha256::digest(&data));
             let text = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(&data))

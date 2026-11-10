@@ -72,7 +72,7 @@ A ficha tem quatro abas:
 
 - **Criar:** em Resumo ▸ **Nova tarefa**, ou na área **Tarefas**. Informe título, responsável (botão **Eu**), ação, prioridade e prazo.
 - **Segue o documento selecionado:** mostra só as tarefas dele, com o botão **Só <número>**. **Todos os documentos** amplia.
-- **Visões:** *Todas*, *Hoje*, *Esta semana*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer*, *A triar*, *Aguardando terceiros*, *Lembretes* e *Sem prazo*. A lista se divide em Atrasadas, Para hoje, Próximas, Sem prazo e Concluídas.
+- **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer*, *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*. A lista se divide em Atrasadas, Para hoje, Próximas, Sem prazo e Concluídas.
 - **Abrir:** clique na tarefa para ver os dados num painel à direita, com **Salvar**, **Concluir**, **Cancelar** e **Excluir…**. Em **Mais detalhes** ficam origem do prazo, lembrete, resultado, checklist, dependências e anexos.
 - **Concluir:** clique no círculo à esquerda da tarefa; clicar de novo reabre. Nada é registrado no SIGADOC.
 - **Ler sem sair da tarefa:** **Consultar documento** abre o texto e os PDFs por cima.
@@ -83,7 +83,7 @@ A ficha tem quatro abas:
 
 - **Notas:** escreva e clique em **Salvar notas**. O ponto laranja na aba indica algo não salvo.
 - **Minuta** (em Notas e minutas): escolha o tipo (*Resposta*, *Encaminhamento*, *Pedido de complementação*) e clique em **Começar por um modelo** (texto-base, sem IA) ou escreva. **Salvar nova versão** guarda o texto, **Exportar (RTF)** cria um arquivo para o Word e **Comparar com versão ▾** mostra as diferenças. O texto final você cola no SIGADOC.
-- **IA (opcional):** **Analisar…** (depois, **Analisar de novo**), no card Análise do Resumo, ou **Gerar com IA**, **Completar** ou **Revisar**, na minuta, com o que você quer em **Pedido desta minuta**. A sugestão abre para revisão e só é salva quando você salvar.
+- **IA (opcional):** **Analisar** (depois, **Analisar de novo**), no card Análise do Resumo, ou **Gerar com IA**, **Completar** ou **Revisar**, na minuta, com o que você quer em **Pedido desta minuta**. A sugestão abre para revisão e só é salva quando você salvar.
 
 **Ajustes ▸ Inteligência artificial** define onde a IA roda (clique em **Salvar** ou saia da seção):
 
@@ -91,7 +91,7 @@ A ficha tem quatro abas:
 |---|---|
 | **Ollama neste computador** | Não. Instale o Ollama e baixe um modelo: `ollama pull qwen3:4b-instruct` |
 | **Ollama Cloud** | Sim. Exige a chave de API da sua conta em ollama.com |
-| **Outro servidor HTTPS** | Sim, para o servidor informado |
+| **Outro servidor** | Sim, para o servidor informado |
 | **ChatGPT (assinatura)** | Sim, para a OpenAI. Usa a cota do seu plano Plus ou Pro: clique em **Entrar com o ChatGPT…** |
 
 Depois de escolher, clique em **Listar modelos do servidor**, selecione o modelo e salve.

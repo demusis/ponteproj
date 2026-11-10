@@ -9,6 +9,15 @@ pub fn date(value: &str) -> String {
         .unwrap_or_else(|_| value.to_owned())
 }
 
+/// "1 documento" / "3 documentos": the number with the right singular or plural.
+pub fn count(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
 /// RFC3339 → `dd/mm/aaaa HH:MM` no fuso local. Também aceita `AAAA-MM-DD`.
 pub fn datetime(value: &str) -> String {
     let value = value.trim();
@@ -166,7 +175,7 @@ pub fn item_kind(kind: &str) -> &str {
         "work_context" => "contexto",
         "saiop" => "atendimento",
         "example" => "exemplo",
-        "saiop_batch" => "lote de planilha",
+        "saiop_batch" => "importação de planilha",
         "document_link" => "vínculo",
         other => other,
     }

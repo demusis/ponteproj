@@ -35,7 +35,7 @@ fn normalized(value: &str) -> String {
 pub fn validate(sources: &[Source], citations: &[Citation]) -> Result<()> {
     ensure!(
         sources.len() <= 128 && citations.len() <= 32,
-        "Quantidade de fontes ou citações excedida."
+        "Há fontes ou citações demais."
     );
     let mut ids = BTreeSet::new();
     let mut size = 0;
@@ -52,7 +52,7 @@ pub fn validate(sources: &[Source], citations: &[Citation]) -> Result<()> {
         );
         ensure!(
             ["captura", "pdf", "ocr"].contains(&source.method.as_str()),
-            "Método da fonte inválido."
+            "Forma de obtenção da fonte inválida."
         );
         ensure!(
             source.method == "captura"
@@ -63,7 +63,7 @@ pub fn validate(sources: &[Source], citations: &[Citation]) -> Result<()> {
     }
     ensure!(
         size <= 500 * 1024,
-        "Fontes selecionadas excedem 500 KiB; escolha menos páginas."
+        "As fontes selecionadas passam de 500 KB; escolha menos páginas."
     );
     for citation in citations {
         let source = sources
@@ -129,7 +129,7 @@ impl Store {
                                 || prepared.sources.len() >= 512
                                 || total + text.len() > 2 * 1024 * 1024
                             {
-                                prepared.pending.push(format!("{}: páginas adicionais não preparadas (limite local de preparação).",file.label));
+                                prepared.pending.push(format!("{}: algumas páginas não foram preparadas (limite de preparação).",file.label));
                                 break;
                             }
                             if !text.trim().is_empty() {
@@ -166,7 +166,7 @@ impl Store {
                                 || prepared.sources.len() >= 512
                             {
                                 prepared.pending.push(format!(
-                                    "{}: OCR adicional não preparado por limite local.",
+                                    "{}: o OCR de mais páginas não foi preparado (limite de preparação).",
                                     file.label
                                 ));
                                 break;
@@ -200,7 +200,7 @@ impl Store {
         }
         ensure!(
             total <= 6 * 1024 * 1024,
-            "Preparação excede o limite local; escolha menos documentos."
+            "A preparação passou do limite; escolha menos documentos."
         );
         Ok(prepared)
     }
@@ -256,7 +256,7 @@ impl SourcesPanel {
                 draft.prepared = Some(value);
                 draft.selected.clear();
                 draft.message =
-                    "Marque explicitamente os textos/páginas que deseja enviar à IA.".into();
+                    "Marque os textos ou páginas que deseja enviar à IA.".into();
             }
             Err(e) => draft.message = e,
         }
@@ -279,7 +279,7 @@ impl SourcesPanel {
         validate(&sources, &[])?;
         ensure!(
             !store.sources_stale(&sources),
-            "Fontes selecionadas desatualizadas; prepare novamente."
+            "As fontes selecionadas estão desatualizadas; prepare as páginas de novo."
         );
         Ok(sources)
     }
@@ -295,7 +295,7 @@ impl SourcesPanel {
         let mut request = None;
         eframe::egui::CollapsingHeader::new(eframe::egui::RichText::new("Outros documentos e páginas para a IA").font(crate::theme::font_strong(crate::theme::SIZE_SECTION))).show(ui,|ui|{
             crate::widgets::small_muted(ui,"Opcional: marque documentos já importados e, depois de preparar, as páginas que a IA deve considerar.").on_hover_text("A seleção vale para a próxima análise ou minuta; análises anteriores guardam as fontes que usaram. O documento atual e o contexto são sempre incluídos. Texto obtido por OCR exige conferência.");
-            match store.list_documents(""){Ok(documents)=>{for document in documents{if document.id!=id{let mut checked=draft.documents.contains(&document.id);if ui.add_enabled(!busy,eframe::egui::Checkbox::new(&mut checked,format!("{} — {}",document.document_number,document.title))).changed(){if checked{draft.documents.insert(document.id);}else{draft.documents.remove(&document.id);}draft.prepared=None;draft.selected.clear();}}}},Err(e)=>{ui.label(format!("Falha ao ler documentos: {e}"));}}
+            match store.list_documents(""){Ok(documents)=>{for document in documents{if document.id!=id{let mut checked=draft.documents.contains(&document.id);if ui.add_enabled(!busy,eframe::egui::Checkbox::new(&mut checked,format!("{} — {}",document.document_number,document.title))).changed(){if checked{draft.documents.insert(document.id);}else{draft.documents.remove(&document.id);}draft.prepared=None;draft.selected.clear();}}}},Err(e)=>{ui.label(format!("Não foi possível ler os documentos: {e}"));}}
             if ui.add_enabled(!busy,eframe::egui::Button::new(if busy {"Preparando…"} else {"Preparar páginas"})).on_hover_text("Lê os PDFs dos documentos marcados neste computador para você escolher as páginas.").clicked(){request=Some(draft.documents.iter().copied().collect());}
             if !draft.message.is_empty(){ui.label(&draft.message);}
             if let Some(prepared)=&draft.prepared {
@@ -304,7 +304,7 @@ impl SourcesPanel {
                     let mut selected=draft.selected.contains(&source.id);if ui.add_enabled(!busy,eframe::egui::Checkbox::new(&mut selected,format!("{} • {} bytes",source.label,source.text.len()))).changed(){if selected{draft.selected.insert(source.id.clone());}else{draft.selected.remove(&source.id);}}
                     ui.push_id(&source.id,|ui|{ui.collapsing("Conferir texto antes de selecionar",|ui|{let mut text=source.text.as_str();ui.add(eframe::egui::TextEdit::multiline(&mut text).desired_rows(5).desired_width(f32::INFINITY));});});
                 }});
-                let size:usize=prepared.sources.iter().filter(|s|draft.selected.contains(&s.id)).map(|s|s.text.len()).sum();ui.label(format!("{} fontes selecionadas • {} KiB adicionais",draft.selected.len(),size.div_ceil(1024)));
+                let size:usize=prepared.sources.iter().filter(|s|draft.selected.contains(&s.id)).map(|s|s.text.len()).sum();ui.label(format!("{} • {} KB adicionais",if draft.selected.len()==1{"1 fonte selecionada".to_owned()}else{format!("{} fontes selecionadas",draft.selected.len())},size.div_ceil(1024)));
             }
         });
         request

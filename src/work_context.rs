@@ -54,13 +54,13 @@ impl WorkContext {
             self.sender.len() <= 1000
                 && self.process_number.len() <= 256
                 && self.notes.len() <= 16000,
-            "Contexto excede os limites dos campos."
+            "O contexto passa do tamanho permitido em algum campo."
         );
         ensure!(
             self.subjects.len() <= 2000
                 && self.document_type.len() <= 256
                 && self.priority_reason.len() <= 4000,
-            "Classificação excede os limites."
+            "A classificação passa do tamanho permitido."
         );
         ensure!(
             ["", "baixa", "normal", "alta", "urgente"].contains(&self.priority.as_str()),
@@ -213,7 +213,7 @@ impl ContextPanel {
                     self.drafts.insert(id, (value.clone(), value));
                 }
                 Err(e) => {
-                    ui.label(format!("Falha ao ler contexto: {e}"));
+                    ui.label(format!("Não foi possível ler o contexto: {e}"));
                     return false;
                 }
             }
@@ -386,7 +386,7 @@ pub fn provenance(ui: &mut eframe::egui::Ui, detail: &crate::model::DocumentDeta
             }
         });
         crate::widgets::small_muted(ui, "De/origem não identifica necessariamente quem tramitou. Recebimento e transferência também podem estar registrados na aba Histórico, com os rótulos da fonte.");
-        crate::widgets::small_muted(ui, "Marca de assinatura e nível de acesso são transcritos da fonte; não representam validação criptográfica nem alteração de permissões. Ciência/conclusão local não tramita no SIGADOC.");
+        crate::widgets::small_muted(ui, "Marca de assinatura e nível de acesso são transcritos da fonte; não comprovam a assinatura nem alteram permissões. Ciência/conclusão local não tramita no SIGADOC.");
     }
 }
 

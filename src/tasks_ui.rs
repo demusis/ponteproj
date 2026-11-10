@@ -11,10 +11,10 @@ const VIEWS: [&str; 9] = [
     "Todas",
     "A triar",
     "Hoje",
-    "Esta semana",
+    "Próximos 7 dias",
     "Atrasadas",
-    "Aguardando terceiros",
-    "Lembretes",
+    "Aguardando",
+    "Com lembrete",
     "Sem prazo",
     "Prontas para fazer",
 ];
@@ -226,9 +226,9 @@ fn task_row(
         .filter(|t| t.dependencies.contains(&task.id))
         .collect();
     let relation = if env.focus_before.contains(&task.id) {
-        Some((p.warn, "Esta tarefa vem ANTES da tarefa aberta na ficha."))
+        Some((p.warn, "Esta tarefa vem antes da tarefa aberta na ficha."))
     } else if env.focus_after.contains(&task.id) {
-        Some((p.ok, "Esta tarefa vem DEPOIS da tarefa aberta na ficha (depende dela)."))
+        Some((p.ok, "Esta tarefa vem depois da tarefa aberta na ficha: depende dela."))
     } else {
         None
     };
@@ -261,7 +261,7 @@ fn task_row(
                         ui,
                         false,
                         enabled,
-                        "Concluir: marca como concluída. Nada é enviado ao SIGADOC.",
+                        "Conclui a tarefa. Nada é enviado ao SIGADOC.",
                         &disabled_hint,
                     ) {
                         out.complete = Some(task.id);
@@ -324,7 +324,7 @@ fn task_row(
                                     )
                                     .selectable(false),
                                 )
-                                .on_hover_text("Profundidade na cadeia de dependências; o recuo para em 4 níveis.");
+                                .on_hover_text("Posição na cadeia de dependências. O recuo da linha para no 4º nível.");
                             }
                             if let Some(count) = env.attachment_counts.get(&task.id) {
                                 ui.add(
@@ -335,19 +335,19 @@ fn task_row(
                                     )
                                     .selectable(false),
                                 )
-                                .on_hover_text(format!("{count} anexo(s) nesta tarefa"));
+                                .on_hover_text(format!("{} nesta tarefa", crate::labels::count(*count, "anexo", "anexos")));
                             }
                         });
                         if !direct.is_empty() {
                             let (color, text) = if blocked {
                                 (
                                     p.warn,
-                                    format!("{} de {} anterior(es) em aberto", blockers.len(), direct.len()),
+                                    format!("{} de {} em aberto", blockers.len(), crate::labels::count(direct.len(), "anterior", "anteriores")),
                                 )
                             } else if pending {
-                                (p.ok, format!("{} anterior(es) concluída(s)", direct.len()))
+                                (p.ok, crate::labels::count(direct.len(), "anterior concluída", "anteriores concluídas"))
                             } else {
-                                (p.muted, format!("{} anterior(es)", direct.len()))
+                                (p.muted, crate::labels::count(direct.len(), "anterior", "anteriores"))
                             };
                             let detail = direct
                                 .iter()
@@ -380,7 +380,7 @@ fn task_row(
                         if !releases.is_empty() {
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = S1;
-                                widgets::small_muted(ui, "libera")
+                                widgets::small_muted(ui, "libera a conclusão de")
                                     .on_hover_text("Tarefas que só podem ser concluídas depois desta.");
                                 for next in &releases {
                                     if let Some(clicked) = dependency_chip(ui, next) {
@@ -569,7 +569,7 @@ impl TaskPanel {
                 Ok(())
             }
             Err(e) => {
-                let text = format!("Tarefa não salva: {e}");
+                let text = format!("Não foi possível salvar a tarefa: {e}");
                 self.notice(text.clone(), true);
                 Err(text)
             }
@@ -743,7 +743,7 @@ impl TaskPanel {
         let tasks = match store.list_tasks() {
             Ok(t) => t,
             Err(e) => {
-                ui.label(format!("Não foi possível ler tarefas: {e}"));
+                ui.label(format!("Não foi possível ler as tarefas: {e}"));
                 return None;
             }
         };
@@ -945,7 +945,7 @@ impl TaskPanel {
                             // Which documents the list covers.
                             if let Some(id) = self.document_filter {
                                 widgets::chip(ui, true, format!("Só {}", number_of(id)))
-                                    .on_hover_text("A lista segue o documento aberto na biblioteca.");
+                                    .on_hover_text("A lista mostra só as tarefas do documento aberto.");
                                 if widgets::chip(ui, false, "Todos os documentos").clicked() {
                                     self.document_filter = None;
                                     self.show_all_documents = true;
@@ -1052,7 +1052,7 @@ impl TaskPanel {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         if visible.is_empty() {
                             ui.add_space(S2);
-                            widgets::muted(ui, "Nenhuma tarefa nesta visão.");
+                            widgets::muted(ui, "Nenhuma tarefa nesta lista.");
                         }
                         for (index, group) in groups.iter().enumerate() {
                             if group.is_empty() {
@@ -1373,7 +1373,7 @@ impl TaskPanel {
                         more.show(ui, |ui| {
                             widgets::small_muted(
                                 ui,
-                                "Lembrete, dependências, lista de providências e anexos.",
+                                "Origem do prazo, lembrete, resultado, providências, dependências e anexos.",
                             );
                             ui.add_space(S1);
                             widgets::field_label(ui, "Origem do prazo (trecho, arquivo ou orientação)");
@@ -1384,7 +1384,7 @@ impl TaskPanel {
                             ui.add_space(S2);
                             ui.horizontal(|ui| {
                                 widgets::field_label(ui, "Lembrar a partir de");
-                                crate::help_ui::help(ui, "Lembrete local, mostrado na visão “Lembretes” enquanto o Ponte estiver aberto.");
+                                crate::help_ui::help(ui, "Lembrete local, mostrado na lista “Com lembrete” enquanto o Ponte estiver aberto.");
                             });
                             crate::labels::date_field(ui, ("task-reminder", task_id), &mut task.reminder_date);
                             ui.add_space(S2);
@@ -1395,7 +1395,7 @@ impl TaskPanel {
                                     .desired_width(f32::INFINITY),
                             );
                             ui.add_space(S2);
-                            ui.collapsing("Checklist de providências", |ui| {
+                            ui.collapsing("Lista de providências", |ui| {
                                 let mut remove = None;
                                 for (index, (done, text)) in task.checklist.iter_mut().enumerate() {
                                     ui.horizontal(|ui| {
@@ -1484,7 +1484,7 @@ impl TaskPanel {
                                 });
                             }
                             ui.collapsing("Depende de outras tarefas", |ui| {
-                                widgets::small_muted(ui, "Uma tarefa só pode ser concluída depois das que ela depende. Tarefas que já dependem desta ficam desabilitadas: marcá-las formaria um ciclo.");
+                                widgets::small_muted(ui, "Uma tarefa só pode ser concluída depois das tarefas de que ela depende. As que já dependem desta aparecem desativadas: marcá-las criaria um ciclo.");
                                 // Marking a task that already waits for this one would
                                 // close a loop; saving would refuse it anyway.
                                 let cycle_makers: std::collections::BTreeSet<i64> = if task_id > 0 {
@@ -1515,7 +1515,7 @@ impl TaskPanel {
                                         );
                                         let response = if would_cycle {
                                             response.on_disabled_hover_text(format!(
-                                                "“{}” já depende desta tarefa (direta ou indiretamente); marcar formaria um ciclo.",
+                                                "“{}” já depende desta tarefa (direta ou indiretamente). Marcá-la criaria um ciclo.",
                                                 previous.title
                                             ))
                                         } else {
@@ -1533,7 +1533,7 @@ impl TaskPanel {
                                 for missing in task.dependencies.clone() {
                                     if !tasks.iter().any(|t| t.id == missing)
                                         && ui
-                                            .add(widgets::secondary(format!("Remover dependência #{missing} (tarefa não disponível)")))
+                                            .add(widgets::secondary("Remover dependência de tarefa que não está mais disponível"))
                                             .clicked()
                                     {
                                         task.dependencies.retain(|id| *id != missing);
@@ -1692,7 +1692,7 @@ mod navigation_tests {
         // A refused save keeps the edit and explains.
         panel.draft.as_mut().unwrap().title = "   ".into();
         let error = panel.save_draft(&mut store).unwrap_err();
-        assert!(error.starts_with("Tarefa não salva:"), "{error}");
+        assert!(error.starts_with("Não foi possível salvar a tarefa:"), "{error}");
         assert!(panel.dirty());
 
         // "Descartar alterações" on an existing task goes back to what is saved.

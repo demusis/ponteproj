@@ -115,7 +115,7 @@ impl MailAccount {
                     .host
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'),
-            "Servidor IMAP inválido (ex.: imap.gmail.com)."
+            "Servidor de e-mail (IMAP) inválido; exemplo: imap.gmail.com."
         );
         ensure!(self.port > 0, "Porta inválida.");
         ensure!(
@@ -126,7 +126,7 @@ impl MailAccount {
         );
         ensure!(
             self.password.len() <= 1024 && !self.password.chars().any(char::is_control),
-            "Senha inválida."
+            "A senha de app tem caracteres inválidos."
         );
         // IMAP quoted strings are 7-bit; anything else would need a literal.
         ensure!(
@@ -345,9 +345,9 @@ impl Session {
         account.validate()?;
         let addresses: Vec<_> = (account.host.as_str(), account.port)
             .to_socket_addrs()
-            .with_context(|| format!("Servidor {} não encontrado.", account.host))?
+            .with_context(|| format!("Não foi possível encontrar o servidor {}. Confira o nome do servidor e a conexão com a internet.", account.host))?
             .collect();
-        ensure!(!addresses.is_empty(), "Servidor sem endereço.");
+        ensure!(!addresses.is_empty(), "O servidor de e-mail não tem um endereço válido.");
         // Every address the name resolves to is tried: an IPv6 one without
         // a route must not stop an IPv4 one from working.
         let mut tcp = None;
@@ -381,7 +381,7 @@ impl Session {
         .with_root_certificates(roots)
         .with_no_client_auth();
         let server_name = rustls::pki_types::ServerName::try_from(account.host.clone())
-            .context("Nome do servidor inválido para TLS.")?;
+            .context("Nome do servidor inválido para a conexão segura.")?;
         let connection = rustls::ClientConnection::new(Arc::new(config), server_name)
             .context("Não foi possível preparar a conexão segura.")?;
         let deadline = Arc::new(std::sync::Mutex::new(Instant::now() + IO_TIMEOUT));
@@ -400,10 +400,10 @@ impl Session {
         };
         let greeting = session
             .read_line()
-            .context("A conexão segura não pôde ser estabelecida")?;
+            .context("Não foi possível estabelecer a conexão segura com o servidor de e-mail")?;
         ensure!(
             greeting.starts_with(b"* OK") || greeting.starts_with(b"* PREAUTH"),
-            "O servidor não respondeu como um servidor IMAP."
+            "O servidor não respondeu como um servidor de e-mail (IMAP). Confira o servidor e a porta."
         );
         Ok(session)
     }
@@ -850,7 +850,7 @@ pub fn fetch_messages(
             out.extend(uids[index..].iter().map(|u| {
                 (
                     *u,
-                    Err("Lote cheio; marque esta mensagem numa próxima leva.".to_owned()),
+                    Err("Limite de tamanho desta importação atingido; importe esta mensagem numa próxima vez.".to_owned()),
                 )
             }));
             break;

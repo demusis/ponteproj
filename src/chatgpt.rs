@@ -94,14 +94,14 @@ impl ChatGptSession {
             ("identificação do cliente", &self.client_id, 512),
             ("conta", &self.account_label, 512),
             ("identidade", &self.subject, 512),
-            ("token de acesso", &self.access_token, 64 * 1024),
-            ("token de renovação", &self.refresh_token, 64 * 1024),
-            ("token de identidade", &self.id_token, 64 * 1024),
+            ("chave de acesso", &self.access_token, 64 * 1024),
+            ("chave de renovação", &self.refresh_token, 64 * 1024),
+            ("chave de identidade", &self.id_token, 64 * 1024),
             ("validade", &self.expires_at, 64),
         ] {
             ensure!(
                 value.len() <= max && !value.chars().any(char::is_control),
-                "Sessão do ChatGPT: {label} inválido."
+                "Sessão do ChatGPT: dado inválido ({label})."
             );
         }
         ensure!(
@@ -393,7 +393,7 @@ impl Login {
             refresh_token: tokens
                 .refresh_token
                 .filter(|t| !t.is_empty())
-                .context("A OpenAI não devolveu o token de renovação; entre de novo.")?,
+                .context("A OpenAI não devolveu a chave de renovação; entre de novo.")?,
             id_token,
             expires_at: expires_at(tokens.expires_in),
             scopes,
@@ -486,7 +486,7 @@ fn parse_callback(query: &str, state: &str, expected_client: Option<&str>) -> Re
     }
     ensure!(
         get("state") == Some(state),
-        "a resposta não corresponde a este pedido de login (state)."
+        "a resposta não corresponde a este pedido de login."
     );
     let code = get("code")
         .filter(|c| !c.is_empty())
@@ -501,7 +501,7 @@ fn parse_callback(query: &str, state: &str, expected_client: Option<&str>) -> Re
         }
         (Some(expected), None) => expected.to_owned(),
         (None, Some(given)) if !given.is_empty() && given != DYNAMIC_CLIENT => given.to_owned(),
-        (None, _) => bail!("o registro do Ponte na OpenAI não foi concluído (sem client_id)."),
+        (None, _) => bail!("o registro do Ponte na OpenAI não foi concluído."),
     };
     ensure!(
         client_id.len() <= 512
@@ -571,7 +571,7 @@ fn token_request(client: &Client, form: &[(&str, &str)]) -> Result<TokenResponse
         bail!(TokenError {
             code: code.clone(),
             message: format!(
-                "A OpenAI recusou o pedido de token (HTTP {}{}).",
+                "A OpenAI recusou o pedido de acesso (código {}{}).",
                 status.as_u16(),
                 if description.is_empty() && code.is_empty() {
                     String::new()
@@ -592,10 +592,10 @@ fn token_request(client: &Client, form: &[(&str, &str)]) -> Result<TokenResponse
         });
     }
     let tokens: TokenResponse = serde_json::from_slice(&body)
-        .context("Resposta de token da OpenAI em formato inesperado.")?;
+        .context("Resposta de acesso da OpenAI em formato inesperado.")?;
     ensure!(
         !tokens.access_token.is_empty(),
-        "A OpenAI devolveu um token vazio."
+        "A OpenAI devolveu uma chave de acesso vazia."
     );
     Ok(tokens)
 }
@@ -738,7 +738,7 @@ pub fn sign_out(session: &ChatGptSession) -> Result<()> {
         .context("Não foi possível falar com a OpenAI para encerrar a sessão.")?;
     ensure!(
         response.status().is_success(),
-        "A OpenAI respondeu HTTP {} ao encerrar a sessão. Desconecte o Ponte nas configurações do ChatGPT.",
+        "A OpenAI respondeu com erro (código {}) ao encerrar a sessão. Desconecte o Ponte nas configurações do ChatGPT.",
         response.status().as_u16()
     );
     Ok(())
@@ -751,7 +751,7 @@ fn discovery(client: &Client) -> Result<Value> {
         .context("Não foi possível obter a configuração de identidade da OpenAI.")?;
     ensure!(
         response.status().is_success(),
-        "A OpenAI respondeu HTTP {} à configuração de identidade.",
+        "A OpenAI respondeu com erro (código {}) ao consultar a configuração de identidade.",
         response.status().as_u16()
     );
     let body = read_limited(response, MAX_ERROR_BYTES)?;
@@ -764,7 +764,7 @@ fn read_limited(response: reqwest::blocking::Response, max: u64) -> Result<Vec<u
     response
         .take(max + 1)
         .read_to_end(&mut bytes)
-        .context("Falha ao ler a resposta da OpenAI.")?;
+        .context("Não foi possível ler a resposta da OpenAI.")?;
     ensure!(
         bytes.len() as u64 <= max,
         "Resposta da OpenAI grande demais."
@@ -804,7 +804,7 @@ fn verify_id_token(client: &Client, token: &str, client_id: &str, nonce: &str) -
         .context("Não foi possível obter as chaves de assinatura da OpenAI.")?;
     ensure!(
         response.status().is_success(),
-        "A OpenAI respondeu HTTP {} às chaves de assinatura.",
+        "A OpenAI respondeu com erro (código {}) ao consultar as chaves de assinatura.",
         response.status().as_u16()
     );
     let jwks: Value = serde_json::from_slice(&read_limited(response, MAX_ERROR_BYTES)?)
@@ -855,7 +855,7 @@ fn check_claims(claims: &Value, client_id: &str, nonce: &str, now: i64) -> Resul
     );
     ensure!(
         claims["nonce"].as_str() == Some(nonce),
-        "A identidade não corresponde a este pedido de login (nonce)."
+        "A identidade não corresponde a este pedido de login."
     );
     let sub = claims["sub"].as_str().unwrap_or("").to_owned();
     ensure!(!sub.is_empty(), "Identidade sem identificação da conta.");
@@ -901,7 +901,7 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<crate::ai::ModelInfo>> {
                 .as_object()
                 .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
                 .unwrap_or_default();
-            format!("Lista de modelos sem a lista `models` nem `data` (campos recebidos: {keys}).")
+            format!("A lista de modelos veio sem os dados esperados (campos recebidos: {keys}).")
         })?;
     let models = entries
         .iter()
@@ -923,7 +923,7 @@ fn network_error(error: &reqwest::Error, action: &str) -> anyhow::Error {
     } else if error.is_connect() {
         anyhow::anyhow!("Não foi possível conectar ao ChatGPT para {action}. Verifique a conexão com a internet.")
     } else {
-        anyhow::anyhow!("Falha na comunicação com o ChatGPT ao {action}.")
+        anyhow::anyhow!("A comunicação com o ChatGPT falhou ao {action}.")
     }
 }
 
@@ -957,17 +957,17 @@ fn explain(status: u16, code: &str, message: &str, param: &str) -> String {
             "O ChatGPT não conseguiu conferir a sua cota agora. Tente de novo em alguns minutos; a sessão continua válida.".into()
         }
         ("subscription_sharing_unsupported_capability", _) => format!(
-            "O ChatGPT recusou um recurso desta requisição{}. Informe o problema aos autores do Ponte.",
+            "O ChatGPT recusou um recurso deste pedido{}. Informe o problema aos autores do Ponte.",
             if param.is_empty() { String::new() } else { format!(" ({})", clean(param, 100)) }
         ),
         ("subscription_sharing_route_not_supported", _) => {
-            "O ChatGPT não aceitou esta rota para uso do plano. Informe o problema aos autores do Ponte.".into()
+            "O ChatGPT não aceitou este tipo de acesso para uso do plano. Informe o problema aos autores do Ponte.".into()
         }
         ("subscription_sharing_invalid_user", _) | (_, 401) => {
             "A sessão do ChatGPT não foi aceita. Entre de novo em Ajustes ▸ Inteligência artificial.".into()
         }
         (_, 403) => format!(
-            "O ChatGPT bloqueou a requisição (política ou região da conta){}.",
+            "O ChatGPT bloqueou o pedido (política ou região da conta){}.",
             if detail.is_empty() { String::new() } else { format!(": {detail}") }
         ),
         (_, 0) => format!(
@@ -976,7 +976,7 @@ fn explain(status: u16, code: &str, message: &str, param: &str) -> String {
             if detail.is_empty() { String::new() } else { format!(": {detail}") }
         ),
         _ => format!(
-            "O ChatGPT respondeu HTTP {status}{}.",
+            "O ChatGPT respondeu com erro (código {status}){}.",
             if detail.is_empty() { String::new() } else { format!(": {detail}") }
         ),
     }
@@ -1064,7 +1064,7 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
                 text.push_str(event["delta"].as_str().unwrap_or(""));
                 ensure!(
                     text.len() <= MAX_GENERATED_BYTES,
-                    "Resposta da IA excede 128 KiB."
+                    "A resposta da IA passa de 128 KB."
                 );
                 Ok(false)
             }
@@ -1117,7 +1117,7 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
         total += line.len() as u64 + 1;
         ensure!(
             total <= MAX_RESPONSE_BYTES,
-            "Resposta da IA excede o limite de 2 MiB."
+            "A resposta da IA passa de 2 MB."
         );
         if let Some(rest) = line.strip_prefix("data:") {
             data.push_str(rest.trim_start());
@@ -1163,7 +1163,7 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
     }
     ensure!(
         !text.trim().is_empty() && text.len() <= MAX_GENERATED_BYTES,
-        "Resposta da IA vazia ou excede 128 KiB."
+        "A resposta da IA está vazia ou passa de 128 KB."
     );
     Ok(text.trim().to_owned())
 }

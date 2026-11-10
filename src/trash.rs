@@ -87,11 +87,11 @@ pub fn require_active_capture(conn: &Connection, id: i64) -> Result<i64> {
             r.get(0)
         })
         .optional()?
-        .context("Captura não encontrada.")?;
+        .context("Versão importada não encontrada.")?;
     require_active_document(conn, doc)?;
     ensure!(
         !contains(conn, Kind::Capture, id)?,
-        "Captura na lixeira. Restaure-a antes de usar ou importar novamente."
+        "Versão importada na lixeira. Restaure-a antes de usar."
     );
     Ok(doc)
 }
@@ -133,7 +133,7 @@ fn all_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
     let count: i64 = conn.query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))?;
     ensure!(
         count <= 10000,
-        "Quantidade de tarefas excede o limite de validação."
+        "Há tarefas demais para esta operação."
     );
     let mut statement = conn.prepare("SELECT id,document_id,payload FROM tasks")?;
     let rows = statement.query_map([], |r| {
@@ -191,8 +191,9 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
             Ok((
                 doc,
                 format!(
-                    "Captura #{id} — {} — {}",
-                    capture.document_number, capture.captured_at
+                    "Versão importada #{id} — {} — {}",
+                    capture.document_number,
+                    crate::labels::datetime(&capture.captured_at)
                 ),
             ))
         }
@@ -264,15 +265,15 @@ fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
                 |r| r.get(0),
             )?;
             if refs > 0 {
-                plan.blocker=Some(format!("Esta captura é utilizada em {refs} registro(s) salvo(s) de minuta/análise ou fontes. Ela é preservada para manter essas bases."));
+                plan.blocker=Some(format!("Esta versão importada é usada em {}. Ela é mantida para preservar esses registros.",if refs==1{"1 registro salvo (minuta, análise ou fonte)".to_owned()}else{format!("{refs} registros salvos (minutas, análises ou fontes)")}));
             } else if remaining.is_none() {
-                plan.blocker=Some("Esta é a única captura ativa. Para retirar todo o conteúdo da biblioteca, exclua o documento para a lixeira.".into());
+                plan.blocker=Some("Esta é a única versão importada ativa. Para retirar todo o conteúdo do acervo, exclua o documento.".into());
             }
             if current == target.id {
                 plan.replacement = remaining;
-                plan.explanation=format!("Esta é a captura em uso. Após a exclusão, a ficha usará a captura #{}. PDFs e dados da captura excluída ficarão preservados na lixeira.",remaining.unwrap_or(current));
+                plan.explanation=format!("Esta é a versão em uso. Após a exclusão, a ficha usará a importação #{}. Os PDFs e os dados da versão excluída ficam guardados na lixeira.",remaining.unwrap_or(current));
             } else {
-                plan.explanation="A captura sairá do histórico ativo; PDFs e conteúdo ficarão preservados para restauração.".into();
+                plan.explanation="A versão sairá do histórico ativo; os PDFs e o conteúdo ficam guardados na lixeira para restauração.".into();
             }
         }
         Kind::Task | Kind::Document => {
@@ -296,12 +297,12 @@ fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
                 })
                 .count();
             if dependents > 0 {
-                plan.blocker=Some(format!("Há {dependents} tarefa(s) ativa(s) que dependem deste item. Revise as dependências antes de excluir."));
+                plan.blocker=Some(if dependents==1{"Há 1 tarefa ativa que depende deste item. Revise as dependências antes de excluir.".to_owned()}else{format!("Há {dependents} tarefas ativas que dependem deste item. Revise as dependências antes de excluir.")});
             }
-            plan.explanation=if target.kind==Kind::Document{"O documento sairá da biblioteca e suas tarefas e anexos ficarão ocultos. Capturas, PDFs, anexos, minutas, notas, OCR e vínculos serão preservados para restauração. Itens já excluídos individualmente continuarão na lixeira."}else{"A tarefa sairá do painel. Seus campos, checklist, resultado e anexos serão preservados na lixeira."}.into();
+            plan.explanation=if target.kind==Kind::Document{"O documento sairá do acervo e suas tarefas e anexos ficarão ocultos. Versões importadas, PDFs, anexos, minutas, notas, textos lidos dos PDFs e vínculos ficam guardados para restauração. Itens já excluídos separadamente continuam na lixeira."}else{"A tarefa sairá da lista. Seus campos, checklist, resultado e anexos ficam guardados na lixeira."}.into();
         }
         Kind::Attachment => {
-            plan.explanation = "O anexo sairá da lista. O arquivo fica preservado na lixeira e pode ser restaurado a qualquer momento.".into();
+            plan.explanation = "O anexo sairá da lista. O arquivo fica guardado na lixeira e pode ser restaurado a qualquer momento.".into();
         }
     }
     Ok(plan)
@@ -543,7 +544,7 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(doc) => return Ok(doc),
-                _ => anyhow::bail!("Resposta inesperada do anfitrião ao excluir item."),
+                _ => anyhow::bail!("Resposta inesperada do computador principal ao excluir o item."),
             }
         }
         let actor = self.active_actor();
@@ -776,7 +777,7 @@ impl Panel {
                         match store.purge_expired_trash(days) {
                             Ok(count) => {
                                 self.purged = count > 0;
-                                self.message = format!("{count} item(ns) apagado(s) de vez.");
+                                self.message = if count == 1 { "1 item apagado de vez.".to_owned() } else { format!("{count} itens apagados de vez.") };
                             }
                             Err(error) => self.message = error.to_string(),
                         }
@@ -789,7 +790,7 @@ impl Panel {
                 if days == 0 {
                     "Itens excluídos podem ser restaurados a qualquer momento; a lixeira não é esvaziada sozinha e os arquivos continuam ocupando espaço no acervo."
                 } else {
-                    "Um documento apagado de vez leva junto versões, PDFs, notas, minutas, tarefas e anexos. Backups anteriores não são afetados."
+                    "Um documento apagado de vez leva junto versões, PDFs, notas, minutas, tarefas e anexos. Cópias de segurança anteriores não são afetadas."
                 },
             );
         });
@@ -940,7 +941,7 @@ impl Panel {
                                     {
                                         match store.restore_item(entry.target.clone()) {
                                             Ok(document) => {
-                                                self.message = "Item restaurado. A biblioteca e o painel foram atualizados.".into();
+                                                self.message = "Item restaurado. O acervo foi atualizado.".into();
                                                 change = Some(Change {
                                                     target: entry.target.clone(),
                                                     document,
@@ -982,7 +983,7 @@ impl Panel {
                             widgets::section(ui, &plan.label);
                             ui.add_space(theme::S1);
                             ui.label(&plan.explanation);
-                            widgets::small_muted(ui, "A exclusão é local e reversível. Nada será excluído ou tramitado no SIGADOC; arquivos exportados e backups permanecem.");
+                            widgets::small_muted(ui, "A exclusão é local e reversível. Nada será excluído ou tramitado no SIGADOC; arquivos exportados e cópias de segurança permanecem.");
                             if let Some(blocker) = &plan.blocker {
                                 ui.add_space(theme::S2);
                                 let (fg, bg) = widgets::Tone::Danger.colors();
@@ -1076,7 +1077,7 @@ impl Panel {
 #[cfg(feature = "desktop")]
 fn kind_name(kind: Kind) -> &'static str {
     match kind {
-        Kind::Capture => "Versão",
+        Kind::Capture => "Versão importada",
         other => other.label(),
     }
 }

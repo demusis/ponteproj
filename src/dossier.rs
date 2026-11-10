@@ -31,7 +31,7 @@ pub fn movements(capture: &Capture) -> Result<Vec<Movement>> {
     let Some(json) = capture.metadata.get("movement_history") else {
         return Ok(vec![]);
     };
-    ensure!(json.len() <= 60000, "Histórico excede 60 KB.");
+    ensure!(json.len() <= 60000, "O histórico passa de 60 KB.");
     let events: Vec<Movement> =
         serde_json::from_str(json).context("Histórico de eventos inválido")?;
     ensure!(
@@ -232,7 +232,7 @@ pub fn show_history(ui: &mut eframe::egui::Ui, capture: &Capture, document: i64)
     {
         match movements(capture){
             Ok(events)=>{
-                crate::widgets::field_label(ui,&format!("Histórico importado do SIGADOC • {} evento(s)",events.len()));
+                crate::widgets::field_label(ui,&format!("Histórico importado do SIGADOC • {}",if events.len()==1{"1 evento".to_owned()}else{format!("{} eventos",events.len())}));
                 if events.is_empty(){ui.label("Nenhum histórico importado nesta importação. Reimporte com a extensão atualizada para tentar obter os registros.");return;}
                 crate::widgets::small_muted(ui,"Fonte: tabela de eventos da visualização detalhada. Ordem e datas preservadas como exibidas; não são calculadas a partir da data documental.");
                 for (index,event) in events.iter().enumerate(){
@@ -247,7 +247,7 @@ pub fn show_history(ui: &mut eframe::egui::Ui, capture: &Capture, document: i64)
                         if !event.description.is_empty(){ui.add(egui::Label::new(format!("Descrição: {}",event.description)).wrap());}
                     });
                 }
-                crate::widgets::small_muted(ui,"Cadastrante e atendente mantêm os papéis escritos no histórico. Uma data vazia não foi completada por inferência.");
+                crate::widgets::small_muted(ui,"Cadastrante e atendente mantêm os papéis escritos no histórico. Datas em branco não foram preenchidas pelo Ponte.");
                 if let Some(source)=capture.metadata.get("movement_source"){ui.hyperlink_to("Consultar histórico no SIGADOC",source);}
             },Err(error)=>{ui.label(format!("Não foi possível apresentar o histórico: {error}"));}
         }
@@ -355,7 +355,7 @@ impl Store {
         );
         ensure!(
             !reason.trim().is_empty() && reason.len() <= 4000,
-            "Informe a base do vínculo (até 4000 bytes)."
+            "Informe a base do vínculo (texto curto, de até 4000 caracteres)."
         );
         if let Some(cfg) = self.client_config()? {
             self.remote_mutate(
@@ -625,14 +625,14 @@ impl DossierPanel {
         let documents = match store.list_documents("") {
             Ok(v) => v,
             Err(e) => {
-                ui.label(format!("Falha ao ler biblioteca: {e}"));
+                ui.label(format!("Não foi possível ler o acervo: {e}"));
                 return None;
             }
         };
         let links = match store.document_links(document) {
             Ok(v) => v,
             Err(e) => {
-                ui.label(format!("Falha ao ler vínculos: {e}"));
+                ui.label(format!("Não foi possível ler os vínculos: {e}"));
                 return None;
             }
         };
@@ -652,7 +652,7 @@ impl DossierPanel {
                         .get("process_number")
                         .map(|p| p.trim().to_uppercase())
                         .unwrap_or_default(),
-                    "campo explícito da captura".into(),
+                    "campo da ficha importada".into(),
                 ))
             }
         };
@@ -766,12 +766,12 @@ impl DossierPanel {
                     if previous.capture.text!=version.capture.text{ui.collapsing("Texto da importação anterior",|ui|{let mut text=previous.capture.text.as_str();ui.add(egui::TextEdit::multiline(&mut text).desired_rows(8).desired_width(f32::INFINITY));});}
                 }else{ui.label("Primeira importação preservada.");}
                 ui.collapsing("Texto desta importação",|ui|{let mut text=version.capture.text.as_str();ui.add(egui::TextEdit::multiline(&mut text).desired_rows(8).desired_width(f32::INFINITY));});
-                match store.list_files(version.id){Ok(files)=>{for file in files{ui.label(format!("PDF: {} • SHA256 {}",file.label,file.sha256));}},Err(e)=>{ui.label(format!("Falha ao ler arquivos: {e}"));}}
+                match store.list_files(version.id){Ok(files)=>{for file in files{ui.label(format!("PDF: {} • código de verificação {}",file.label,file.sha256));}},Err(e)=>{ui.label(format!("Não foi possível ler os arquivos: {e}"));}}
             });
                 }
             }
             Err(e) => {
-                ui.label(format!("Falha ao ler importações: {e}"));
+                ui.label(format!("Não foi possível ler as importações: {e}"));
             }
         }
         open

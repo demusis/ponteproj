@@ -48,7 +48,7 @@ mod keyed {
             let mut nonce = [0u8; NONCE_LEN];
             SystemRandom::new()
                 .fill(&mut nonce)
-                .map_err(|_| anyhow::anyhow!("Sem fonte de números aleatórios."))?;
+                .map_err(|_| anyhow::anyhow!("O Windows não forneceu os dados aleatórios necessários para proteger o acervo."))?;
             let mut out = bytes.to_vec();
             key.seal_in_place_append_tag(
                 Nonce::assume_unique_for_key(nonce),
@@ -60,7 +60,7 @@ mod keyed {
             sealed.extend(out);
             Ok(sealed)
         } else {
-            anyhow::ensure!(bytes.len() > NONCE_LEN, "Dados protegidos truncados.");
+            anyhow::ensure!(bytes.len() > NONCE_LEN, "Dados protegidos incompletos.");
             let (nonce, body) = bytes.split_at(NONCE_LEN);
             let nonce = Nonce::try_assume_unique_for_key(nonce)
                 .map_err(|_| anyhow::anyhow!("Dados protegidos inválidos."))?;
@@ -127,7 +127,7 @@ mod platform {
             len: bytes
                 .len()
                 .try_into()
-                .context("Conteúdo grande demais para proteção")?,
+                .context("Conteúdo grande demais para ser protegido")?,
             data: bytes.as_ptr() as *mut u8,
         };
         let purpose = b"ponteproj-document-content-v1";
@@ -164,10 +164,10 @@ mod platform {
         };
         if ok == 0 {
             return Err(std::io::Error::last_os_error())
-                .context("Não foi possível proteger/abrir os dados deste perfil Windows");
+                .context("Não foi possível proteger ou abrir os dados desta conta do Windows");
         }
         if output.data.is_null() {
-            bail!("A proteção do Windows retornou dados inválidos");
+            bail!("O Windows devolveu dados protegidos inválidos");
         }
         let result =
             unsafe { std::slice::from_raw_parts(output.data, output.len as usize).to_vec() };
@@ -189,7 +189,7 @@ pub fn seal(bytes: &[u8]) -> Result<Vec<u8>> {
 
 pub fn unseal(bytes: &[u8]) -> Result<Vec<u8>> {
     if !bytes.starts_with(PREFIX) {
-        bail!("Formato de proteção desconhecido; não interpretar dados como texto em claro");
+        bail!("Formato de proteção desconhecido; os dados não foram abertos");
     }
     platform::transform(&bytes[PREFIX.len()..], false)
 }

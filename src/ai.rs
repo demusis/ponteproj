@@ -245,7 +245,7 @@ impl AiConfig {
             AiProvider::Cloud => ensure!(
                 !settings.token.is_empty()
                     || std::env::var("PONTEPROJ_AI_TOKEN").is_ok_and(|v| !v.trim().is_empty()),
-                "Informe a chave de API da sua conta do Ollama Cloud em Ajustes ▸ Inteligência artificial."
+                "Informe a chave da sua conta do Ollama Cloud em Ajustes ▸ Inteligência artificial."
             ),
             AiProvider::ChatGpt => {
                 ensure!(
@@ -278,14 +278,14 @@ impl AiConfig {
             });
         }
         let base_url = self.base_url();
-        let url = Url::parse(base_url.trim()).context("Endpoint de IA inválido")?;
+        let url = Url::parse(base_url.trim()).context("Endereço do servidor de IA inválido")?;
         ensure!(
             url.username().is_empty() && url.password().is_none(),
-            "O endpoint não pode conter usuário ou senha na URL."
+            "O endereço não pode conter usuário nem senha."
         );
         ensure!(
             url.query().is_none() && url.fragment().is_none(),
-            "Use o endpoint base, sem parâmetros ou fragmentos."
+            "Use só o endereço base do servidor, sem parâmetros nem fragmentos."
         );
         match self.provider {
             AiProvider::Local => {
@@ -293,12 +293,12 @@ impl AiConfig {
                     url.host_str(),
                     Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
                 );
-                ensure!(local && matches!(url.scheme(), "http" | "https"), "O modo local aceita apenas localhost, 127.0.0.1 ou ::1. Para outro servidor, escolha HTTPS remoto.");
+                ensure!(local && matches!(url.scheme(), "http" | "https"), "O servidor local deve estar neste computador (localhost ou 127.0.0.1). Para usar outro servidor, escolha o provedor remoto, com endereço https.");
             }
             AiProvider::Cloud | AiProvider::ChatGpt => {}
             AiProvider::Remote => ensure!(
                 url.scheme() == "https" && url.host_str().is_some(),
-                "O provedor remoto precisa usar HTTPS."
+                "O endereço do provedor remoto deve começar com https://."
             ),
         }
         Ok(AiSettings {
@@ -313,19 +313,19 @@ impl AiConfig {
     /// Field-level limits, applied before saving and before any call.
     pub fn validate(&self) -> Result<()> {
         for (label, value, max) in [
-            ("Endpoint local", &self.local_url, 2048),
-            ("Endpoint remoto", &self.remote_url, 2048),
+            ("Endereço do servidor local", &self.local_url, 2048),
+            ("Endereço do servidor remoto", &self.remote_url, 2048),
             ("Modelo local", &self.local_model, 512),
             ("Modelo do Ollama Cloud", &self.cloud_model, 512),
             ("Modelo remoto", &self.remote_model, 512),
             ("Chave do Ollama Cloud", &self.cloud_key, 16 * 1024),
-            ("Token remoto", &self.remote_token, 16 * 1024),
+            ("Chave do servidor remoto", &self.remote_token, 16 * 1024),
             ("Modelo do ChatGPT", &self.chatgpt_model, 128),
             ("Identificação deste computador", &self.chatgpt_host_id, 128),
         ] {
             ensure!(
                 value.len() <= max && !value.chars().any(char::is_control),
-                "{label}: valor inválido (muito longo ou com caracteres de controle)."
+                "{label}: valor inválido (longo demais ou com caracteres não permitidos)."
             );
         }
         self.chatgpt.validate()
@@ -366,7 +366,7 @@ impl crate::storage::Store {
         match blob {
             Some(bytes) => {
                 let plain = crate::protection::unseal(&bytes)
-                    .context("Não foi possível abrir a configuração de IA; use a conta Windows que a gravou.")?;
+                    .context("Não foi possível abrir a configuração de IA; use a conta do Windows que a gravou.")?;
                 let config: AiConfig = serde_json::from_slice(&plain)
                     .context("Configuração de IA gravada em formato incompatível.")?;
                 config.validate()?;
@@ -379,7 +379,7 @@ impl crate::storage::Store {
     pub fn save_ai_config(&mut self, config: &AiConfig) -> Result<()> {
         config.validate()?;
         let payload = crate::protection::seal(&serde_json::to_vec(&config.for_storage())?)
-            .context("Não foi possível proteger a configuração para a conta Windows atual.")?;
+            .context("Não foi possível proteger a configuração para esta conta do Windows.")?;
         self.conn.execute(
             "INSERT INTO ai_config(id,payload) VALUES(1,?1)
              ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
@@ -446,22 +446,22 @@ pub fn list_models(settings: &AiSettings) -> Result<Vec<ModelInfo>> {
     let status = response.status();
     ensure!(
         status != reqwest::StatusCode::UNAUTHORIZED && status != reqwest::StatusCode::FORBIDDEN,
-        "O servidor recusou a chave informada (HTTP {}).",
+        "O servidor recusou a chave informada (código {}).",
         status.as_u16()
     );
     ensure!(
         status.is_success(),
-        "O servidor respondeu HTTP {} ao listar os modelos.",
+        "O servidor respondeu com erro (código {}) ao listar os modelos.",
         status.as_u16()
     );
     let mut bytes = Vec::new();
     response
         .take(MAX_RESPONSE_BYTES + 1)
         .read_to_end(&mut bytes)
-        .context("Falha ao ler a lista de modelos.")?;
+        .context("Não foi possível ler a lista de modelos.")?;
     ensure!(
         bytes.len() as u64 <= MAX_RESPONSE_BYTES,
-        "Lista de modelos excede o limite de 2 MiB."
+        "A lista de modelos é grande demais (limite de 2 MB)."
     );
     parse_tags(&bytes)
 }
@@ -487,7 +487,7 @@ fn parse_tags(bytes: &[u8]) -> Result<Vec<ModelInfo>> {
         parameter_size: String,
     }
     let tags: Tags = serde_json::from_slice(bytes)
-        .context("A lista de modelos não está no formato do Ollama.")?;
+        .context("A resposta do servidor não é uma lista de modelos do Ollama.")?;
     let mut models: Vec<ModelInfo> = tags
         .models
         .into_iter()
@@ -526,7 +526,7 @@ fn effective_token(settings: &AiSettings) -> Result<String> {
     };
     ensure!(
         token.len() <= 16 * 1024 && !token.chars().any(char::is_control),
-        "Token inválido."
+        "Chave inválida."
     );
     Ok(token)
 }
@@ -567,12 +567,12 @@ pub fn analyze_with_sources(
     crate::evidence::validate(sources, &[])?;
     ensure!(
         human_context.len() <= 32 * 1024,
-        "Contexto e notas para análise excedem 32 KiB; reduza-os antes de enviar."
+        "O contexto e as notas para a análise passam de 32 KB; reduza-os antes de enviar."
     );
     capture.validate()?;
     ensure!(
         capture_id > 0,
-        "Selecione uma captura salva antes de analisar."
+        "Escolha um documento salvo antes de analisar."
     );
     let mut schema = analysis_schema();
     if !sources.is_empty() {
@@ -906,7 +906,7 @@ pub fn generate_draft(settings: &AiSettings, job: &DraftJob, reporter: &Reporter
                     Ok(body)
                 },
             )?;
-            ensure!(body.len() <= MAX_GENERATED_BYTES, "Minuta excede 128 KiB.");
+            ensure!(body.len() <= MAX_GENERATED_BYTES, "A minuta passa de 128 KB.");
             return Ok(body);
         }
         let sources = &job.sources;
@@ -948,7 +948,7 @@ pub fn generate_draft(settings: &AiSettings, job: &DraftJob, reporter: &Reporter
         }
         ensure!(
             body.len() <= MAX_GENERATED_BYTES,
-            "Minuta e bases excedem 128 KiB."
+            "A minuta e as bases passam de 128 KB."
         );
         Ok(body)
     })();
@@ -977,7 +977,7 @@ pub fn template_reply(capture: &Capture, kind: &str) -> String {
         String::new()
     } else {
         format!(
-            "\n\nConferência pendente da captura: {}.",
+            "\n\nConferência pendente da importação: {}.",
             capture.coverage.pending.join("; ")
         )
     };
@@ -1000,7 +1000,7 @@ fn manual_note(capture: &Capture) -> &'static str {
 }
 
 fn ensure_context(data: &str) -> Result<()> {
-    ensure!(data.len() <= MAX_CONTEXT_BYTES, "O contexto para IA excede 500 KiB. Reduza o contexto adicional ou faça uma captura menor; nenhum trecho foi truncado ou enviado.");
+    ensure!(data.len() <= MAX_CONTEXT_BYTES, "O contexto para a IA passa de 500 KB. Reduza o contexto adicional ou use um documento menor; nada foi cortado nem enviado.");
     Ok(())
 }
 
@@ -1033,19 +1033,19 @@ fn endpoint(settings: &AiSettings, route: &str) -> Result<(Url, bool)> {
     );
     ensure!(
         settings.token.len() <= 16 * 1024 && !settings.token.chars().any(char::is_control),
-        "Token inválido."
+        "Chave inválida."
     );
     let mut url = Url::parse(settings.base_url.trim())
-        .context("Endpoint de IA inválido; informe http://localhost:11434 ou um endpoint HTTPS.")?;
+        .context("Endereço do servidor de IA inválido; informe http://localhost:11434 ou um endereço https.")?;
     ensure!(
         url.username().is_empty() && url.password().is_none(),
-        "Endpoint não pode conter usuário ou senha na URL."
+        "O endereço não pode conter usuário nem senha."
     );
     ensure!(
         url.query().is_none() && url.fragment().is_none(),
-        "Endpoint não pode conter parâmetros ou fragmentos; use o campo de token."
+        "O endereço não pode conter parâmetros nem fragmentos; use o campo da chave."
     );
-    let host = url.host_str().context("Endpoint de IA sem servidor.")?;
+    let host = url.host_str().context("O endereço do servidor de IA está incompleto.")?;
     let local = host.eq_ignore_ascii_case("localhost")
         || host
             .trim_matches(['[', ']'])
@@ -1053,7 +1053,7 @@ fn endpoint(settings: &AiSettings, route: &str) -> Result<(Url, bool)> {
             .is_ok_and(|ip| ip.is_loopback());
     ensure!(
         url.scheme() == "https" || (url.scheme() == "http" && local),
-        "Endpoint remoto exige HTTPS; HTTP só é permitido em localhost ou IP de loopback."
+        "Um servidor remoto exige endereço https; http só é permitido neste computador (localhost)."
     );
     let path = url.path().trim_end_matches('/');
     // People sometimes paste the chat route itself as the base.
@@ -1122,15 +1122,15 @@ fn chat(
             request = request.bearer_auth(&token);
         }
         reporter.step(match (attempt, window) {
-            (0, None) => "Enviando ao modelo e aguardando o início da resposta…".to_owned(),
-            (0, Some(_)) => "Documento longo: pedindo ao modelo uma janela maior e aguardando o início da resposta…".to_owned(),
-            _ => "O modelo pediu mais espaço: reenviando com uma janela maior…".to_owned(),
+            (0, None) => "Enviando à IA e aguardando o início da resposta…".to_owned(),
+            (0, Some(_)) => "Documento longo: pedindo à IA mais espaço de leitura e aguardando o início da resposta…".to_owned(),
+            _ => "A IA precisa de mais espaço de leitura: reenviando o documento…".to_owned(),
         });
         let response = request.send().map_err(|error| {
             // Do not include provider bodies, request data, endpoint paths or credentials in errors.
-            if error.is_timeout() { anyhow::anyhow!("A IA excedeu o tempo limite de 120 segundos. Tente um modelo menor ou verifique o provedor.") }
-            else if error.is_connect() { anyhow::anyhow!("Não foi possível conectar à IA. Verifique o endpoint e se o Ollama está disponível.") }
-            else { anyhow::anyhow!("Falha na comunicação com o provedor de IA.") }
+            if error.is_timeout() { anyhow::anyhow!("A IA demorou mais de 120 segundos para responder. Tente um modelo menor ou verifique o servidor de IA.") }
+            else if error.is_connect() { anyhow::anyhow!("Não foi possível conectar à IA. Verifique o endereço do servidor e se o Ollama está em execução.") }
+            else { anyhow::anyhow!("A comunicação com o servidor de IA falhou. Tente de novo.") }
         })?;
         let status = response.status();
         if status.is_success() {
@@ -1186,9 +1186,7 @@ fn context_window(prompt_tokens: usize) -> Result<Option<u32>> {
     match [8192_u32, 16384, MAX_WINDOW].into_iter().find(|step| needed <= *step as usize) {
         Some(step) => Ok(Some(step)),
         None => bail!(
-            "O documento, com as notas e as fontes, é grande demais para o modelo deste servidor (cerca de {} mil tokens; o Ponte pede no máximo {} mil). Analise sem as fontes extras ou escolha outro provedor em Ajustes ▸ Inteligência artificial.",
-            prompt_tokens / 1000,
-            MAX_WINDOW / 1000
+            "O documento, com as notas e as fontes, é grande demais para o modelo deste servidor. Analise sem as fontes extras ou escolha outro provedor em Ajustes ▸ Inteligência artificial."
         ),
     }
 }
@@ -1219,9 +1217,9 @@ fn ollama_failure(status: u16, body: &[u8], model: &str, local: bool) -> OllamaF
         context_needed = numbers.first().copied().filter(|n| *n > 0);
         match (numbers.first(), numbers.get(1)) {
             (Some(needed), Some(limit)) => format!(
-                "O documento, com as notas e as fontes, não coube na janela do modelo: precisa de {needed} tokens e o limite é {limit}. Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor em Ajustes ▸ Inteligência artificial."
+                "O documento, com as notas e as fontes, é grande demais para este modelo (tamanho {needed}; limite {limit}). Analise sem as fontes extras, use um modelo que leia mais texto ou escolha outro provedor em Ajustes ▸ Inteligência artificial."
             ),
-            _ => "O documento, com as notas e as fontes, não coube na janela do modelo. Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor em Ajustes ▸ Inteligência artificial.".to_owned(),
+            _ => "O documento, com as notas e as fontes, é grande demais para este modelo. Analise sem as fontes extras, use um modelo que leia mais texto ou escolha outro provedor em Ajustes ▸ Inteligência artificial.".to_owned(),
         }
     } else if status == 404 || lower.contains("not found") {
         format!(
@@ -1233,7 +1231,7 @@ fn ollama_failure(status: u16, body: &[u8], model: &str, local: bool) -> OllamaF
     } else if lower.contains("memory") {
         "O computador não tem memória livre para este modelo com um documento deste tamanho. Feche outros programas, use um modelo menor ou escolha outro provedor em Ajustes ▸ Inteligência artificial.".to_owned()
     } else if matches!(status, 401 | 403) {
-        format!("O servidor de IA recusou a credencial (HTTP {status}). Confira a chave em Ajustes ▸ Inteligência artificial.")
+        format!("O servidor de IA recusou a chave (código {status}). Confira a chave em Ajustes ▸ Inteligência artificial.")
     } else {
         let detail: String = text
             .chars()
@@ -1246,7 +1244,7 @@ fn ollama_failure(status: u16, body: &[u8], model: &str, local: bool) -> OllamaF
             .take(200)
             .collect();
         format!(
-            "Provedor de IA respondeu HTTP {status}. Verifique endpoint, modelo e credenciais.{}",
+            "O servidor de IA respondeu com erro (código {status}). Verifique o endereço, o modelo e a chave.{}",
             if local && !detail.is_empty() {
                 format!(" Detalhe do Ollama: {detail}")
             } else {
@@ -1287,14 +1285,14 @@ fn read_ollama_stream(reader: impl BufRead, reporter: &Reporter) -> Result<Strin
         total += line.len() as u64 + 1;
         ensure!(
             total <= MAX_RESPONSE_BYTES,
-            "Resposta da IA excede o limite de 2 MiB."
+            "A resposta da IA passa de 2 MB."
         );
         if line.trim().is_empty() {
             continue;
         }
         reporter.check()?;
         let chunk: ChatResponse = serde_json::from_str(&line)
-            .context("Resposta do provedor não é JSON Ollama válido.")?;
+            .context("A resposta do servidor de IA veio em formato inválido.")?;
         ensure!(
             chunk.error.is_none(),
             "O provedor informou uma falha de geração. Verifique o modelo configurado."
@@ -1305,12 +1303,12 @@ fn read_ollama_stream(reader: impl BufRead, reporter: &Reporter) -> Result<Strin
                     .role
                     .as_deref()
                     .is_none_or(|role| role == "assistant"),
-                "Resposta da IA com papel inválido."
+                "A resposta da IA veio em formato inesperado."
             );
             content.push_str(&message.content);
             ensure!(
                 content.len() <= MAX_GENERATED_BYTES,
-                "Resposta da IA excede 128 KiB."
+                "A resposta da IA passa de 128 KB."
             );
             meter.tick(reporter, &content);
         }
@@ -1812,7 +1810,7 @@ mod tests {
             analyze_with_sources(&settings(&base), &capture, 7, "", &[], &Reporter::silent())
                 .unwrap_err();
         server.join().unwrap();
-        assert!(error.to_string().contains("HTTP 500"), "{error}");
+        assert!(error.to_string().contains("código 500"), "{error}");
         assert_eq!(received.try_iter().count(), 1);
     }
 
@@ -1861,13 +1859,13 @@ mod tests {
         // Unknown refusals keep the status; the body is quoted only for this computer.
         let unknown_local = ollama_failure(500, br#"{"error":"something broke"}"#, "m", true);
         assert!(
-            unknown_local.message.contains("HTTP 500")
+            unknown_local.message.contains("código 500")
                 && unknown_local.message.contains("something broke")
         );
         let unknown_remote =
             ollama_failure(500, br#"{"error":"echo of private text"}"#, "m", false);
         assert!(
-            unknown_remote.message.contains("HTTP 500")
+            unknown_remote.message.contains("código 500")
                 && !unknown_remote.message.contains("private")
         );
     }
@@ -2013,6 +2011,6 @@ mod tests {
             &"x".repeat(MAX_CONTEXT_BYTES),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("500 KiB"));
+        assert!(error.to_string().contains("500 KB"));
     }
 }

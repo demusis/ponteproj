@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.24.0 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.25.0 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, quadro **Ligação com o navegador** | *✓ O Ponte está registrado para o Chrome e Edge* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.24.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.25.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 Se algum dos três não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -259,7 +259,7 @@ Outras marcas do cartão: **Manual** (registro manual), `📎 N juntado(s)` (o d
 
 | Aba | O que tem |
 |---|---|
-| **Resumo** | Cartões **Análise** (botão **Analisar…**, depois **Analisar de novo**; as providências sugeridas têm **Criar tarefa**), **Dados do documento** (**Ler o PDF**, **Completar contexto**), **Tarefas** (**Nova tarefa**, **Ver todas**), **Atendimento** e **Nota**; documentos parecidos. |
+| **Resumo** | Cartões **Análise** (botão **Analisar**, depois **Analisar de novo**; as providências sugeridas têm **Criar tarefa**), **Dados do documento** (**Ler o PDF**, **Completar contexto**), **Tarefas** (**Nova tarefa**, **Ver todas**), **Atendimento** e **Nota**; documentos parecidos. |
 | **Documento** | **Texto importado**; **Arquivos (PDF)** com **Ler no Ponte** e exportação; **Anexos** (arquivos seus); dados do SIGADOC; histórico de tramitação. |
 | **Notas e minutas** | **Notas** no alto; **Minuta** embaixo, com tipo, **Modelo de trabalho**, **Começar por um modelo**, **Guardar como modelo**, **Pedido desta minuta**, IA (**Gerar com IA**, **Completar**, **Revisar**), **Salvar nova versão**, **Copiar**, **Exportar (RTF)**, **Comparar com versão ▾** e as versões salvas, cada uma com **Material utilizado** quando foi gerada com IA. |
 | **Mais** | Vínculos entre documentos (automáticos ou feitos por você); versões importadas, com comparação; o que foi importado e os links encontrados na página; dados técnicos. |
@@ -326,7 +326,7 @@ Cada documento importado recebe uma tarefa de triagem. Você cria outras no Resu
 O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupada em ATRASADAS, PARA HOJE, PRÓXIMAS, SEM PRAZO e CONCLUÍDAS. O círculo à esquerda de cada tarefa a conclui (ou a reabre, se já concluída). Clicar na tarefa abre os dados num painel à direita, com **Salvar**, **Concluir**, **Cancelar** e **Excluir…** embaixo.
 
 - **A área segue o documento selecionado.** Com um documento selecionado em Documentos, ela mostra só as tarefas dele: no alto aparece `Só SESP-OFI-2026/00042` e o botão **Todos os documentos**, que amplia. Selecionar outro documento volta a filtrar por ele.
-- **Visões:** *Todas*, *Hoje*, *Esta semana*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando terceiros*, *Lembretes* e *Sem prazo*.
+- **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*.
 - **Mostrar concluídas** inclui as já concluídas na lista.
 - **Nova tarefa** cria uma tarefa do documento selecionado, quando há um.
 
@@ -564,7 +564,7 @@ Em **Ajustes ▸ Inteligência artificial**, escolha uma das quatro opções:
 |---|---|---|---|
 | **Ollama neste computador** (padrão) | **Não** | nenhum | instale o [Ollama](https://ollama.com) e baixe um modelo: `ollama pull qwen3:4b-instruct` |
 | **Ollama Cloud** | Sim, para os servidores da Ollama | conta em ollama.com, gratuita por uso ou plano mensal | a chave de API criada em [ollama.com/settings/keys](https://ollama.com/settings/keys) |
-| **Outro servidor HTTPS** | Sim, para esse servidor | o do servidor | endereço e token opcional. Serve para um servidor do órgão compatível com a API do Ollama |
+| **Outro servidor** | Sim, para esse servidor | o do servidor | endereço e chave opcional. Serve para um servidor do órgão compatível com a API do Ollama |
 | **ChatGPT (assinatura)** | Sim, para a OpenAI, nos EUA | usa a cota do seu plano Plus ou Pro | clique em **Entrar com o ChatGPT…** e autorize no navegador |
 
 Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na lista. Depois, **Salvar** (ou saia da seção: ela é salva ao sair).
@@ -778,7 +778,7 @@ Não. O acervo é cifrado pela conta do Windows de cada máquina, e um banco de 
 Se nada mudou, nada é gravado e a extensão avisa. Se mudou, o Ponte guarda uma nova versão e mantém as anteriores.
 
 **A IA lê meus documentos sem eu pedir?**
-Não. Nada é enviado à IA ao importar. O envio acontece só quando você clica em **Analisar…** (ou **Analisar de novo**) ou em **Gerar com IA**, **Completar** ou **Revisar**.
+Não. Nada é enviado à IA ao importar. O envio acontece só quando você clica em **Analisar** (ou **Analisar de novo**) ou em **Gerar com IA**, **Completar** ou **Revisar**.
 
 **Qual a diferença entre a extensão da loja e a da pasta?**
 São a mesma extensão. A da loja se atualiza sozinha e não exige o modo do desenvolvedor; a da pasta vem junto com o instalador, para quem não tem acesso à loja. Use só uma das duas.
@@ -901,7 +901,7 @@ node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tes
 
 Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
-Hoje são 139 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
+Hoje são 140 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 

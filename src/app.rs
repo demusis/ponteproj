@@ -19,6 +19,15 @@ const PROJECT_URL: &str = "https://github.com/demusis/ponteproj";
 /// Version of the browser extension shipped with this build (extension/manifest.json).
 const EXTENSION_VERSION: &str = "0.1.11";
 
+/// "1 documento" / "3 documentos".
+fn plural(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DocTaskFilter {
     #[default]
@@ -362,7 +371,7 @@ pub fn run(initial_document: Option<i64>) -> Result<()> {
 /// Opens the window, on a document or on the "Modelos" area.
 pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Result<()> {
     let db_path = crate::paths::db_path()?;
-    let store = Store::open(&db_path).context("Não foi possível abrir a biblioteca protegida")?;
+    let store = Store::open(&db_path).context("Não foi possível abrir o acervo protegido")?;
     // Temporary copies of attachments opened in other programs do not outlive a session.
     crate::attachments::clear_temp_dir();
     let mut app = PonteApp::new(store, db_path);
@@ -372,12 +381,15 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
         Ok((0, problems)) if problems.is_empty() => {}
         Ok((count, problems)) => {
             if problems.is_empty() {
-                app.message(format!(
-                    "{count} modelo(s) pessoal(is) de versões anteriores foram levados para a área Modelos."
-                ));
+                app.message(if count == 1 {
+                    "1 modelo pessoal de versões anteriores foi levado para a área Modelos.".to_owned()
+                } else {
+                    format!("{count} modelos pessoais de versões anteriores foram levados para a área Modelos.")
+                });
             } else {
                 app.error(format!(
-                    "{count} modelo(s) antigo(s) convertido(s); não foi possível converter: {}",
+                    "{}; não foi possível converter os demais: {}",
+                    plural(count, "modelo antigo foi convertido", "modelos antigos foram convertidos"),
                     problems.join("; ")
                 ));
             }
@@ -389,9 +401,11 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     // E-mails imported by 0.22–0.23 (numbered MANUAL-) get their own numbering.
     match crate::storage::renumber_imported_emails(&mut app.store) {
         Ok(0) => {}
-        Ok(count) => app.message(format!(
-            "{count} e-mail(s) importado(s) antes desta versão passaram a ter número próprio (EMAIL-ano/sequência)."
-        )),
+        Ok(count) => app.message(if count == 1 {
+            "1 e-mail importado antes desta versão passou a ter número próprio (EMAIL-ano/sequência).".to_owned()
+        } else {
+            format!("{count} e-mails importados antes desta versão passaram a ter número próprio (EMAIL-ano/sequência).")
+        }),
         Err(error) => app.error(format!(
             "Os e-mails importados não puderam receber número próprio: {error}"
         )),
@@ -634,7 +648,7 @@ fn document_row(ui: &mut egui::Ui, row: &DocRow) -> egui::Response {
         if document.joined_children_count > 0 {
             pill(
                 ui,
-                format!("{} juntado(s)", document.joined_children_count),
+                plural(document.joined_children_count as usize, "juntado", "juntados"),
                 Tone::Violet,
             );
         }
@@ -1351,8 +1365,13 @@ impl PonteApp {
                 self.tab = Tab::Document;
                 let mut message = if result.already_imported && result.attachments_added > 0 {
                     format!(
-                        "Este e-mail já estava no acervo (“{}”); foram acrescentados {} anexo(s) que faltavam.",
-                        result.subject, result.attachments_added
+                        "Este e-mail já estava no acervo (“{}”); {}.",
+                        result.subject,
+                        if result.attachments_added == 1 {
+                            "foi acrescentado o anexo que faltava".to_owned()
+                        } else {
+                            format!("foram acrescentados {} anexos que faltavam", result.attachments_added)
+                        }
                     )
                 } else if result.already_imported {
                     format!(
@@ -1361,8 +1380,9 @@ impl PonteApp {
                     )
                 } else {
                     format!(
-                        "E-mail “{}” importado, com {} anexo(s).",
-                        result.subject, result.attachments_added
+                        "E-mail “{}” importado, com {}.",
+                        result.subject,
+                        plural(result.attachments_added, "anexo", "anexos")
                     )
                 };
                 for note in result.notes.iter().chain(result.attachments_skipped.iter()) {
@@ -1378,7 +1398,7 @@ impl PonteApp {
                     self.error(message);
                 }
             }
-            Err(error) => self.error(format!("E-mail não importado: {error:#}")),
+            Err(error) => self.error(format!("Não foi possível importar o e-mail: {error:#}")),
         }
     }
 
@@ -1400,7 +1420,7 @@ impl PonteApp {
             crate::mail_ui::MailAction::None => {}
             crate::mail_ui::MailAction::ListFolders(account) => {
                 self.spawn(
-                    format!("Conectando a {}", account.host),
+                    format!("Conectando a {}…", account.host),
                     WorkKind::Mail,
                     move |reporter| {
                         WorkResult::MailFolders(
@@ -1417,7 +1437,7 @@ impl PonteApp {
                 filter,
             } => {
                 self.spawn(
-                    format!("Listando mensagens de {folder}"),
+                    format!("Listando mensagens de {folder}…"),
                     WorkKind::Mail,
                     move |reporter| {
                         WorkResult::MailMessages(
@@ -1439,7 +1459,7 @@ impl PonteApp {
                     address: account.user.trim().to_owned(),
                 };
                 self.spawn(
-                    format!("Baixando {} mensagem(ns)", uids.len()),
+                    format!("Baixando {}…", plural(uids.len(), "mensagem", "mensagens")),
                     WorkKind::Mail,
                     move |reporter| {
                         WorkResult::MailFetched(
@@ -1526,7 +1546,7 @@ impl PonteApp {
                             self.manual_form.open_new();
                         }
                         if ui
-                            .add(widgets::secondary(format!("{} Importar e-mail (.eml)…", icon::MAIL)))
+                            .add(widgets::secondary(format!("{} Importar e-mail de um arquivo (.eml)…", icon::MAIL)))
                             .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro do tipo E-mail recebido (número EMAIL-ano/sequência), com os anexos. Nada é lido da sua conta de e-mail.")
                             .clicked()
                         {
@@ -1698,7 +1718,10 @@ impl PonteApp {
         let unsent = self.intranet.unsent_folder_changes(&self.store);
         if unsent > 0 {
             out.push(Pending {
-                label: format!("{unsent} alteração(ões) ainda não enviada(s) à pasta compartilhada (botão Sincronizar, no rodapé)"),
+                label: format!(
+                    "{} à pasta compartilhada (botão Sincronizar, no rodapé)",
+                    if unsent == 1 { "1 alteração ainda não enviada".to_owned() } else { format!("{unsent} alterações ainda não enviadas") }
+                ),
                 go: PendingTarget::Network,
             });
         }
@@ -1983,7 +2006,7 @@ impl PonteApp {
         if conflicts > 0 {
             return (
                 crate::theme::error(),
-                format!("⚠ {conflicts} conflito(s) de edição"),
+                format!("⚠ {}", plural(conflicts, "conflito de edição", "conflitos de edição")),
                 format!("{full}\nDecida campo a campo."),
             );
         }
@@ -2051,7 +2074,7 @@ impl PonteApp {
         self.intranet.refresh_client(&mut self.store, &self.db_path);
         match self.store.list_documents(&self.query) {
             Ok(documents) => self.documents = documents,
-            Err(error) => self.error(format!("Falha ao atualizar a biblioteca: {error}")),
+            Err(error) => self.error(format!("Não foi possível atualizar a lista de documentos: {error}")),
         }
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         self.task_badge = self
@@ -2112,14 +2135,14 @@ impl PonteApp {
                         Ok(children) => self.joined_children = children,
                         Err(error) => {
                             self.joined_children.clear();
-                            self.error(format!("Falha ao ler documentos juntados: {error}"));
+                            self.error(format!("Não foi possível ler os documentos juntados: {error}"));
                         }
                     }
                     detail.summary.joined_children_count = self.joined_children.len();
                     self.detail = Some(detail);
                     match self.store.similar_documents(id, 5) {
                         Ok(items) => self.similar = items,
-                        Err(error) => self.error(format!("Falha ao buscar similares: {error}")),
+                        Err(error) => self.error(format!("Não foi possível buscar documentos parecidos: {error}")),
                     }
                 }
             }
@@ -2139,7 +2162,7 @@ impl PonteApp {
     fn settings(&self) -> Result<AiSettings> {
         anyhow::ensure!(
             !self.ai.model().trim().is_empty(),
-            "Escolha o modelo em Ajustes ▸ Inteligência artificial."
+            "Escolha o modelo da IA em Ajustes ▸ Inteligência artificial."
         );
         Ok(self.with_chatgpt_session(self.ai.chat_settings()?))
     }
@@ -2194,7 +2217,7 @@ impl PonteApp {
                 let session = self.ai.chatgpt.clone();
                 self.set_chatgpt_session(session);
             }
-            Err(error) => self.error(format!("Configuração de IA não carregada: {error}")),
+            Err(error) => self.error(format!("Não foi possível carregar a configuração da IA: {error}")),
         }
     }
 
@@ -2276,7 +2299,7 @@ impl PonteApp {
             }
             Some(Err(TryRecvError::Disconnected)) => {
                 self.chatgpt_login = None;
-                self.chatgpt_login_error = Some("O login terminou sem resposta.".into());
+                self.chatgpt_login_error = Some("O login não foi concluído. Tente de novo.".into());
             }
             _ => {}
         }
@@ -2324,7 +2347,7 @@ impl PonteApp {
                 true
             }
             Err(error) => {
-                self.error(format!("Configuração de IA não salva: {error}"));
+                self.error(format!("Não foi possível salvar a configuração da IA: {error}"));
                 false
             }
         }
@@ -2361,7 +2384,7 @@ impl PonteApp {
                 self.models_error = None;
             }
             Err(error) => {
-                self.models_error = Some(format!("Não foi possível consultar os modelos: {error}"))
+                self.models_error = Some(format!("Não foi possível listar os modelos: {error}"))
             }
         }
     }
@@ -2395,7 +2418,7 @@ impl PonteApp {
             }
             Some(Err(TryRecvError::Disconnected)) => {
                 self.model_fetch = None;
-                self.models_error = Some("A consulta de modelos terminou sem resposta.".into());
+                self.models_error = Some("Não houve resposta ao listar os modelos. Tente de novo.".into());
             }
             _ => {}
         }
@@ -2452,7 +2475,7 @@ impl PonteApp {
     fn prepare_sources(&mut self, document_id: i64, documents: Vec<i64>, ctx: &egui::Context) {
         let path = self.db_path.clone();
         self.spawn(
-            "Preparando fontes localmente".into(),
+            "Preparando as fontes neste computador…".into(),
             WorkKind::Sources,
             move |_| WorkResult::Sources {
                 document_id,
@@ -2480,7 +2503,7 @@ impl PonteApp {
         let human_context = match self.store.load_work_context(detail.summary.id) {
             Ok(value) => value.analysis_text(&note),
             Err(e) => {
-                self.error(format!("Falha ao ler contexto: {e}"));
+                self.error(format!("Não foi possível ler o contexto: {e}"));
                 return;
             }
         };
@@ -2496,7 +2519,7 @@ impl PonteApp {
         let capture_id = detail.summary.latest_capture_id;
         let capture = detail.capture.clone();
         self.spawn(
-            format!("Analisando {}", detail.summary.document_number),
+            format!("Analisando {}…", detail.summary.document_number),
             WorkKind::Analysis,
             move |reporter| WorkResult::Analysis {
                 document_id,
@@ -2536,7 +2559,7 @@ impl PonteApp {
         }
         if !saved.is_empty() {
             self.message(format!(
-                "{} salvo(s) antes de acionar a IA.",
+                "Salvos antes de acionar a IA: {}.",
                 saved.join(" e ")
             ));
             self.reload(id);
@@ -2586,7 +2609,7 @@ impl PonteApp {
         let local_context = match self.store.load_work_context(document_id) {
             Ok(value) => value.analysis_text(&note),
             Err(e) => {
-                self.error(format!("Falha ao ler contexto: {e}"));
+                self.error(format!("Não foi possível ler o contexto: {e}"));
                 return;
             }
         };
@@ -2613,7 +2636,7 @@ impl PonteApp {
                     return;
                 }
                 Err(error) => {
-                    self.error(format!("Falha ao ler o modelo: {error}"));
+                    self.error(format!("Não foi possível ler o modelo: {error}"));
                     return;
                 }
             },
@@ -2658,7 +2681,7 @@ impl PonteApp {
         };
         let number = detail.summary.document_number.clone();
         self.spawn(
-            format!("Gerando minuta de {}", number),
+            format!("Gerando minuta de {}…", number),
             WorkKind::Draft,
             move |reporter| {
                 let outcome = ai::generate_draft(&settings, &job, &reporter);
@@ -2681,7 +2704,7 @@ impl PonteApp {
     fn backup(&mut self, ctx: &egui::Context) {
         let db_path = self.db_path.clone();
         self.spawn(
-            "Criando backup protegido".into(),
+            "Criando a cópia de segurança protegida…".into(),
             WorkKind::Backup,
             move |_| {
                 let result = (|| -> Result<PathBuf> {
@@ -2705,7 +2728,7 @@ impl PonteApp {
     fn export_csv(&mut self, ctx: &egui::Context) {
         let db_path = self.db_path.clone();
         self.spawn(
-            "Exportando dados para CSV".into(),
+            "Exportando dados para CSV…".into(),
             WorkKind::Export,
             move |_| {
                 let result = Store::open(&db_path)
@@ -2770,14 +2793,14 @@ impl PonteApp {
             } => match result {
                 Ok(analysis) => match self.store.save_analysis(document_id, &analysis) {
                     Ok(()) => {
-                        self.message("Análise salva e vinculada à captura utilizada. Confira as conclusões na fonte.");
+                        self.message("Análise salva e vinculada à importação usada. Confira as conclusões na fonte.");
                         self.refresh();
                     }
                     Err(error) => self.error(format!(
-                        "A análise foi obtida, mas não pôde ser salva: {error}"
+                        "A IA respondeu, mas a análise não pôde ser salva: {error}"
                     )),
                 },
-                Err(error) => self.error(format!("Análise não concluída: {error}")),
+                Err(error) => self.error(format!("Não foi possível concluir a análise: {error}")),
             },
             WorkResult::Draft {
                 materials,
@@ -2792,7 +2815,7 @@ impl PonteApp {
             } => {
                 // Every generation is recorded, accepted or refused.
                 if let Err(error) = self.store.record_generation(&record) {
-                    self.error(format!("A geração não pôde ser registrada: {error}"));
+                    self.error(format!("Não foi possível registrar esta geração no histórico: {error}"));
                 }
                 match result {
                     Ok(body) => {
@@ -2819,15 +2842,15 @@ impl PonteApp {
                         self.suggestion_open = true;
                         self.message("Sugestão pronta para revisão. Salve uma versão quando o texto estiver adequado.");
                     }
-                    Err(error) => self.error(format!("Minuta não gerada: {error}")),
+                    Err(error) => self.error(format!("Não foi possível gerar a minuta: {error}")),
                 }
             }
             WorkResult::Backup(result) => match result {
                 Ok(path) => {
-                    self.message(format!("Backup protegido concluído: {}", path.display()));
+                    self.message(format!("Cópia de segurança concluída: {}", path.display()));
                     self.backup_path = Some(path);
                 }
-                Err(error) => self.error(format!("Backup não concluído: {error}")),
+                Err(error) => self.error(format!("Não foi possível fazer a cópia de segurança: {error}")),
             },
             WorkResult::MailFolders(result) => self.mail.accept_folders(result),
             WorkResult::MailMessages(result) => {
@@ -2857,9 +2880,11 @@ impl PonteApp {
                             // Through the guard: an unsaved task is never hidden.
                             self.navigate(Leave::Select(id));
                         }
-                        self.message(format!(
-                            "{imported} mensagem(ns) importada(s) como registro(s) manual(is)."
-                        ));
+                        self.message(if imported == 1 {
+                            "1 mensagem importada como e-mail.".to_owned()
+                        } else {
+                            format!("{imported} mensagens importadas como e-mails.")
+                        });
                     }
                 }
                 Err(error) => self.mail.accept_fetch_error(error),
@@ -2867,15 +2892,15 @@ impl PonteApp {
             WorkResult::Export(result) => match result {
                 Ok(report) => {
                     self.message(format!(
-                        "Exportados {} documento(s), {} tarefa(s) e {} atendimento(s) em {}. No CERES, envie cada arquivo .csv como um conjunto.",
-                        report.documents,
-                        report.tasks,
-                        report.attendances,
+                        "Exportação concluída: {}, {} e {}, em {}. No CERES, envie cada arquivo .csv como um conjunto.",
+                        plural(report.documents as usize, "documento", "documentos"),
+                        plural(report.tasks as usize, "tarefa", "tarefas"),
+                        plural(report.attendances as usize, "atendimento", "atendimentos"),
                         report.folder.display()
                     ));
                     crate::windows_ui::reveal_in_explorer(&report.folder);
                 }
-                Err(error) => self.error(format!("Exportação não concluída: {error}")),
+                Err(error) => self.error(format!("Não foi possível exportar os dados: {error}")),
             },
         }
     }
@@ -2937,7 +2962,7 @@ impl PonteApp {
                 self.message("Notas salvas.");
                 self.reload(id);
             }
-            Err(error) => self.error(format!("Notas não salvas: {error}")),
+            Err(error) => self.error(format!("Não foi possível salvar as notas: {error}")),
         }
     }
 
@@ -2966,7 +2991,7 @@ impl PonteApp {
                 ));
                 self.reload(id);
             }
-            Err(error) => self.error(format!("Minuta não salva: {error}")),
+            Err(error) => self.error(format!("Não foi possível salvar a minuta: {error}")),
         }
     }
 
@@ -3011,8 +3036,12 @@ impl PonteApp {
                 tasks.on_hover_text("Há uma tarefa com alterações não salvas. (Ctrl+2)")
             } else if self.task_badge > 0 {
                 tasks.on_hover_text(format!(
-                    "{} tarefa(s) atrasada(s) ou para hoje. (Ctrl+2)",
-                    self.task_badge
+                    "{} ou para hoje. (Ctrl+2)",
+                    plural(
+                        self.task_badge as usize,
+                        "tarefa atrasada",
+                        "tarefas atrasadas"
+                    )
                 ))
             } else {
                 tasks.on_hover_text("Tarefas de todos os documentos. (Ctrl+2)")
@@ -3266,7 +3295,7 @@ impl PonteApp {
                             .add(primary(format!("{} Contas e importação", icon::MAIL)))
                             .clicked();
                         import_eml = ui
-                            .add(secondary("Importar um e-mail salvo em arquivo (.eml)…"))
+                            .add(secondary("Importar e-mail de um arquivo (.eml)…"))
                             .on_hover_text("Um e-mail salvo como arquivo vira um registro do tipo E-mail recebido, com os anexos.")
                             .clicked();
                     },
@@ -3288,7 +3317,7 @@ impl PonteApp {
                 widgets::section(ui, "Cópia de segurança");
                 Self::settings_card(
                     ui,
-                    "Guarda uma cópia protegida do acervo na pasta de backups deste computador. Ela só abre na mesma conta do Windows.",
+                    "Guarda uma cópia protegida do acervo na pasta “backups” deste computador. Ela só abre na mesma conta do Windows.",
                     |ui| {
                         backup = ui
                             .add_enabled(idle, primary("Fazer cópia agora"))
@@ -3442,7 +3471,7 @@ impl PonteApp {
             "Buscar número, assunto ou texto",
             search_width,
         )
-        .accessible_name("Buscar documentos na biblioteca");
+        .accessible_name("Buscar documentos no acervo");
         if response.changed() {
             self.search_changed = Some(Instant::now());
         }
@@ -3620,12 +3649,12 @@ impl PonteApp {
         let mut clear = false;
         ui.horizontal(|ui| {
             let count = if filtered_docs.len() == self.documents.len() {
-                format!("{} documento(s)", self.documents.len())
+                plural(self.documents.len(), "documento", "documentos")
             } else {
                 format!(
-                    "{} de {} documento(s)",
+                    "{} de {}",
                     filtered_docs.len(),
-                    self.documents.len()
+                    plural(self.documents.len(), "documento", "documentos")
                 )
             };
             widgets::small_muted(ui, count);
@@ -3858,7 +3887,11 @@ impl PonteApp {
             ui.horizontal_wrapped(|ui| {
                 pill(
                     ui,
-                    format!("{} documento(s) juntado(s)", self.joined_children.len()),
+                    plural(
+                        self.joined_children.len(),
+                        "documento juntado",
+                        "documentos juntados",
+                    ),
                     Tone::Violet,
                 );
                 for child in &self.joined_children {
@@ -4209,7 +4242,7 @@ impl PonteApp {
 
     fn overview(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         ui.spacing_mut().item_spacing = egui::vec2(S4, S4);
-        if ui.available_width() >= 760.0 {
+        if ui.available_width() >= 980.0 {
             ui.columns(2, |columns| {
                 self.analysis_section(&mut columns[0], detail);
                 self.document_summary(&mut columns[0], detail);
@@ -4244,7 +4277,7 @@ impl PonteApp {
         }
         widgets::card(ui, |ui| {
             egui::CollapsingHeader::new(
-                RichText::new("Documentos parecidos na biblioteca")
+                RichText::new("Documentos parecidos no acervo")
                     .font(theme::font_strong(theme::SIZE_SECTION)),
             )
             .id_salt(("similar", detail.summary.id))
@@ -4380,7 +4413,7 @@ impl PonteApp {
                 format!("Analisando… {}", worker.short_step())
             }
             _ if has_analysis => "Analisar de novo".to_owned(),
-            _ => format!("{} Analisar…", icon::AI),
+            _ => format!("{} Analisar", icon::AI),
         };
         let hover = self.ai_disclosure_text(false);
         let mut analyze = false;
@@ -4440,7 +4473,7 @@ impl PonteApp {
                 let mut open_task: Option<crate::tasks::Task> = None;
                 if !analysis.suggested_actions.is_empty() {
                     ui.separator();
-                    widgets::field_label(ui, "Providências sugeridas — revisão necessária");
+                    widgets::field_label(ui, "Providências sugeridas (revise antes de usar)");
                     // A suggestion already turned into a task of this document
                     // is shown folded, with the task, so it is not prepared twice
                     // by mistake (another one can still be prepared on purpose).
@@ -4479,7 +4512,7 @@ impl PonteApp {
                                         .add_enabled(!stale, widgets::secondary("Criar tarefa"))
                                         .on_hover_text(format!(
                                             "Prepara uma tarefa: {}",
-                                            suggestion.action
+                                            crate::labels::task_action(&suggestion.action)
                                         ))
                                         .clicked()
                                     {
@@ -4490,7 +4523,7 @@ impl PonteApp {
                                         |ui| {
                                             ui.add(
                                                 egui::Label::new(
-                                                    RichText::new(&suggestion.action).font(
+                                                    RichText::new(crate::labels::task_action(&suggestion.action)).font(
                                                         theme::font_strong(theme::SIZE_BODY),
                                                     ),
                                                 )
@@ -4603,7 +4636,7 @@ impl PonteApp {
                 widgets::small_muted(
                     ui,
                     format!(
-                        "Modelo {} • {}",
+                        "Modelo de IA {} • {}",
                         analysis.model,
                         display_date(&analysis.created_at)
                     ),
@@ -4626,7 +4659,7 @@ impl PonteApp {
             }
             Ok(files) => {
                 ui.horizontal_wrapped(|ui| {
-                    info(ui, "“Ler no Ponte” abre a cópia local, sem precisar do SIGADOC. “Abrir no SIGADOC” vai à versão oficial no navegador (exige login). “Exportar” cria uma cópia legível na pasta local \"exportados\".");
+                    info(ui, "“Ler no Ponte” abre a cópia local, sem precisar do SIGADOC. “Abrir no SIGADOC” vai à versão oficial no navegador (exige login). “Exportar e abrir pasta” cria uma cópia legível na pasta “exportados” deste computador.");
                     widgets::small_muted(ui, "Cópias baixadas na importação, guardadas protegidas no acervo.");
                 });
                 for (index, file) in files.into_iter().enumerate() {
@@ -4681,7 +4714,7 @@ impl PonteApp {
                                         crate::windows_ui::reveal_in_explorer(parent);
                                     }
                                 }
-                                Err(e) => self.error(format!("PDF não exportado: {e}")),
+                                Err(e) => self.error(format!("Não foi possível exportar o PDF: {e}")),
                             }
                         }
                         if let Some(reference) = origin {
@@ -4694,21 +4727,21 @@ impl PonteApp {
                                 &file.sha256[..file.sha256.len().min(12)]
                             ),
                         )
-                        .on_hover_text(format!("SHA-256 completo: {}", file.sha256));
+                        .on_hover_text(format!("Identificação completa do arquivo (SHA-256): {}", file.sha256));
                     });
                 }
             }
             Err(e) => {
-                notice_line(ui, Tone::Warn, format!("Falha ao ler arquivos: {e}"));
+                notice_line(ui, Tone::Warn, format!("Não foi possível ler os arquivos: {e}"));
             }
         }
     }
 
     fn coverage_and_references(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         ui.label(format!(
-            "{} caracteres de texto • {} referência(s)",
+            "{} caracteres de texto • {}",
             detail.capture.text.chars().count(),
-            detail.capture.references.len()
+            plural(detail.capture.references.len(), "referência", "referências")
         ));
         if detail.capture.coverage.recognized.is_empty() {
             notice_line(ui, Tone::Warn, "Nenhuma parte da página foi marcada como reconhecida.");
@@ -4892,10 +4925,10 @@ impl PonteApp {
                         rows.push((
                             "Arquivos",
                             format!(
-                                "{} PDF(s) • {} caracteres de texto • {} referência(s)",
-                                files.len(),
+                                "{} • {} caracteres de texto • {}",
+                                plural(files.len(), "PDF", "PDFs"),
                                 detail.capture.text.chars().count(),
-                                detail.capture.references.len()
+                                plural(detail.capture.references.len(), "referência", "referências")
                             ),
                         ));
                         facts(ui, ("doc-facts", detail.summary.id), &rows);
@@ -4914,8 +4947,12 @@ impl PonteApp {
                                 pill(
                                     ui,
                                     format!(
-                                        "{} observação(ões) da importação",
-                                        detail.capture.coverage.pending.len()
+                                        "{} da importação",
+                                        plural(
+                                            detail.capture.coverage.pending.len(),
+                                            "observação",
+                                            "observações"
+                                        )
                                     ),
                                     Tone::Warn,
                                 );
@@ -5004,13 +5041,17 @@ impl PonteApp {
                     } else {
                         widgets::small_muted(
                             ui,
-                            format!("{} pendente(s) • {} concluída(s)", pending, tasks.len() - pending),
+                            format!(
+                                "{} • {}",
+                                plural(pending, "pendente", "pendentes"),
+                                plural(tasks.len() - pending, "concluída", "concluídas")
+                            ),
                         );
                     }
                     if pending > 5 {
                         widgets::small_muted(
                             ui,
-                            "As cinco mais urgentes estão abaixo; \"Ver todas\" mostra o restante.",
+                            "As cinco mais urgentes estão abaixo; “Ver todas” mostra o restante.",
                         );
                     }
                     // Same order and signals as the Tarefas panel: a task after
@@ -5164,7 +5205,7 @@ impl PonteApp {
                 if dirty {
                     pill(ui, "não salvas", Tone::Warn);
                 }
-                info(ui, "Suas anotações e correções sobre este documento. Ficam só na biblioteca protegida deste computador (ou do gabinete, se estiver em equipe).");
+                info(ui, "Suas anotações e correções sobre este documento. Ficam só no acervo protegido deste computador (ou do gabinete, se estiver em equipe).");
             },
             |ui| {
                 let editor = self.editors.get_mut(&id).expect("editor exists");
@@ -5197,7 +5238,7 @@ impl PonteApp {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    widgets::muted(ui, format!("Importação da minuta não disponível: {e}"));
+                    widgets::muted(ui, format!("Não foi possível ler a importação da minuta: {e}"));
                     return;
                 }
             }
@@ -5558,7 +5599,7 @@ impl PonteApp {
                         crate::windows_ui::reveal_in_explorer(parent);
                     }
                 }
-                Err(e) => self.error(format!("Minuta não exportada: {e}")),
+                Err(e) => self.error(format!("Não foi possível exportar a minuta: {e}")),
             }
         }
         if let Some(draft) = compare {
@@ -5666,7 +5707,7 @@ impl PonteApp {
         } else {
             "o documento importado, o contexto, as notas salvas e as fontes selecionadas"
         };
-        format!("Ao clicar, envia {sent} ao {provider} ({destination}). Modelo: {model}. O resultado é uma sugestão para a sua revisão.")
+        format!("Ao clicar, envia {sent} ao {provider} ({destination}). Modelo de IA: {model}. O resultado é uma sugestão para a sua revisão.")
     }
 
     /// One short, always-visible line saying where the AI runs.
@@ -5705,15 +5746,15 @@ impl PonteApp {
         let mut refresh = false;
         let mut provider_changed = false;
         widgets::card(ui, |ui| {
-            widgets::section(ui, "Onde a IA roda");
+            widgets::section(ui, "Onde a IA funciona");
             ui.horizontal_wrapped(|ui| {
                 let before = self.ai.provider;
                 ui.radio_value(&mut self.ai.provider, AiProvider::Local, "Ollama neste computador")
-                    .on_hover_text("Modelo instalado neste computador. Nada sai da máquina.");
+                    .on_hover_text("Modelo instalado neste computador. Nada sai deste computador.");
                 ui.radio_value(&mut self.ai.provider, AiProvider::Cloud, "Ollama Cloud")
                     .on_hover_text("Modelos grandes nos servidores da Ollama (ollama.com), com a chave da sua conta.");
-                ui.radio_value(&mut self.ai.provider, AiProvider::Remote, "Outro servidor HTTPS")
-                    .on_hover_text("Servidor do órgão compatível com a API de chat do Ollama.");
+                ui.radio_value(&mut self.ai.provider, AiProvider::Remote, "Outro servidor")
+                    .on_hover_text("Servidor do órgão que funciona como o Ollama. O endereço deve começar com https.");
                 ui.radio_value(&mut self.ai.provider, AiProvider::ChatGpt, "ChatGPT (assinatura)")
                     .on_hover_text("Usa a cota da sua assinatura ChatGPT Plus ou Pro, entrando com a sua conta. Os textos vão para os servidores da OpenAI.");
                 provider_changed = before != self.ai.provider;
@@ -5724,7 +5765,7 @@ impl PonteApp {
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
                         ui.colored_label(crate::theme::warning(), "⚠ Nesta opção, os dados saem do seu computador e do órgão.");
-                        ui.label("A cada clique em “Analisar” ou “Gerar sugestão”, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados aos servidores da OpenAI, nos Estados Unidos, sob os termos e a política de privacidade da OpenAI. Nada é enviado ao importar, só quando você clica. Use apenas com documentos que podem sair do órgão; avalie sigilo e LGPD antes.");
+                        ui.label("A cada clique em “Analisar” ou “Gerar com IA”, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados aos servidores da OpenAI, nos Estados Unidos, sob os termos e a política de privacidade da OpenAI. Nada é enviado ao importar, só quando você clica. Use apenas com documentos que podem sair do órgão; avalie sigilo e LGPD antes.");
                         ui.small("O Ponte não recebe acesso às suas conversas, à memória nem à cobrança do ChatGPT. O uso é descontado da cota da sua assinatura (Plus ou Pro); o limite por aplicativo pode ser ajustado em ChatGPT ▸ Configurações ▸ Uso. Quando a cota acaba, o Ponte avisa e não usa outro provedor por conta própria.");
                     });
                     ui.add_space(4.0);
@@ -5773,7 +5814,7 @@ impl PonteApp {
                     if let Some(error) = &self.chatgpt_login_error {
                         ui.colored_label(crate::theme::error(), format!("✗ {error}"));
                     }
-                    ui.small("Requer assinatura ChatGPT Plus ou Pro (conta gratuita entra, mas não libera o uso do plano). O login abre o navegador em auth.openai.com e volta para o Ponte por uma porta local deste computador.");
+                    ui.small("Requer assinatura ChatGPT Plus ou Pro (conta gratuita entra, mas não libera o uso do plano). O login é feito no navegador, em auth.openai.com, e retorna ao Ponte neste computador.");
                 }
                 AiProvider::Local => {
                     let label = ui.label("Endereço do Ollama");
@@ -5782,7 +5823,7 @@ impl PonteApp {
                 }
                 AiProvider::Cloud => {
                     ui.label(format!("Endereço: {} (fixo)", ai::CLOUD_URL));
-                    let label = ui.label("Chave de API da sua conta");
+                    let label = ui.label("Chave da sua conta");
                     ui.add(egui::TextEdit::singleline(&mut self.ai.cloud_key).password(true).hint_text("cole aqui a chave gerada em ollama.com").desired_width(f32::INFINITY)).labelled_by(label.id);
                     ui.horizontal_wrapped(|ui| {
                         ui.small("Crie a chave em");
@@ -5794,13 +5835,13 @@ impl PonteApp {
                 AiProvider::Remote => {
                     let label = ui.label("Endereço do servidor (HTTPS)");
                     ui.add(egui::TextEdit::singleline(&mut self.ai.remote_url).desired_width(f32::INFINITY)).labelled_by(label.id);
-                    let label = ui.label("Chave de acesso (opcional)");
+                    let label = ui.label("Chave do servidor (opcional)");
                     ui.add(egui::TextEdit::singleline(&mut self.ai.remote_token).password(true).desired_width(f32::INFINITY)).labelled_by(label.id);
                     ui.colored_label(crate::theme::warning(), "Os textos enviados à IA saem deste computador para esse servidor.");
                 }
             }
             ui.add_space(6.0);
-            ui.strong("Modelo");
+            ui.strong("Modelo de IA");
             let listed = self.models_match_current() && !self.models.is_empty();
             ui.horizontal_wrapped(|ui| {
                 if listed {
@@ -5837,7 +5878,11 @@ impl PonteApp {
             if let Some(error) = &self.models_error {
                 ui.colored_label(crate::theme::warning(), format!("⚠ {error}"));
             } else if listed {
-                ui.small(format!("{} modelo(s) oferecido(s) por este servidor.", self.models.len()));
+                ui.small(if self.models.len() == 1 {
+                    "1 modelo oferecido por este servidor.".to_owned()
+                } else {
+                    format!("{} modelos oferecidos por este servidor.", self.models.len())
+                });
             } else if self.model_fetch.is_none() {
                 ui.small("Clique em “Listar modelos do servidor” para escolher entre os disponíveis.");
             }
@@ -5848,7 +5893,7 @@ impl PonteApp {
                 "Guardar a chave neste computador"
             };
             ui.checkbox(&mut self.ai.remember_keys, remember_label)
-                .on_hover_text("A configuração fica no acervo, cifrada com a DPAPI da sua conta do Windows. Desmarcada, a chave (ou a sessão do ChatGPT) vale só até fechar o Ponte.");
+                .on_hover_text("A configuração fica no acervo, protegida pela sua conta do Windows. Desmarcada, a chave (ou a sessão do ChatGPT) vale só até fechar o Ponte.");
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let dirty = self.ai_config_dirty();
@@ -5863,8 +5908,8 @@ impl PonteApp {
                 }
             });
             ui.separator();
-            widgets::small_muted(ui, "O servidor só é acessado ao listar modelos, analisar ou gerar uma sugestão. A chave também pode vir da variável PONTEPROJ_AI_TOKEN. O aplicativo não solicita sua senha do SIGADOC.");
-            widgets::small_muted(ui, "A análise é salva na biblioteca. A sugestão de minuta só é salva por sua ação explícita.");
+            widgets::small_muted(ui, "O servidor só é acessado ao listar modelos, analisar ou gerar uma sugestão. O aplicativo não solicita sua senha do SIGADOC.");
+            widgets::small_muted(ui, "A análise é salva no acervo. A sugestão de minuta só é salva por sua ação explícita.");
         });
         if provider_changed {
             self.models_error = None;
@@ -5999,7 +6044,7 @@ impl PonteApp {
             }
             Err(error) => {
                 self.material = None;
-                self.error(format!("Falha ao ler o registro: {error}"));
+                self.error(format!("Não foi possível ler o registro: {error}"));
                 return;
             }
         };
@@ -6103,7 +6148,7 @@ impl PonteApp {
                     widgets::small_muted(
                         ui,
                         format!(
-                            "Instruções enviadas: {} • dados: {} • assinatura {}",
+                            "Instruções enviadas: {} • dados: {} • código das instruções: {}",
                             crate::labels::file_size(record.system_bytes as u64),
                             crate::labels::file_size(record.data_bytes as u64),
                             record.system_sha256.chars().take(12).collect::<String>()
@@ -6177,12 +6222,17 @@ impl PonteApp {
             Ok(0) => {}
             Ok(count) => {
                 self.message(format!(
-                    "Lixeira: {count} item(ns) excluído(s) há mais de {} apagado(s) de vez.",
+                    "Lixeira: {} por estar na lixeira há mais de {}.",
+                    plural(
+                        count as usize,
+                        "item foi apagado de vez",
+                        "itens foram apagados de vez"
+                    ),
                     crate::trash::retention_label(days)
                 ));
                 self.refresh();
             }
-            Err(error) => self.error(format!("A limpeza da Lixeira falhou: {error}")),
+            Err(error) => self.error(format!("Não foi possível esvaziar a lixeira automaticamente: {error}")),
         }
     }
 
@@ -6214,16 +6264,16 @@ impl PonteApp {
             self.message(if change.target.kind == Kind::Attachment {
                 "Anexo movido para a Lixeira. É possível restaurá-lo em Ajustes ▸ Lixeira."
             } else {
-                "Item movido para a lixeira local. É possível restaurá-lo em Ajustes ▸ Lixeira."
+                "Item movido para a Lixeira. É possível restaurá-lo em Ajustes ▸ Lixeira."
             });
         } else {
             if self.selected_id == Some(change.document) {
                 self.reload(change.document);
             }
             self.message(if change.target.kind == Kind::Capture {
-                "Captura restaurada no histórico. A captura em uso foi mantida."
+                "Importação restaurada no histórico. A importação em uso foi mantida."
             } else {
-                "Item restaurado. A biblioteca e as tarefas foram atualizadas."
+                "Item restaurado. Os documentos e as tarefas foram atualizados."
             });
         }
         self.refresh();
@@ -6261,7 +6311,7 @@ impl PonteApp {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.label(format!("A tarefa “{title}” tem alterações não salvas."));
-                    ui.small("Salvar e continuar grava a tarefa e segue para onde você clicou. Descartar alterações volta a tarefa ao que estava salvo (uma tarefa nova é apagada). Voltar à tarefa deixa tudo como está.");
+                    ui.small("Salvar e continuar grava a tarefa e vai para onde você clicou. Descartar alterações volta ao que estava salvo (tarefa nova é apagada). Voltar à tarefa deixa tudo como está.");
                     if let Some(error) = &self.leave_error {
                         ui.add_space(4.0);
                         ui.colored_label(crate::theme::error(), error);
@@ -6309,7 +6359,7 @@ impl PonteApp {
                 .default_width(520.0)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.label("Ao fechar agora, isto será perdido:");
+                    ui.label("Ainda há pendências. Ao fechar agora, elas serão perdidas:");
                     for item in &pending {
                         ui.horizontal(|ui| {
                             ui.label(format!("• {}", item.label));
@@ -6512,7 +6562,7 @@ impl eframe::App for PonteApp {
                             )
                             .frame(false),
                         )
-                        .on_hover_text("Lê as pastas compartilhadas e grava o que mudou aqui, agora. Sem clicar, o Ponte faz isso ao abrir, a cada 5 minutos e, depois de alterações suas, em até cerca de 2 minutos.")
+                        .on_hover_text("Sincroniza agora com as pastas compartilhadas. O Ponte também faz isso ao abrir, a cada 5 minutos e cerca de 2 minutos depois de uma alteração sua.")
                         .clicked()
                     {
                         self.intranet.request_full_sync();
@@ -6967,7 +7017,7 @@ fn safe_link(ui: &mut egui::Ui, label: &str, raw_url: &str) {
     if allowed_sigadoc_url(raw_url) {
         ui.hyperlink_to(label, raw_url);
     } else {
-        ui.label(label).on_hover_text("Link indisponível: somente endereços HTTPS do SIGADOC presentes nesta captura podem ser abertos.");
+        ui.label(label).on_hover_text("Link indisponível: somente endereços HTTPS do SIGADOC presentes nesta importação podem ser abertos.");
     }
 }
 

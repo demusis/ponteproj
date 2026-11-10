@@ -69,14 +69,14 @@ pub fn read_frame<R: Read>(reader: &mut R) -> Result<Option<Vec<u8>>> {
     match reader.read(&mut header[..1]) {
         Ok(0) => return Ok(None),
         Ok(_) => (),
-        Err(e) => return Err(e).context("Falha ao ler mensagem do navegador"),
+        Err(e) => return Err(e).context("Não foi possível ler a mensagem do navegador"),
     }
     reader
         .read_exact(&mut header[1..])
-        .context("Cabeçalho de mensagem incompleto")?;
+        .context("Mensagem do navegador incompleta")?;
     let len = u32::from_le_bytes(header) as usize;
     if len == 0 || len > MAX_FRAME {
-        bail!("Tamanho de mensagem não permitido");
+        bail!("A mensagem do navegador tem um tamanho não permitido");
     }
     let mut bytes = vec![0; len];
     reader
@@ -88,7 +88,7 @@ pub fn read_frame<R: Read>(reader: &mut R) -> Result<Option<Vec<u8>>> {
 pub fn write_frame<W: Write>(writer: &mut W, value: &Value) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     if bytes.is_empty() || bytes.len() > 1024 * 1024 {
-        bail!("Resposta excede o limite de transporte");
+        bail!("A resposta é grande demais para ser enviada ao navegador");
     }
     writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
     writer.write_all(&bytes)?;
@@ -127,7 +127,7 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
     }
     match request.action.as_str() {
         "ping" => (
-            json!({"protocol_version":1,"ok":true,"app_version":env!("CARGO_PKG_VERSION"),"message":"Aplicativo disponível"}),
+            json!({"protocol_version":1,"ok":true,"app_version":env!("CARGO_PKG_VERSION"),"message":"O Ponte está disponível"}),
             None,
         ),
         "import_capture" | "import_bundle" => {
@@ -143,7 +143,7 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
             let result = if request.action == "import_bundle" {
                 store.import_bundle(&capture, &request.files.unwrap_or_default())
             } else if request.files.is_some() {
-                Err(anyhow::anyhow!("Arquivos exigem a ação import_bundle."))
+                Err(anyhow::anyhow!("Esta importação inclui arquivos; atualize a extensão e o Ponte."))
             } else {
                 store.import_capture(&capture)
             };
@@ -190,7 +190,7 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
             }
         }
         _ => (
-            error("unsupported_action", "Ação não suportada pelo aplicativo."),
+            error("unsupported_action", "O Ponte não reconhece este pedido da extensão. Atualize a extensão e o Ponte."),
             None,
         ),
     }

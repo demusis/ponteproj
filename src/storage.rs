@@ -112,9 +112,9 @@ impl Store {
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent).context("Não foi possível criar a pasta do banco.")?;
+            std::fs::create_dir_all(parent).context("Não foi possível criar a pasta do acervo.")?;
         }
-        let mut conn = Connection::open(path).context("Não foi possível abrir o banco local.")?;
+        let mut conn = Connection::open(path).context("Não foi possível abrir o acervo deste computador.")?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.create_scalar_function(
             "ponte_client_schema",
@@ -128,7 +128,7 @@ impl Store {
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         ensure!(
             version <= SCHEMA_VERSION,
-            "Banco criado por versão mais recente; atualize o aplicativo antes de abri-lo."
+            "Este acervo foi criado por uma versão mais nova do Ponte; atualize o Ponte antes de abri-lo."
         );
         conn.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA secure_delete=ON;",
@@ -137,13 +137,13 @@ impl Store {
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
         ensure!(
             version <= SCHEMA_VERSION,
-            "Banco criado por versão mais recente."
+            "Este acervo foi criado por uma versão mais nova do Ponte."
         );
         if version == 0 {
             let tables: i64 = tx.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |row| row.get(0))?;
             ensure!(
                 tables == 0,
-                "Banco sem versão contém tabelas desconhecidas; não será modificado."
+                "Este acervo não tem versão e contém dados desconhecidos; ele não será modificado."
             );
             tx.execute_batch(
                 "CREATE TABLE documents (
@@ -325,7 +325,7 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Receipt(r) => return Ok(r),
-                _ => anyhow::bail!("Resposta inesperada do anfitrião ao importar captura."),
+                _ => anyhow::bail!("O computador principal respondeu de forma inesperada ao importar o documento. Tente de novo."),
             }
         }
         self.import_capture_with_files(capture, &[])
@@ -374,7 +374,7 @@ impl Store {
             // the stored copy is the one that counts.
             ensure!(
                 pending_manual || (old_identity == identity_hash && old_content == content_hash),
-                "request_id já utilizado para outra captura; gere um novo UUID."
+                "Este identificador de importação já foi usado em outra importação."
             );
             crate::trash::require_active_capture(&tx, capture_id)?;
             tx.commit()?;
@@ -478,7 +478,7 @@ impl Store {
             )?;
         }
         tx.commit()
-            .context("Falha ao confirmar a captura; tente novamente com o mesmo request_id.")?;
+            .context("Não foi possível concluir a importação; tente de novo.")?;
         // The capture is already committed; a failure here must not undo the
         // import. The next open/import retries the idempotent reconciliation.
         let _ = self.link_juntadas();
@@ -710,7 +710,7 @@ impl Store {
         note: &str,
         expected_version: Option<i64>,
     ) -> Result<()> {
-        ensure!(note.len() <= MAX_HUMAN_BYTES, "Nota excede 500 KiB.");
+        ensure!(note.len() <= MAX_HUMAN_BYTES, "A nota passa de 500 KB.");
         if let Some(cfg) = self.client_config()? {
             self.remote_mutate(
                 &cfg,
@@ -779,7 +779,7 @@ impl Store {
         }
         ensure!(
             !body.trim().is_empty() && body.len() <= MAX_HUMAN_BYTES,
-            "Minuta vazia ou excede 500 KiB."
+            "A minuta está vazia ou passa de 500 KB."
         );
         if let Some(cfg) = self.client_config()? {
             match self.remote_mutate(
@@ -794,7 +794,7 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(draft_id) => return Ok(draft_id),
-                _ => anyhow::bail!("Resposta inesperada do anfitrião ao salvar minuta."),
+                _ => anyhow::bail!("O computador principal respondeu de forma inesperada ao salvar a minuta. Tente de novo."),
             }
         }
         let actor = self.active_actor();
@@ -913,15 +913,15 @@ impl Store {
     pub fn backup(&self, path: &Path) -> Result<()> {
         ensure!(
             !path.exists(),
-            "Destino de backup já existe; escolha outro arquivo."
+            "Já existe um arquivo neste destino; escolha outro nome."
         );
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent).context("Não foi possível criar a pasta de backup.")?;
+            std::fs::create_dir_all(parent).context("Não foi possível criar a pasta da cópia de segurança.")?;
         }
         // SQLite's online backup includes committed WAL pages as a consistent snapshot.
         self.conn
             .backup("main", path, rusqlite::backup::NO_PROGRESS)
-            .context("Não foi possível criar um backup consistente.")?;
+            .context("Não foi possível criar uma cópia de segurança consistente.")?;
         Ok(())
     }
 
@@ -1064,25 +1064,25 @@ fn require_capture(conn: &Connection, id: i64, capture_id: i64) -> Result<()> {
             params![id, capture_id],
             |row| row.get::<_, bool>(0)
         )?,
-        "A captura não pertence a este documento."
+        "A importação não pertence a este documento."
     );
     ensure!(
         crate::trash::require_active_capture(conn, capture_id)? == id,
-        "A captura não pertence ao documento."
+        "A importação não pertence ao documento."
     );
     Ok(())
 }
 
 fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     seal(&serde_json::to_vec(value)?)
-        .context("Não foi possível proteger o conteúdo para a conta Windows atual.")
+        .context("Não foi possível proteger o conteúdo para esta conta do Windows.")
 }
 
 fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     let plain = unseal(bytes)
-        .context("Não foi possível abrir conteúdo protegido; use a conta Windows que o gravou.")?;
+        .context("Não foi possível abrir o conteúdo protegido; use a conta do Windows que o gravou.")?;
     serde_json::from_slice(&plain)
-        .context("Conteúdo protegido está corrompido ou tem formato incompatível.")
+        .context("O conteúdo protegido está danificado ou em formato incompatível.")
 }
 
 fn now() -> String {

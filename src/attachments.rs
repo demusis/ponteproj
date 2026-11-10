@@ -140,7 +140,7 @@ fn refusal_hint(extension: &str) -> Option<&'static str> {
             "arquivos do Office com macros não são aceitos. Abra-o no Office e salve como .docx, .xlsx ou .pptx (sem macros)."
         }
         "html" | "htm" | "mht" | "svg" | "xml" => {
-            "páginas e arquivos de marcação podem conter scripts. Exporte o conteúdo como PDF e anexe o PDF."
+            "páginas da web e arquivos semelhantes podem conter programas embutidos. Exporte o conteúdo como PDF e anexe o PDF."
         }
         _ => return None,
     })
@@ -193,7 +193,7 @@ pub fn validate_file(name: &str, data: &[u8]) -> Result<&'static str> {
     };
     ensure!(
         !data.is_empty(),
-        "O arquivo “{name}” está vazio (0 bytes). Confira se ele foi salvo corretamente antes de anexar."
+        "O arquivo “{name}” está vazio. Confira se ele foi salvo corretamente antes de anexar."
     );
     ensure!(
         data.len() <= MAX_ATTACHMENT_BYTES,
@@ -404,7 +404,7 @@ impl Store {
                 crate::intranet::IntranetMutation::DeleteAttachment { id },
             )? {
                 crate::intranet::MutationReply::Unit => return Ok(()),
-                _ => bail!("Resposta inesperada do computador principal ao excluir o anexo."),
+                _ => bail!("O computador principal respondeu de forma inesperada ao excluir o anexo. Tente de novo."),
             }
         }
         let actor = self.active_actor();
@@ -467,7 +467,7 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(id) => return Ok(id),
-                _ => bail!("Resposta inesperada do computador principal ao anexar arquivo."),
+                _ => bail!("O computador principal respondeu de forma inesperada ao anexar o arquivo. Tente de novo."),
             }
         }
         let actor = self.active_actor();
@@ -478,8 +478,14 @@ impl Store {
         let existing = list_active(&tx, owner)?;
         ensure!(
             existing.len() < MAX_PER_OWNER,
-            "Este {} já tem {MAX_PER_OWNER} anexos, o máximo. Exclua um anexo que não seja mais necessário (ele vai para a Lixeira e pode ser restaurado) ou junte vários arquivos num único PDF.",
-            owner.noun()
+            "{} {} já tem {MAX_PER_OWNER} anexos, o máximo. {} ou junte vários arquivos num único PDF.",
+            if matches!(owner, Owner::Task(_)) { "Esta" } else { "Este" },
+            owner.noun(),
+            if owner.deletes_for_good() {
+                "Apague de vez um anexo que não seja mais necessário"
+            } else {
+                "Exclua um anexo que não seja mais necessário (ele vai para a Lixeira e pode ser restaurado)"
+            }
         );
         let sha256 = format!("{:x}", Sha256::digest(data));
         if let Some(same) = existing.iter().find(|a| a.sha256 == sha256) {
@@ -742,20 +748,20 @@ impl AttachmentsPanel {
         let full = list.len() >= MAX_PER_OWNER;
         let mut pick = false;
         ui.horizontal_wrapped(|ui| {
-            widgets::small_muted(ui, format!("{} de {MAX_PER_OWNER}", list.len()));
+            widgets::small_muted(ui, format!("{} de {MAX_PER_OWNER} anexos", list.len()));
             let on_delete = if owner.deletes_for_good() {
-                "Excluir um anexo o remove em definitivo."
+                "Apagar de vez remove o anexo em definitivo, sem passar pela Lixeira."
             } else {
                 "Excluir um anexo o leva para a Lixeira, de onde pode ser restaurado."
             };
             crate::help_ui::help(ui, format!(
-                "Até {MAX_PER_OWNER} anexos de até {} cada. Tipos aceitos: {ACCEPTED_TYPES_TEXT}. Programas, scripts, atalhos e arquivos compactados não são aceitos. {on_delete}",
+                "Até {MAX_PER_OWNER} anexos de até {} cada. Tipos aceitos: {ACCEPTED_TYPES_TEXT}. Programas, atalhos e arquivos compactados não são aceitos. {on_delete}",
                 labels::file_size(MAX_ATTACHMENT_BYTES as u64)
             ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_enabled(!busy && !full, widgets::secondary(format!("{} Anexar arquivo…", icon::CLIP)))
-                    .on_hover_text(format!("Escolhe um arquivo deste computador (até {}). Ele fica guardado protegido no acervo e visível para a equipe.", labels::file_size(MAX_ATTACHMENT_BYTES as u64)))
+                    .on_hover_text(format!("Escolhe um arquivo deste computador (até {}). Ele fica guardado, protegido, no acervo e a equipe também pode vê-lo.", labels::file_size(MAX_ATTACHMENT_BYTES as u64)))
                     .on_disabled_hover_text(if full { "Limite de anexos atingido. Exclua um anexo para abrir espaço." } else { "Aguarde a operação em andamento." })
                     .clicked()
                 {
@@ -850,8 +856,8 @@ impl AttachmentsPanel {
                     } else {
                         self.descriptions.remove(&meta.id);
                     }
-                    widgets::small_muted(ui, format!("identificação {}…", &meta.sha256[..meta.sha256.len().min(12)]))
-                        .on_hover_text(format!("SHA-256 completo: {}", meta.sha256));
+                    widgets::small_muted(ui, format!("código de verificação {}…", &meta.sha256[..meta.sha256.len().min(12)]))
+                        .on_hover_text(format!("Código de verificação completo: {}", meta.sha256));
                     if self.confirm_delete == Some(meta.id) {
                         ui.add_space(theme::S1);
                         soft_note(ui, Tone::Warn, icon::WARNING, &format!("Apagar “{}” de vez? Não há como restaurar.", meta.name), None);
@@ -872,9 +878,9 @@ impl AttachmentsPanel {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                     // Removal sits at the far right, apart from the others.
                     let remove_hint = if owner.deletes_for_good() {
-                        "Excluir de vez: apaga o anexo definitivamente (anexos de atendimentos e de exemplos não vão para a Lixeira)."
+                        "Apagar de vez: o anexo é apagado em definitivo, sem passar pela Lixeira (anexos de atendimentos e de exemplos não têm lixeira)."
                     } else {
-                        "Excluir: move o anexo para a Lixeira; pode ser restaurado depois."
+                        "Excluir: envia o anexo para a Lixeira, de onde pode ser restaurado."
                     };
                     let remove = ui
                         .add_enabled_ui(!busy, |ui| widgets::icon_button(ui, icon::TRASH, remove_hint))

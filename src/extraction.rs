@@ -610,7 +610,7 @@ fn require_example_file(conn: &Connection, attachment_id: i64) -> Result<()> {
         .optional()?;
     match owner.as_deref() {
         Some("example") => Ok(()),
-        Some(_) => bail!("Só arquivos de exemplos de modelos têm o texto extraído."),
+        Some(_) => bail!("Só os arquivos de exemplos de modelos têm texto extraído."),
         None => bail!("Anexo não encontrado."),
     }
 }
@@ -685,7 +685,7 @@ impl Store {
     ) -> Result<AttachmentText> {
         ensure!(
             !text.trim().is_empty() && text.len() <= MAX_TEXT_BYTES,
-            "O texto conferido está vazio ou passa de {} KiB.",
+            "O texto conferido está vazio ou passa de {} KB.",
             MAX_TEXT_BYTES / 1024
         );
         require_example_file(&self.conn, attachment_id)?;

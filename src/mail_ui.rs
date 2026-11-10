@@ -280,7 +280,7 @@ impl MailPanel {
                     .map(|f| f.raw.clone());
                 self.folder_raw = pick.unwrap_or_default();
                 let n = self.folders.iter().filter(|f| !f.no_select).count();
-                self.set_notice(format!("Conectado. {n} pasta(s) disponível(is)."), false);
+                self.set_notice(if n == 1 { "Conectado. 1 pasta disponível.".to_owned() } else { format!("Conectado. {n} pastas disponíveis.") }, false);
             }
             Err(e) => self.set_notice(e, true),
         }
@@ -346,19 +346,25 @@ impl MailPanel {
                     if done.already_imported {
                         let line = if done.attachments_added > 0 {
                             format!(
-                                "{title}: já estava no acervo; {} anexo(s) que faltava(m) acrescentado(s)",
-                                done.attachments_added
+                                "{title}: já estava no acervo; {} acrescentado{}",
+                                if done.attachments_added == 1 {
+                                    "1 anexo que faltava".to_owned()
+                                } else {
+                                    format!("{} anexos que faltavam", done.attachments_added)
+                                },
+                                if done.attachments_added == 1 { "" } else { "s" }
                             )
                         } else {
                             format!("{title}: já estava no acervo")
                         };
                         self.summary.push((crate::theme::warning(), line));
                     } else {
-                        let mut line = format!("✓ {title} — {} anexo(s)", done.attachments_added);
+                        let mut line = format!("✓ {title} — {}", if done.attachments_added == 1 { "1 anexo".to_owned() } else { format!("{} anexos", done.attachments_added) });
                         if !done.attachments_skipped.is_empty() {
                             line.push_str(&format!(
-                                ", {} não anexado(s)",
-                                done.attachments_skipped.len()
+                                ", {} não anexado{}",
+                                done.attachments_skipped.len(),
+                                if done.attachments_skipped.len() == 1 { "" } else { "s" }
                             ));
                         }
                         self.summary.push((crate::theme::success(), line));
@@ -404,7 +410,7 @@ impl MailPanel {
                 false,
             )
         } else {
-            (format!("⚠ {ok} importada(s), {failed} com erro."), false)
+            (format!("⚠ {} importada{}, {failed} com erro.", ok, if ok == 1 { "" } else { "s" }), false)
         });
     }
 
@@ -570,7 +576,7 @@ impl MailPanel {
         } else if !busy && self.notice.is_some() {
             widgets::muted(
                 ui,
-                "A lista não pôde ser lida. Use Atualizar ou Trocar pasta ou conta…",
+                "Não foi possível ler a lista. Use Atualizar ou Trocar pasta ou conta…",
             );
         }
         action
@@ -682,7 +688,7 @@ impl MailPanel {
                 ui.add_space(theme::S1);
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(!busy, widgets::danger("Sim, excluir"))
+                        .add_enabled(!busy, widgets::danger("Excluir"))
                         .clicked()
                     {
                         self.confirm_delete_account = false;
@@ -720,7 +726,7 @@ impl MailPanel {
                     .is_some_and(|a| a.password.is_empty());
                 if stored_empty {
                     ui.add_space(theme::S2);
-                    widgets::field_label(ui, "Senha de app desta sessão");
+                    widgets::field_label(ui, "Senha de app (vale até fechar o Ponte)");
                     let entry = self.session_passwords.entry(uid).or_default();
                     ui.add(
                         egui::TextEdit::singleline(entry)
@@ -752,13 +758,13 @@ impl MailPanel {
                         widgets::field_label(&mut cols[0], "Nome");
                         cols[0].add(egui::TextEdit::singleline(&mut form.account.name).desired_width(width));
                         let width = cols[1].available_width();
-                        widgets::field_label(&mut cols[1], "Pasta (a última listada)");
+                        widgets::field_label(&mut cols[1], "Pasta (a última usada)");
                         cols[1].add(egui::TextEdit::singleline(&mut form.account.folder).desired_width(width));
                     });
                     ui.add_space(theme::S2);
                     ui.columns(2, |cols| {
                         let width = cols[0].available_width();
-                        widgets::field_label(&mut cols[0], "Servidor IMAP");
+                        widgets::field_label(&mut cols[0], "Servidor de e-mail (IMAP)");
                         cols[0].add(egui::TextEdit::singleline(&mut form.account.host).desired_width(width));
                         widgets::field_label(&mut cols[1], "Porta");
                         cols[1].add(egui::TextEdit::singleline(&mut form.port_text).desired_width(70.0));
@@ -779,7 +785,7 @@ impl MailPanel {
                     ui.add_space(theme::S2);
                     ui.checkbox(&mut form.account.remember, "Lembrar a senha neste computador")
                         .on_hover_text(
-                            "A senha fica guardada, selada, no acervo deste computador. Sem marcar, ela é pedida a cada sessão.",
+                            "A senha fica guardada, protegida, neste computador. Sem marcar, ela é pedida a cada vez que o Ponte é aberto.",
                         );
                     ui.add_space(theme::S3);
                     ui.horizontal(|ui| {
@@ -915,7 +921,7 @@ impl MailPanel {
                 if let Some((a, folder, filter)) = list_request {
                     action = self.list_action(a, folder, filter);
                 }
-                widgets::small_muted(ui, "Listadas as 100 mais recentes.");
+                widgets::small_muted(ui, "Mostrando as 100 mensagens mais recentes.");
             }
         });
         action
