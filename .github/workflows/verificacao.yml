@@ -1,0 +1,56 @@
+name: Verificação
+
+# Roda a cada envio: formatação, verificador (clippy) e testes do aplicativo,
+# e os testes da extensão do navegador.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  aplicativo:
+    name: Aplicativo (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust estável
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Formatação
+        run: cargo fmt --all --check
+      - name: Verificador
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Núcleo sem a janela
+        run: cargo clippy --no-default-features --lib --locked -- -D warnings
+      - name: Testes
+        run: cargo test --all-targets --locked
+
+  extensao:
+    name: Extensão do navegador
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Dependências de teste
+        working-directory: extension
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install chromium
+      - name: Testes
+        working-directory: extension
+        env:
+          PONTEPROJ_PLAYWRIGHT_DIR: ${{ github.workspace }}\extension\node_modules\playwright
+        run: npm test

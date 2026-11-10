@@ -128,6 +128,10 @@ struct ManualForm {
 
 impl ManualForm {
     fn open_new(&mut self) {
+        // A record being typed is never replaced by a blank one.
+        if self.open && self.dirty() {
+            return;
+        }
         let fields = crate::manual::ManualFields {
             kind: "memorando".into(),
             ..Default::default()
@@ -1123,7 +1127,7 @@ struct Notice {
 /// What the button of a notice does.
 #[derive(Clone)]
 enum NoticeAction {
-    /// Undo "concluir": the task goes back to what it was.
+    /// Undo "concluir": the task is open again (as "pendente").
     ReopenTask(i64),
     /// Undo "excluir": the item comes back from the Lixeira.
     Restore(crate::trash::Target),
@@ -1703,8 +1707,8 @@ impl PonteApp {
     /// The button of a notice was pressed.
     fn run_notice_action(&mut self, action: NoticeAction) {
         match action {
-            NoticeAction::ReopenTask(id) => match self.store.reopen_task(id) {
-                Ok(_) => {
+            NoticeAction::ReopenTask(id) => match self.tasks.undo_conclude(&mut self.store, id) {
+                Ok(()) => {
                     self.refresh();
                     self.message("Tarefa reaberta.");
                 }
@@ -1883,6 +1887,7 @@ impl PonteApp {
             && !matches!(leave, Leave::Settings)
             && !self.leave_ai_settings()
         {
+            self.return_after_select = None;
             return;
         }
         let hides_visible_edit = self.area == Area::Tasks && self.tasks.dirty();
@@ -1896,6 +1901,12 @@ impl PonteApp {
     }
 
     fn perform_leave(&mut self, leave: Leave) {
+        // The way back belongs to the document just opened for the person;
+        // going anywhere else ends it.
+        if !matches!(leave, Leave::Select(_)) {
+            self.return_to = None;
+            self.return_after_select = None;
+        }
         match leave {
             Leave::Saiop => {
                 self.area = Area::Saiop;
@@ -3270,6 +3281,11 @@ impl PonteApp {
     /// path as the button it stands for.
     fn shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
+        // AltGr arrives as Ctrl+Alt on Windows and types characters (², £):
+        // never a shortcut.
+        if ctx.input(|input| input.modifiers.alt) {
+            return;
+        }
         let pressed = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, key));
         if pressed(Key::Num1) {
             self.navigate(Leave::Today);
@@ -3303,7 +3319,11 @@ impl PonteApp {
                 Area::Saiop => {
                     self.saiop.key_new(&self.store);
                 }
-                Area::Today | Area::Documents => self.manual_form.open_new(),
+                Area::Today | Area::Documents => {
+                    if !self.manual_form.open {
+                        self.manual_form.open_new();
+                    }
+                }
                 Area::Templates | Area::Settings => {}
             }
         } else if pressed(Key::S) {
@@ -3339,6 +3359,8 @@ impl PonteApp {
                 self.about_open = false;
             } else if self.consult.is_some() {
                 self.consult = None;
+            } else if self.manual_form.open || self.mail.open {
+                // Their own buttons close them (they may hold unsaved work).
             } else {
                 match self.area {
                     Area::Tasks => {
@@ -3362,6 +3384,8 @@ impl PonteApp {
         {
             return;
         }
+        self.return_to = None;
+        self.return_after_select = None;
         self.area = Area::Tasks;
     }
 
@@ -6719,6 +6743,7 @@ impl PonteApp {
             if stay {
                 self.leave = None;
                 self.leave_error = None;
+                self.return_after_select = None;
                 self.area = Area::Tasks;
             }
             if save {

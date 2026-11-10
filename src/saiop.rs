@@ -819,7 +819,7 @@ impl Store {
     pub fn retry_auto_attendance(&mut self, document_id: i64) -> Result<()> {
         ensure!(
             self.auto_attendance_enabled()?,
-            "Ative \"Criar atendimento ao importar do SIGADOC\" para tentar de novo, ou dispense o aviso."
+            "Ative \"Criar atendimento ao importar do SIGADOC\" em Ajustes ▸ Importação do SIGADOC para tentar de novo, ou dispense o aviso."
         );
         let capture = self.load_document(document_id)?.capture;
         let outcome = self.attendance_for_import(document_id, &capture);
@@ -3751,7 +3751,7 @@ impl SaiopPanel {
             .inner_margin(egui::Margin::ZERO)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                egui::ScrollArea::vertical()
+                egui::ScrollArea::both()
                     .id_salt("saiop-grid-scroll")
                     .auto_shrink([false, true])
                     .max_height(height)

@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.25.0 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.26.0 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, quadro **Ligação com o navegador** | *✓ O Ponte está registrado para o Chrome e Edge* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.25.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.26.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 Se algum dos três não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -109,13 +109,13 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 
 ```
 ┌──────────────┬───────────────────────────┬──────────────────────────────────────┐
-│ Documentos   │ Documentos      [Novo ▾]  │ ORG-OFI-2026/00042  ● 1 em aberto   │
-│ Tarefas  2   │ [Buscar...]               │ Abrir no SIGADOC     Excluir…        │
-│ Atendimentos │ Todos Com tarefa Atrasados│ Resumo Documento Notas e minutas Mais│
-│ Modelos      │ Filtros                   │                                      │
-│              │ ORG-OFI-2026/00042       │ Análise      Dados do documento      │
-│              │ Pedido de revisão...      │ Tarefas      Atendimento      Nota   │
-│              │ ● 1 em aberto             │                                      │
+│ Hoje     3   │ Documentos      [Novo ▾]  │ ← Voltar a Hoje                      │
+│ Documentos   │ [Buscar...]               │ ORG-OFI-2026/00042  ● 1 em aberto   │
+│ Tarefas  2   │ Todos Com tarefa Atrasados│ Abrir no SIGADOC     Excluir…        │
+│ Atendimentos │ Filtros                   │ Resumo Documento Notas e minutas Mais│
+│ Modelos      │ ORG-OFI-2026/00042       │                                      │
+│              │ Pedido de revisão...      │ Análise      Dados do documento      │
+│              │ ● 1 em aberto             │ Tarefas      Atendimento      Nota   │
 │              │ MANUAL-2026/0001          │                                      │
 │              │ ✓ 1 concluída  Manual     │                                      │
 │              │                           │                                      │
@@ -126,23 +126,44 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Barra lateral (esquerda):** escolhe a área. **Documentos** (Ctrl+1) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+2) mostra um número vermelho com as tarefas atrasadas ou que vencem hoje. **Atendimentos** (Ctrl+3) é o controle do gabinete. **Modelos** (Ctrl+4) é a área dos modelos de trabalho ([seção 9.5](#95-modelos-de-trabalho)). Embaixo ficam **Ajustes** e **Ajuda**, que abre o guia curto.
+- **Barra lateral (esquerda):** escolhe a área. **Hoje** (Ctrl+1) é a tela em que o Ponte abre; com o acervo vazio, abre a tela de boas-vindas em Documentos. **Documentos** (Ctrl+2) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+3) é a lista de tarefas. **Atendimentos** (Ctrl+4) é o controle do gabinete. **Modelos** (Ctrl+5) é a área dos modelos de trabalho ([seção 9.5](#95-modelos-de-trabalho)). Um número vermelho em **Hoje** (tarefas atrasadas ou para hoje, mais atendimentos com prazo vencido ou para hoje) e em **Tarefas** (só as tarefas atrasadas ou para hoje) mostra o que pede atenção. Embaixo ficam **Ajustes** e **Ajuda**, que abre o guia curto.
+- **Hoje:** a tela do começo do dia (veja abaixo, em **A área Hoje**).
 - **Documentos:** a lista fica à esquerda e a ficha do documento selecionado, à direita. A lista de documentos existe só nesta área.
-- **Documento selecionado:** em **Tarefas** e **Atendimentos**, a lista passa a mostrar só o que é dele, com um botão para ver tudo (**Todos os documentos** em Tarefas, **Todos os atendimentos** em Atendimentos).
+- **Tarefas e Atendimentos abrem com tudo.** Não seguem o documento selecionado em Documentos. Para ver só os de um documento, veja [6.1](#61-a-área-tarefas) e [7.2](#72-ver-só-os-de-um-documento).
+- **Voltar:** quando você vai de uma tarefa, de um atendimento ou de Hoje até um documento, a ficha mostra no alto **Voltar à tarefa**, **Voltar ao atendimento** ou **Voltar a Hoje**, que leva de volta ao ponto de onde você veio.
+- **Atalhos de teclado:**
+
+| Atalho | O que faz |
+|---|---|
+| **Ctrl+1** a **Ctrl+5** | Ir para Hoje, Documentos, Tarefas, Atendimentos e Modelos |
+| **Ctrl+F** | Ir para a busca da área; a partir de outras áreas, para a busca de documentos |
+| **Ctrl+N** | Criar: registro manual (em Hoje e Documentos), nova tarefa do documento selecionado (em Tarefas), nova entrada (em Atendimentos) |
+| **Ctrl+S** | Salvar o que está em edição: tarefa, atendimento, notas do documento ou configuração de IA |
+| **Esc** | Fechar a janela ou o painel lateral aberto, se não houver nada sem salvar |
 - **Barra inferior:** um ponto colorido diz como está a rede (por exemplo `● só neste computador` ou `● em dia há 3 min`). Passe o mouse para a frase completa; clicar nela abre Ajustes ▸ Equipe e sincronização. No modo pasta compartilhada, o botão **Sincronizar** ao lado sincroniza com a pasta na hora. A lista de documentos se atualiza sozinha.
 - **Avisos:** mensagens como *Nota salva* e os erros aparecem numa caixa no canto inferior direito. Os de sucesso somem sozinhos; os de erro ficam até você fechar. O progresso das operações demoradas, como a IA e a sincronização, aparece na barra inferior.
 - **Tema:** claro ou escuro, em Ajustes ▸ Aparência.
-- **Ajustes** reúne o que não é trabalho do dia a dia, em sete seções:
+- **Ajustes** reúne o que não é trabalho do dia a dia, em oito seções:
 
 | Seção | Para quê |
 |---|---|
 | **Equipe e sincronização** | Trabalhar em equipe ou em mais de um computador; conflitos de edição e alterações a enviar ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) |
 | **E-mail** | **Contas e importação** e **Importar um e-mail salvo em arquivo (.eml)…** ([5.5](#55-registros-manuais)) |
+| **Importação do SIGADOC** | Criar atendimento ao importar do SIGADOC ([7.1](#71-de-onde-vêm-os-atendimentos)) |
 | **Inteligência artificial** | Escolher onde a IA roda ([seção 9](#9-ia-opcional)). Salva com **Salvar** ou ao sair da seção |
 | **Cópia de segurança e exportação** | **Fazer cópia agora** e **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) |
 | **Lixeira** | Restaurar itens excluídos e definir o prazo de limpeza |
 | **Aparência** | Tema: *Como o Windows*, *Claro* ou *Escuro* |
 | **Sobre o Ponte** | Versão, **Guia do usuário**, **Autores e licença…** e endereço do projeto |
+
+**A área Hoje.** Reúne, numa tela só, o que pede atenção no dia, sem precisar abrir cada área. Faixas no alto contam as tarefas atrasadas, as tarefas para hoje e os atendimentos com prazo vencido ou para hoje. Abaixo ficam:
+
+- **Atrasadas** e **Para hoje:** as tarefas. O círculo à esquerda conclui a tarefa; o clique na tarefa a abre em Tarefas; o clique no documento abre a ficha dele, com **Voltar a Hoje** no alto.
+- **Próximos dias:** as tarefas que vencem nos dias seguintes.
+- **Atendimentos com prazo vencido ou para hoje:** um clique abre o atendimento em Atendimentos.
+- **Documentos recentes:** os últimos documentos trabalhados; um clique abre a ficha.
+
+Quando nada está atrasado nem para hoje, a tela diz *Nenhuma tarefa atrasada ou para hoje*. Ao concluir uma tarefa por aqui, o aviso do canto inferior direito traz **Desfazer**, por alguns segundos.
 
 **Datas:** todo campo de data aceita digitar `dd/mm/aaaa` ou escolher no calendário, pelo ícone de calendário. O calendário abre o mês, com os dias da semana (D S T Q Q S S), setas ◀ ▶ para trocar de mês, hoje em destaque e os atalhos **Hoje** e **Limpar**. Uma data inválida, como `31/02/2026`, fica marcada em vermelho.
 
@@ -313,7 +334,7 @@ Arquivos do seu computador podem ser juntados a um **documento** (Documento ▸ 
 
 O tipo é conferido também pelo conteúdo, não só pela extensão. Quando um arquivo é recusado, a mensagem diz o motivo e o que fazer, por exemplo: *"O arquivo tem 12,4 MB; o limite é 8 MB. Para reduzir: salve o PDF com compressão… ou divida o documento em partes"*.
 
-Cada anexo tem uma **descrição** opcional e os botões **Ler no Ponte** (PDF) ou **Abrir** (demais tipos, no programa padrão do Windows, a partir de uma cópia temporária apagada ao fechar o Ponte) e **Salvar como…**. Para excluir: em documentos e tarefas, **Excluir…** manda para a Lixeira; em atendimentos, **Excluir de vez…** apaga definitivamente, com confirmação, porque atendimentos não têm Lixeira.
+Cada anexo tem uma **descrição** opcional e os botões **Ler no Ponte** (PDF) ou **Abrir** (demais tipos, no programa padrão do Windows, a partir de uma cópia temporária apagada ao fechar o Ponte) e **Salvar como…**. Para excluir: em documentos e tarefas, **Excluir…** manda para a Lixeira; em atendimentos, **Apagar de vez…** apaga definitivamente, com confirmação, porque atendimentos não têm Lixeira.
 
 ---
 
@@ -325,10 +346,13 @@ Cada documento importado recebe uma tarefa de triagem. Você cria outras no Resu
 
 O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupada em ATRASADAS, PARA HOJE, PRÓXIMAS, SEM PRAZO e CONCLUÍDAS. O círculo à esquerda de cada tarefa a conclui (ou a reabre, se já concluída). Clicar na tarefa abre os dados num painel à direita, com **Salvar**, **Concluir**, **Cancelar** e **Excluir…** embaixo.
 
-- **A área segue o documento selecionado.** Com um documento selecionado em Documentos, ela mostra só as tarefas dele: no alto aparece `Só ORG-OFI-2026/00042` e o botão **Todos os documentos**, que amplia. Selecionar outro documento volta a filtrar por ele.
+- **A área abre com todas as tarefas**, qualquer que seja o documento selecionado em Documentos. Para ver só as de um documento, use **Ver todas** no card Tarefas da ficha dele, ou **Só as de ORG-OFI-2026/00042** no fim da fileira de visões. Enquanto a lista está restrita, uma faixa diz *Mostrando só as tarefas de ORG-OFI-2026/00042 — Pedido de revisão de materiais de treinamento*, com **Ver todas** para voltar a tudo.
+- **Ordenar:** à direita das visões, *Prazo*, *Prioridade* ou *Documento*.
+- **Lista vazia:** a área diz por quê (por exemplo, nenhuma tarefa na visão escolhida ou na busca).
 - **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*.
 - **Mostrar concluídas** inclui as já concluídas na lista.
-- **Nova tarefa** cria uma tarefa do documento selecionado, quando há um.
+- **Nova tarefa** cria uma tarefa do documento selecionado, quando há um (também com **Ctrl+N**).
+- O painel da tarefa mostra o número e o assunto do documento a que ela pertence.
 
 ### 6.2 Os campos
 
@@ -346,8 +370,8 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 
 ### 6.3 Regras que vale conhecer
 
-- **Concluir** e reabrir ficam na própria lista, no círculo à esquerda da tarefa. Concluir uma tarefa não registra nada no SIGADOC.
-- **Sem sair da tarefa:** na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só para leitura. **Ir para o documento** abre a ficha completa.
+- **Concluir** e reabrir ficam na própria lista, no círculo à esquerda da tarefa. Concluir uma tarefa não registra nada no SIGADOC. Logo após concluir, o aviso do canto inferior direito traz **Desfazer**, por alguns segundos, que reabre a tarefa.
+- **Sem sair da tarefa:** na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só para leitura. **Ir para o documento** abre a ficha completa, com **Voltar à tarefa** no alto.
 - **Alterações não salvas:** com uma tarefa em edição e alterações não salvas, ao clicar em outro lugar o Ponte pergunta: **Salvar e continuar**, **Descartar alterações** ou **Voltar à tarefa**.
 - **Juntados seguem o principal:** concluir a última tarefa aberta de um documento principal conclui também as tarefas abertas dos documentos juntados a ele, cada uma com a anotação *"Concluída automaticamente: o documento principal X foi concluído"*. A mensagem lista o que foi concluído. Reabrir o principal não reabre as peças.
 
@@ -376,19 +400,19 @@ A área **Atendimentos** é o "livro de entrada e saída" do gabinete: cada linh
 
 | Origem | Como |
 |---|---|
-| **Importação do SIGADOC** | Na primeira importação de cada documento, o Ponte cria o atendimento sozinho: referência = número do documento, assunto = título, entrada = hoje, responsável = você, situação *Em análise*, já ligado ao documento. Documentos juntados a outro não geram atendimento, e nova versão do mesmo documento não cria outro. A caixa **Criar atendimento ao importar do SIGADOC**, no alto da área, desliga isso. Se o registro automático falhar (a importação em si continua valendo), a área mostra um aviso com o número do documento e o motivo, e os botões **Tentar de novo** e **Dispensar**. |
+| **Importação do SIGADOC** | Na primeira importação de cada documento, o Ponte cria o atendimento sozinho: referência = número do documento, assunto = título, entrada = hoje, responsável = você, situação *Em análise*, já ligado ao documento. Documentos juntados a outro não geram atendimento, e nova versão do mesmo documento não cria outro. A caixa **Criar atendimento ao importar do SIGADOC**, em **Ajustes ▸ Importação do SIGADOC**, desliga isso. Se o registro automático falhar (a importação em si continua valendo), a área mostra um aviso com o número do documento e o motivo, e os botões **Tentar de novo** e **Dispensar**. |
 | **À mão** | Botão **Nova entrada**. |
 | **Planilha** | Botão **Importar planilha** ([7.4](#74-importar-a-planilha-do-controle)). |
 
 Se já existe um atendimento com o mesmo número e sem documento ligado (vindo da planilha, por exemplo), a importação do SIGADOC **liga** esse atendimento ao documento em vez de criar outro.
 
-### 7.2 A área segue o documento selecionado
+### 7.2 Ver só os de um documento
 
-Com um documento selecionado em Documentos, a área mostra só os atendimentos ligados a ele: no alto aparece `Só ORG-OFI-2026/00042` e o botão **Todos os atendimentos**, que amplia. Nesse estado, **Nova entrada** cria o atendimento já ligado ao documento, com o número dele como referência.
+A área abre com todos os atendimentos, qualquer que seja o documento selecionado em Documentos. Para ver só os ligados a um documento, abra **Filtros** e use **Só os de ORG-OFI-2026/00042**. Enquanto a lista está restrita, uma faixa diz *Mostrando só os atendimentos de ORG-OFI-2026/00042*, com **Ver todos** para voltar a tudo. Com um documento selecionado, **Nova entrada** (ou **Ctrl+N**) cria o atendimento já ligado a ele, com o número dele como referência.
 
 ### 7.3 A ficha do atendimento
 
-Clicar numa linha da tabela abre a ficha num painel à direita, com os botões **Salvar**, **Descartar alterações**, **Encerrar** (ou **Reabrir**), **Fechar ficha** e **Excluir…**. Na tabela, *Situação* e *Prazo* aparecem como etiquetas coloridas.
+Clicar numa linha da tabela abre a ficha num painel à direita, com os botões **Salvar**, **Descartar alterações**, **Encerrar** (ou **Reabrir**), **Fechar ficha** e **Apagar de vez…**. Na tabela, *Situação* e *Prazo* aparecem como etiquetas coloridas. A tabela mostra as colunas que cabem na largura: *Referência*, *Assunto*, *Situação* e *Prazo* sempre; *Responsável*, *Entrada*, *Tempo* e *Destino / Saída*, conforme o espaço. **Abrir o documento** na ficha leva ao documento ligado, com **Voltar ao atendimento** no alto.
 
 | Seção | Campo | Opções ou exemplo |
 |---|---|---|
@@ -449,8 +473,8 @@ Linhas só com fórmulas são ignoradas. A mesma referência com datas de entrad
 ### 7.5 Filas e filtros
 
 - **Fila:** a lista suspensa no alto da área (por exemplo *Fila: Minhas pendências (3)*) mostra quantos atendimentos há em cada fila: *Minhas pendências*, *Sem responsável*, *Prazo vencido*, *Vence hoje*, *Vence nos próximos dias* (ajuste os dias), *Aguardando resposta*, *Retorno para UAS*, *Aguardando assinatura*, *Sem atualização no período*, *Com alerta de revisão*.
-- **Filtros** abre responsável, origem, destino e situação.
-- Clique no título de uma coluna para ordenar. A coluna *Idade / Espera* mostra os dias desde a entrada e os dias aguardando retorno externo.
+- **Filtros** abre responsável, origem, destino e situação, e **Só os de <número>** ([7.2](#72-ver-só-os-de-um-documento)).
+- Clique no título de uma coluna para ordenar. A coluna *Tempo* mostra os dias desde a entrada e os dias aguardando retorno externo.
 
 ---
 
@@ -686,7 +710,7 @@ Por isso, **trocar de computador ou reinstalar o Windows exige planejamento**: u
 
 ### 10.4 Lixeira
 
-Excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a **Lixeira** (Ajustes ▸ Lixeira), de onde se restaura com um clique.
+Excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a **Lixeira** (Ajustes ▸ Lixeira), de onde se restaura com um clique. Logo após a exclusão, o aviso do canto inferior direito traz **Desfazer**, por alguns segundos.
 
 - **Por padrão, nada é apagado de vez.**
 - Na seção Lixeira, **Apagar de vez os itens excluídos há mais de:** aceita *Nunca*, *7 dias*, *30 dias*, *90 dias*, *180 dias* ou *1 ano*. Com um prazo, o Ponte faz a limpeza ao abrir e uma vez por dia, e avisa quantos itens foram apagados. **Apagar agora os vencidos** antecipa.
@@ -901,7 +925,7 @@ node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tes
 
 Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
-Hoje são 140 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
+Hoje são 152 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 31 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 

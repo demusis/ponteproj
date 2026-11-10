@@ -24,11 +24,13 @@ Os dados ficam só na sua conta do Windows, cifrados. Outra conta no mesmo compu
 
 ## 2. A janela em um minuto
 
-- **Barra lateral (esquerda):** escolhe a área. **Documentos** (Ctrl+1) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+2) mostra um número vermelho com as tarefas atrasadas ou que vencem hoje. **Atendimentos** (Ctrl+3) é o controle do gabinete. **Modelos** (Ctrl+4) guarda os modelos de trabalho. Embaixo ficam **Ajustes** e **Ajuda** (abre este guia).
-- **Documento selecionado:** em Tarefas e Atendimentos, a lista mostra só o que é dele; **Todos os documentos** (Tarefas) e **Todos os atendimentos** ampliam.
+- **Barra lateral (esquerda):** escolhe a área. **Hoje** (Ctrl+1) é a tela em que o Ponte abre (com o acervo vazio, abre a tela de boas-vindas em Documentos). **Documentos** (Ctrl+2) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+3) é a lista de tarefas. **Atendimentos** (Ctrl+4) é o controle do gabinete. **Modelos** (Ctrl+5) guarda os modelos de trabalho. Um número vermelho em Hoje (tarefas atrasadas ou para hoje, mais atendimentos com prazo vencido ou para hoje) e em Tarefas (só as tarefas) avisa o que pede atenção. Embaixo ficam **Ajustes** e **Ajuda** (abre este guia).
+- **Atalhos:** **Ctrl+F** vai para a busca da área (de outras áreas, para a busca de documentos). **Ctrl+N** cria: registro manual em Hoje e Documentos, nova tarefa em Tarefas (do documento selecionado), nova entrada em Atendimentos. **Ctrl+S** salva o que está em edição (tarefa, atendimento, notas do documento, configuração de IA). **Esc** fecha a janela ou o painel lateral aberto, se nada estiver sem salvar.
+- **Tarefas e Atendimentos abrem com tudo**, sem seguir o documento selecionado em Documentos. Para ver só os de um documento: em Tarefas, **Ver todas** no card Tarefas da ficha ou **Só as de <número>** ao fim dos botões de visão; em Atendimentos, **Só os de <número>** dentro de **Filtros**. Uma faixa avisa que a lista está restrita e traz **Ver todas** / **Ver todos**.
+- **Voltar:** ao ir de uma tarefa, de um atendimento ou de Hoje para um documento, a ficha mostra no alto **Voltar à tarefa**, **Voltar ao atendimento** ou **Voltar a Hoje**.
 - **Barra inferior:** um ponto colorido mostra a situação da rede, e **Sincronizar** aparece no modo pasta compartilhada. Clicar na situação abre Ajustes ▸ Equipe e sincronização.
 - **Avisos:** aparecem numa caixa no canto inferior direito. Os de sucesso somem sozinhos; os de erro ficam até você fechar.
-- **Ajustes:** Equipe e sincronização, E-mail, Inteligência artificial, Cópia de segurança e exportação, Lixeira, Aparência (tema Como o Windows, Claro ou Escuro) e Sobre o Ponte.
+- **Ajustes:** Equipe e sincronização, E-mail, Importação do SIGADOC, Inteligência artificial, Cópia de segurança e exportação, Lixeira, Aparência (tema Como o Windows, Claro ou Escuro) e Sobre o Ponte.
 - **Datas:** digite `dd/mm/aaaa` ou clique no ícone de calendário; **Hoje** preenche a data de hoje.
 - **Nada se perde ao trocar de tela:** se há algo não salvo, o Ponte pergunta antes.
 
@@ -70,9 +72,9 @@ A ficha tem quatro abas:
 
 ## 5. Tarefas e prazos
 
+- **Começar o dia por Hoje:** a área reúne as **Atrasadas** e as **Para hoje** (com o círculo para concluir e um clique para abrir), os **Próximos dias**, os **Atendimentos com prazo vencido ou para hoje** e os **Documentos recentes**. Ao concluir uma tarefa, o aviso do canto traz **Desfazer** por alguns segundos.
 - **Criar:** em Resumo ▸ **Nova tarefa**, ou na área **Tarefas**. Informe título, responsável (botão **Eu**), ação, prioridade e prazo.
-- **Segue o documento selecionado:** mostra só as tarefas dele, com o botão **Só <número>**. **Todos os documentos** amplia.
-- **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer*, *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*. A lista se divide em Atrasadas, Para hoje, Próximas, Sem prazo e Concluídas.
+- **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer*, *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*. **Ordenar:** Prazo, Prioridade ou Documento. A lista se divide em Atrasadas, Para hoje, Próximas, Sem prazo e Concluídas; lista vazia diz o motivo. Para ver só as de um documento, use **Só as de <número>**; a faixa *Mostrando só as tarefas de <número>* tem **Ver todas**.
 - **Abrir:** clique na tarefa para ver os dados num painel à direita, com **Salvar**, **Concluir**, **Cancelar** e **Excluir…**. Em **Mais detalhes** ficam origem do prazo, lembrete, resultado, checklist, dependências e anexos.
 - **Concluir:** clique no círculo à esquerda da tarefa; clicar de novo reabre. Nada é registrado no SIGADOC.
 - **Ler sem sair da tarefa:** **Consultar documento** abre o texto e os PDFs por cima.
@@ -124,14 +126,14 @@ Se duas instruções se contradisserem, o Ponte avisa antes de gerar. É só um 
 Um atendimento é uma **passagem** de um documento ou de uma demanda pelo gabinete: quando entrou, com quem está, em que situação, quando saiu. É o controle que muitos gabinetes fazem em planilha.
 
 - **De onde vêm:** da importação do SIGADOC (o Ponte cria sozinho na primeira importação de cada documento), do botão **Nova entrada** ou de **Importar planilha**.
-- **Desligar a criação automática:** desmarque **Criar atendimento ao importar do SIGADOC**, no alto da área.
+- **Desligar a criação automática:** desmarque **Criar atendimento ao importar do SIGADOC**, em **Ajustes ▸ Importação do SIGADOC**.
 - **Se a criação automática falhar**, o documento é importado assim mesmo e o painel mostra um aviso com o número e o motivo. Use **Tentar de novo** ou **Dispensar** (e registre à mão, se quiser).
-- **Segue o documento selecionado:** mostra só os atendimentos dele (botão **Só <número>**), e **Nova entrada** cria um atendimento já ligado a ele. **Todos os atendimentos** amplia.
-- **A ficha** abre num painel à direita da lista, com **Salvar**, **Encerrar**, **Descartar alterações** e **Excluir…**. Só a referência ou o assunto é obrigatório.
+- **A lista** abre com todos os atendimentos e mostra as colunas que cabem: Referência, Assunto, Situação e Prazo sempre; Responsável, Entrada, Tempo e Destino / Saída conforme o espaço. Para ver só os de um documento, use **Só os de <número>** em **Filtros**; a faixa *Mostrando só os atendimentos de <número>* tem **Ver todos**. Com um documento selecionado, **Nova entrada** cria um atendimento já ligado a ele.
+- **A ficha** abre num painel à direita da lista, com **Salvar**, **Encerrar**, **Descartar alterações** e **Apagar de vez…**. Só a referência ou o assunto é obrigatório.
 - **Ligar a documento:** informe o número de um documento já importado. A referência passa a ser o número dele.
 - **Criar tarefa** gera uma tarefa do documento ligado; por isso só fica ativo com um documento ligado.
 - **Anexos e linha do tempo:** a ficha aceita arquivos seus e registra cada mudança de situação.
-- **Excluir** um atendimento é definitivo, com confirmação. Não há Lixeira para atendimentos.
+- **Apagar de vez** um atendimento é definitivo, com confirmação. Não há Lixeira para atendimentos.
 - **Fila**, a lista suspensa no alto da área, agrupa os atendimentos (prazo vencido, vence hoje, sem responsável…). **Filtros** abre responsável, origem, destino e situação.
 - **Planilha:** **Importar planilha** lê a aba PROCESSOS de um arquivo .xlsx, mostra uma prévia e importa só as linhas novas. A importação pode ser desfeita.
 
@@ -156,7 +158,7 @@ Em **Ajustes ▸ Equipe e sincronização**. Trocar de modo nunca apaga dados.
 ## 9. Cópia de segurança, lixeira e exportação
 
 - **Cópia de segurança:** **Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora** cria uma cópia do acervo na pasta de backups. Ela só abre na mesma conta do Windows.
-- **Lixeira:** excluir documento, tarefa, anexo ou versão importada manda para a **Lixeira** (Ajustes), de onde se restaura. Por padrão nada é apagado de vez. Na seção Lixeira você pode definir um prazo, de 7 dias a 1 ano, para a limpeza automática.
+- **Lixeira:** excluir documento, tarefa, anexo ou versão importada manda para a **Lixeira** (Ajustes), de onde se restaura. Logo após excluir, o aviso do canto traz **Desfazer** por alguns segundos. Por padrão nada é apagado de vez. Na seção Lixeira você pode definir um prazo, de 7 dias a 1 ano, para a limpeza automática.
 - **Exportar:** **Ajustes ▸ Cópia de segurança e exportação ▸ Exportar dados para CSV…** grava documentos, tarefas e atendimentos em três arquivos para o Excel, sem textos nem anexos.
 - **Ao fechar** com algo não salvo, o Ponte lista o que está pendente, com um botão **Ir para** em cada item.
 

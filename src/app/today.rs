@@ -185,7 +185,7 @@ impl PonteApp {
                     Tone::Info,
                 );
             }
-            if late + due + attendances == 0 {
+            if late + due + attendances == 0 && self.today.error.is_none() {
                 widgets::pill(ui, "Nada vence hoje", Tone::Ok);
             }
         });
@@ -235,7 +235,10 @@ impl PonteApp {
                         &title_of,
                         asked,
                     );
-                    if self.today.late.is_empty() && self.today.today.is_empty() {
+                    if self.today.late.is_empty()
+                        && self.today.today.is_empty()
+                        && self.today.error.is_none()
+                    {
                         widgets::overline(ui, "Tarefas", None);
                         ui.add_space(S1);
                         widgets::card(ui, |ui| {
@@ -271,7 +274,21 @@ impl PonteApp {
         match asked {
             None => {}
             Some(Asked::Conclude(task)) => self.conclude_from_today(task),
-            Some(Asked::OpenTask(task)) => self.navigate(Leave::OpenTask(task)),
+            Some(Asked::OpenTask(task)) => {
+                // The list may be a few seconds old: open what the library holds now.
+                let current = self
+                    .store
+                    .list_tasks()
+                    .ok()
+                    .and_then(|tasks| tasks.into_iter().find(|t| t.id == task.id));
+                match current {
+                    Some(current) => self.navigate(Leave::OpenTask(current)),
+                    None => {
+                        self.refresh();
+                        self.message("Esta tarefa não está mais disponível.");
+                    }
+                }
+            }
             Some(Asked::OpenDocument(id)) => {
                 self.return_after_select = Some(ReturnTo::Today);
                 self.navigate(Leave::Select(id));
@@ -294,12 +311,24 @@ impl PonteApp {
         }
         match self.store.complete_task(task.id) {
             Ok(_) => {
+                // A clean copy of this task open in Tarefas would be stale.
+                self.tasks.forget_task(task.id);
+                let cascade = self.store.take_cascade_notes();
                 self.refresh();
-                self.message_with_action(
-                    format!("Tarefa concluída: {}", task.title),
-                    "Desfazer",
-                    NoticeAction::ReopenTask(task.id),
-                );
+                if cascade.is_empty() {
+                    self.message_with_action(
+                        format!("Tarefa concluída: {}", task.title),
+                        "Desfazer",
+                        NoticeAction::ReopenTask(task.id),
+                    );
+                } else {
+                    // Other tasks were concluded with it: no one-click undo.
+                    self.message(format!(
+                        "Tarefa concluída: {}. {}",
+                        task.title,
+                        cascade.join(" ")
+                    ));
+                }
             }
             Err(error) => self.error(format!("Não foi possível concluir a tarefa: {error}")),
         }
