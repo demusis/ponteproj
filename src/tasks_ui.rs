@@ -206,14 +206,17 @@ fn task_row(
     task: &Task,
     first: bool,
     last: bool,
+    // True when a task this one waits for is right above it, in the same
+    // group: only then the row is drawn hanging from it.
+    nested: bool,
     out: &mut RowOut,
 ) {
     let p = c();
     let editing_this = env.editing == Some(task.id);
     let pending = task.status != "concluida";
     let document = env.documents.iter().find(|d| d.id == task.document_id);
-    let level = env.deps.level(task.id);
-    let indent = 18.0 * level.min(4) as f32;
+    let level = usize::from(nested && env.deps.level(task.id) > 0);
+    let indent = 18.0 * level as f32;
     let direct = env.deps.direct(task.id);
     let blockers = env.deps.open_blockers(task.id);
     let blocked = pending && !blockers.is_empty();
@@ -454,8 +457,12 @@ fn task_row(
         ui.painter()
             .hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, p.outline));
     }
+    // The click only counts when the area it landed on is where this row
+    // still is: after the list changes, last frame's area may belong to
+    // another row's place.
+    let in_place = cached.is_some_and(|old| (old.min - rect.min).length() < 1.0);
     if let Some(row) = row {
-        if row.clicked() {
+        if in_place && row.clicked() {
             out.select = Some(task.clone());
         }
     }
@@ -1038,7 +1045,7 @@ impl TaskPanel {
                     .id_salt("task-manager")
                     .auto_shrink([false, false]);
                 #[cfg(feature = "shots")]
-                {
+                if crate::shots::active() {
                     list_scroll = list_scroll.vertical_scroll_offset(self.shots_scroll);
                 }
                 list_scroll.show(ui, |ui| {
@@ -1065,14 +1072,26 @@ impl TaskPanel {
                                     ui.set_width(ui.available_width());
                                     ui.spacing_mut().item_spacing.y = 0.0;
                                     for (position, task) in group.iter().enumerate() {
-                                        task_row(
-                                            ui,
-                                            &env,
-                                            task,
-                                            position == 0,
-                                            position + 1 == group.len(),
-                                            &mut out,
-                                        );
+                                        // A task hangs from the one it waits
+                                        // for only when that one is above it
+                                        // in this same group.
+                                        let nested = group[..position]
+                                            .iter()
+                                            .any(|above| task.dependencies.contains(&above.id));
+                                        // Controls keep the task's own id, so a
+                                        // click never lands on a neighbour when
+                                        // the list changes under the pointer.
+                                        ui.push_id(("task", task.id), |ui| {
+                                            task_row(
+                                                ui,
+                                                &env,
+                                                task,
+                                                position == 0,
+                                                position + 1 == group.len(),
+                                                nested,
+                                                &mut out,
+                                            );
+                                        });
                                     }
                                 });
                         }
@@ -1143,7 +1162,7 @@ impl TaskPanel {
                     widgets::pill(ui, "Não salva", Tone::Warn);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let response = ui.add_enabled_ui(!dirty, |ui| {
+                    let response = ui.add_enabled_ui(!dirty && !self.attachments.dirty(), |ui| {
                         widgets::icon_button(ui, icon::CLOSE, "Fechar o painel")
                     });
                     if response.inner.clicked() {
@@ -1234,7 +1253,7 @@ impl TaskPanel {
             .id_salt("task-form")
             .auto_shrink([false, false]);
         #[cfg(feature = "shots")]
-        {
+        if crate::shots::active() {
             form_scroll = form_scroll.vertical_scroll_offset(if force_details { 330.0 } else { 0.0 });
         }
         form_scroll.show(ui, |ui| {
@@ -1576,7 +1595,7 @@ impl TaskPanel {
         if conclude {
             self.apply_status_change(store, task_id, true);
         }
-        if close && !self.dirty() {
+        if close && !self.dirty() && !self.attachments.dirty() {
             self.close_form();
         }
         open

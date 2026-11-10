@@ -6322,7 +6322,7 @@ impl IntranetPanel {
                     Err(e) => {
                         self.error = true;
                         self.message =
-                            format!("Não foi possível resolver o choque agora: {e}");
+                            format!("Não foi possível resolver o conflito agora: {e}");
                     }
                 }
             }

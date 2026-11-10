@@ -655,7 +655,7 @@ fn exchange_code(
 pub fn refresh(session: &ChatGptSession) -> Result<ChatGptSession> {
     ensure!(
         session.signed_in(),
-        "Entre com a sua conta do ChatGPT em Configurar IA."
+        "Entre com a sua conta do ChatGPT em Ajustes ▸ Inteligência artificial."
     );
     let client = http(Duration::from_secs(30))?;
     let tokens = token_request(
@@ -691,11 +691,11 @@ pub fn access_token(shared: &SharedSession) -> Result<String> {
         .map_err(|_| anyhow::anyhow!("Sessão do ChatGPT indisponível."))?;
     ensure!(
         session.signed_in(),
-        "Entre com a sua conta do ChatGPT em Configurar IA."
+        "Entre com a sua conta do ChatGPT em Ajustes ▸ Inteligência artificial."
     );
     ensure!(
         session.sharing(),
-        "Sua conta do ChatGPT entrou, mas não liberou o uso do plano para o Ponte. Em Configurar IA, clique em “Entrar de novo…” e marque a permissão de uso do plano."
+        "Sua conta do ChatGPT entrou, mas não liberou o uso do plano para o Ponte. Em Ajustes ▸ Inteligência artificial, clique em “Entrar de novo…” e marque a permissão de uso do plano."
     );
     if session.access_token.is_empty() || session.expires_within(REFRESH_MARGIN) {
         match refresh(&session) {
@@ -706,7 +706,7 @@ pub fn access_token(shared: &SharedSession) -> Result<String> {
                     .is_some_and(TokenError::signed_out)
                 {
                     *session = session.without_tokens();
-                    bail!("A sessão do ChatGPT foi encerrada (desconectada nas configurações do ChatGPT ou expirada). Entre de novo em Configurar IA.");
+                    bail!("A sessão do ChatGPT foi encerrada (desconectada nas configurações do ChatGPT ou expirada). Entre de novo em Ajustes ▸ Inteligência artificial.");
                 }
                 return Err(error.context("Não foi possível renovar a sessão do ChatGPT"));
             }
@@ -947,7 +947,7 @@ fn explain(status: u16, code: &str, message: &str, param: &str) -> String {
     let detail = clean(message, 300);
     match (code, status) {
         ("subscription_sharing_usage_limit_exceeded", _) | (_, 429) => {
-            "A cota do seu plano ChatGPT para o Ponte acabou por enquanto (limite semanal, ou das últimas horas no plano Plus). Veja e ajuste em ChatGPT ▸ Configurações ▸ Uso, ou escolha outro provedor em Configurar IA. Nada foi enviado a outro provedor.".into()
+            "A cota do seu plano ChatGPT para o Ponte acabou por enquanto (limite semanal, ou das últimas horas no plano Plus). Veja e ajuste em ChatGPT ▸ Configurações ▸ Uso, ou escolha outro provedor em Ajustes ▸ Inteligência artificial. Nada foi enviado a outro provedor.".into()
         }
         ("subscription_sharing_user_not_eligible", _) => {
             "Seu plano do ChatGPT não permite uso por aplicativos: é preciso Plus ou Pro (ou, em conta de trabalho, liberação do administrador).".into()
@@ -964,7 +964,7 @@ fn explain(status: u16, code: &str, message: &str, param: &str) -> String {
             "O ChatGPT não aceitou esta rota para uso do plano. Informe o problema aos autores do Ponte.".into()
         }
         ("subscription_sharing_invalid_user", _) | (_, 401) => {
-            "A sessão do ChatGPT não foi aceita. Entre de novo em Configurar IA.".into()
+            "A sessão do ChatGPT não foi aceita. Entre de novo em Ajustes ▸ Inteligência artificial.".into()
         }
         (_, 403) => format!(
             "O ChatGPT bloqueou a requisição (política ou região da conta){}.",
@@ -1016,7 +1016,7 @@ fn respond_at(
 ) -> Result<String> {
     ensure!(
         !model.trim().is_empty() && model.len() <= 128 && !model.chars().any(char::is_control),
-        "Escolha o modelo do ChatGPT em Configurar IA."
+        "Escolha o modelo do ChatGPT em Ajustes ▸ Inteligência artificial."
     );
     // With a plan token the gateway insists on `input` being a list of
     // messages ("Input must be a list"), as in OpenAI's examples.

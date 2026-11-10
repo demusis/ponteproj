@@ -785,6 +785,66 @@ fn window_size() -> [f32; 2] {
     [1240.0, 820.0]
 }
 
+/// The sections of the Ajustes area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsSection {
+    Team,
+    Mail,
+    Ai,
+    Backup,
+    Trash,
+    Appearance,
+    About,
+}
+
+impl SettingsSection {
+    const ALL: [Self; 7] = [
+        Self::Team,
+        Self::Mail,
+        Self::Ai,
+        Self::Backup,
+        Self::Trash,
+        Self::Appearance,
+        Self::About,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Team => "Equipe e sincronização",
+            Self::Mail => "E-mail",
+            Self::Ai => "Inteligência artificial",
+            Self::Backup => "Cópia de segurança e exportação",
+            Self::Trash => "Lixeira",
+            Self::Appearance => "Aparência",
+            Self::About => "Sobre o Ponte",
+        }
+    }
+
+    fn summary(self) -> &'static str {
+        match self {
+            Self::Team => "Como este computador compartilha o acervo com outros computadores e com o celular.",
+            Self::Mail => "Contas de e-mail para importar mensagens como registros.",
+            Self::Ai => "Opcional. Onde a análise e as minutas são geradas.",
+            Self::Backup => "Guardar uma cópia do acervo e levar os dados para planilhas.",
+            Self::Trash => "O que foi excluído fica aqui por um tempo e pode ser restaurado.",
+            Self::Appearance => "Tema claro ou escuro.",
+            Self::About => "Versão, guia do usuário, autores e licença.",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Team => icon::TEAM,
+            Self::Mail => icon::MAIL,
+            Self::Ai => icon::AI,
+            Self::Backup => icon::DATABASE,
+            Self::Trash => icon::TRASH,
+            Self::Appearance => icon::SUN,
+            Self::About => icon::INFO,
+        }
+    }
+}
+
 /// Where the choice of theme is kept: a plain word in the data folder (it says
 /// nothing about the library).
 fn appearance_path() -> Option<PathBuf> {
@@ -1123,6 +1183,7 @@ struct PonteApp {
     /// Open tasks that are late or due today, shown on the rail.
     task_badge: usize,
     appearance: crate::theme::Appearance,
+    settings_section: SettingsSection,
     #[cfg(feature = "shots")]
     tour: Option<crate::shots::Tour>,
     /// Navigation waiting for a decision about the unsaved task.
@@ -1203,6 +1264,7 @@ impl PonteApp {
             area: Area::Documents,
             task_badge: 0,
             appearance: load_appearance(),
+            settings_section: SettingsSection::Team,
             #[cfg(feature = "shots")]
             tour: crate::shots::Tour::start(),
             leave: None,
@@ -1636,7 +1698,7 @@ impl PonteApp {
         let unsent = self.intranet.unsent_folder_changes(&self.store);
         if unsent > 0 {
             out.push(Pending {
-                label: format!("{unsent} alteração(ões) ainda não enviada(s) à pasta compartilhada (Rede e equipe ▸ Sincronizar agora)"),
+                label: format!("{unsent} alteração(ões) ainda não enviada(s) à pasta compartilhada (botão Sincronizar, no rodapé)"),
                 go: PendingTarget::Network,
             });
         }
@@ -1682,6 +1744,15 @@ impl PonteApp {
     /// then the question "save, discard or stay?" is shown first and the
     /// move happens after the answer.
     fn navigate(&mut self, leave: Leave) {
+        // Leaving the AI section of Ajustes saves it; an invalid
+        // configuration keeps the person there.
+        if self.area == Area::Settings
+            && self.settings_section == SettingsSection::Ai
+            && !matches!(leave, Leave::Settings)
+            && !self.leave_ai_settings()
+        {
+            return;
+        }
         let hides_visible_edit = self.area == Area::Tasks && self.tasks.dirty();
         let replaces_edit = leave.replaces_task() && self.tasks.dirty();
         if hides_visible_edit || replaces_edit {
@@ -1908,7 +1979,7 @@ impl PonteApp {
             .list_offline_outbox()
             .map(|v| v.len())
             .unwrap_or(0);
-        let full = format!("{full}\n\nClique para abrir Rede e equipe.");
+        let full = format!("{full}\n\nClique para abrir Ajustes ▸ Equipe e sincronização.");
         if conflicts > 0 {
             return (
                 crate::theme::error(),
@@ -2068,7 +2139,7 @@ impl PonteApp {
     fn settings(&self) -> Result<AiSettings> {
         anyhow::ensure!(
             !self.ai.model().trim().is_empty(),
-            "Escolha o modelo em Configurar IA."
+            "Escolha o modelo em Ajustes ▸ Inteligência artificial."
         );
         Ok(self.with_chatgpt_session(self.ai.chat_settings()?))
     }
@@ -2947,7 +3018,7 @@ impl PonteApp {
                 tasks.on_hover_text("Tarefas de todos os documentos. (Ctrl+2)")
             };
             if tasks.clicked() {
-                self.area = Area::Tasks;
+                self.go_tasks();
             }
             if rail_item(
                 ui,
@@ -3007,7 +3078,7 @@ impl PonteApp {
         if pressed(Key::Num1) {
             self.navigate(Leave::Documents);
         } else if pressed(Key::Num2) {
-            self.area = Area::Tasks;
+            self.go_tasks();
         } else if pressed(Key::Num3) {
             self.navigate(Leave::Saiop);
         } else if pressed(Key::Num4) {
@@ -3015,89 +3086,189 @@ impl PonteApp {
         }
     }
 
-    /// One block of the Ajustes area: icon, name, what it is for, and its buttons.
-    fn settings_card(
-        ui: &mut egui::Ui,
-        icon: &str,
-        title: &str,
-        text: &str,
-        add: impl FnOnce(&mut egui::Ui),
-    ) {
-        let p = crate::theme::c();
-        crate::widgets::card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(icon).size(22.0).color(p.primary));
-                ui.vertical(|ui| {
-                    crate::widgets::section(ui, title);
-                    if !text.is_empty() {
-                        ui.add(egui::Label::new(RichText::new(text).color(p.muted)).wrap());
-                    }
-                    ui.add_space(2.0);
-                    ui.horizontal_wrapped(add);
-                });
-            });
+    /// The Tarefas area never hides an unsaved task, so it needs no question;
+    /// only the AI section of Ajustes is saved on the way out.
+    fn go_tasks(&mut self) {
+        if self.area == Area::Settings
+            && self.settings_section == SettingsSection::Ai
+            && !self.leave_ai_settings()
+        {
+            return;
+        }
+        self.area = Area::Tasks;
+    }
+
+    /// Room around each area. Areas with their own side panels draw to the
+    /// edge of the window and keep the room inside.
+    fn area_margin(&self) -> egui::Margin {
+        match self.area {
+            Area::Tasks | Area::Saiop | Area::Settings => egui::Margin::ZERO,
+            _ => egui::Margin::symmetric(20, 14),
+        }
+    }
+
+    /// One block of the Ajustes area: what it is for, and its buttons.
+    fn settings_card(ui: &mut egui::Ui, text: &str, add: impl FnOnce(&mut egui::Ui)) {
+        widgets::card(ui, |ui| {
+            if !text.is_empty() {
+                ui.add(egui::Label::new(RichText::new(text).color(theme::c().muted)).wrap());
+                ui.add_space(S1);
+            }
+            ui.horizontal_wrapped(add);
         });
+    }
+
+    /// One line of the list of sections, on the left of Ajustes.
+    fn settings_nav_item(ui: &mut egui::Ui, glyph: &str, label: &str, selected: bool) -> bool {
+        let p = theme::c();
+        let size = egui::vec2(ui.available_width(), 36.0);
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if ui.is_rect_visible(rect) {
+            if selected {
+                ui.painter().rect_filled(rect, 6.0, p.primary_soft);
+            } else if response.hovered() {
+                ui.painter().rect_filled(rect, 6.0, p.sunken);
+            }
+            let color = if selected { p.primary } else { p.text };
+            ui.painter().text(
+                egui::pos2(rect.left() + 12.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                glyph,
+                theme::font(18.0),
+                if selected { p.primary } else { p.muted },
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + 40.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                if selected {
+                    theme::font_strong(theme::SIZE_BODY)
+                } else {
+                    theme::font(theme::SIZE_BODY)
+                },
+                color,
+            );
+        }
+        response.clicked()
+    }
+
+    /// Goes to a section of Ajustes. Leaving the AI section saves it first;
+    /// an invalid AI configuration keeps the person there.
+    fn open_settings(&mut self, section: SettingsSection) {
+        let leaving_ai = self.area == Area::Settings
+            && self.settings_section == SettingsSection::Ai
+            && section != SettingsSection::Ai;
+        if leaving_ai && !self.leave_ai_settings() {
+            return;
+        }
+        self.settings_section = section;
+        if self.area != Area::Settings {
+            self.navigate(Leave::Settings);
+        }
+    }
+
+    /// Other parts of the app still ask for the old windows by raising their
+    /// flags (status bar, "Ir para", the tour): each request becomes a visit
+    /// to the section of Ajustes that now holds that content.
+    fn route_settings_requests(&mut self) {
+        if self.intranet.open {
+            self.intranet.open = false;
+            self.open_settings(SettingsSection::Team);
+        }
+        if self.trash.open {
+            self.trash.open = false;
+            self.open_settings(SettingsSection::Trash);
+        }
+        if self.settings_open {
+            self.settings_open = false;
+            self.open_settings(SettingsSection::Ai);
+        }
     }
 
     /// The Ajustes area: what used to be scattered in the "Menu".
     fn settings_area(&mut self, ui: &mut egui::Ui) {
-        use crate::theme::icon;
-        use crate::widgets::{primary, secondary};
         let ctx = ui.ctx().clone();
-        crate::widgets::heading(ui, "Ajustes");
-        ui.add_space(4.0);
-        egui::ScrollArea::vertical()
-            .id_salt("settings-area")
-            .auto_shrink([false, false])
+        let p = theme::c();
+        egui::Panel::left("settings-nav")
+            .exact_size(264.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(p.surface)
+                    .inner_margin(egui::Margin::symmetric(10, 14)),
+            )
             .show(ui, |ui| {
-                ui.set_max_width(760.0);
-                ui.spacing_mut().item_spacing.y = 12.0;
-
-                let (_, short, _) = self.network_status();
-                let folder_mode = self.intranet.folder_mode(&self.store);
-                let unsent = if folder_mode {
-                    self.intranet.unsent_folder_changes(&self.store)
-                } else {
-                    0
-                };
-                let syncing = self.intranet.syncing();
-                let mut open_network = false;
-                let mut sync_now = false;
-                Self::settings_card(
-                    ui,
-                    icon::TEAM,
-                    "Equipe e sincronização",
-                    &format!("Como este computador compartilha o acervo com outros computadores e com o celular. Agora: {short}."),
-                    |ui| {
-                        open_network = ui.add(secondary("Abrir")).clicked();
-                        if folder_mode {
-                            let label = if unsent > 0 {
-                                format!("Sincronizar agora ({unsent} a enviar)")
-                            } else {
-                                "Sincronizar agora".to_owned()
-                            };
-                            sync_now = ui.add_enabled(!syncing, secondary(label)).clicked();
-                        }
-                    },
-                );
-                if open_network {
-                    self.intranet.open = true;
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    widgets::heading(ui, "Ajustes");
+                });
+                ui.add_space(S2);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                let mut chosen = None;
+                for section in SettingsSection::ALL {
+                    if Self::settings_nav_item(
+                        ui,
+                        section.icon(),
+                        section.label(),
+                        self.settings_section == section,
+                    ) {
+                        chosen = Some(section);
+                    }
                 }
-                if sync_now {
-                    self.intranet.request_full_sync();
+                if let Some(section) = chosen {
+                    self.open_settings(section);
+                }
+            });
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(p.bg)
+                    .inner_margin(egui::Margin::symmetric(24, 16)),
+            )
+            .show(ui, |ui| {
+                let section = self.settings_section;
+                widgets::heading(ui, section.label());
+                widgets::muted(ui, section.summary());
+                ui.add_space(S2);
+                egui::ScrollArea::vertical()
+                    .id_salt(("settings-section", section.label()))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_max_width(820.0);
+                        self.settings_section_body(ui, &ctx, section);
+                        ui.add_space(S3);
+                    });
+            });
+    }
+
+    fn settings_section_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        section: SettingsSection,
+    ) {
+        use crate::widgets::{primary, secondary};
+        match section {
+            SettingsSection::Team => {
+                if self.intranet.ui(ui, &mut self.store, &self.db_path) {
                     self.refresh();
                 }
-
+            }
+            SettingsSection::Mail => {
                 let mut open_mail = false;
                 let mut import_eml = false;
                 Self::settings_card(
                     ui,
-                    icon::MAIL,
-                    "E-mail",
-                    "Contas de e-mail para importar mensagens (só leitura: nada é marcado, movido ou apagado na conta), e importação de um e-mail salvo em arquivo.",
+                    "As contas ficam guardadas no acervo deste computador. O Ponte só lê a caixa de e-mail: nada é marcado como lido, movido ou apagado na conta.",
                     |ui| {
-                        open_mail = ui.add(secondary("Contas e importação")).clicked();
-                        import_eml = ui.add(secondary("Importar arquivo .eml…")).clicked();
+                        open_mail = ui
+                            .add(primary(format!("{} Contas e importação", icon::MAIL)))
+                            .clicked();
+                        import_eml = ui
+                            .add(secondary("Importar um e-mail salvo em arquivo (.eml)…"))
+                            .on_hover_text("Um e-mail salvo como arquivo vira um registro do tipo E-mail recebido, com os anexos.")
+                            .clicked();
                     },
                 );
                 if open_mail {
@@ -3106,46 +3277,45 @@ impl PonteApp {
                 if import_eml {
                     self.import_eml_dialog();
                 }
-
-                let mut open_ai = false;
-                Self::settings_card(
-                    ui,
-                    icon::AI,
-                    "Inteligência artificial",
-                    "Opcional. Escolha onde a análise e as minutas são geradas: neste computador, num servidor do órgão ou num serviço externo.",
-                    |ui| {
-                        open_ai = ui.add(secondary("Configurar")).clicked();
-                    },
-                );
-                if open_ai {
-                    self.open_ai_settings(&ctx);
-                }
-
+            }
+            SettingsSection::Ai => self.ai_settings(ui),
+            SettingsSection::Backup => {
                 let idle = self.worker.is_none();
                 let has_backup = self.backup_path.is_some();
                 let mut backup = false;
                 let mut export = false;
                 let mut copy_backup = false;
+                widgets::section(ui, "Cópia de segurança");
                 Self::settings_card(
                     ui,
-                    icon::DATABASE,
-                    "Cópia de segurança e exportação",
-                    "A cópia de segurança guarda o acervo protegido na pasta de backups deste computador. A exportação grava documentos, tarefas e atendimentos em arquivos .csv, sem textos, notas ou anexos.",
+                    "Guarda uma cópia protegida do acervo na pasta de backups deste computador. Ela só abre na mesma conta do Windows.",
                     |ui| {
-                        backup = ui.add_enabled(idle, secondary("Fazer cópia agora")).clicked();
-                        export = ui.add_enabled(idle, secondary("Exportar para CSV…")).clicked();
+                        backup = ui
+                            .add_enabled(idle, primary("Fazer cópia agora"))
+                            .clicked();
                         if has_backup {
                             copy_backup = ui
-                                .add(crate::widgets::quiet("Copiar o caminho da última cópia"))
+                                .add(widgets::quiet("Copiar o caminho da última cópia"))
                                 .clicked();
                         }
                     },
                 );
+                ui.add_space(S3);
+                widgets::section(ui, "Exportação");
+                Self::settings_card(
+                    ui,
+                    "Grava documentos, tarefas e atendimentos em três arquivos .csv (sem textos, notas ou anexos), prontos para os painéis do CERES ou para o Excel.",
+                    |ui| {
+                        export = ui
+                            .add_enabled(idle, secondary("Exportar dados para CSV…"))
+                            .clicked();
+                    },
+                );
                 if backup {
-                    self.backup(&ctx);
+                    self.backup(ctx);
                 }
                 if export {
-                    self.export_csv(&ctx);
+                    self.export_csv(ctx);
                 }
                 if copy_backup {
                     if let Some(path) = &self.backup_path {
@@ -3153,55 +3323,53 @@ impl PonteApp {
                         self.message("Caminho copiado.");
                     }
                 }
-
-                let mut open_trash = false;
-                Self::settings_card(
-                    ui,
-                    icon::TRASH,
-                    "Lixeira",
-                    "O que foi excluído fica aqui por um tempo e pode ser restaurado.",
-                    |ui| {
-                        open_trash = ui.add(secondary("Abrir a lixeira")).clicked();
-                    },
-                );
-                if open_trash {
-                    self.trash.open = true;
+            }
+            SettingsSection::Trash => {
+                let busy = self.worker.is_some()
+                    || self.pdf_reader.busy()
+                    || self.exit_confirm
+                    || self.replacement.is_some();
+                if let Some(change) = self.trash.ui(ui, &mut self.store, busy) {
+                    self.apply_trash_change(change);
                 }
-
+            }
+            SettingsSection::Appearance => {
                 let mut chosen = self.appearance;
-                Self::settings_card(
-                    ui,
-                    icon::SUN,
-                    "Aparência",
-                    "Tema claro ou escuro.",
-                    |ui| {
+                widgets::card(ui, |ui| {
+                    widgets::field_label(ui, "Tema");
+                    ui.horizontal(|ui| {
                         for option in [
-                            crate::theme::Appearance::System,
-                            crate::theme::Appearance::Light,
-                            crate::theme::Appearance::Dark,
+                            theme::Appearance::System,
+                            theme::Appearance::Light,
+                            theme::Appearance::Dark,
                         ] {
-                            if crate::widgets::chip(ui, chosen == option, option.label()).clicked() {
+                            if widgets::chip(ui, chosen == option, option.label()).clicked() {
                                 chosen = option;
                             }
                         }
-                    },
-                );
+                    });
+                });
                 if chosen != self.appearance {
                     self.appearance = chosen;
-                    crate::theme::set_appearance(&ctx, chosen);
+                    theme::set_appearance(ctx, chosen);
                     save_appearance(chosen);
                 }
-
+            }
+            SettingsSection::About => {
                 let mut about = false;
                 let mut guide = false;
                 Self::settings_card(
                     ui,
-                    icon::INFO,
-                    "Sobre o Ponte",
-                    &format!("Versão {}.", env!("CARGO_PKG_VERSION")),
+                    &format!(
+                        "Ponte {} • Assistente documental. Os dados ficam neste computador, protegidos pela sua conta do Windows.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
                     |ui| {
-                        about = ui.add(secondary("Sobre…")).clicked();
-                        guide = ui.add(primary("Guia do usuário")).clicked();
+                        guide = ui
+                            .add(primary(format!("{} Guia do usuário", icon::BOOK)))
+                            .on_hover_text("Abre o guia no navegador. Funciona sem internet.")
+                            .clicked();
+                        about = ui.add(secondary("Autores e licença…")).clicked();
                     },
                 );
                 if about {
@@ -3210,8 +3378,8 @@ impl PonteApp {
                 if guide {
                     self.open_guide();
                 }
-                ui.add_space(8.0);
-            });
+            }
+        }
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
@@ -3350,7 +3518,7 @@ impl PonteApp {
                 self.filters_open = !self.filters_open;
             }
         });
-        if self.filters_open {
+        if self.filters_open || hidden_filter_on {
             ui.add_space(S1);
             egui::Frame::new()
                 .fill(p.sunken)
@@ -5528,16 +5696,16 @@ impl PonteApp {
         })
     }
 
-    fn configuration(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {
-            return;
-        }
-        let mut open = self.settings_open;
+    /// The "Inteligência artificial" section of Ajustes. Leaving the section
+    /// saves what was changed (see `leave_ai_settings`).
+    fn ai_settings(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut save = false;
         let mut refresh = false;
         let mut provider_changed = false;
-        egui::Window::new("Configurar IA").open(&mut open).default_width(600.0).resizable(true).show(ctx, |ui| {
-            ui.strong("Onde a IA roda");
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Onde a IA roda");
             ui.horizontal_wrapped(|ui| {
                 let before = self.ai.provider;
                 ui.radio_value(&mut self.ai.provider, AiProvider::Local, "Ollama neste computador")
@@ -5626,7 +5794,7 @@ impl PonteApp {
                 AiProvider::Remote => {
                     let label = ui.label("Endereço do servidor (HTTPS)");
                     ui.add(egui::TextEdit::singleline(&mut self.ai.remote_url).desired_width(f32::INFINITY)).labelled_by(label.id);
-                    let label = ui.label("Token (opcional)");
+                    let label = ui.label("Chave de acesso (opcional)");
                     ui.add(egui::TextEdit::singleline(&mut self.ai.remote_token).password(true).desired_width(f32::INFINITY)).labelled_by(label.id);
                     ui.colored_label(crate::theme::warning(), "Os textos enviados à IA saem deste computador para esse servidor.");
                 }
@@ -5684,18 +5852,19 @@ impl PonteApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let dirty = self.ai_config_dirty();
-                if ui.add_enabled(dirty, egui::Button::new("Salvar")).clicked() {
+                if ui.add_enabled(dirty, widgets::primary("Salvar")).clicked() {
                     save = true;
                 }
                 if dirty {
-                    ui.small("alterações não salvas (também são salvas ao fechar esta janela)");
+                    pill(ui, "Não salvo", Tone::Warn);
+                    widgets::small_muted(ui, "Também é salvo ao sair desta seção.");
                 } else {
-                    ui.small("configuração salva");
+                    widgets::small_muted(ui, "Configuração salva.");
                 }
             });
             ui.separator();
-            ui.small("O servidor só é acessado ao listar modelos, analisar ou gerar uma sugestão. A chave também pode vir da variável PONTEPROJ_AI_TOKEN. O aplicativo não solicita sua senha do SIGADOC.");
-            ui.small("A análise é salva na biblioteca. A sugestão de minuta só é salva por sua ação explícita.");
+            widgets::small_muted(ui, "O servidor só é acessado ao listar modelos, analisar ou gerar uma sugestão. A chave também pode vir da variável PONTEPROJ_AI_TOKEN. O aplicativo não solicita sua senha do SIGADOC.");
+            widgets::small_muted(ui, "A análise é salva na biblioteca. A sugestão de minuta só é salva por sua ação explícita.");
         });
         if provider_changed {
             self.models_error = None;
@@ -5710,15 +5879,20 @@ impl PonteApp {
         if save && self.save_ai_config() {
             self.message("Configuração de IA salva.");
         }
-        if !open && self.ai_config_dirty() {
-            // Closing saves; an invalid configuration keeps the window open.
-            if self.save_ai_config() {
-                self.message("Configuração de IA salva.");
-            } else {
-                open = true;
-            }
+    }
+
+    /// Leaving the AI section saves what was changed, as closing its window
+    /// used to. False when the configuration is invalid: the person stays.
+    fn leave_ai_settings(&mut self) -> bool {
+        if !self.ai_config_dirty() {
+            return true;
         }
-        self.settings_open = open;
+        if self.save_ai_config() {
+            self.message("Configuração de IA salva.");
+            true
+        } else {
+            false
+        }
     }
 
     fn suggestion_window(&mut self, ctx: &egui::Context) {
@@ -6040,7 +6214,7 @@ impl PonteApp {
             self.message(if change.target.kind == Kind::Attachment {
                 "Anexo movido para a Lixeira. É possível restaurá-lo em Ajustes ▸ Lixeira."
             } else {
-                "Item movido para a lixeira local. É possível restaurá-lo pelo botão Lixeira."
+                "Item movido para a lixeira local. É possível restaurá-lo em Ajustes ▸ Lixeira."
             });
         } else {
             if self.selected_id == Some(change.document) {
@@ -6226,6 +6400,7 @@ impl eframe::App for PonteApp {
             && self.leave.is_none();
         if enabled {
             self.shortcuts(&ctx);
+            self.route_settings_requests();
         }
         let palette = crate::theme::c();
         egui::Panel::left("rail")
@@ -6386,7 +6561,7 @@ impl eframe::App for PonteApp {
             .frame(
                 egui::Frame::new()
                     .fill(palette.bg)
-                    .inner_margin(egui::Margin::symmetric(20, 14)),
+                    .inner_margin(self.area_margin()),
             )
             .show(ui, |ui| {
             ui.add_enabled_ui(enabled, |ui| {
@@ -6472,13 +6647,9 @@ impl eframe::App for PonteApp {
             self.about_window(&ctx);
             self.manual_window(&ctx);
             self.consult_window(&ctx);
-            self.configuration(&ctx);
             self.suggestion_window(&ctx);
             self.material_window(&ctx);
             self.mail_window(&ctx);
-            if self.intranet.show(&ctx, &mut self.store, &self.db_path) {
-                self.refresh();
-            }
         }
         self.confirmations(&ctx);
         if let Some(change) = self.trash.show(

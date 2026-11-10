@@ -3009,6 +3009,15 @@ impl SaiopPanel {
         if self.editor.is_some() {
             self.show_ficha(ui, store, &all_items, &mut open_document);
         }
+        // The area draws to the edges of the window (the ficha touches them);
+        // the rest keeps its room inside what the panel left.
+        let room = ui.available_rect_before_wrap();
+        let room = egui::Rect::from_min_max(
+            room.min + egui::vec2(20.0, 14.0),
+            room.max - egui::vec2(20.0, 0.0),
+        );
+        let mut content = ui.new_child(egui::UiBuilder::new().max_rect(room));
+        let ui = &mut content;
 
         ui.spacing_mut().item_spacing.y = S2;
         // ---- Area header ---------------------------------------------------

@@ -15,7 +15,7 @@ Ele tem duas partes, que funcionam juntas:
 |---|---|
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
-| **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Menu ▾ ▸ Guia do usuário** |
+| **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
 | **Versão** | 0.24.0 (extensão 0.1.11) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
@@ -94,7 +94,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | **Documento** | Um processo, ofício, memorando ou outro expediente do SIGADOC que você importou. No SIGADOC, processo e expediente são igualmente "documentos", e é assim que o Ponte os trata. Cada um tem um número oficial, como `SESP-OFI-2026/00042`. |
 | **Versão importada** | Uma fotografia do documento no momento da importação. Importar de novo depois de um despacho cria uma nova versão; as anteriores ficam guardadas. |
 | **Registro manual** | Um documento que você mesmo cria, para o que não está no SIGADOC: uma ligação, um e-mail, um ofício em papel. Recebe um número próprio, como `MANUAL-2026/0007`. |
-| **Ficha** | A tela de um documento, com quatro abas: Resumo, Documento, Anotações e minutas, Mais. |
+| **Ficha** | A tela de um documento, com quatro abas: Resumo, Documento, Notas e minutas, Mais. |
 | **Tarefa** | Uma providência a tomar sobre um documento, com responsável e prazo. Toda tarefa pertence a um documento. |
 | **Atendimento** | Uma **passagem** de um documento ou de uma demanda pelo gabinete: quando entrou, com quem está, em que situação, quando saiu. É o que muitos gabinetes controlam em planilha. O mesmo documento pode ter várias passagens, e um atendimento pode existir sem documento. |
 | **Anexo** | Um arquivo do seu computador que você junta a um documento, a uma tarefa ou a um atendimento. Não confundir com os PDFs do SIGADOC, que vêm na importação. |
@@ -108,42 +108,43 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 ## 3. A janela do Ponte
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│ PONTE  Assistente documental   Atendimentos  Tarefas  Ficha      Menu ▾ │  cabeçalho
-├───────────────────────┬──────────────────────────────────────────────────┤
-│ Documentos            │                                                  │
-│ [Buscar número...]    │   Área central: muda conforme o botão do         │
-│ Filtrar ▾  + Registro │   cabeçalho.                                     │
-│                       │                                                  │
-│  SESP-OFI-2026/00042  │   Ficha         a ficha do documento selecionado │
-│  Pedido de revisão... │   Tarefas       o painel de tarefas              │
-│  ● 1 em aberto        │   Atendimentos  o controle do gabinete           │
-│                       │                                                  │
-│  MANUAL-2026/0001     │                                                  │
-│  ✓ 1 concluída Manual │                                                  │
-├───────────────────────┴──────────────────────────────────────────────────┤
-│ ● em dia há 3 min          avisos e progresso das operações              │  barra inferior
-└──────────────────────────────────────────────────────────────────────────┘
+┌──────────────┬───────────────────────────┬──────────────────────────────────────┐
+│ Documentos   │ Documentos      [Novo ▾]  │ SESP-OFI-2026/00042  ● 1 em aberto   │
+│ Tarefas  2   │ [Buscar...]               │ Abrir no SIGADOC     Excluir…        │
+│ Atendimentos │ Todos Com tarefa Atrasados│ Resumo Documento Notas e minutas Mais│
+│ Modelos      │ Filtros                   │                                      │
+│              │ SESP-OFI-2026/00042       │ Análise      Dados do documento      │
+│              │ Pedido de revisão...      │ Tarefas      Atendimento      Nota   │
+│              │ ● 1 em aberto             │                                      │
+│              │ MANUAL-2026/0001          │                                      │
+│              │ ✓ 1 concluída  Manual     │                                      │
+│              │                           │                                      │
+│ Ajustes      │                           │                                      │
+│ Ajuda        │                           │                                      │
+├──────────────┴───────────────────────────┴──────────────────────────────────────┤
+│ ● em dia há 3 min     Sincronizar                                               │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Cabeçalho:** os botões escolhem o que a área central mostra. **Ficha** é o documento selecionado na lista. **Tarefas** é o painel de tarefas. **Atendimentos** é o controle do gabinete. **Modelos** é a área dos modelos de trabalho ([seção 9.5](#95-modelos-de-trabalho)).
-- **Lista de documentos (esquerda):** sempre visível. Selecionar um documento muda o que os três painéis mostram: a Ficha abre nele, e Tarefas e Atendimentos passam a listar só o que é dele (com um botão para ver tudo).
-- **Barra inferior:** um ponto colorido diz como está a rede (por exemplo `● só neste computador` ou `● em dia há 3 min`). Passe o mouse para a frase completa. Ali também aparecem os avisos e o progresso das operações demoradas, como a IA e a sincronização.
-- **Menu ▾:**
+- **Barra lateral (esquerda):** escolhe a área. **Documentos** (Ctrl+1) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+2) mostra um número vermelho com as tarefas atrasadas ou que vencem hoje. **Atendimentos** (Ctrl+3) é o controle do gabinete. **Modelos** (Ctrl+4) é a área dos modelos de trabalho ([seção 9.5](#95-modelos-de-trabalho)). Embaixo ficam **Ajustes** e **Ajuda**, que abre o guia curto.
+- **Documentos:** a lista fica à esquerda e a ficha do documento selecionado, à direita. A lista de documentos existe só nesta área.
+- **Documento selecionado:** em **Tarefas** e **Atendimentos**, a lista passa a mostrar só o que é dele, com um botão para ver tudo (**Todos os documentos** em Tarefas, **Todos os atendimentos** em Atendimentos).
+- **Barra inferior:** um ponto colorido diz como está a rede (por exemplo `● só neste computador` ou `● em dia há 3 min`). Passe o mouse para a frase completa; clicar nela abre Ajustes ▸ Equipe e sincronização. No modo pasta compartilhada, o botão **Sincronizar** ao lado sincroniza com a pasta na hora. A lista de documentos se atualiza sozinha.
+- **Avisos:** mensagens como *Nota salva* e os erros aparecem numa caixa no canto inferior direito. Os de sucesso somem sozinhos; os de erro ficam até você fechar. O progresso das operações demoradas, como a IA e a sincronização, aparece na barra inferior.
+- **Tema:** claro ou escuro, em Ajustes ▸ Aparência.
+- **Ajustes** reúne o que não é trabalho do dia a dia, em sete seções:
 
-| Item | Para quê |
+| Seção | Para quê |
 |---|---|
-| **Rede e equipe…** | Trabalhar em equipe ou em mais de um computador ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) |
-| **Sincronizar com a pasta agora** | Aparece no modo pasta compartilhada |
-| **Configurar IA…** | Escolher onde a IA roda ([seção 9](#9-ia-opcional)) |
-| **Lixeira…** | Restaurar itens excluídos e definir o prazo de limpeza |
-| **Fazer backup agora** | Cópia de segurança do acervo |
-| **Exportar dados para CSV…** | Planilhas para o Excel ou para painéis |
-| **Atualizar lista** | A lista já se atualiza sozinha; serve para forçar |
-| **Guia do usuário** | Abre o guia curto no navegador, sem precisar de internet. Dá para imprimir |
-| **Sobre o Ponte X.Y.Z…** (com o número da versão) | Versão, autoria, licença e endereço do projeto |
+| **Equipe e sincronização** | Trabalhar em equipe ou em mais de um computador; conflitos de edição e alterações a enviar ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) |
+| **E-mail** | **Contas e importação** e **Importar um e-mail salvo em arquivo (.eml)…** ([5.5](#55-registros-manuais)) |
+| **Inteligência artificial** | Escolher onde a IA roda ([seção 9](#9-ia-opcional)). Salva com **Salvar** ou ao sair da seção |
+| **Cópia de segurança e exportação** | **Fazer cópia agora** e **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) |
+| **Lixeira** | Restaurar itens excluídos e definir o prazo de limpeza |
+| **Aparência** | Tema: *Como o Windows*, *Claro* ou *Escuro* |
+| **Sobre o Ponte** | Versão, **Guia do usuário**, **Autores e licença…** e endereço do projeto |
 
-**Datas:** todo campo de data aceita digitar `dd/mm/aaaa` ou escolher no calendário. O botão 📅 abre o mês, com os dias da semana (D S T Q Q S S), setas ◀ ▶ para trocar de mês, hoje em destaque e os atalhos **Hoje** e **Limpar**. Uma data inválida, como `31/02/2026`, fica marcada em vermelho.
+**Datas:** todo campo de data aceita digitar `dd/mm/aaaa` ou escolher no calendário, pelo ícone de calendário. O calendário abre o mês, com os dias da semana (D S T Q Q S S), setas ◀ ▶ para trocar de mês, hoje em destaque e os atalhos **Hoje** e **Limpar**. Uma data inválida, como `31/02/2026`, fica marcada em vermelho.
 
 **Nada se perde ao trocar de tela.** Se há algo não salvo, o Ponte pergunta antes de sair, e ao fechar o programa lista cada pendência com um botão **Ir para**.
 
@@ -174,11 +175,11 @@ Nesse momento o Ponte criou três coisas: o **documento**, uma **tarefa de triag
 
 ### 4.2 Ler
 
-A ficha abre na aba **Resumo**: dados principais, tarefas, atendimentos ligados e, mais abaixo, a análise por IA (opcional). A aba **Documento** traz o texto importado, os PDFs (com leitor próprio e reconhecimento de texto local), os dados do SIGADOC e o histórico de tramitação.
+A ficha abre na aba **Resumo**, em cartões: **Análise** (por IA, opcional), **Dados do documento**, **Tarefas**, **Atendimento** e **Nota**. A aba **Documento** traz o texto importado, os PDFs (com leitor próprio e reconhecimento de texto local), os dados do SIGADOC e o histórico de tramitação.
 
 ### 4.3 Anotar
 
-Em **Anotações e minutas**, escreva nas notas, por exemplo:
+Em **Notas e minutas**, escreva nas notas, por exemplo:
 
 > Falar com a Coordenação de Capacitação antes de responder. Planilha anexa tem valores desatualizados (ver p. 3 do PDF).
 
@@ -186,51 +187,53 @@ Clique em **Salvar notas**. O ponto laranja na aba some quando tudo está salvo.
 
 ### 4.4 Criar a tarefa com prazo
 
-No Resumo, em **Tarefas deste documento**, clique em **Nova tarefa**. Preencha:
+No Resumo, no cartão **Tarefas**, clique em **Nova tarefa**. Preencha:
 
 | Campo | Valor |
 |---|---|
 | Título | `Responder ao ofício` |
 | Responsável | clique em **Eu** |
 | Ação | *Responder* |
-| Prazo | `13/11/2026` (digite ou use o 📅) |
+| Prazo | `13/11/2026` (digite ou use o calendário) |
 
 Salve. A etiqueta azul embaixo do cartão do documento, na lista da esquerda, passa a mostrar `● 2 em aberto (no prazo) • Prazo: 13/11/2026`. No dia do prazo ela fica âmbar, `⏰ 1 vence hoje (+1 no prazo)`, e depois dele fica vermelha, `⚠ 1 tarefa atrasada (+1 no prazo) • Prazo: 13/11/2026`.
 
 ### 4.5 Responder
 
-Ainda em **Anotações e minutas**, na parte **Minuta**:
+Ainda em **Notas e minutas**, na parte **Minuta**:
 
 1. Escolha o tipo: *Resposta*.
-2. Clique em **Começar por um modelo** (texto-base, sem IA) ou em **Gerar nova com IA**. Para usar um modelo de trabalho, escolha-o antes em **Modelo de trabalho** ([seção 9.5](#95-modelos-de-trabalho)).
+2. Clique em **Começar por um modelo** (texto-base, sem IA) ou em **Gerar com IA**. Para usar um modelo de trabalho, escolha-o antes em **Modelo de trabalho** ([seção 9.5](#95-modelos-de-trabalho)).
 3. Edite o texto.
 4. **Salvar nova versão**.
-5. **Exportar (RTF)** abre a pasta com o arquivo para o Word, ou **Copiar texto** para colar direto.
+5. **Exportar (RTF)** abre a pasta com o arquivo para o Word, ou **Copiar** para colar direto.
 
 O texto final você cola no SIGADOC. O Ponte não tramita nem assina.
 
 ### 4.6 Concluir
 
-Com a resposta enviada pelo SIGADOC, clique em **✓ Concluir** ao lado de cada tarefa. O cartão passa a `✓ 2 tarefas concluídas`. No painel **Atendimentos**, abra o atendimento e clique em **Encerrar**, informando a data de saída e para onde foi.
+Com a resposta enviada pelo SIGADOC, clique no círculo à esquerda de cada tarefa, na área **Tarefas**. O cartão passa a `✓ 2 tarefas concluídas`. Na área **Atendimentos**, abra o atendimento e clique em **Encerrar**, informando a data de saída e para onde foi.
 
 ---
 
 ## 5. Documentos
 
-### 5.1 A lista da esquerda
+### 5.1 A lista de documentos
 
-- **Buscar** procura em número, assunto, texto, notas, minutas e nos PDFs já lidos.
-- **Filtrar ▾** abre os filtros e a ordem:
+A lista fica na área **Documentos**, à esquerda da ficha.
+
+- A busca procura em número, assunto, texto, notas, minutas e nos PDFs já lidos.
+- Os atalhos *Todos*, *Com tarefa* e *Atrasados · N* filtram a lista na hora.
+- **Filtros** abre os demais filtros e a ordem:
 
 | Filtro | Opções |
 |---|---|
-| Situação das tarefas | *Todos*, *Com tarefa aberta*, *No prazo*, *Atrasados*, *Concluídos* |
+| Situação das tarefas | *Todos*, *Com tarefa*, *No prazo*, *Atrasados*, *Concluídos* |
 | Prioridade | todas, urgente, alta, normal, baixa, não classificada |
 | Origem | *Todos*, *SIGADOC*, *Manuais* (aparece quando há registros manuais) |
 | **Ordem** | *Mais recentes primeiro* (padrão), *Prazo mais próximo primeiro*, *Prioridade (urgente primeiro)*, *Número do documento*, *Assunto (A–Z)* |
 
-- **+ Registro manual** cria um documento que não está no SIGADOC ([5.5](#55-registros-manuais)).
-- Quando há tarefas atrasadas, o atalho `⚠ N atrasado(s)` aparece ao lado de Filtrar.
+- **Novo** abre um menu: **Registro manual…** cria um documento que não está no SIGADOC ([5.5](#55-registros-manuais)); **Importar e-mail de um arquivo (.eml)…** e **Importar da conta de e-mail…** trazem e-mails.
 
 ### 5.2 Como ler um cartão
 
@@ -256,12 +259,12 @@ Outras marcas do cartão: **Manual** (registro manual), `📎 N juntado(s)` (o d
 
 | Aba | O que tem |
 |---|---|
-| **Resumo** | Dados principais; **Tarefas deste documento**; atendimentos ligados; **Análise assistida por IA**; contexto de trabalho e fontes extras (recolhidos); documentos parecidos. |
+| **Resumo** | Cartões **Análise** (botão **Analisar…**, depois **Analisar de novo**; as providências sugeridas têm **Criar tarefa**), **Dados do documento** (**Ler o PDF**, **Completar contexto**), **Tarefas** (**Nova tarefa**, **Ver todas**), **Atendimento** e **Nota**; documentos parecidos. |
 | **Documento** | **Texto importado**; **Arquivos (PDF)** com **Ler no Ponte** e exportação; **Anexos** (arquivos seus); dados do SIGADOC; histórico de tramitação. |
-| **Anotações e minutas** | **Notas** no alto; **Minuta** embaixo, com tipo, **Modelo de trabalho**, **Começar por um modelo**, **Guardar como modelo**, **Pedido desta minuta**, IA (**Gerar nova com IA**, **Completar texto atual**, **Revisar texto atual**), **Salvar nova versão**, **Copiar texto**, **Exportar (RTF)**, **Comparar com versão ▾** e as versões salvas, cada uma com **Material utilizado** quando foi gerada com IA. |
+| **Notas e minutas** | **Notas** no alto; **Minuta** embaixo, com tipo, **Modelo de trabalho**, **Começar por um modelo**, **Guardar como modelo**, **Pedido desta minuta**, IA (**Gerar com IA**, **Completar**, **Revisar**), **Salvar nova versão**, **Copiar**, **Exportar (RTF)**, **Comparar com versão ▾** e as versões salvas, cada uma com **Material utilizado** quando foi gerada com IA. |
 | **Mais** | Vínculos entre documentos (automáticos ou feitos por você); versões importadas, com comparação; o que foi importado e os links encontrados na página; dados técnicos. |
 
-O cabeçalho da ficha mostra o número, a etiqueta de tarefas, a situação de juntada (com **Abrir documento principal**), **Abrir documento no SIGADOC** e **Excluir…** (vai para a Lixeira).
+O alto da ficha mostra o número, as etiquetas de situação, a situação de juntada (com **Abrir documento principal**), **Abrir no SIGADOC** e **Excluir…** (vai para a Lixeira).
 
 ### 5.4 Importar de novo o mesmo documento
 
@@ -279,7 +282,7 @@ Se a confirmação de uma importação se perder no caminho, o botão vira **Rep
 
 ### 5.5 Registros manuais
 
-Para o que não está no SIGADOC. Clique em **+ Registro manual** (ou **+ Criar registro manual…** na tela inicial) e preencha:
+Para o que não está no SIGADOC. Clique em **Novo ▸ Registro manual…** (ou **Criar registro manual…** na tela inicial) e preencha:
 
 | Campo | Exemplo |
 |---|---|
@@ -293,9 +296,9 @@ Ao salvar, o registro recebe o número `MANUAL-ano/sequência`, que nunca se con
 
 Em equipe, o número é dado pelo computador principal. Se ele estiver fora de alcance, o registro fica como "pendente" até a próxima sincronização.
 
-**E-mails salvos como arquivo.** Um e-mail pode entrar pronto, sem digitar: salve-o como `.eml` (no Gmail, abra a mensagem ▸ ⋮ ▸ **Mostrar original** ▸ **Baixar original**; no Outlook, **Salvar como**) e use **+ Importar e-mail (.eml)…** na tela inicial ou **Menu ▾ ▸ Importar e-mail (.eml)…**. O Ponte lê o arquivo neste computador (nada é lido da sua conta de e-mail) e cria um registro manual do tipo *E-mail recebido* com remetente, destinatários, data e assunto no texto, o corpo da mensagem (texto simples, ou o HTML convertido) e os arquivos anexados como **Anexos** do registro. Imagens embutidas sem nome e partes ilegíveis são deixadas de fora, com aviso. O mesmo e-mail importado duas vezes é reconhecido pelo identificador da mensagem e não é duplicado. Nos modelos de trabalho, um `.eml` anexado a um exemplo tem o texto extraído só com assunto e corpo, sem endereços.
+**E-mails salvos como arquivo.** Um e-mail pode entrar pronto, sem digitar: salve-o como `.eml` (no Gmail, abra a mensagem ▸ ⋮ ▸ **Mostrar original** ▸ **Baixar original**; no Outlook, **Salvar como**) e use **Novo ▸ Importar e-mail de um arquivo (.eml)…** ou **Ajustes ▸ E-mail ▸ Importar um e-mail salvo em arquivo (.eml)…**. O Ponte lê o arquivo neste computador (nada é lido da sua conta de e-mail) e cria um registro manual do tipo *E-mail recebido* com remetente, destinatários, data e assunto no texto, o corpo da mensagem (texto simples, ou o HTML convertido) e os arquivos anexados como **Anexos** do registro. Imagens embutidas sem nome e partes ilegíveis são deixadas de fora, com aviso. O mesmo e-mail importado duas vezes é reconhecido pelo identificador da mensagem e não é duplicado. Nos modelos de trabalho, um `.eml` anexado a um exemplo tem o texto extraído só com assunto e corpo, sem endereços.
 
-**Direto da conta de e-mail (IMAP).** O botão **✉ E-mails**, ao lado de **+ Registro manual**, abre direto a lista de mensagens da última conta, pasta e filtro usados, para marcar e importar; **Trocar pasta ou conta…** leva à janela completa. Na lista de documentos, um e-mail aparece pelo endereço e nome do remetente, com a data em que foi importado. **Menu ▾ ▸ Importar do e-mail (IMAP)…** abre a janela completa com as suas contas. Cadastre uma (nome, servidor, usuário e **senha de app**; para o Gmail pessoal, ative a verificação em duas etapas e crie a senha em Conta Google ▸ Segurança ▸ Senhas de app: a senha normal não funciona). A senha fica selada só neste computador, e só se você marcar "Lembrar"; sem marcar, é pedida a cada sessão. Conecte, escolha a pasta (a Caixa de entrada, **Com estrela** ou um marcador do Gmail, que aparece como pasta) e o filtro (Todas, Com estrela, Não lidas), liste as cem mais recentes, marque as que quer e clique em **Importar**. Cada mensagem vira o mesmo registro manual do `.eml`, com anexos; as já importadas aparecem indicadas e não se repetem. O Ponte só lê: nada é marcado como lido, movido ou apagado. A conexão é cifrada (TLS) e vai direto ao servidor de e-mail; nada passa por terceiros. Pode haver várias contas.
+**Direto da conta de e-mail (IMAP).** **Novo ▸ Importar da conta de e-mail…** abre direto a lista de mensagens da última conta, pasta e filtro usados, para marcar e importar; **Trocar pasta ou conta…** leva à janela completa. Na lista de documentos, um e-mail aparece pelo endereço e nome do remetente, com a data em que foi importado. **Ajustes ▸ E-mail ▸ Contas e importação** abre a janela completa com as suas contas. Cadastre uma (nome, servidor, usuário e **senha de app**; para o Gmail pessoal, ative a verificação em duas etapas e crie a senha em Conta Google ▸ Segurança ▸ Senhas de app: a senha normal não funciona). A senha fica selada só neste computador, e só se você marcar "Lembrar"; sem marcar, é pedida a cada sessão. Conecte, escolha a pasta (a Caixa de entrada, **Com estrela** ou um marcador do Gmail, que aparece como pasta) e o filtro (Todas, Com estrela, Não lidas), liste as cem mais recentes, marque as que quer e clique em **Importar**. Cada mensagem vira o mesmo registro manual do `.eml`, com anexos; as já importadas aparecem indicadas e não se repetem. O Ponte só lê: nada é marcado como lido, movido ou apagado. A conexão é cifrada (TLS) e vai direto ao servidor de e-mail; nada passa por terceiros. Pode haver várias contas.
 
 ### 5.6 Anexos
 
@@ -316,16 +319,16 @@ Cada anexo tem uma **descrição** opcional e os botões **Ler no Ponte** (PDF) 
 
 ## 6. Tarefas e prazos
 
-Cada documento importado recebe uma tarefa de triagem. Você cria outras no Resumo do documento (**Nova tarefa**) ou no painel **Tarefas**.
+Cada documento importado recebe uma tarefa de triagem. Você cria outras no Resumo do documento (**Nova tarefa**) ou na área **Tarefas**.
 
-### 6.1 O painel
+### 6.1 A área Tarefas
 
-A lista fica à esquerda e a ficha da tarefa à direita.
+O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupada em ATRASADAS, PARA HOJE, PRÓXIMAS, SEM PRAZO e CONCLUÍDAS. O círculo à esquerda de cada tarefa a conclui (ou a reabre, se já concluída). Clicar na tarefa abre os dados num painel à direita, com **Salvar**, **Concluir**, **Cancelar** e **Excluir…** embaixo.
 
-- **O painel segue o documento selecionado.** Com um documento selecionado na lista da esquerda, o painel mostra só as tarefas dele: no alto aparece `Só SESP-OFI-2026/00042` e o botão **Todos os documentos**, que amplia. Selecionar outro documento volta a filtrar por ele.
-- **Visões:** *Hoje*, *Esta semana*, *Atrasadas*, *Todas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando terceiros*, *Lembretes* e *Sem prazo*.
+- **A área segue o documento selecionado.** Com um documento selecionado em Documentos, ela mostra só as tarefas dele: no alto aparece `Só SESP-OFI-2026/00042` e o botão **Todos os documentos**, que amplia. Selecionar outro documento volta a filtrar por ele.
+- **Visões:** *Todas*, *Hoje*, *Esta semana*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando terceiros*, *Lembretes* e *Sem prazo*.
 - **Mostrar concluídas** inclui as já concluídas na lista.
-- **Nova tarefa para …** cria uma tarefa do documento selecionado.
+- **Nova tarefa** cria uma tarefa do documento selecionado, quando há um.
 
 ### 6.2 Os campos
 
@@ -343,9 +346,9 @@ A lista fica à esquerda e a ficha da tarefa à direita.
 
 ### 6.3 Regras que vale conhecer
 
-- **✓ Concluir** e **Reabrir** ficam na própria lista. Concluir uma tarefa não registra nada no SIGADOC.
+- **Concluir** e reabrir ficam na própria lista, no círculo à esquerda da tarefa. Concluir uma tarefa não registra nada no SIGADOC.
 - **Sem sair da tarefa:** na ficha, **Consultar documento** abre o texto e os PDFs numa janela por cima, só para leitura. **Ir para o documento** abre a ficha completa.
-- **Alterações não salvas:** com uma tarefa em edição, o rótulo **Tarefas ●** fica laranja no cabeçalho. Ao clicar em outro lugar, o Ponte pergunta: **Salvar e continuar**, **Descartar alterações** ou **Voltar à tarefa**.
+- **Alterações não salvas:** com uma tarefa em edição e alterações não salvas, ao clicar em outro lugar o Ponte pergunta: **Salvar e continuar**, **Descartar alterações** ou **Voltar à tarefa**.
 - **Juntados seguem o principal:** concluir a última tarefa aberta de um documento principal conclui também as tarefas abertas dos documentos juntados a ele, cada uma com a anotação *"Concluída automaticamente: o documento principal X foi concluído"*. A mensagem lista o que foi concluído. Reabrir o principal não reabre as peças.
 
 ### 6.4 Dependências entre tarefas
@@ -361,31 +364,31 @@ Uma tarefa pode depender de outras ("só posso responder depois de receber o par
 | `↱ libera:` seguido de botões | as tarefas que esperam por esta |
 | barra âmbar ou azul à esquerda de um cartão | com uma tarefa aberta na ficha: âmbar marca as anteriores dela, azul as que dependem dela |
 
-Enquanto houver tarefa anterior em aberto, **✓ Concluir** fica desabilitado, com a dica *"Conclua antes: A, B"*. O Ponte não deixa formar ciclos: as opções que criariam um aparecem desabilitadas e explicadas.
+Enquanto houver tarefa anterior em aberto, concluir fica desabilitado, com a dica *"Conclua antes: A, B"*. O Ponte não deixa formar ciclos: as opções que criariam um aparecem desabilitadas e explicadas.
 
 ---
 
 ## 7. Atendimentos (controle do gabinete)
 
-O painel **Atendimentos** é o "livro de entrada e saída" do gabinete: cada linha é uma passagem de um documento ou de uma demanda, com entrada, responsável, situação, prazo e resultado. Substitui a planilha de controle e pode ser alimentado por ela.
+A área **Atendimentos** é o "livro de entrada e saída" do gabinete: cada linha é uma passagem de um documento ou de uma demanda, com entrada, responsável, situação, prazo e resultado. Substitui a planilha de controle e pode ser alimentado por ela.
 
 ### 7.1 De onde vêm os atendimentos
 
 | Origem | Como |
 |---|---|
-| **Importação do SIGADOC** | Na primeira importação de cada documento, o Ponte cria o atendimento sozinho: referência = número do documento, assunto = título, entrada = hoje, responsável = você, situação *Em análise*, já ligado ao documento. Documentos juntados a outro não geram atendimento, e nova versão do mesmo documento não cria outro. A caixa **Criar atendimento ao importar do SIGADOC**, no alto do painel, desliga isso. Se o registro automático falhar (a importação em si continua valendo), o painel mostra um aviso com o número do documento e o motivo, e os botões **Tentar de novo** e **Dispensar**. |
-| **À mão** | Botão **Registrar nova entrada**. |
-| **Planilha** | Botão **Importar planilha…** ([7.4](#74-importar-a-planilha-do-controle)). |
+| **Importação do SIGADOC** | Na primeira importação de cada documento, o Ponte cria o atendimento sozinho: referência = número do documento, assunto = título, entrada = hoje, responsável = você, situação *Em análise*, já ligado ao documento. Documentos juntados a outro não geram atendimento, e nova versão do mesmo documento não cria outro. A caixa **Criar atendimento ao importar do SIGADOC**, no alto da área, desliga isso. Se o registro automático falhar (a importação em si continua valendo), a área mostra um aviso com o número do documento e o motivo, e os botões **Tentar de novo** e **Dispensar**. |
+| **À mão** | Botão **Nova entrada**. |
+| **Planilha** | Botão **Importar planilha** ([7.4](#74-importar-a-planilha-do-controle)). |
 
 Se já existe um atendimento com o mesmo número e sem documento ligado (vindo da planilha, por exemplo), a importação do SIGADOC **liga** esse atendimento ao documento em vez de criar outro.
 
-### 7.2 O painel segue o documento selecionado
+### 7.2 A área segue o documento selecionado
 
-Com um documento selecionado na lista da esquerda, o painel mostra só os atendimentos ligados a ele: no alto aparece `Só SESP-OFI-2026/00042` e o botão **Todos os atendimentos**, que amplia. Nesse estado, **Registrar nova entrada** cria o atendimento já ligado ao documento, com o número dele como referência.
+Com um documento selecionado em Documentos, a área mostra só os atendimentos ligados a ele: no alto aparece `Só SESP-OFI-2026/00042` e o botão **Todos os atendimentos**, que amplia. Nesse estado, **Nova entrada** cria o atendimento já ligado ao documento, com o número dele como referência.
 
 ### 7.3 A ficha do atendimento
 
-A ficha abre ao lado da grade, com os botões sempre visíveis no alto: **Salvar**, **Descartar alterações**, **Encerrar** (ou **Reabrir**), **Fechar ficha** e **Excluir…**.
+Clicar numa linha da tabela abre a ficha num painel à direita, com os botões **Salvar**, **Descartar alterações**, **Encerrar** (ou **Reabrir**), **Fechar ficha** e **Excluir…**. Na tabela, *Situação* e *Prazo* aparecem como etiquetas coloridas.
 
 | Seção | Campo | Opções ou exemplo |
 |---|---|---|
@@ -410,7 +413,7 @@ Só a **referência ou o assunto** é obrigatório.
 
 **Ligar a um documento.** Informe o número de um documento já importado e clique em **Ligar a documento**. A referência passa a ser o número do documento e fica travada enquanto ligado; **Desligar do documento** libera. O Resumo do documento passa a mostrar o atendimento.
 
-**Tarefas deste atendimento.** Lista as tarefas criadas a partir dele, com situação, prazo e **Abrir**. O botão **Criar tarefa** cria, no painel Tarefas, uma tarefa do documento ligado, com a prioridade, o prazo e o responsável do atendimento. Como toda tarefa pertence a um documento, o botão só fica ativo com um documento ligado. A tarefa e o registro dela na linha do tempo são gravados juntos: ou ficam os dois, ou nenhum.
+**Tarefas deste atendimento.** Lista as tarefas criadas a partir dele, com situação, prazo e **Abrir**. O botão **Criar tarefa** cria, na área Tarefas, uma tarefa do documento ligado, com a prioridade, o prazo e o responsável do atendimento. Como toda tarefa pertence a um documento, o botão só fica ativo com um documento ligado. A tarefa e o registro dela na linha do tempo são gravados juntos: ou ficam os dois, ou nenhum.
 
 **Anexos.** Depois de salvo, o atendimento aceita arquivos seus ([5.6](#56-anexos)).
 
@@ -422,7 +425,7 @@ Só a **referência ou o assunto** é obrigatório.
 
 Para quem já mantém o controle em Excel (arquivo `.xlsx`, aba `PROCESSOS`):
 
-1. **Importar planilha…** → **Escolher planilha…** → **Ler a planilha**.
+1. **Importar planilha** → **Escolher planilha…** → **Ler a planilha**.
 2. A **prévia** lista cada linha com referência, assunto, responsável, entrada, situação, prazo, alertas e se **já está registrada** (mesma referência e mesma data de entrada). Nada é gravado ainda.
 3. Clique em **Importar só as N novas** (ou em importar todas). A planilha original nunca é alterada.
 
@@ -445,15 +448,15 @@ Linhas só com fórmulas são ignoradas. A mesma referência com datas de entrad
 
 ### 7.5 Filas e filtros
 
-- **Fila:** a lista suspensa no alto do painel (por exemplo *Fila: Minhas pendências (3)*) mostra quantos atendimentos há em cada fila: *Minhas pendências*, *Sem responsável*, *Prazo vencido*, *Vence hoje*, *Vence nos próximos dias* (ajuste os dias), *Aguardando resposta*, *Retorno para UAS*, *Aguardando assinatura*, *Sem atualização no período*, *Com alerta de revisão*.
-- **Filtros ▾** abre responsável, origem, destino e situação.
+- **Fila:** a lista suspensa no alto da área (por exemplo *Fila: Minhas pendências (3)*) mostra quantos atendimentos há em cada fila: *Minhas pendências*, *Sem responsável*, *Prazo vencido*, *Vence hoje*, *Vence nos próximos dias* (ajuste os dias), *Aguardando resposta*, *Retorno para UAS*, *Aguardando assinatura*, *Sem atualização no período*, *Com alerta de revisão*.
+- **Filtros** abre responsável, origem, destino e situação.
 - Clique no título de uma coluna para ordenar. A coluna *Idade / Espera* mostra os dias desde a entrada e os dias aguardando retorno externo.
 
 ---
 
 ## 8. Mais de um computador: equipe e pasta compartilhada
 
-Em **Menu ▾ ▸ Rede e equipe** você escolhe um de quatro modos. Trocar de modo nunca apaga dados.
+Em **Ajustes ▸ Equipe e sincronização** você escolhe um de quatro modos. Trocar de modo nunca apaga dados.
 
 | Modo | Para quem | Como os computadores se falam |
 |---|---|---|
@@ -483,13 +486,13 @@ Um computador do gabinete é o **principal**; os outros se conectam a ele. Nada 
 
 1. *Seu nome na equipe*: `MARIA`.
 2. Marque **Conectar ao computador principal do gabinete**, cole o código em *Código de conexão* e clique em **Usar código**. O Ponte testa a conexão na hora.
-3. Clique em **Salvar e sincronizar acervo agora**. A partir daí vale neste computador o acervo do gabinete. Se ele já tinha documentos próprios, faça antes um backup (**Menu ▾ ▸ Fazer backup agora**): o conteúdo local dá lugar ao do computador principal.
+3. Clique em **Salvar e sincronizar acervo agora**. A partir daí vale neste computador o acervo do gabinete. Se ele já tinha documentos próprios, faça antes uma cópia de segurança (**Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora**): o conteúdo local dá lugar ao do computador principal.
 
 Pronto: importações, notas, minutas, tarefas e atendimentos de todos vão para o mesmo acervo, com o nome de quem fez cada coisa.
 
 **Se o principal desligar**, nada para. Cada computador continua salvando localmente (a mensagem avisa *Salvo neste computador… será enviado ao reconectar*) e envia tudo quando a conexão volta, na ordem em que foi feito. O que foi criado sem conexão (uma tarefa, um atendimento, um anexo) pode receber outro número no principal; o Ponte acompanha essa troca, e as alterações seguintes chegam ao item certo. Se o principal quebrar de vez, qualquer colega pode marcar o próprio computador como principal e distribuir um novo código: o acervo dele já está completo.
 
-**Se os colegas não conseguirem conectar**, peça à TI para liberar a porta **7878 (TCP)** no Firewall do Windows do computador principal. A janela traz o comando pronto.
+**Se os colegas não conseguirem conectar**, peça à TI para liberar a porta **7878 (TCP)** no Firewall do Windows do computador principal. A seção traz o comando pronto.
 
 ### 8.2 Uma pessoa, dois computadores: pasta compartilhada
 
@@ -508,7 +511,7 @@ Cada computador guarda também, ao lado do próprio acervo, a última cópia que
 
 Como funciona no dia a dia:
 
-- **Quando sincroniza:** ao abrir o Ponte, a cada 5 minutos, em **Salvar e sincronizar agora** ou em **Menu ▾ ▸ Sincronizar com a pasta agora**. Ao fechar com alterações ainda não enviadas, o Ponte avisa.
+- **Quando sincroniza:** ao abrir o Ponte, a cada 5 minutos, em **Salvar e sincronizar agora** ou no botão **Sincronizar** da barra inferior. Ao fechar com alterações ainda não enviadas, o Ponte avisa.
 - **Espere a nuvem terminar** de sincronizar a pasta antes de abrir o Ponte no outro computador.
 - **Só o que mudou** entra. PDFs e anexos só são copiados quando faltam.
 - **Várias pastas:** o Ponte usa a cópia mais recente e grava em todas as que alcançar. Se duas pastas divergirem, as alterações de uma e de outra são conciliadas.
@@ -517,7 +520,7 @@ Como funciona no dia a dia:
 
 ### 8.3 Conflitos de edição
 
-Um conflito acontece só quando o **mesmo item** foi alterado nos dois lados enquanto estavam sem contato. A janela Rede e equipe mostra, campo a campo, o valor de cada lado e **quem alterou** (*só por você*, *só no computador principal*, *pelos dois lados*), e oferece:
+Um conflito acontece só quando o **mesmo item** foi alterado nos dois lados enquanto estavam sem contato. O cartão *Edições em conflito*, em Ajustes ▸ Equipe e sincronização, mostra, campo a campo, o valor de cada lado e **quem alterou** (*só por você*, *só no computador principal*, *pelos dois lados*), e oferece:
 
 - **Combinar as duas versões…** — cada campo fica com o lado que o alterou; textos alterados dos dois lados são juntados; nos demais campos alterados dos dois lados, a sua versão prevalece e o valor do outro lado fica anotado no próprio item. Nada se perde em silêncio.
 - **Usar só a minha versão…**
@@ -525,7 +528,7 @@ Um conflito acontece só quando o **mesmo item** foi alterado nos dois lados enq
 
 Todas pedem confirmação.
 
-Um caso especial: se o computador principal recusou a criação de um item feito sem conexão (por exemplo, a tarefa de um documento que um colega mandou para a lixeira), as alterações seguintes desse item não têm onde cair. Elas aparecem como aviso, sem as opções acima, só com **Dispensar o aviso**: refaça a alteração à mão, se ainda for necessária.
+Um caso especial: se o computador principal recusou a criação de um item feito sem conexão (por exemplo, a tarefa de um documento que um colega mandou para a lixeira), as alterações seguintes desse item não têm onde cair. Elas aparecem como aviso (no cartão *Alterações a enviar*, da mesma seção), sem as opções acima, só com **Dispensar o aviso**: refaça a alteração à mão, se ainda for necessária.
 
 ### 8.4 O indicador na barra inferior
 
@@ -540,7 +543,7 @@ Um caso especial: se o computador principal recusou a criação de um item feito
 | `● pasta fora de alcance` | a pasta não está acessível agora |
 | `● ⚠ 2 conflito(s) de edição` | há conflitos a decidir |
 
-Passe o mouse para a frase completa e clique para abrir Rede e equipe. Durante uma sincronização, a mesma linha mostra a etapa em andamento.
+Passe o mouse para a frase completa e clique para abrir Ajustes ▸ Equipe e sincronização. Durante uma sincronização, a mesma linha mostra a etapa em andamento.
 
 ---
 
@@ -548,14 +551,14 @@ Passe o mouse para a frase completa e clique para abrir Rede e equipe. Durante u
 
 O Ponte funciona inteiro sem IA. Ela serve para duas coisas:
 
-- **Resumo ▸ Analisar e sugerir providências:** resume o documento, sugere prioridade, aponta o prazo mencionado e propõe providências, que viram tarefas com um clique. Os trechos citados são conferidos, palavra por palavra, contra as fontes.
-- **Anotações e minutas ▸ Gerar nova com IA, Completar texto atual e Revisar texto atual:** escrevem uma minuta do tipo escolhido, completam o texto que está no editor ou o revisam. O campo **Pedido desta minuta** recebe o que você quer, como *"solicitar a informação que falta, com tom objetivo"*; com um **Modelo de trabalho** escolhido, a IA segue também as instruções dele ([seção 9.5](#95-modelos-de-trabalho)). A sugestão abre para revisão (**Levar ao editor**, **Copiar sugestão**, **Descartar sugestão**) e só vira versão quando você salvar.
+- **Resumo ▸ Análise ▸ Analisar…** (depois, **Analisar de novo**): resume o documento, sugere prioridade, aponta o prazo mencionado e propõe providências, que viram tarefas com um clique. Os trechos citados são conferidos, palavra por palavra, contra as fontes.
+- **Notas e minutas ▸ Gerar com IA, Completar e Revisar:** escrevem uma minuta do tipo escolhido, completam o texto que está no editor ou o revisam. O campo **Pedido desta minuta** recebe o que você quer, como *"solicitar a informação que falta, com tom objetivo"*; com um **Modelo de trabalho** escolhido, a IA segue também as instruções dele ([seção 9.5](#95-modelos-de-trabalho)). A sugestão abre para revisão (**Levar ao editor**, **Copiar sugestão**, **Descartar sugestão**) e só vira versão quando você salvar.
 
 Ao lado de cada botão, uma linha diz para onde os dados vão.
 
 ### 9.1 Onde a IA roda
 
-Em **Menu ▾ ▸ Configurar IA**, escolha uma das quatro opções:
+Em **Ajustes ▸ Inteligência artificial**, escolha uma das quatro opções:
 
 | Opção | Os dados saem do computador? | Custo | O que informar |
 |---|---|---|---|
@@ -564,7 +567,7 @@ Em **Menu ▾ ▸ Configurar IA**, escolha uma das quatro opções:
 | **Outro servidor HTTPS** | Sim, para esse servidor | o do servidor | endereço e token opcional. Serve para um servidor do órgão compatível com a API do Ollama |
 | **ChatGPT (assinatura)** | Sim, para a OpenAI, nos EUA | usa a cota do seu plano Plus ou Pro | clique em **Entrar com o ChatGPT…** e autorize no navegador |
 
-Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na lista. Depois, **Salvar**.
+Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na lista. Depois, **Salvar** (ou saia da seção: ela é salva ao sair).
 
 **Sigilo e LGPD.** Nas três opções em que os dados saem do computador, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados a cada clique em Analisar ou Gerar. Nada é enviado ao importar. Use essas opções só com documentos que podem sair do órgão.
 
@@ -574,7 +577,7 @@ A configuração fica no acervo, cifrada pela sua conta do Windows. Desmarque **
 
 1. Instale o Ollama (<https://ollama.com/download>) e deixe-o aberto.
 2. No Prompt de Comando, baixe um modelo: `ollama pull qwen3:4b-instruct` (cerca de 2,5 GB).
-3. No Ponte, **Configurar IA ▸ Ollama neste computador ▸ Listar modelos do servidor**, escolha o modelo e salve.
+3. No Ponte, **Ajustes ▸ Inteligência artificial ▸ Ollama neste computador ▸ Listar modelos do servidor**, escolha o modelo e salve.
 
 **Documentos longos.** O Ollama atende, por padrão, com uma janela de 4.096 tokens (de 12 a 16 mil caracteres, somando documento, notas, fontes e a resposta). Quando o pedido passa disso, o Ponte pede sozinho uma janela maior, de 8, 16 ou 32 mil tokens, a menor que serve, e a barra inferior avisa *"Documento longo: pedindo ao modelo uma janela maior"*. Janelas maiores usam mais memória, e a primeira análise longa leva alguns segundos a mais porque o Ollama recarrega o modelo. Se nem 32 mil tokens bastarem, o Ponte explica e sugere analisar sem as fontes extras ou usar outro provedor.
 
@@ -597,7 +600,7 @@ O texto do documento é tratado como dado, nunca como instrução: não há agen
 
 ### 9.5 Modelos de trabalho
 
-Um modelo de trabalho reúne o que se repete na redação de um tipo de resposta, para que a IA e as pessoas da equipe partam do mesmo ponto. A área fica no botão **Modelos** do cabeçalho. Modelos são opcionais: sem eles, a minuta funciona como antes.
+Um modelo de trabalho reúne o que se repete na redação de um tipo de resposta, para que a IA e as pessoas da equipe partam do mesmo ponto. A área é **Modelos**, na barra lateral. Modelos são opcionais: sem eles, a minuta funciona como antes.
 
 **O que um modelo guarda**
 
@@ -626,7 +629,7 @@ Pessoal é apenas um filtro de exibição. Não protege o conteúdo: quem tem ac
 | **Instruções** | Biblioteca de blocos; anexar ao modelo como obrigatória, opcional ou condicional; editar e publicar versões do bloco. |
 | **Exemplos** | Cadastrar, **Aprovar** ou **Rejeitar** exemplos; anexar arquivos (PDF com texto, .txt, .docx), **Extrair texto** e **Conferir texto…**. |
 | **Referências** | Fontes que o modelo manda conferir. |
-| **Testar** | Usa o documento selecionado na Ficha e mostra o que seria enviado à IA: instruções incluídas, tamanhos e conflitos. **Nada é enviado.** |
+| **Testar** | Usa o documento selecionado em Documentos e mostra o que seria enviado à IA: instruções incluídas, tamanhos e conflitos. **Nada é enviado.** |
 
 **Arquivos de exemplo**
 
@@ -634,7 +637,7 @@ Um exemplo pode ter arquivos anexados: um ofício real já respondido, uma minut
 
 **Como usar na minuta**
 
-Em **Anotações e minutas**, escolha o **Modelo de trabalho** (só os publicados do tipo aparecem). Enquanto nenhum está escolhido, o Ponte pode sugerir um ("Modelo sugerido pelas palavras do documento", com o percentual de semelhança): é uma comparação lexical entre as palavras do documento e o nome, a finalidade, os critérios de uso e os exemplos aprovados de cada modelo publicado; a escolha continua sua. Dos exemplos aprovados, vão à IA os três mais parecidos com o documento (pelo título e pela demanda); sem semelhança, os três mais recentes. Marque as **Instruções opcionais** que valem para este caso, escreva o **Pedido desta minuta** e clique em **Gerar nova com IA**, **Completar texto atual** (preenche o que falta e preserva o que já está escrito) ou **Revisar texto atual** (altera só o necessário e abre a comparação antes de substituir). **Começar por um modelo** preenche o editor com as seções, sem IA. **Guardar como modelo** leva a minuta revisada para a área Modelos, como rascunho de um modelo novo. Em **Modelos**, **Usar este modelo na minuta** faz o caminho inverso.
+Em **Notas e minutas**, escolha o **Modelo de trabalho** (só os publicados do tipo aparecem). Enquanto nenhum está escolhido, o Ponte pode sugerir um ("Modelo sugerido pelas palavras do documento", com o percentual de semelhança): é uma comparação lexical entre as palavras do documento e o nome, a finalidade, os critérios de uso e os exemplos aprovados de cada modelo publicado; a escolha continua sua. Dos exemplos aprovados, vão à IA os três mais parecidos com o documento (pelo título e pela demanda); sem semelhança, os três mais recentes. Marque as **Instruções opcionais** que valem para este caso, escreva o **Pedido desta minuta** e clique em **Gerar com IA**, **Completar** (preenche o que falta e preserva o que já está escrito) ou **Revisar** (altera só o necessário e abre a comparação antes de substituir). **Começar por um modelo** preenche o editor com as seções, sem IA. **Guardar como modelo** leva a minuta revisada para a área Modelos, como rascunho de um modelo novo. Em **Modelos**, **Usar este modelo na minuta** faz o caminho inverso.
 
 **Como as instruções chegam à IA**
 
@@ -679,27 +682,27 @@ Por isso, **trocar de computador ou reinstalar o Windows exige planejamento**: u
 
 ### 10.3 Backup
 
-**Menu ▾ ▸ Fazer backup agora** cria uma cópia consistente na pasta de backups. O instalador também faz uma antes de cada atualização.
+**Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora** cria uma cópia consistente na pasta de backups. O instalador também faz uma antes de cada atualização.
 
 ### 10.4 Lixeira
 
-Excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a **Lixeira** (Menu ▾), de onde se restaura com um clique.
+Excluir documento, tarefa, anexo ou versão importada pede confirmação e manda para a **Lixeira** (Ajustes ▸ Lixeira), de onde se restaura com um clique.
 
 - **Por padrão, nada é apagado de vez.**
-- Na janela da Lixeira, **Apagar de vez os itens excluídos há mais de:** aceita *Nunca*, *7 dias*, *30 dias*, *90 dias*, *180 dias* ou *1 ano*. Com um prazo, o Ponte faz a limpeza ao abrir e uma vez por dia, e avisa quantos itens foram apagados. **Apagar agora os vencidos** antecipa.
+- Na seção Lixeira, **Apagar de vez os itens excluídos há mais de:** aceita *Nunca*, *7 dias*, *30 dias*, *90 dias*, *180 dias* ou *1 ano*. Com um prazo, o Ponte faz a limpeza ao abrir e uma vez por dia, e avisa quantos itens foram apagados. **Apagar agora os vencidos** antecipa.
 - Um documento apagado de vez leva junto versões, PDFs, notas, minutas, tarefas e anexos. Backups feitos antes não são afetados.
 - Em equipe, a limpeza é feita pelo computador principal, pela configuração dele.
 - Atendimentos e seus anexos não passam pela Lixeira: a exclusão deles é definitiva, com confirmação.
 
 ### 10.5 Exportar dados (CSV)
 
-**Menu ▾ ▸ Exportar dados para CSV…** grava três arquivos numa pasta nova, `exportados\csv-AAAAMMDD-HHMMSS\`:
+**Ajustes ▸ Cópia de segurança e exportação ▸ Exportar dados para CSV…** grava três arquivos numa pasta nova, `exportados\csv-AAAAMMDD-HHMMSS\`:
 
 | Arquivo | Conteúdo |
 |---|---|
 | `documentos.csv` | número, título, tipo, origem, datas, processo, remetente, finalidade, assuntos, prioridade, juntada, contagem de tarefas e de anexos |
 | `tarefas.csv` | tarefa, ação, situação, prioridade, responsável, prazo, atraso, conclusão |
-| `atendimentos.csv` | as passagens do painel Atendimentos |
+| `atendimentos.csv` | as passagens da área Atendimentos |
 
 Formato: UTF-8, separador `;`, datas `AAAA-MM-DD` e uma coluna "Mês" para séries mensais. **Não saem** textos de documentos, notas, minutas, observações nem anexos. Os arquivos abrem no Excel e servem de entrada para painéis: marque a coluna `ID` como identificador para reimportar sem duplicar.
 
@@ -729,14 +732,14 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 
 | Mensagem | O que fazer |
 |---|---|
-| *"Não foi possível conectar à IA"* | O Ollama não está aberto, ou o endereço em Configurar IA está errado. |
-| *"O modelo “X” não está instalado neste servidor"* | Em Configurar IA, **Listar modelos do servidor** e escolha um, ou instale com `ollama pull X`. |
+| *"Não foi possível conectar à IA"* | O Ollama não está aberto, ou o endereço em Ajustes ▸ Inteligência artificial está errado. |
+| *"O modelo “X” não está instalado neste servidor"* | Em Ajustes ▸ Inteligência artificial, **Listar modelos do servidor** e escolha um, ou instale com `ollama pull X`. |
 | *"O nome de modelo “X” não é aceito pelo Ollama"* | Escolha o modelo pela lista, em vez de digitar. |
 | *"O documento, com as notas e as fontes, não coube na janela do modelo"* | Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor. |
 | *"O computador não tem memória livre para este modelo"* | Feche outros programas, use um modelo menor ou outro provedor. |
 | *"A IA excedeu o tempo limite de 120 segundos"* | O modelo é lento para este computador. Tente um modelo menor. |
 | *"A cota do seu plano ChatGPT para o Ponte acabou por enquanto"* | Veja o saldo em ChatGPT ▸ Configurações ▸ Uso. Use uma redefinição, espere a renovação ou troque de provedor. |
-| *"Entre com a sua conta do ChatGPT em Configurar IA"* | A sessão expirou ou foi encerrada. Entre de novo. |
+| *"Entre com a sua conta do ChatGPT em Ajustes ▸ Inteligência artificial"* | A sessão expirou ou foi encerrada. Entre de novo. |
 
 ### 11.3 Equipe e pasta compartilhada
 
@@ -753,7 +756,7 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | Mensagem | O que fazer |
 |---|---|
 | *"Não foi possível proteger/abrir os dados deste perfil Windows"* | O acervo pertence a outra conta do Windows. Entre com a conta que fez a instalação. |
-| *"Item na lixeira; restaure antes de editar"* | O item foi excluído. Restaure-o em Menu ▾ ▸ Lixeira. |
+| *"Item na lixeira; restaure antes de editar"* | O item foi excluído. Restaure-o em Ajustes ▸ Lixeira. |
 
 ---
 
@@ -775,19 +778,19 @@ Não. O acervo é cifrado pela conta do Windows de cada máquina, e um banco de 
 Se nada mudou, nada é gravado e a extensão avisa. Se mudou, o Ponte guarda uma nova versão e mantém as anteriores.
 
 **A IA lê meus documentos sem eu pedir?**
-Não. Nada é enviado à IA ao importar. O envio acontece só quando você clica em **Analisar e sugerir providências** ou em **Gerar nova com IA**, **Completar texto atual** ou **Revisar texto atual**.
+Não. Nada é enviado à IA ao importar. O envio acontece só quando você clica em **Analisar…** (ou **Analisar de novo**) ou em **Gerar com IA**, **Completar** ou **Revisar**.
 
 **Qual a diferença entre a extensão da loja e a da pasta?**
 São a mesma extensão. A da loja se atualiza sozinha e não exige o modo do desenvolvedor; a da pasta vem junto com o instalador, para quem não tem acesso à loja. Use só uma das duas.
 
 **Excluí um documento sem querer. E agora?**
-Menu ▾ ▸ Lixeira ▸ **Restaurar**. Por padrão a Lixeira nunca é esvaziada.
+Ajustes ▸ Lixeira ▸ **Restaurar**. Por padrão a Lixeira nunca é esvaziada.
 
 **Esqueci a senha da pasta compartilhada.**
 O arquivo da pasta não pode ser aberto sem ela. O acervo de cada computador continua intacto: escolha uma pasta nova, crie outra senha e sincronize de novo a partir do computador mais atualizado.
 
 **Onde vejo a versão instalada?**
-Em **Menu ▾ ▸ Sobre o Ponte**, ou no ícone da extensão.
+Em **Ajustes ▸ Sobre o Ponte**, ou no ícone da extensão.
 
 ---
 
@@ -801,7 +804,7 @@ Chrome/Edge ──(Native Messaging)──► ponteproj.exe (host nativo) ──
                                               │
    ponteproj.exe (egui) ◄── src/app.rs ───────┘
         │
-        ├── Rede e equipe: HTTP/JSON na intranet, fila offline, conflitos (src/intranet.rs)
+        ├── Equipe e sincronização: HTTP/JSON na intranet, fila offline, conflitos (src/intranet.rs)
         ├── Pasta compartilhada: arquivo ponte-sync.ponte cifrado (src/sharedfolder.rs)
         └── IA: Ollama (src/ai.rs) ou ChatGPT por assinatura (src/chatgpt.rs)
 ```
@@ -951,7 +954,7 @@ Os instaladores e as notas de cada versão estão nas [Releases](https://github.
 
 ## 14. Autoria e licença
 
-O Ponte foi concebido e desenvolvido por **Carlo Ralph De Musis** e **João Gabriel Bezerra Estrela**. No programa, **Menu ▾ ▸ Sobre o Ponte** mostra estes créditos, a versão e o endereço do projeto.
+O Ponte foi concebido e desenvolvido por **Carlo Ralph De Musis** e **João Gabriel Bezerra Estrela**. No programa, **Ajustes ▸ Sobre o Ponte** mostra estes créditos, a versão e o endereço do projeto.
 
 O código é distribuído sob a licença **MIT** (arquivo [`LICENSE`](LICENSE)): pode ser usado, copiado, modificado e redistribuído livremente, inclusive para fins comerciais, desde que o aviso de autoria e a licença sejam mantidos. O software é fornecido sem garantias.
 

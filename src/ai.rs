@@ -245,16 +245,16 @@ impl AiConfig {
             AiProvider::Cloud => ensure!(
                 !settings.token.is_empty()
                     || std::env::var("PONTEPROJ_AI_TOKEN").is_ok_and(|v| !v.trim().is_empty()),
-                "Informe a chave de API da sua conta do Ollama Cloud em Configurar IA."
+                "Informe a chave de API da sua conta do Ollama Cloud em Ajustes ▸ Inteligência artificial."
             ),
             AiProvider::ChatGpt => {
                 ensure!(
                     self.chatgpt.signed_in(),
-                    "Entre com a sua conta do ChatGPT em Configurar IA."
+                    "Entre com a sua conta do ChatGPT em Ajustes ▸ Inteligência artificial."
                 );
                 ensure!(
                     self.chatgpt.sharing(),
-                    "Sua conta do ChatGPT entrou, mas não liberou o uso do plano para o Ponte. Em Configurar IA, clique em “Entrar de novo…” e marque a permissão de uso do plano."
+                    "Sua conta do ChatGPT entrou, mas não liberou o uso do plano para o Ponte. Em Ajustes ▸ Inteligência artificial, clique em “Entrar de novo…” e marque a permissão de uso do plano."
                 );
             }
             _ => {}
@@ -415,7 +415,7 @@ pub fn list_models(settings: &AiSettings) -> Result<Vec<ModelInfo>> {
         let shared = settings
             .chatgpt
             .as_ref()
-            .context("Entre com a sua conta do ChatGPT em Configurar IA.")?;
+            .context("Entre com a sua conta do ChatGPT em Ajustes ▸ Inteligência artificial.")?;
         return crate::chatgpt::list_models(shared);
     }
     let (url, local) = endpoint(settings, "/api/tags")?;
@@ -1074,7 +1074,7 @@ fn chat(
         let shared = settings
             .chatgpt
             .as_ref()
-            .context("Entre com a sua conta do ChatGPT em Configurar IA.")?;
+            .context("Entre com a sua conta do ChatGPT em Ajustes ▸ Inteligência artificial.")?;
         return crate::chatgpt::respond(shared, &settings.model, system, data, schema, reporter);
     }
     let (url, local) = endpoint(settings, "/api/chat")?;
@@ -1186,7 +1186,7 @@ fn context_window(prompt_tokens: usize) -> Result<Option<u32>> {
     match [8192_u32, 16384, MAX_WINDOW].into_iter().find(|step| needed <= *step as usize) {
         Some(step) => Ok(Some(step)),
         None => bail!(
-            "O documento, com as notas e as fontes, é grande demais para o modelo deste servidor (cerca de {} mil tokens; o Ponte pede no máximo {} mil). Analise sem as fontes extras ou escolha outro provedor em Configurar IA.",
+            "O documento, com as notas e as fontes, é grande demais para o modelo deste servidor (cerca de {} mil tokens; o Ponte pede no máximo {} mil). Analise sem as fontes extras ou escolha outro provedor em Ajustes ▸ Inteligência artificial.",
             prompt_tokens / 1000,
             MAX_WINDOW / 1000
         ),
@@ -1219,21 +1219,21 @@ fn ollama_failure(status: u16, body: &[u8], model: &str, local: bool) -> OllamaF
         context_needed = numbers.first().copied().filter(|n| *n > 0);
         match (numbers.first(), numbers.get(1)) {
             (Some(needed), Some(limit)) => format!(
-                "O documento, com as notas e as fontes, não coube na janela do modelo: precisa de {needed} tokens e o limite é {limit}. Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor em Configurar IA."
+                "O documento, com as notas e as fontes, não coube na janela do modelo: precisa de {needed} tokens e o limite é {limit}. Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor em Ajustes ▸ Inteligência artificial."
             ),
-            _ => "O documento, com as notas e as fontes, não coube na janela do modelo. Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor em Configurar IA.".to_owned(),
+            _ => "O documento, com as notas e as fontes, não coube na janela do modelo. Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor em Ajustes ▸ Inteligência artificial.".to_owned(),
         }
     } else if status == 404 || lower.contains("not found") {
         format!(
-            "O modelo “{model}” não está instalado neste servidor. Em Configurar IA, clique em “Listar modelos do servidor” e escolha um{}.",
+            "O modelo “{model}” não está instalado neste servidor. Em Ajustes ▸ Inteligência artificial, clique em “Listar modelos do servidor” e escolha um{}.",
             if local { format!(", ou instale-o no terminal com: ollama pull {model}") } else { String::new() }
         )
     } else if lower.contains("invalid model name") || lower.contains("model is required") {
-        format!("O nome de modelo “{model}” não é aceito pelo Ollama. Em Configurar IA, clique em “Listar modelos do servidor” e escolha um da lista.")
+        format!("O nome de modelo “{model}” não é aceito pelo Ollama. Em Ajustes ▸ Inteligência artificial, clique em “Listar modelos do servidor” e escolha um da lista.")
     } else if lower.contains("memory") {
-        "O computador não tem memória livre para este modelo com um documento deste tamanho. Feche outros programas, use um modelo menor ou escolha outro provedor em Configurar IA.".to_owned()
+        "O computador não tem memória livre para este modelo com um documento deste tamanho. Feche outros programas, use um modelo menor ou escolha outro provedor em Ajustes ▸ Inteligência artificial.".to_owned()
     } else if matches!(status, 401 | 403) {
-        format!("O servidor de IA recusou a credencial (HTTP {status}). Confira a chave em Configurar IA.")
+        format!("O servidor de IA recusou a credencial (HTTP {status}). Confira a chave em Ajustes ▸ Inteligência artificial.")
     } else {
         let detail: String = text
             .chars()
