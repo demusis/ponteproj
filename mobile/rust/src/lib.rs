@@ -1,6 +1,6 @@
 //! JNI entry points of the Ponte core for the Android prototype ("Ponte de
 //! bolso"). The phone is one more member of the shared-folder mode: the app
-//! copies `ponte-sync.ponte` from Google Drive into its cache, this core runs
+//! copies `ponte-sync.ponte` from Google Drive into a private working file, this core runs
 //! the very same synchronization the desktop runs on that local copy, and
 //! the app writes the copy back to Drive only when nobody changed it there
 //! meanwhile.
@@ -77,6 +77,11 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_init<'local>(
             // merge of diverged copies): on Android that is the app's own
             // private folder, never the default user folders.
             std::env::set_var("PONTEPROJ_DATA_DIR", &dir);
+            // The phone (not Windows) keeps the key given by the app; the
+            // Windows host build, used only by tests, has no such call.
+            #[cfg(windows)]
+            let _ = &key;
+            #[cfg(not(windows))]
             ponteproj::protection::set_platform_key(&key)?;
             let mut store = Store::open(&dir.join("acervo.sqlite3"))?;
             let mut cfg = store.load_intranet_config()?;
@@ -117,44 +122,61 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_sync<'local>(
         let pending = text(env, &pending_path)?;
         let key = text(env, &passphrase)?;
         anyhow::ensure!(!key.is_empty(), "Digite a frase-senha da sincronização.");
-        with_store(|store| {
-            let mut files = vec![path.clone()];
-            if !pending.is_empty() && std::path::Path::new(&pending).exists() {
-                files.push(pending.clone());
-            }
-            let mut cfg = store.load_intranet_config()?;
-            if cfg.folder_files != files {
-                cfg.folder_files = files;
-                store.save_intranet_config(&cfg)?;
-            }
-            let reporter = ponteproj::ai::Reporter::silent();
-            let report = match store.sync_with_folders(&cfg, &key, false, &reporter) {
-                Ok(report) => report,
-                // Joining a library: the phone never creates documents on
-                // its own, so with nothing waiting to be sent it simply
-                // adopts the copy in the folder.
-                Err(error)
-                    if error.to_string().starts_with("[confirmar-substituicao]")
-                        && store.list_offline_outbox()?.is_empty() =>
-                {
-                    store.sync_with_folders(&cfg, &key, true, &reporter)?
-                }
-                Err(error) => return Err(error),
-            };
-            // Written means: the copy at `transport_path` changed (the
-            // pending one is rewritten along with it).
-            let written = report
-                .written_to
-                .iter()
-                .any(|w| std::path::Path::new(w) == std::path::Path::new(&path));
-            Ok(json!({
-                "written": written,
-                "summary": report.summary(),
-                "waiting": store.list_offline_outbox()?.len(),
-                "conflicts": report.conflicts,
-            }))
-        })
+        with_store(|store| sync_paths(store, &path, &pending, &key))
     })
+}
+
+/// The exchange itself, on plain paths (no JVM needed, so tests run it).
+///
+/// The core reads the whole transport file into native memory to decrypt it
+/// (AES-GCM is opened in one piece) and rewrites `path` atomically (temporary
+/// name, then rename), so a failed run leaves `path` exactly as it was and no
+/// partial file. When the copy changed, the answer carries `bytes`, the length
+/// of the file now at `path`, so the app can check what it will upload.
+fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result<Value> {
+    anyhow::ensure!(
+        std::path::Path::new(path).is_file(),
+        "O arquivo de sincronização não foi encontrado."
+    );
+    let mut files = vec![path.to_owned()];
+    if !pending.is_empty() && std::path::Path::new(pending).exists() {
+        files.push(pending.to_owned());
+    }
+    let mut cfg = store.load_intranet_config()?;
+    if cfg.folder_files != files {
+        cfg.folder_files = files;
+        store.save_intranet_config(&cfg)?;
+    }
+    let reporter = ponteproj::ai::Reporter::silent();
+    let report = match store.sync_with_folders(&cfg, key, false, &reporter) {
+        Ok(report) => report,
+        // Joining a library: the phone never creates documents on
+        // its own, so with nothing waiting to be sent it simply
+        // adopts the copy in the folder.
+        Err(error)
+            if error.to_string().starts_with("[confirmar-substituicao]")
+                && store.list_offline_outbox()?.is_empty() =>
+        {
+            store.sync_with_folders(&cfg, key, true, &reporter)?
+        }
+        Err(error) => return Err(error),
+    };
+    // Written means: the copy at `path` changed (the pending one is
+    // rewritten along with it).
+    let written = report
+        .written_to
+        .iter()
+        .any(|w| std::path::Path::new(w) == std::path::Path::new(path));
+    let mut answer = json!({
+        "written": written,
+        "summary": report.summary(),
+        "waiting": store.list_offline_outbox()?.len(),
+        "conflicts": report.conflicts,
+    });
+    if written {
+        answer["bytes"] = json!(std::fs::metadata(path)?.len());
+    }
+    Ok(answer)
 }
 
 /// The documents of the library, newest first, with their notes and what the
@@ -752,4 +774,162 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_importMail<'local>
         })?;
         Ok(json!({ "results": results }))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ponteproj::intranet::{IntranetConfig, IntranetMode};
+    use std::path::{Path, PathBuf};
+
+    /// The core reads PONTEPROJ_DATA_DIR; tests take turns.
+    static LOCK: Mutex<()> = Mutex::new(());
+    const KEY: &str = "frase-de-teste-123";
+
+    struct Dir(PathBuf);
+    impl Dir {
+        fn new() -> Dir {
+            let dir = std::env::temp_dir()
+                .join(format!("ponte-mobile-test-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Dir(dir)
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn open(dir: &Path, name: &str, member: &str) -> Store {
+        let mut store = Store::open(&dir.join(name)).unwrap();
+        let cfg = IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: member.into(),
+            folder_files: vec![dir.join("ponte-sync.ponte").display().to_string()],
+            folder_writer: uuid::Uuid::new_v4().simple().to_string(),
+            ..store.load_intranet_config().unwrap()
+        };
+        store.save_intranet_config(&cfg).unwrap();
+        store
+    }
+
+    /// A "computer" library with one document, and its first transport file.
+    fn first_transport(dir: &Path) -> (Store, PathBuf, i64) {
+        std::env::set_var("PONTEPROJ_DATA_DIR", dir);
+        let mut computer = open(dir, "computador.sqlite3", "Computador de teste");
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/capture.json");
+        let capture: ponteproj::model::Capture =
+            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+        let id = computer.import_capture(&capture).unwrap().document_id;
+        let drive = dir.join("drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        let mut cfg = computer.load_intranet_config().unwrap();
+        cfg.folder_files = vec![drive.display().to_string()];
+        computer.save_intranet_config(&cfg).unwrap();
+        let reporter = ponteproj::ai::Reporter::silent();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        (computer, drive, id)
+    }
+
+    fn leftovers(folder: &Path) -> Vec<String> {
+        std::fs::read_dir(folder)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-"))
+            .collect()
+    }
+
+    #[test]
+    fn path_sync_joins_then_sends_a_note_and_reports_the_written_length() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut computer, drive, id) = first_transport(&dir.0);
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+
+        // The phone works on a private copy of the Drive file.
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        let work_s = work.display().to_string();
+        let first = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(phone.list_documents("").unwrap().len(), 1, "adopted the library");
+        assert_eq!(first["written"], json!(false));
+        assert!(first.get("bytes").is_none());
+
+        // A note on the phone: the copy changes and its length is reported.
+        phone.save_note(id, "Nota do celular").unwrap();
+        let second = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(second["written"], json!(true));
+        let len = std::fs::metadata(&work).unwrap().len();
+        assert_eq!(second["bytes"].as_u64().unwrap(), len);
+        assert!(leftovers(&dir.0).is_empty());
+
+        // The result is a valid transport: the computer receives the note.
+        std::fs::copy(&work, &drive).unwrap();
+        let cfg = computer.load_intranet_config().unwrap();
+        computer
+            .sync_with_folders(&cfg, KEY, false, &ponteproj::ai::Reporter::silent())
+            .unwrap();
+        assert_eq!(computer.load_document(id).unwrap().note, "Nota do celular");
+    }
+
+    #[test]
+    fn the_same_input_gives_equivalent_output_on_either_run() {
+        // The core encrypts with a fresh salt and nonce, so two outputs never
+        // match byte for byte; what must match is what they say.
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (_computer, drive, id) = first_transport(&dir.0);
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        let mut seen = Vec::new();
+        for name in ["um", "dois"] {
+            let work = dir.0.join(format!("{name}.ponte"));
+            std::fs::copy(&drive, &work).unwrap();
+            let mut phone = open(&dir.0, &format!("{name}.sqlite3"), "Celular");
+            let w = work.display().to_string();
+            sync_paths(&mut phone, &w, "", KEY).unwrap();
+            phone.save_note(id, "mesma nota").unwrap();
+            let answer = sync_paths(&mut phone, &w, "", KEY).unwrap();
+            assert_eq!(answer["written"], json!(true));
+            let copy = ponteproj::sharedfolder::read(&work, KEY).unwrap().unwrap();
+            seen.push((copy.header.lineage.clone(), copy.header.revision));
+        }
+        assert_eq!(seen[0], seen[1]);
+    }
+
+    #[test]
+    fn a_missing_input_path_errors_cleanly_and_creates_nothing() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular");
+        let missing = dir.0.join("nao-existe.ponte");
+        let error = sync_paths(&mut phone, &missing.display().to_string(), "", KEY)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("não foi encontrado"), "{error}");
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn a_failed_run_leaves_the_file_untouched_and_no_partial_output() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (_computer, drive, _id) = first_transport(&dir.0);
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let before = std::fs::read(&work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular");
+        let w = work.display().to_string();
+        // Wrong passphrase.
+        assert!(sync_paths(&mut phone, &w, "", "outra-frase-999").is_err());
+        assert_eq!(std::fs::read(&work).unwrap(), before);
+        // Truncated file.
+        std::fs::write(&work, &before[..before.len() - 7]).unwrap();
+        assert!(sync_paths(&mut phone, &w, "", KEY).is_err());
+        assert_eq!(std::fs::read(&work).unwrap().len(), before.len() - 7);
+        assert!(leftovers(&dir.0).is_empty());
+    }
 }

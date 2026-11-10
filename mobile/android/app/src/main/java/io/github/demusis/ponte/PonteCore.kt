@@ -9,7 +9,8 @@ class PonteCore {
 
     /**
      * pendingPath is "" when there is no pending copy.
-     * Answer: {"ok":true,"written":bool,"summary":"...","waiting":N,"conflicts":N}
+     * transportPath is the private working copy: the core rewrites it in place (atomically) when it changed.
+     * Answer: {"ok":true,"written":bool,"bytes":N (only when written),"summary":"...","waiting":N,"conflicts":N}
      */
     external fun sync(transportPath: String, pendingPath: String, passphrase: String): String
 

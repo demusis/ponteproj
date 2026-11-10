@@ -10,6 +10,8 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import org.json.JSONObject
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -208,59 +210,65 @@ internal object SyncRunner {
         return submit { runSync(app, uri, pass, note) }
     }
 
-    private fun readUri(ctx: Context, uri: Uri): ByteArray =
-        ctx.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+    /** Streams the Drive file into [to] (when given) while hashing it; the limit is enforced as it reads. */
+    private fun readUri(ctx: Context, uri: Uri, to: File?): SyncIo.Digest =
+        ctx.contentResolver.openInputStream(uri)!!.use { input ->
+            if (to == null) SyncIo.copyHash(input, null, SyncIo.MAX_BYTES)
+            else to.outputStream().use { out -> SyncIo.copyHash(input, out, SyncIo.MAX_BYTES) }
+        }
 
-    private fun sha256(b: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }
-
-    private fun writeUri(ctx: Context, uri: Uri, data: ByteArray) {
+    private fun writeUri(ctx: Context, uri: Uri, from: File) {
         ctx.contentResolver.openOutputStream(uri, "wt")!!.use { s ->
-            s.write(data)
+            from.inputStream().use { SyncIo.copyHash(it, s, Long.MAX_VALUE) }
             s.flush()
         }
     }
 
     private fun runSync(ctx: Context, uri: Uri, pass: String, note: Pair<Long, String>?) {
         val t0 = System.nanoTime()
-        val cache = File(ctx.cacheDir, "sync-" + System.currentTimeMillis() + ".ponte")
+        // Private working copy of the Drive file (already encrypted with the passphrase):
+        // never in the cache folder, never in backups, removed on every path.
+        val dir = ctx.noBackupFilesDir
+        SyncIo.removeStale(dir)
+        val work = File(dir, SyncIo.WORK_PREFIX + System.currentTimeMillis() + SyncIo.WORK_SUFFIX)
         val pending = pendingFile(ctx)
-        try {
+        SyncIo.withCleanup(listOf(work)) {
             if (!ready) throw CoreException("O acervo ainda não está pronto.")
             if (note != null) check(core.saveNote(note.first, note.second))
 
-            // a. copy the Drive file to the per-run cache and remember its hash
-            val bytes = readUri(ctx, uri)
-            val original = sha256(bytes)
-            cache.writeBytes(bytes)
+            // a. copy the Drive file to the working file and remember its hash
+            val original = readUri(ctx, uri, work)
 
-            // b. let the core merge; it may rewrite the cache file
-            val r = check(core.sync(cache.absolutePath, if (pending.exists()) pending.absolutePath else "", pass))
+            // b. let the core merge; it may rewrite the working file (atomically)
+            val r = check(core.sync(work.absolutePath, if (pending.exists()) pending.absolutePath else "", pass))
             val summary = r.optString("summary")
             val conflicts = r.optInt("conflicts", 0)
             var message = "Sincronizado: $summary"
             var isError = false
-            var size = bytes.size
+            var size = original.length
 
             if (r.optBoolean("written")) {
+                // the core says how long the file it wrote is: anything else is not what it meant
+                if (r.has("bytes") && r.optLong("bytes", -1) != work.length()) {
+                    throw CoreException("O arquivo de sincronização gerado está incompleto ou danificado.")
+                }
+                val want = SyncIo.hashFile(work)
                 // c. the merged copy must survive a failed upload: keep it first
-                cache.copyTo(pending, overwrite = true)
-                if (sha256(readUri(ctx, uri)) != original) {
+                work.copyTo(pending, overwrite = true)
+                if (!SyncIo.unchanged(original, readUri(ctx, uri, null))) {
                     isError = true
                     message = "O arquivo mudou no Drive durante a sincronização. " +
                         "Sua alteração ficou guardada neste aparelho e vai na próxima sincronização."
                 } else {
                     // d. write, then verify by reading back; one retry
-                    val out = cache.readBytes()
-                    val want = sha256(out)
                     var ok = false
                     for (attempt in 1..2) {
-                        writeUri(ctx, uri, out)
-                        if (sha256(readUri(ctx, uri)) == want) { ok = true; break }
+                        writeUri(ctx, uri, work)
+                        if (SyncIo.unchanged(want, readUri(ctx, uri, null))) { ok = true; break }
                     }
                     if (ok) {
                         pending.delete()
-                        size = out.size
+                        size = want.length
                     } else {
                         isError = true
                         message = "A gravação no Drive não pôde ser conferida; a cópia ficou " +
@@ -288,8 +296,6 @@ internal object SyncRunner {
             }
             val secs = (System.nanoTime() - t0) / 1_000_000_000.0
             setStatus(message + String.format(" (%.1f s, %d bytes)", secs, size), isError)
-        } finally {
-            cache.delete()
         }
     }
 
@@ -348,3 +354,66 @@ internal object SyncRunner {
     }
 }
 
+/**
+ * The byte plumbing of a sync, free of Android types so plain JUnit can test it. Everything runs
+ * on one fixed 64 KiB buffer: the transport file is never held in the Java heap.
+ */
+internal object SyncIo {
+    /** Same limit as the core (512 MB). */
+    const val MAX_BYTES: Long = 512L * 1024 * 1024
+    const val WORK_PREFIX = "sync-work-"
+    const val WORK_SUFFIX = ".ponte"
+    const val TOO_BIG = "O arquivo de sincronização passa de 512 MB e não pode ser aberto."
+    private const val BUFFER = 64 * 1024
+
+    /** SHA-256 (lowercase hex) and length of a stream or file. */
+    data class Digest(val sha256: String, val length: Long)
+
+    /**
+     * Reads [input] to its end, hashing it and copying it to [output] when given. Stops with
+     * [CoreException] as soon as more than [limit] bytes have been read (the extra bytes are
+     * never written).
+     */
+    fun copyHash(input: InputStream, output: OutputStream?, limit: Long): Digest {
+        val md = MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(BUFFER)
+        var total = 0L
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            if (total + n > limit) throw CoreException(TOO_BIG)
+            md.update(buf, 0, n)
+            output?.write(buf, 0, n)
+            total += n
+        }
+        output?.flush()
+        return Digest(md.digest().joinToString("") { "%02x".format(it) }, total)
+    }
+
+    fun hashFile(file: File): Digest =
+        file.inputStream().use { copyHash(it, null, Long.MAX_VALUE) }
+
+    /** The Drive copy is the one that was read when both the hash and the length match. */
+    fun unchanged(before: Digest, now: Digest): Boolean =
+        before.sha256 == now.sha256 && before.length == now.length
+
+    /** Runs [block] and deletes [files] afterwards, whatever happens (success, error, cancellation). */
+    fun <T> withCleanup(files: List<File>, block: () -> T): T {
+        try {
+            return block()
+        } finally {
+            for (f in files) {
+                try { f.delete() } catch (_: Throwable) { }
+            }
+        }
+    }
+
+    /** Working files left by a process that died mid-sync. Only the single worker calls this. */
+    fun removeStale(dir: File) {
+        dir.listFiles()?.forEach {
+            if (it.name.startsWith(WORK_PREFIX) && it.name.endsWith(WORK_SUFFIX)) {
+                try { it.delete() } catch (_: Throwable) { }
+            }
+        }
+    }
+}
