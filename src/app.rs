@@ -4209,7 +4209,7 @@ impl PonteApp {
 
     fn overview(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         ui.spacing_mut().item_spacing = egui::vec2(S4, S4);
-        if ui.available_width() >= 900.0 {
+        if ui.available_width() >= 760.0 {
             ui.columns(2, |columns| {
                 self.analysis_section(&mut columns[0], detail);
                 self.document_summary(&mut columns[0], detail);

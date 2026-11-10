@@ -266,7 +266,7 @@ pub fn search(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> Respons
     );
     let mut inner = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(9.0, 0.0)))
+            .max_rect(rect.shrink2(egui::vec2(9.0, 1.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     inner.spacing_mut().item_spacing.x = 6.0;

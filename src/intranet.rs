@@ -6458,9 +6458,14 @@ fn option_card(ui: &mut egui::Ui, selected: bool, title: &str, line: &str) -> bo
             });
         })
         .response;
-    ui.interact(response.rect, ui.auto_id_with(("team-mode", title)), egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
+    // Reachable with Tab; Space or Enter chooses it, and the focus shows.
+    let choice = ui
+        .interact(response.rect, ui.auto_id_with(("team-mode", title)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if choice.has_focus() {
+        crate::widgets::outline(ui, choice.rect.expand(2.0), p.primary);
+    }
+    choice.clicked()
 }
 
 #[cfg(test)]

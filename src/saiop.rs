@@ -3497,8 +3497,13 @@ impl SaiopPanel {
 
                         for att in filtered {
                             let is_sel = self.selected_id == Some(att.id);
-                            let (row, response) =
-                                ui.allocate_exact_size(vec2(total, ROW_HEIGHT), Sense::click());
+                            // The row answers by the atendimento's own id, so a
+                            // click never lands on a neighbour when the list
+                            // changes under the pointer.
+                            let (row, _) =
+                                ui.allocate_exact_size(vec2(total, ROW_HEIGHT), Sense::hover());
+                            let response =
+                                ui.interact(row, ui.scope_id().with(("saiop-row", att.id)), Sense::click());
                             let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                             if is_sel {
                                 ui.painter().rect_filled(row, 0.0, p.primary_soft);
