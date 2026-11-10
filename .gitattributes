@@ -1,0 +1,8 @@
+# Nenhum arquivo tem as quebras de linha convertidas: o que está no
+# repositório é o que se usa (PDFs de teste, fontes e textos embutidos no
+# programa dependem dos bytes exatos).
+* -text
+*.pdf binary
+*.ttf binary
+*.png binary
+*.ico binary
