@@ -59,9 +59,12 @@ pub(crate) struct ReadCache {
     values: std::collections::HashMap<String, Box<dyn std::any::Any + Send>>,
 }
 
-/// Distinct reads kept at once; a search typed letter by letter must not grow
-/// the memo without bound.
-const READ_CACHE_ENTRIES: usize = 64;
+/// Distinct reads kept at once. Large enough for one entry per document (the
+/// Tarefas area reads the context of every document on each frame; a smaller
+/// memo was emptied on every frame of a library with more than some sixty
+/// documents, and nothing stayed memoized), and still a bound for a search
+/// typed letter by letter. The memo is dropped whenever the library changes.
+const READ_CACHE_ENTRIES: usize = 8192;
 
 impl Store {
     /// Library state the read memo is tied to, or `None` when it cannot be

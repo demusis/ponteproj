@@ -323,6 +323,8 @@ fn style_for(style: &mut egui::Style, p: &Palette, dark: bool) {
     v.collapsing_header_frame = false;
     v.slider_trailing_fill = true;
     v.weak_text_color = Some(p.muted);
+    // Disabled controls stay readable (the default fades them to half).
+    v.disabled_alpha = 0.62;
 
     let radius = CornerRadius::same(RADIUS);
     let w = &mut v.widgets;
