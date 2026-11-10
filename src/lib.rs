@@ -69,3 +69,10 @@ pub mod shots;
 /// Sample library for the pictures of the screens (development only).
 #[cfg(any(test, feature = "shots"))]
 pub mod shots_data;
+
+/// The ficha as a printable page.
+pub mod ficha_export;
+
+/// "Is there a newer version?", asked only on request.
+#[cfg(feature = "desktop")]
+pub mod update_check;

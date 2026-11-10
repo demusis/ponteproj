@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 mod ficha;
 mod library;
 mod minuta;
+mod search;
 mod settings;
 mod today;
 #[cfg(feature = "shots")]
@@ -986,6 +987,11 @@ struct PonteApp {
     return_after_select: Option<ReturnTo>,
     /// Ctrl+F asked for the search box of the document list.
     focus_search: bool,
+    /// The search across the whole library (Ctrl+K).
+    global_search: search::GlobalSearch,
+    /// "Is there a newer version?" in Ajustes ▸ Sobre o Ponte.
+    #[allow(dead_code)] // until the settings screen uses it
+    update: crate::update_check::UpdateState,
     /// Open tasks that are late or due today, shown on the rail.
     task_badge: usize,
     appearance: crate::theme::Appearance,
@@ -1073,6 +1079,8 @@ impl PonteApp {
             return_to: None,
             return_after_select: None,
             focus_search: false,
+            global_search: Default::default(),
+            update: Default::default(),
             task_badge: 0,
             appearance: load_appearance().0,
             text_size: load_appearance().1,
@@ -2491,7 +2499,13 @@ impl PonteApp {
                     .extra_letter_spacing(1.6)
                     .color(p.rail_on),
             );
-            ui.add_space(10.0);
+            ui.add_space(6.0);
+            if rail_item(ui, icon::SEARCH, "Buscar", self.global_search.open, 0, false)
+                .on_hover_text("Busca em todo o acervo: documentos, tarefas e atendimentos. (Ctrl+K)")
+                .clicked()
+            {
+                self.global_search.open = true;
+            }
             let today_badge = self.today.pending_tasks() + self.today.attendances.len();
             if rail_item(
                 ui,
@@ -2619,6 +2633,8 @@ impl PonteApp {
             self.navigate(Leave::Saiop);
         } else if pressed(Key::Num5) {
             self.navigate(Leave::Templates);
+        } else if pressed(Key::K) {
+            self.global_search.open = true;
         } else if pressed(Key::F) {
             match self.area {
                 Area::Tasks => self.tasks.key_find(),
@@ -2680,7 +2696,9 @@ impl PonteApp {
             && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
         {
             // A window in front closes first; then the panel of the area.
-            if self.about_open {
+            if self.global_search.open {
+                self.global_search.open = false;
+            } else if self.about_open {
                 self.about_open = false;
             } else if self.consult.is_some() {
                 self.consult = None;
@@ -3230,6 +3248,7 @@ impl eframe::App for PonteApp {
             self.suggestion_window(&ctx);
             self.material_window(&ctx);
             self.mail_window(&ctx);
+            self.global_search(&ctx);
         }
         self.confirmations(&ctx);
         if let Some(change) = self.trash.show(
