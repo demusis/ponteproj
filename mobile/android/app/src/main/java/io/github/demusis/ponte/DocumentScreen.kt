@@ -51,7 +51,8 @@ internal fun DocumentScreen(
     onNewTask: () -> Unit,
     onEditNote: () -> Unit,
     onOpenFile: (FileItem) -> Unit,
-    onReadText: () -> Unit
+    onReadText: () -> Unit,
+    onOpenTask: (TaskItem) -> Unit = {}
 ) {
     val c = Ponte.colors
     val doc = state.doc
@@ -71,7 +72,7 @@ internal fun DocumentScreen(
             when {
                 state.loading -> LoadingBox()
                 state.error != null -> Notice(state.error, modifier = Modifier.padding(16.dp))
-                doc != null -> FichaBody(doc, onToggleTask, onNewTask, onEditNote, onOpenFile, onReadText)
+                doc != null -> FichaBody(doc, onToggleTask, onNewTask, onEditNote, onOpenFile, onReadText, onOpenTask)
             }
         }
     }
@@ -84,7 +85,8 @@ private fun FichaBody(
     onNewTask: () -> Unit,
     onEditNote: () -> Unit,
     onOpenFile: (FileItem) -> Unit,
-    onReadText: () -> Unit
+    onReadText: () -> Unit,
+    onOpenTask: (TaskItem) -> Unit
 ) {
     val c = Ponte.colors
     Column(
@@ -120,7 +122,7 @@ private fun FichaBody(
                     )
                 }
                 for (t in tasks) {
-                    TaskRow(t, t.actionLabel, onToggle = { onToggleTask(t) })
+                    TaskRow(t, t.actionLabel, onToggle = { onToggleTask(t) }, onOpen = { onOpenTask(t) })
                 }
                 CardButton("Nova tarefa", Icons.Outlined.Add, onNewTask)
             }

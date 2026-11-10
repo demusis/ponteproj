@@ -25,7 +25,27 @@ class PonteCore {
     external fun listTasks(): String
     external fun completeTask(taskId: Long): String
     external fun reopenTask(taskId: Long): String
+    /** A missing or zero "document_id" makes a task without document. Answer: {id}. */
     external fun createTask(json: String): String
+
+    /**
+     * What Hoje lists: {late, today, upcoming: [task], attendances: [{id, reference, subject,
+     * status_label, due_date, late}]}, already ordered.
+     */
+    external fun today(): String
+
+    /** One task with every editable field, "checklist", "document_title" and its "version". */
+    external fun getTask(taskId: Long): String
+
+    /**
+     * Saves the fields sent among title, action, priority, due_date, assignee, notes; "id" and the
+     * "version" read by getTask are required. A task changed meanwhile answers an error and saves
+     * nothing. Answer: {id, version}.
+     */
+    external fun saveTask(json: String): String
+
+    /** Links, moves (documentId > 0) or unlinks (0) a task; version as in saveTask. */
+    external fun relinkTask(taskId: Long, documentId: Long, version: Long): String
     external fun choices(): String
     external fun createPhotoRecord(fieldsJson: String, imagePath: String): String
     external fun listMailAccounts(): String

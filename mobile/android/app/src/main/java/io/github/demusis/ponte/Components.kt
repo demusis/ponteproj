@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Mail
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.Today
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.Badge
@@ -127,7 +128,7 @@ internal fun MainShell(
     content: @Composable () -> Unit
 ) {
     val c = Ponte.colors
-    val titles = listOf("Tarefas", "Documentos", "E-mail")
+    val titles = listOf("Hoje", "Tarefas", "Documentos", "E-mail")
     Column(Modifier.fillMaxSize().background(c.ground)) {
         Row(
             Modifier.statusBarsPadding().fillMaxWidth().padding(start = 20.dp, top = 12.dp, end = 8.dp, bottom = 6.dp),
@@ -180,7 +181,7 @@ internal fun MainShell(
         Box(Modifier.weight(1f).fillMaxWidth()) { content() }
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.barBorder))
         NavigationBar(containerColor = c.surface, tonalElevation = 0.dp) {
-            val icons = listOf(Icons.Outlined.CheckCircle, Icons.Outlined.Description, Icons.Outlined.Mail)
+            val icons = listOf(Icons.Outlined.Today, Icons.Outlined.CheckCircle, Icons.Outlined.Description, Icons.Outlined.Mail)
             val itemColors = NavigationBarItemDefaults.colors(
                 selectedIconColor = c.onAccentContainer,
                 selectedTextColor = c.onAccentContainer,
@@ -358,11 +359,25 @@ internal fun TaskRow(
             if (secondLine.isNotEmpty()) {
                 Text(secondLine, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+            // Only what is not the usual: a normal priority says nothing.
+            val flag = priorityFlag(task)
+            if (flag != null) Pill(flag.first, flag.second, Modifier.padding(top = 4.dp))
         }
         if (!task.done && task.dueChip.isNotEmpty()) {
             Spacer(Modifier.width(8.dp))
             Pill(task.dueChip, if (task.overdue) Tone.ERROR else if (task.dueToday) Tone.WARNING else Tone.NEUTRAL)
         }
+    }
+}
+
+/** Text and tone of the priority pill of an open task, or null when it is normal (or done). */
+internal fun priorityFlag(task: TaskItem): Pair<String, Tone>? {
+    if (task.done) return null
+    return when (task.priority) {
+        "urgente" -> "Urgente" to Tone.ERROR
+        "alta" -> "Prioridade alta" to Tone.WARNING
+        "baixa" -> "Prioridade baixa" to Tone.NEUTRAL
+        else -> null
     }
 }
 
@@ -425,6 +440,28 @@ internal fun PrimaryButton(
             Spacer(Modifier.width(8.dp))
         }
         Text(text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/** Full-width second button (52 dp, pill, outlined): the other choice beside or under [PrimaryButton]. */
+@Composable
+internal fun SecondaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    danger: Boolean = false
+) {
+    val c = Ponte.colors
+    val color = if (danger) c.error else c.accent
+    androidx.compose.material3.OutlinedButton(
+        onClick = onClick, enabled = enabled,
+        modifier = modifier.fillMaxWidth().height(52.dp),
+        shape = RoundedCornerShape(26.dp),
+        border = BorderStroke(1.dp, if (enabled) color else c.outline),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = color, disabledContentColor = c.muted)
+    ) {
+        Text(text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

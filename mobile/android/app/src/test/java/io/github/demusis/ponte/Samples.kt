@@ -54,6 +54,56 @@ internal object Samples {
         task(9, "Encaminhar escala de trabalho", "Encaminhar", "MEM. 101/2026", "", "", done = true)
     )
 
+    private fun urgent(t: TaskItem, key: String, label: String) = t.copy(priority = key, priorityLabel = label)
+
+    /** A task without document: "Sem documento" instead of the number. */
+    private fun loose(id: Long, title: String, action: String, due: String, chip: String, overdue: Boolean = false, today: Boolean = false) =
+        TaskItem(id, 0, title, action, "", due, chip, false, overdue, today)
+
+    val todayLate = listOf(
+        urgent(tasks[0], "urgente", "Urgente"),
+        tasks[1],
+        loose(10, "Ligar para o setor de protocolo", "Acompanhar", "2026-11-09", "ontem", overdue = true)
+    )
+    val todayDue = listOf(urgent(tasks[2], "alta", "Alta"))
+    val todayUpcoming = listOf(
+        tasks[3],
+        loose(11, "Reservar a sala para a reunião", "Examinar", "2026-11-13", "13/11"),
+        urgent(tasks[4], "baixa", "Baixa")
+    )
+    val attendances = listOf(
+        AttendanceItem(1, "ORG-OFI-2026/00431", "Pedido de apoio logístico para evento", "Em análise", "2026-11-06", "há 4 dias", true),
+        AttendanceItem(2, "ORG-PRO-2026/00212", "Consulta sobre o quadro de pessoal", "Aguardando resposta", "2026-11-10", "hoje", false)
+    )
+    val today = TodayState(
+        loading = false, late = todayLate, today = todayDue, upcoming = todayUpcoming, attendances = attendances
+    )
+
+    private fun detailOf(
+        id: Long, documentId: Long, number: String, title: String, form: TaskForm, done: Boolean = false,
+        checklist: List<ChecklistItem> = emptyList()
+    ) = TaskDetail(id, documentId, number, title, form, done, 3, checklist)
+
+    val taskForm = TaskForm(
+        "Responder ofício sobre o pessoal do Projeto Alfa", "responder", "alta", "2026-11-12", "Servidor A",
+        "Pedir os valores de diárias à coordenação antes de responder."
+    )
+
+    val taskLinked = detailOf(
+        1, 101, "ORG-OFI-2026/00431", "Solicitação de informações sobre o pessoal do Projeto Alfa", taskForm,
+        checklist = listOf(
+            ChecklistItem(true, "Conferir o quadro de pessoal"),
+            ChecklistItem(false, "Reunir os valores de diárias"),
+            ChecklistItem(false, "Enviar a minuta à chefia")
+        )
+    )
+
+    val taskLoose = detailOf(
+        10, 0, "", "", TaskForm("Ligar para o setor de protocolo", "acompanhar", "normal", "2026-11-09", "", "")
+    )
+
+    val priorities = listOf(Choice("baixa", "Baixa"), Choice("normal", "Normal"), Choice("alta", "Alta"), Choice("urgente", "Urgente"))
+
     val docs = listOf(
         Doc(
             101, "OF. 0412/2026", "Solicitação de informações sobre o pessoal do Projeto Alfa", "Aguardando dados de outro setor.", null,
@@ -117,8 +167,8 @@ internal object Samples {
     )
 
     val actions = listOf(
-        Choice("responder", "Responder"), Choice("encaminhar", "Encaminhar"), Choice("analisar", "Analisar"),
-        Choice("arquivar", "Arquivar"), Choice("outra", "Outra")
+        Choice("triar", "Triar"), Choice("responder", "Responder"), Choice("encaminhar", "Encaminhar"),
+        Choice("acompanhar", "Acompanhar"), Choice("examinar", "Examinar")
     )
 
     val kinds = listOf(Choice("papel", "Papel"), Choice("telefonema", "Telefonema"), Choice("reuniao", "Reunião"), Choice("outro", "Outro"))

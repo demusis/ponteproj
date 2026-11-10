@@ -70,8 +70,12 @@ internal fun AppRoot() {
             ) {
                 holder.SaveableStateProvider("tab:" + c.tab) {
                     when (c.tab) {
-                        0 -> TasksScreen(c.tasks, onToggle = c::toggleTask, onOpen = { c.openDocument(it.documentId) })
-                        1 -> DocumentsScreen(
+                        0 -> TodayScreen(c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) })
+                        1 -> TasksScreen(
+                            c.tasks, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
+                            onNew = c::openNewTaskWithoutDocument
+                        )
+                        2 -> DocumentsScreen(
                             docs = c.docs,
                             query = c.docQuery, onQuery = { c.docQuery = it },
                             filter = c.docFilter, onFilter = { c.docFilter = it },
@@ -92,7 +96,7 @@ internal fun AppRoot() {
         }
 
         // Above the bottom bar (or the footer of a detail); on Documentos, above the photo button too.
-        val lift = if (top == null && c.tab == 1) 152.dp else 84.dp
+        val lift = if (top == null && (c.tab == 1 || c.tab == 2)) 152.dp else 84.dp
         SnackbarHost(
             c.snackbar,
             Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding().padding(bottom = lift)
@@ -112,7 +116,16 @@ private fun RouteScreen(route: Route) {
             state = c.document, syncing = c.shell.syncing,
             onBack = c::back, onSync = { c.requestSync(null) },
             onToggleTask = c::toggleTask, onNewTask = c::openNewTask, onEditNote = c::openNote,
-            onOpenFile = c::openFile, onReadText = c::openText
+            onOpenFile = c::openFile, onReadText = c::openText, onOpenTask = { c.openTask(it.id) }
+        )
+        is Route.EditTask -> TaskScreen(
+            state = c.taskEdit, actions = c.actions, priorities = c.priorities, me = phoneMemberName(),
+            onBack = c::back, onSave = c::saveTask, onFinish = c::finishTask,
+            onOpenDocument = { c.openTaskDocument() }, onLink = c::openPicker, onUnlink = c::unlinkTask
+        )
+        is Route.Pick -> DocumentPickerScreen(
+            docs = c.docs, currentId = c.taskEdit.task?.documentId ?: 0L, busy = c.taskEdit.busy,
+            onBack = c::back, onPick = c::pickDocument
         )
         is Route.Text ->
             if (doc == null) Waiting("Texto do documento", c.document, c::back)
@@ -120,7 +133,12 @@ private fun RouteScreen(route: Route) {
         is Route.Note ->
             if (doc == null) Waiting("Nota", c.document, c::back)
             else NoteEditorScreen(title = docName, initial = doc.note, onBack = c::back, onSave = c::saveNote)
-        is Route.NewTask -> NewTaskScreen(document = docName, actions = c.actions, onBack = c::back, onCreate = c::createTask)
+        is Route.NewTask -> NewTaskScreen(
+            document = if (route.id > 0) docName else "",
+            // A task without document has nothing to triage.
+            actions = if (route.id > 0) c.actions else c.actions.filter { it.key != "triar" },
+            onBack = c::back, onCreate = c::createTask, withoutDocument = route.id <= 0
+        )
         Route.Photo -> PhotoScreen(
             state = c.photo,
             onTitle = c::setPhotoTitle, onKind = c::setPhotoKind, onDate = c::setPhotoDate,

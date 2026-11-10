@@ -36,6 +36,21 @@ internal object Api {
         return c(core.createTask(o.toString())).optLong("id")
     }
 
+    fun today(): JSONObject = c(core.today())
+
+    fun task(id: Long): TaskDetail = c(core.getTask(id)).toTaskDetail()
+
+    /** Sends only [changes] (field to value); [version] is the one the task was read with. */
+    fun saveTask(id: Long, version: Long, changes: Map<String, String>) {
+        val o = JSONObject().put("id", id).put("version", version)
+        for ((k, v) in changes) o.put(k, v)
+        c(core.saveTask(o.toString()))
+    }
+
+    fun relinkTask(id: Long, documentId: Long, version: Long) {
+        c(core.relinkTask(id, documentId, version))
+    }
+
     fun choices(): JSONObject {
         choicesCache?.let { return it }
         val o = c(core.choices())

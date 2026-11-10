@@ -9,7 +9,7 @@ class EmailAjustesTest {
     private val server = "Conversando com o servidor de e-mail…"
 
     private fun mail(state: MailState, name: String, dark: Boolean = false) =
-        paparazzi.shotInShell(name, 2, dark) { MailScreen(state, {}, {}, {}, {}, {}, {}, {}, {}) }
+        paparazzi.shotInShell(name, 3, dark) { MailScreen(state, {}, {}, {}, {}, {}, {}, {}, {}) }
 
     @Test fun email() = mail(Samples.mail, "claro")
 

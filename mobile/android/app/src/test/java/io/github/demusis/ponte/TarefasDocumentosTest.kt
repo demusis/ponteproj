@@ -8,26 +8,26 @@ class TarefasDocumentosTest {
 
     private val all = TasksState(false, null, Samples.tasks)
 
-    @Test fun tarefas() = paparazzi.shotInShell("claro", 0) { TasksScreen(all, {}, {}) }
+    @Test fun tarefas() = paparazzi.shotInShell("claro", 1) { TasksScreen(all, {}, {}) }
 
-    @Test fun tarefasEscuro() = paparazzi.shotInShell("escuro", 0, dark = true) { TasksScreen(all, {}, {}) }
+    @Test fun tarefasEscuro() = paparazzi.shotInShell("escuro", 1, dark = true) { TasksScreen(all, {}, {}) }
 
     @Test fun tarefasInteira() {
         paparazzi.tall(3600)
-        paparazzi.shotInShell("inteira", 0) { TasksScreen(all, {}, {}) }
+        paparazzi.shotInShell("inteira", 1) { TasksScreen(all, {}, {}) }
     }
 
-    @Test fun tarefasVazia() = paparazzi.shotInShell("vazia", 0, shell = Samples.shell.copy(badge = 0)) {
+    @Test fun tarefasVazia() = paparazzi.shotInShell("vazia", 1, shell = Samples.shell.copy(badge = 0)) {
         TasksScreen(TasksState(false, null, emptyList()), {}, {})
     }
 
     @Test fun tarefasCarregando() = paparazzi.shotInShell(
-        "carregando", 0,
+        "carregando", 1,
         shell = Samples.shell.copy(badge = 0, syncing = true, statusLine = "Sincronizando…", statusKind = StatusKind.NEUTRAL)
     ) { TasksScreen(TasksState(true, null, emptyList()), {}, {}) }
 
     @Test fun tarefasErro() = paparazzi.shotInShell(
-        "erro", 0, shell = Samples.shell.copy(statusLine = "Senha de sincronização incorreta.", statusKind = StatusKind.ERROR)
+        "erro", 1, shell = Samples.shell.copy(statusLine = "Senha de sincronização incorreta.", statusKind = StatusKind.ERROR)
     ) {
         TasksScreen(
             TasksState(false, "Não foi possível ler as tarefas. Toque em Sincronizar agora e tente de novo.", Samples.tasks.take(3)),
@@ -35,24 +35,24 @@ class TarefasDocumentosTest {
         )
     }
 
-    @Test fun documentos() = paparazzi.shotInShell("claro", 1) {
+    @Test fun documentos() = paparazzi.shotInShell("claro", 2) {
         DocumentsScreen(Samples.docs, "", {}, DocFilter.ALL, {}, {}, {})
     }
 
-    @Test fun documentosEscuro() = paparazzi.shotInShell("escuro", 1, dark = true) {
+    @Test fun documentosEscuro() = paparazzi.shotInShell("escuro", 2, dark = true) {
         DocumentsScreen(Samples.docs, "", {}, DocFilter.ALL, {}, {}, {})
     }
 
-    @Test fun documentosBusca() = paparazzi.shotInShell("busca", 1) {
+    @Test fun documentosBusca() = paparazzi.shotInShell("busca", 2) {
         DocumentsScreen(Samples.docs, "veículos", {}, DocFilter.WITH_TASK, {}, {}, {})
     }
 
-    @Test fun documentosSemResultado() = paparazzi.shotInShell("sem_resultado", 1) {
+    @Test fun documentosSemResultado() = paparazzi.shotInShell("sem_resultado", 2) {
         DocumentsScreen(Samples.docs, "xyz", {}, DocFilter.EMAILS, {}, {}, {})
     }
 
     @Test fun documentosVazio() = paparazzi.shotInShell(
-        "vazio", 1,
+        "vazio", 2,
         shell = Samples.shell.copy(badge = 0, statusLine = "Ainda não sincronizado", statusKind = StatusKind.NEUTRAL)
     ) { DocumentsScreen(emptyList(), "", {}, DocFilter.ALL, {}, {}, {}) }
 }

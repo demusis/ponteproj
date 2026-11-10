@@ -23,8 +23,18 @@ internal data class TaskItem(
     val dueChip: String,
     val done: Boolean,
     val overdue: Boolean,
-    val dueToday: Boolean
-)
+    val dueToday: Boolean,
+    /** The core's key: "baixa", "normal", "alta" or "urgente". */
+    val priority: String = "normal",
+    /** "Baixa", "Alta", "Urgente"… */
+    val priorityLabel: String = "",
+    val notes: String = ""
+) {
+    /** The second line of a row: the action and the document ("Sem documento" for none). */
+    val secondLine: String
+        get() = listOf(actionLabel, if (documentId <= 0) "Sem documento" else documentNumber)
+            .filter { it.isNotEmpty() }.joinToString(" · ")
+}
 
 /** Short, relative wording of a due date for the chip. */
 internal fun dueChipText(iso: String, today: LocalDate = LocalDate.now()): String {
@@ -52,9 +62,101 @@ internal fun JSONObject.toTask(): TaskItem {
         dueChip = if (due.isEmpty()) "" else dueChipText(due),
         done = s("status") == "concluida",
         overdue = optBoolean("overdue"),
-        dueToday = optBoolean("due_today")
+        dueToday = optBoolean("due_today"),
+        priority = s("priority", "normal").ifEmpty { "normal" },
+        priorityLabel = s("priority_label"),
+        notes = s("notes")
     )
 }
+
+/** An atendimento with a deadline (late or due today), read-only on the phone. */
+internal data class AttendanceItem(
+    val id: Long,
+    /** Reference, or the subject when there is none. */
+    val reference: String,
+    val subject: String,
+    val statusLabel: String,
+    val dueDate: String,
+    val dueChip: String,
+    val late: Boolean
+)
+
+internal fun JSONObject.toAttendance() = AttendanceItem(
+    id = optLong("id"), reference = s("reference"), subject = s("subject"),
+    statusLabel = s("status_label"), dueDate = s("due_date"),
+    dueChip = s("due_date").let { if (it.isEmpty()) "" else dueChipText(it) }, late = optBoolean("late")
+)
+
+/** "1 tarefa atrasada · 2 para hoje", or "Nada vence hoje." when nothing is late or due today. */
+internal fun todaySummary(late: Int, today: Int): String = when {
+    late > 0 && today > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas") + " · $today para hoje"
+    late > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas")
+    today > 0 -> PhoneWords.plural(today, "tarefa para hoje", "tarefas para hoje")
+    else -> "Nada vence hoje."
+}
+
+/** The checklist of a task (read-only here). */
+internal data class ChecklistItem(val done: Boolean, val text: String)
+
+/** The fields of a task the phone edits. */
+internal data class TaskForm(
+    val title: String,
+    val action: String,
+    val priority: String,
+    /** ISO date or empty ("Sem prazo"). */
+    val dueDate: String,
+    val assignee: String,
+    val notes: String
+) {
+    /** Whether the person changed something compared with [saved] (blanks around names do not count). */
+    fun changedFrom(saved: TaskForm): Boolean = changes(saved).isNotEmpty()
+
+    /** Field name (as the core's `saveTask` reads it) to new value, only for what differs. */
+    fun changes(saved: TaskForm): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        if (title.trim() != saved.title.trim()) out["title"] = title.trim()
+        if (action != saved.action) out["action"] = action
+        if (priority != saved.priority) out["priority"] = priority
+        if (dueDate != saved.dueDate) out["due_date"] = dueDate
+        if (assignee.trim() != saved.assignee.trim()) out["assignee"] = assignee.trim()
+        if (notes != saved.notes) out["notes"] = notes
+        return out
+    }
+}
+
+/** Everything the task screen shows. [version] must come back with the save. */
+internal data class TaskDetail(
+    val id: Long,
+    /** 0: a task without document. */
+    val documentId: Long,
+    val documentNumber: String,
+    val documentTitle: String,
+    val form: TaskForm,
+    val done: Boolean,
+    val version: Long,
+    val checklist: List<ChecklistItem>
+) {
+    /** "ORG-… — assunto", or whichever of the two exists. */
+    val documentLine: String
+        get() = listOf(documentNumber, documentTitle).filter { it.isNotBlank() }.joinToString(" — ")
+
+    /** As a row of a list, for the common actions (conclude, reopen). */
+    fun asItem() = TaskItem(
+        id = id, documentId = documentId, title = form.title, actionLabel = "", documentNumber = documentNumber,
+        dueDate = form.dueDate, dueChip = "", done = done, overdue = false, dueToday = false
+    )
+}
+
+internal fun JSONObject.toTaskDetail() = TaskDetail(
+    id = optLong("id"), documentId = optLong("document_id"), documentNumber = s("document_number"),
+    documentTitle = s("document_title"),
+    form = TaskForm(
+        title = s("title"), action = s("action"), priority = s("priority", "normal").ifEmpty { "normal" },
+        dueDate = s("due_date"), assignee = s("assignee"), notes = s("notes")
+    ),
+    done = s("status") == "concluida", version = optLong("version"),
+    checklist = optJSONArray("checklist").objs().map { ChecklistItem(it.optBoolean("done"), it.s("text")) }
+)
 
 /** Which documents the list shows. */
 internal enum class DocFilter(val label: String) {
@@ -208,9 +310,9 @@ internal enum class StatusKind { OK, WAITING, ERROR, NEUTRAL }
 
 /** The frame around the three areas. */
 internal data class ShellState(
-    /** 0 Tarefas, 1 Documentos, 2 E-mail. */
+    /** 0 Hoje, 1 Tarefas, 2 Documentos, 3 E-mail. */
     val tab: Int = 0,
-    /** Tasks late or due today (badge on Tarefas); 0 hides it. */
+    /** Tasks late or due today (badge on Hoje); 0 hides it. */
     val badge: Int = 0,
     val syncing: Boolean = false,
     /** One line, already short ("Sincronizado · 14:32"). */
@@ -224,6 +326,30 @@ internal data class TasksState(
     val loading: Boolean = true,
     val error: String? = null,
     val tasks: List<TaskItem> = emptyList()
+)
+
+/** What the Hoje area lists, already ordered by the core. */
+internal data class TodayState(
+    val loading: Boolean = true,
+    val error: String? = null,
+    val late: List<TaskItem> = emptyList(),
+    val today: List<TaskItem> = emptyList(),
+    val upcoming: List<TaskItem> = emptyList(),
+    val attendances: List<AttendanceItem> = emptyList()
+) {
+    val isEmpty: Boolean get() = late.isEmpty() && today.isEmpty() && upcoming.isEmpty() && attendances.isEmpty()
+}
+
+/** The task screen: the task as stored, and what is going on with it. */
+internal data class TaskEditState(
+    val loading: Boolean = true,
+    /** Why the task could not be read. */
+    val error: String? = null,
+    val task: TaskDetail? = null,
+    /** Saving, concluding or changing the document: buttons wait. */
+    val busy: Boolean = false,
+    /** Shown above the buttons (a failed save, a changed task). */
+    val formError: String = ""
 )
 
 internal data class DocumentState(

@@ -269,6 +269,15 @@ fn json_arg(env: &mut JNIEnv, value: &JString) -> Result<Value> {
 
 fn task_json(task: &ponteproj::tasks::Task, numbers: &std::collections::HashMap<i64, String>) -> Value {
     let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    task_json_on(task, numbers, &today)
+}
+
+/// `task_json` as of the given day (`AAAA-MM-DD`), so tests can fix the date.
+fn task_json_on(
+    task: &ponteproj::tasks::Task,
+    numbers: &std::collections::HashMap<i64, String>,
+    today: &str,
+) -> Value {
     let open = task.status != "concluida";
     json!({
         "id": task.id,
@@ -284,9 +293,10 @@ fn task_json(task: &ponteproj::tasks::Task, numbers: &std::collections::HashMap<
         "status": task.status,
         "status_label": ponteproj::tasks::status_label(&task.status),
         "priority": task.priority,
+        "priority_label": ponteproj::tasks::priority_label(&task.priority),
         "due_date": task.due_date,
         "due_label": ponteproj::labels::date(&task.due_date),
-        "overdue": open && !task.due_date.is_empty() && task.due_date.as_str() < today.as_str(),
+        "overdue": open && !task.due_date.is_empty() && task.due_date.as_str() < today,
         "due_today": open && task.due_date == today,
         "notes": task.notes,
     })
@@ -469,7 +479,8 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_reopenTask<'local>
     })
 }
 
-/// A new task on a document: `{"document_id":1,"title":"...","action":"responder","due_date":"AAAA-MM-DD"}`.
+/// A new task: `{"document_id":1,"title":"...","action":"responder","due_date":"AAAA-MM-DD"}`.
+/// A missing or zero `document_id` makes a task without document.
 #[no_mangle]
 pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createTask<'local>(
     mut env: JNIEnv<'local>,
@@ -478,18 +489,237 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createTask<'local>
 ) -> jstring {
     answer(&mut env, |env| {
         let input = json_arg(env, &task_json_text)?;
+        with_store(|store| create_task(store, &input))
+    })
+}
+
+fn create_task(store: &mut Store, input: &Value) -> Result<Value> {
+    let document_id = input["document_id"].as_i64().filter(|id| *id > 0);
+    let mut task = ponteproj::tasks::Task::blank(document_id);
+    task.title = input["title"].as_str().unwrap_or("").trim().to_owned();
+    if let Some(action) = input["action"].as_str().filter(|a| !a.is_empty()) {
+        task.action = action.to_owned();
+    }
+    task.due_date = valid_due(input["due_date"].as_str().unwrap_or(""))?;
+    let id = store.save_task(&task)?;
+    Ok(json!({ "id": id }))
+}
+
+/// A due date as the core keeps it: empty, or `AAAA-MM-DD`.
+fn valid_due(value: &str) -> Result<String> {
+    let value = value.trim();
+    anyhow::ensure!(
+        value.is_empty() || chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok(),
+        "O prazo informado não é uma data válida."
+    );
+    Ok(value.to_owned())
+}
+
+/// What the phone says when the task changed under the form (the core's text
+/// is written for the computer).
+const TASK_CHANGED: &str =
+    "Esta tarefa foi alterada em outro aparelho. Abra-a de novo para ver a versão atual.";
+
+fn task_conflict(error: anyhow::Error) -> anyhow::Error {
+    if format!("{error:#}").starts_with("Conflito de edição simultânea") {
+        anyhow::anyhow!(TASK_CHANGED)
+    } else {
+        error
+    }
+}
+
+/// The active task `id` (neither it nor its document in the trash).
+fn find_task(store: &Store, id: i64) -> Result<ponteproj::tasks::Task> {
+    store
+        .list_tasks()?
+        .into_iter()
+        .find(|t| t.id == id)
+        .context("Tarefa não encontrada. Ela pode ter sido excluída em outro aparelho.")
+}
+
+/// Everything the task screen shows or edits, plus the `version` a save must
+/// present back.
+fn get_task(store: &Store, id: i64) -> Result<Value> {
+    let task = find_task(store, id)?;
+    let documents = store.list_documents("")?;
+    let title = task
+        .document_id
+        .and_then(|d| documents.iter().find(|x| x.id == d))
+        .map(|d| d.title.clone())
+        .unwrap_or_default();
+    let numbers = documents.iter().map(|d| (d.id, d.document_number.clone())).collect();
+    let mut value = task_json(&task, &numbers);
+    value["document_title"] = json!(title);
+    value["assignee"] = json!(task.assignee);
+    value["reminder_date"] = json!(task.reminder_date);
+    value["checklist"] = json!(task
+        .checklist
+        .iter()
+        .map(|(done, text)| json!({"done": done, "text": text}))
+        .collect::<Vec<_>>());
+    value["version"] = json!(store.item_version("task", id)?.version);
+    Ok(value)
+}
+
+/// Saves the editable fields present in `input` (`id`, `version`, `title`,
+/// `action`, `priority`, `due_date`, `assignee`, `notes`) over the stored task;
+/// everything else (dependencies, reminder, checklist, outcome, document,
+/// status) stays as stored. A stale `version` saves nothing.
+fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
+    let id = input["id"].as_i64().context("Tarefa ausente.")?;
+    let version = input["version"].as_i64().context("Versão da tarefa ausente.")?;
+    let mut task = find_task(store, id)?;
+    let text = |key: &str| input[key].as_str().map(str::to_owned);
+    if let Some(title) = text("title") {
+        task.title = title.trim().to_owned();
+    }
+    if let Some(action) = text("action").filter(|a| !a.is_empty()) {
+        task.action = action;
+    }
+    if let Some(priority) = text("priority").filter(|p| !p.is_empty()) {
+        task.priority = priority;
+    }
+    if let Some(due) = text("due_date") {
+        task.due_date = valid_due(&due)?;
+    }
+    if let Some(assignee) = text("assignee") {
+        task.assignee = assignee.trim().to_owned();
+    }
+    if let Some(notes) = text("notes") {
+        task.notes = notes;
+    }
+    anyhow::ensure!(!task.title.is_empty(), "Informe o título da tarefa.");
+    anyhow::ensure!(
+        ["baixa", "normal", "alta", "urgente"].contains(&task.priority.as_str()),
+        "A prioridade da tarefa é inválida."
+    );
+    store.save_task_checked(&task, Some(version)).map_err(task_conflict)?;
+    Ok(json!({ "id": id, "version": store.item_version("task", id)?.version }))
+}
+
+/// Moves a task to `document_id`, or (0) takes it out of its document.
+fn relink_task(store: &mut Store, task_id: i64, document_id: i64, version: i64) -> Result<Value> {
+    find_task(store, task_id)?;
+    store
+        .relink_task(task_id, (document_id > 0).then_some(document_id), Some(version))
+        .map_err(task_conflict)?;
+    Ok(json!({ "id": task_id, "version": store.item_version("task", task_id)?.version }))
+}
+
+/// One task as the task screen reads it.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_getTask<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    task_id: jlong,
+) -> jstring {
+    answer(&mut env, |_| with_store(|store| get_task(store, task_id)))
+}
+
+/// Saves the edited fields of a task (see [`save_task`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_saveTask<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    task_json_text: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = json_arg(env, &task_json_text)?;
+        with_store(|store| save_task(store, &input))
+    })
+}
+
+/// Links, moves or unlinks a task (`document_id` 0: no document).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_relinkTask<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    task_id: jlong,
+    document_id: jlong,
+    version: jlong,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| relink_task(store, task_id, document_id, version))
+    })
+}
+
+/// What "Hoje" shows, as of the current day.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_today<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
         with_store(|store| {
-            let document_id = input["document_id"].as_i64().context("Documento da tarefa ausente.")?;
-            let mut task = ponteproj::tasks::Task::new(document_id);
-            task.title = input["title"].as_str().unwrap_or("").trim().to_owned();
-            if let Some(action) = input["action"].as_str().filter(|a| !a.is_empty()) {
-                task.action = action.to_owned();
-            }
-            task.due_date = input["due_date"].as_str().unwrap_or("").trim().to_owned();
-            let id = store.save_task(&task)?;
-            Ok(json!({ "id": id }))
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            today_lists(store, &today)
         })
     })
+}
+
+/// How many tasks "Próximos dias" lists.
+const UPCOMING_LIMIT: usize = 6;
+
+/// The lists of "Hoje" as of `today` (`AAAA-MM-DD`). The rules are those of
+/// the desktop "Hoje" area (`src/app/today.rs`, desktop-only, so re-expressed
+/// here): `split_tasks` for the tasks (open = not concluded and no
+/// `completed_at`; a due date before today is late, equal is today, after is
+/// upcoming; late and upcoming sorted by date, upcoming cut to 6) and `due_attendances` for the atendimentos
+/// (open per `SaiopAttendance::is_open`, with a due date that is today or
+/// past, oldest first; the reference wording is that of the desktop calendar).
+fn today_lists(store: &Store, today: &str) -> Result<Value> {
+    let numbers = document_numbers(store)?;
+    let mut late = Vec::new();
+    let mut due_today = Vec::new();
+    let mut upcoming = Vec::new();
+    for task in store.list_tasks()? {
+        if task.completed_at.is_some() || task.status == "concluida" || task.due_date.is_empty() {
+            continue;
+        }
+        match task.due_date.as_str().cmp(today) {
+            std::cmp::Ordering::Less => late.push(task),
+            std::cmp::Ordering::Equal => due_today.push(task),
+            std::cmp::Ordering::Greater => upcoming.push(task),
+        }
+    }
+    late.sort_by(|a, b| a.due_date.cmp(&b.due_date));
+    upcoming.sort_by(|a, b| a.due_date.cmp(&b.due_date));
+    upcoming.truncate(UPCOMING_LIMIT);
+    let rows = |list: &[ponteproj::tasks::Task]| {
+        list.iter().map(|t| task_json_on(t, &numbers, today)).collect::<Vec<_>>()
+    };
+    let mut attendances: Vec<_> = store
+        .list_saiop_attendances()?
+        .into_iter()
+        .filter(|a| a.is_open() && !a.due_date.is_empty() && a.due_date.as_str() <= today)
+        .collect();
+    attendances.sort_by(|a, b| a.due_date.cmp(&b.due_date));
+    let attendances = attendances
+        .iter()
+        .map(|a| {
+            let reference = if !a.reference_raw.is_empty() {
+                a.reference_raw.as_str()
+            } else if !a.subject.is_empty() {
+                a.subject.as_str()
+            } else {
+                "Sem referência"
+            };
+            json!({
+                "id": a.id,
+                "reference": reference,
+                "subject": a.subject,
+                "status_label": ponteproj::saiop::status_label(&a.status),
+                "due_date": a.due_date,
+                "late": a.due_date.as_str() < today,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "late": rows(&late),
+        "today": rows(&due_today),
+        "upcoming": rows(&upcoming),
+        "attendances": attendances,
+    }))
 }
 
 /// The task actions and the kinds of manual record, for the app's choices.
@@ -507,7 +737,11 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_choices<'local>(
             .iter()
             .map(|(key, label)| json!({"key": key, "label": label}))
             .collect::<Vec<_>>();
-        Ok(json!({"actions": actions, "manual_kinds": kinds}))
+        let priorities = ["baixa", "normal", "alta", "urgente"]
+            .iter()
+            .map(|p| json!({"key": p, "label": ponteproj::tasks::priority_label(p)}))
+            .collect::<Vec<_>>();
+        Ok(json!({"actions": actions, "manual_kinds": kinds, "priorities": priorities}))
     })
 }
 
@@ -904,6 +1138,262 @@ mod tests {
             seen.push((copy.header.lineage.clone(), copy.header.revision));
         }
         assert_eq!(seen[0], seen[1]);
+    }
+
+    /// A library with one document (the fixture capture) and nothing else.
+    fn library(dir: &Path) -> (Store, i64) {
+        std::env::set_var("PONTEPROJ_DATA_DIR", dir);
+        let mut store = open(dir, "acervo.sqlite3", "Celular de teste");
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/capture.json");
+        let capture: ponteproj::model::Capture =
+            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+        let id = store.import_capture(&capture).unwrap().document_id;
+        (store, id)
+    }
+
+    fn add_task(store: &mut Store, document: Option<i64>, title: &str, due: &str) -> i64 {
+        let mut task = ponteproj::tasks::Task::blank(document);
+        task.title = title.into();
+        task.due_date = due.into();
+        store.save_task(&task).unwrap()
+    }
+
+    fn titles(list: &Value) -> Vec<String> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["title"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn today_splits_late_today_and_upcoming_on_fixed_dates() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let today = "2026-11-10";
+        add_task(&mut store, Some(doc), "ontem", "2026-11-09");
+        add_task(&mut store, None, "muito atrasada", "2026-10-01");
+        add_task(&mut store, Some(doc), "hoje", "2026-11-10");
+        add_task(&mut store, Some(doc), "amanha", "2026-11-11");
+        add_task(&mut store, Some(doc), "no limite", "2026-11-17");
+        add_task(&mut store, Some(doc), "alem da semana", "2026-11-18");
+        add_task(&mut store, Some(doc), "sem prazo", "");
+        let done = add_task(&mut store, Some(doc), "concluida", "2026-11-01");
+        store.complete_task(done).unwrap();
+
+        let lists = today_lists(&store, today).unwrap();
+        assert_eq!(titles(&lists["late"]), ["muito atrasada", "ontem"], "oldest first");
+        assert_eq!(titles(&lists["today"]), ["hoje"]);
+        assert_eq!(
+            titles(&lists["upcoming"]),
+            ["amanha", "no limite", "alem da semana"],
+            "as on the computer: soonest first, however far"
+        );
+        assert_eq!(lists["late"][0]["overdue"], json!(true));
+        assert_eq!(lists["today"][0]["due_today"], json!(true));
+        // A task without document says so by an empty number and id 0.
+        assert_eq!(lists["late"][0]["document_id"], json!(0));
+        assert!(lists["attendances"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn today_upcoming_is_cut_to_six() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        for day in 11..=17 {
+            add_task(&mut store, Some(doc), &format!("dia {day}"), &format!("2026-11-{day}"));
+        }
+        let lists = today_lists(&store, "2026-11-10").unwrap();
+        assert_eq!(lists["upcoming"].as_array().unwrap().len(), 6);
+        assert_eq!(lists["upcoming"][5]["title"], json!("dia 16"));
+    }
+
+    #[test]
+    fn today_lists_open_attendances_due_today_or_before() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let mut make = |reference: &str, subject: &str, status: &str, due: &str| {
+            let mut a = ponteproj::saiop::SaiopAttendance::new_manual();
+            a.reference_raw = reference.into();
+            a.subject = subject.into();
+            a.status = status.into();
+            a.due_date = due.into();
+            store.save_saiop_attendance(&a, None).unwrap();
+        };
+        make("ORG-OFI-2026/00431", "Pedido de apoio", "em_analise", "2026-11-09");
+        make("", "Sem referência própria", "a_distribuir", "2026-11-10");
+        make("ORG-OFI-2026/00500", "Amanhã", "em_analise", "2026-11-11");
+        make("ORG-OFI-2026/00501", "Encerrado", "encerrado", "2026-11-01");
+        make("ORG-OFI-2026/00502", "Cancelado", "cancelado", "2026-11-01");
+        make("ORG-OFI-2026/00503", "Sem prazo", "em_analise", "");
+        let lists = today_lists(&store, "2026-11-10").unwrap();
+        let rows = lists["attendances"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["reference"], json!("ORG-OFI-2026/00431"));
+        assert_eq!(rows[0]["status_label"], json!("Em análise"));
+        assert_eq!(rows[0]["late"], json!(true));
+        assert_eq!(rows[1]["reference"], json!("Sem referência própria"));
+        assert_eq!(rows[1]["late"], json!(false));
+    }
+
+    #[test]
+    fn save_task_changes_only_the_sent_fields_and_keeps_the_rest() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let other = add_task(&mut store, Some(doc), "anterior", "");
+        let mut task = ponteproj::tasks::Task::blank(Some(doc));
+        task.title = "original".into();
+        task.reminder_date = "2026-12-01".into();
+        task.checklist = vec![(true, "um".into()), (false, "dois".into())];
+        task.outcome = "respondido".into();
+        task.dependencies = vec![other];
+        task.assignee = "Fulana".into();
+        let id = store.save_task(&task).unwrap();
+
+        let before = get_task(&store, id).unwrap();
+        let version = before["version"].as_i64().unwrap();
+        let saved = save_task(
+            &mut store,
+            &json!({"id": id, "version": version, "title": "  novo título ", "priority": "alta",
+                    "due_date": "2026-11-20", "notes": "uma nota"}),
+        )
+        .unwrap();
+        assert!(saved["version"].as_i64().unwrap() > version);
+
+        let task = find_task(&store, id).unwrap();
+        assert_eq!(task.title, "novo título");
+        assert_eq!(task.priority, "alta");
+        assert_eq!(task.due_date, "2026-11-20");
+        assert_eq!(task.notes, "uma nota");
+        // Not sent: kept.
+        assert_eq!(task.assignee, "Fulana");
+        assert_eq!(task.action, "triar");
+        assert_eq!(task.reminder_date, "2026-12-01");
+        assert_eq!(task.checklist, vec![(true, "um".to_owned()), (false, "dois".to_owned())]);
+        assert_eq!(task.outcome, "respondido");
+        assert_eq!(task.dependencies, vec![other]);
+        assert_eq!(task.document_id, Some(doc));
+        assert_eq!(task.status, "pendente");
+
+        // Clearing the due date and the responsible is a change too.
+        let version = saved["version"].as_i64().unwrap();
+        save_task(&mut store, &json!({"id": id, "version": version, "due_date": "", "assignee": ""})).unwrap();
+        let task = find_task(&store, id).unwrap();
+        assert_eq!((task.due_date.as_str(), task.assignee.as_str()), ("", ""));
+        assert_eq!(task.title, "novo título");
+
+        let shown = get_task(&store, id).unwrap();
+        assert_eq!(shown["checklist"][1]["text"], json!("dois"));
+        assert_eq!(shown["document_number"], json!(store.list_documents("").unwrap()[0].document_number));
+    }
+
+    #[test]
+    fn save_task_refuses_a_stale_version_and_saves_nothing() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let id = add_task(&mut store, Some(doc), "original", "");
+        let version = get_task(&store, id).unwrap()["version"].as_i64().unwrap();
+        // Another device saves first.
+        save_task(&mut store, &json!({"id": id, "version": version, "notes": "do outro aparelho"})).unwrap();
+        let error = save_task(
+            &mut store,
+            &json!({"id": id, "version": version, "title": "meu título"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, TASK_CHANGED);
+        let task = find_task(&store, id).unwrap();
+        assert_eq!(task.title, "original");
+        assert_eq!(task.notes, "do outro aparelho");
+    }
+
+    #[test]
+    fn save_task_validates_title_priority_and_date() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let id = add_task(&mut store, Some(doc), "original", "");
+        let v = get_task(&store, id).unwrap()["version"].as_i64().unwrap();
+        assert!(save_task(&mut store, &json!({"id": id, "version": v, "title": "   "})).is_err());
+        assert!(save_task(&mut store, &json!({"id": id, "version": v, "priority": "máxima"})).is_err());
+        assert!(save_task(&mut store, &json!({"id": id, "version": v, "due_date": "amanhã"})).is_err());
+        assert_eq!(find_task(&store, id).unwrap().title, "original");
+        assert_eq!(get_task(&store, id).unwrap()["version"].as_i64().unwrap(), v);
+    }
+
+    #[test]
+    fn create_task_without_document_and_with_one() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let free = create_task(&mut store, &json!({"title": " Ligar para o setor ", "action": "acompanhar"})).unwrap();
+        let task = find_task(&store, free["id"].as_i64().unwrap()).unwrap();
+        assert_eq!(task.document_id, None);
+        assert_eq!(task.title, "Ligar para o setor");
+        assert_eq!(task.action, "acompanhar");
+        let zero = create_task(&mut store, &json!({"document_id": 0, "title": "outra"})).unwrap();
+        let task = find_task(&store, zero["id"].as_i64().unwrap()).unwrap();
+        assert_eq!(task.document_id, None);
+        assert_eq!(task.action, "examinar");
+        let linked = create_task(&mut store, &json!({"document_id": doc, "title": "da ficha", "due_date": "2026-11-12"})).unwrap();
+        let task = find_task(&store, linked["id"].as_i64().unwrap()).unwrap();
+        assert_eq!(task.document_id, Some(doc));
+        assert_eq!(task.due_date, "2026-11-12");
+        assert!(create_task(&mut store, &json!({"title": ""})).is_err());
+        assert!(create_task(&mut store, &json!({"title": "x", "due_date": "31/12"})).is_err());
+    }
+
+    #[test]
+    fn relink_task_both_ways_and_with_a_stale_version() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let id = add_task(&mut store, None, "solta", "");
+        let version = |store: &Store| get_task(store, id).unwrap()["version"].as_i64().unwrap();
+
+        let v0 = version(&store);
+        relink_task(&mut store, id, doc, v0).unwrap();
+        assert_eq!(find_task(&store, id).unwrap().document_id, Some(doc));
+        let shown = get_task(&store, id).unwrap();
+        assert_eq!(shown["document_id"], json!(doc));
+        assert!(!shown["document_title"].as_str().unwrap().is_empty());
+
+        // The old version is now stale.
+        let error = relink_task(&mut store, id, 0, v0).unwrap_err().to_string();
+        assert_eq!(error, TASK_CHANGED);
+        assert_eq!(find_task(&store, id).unwrap().document_id, Some(doc));
+
+        let v1 = version(&store);
+        relink_task(&mut store, id, 0, v1).unwrap();
+        assert_eq!(find_task(&store, id).unwrap().document_id, None);
+        assert_eq!(get_task(&store, id).unwrap()["document_number"], json!(""));
+        // Already without document: the core says so, nothing changes.
+        let v2 = version(&store);
+        assert!(relink_task(&mut store, id, 0, v2).is_err());
+        assert_eq!(version(&store), v2);
+    }
+
+    #[test]
+    fn get_task_of_a_trashed_or_unknown_task_says_not_found() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let id = add_task(&mut store, Some(doc), "vai para a lixeira", "");
+        assert!(get_task(&store, id).is_ok());
+        store
+            .trash_item(ponteproj::trash::Target { kind: ponteproj::trash::Kind::Task, id })
+            .unwrap();
+        for missing in [id, 99_999] {
+            let error = get_task(&store, missing).unwrap_err().to_string();
+            assert!(error.starts_with("Tarefa não encontrada"), "{error}");
+        }
+        assert!(save_task(&mut store, &json!({"id": id, "version": 1, "title": "x"})).is_err());
+        assert!(relink_task(&mut store, id, doc, 1).is_err());
     }
 
     #[test]

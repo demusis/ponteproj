@@ -53,6 +53,12 @@ internal sealed class Route {
     /** A new task for a document. */
     data class NewTask(val id: Long) : Route() { override val key get() = "task:$id" }
 
+    /** The screen of one task (edit, conclude, change its document). */
+    data class EditTask(val id: Long) : Route() { override val key get() = "edit:$id" }
+
+    /** The list to pick the document of task [taskId] from. */
+    data class Pick(val taskId: Long) : Route() { override val key get() = "pick:$taskId" }
+
     object Photo : Route() { override val key get() = "photo" }
     object Settings : Route() { override val key get() = "settings" }
 
@@ -69,6 +75,8 @@ internal sealed class Route {
                 "text" -> arg.toLongOrNull()?.let { Text(it) }
                 "note" -> arg.toLongOrNull()?.let { Note(it) }
                 "task" -> arg.toLongOrNull()?.let { NewTask(it) }
+                "edit" -> arg.toLongOrNull()?.let { EditTask(it) }
+                "pick" -> arg.toLongOrNull()?.let { Pick(it) }
                 "photo" -> Photo
                 "settings" -> Settings
                 "account" -> Account(arg)
@@ -78,6 +86,9 @@ internal sealed class Route {
         }
     }
 }
+
+/** The name this phone gives itself in the library (the "Eu" of the task screen). */
+internal fun phoneMemberName(): String = "Celular (" + android.os.Build.MODEL + ")"
 
 /** A question or message shown over whatever is on screen. */
 internal sealed class AppDialog {
@@ -131,6 +142,12 @@ internal object Controller {
     var docQuery by mutableStateOf("")
     var docFilter by mutableStateOf(DocFilter.ALL)
     var tasks by mutableStateOf(TasksState())
+        private set
+    var today by mutableStateOf(TodayState())
+        private set
+    var taskEdit by mutableStateOf(TaskEditState())
+        private set
+    var priorities by mutableStateOf(DefaultPriorities)
         private set
     var document by mutableStateOf(DocumentState())
         private set
@@ -215,7 +232,7 @@ internal object Controller {
 
     /** After the process died: navigation and the photo form come back. */
     private fun restore(s: Bundle) {
-        tab = s.getInt("tab", 0).coerceIn(0, 2)
+        tab = s.getInt("tab", 0).coerceIn(0, 3)
         docQuery = s.getString("query") ?: ""
         docFilter = try { DocFilter.valueOf(s.getString("filter") ?: "") } catch (_: Throwable) { DocFilter.ALL }
         stack.clear()
@@ -227,7 +244,9 @@ internal object Controller {
                 is Route.Document -> documentId = r.id
                 is Route.Text -> documentId = r.id
                 is Route.Note -> documentId = r.id
-                is Route.NewTask -> documentId = r.id
+                is Route.NewTask -> if (r.id > 0) documentId = r.id
+                is Route.EditTask -> loadTask(r.id)
+                is Route.Pick -> loadTask(r.taskId)
                 is Route.Account -> loadAccounts { list ->
                     val found = list.firstOrNull { it.uid == r.uid }
                     // An account that no longer exists must not come back as a new one.
@@ -236,11 +255,10 @@ internal object Controller {
                 }
                 Route.Settings, Route.Setup -> loadFileInfo()
                 Route.Photo -> restorePhoto(s.getBundle("photo"))
-                else -> {}
             }
         }
         if (documentId >= 0) loadDocument()
-        if (tab == 2) openMailTab()
+        if (tab == 3) openMailTab()
     }
 
     /** Old export/photo files from a previous run are not needed any more. */
@@ -285,6 +303,8 @@ internal object Controller {
                 manualKinds = k
                 photo = photo.copy(kinds = k)
             }
+            val p = ch.optJSONArray("priorities").objs().map { Choice(it.s("key"), it.s("label")) }
+            if (p.isNotEmpty()) priorities = p
         })
     }
 
@@ -638,11 +658,11 @@ internal object Controller {
     // ---------------------------------------------------------------- navigation
 
     fun selectTab(i: Int) {
-        tab = i.coerceIn(0, 2)
+        tab = i.coerceIn(0, 3)
         shell = shell.copy(tab = tab)
         when (tab) {
-            0 -> refreshTasks()
-            2 -> openMailTab()
+            0, 1 -> refreshTasks()
+            3 -> openMailTab()
         }
     }
 
@@ -658,6 +678,7 @@ internal object Controller {
             Route.Photo -> closePhoto()
             Route.Setup -> setupBack()
             is Route.Account -> if (!accountForm.busy) pop()
+            is Route.EditTask, is Route.Pick -> if (!taskEdit.busy) pop()
             else -> {
                 pop()
                 if (top is Route.Document) documentId = -1L
@@ -798,6 +819,23 @@ internal object Controller {
             shell = shell.copy(badge = list.count { t -> !t.done && (t.overdue || t.dueToday) })
         }, { tasks = TasksState(loading = false, error = it, tasks = tasks.tasks) },
             fail = "Não foi possível ler as tarefas. Toque em Sincronizar agora e tente de novo.")
+        refreshToday()
+    }
+
+    /** Reads what Hoje lists; what the person just concluded stays out even before it is saved. */
+    private fun refreshToday() {
+        SyncRunner.background({
+            val o = Api.today()
+            val tasksOf = { key: String -> o.optJSONArray(key).objs().map { it.toTask() } }
+            TodayState(
+                loading = false, late = tasksOf("late"), today = tasksOf("today"), upcoming = tasksOf("upcoming"),
+                attendances = o.optJSONArray("attendances").objs().map { it.toAttendance() }
+            )
+        }, { read ->
+            val open = { list: List<TaskItem> -> list.map { it.withPending() }.filter { !it.done } }
+            today = read.copy(late = open(read.late), today = open(read.today), upcoming = open(read.upcoming))
+        }, { today = today.copy(loading = false, error = it) },
+            fail = "Não foi possível ler o que vence hoje. Toque em Sincronizar agora e tente de novo.")
     }
 
     /** Completes or reopens a task, then syncs. */
@@ -813,7 +851,11 @@ internal object Controller {
             else x.copy(done = done, overdue = if (done) false else x.overdue, dueToday = if (done) false else x.dueToday)
         }
         tasks = tasks.copy(tasks = tasks.tasks.map(flip))
-        document = document.copy(doc = document.doc?.let { it.copy(tasks = it.tasks.map(flip)) })
+        if (done) {
+            val out = { list: List<TaskItem> -> list.filter { it.id != t.id } }
+            today = today.copy(late = out(today.late), today = out(today.today), upcoming = out(today.upcoming))
+        }
+        document =document.copy(doc = document.doc?.let { it.copy(tasks = it.tasks.map(flip)) })
         SyncRunner.background({
             Api.setDone(t.id, done)
             SyncRunner.refreshDocs()
@@ -839,10 +881,123 @@ internal object Controller {
         if (stack.lastOrNull() != r) stack.add(r)
     }
 
+    /** From a ficha: the new task belongs to that document. */
     fun openNewTask() {
         if (documentId < 0) return
         if (actions.isEmpty()) loadChoices()
         push(Route.NewTask(documentId))
+    }
+
+    /** From Tarefas: a task without document (it can be linked to one later). */
+    fun openNewTaskWithoutDocument() {
+        if (actions.isEmpty()) loadChoices()
+        push(Route.NewTask(0))
+    }
+
+    // ---- the task screen
+
+    /** Opens a task to edit. */
+    fun openTask(id: Long) {
+        if (id <= 0) return
+        val r = Route.EditTask(id)
+        if (stack.lastOrNull() == r) return
+        if (actions.isEmpty()) loadChoices()
+        taskEdit = TaskEditState()
+        stack.add(r)
+        loadTask(id)
+    }
+
+    private fun loadTask(id: Long) {
+        SyncRunner.background({ Api.task(id) }, { d ->
+            if (stack.any { it is Route.EditTask && it.id == id }) taskEdit = TaskEditState(loading = false, task = d)
+        }, {
+            if (stack.any { it is Route.EditTask && it.id == id }) taskEdit = TaskEditState(loading = false, error = it)
+        }, fail = "Não foi possível abrir a tarefa. Volte e tente de novo.")
+    }
+
+    /** Saves what changed in the form; the screen closes when it worked. */
+    fun saveTask(f: TaskForm) = saveTask(f, thenFinish = false)
+
+    private fun saveTask(f: TaskForm, thenFinish: Boolean) {
+        val t = taskEdit.task ?: return
+        if (taskEdit.busy || f.title.isBlank()) return
+        val changes = f.changes(t.form)
+        if (changes.isEmpty()) {
+            stack.remove(Route.EditTask(t.id))
+            if (thenFinish) finishNow(t)
+            return
+        }
+        taskEdit = taskEdit.copy(busy = true, formError = "")
+        SyncRunner.background({
+            Api.saveTask(t.id, t.version, changes)
+            SyncRunner.refreshDocs()
+        }, {
+            docs = SyncRunner.docs
+            taskEdit = TaskEditState(loading = false, task = t.copy(form = f))
+            stack.remove(Route.EditTask(t.id))
+            refreshTasks()
+            reloadDocument()
+            if (thenFinish) finishNow(t) else {
+                say("Tarefa salva.")
+                requestSync(null, auto = true)
+            }
+        }, { taskEdit = taskEdit.copy(busy = false, formError = it) },
+            fail = "Não foi possível salvar a tarefa. Tente de novo.")
+    }
+
+    /** Concludes the task (or reopens it, when it was concluded), saving typed changes first. */
+    fun finishTask(f: TaskForm) {
+        val t = taskEdit.task ?: return
+        if (taskEdit.busy || f.title.isBlank()) return
+        if (f.changedFrom(t.form)) saveTask(f, thenFinish = true) else {
+            stack.remove(Route.EditTask(t.id))
+            finishNow(t)
+        }
+    }
+
+    private fun finishNow(t: TaskDetail) {
+        setTaskDone(t.asItem(), !t.done, offerUndo = !t.done)
+        if (t.done) say("Tarefa reaberta.")
+    }
+
+    fun openTaskDocument() {
+        val t = taskEdit.task ?: return
+        if (t.documentId > 0) openDocument(t.documentId)
+    }
+
+    /** Opens the list of documents to link the task to (or move it to). */
+    fun openPicker() {
+        val t = taskEdit.task ?: return
+        if (taskEdit.busy) return
+        push(Route.Pick(t.id))
+    }
+
+    fun pickDocument(d: Doc) = relink(d.id)
+
+    fun unlinkTask() = relink(0)
+
+    /** Links the task to [documentId], or (0) takes it out of its document. */
+    private fun relink(documentId: Long) {
+        val t = taskEdit.task ?: return
+        if (taskEdit.busy) return
+        taskEdit = taskEdit.copy(busy = true, formError = "")
+        SyncRunner.background({
+            Api.relinkTask(t.id, documentId, t.version)
+            SyncRunner.refreshDocs()
+        }, {
+            docs = SyncRunner.docs
+            stack.removeAll { it is Route.Pick }
+            taskEdit = taskEdit.copy(busy = false)
+            loadTask(t.id)
+            refreshTasks()
+            reloadDocument()
+            say(if (documentId > 0) "Tarefa vinculada ao documento." else "Tarefa desvinculada do documento.")
+            requestSync(null, auto = true)
+        }, {
+            // The reason is shown on the task screen, under the picker.
+            stack.removeAll { it is Route.Pick }
+            taskEdit = taskEdit.copy(busy = false, formError = it)
+        }, fail = "Não foi possível trocar o documento da tarefa. Tente de novo.")
     }
 
     fun createTask(title: String, action: String, due: String) {
@@ -1062,8 +1217,8 @@ internal object Controller {
                     out.delete()
                     docs = SyncRunner.docs
                     stack.remove(Route.Photo)
-                    tab = 1
-                    shell = shell.copy(tab = 1)
+                    tab = 2
+                    shell = shell.copy(tab = 2)
                     openDocument(id)
                     say("Registro salvo.")
                     requestSync(null, auto = true)
@@ -1132,7 +1287,7 @@ internal object Controller {
     }
 
     private fun browseIfNeeded() {
-        if (tab != 2 || mail.account == null || mail.listed || mail.busy) return
+        if (tab != 3 || mail.account == null || mail.listed || mail.busy) return
         browse(explicit = false)
     }
 

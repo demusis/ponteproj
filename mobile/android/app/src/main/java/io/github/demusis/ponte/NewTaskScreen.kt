@@ -25,7 +25,8 @@ internal fun NewTaskScreen(
     document: String,
     actions: List<Choice>,
     onBack: () -> Unit,
-    onCreate: (String, String, String) -> Unit
+    onCreate: (String, String, String) -> Unit,
+    withoutDocument: Boolean = false
 ) {
     var title by rememberSaveable { mutableStateOf("") }
     var action by rememberSaveable { mutableStateOf(actions.firstOrNull()?.key ?: "") }
@@ -50,6 +51,11 @@ internal fun NewTaskScreen(
                     "No documento $document", Modifier,
                     style = MaterialTheme.typography.bodyMedium, color = Ponte.colors.muted,
                     maxLines = 2, overflow = TextOverflow.Ellipsis
+                )
+            } else if (withoutDocument) {
+                Text(
+                    "Tarefa sem documento. Depois você pode vinculá-la a um documento.", Modifier,
+                    style = MaterialTheme.typography.bodyMedium, color = Ponte.colors.muted
                 )
             }
             LabeledField(

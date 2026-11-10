@@ -45,6 +45,12 @@ import java.text.Normalizer
 private fun fold(s: String): String =
     Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").lowercase()
 
+/** The search of the Documentos tab and of the document picker: number, title, origin, sender. */
+internal fun matchesQuery(d: Doc, query: String): Boolean {
+    val q = fold(query.trim())
+    return q.isEmpty() || fold("${d.number} ${d.title} ${d.origin} ${d.emailFrom}").contains(q)
+}
+
 /** The Documentos area (inside MainShell): search, filters, the list and the photo button. */
 @Composable
 internal fun DocumentsScreen(
@@ -58,7 +64,6 @@ internal fun DocumentsScreen(
 ) {
     val c = Ponte.colors
     val shown = remember(docs, query, filter) {
-        val q = fold(query.trim())
         docs.filter { d ->
             val byFilter = when (filter) {
                 DocFilter.ALL -> true
@@ -66,7 +71,7 @@ internal fun DocumentsScreen(
                 DocFilter.EMAILS -> d.email
                 DocFilter.RECORDS -> d.manual
             }
-            byFilter && (q.isEmpty() || fold("${d.number} ${d.title} ${d.origin} ${d.emailFrom}").contains(q))
+            byFilter && matchesQuery(d, query)
         }
     }
     Box(Modifier.fillMaxSize()) {
@@ -142,7 +147,7 @@ internal fun DocumentsScreen(
 }
 
 @Composable
-private fun DocCard(d: Doc, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun DocCard(d: Doc,onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = Ponte.colors
     PonteCard(modifier, onClick) {
         Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

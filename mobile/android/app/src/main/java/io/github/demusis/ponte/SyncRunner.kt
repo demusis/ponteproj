@@ -155,7 +155,7 @@ internal object SyncRunner {
             try {
                 if (reset) wipeLocalState(app)
                 val key = loadOrCreateLibraryKey(app)
-                val name = "Celular (" + Build.MODEL + ")"
+                val name = phoneMemberName()
                 check(core.init(app.filesDir.absolutePath, key, name))
                 ready = true
                 keyBroken = false

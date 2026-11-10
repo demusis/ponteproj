@@ -2,6 +2,7 @@ package io.github.demusis.ponte
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,9 +13,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,7 +37,12 @@ private class TaskGroup(val key: String, val title: String, val tasks: List<Task
 
 /** The Tarefas area (inside MainShell): open tasks grouped by urgency, finished ones below. */
 @Composable
-internal fun TasksScreen(state: TasksState, onToggle: (TaskItem) -> Unit, onOpen: (TaskItem) -> Unit) {
+internal fun TasksScreen(
+    state: TasksState,
+    onToggle: (TaskItem) -> Unit,
+    onOpen: (TaskItem) -> Unit,
+    onNew: () -> Unit = {}
+) {
     val c = Ponte.colors
     var showDone by rememberSaveable { mutableStateOf(false) }
     val groups = remember(state.tasks) {
@@ -54,9 +66,10 @@ internal fun TasksScreen(state: TasksState, onToggle: (TaskItem) -> Unit, onOpen
         return
     }
 
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 32.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 104.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         state.error?.let { item(key = "error") { Notice(it) } }
@@ -95,14 +108,23 @@ internal fun TasksScreen(state: TasksState, onToggle: (TaskItem) -> Unit, onOpen
             if (showDone) items(done, key = { "d-${it.id}" }) { t -> TaskCard(t, onToggle, onOpen) }
         }
     }
+    ExtendedFloatingActionButton(
+        onClick = onNew,
+        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+        containerColor = c.accent, contentColor = c.onAccent,
+        elevation = FloatingActionButtonDefaults.elevation(2.dp, 2.dp, 2.dp, 2.dp),
+        icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+        text = { Text("Nova tarefa", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
+    )
+    }
 }
 
+/** One task in a card (Hoje and Tarefas): check to conclude, tap to open it. */
 @Composable
-private fun TaskCard(t: TaskItem, onToggle: (TaskItem) -> Unit, onOpen: (TaskItem) -> Unit) {
+internal fun TaskCard(t: TaskItem, onToggle: (TaskItem) -> Unit, onOpen: (TaskItem) -> Unit) {
     PonteCard {
         TaskRow(
-            t, listOf(t.actionLabel, if (t.documentId <= 0) "Sem documento" else t.documentNumber)
-                .filter { it.isNotEmpty() }.joinToString(" · "),
+            t, t.secondLine,
             onToggle = { onToggle(t) }, onOpen = { onOpen(t) },
             modifier = Modifier.padding(start = 6.dp, end = 12.dp, top = 6.dp, bottom = 6.dp)
         )
