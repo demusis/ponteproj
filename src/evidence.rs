@@ -293,8 +293,8 @@ impl SourcesPanel {
         let draft = self.drafts.entry(id).or_default();
         draft.documents.insert(id);
         let mut request = None;
-        ui.collapsing("Outros documentos e páginas para a IA",|ui|{
-            ui.small("Opcional: marque documentos já importados e, depois de preparar, as páginas que a IA deve considerar.").on_hover_text("A seleção vale para a próxima análise ou minuta; análises anteriores guardam as fontes que usaram. O documento atual e o contexto são sempre incluídos. Texto obtido por OCR exige conferência.");
+        eframe::egui::CollapsingHeader::new(eframe::egui::RichText::new("Outros documentos e páginas para a IA").font(crate::theme::font_strong(crate::theme::SIZE_SECTION))).show(ui,|ui|{
+            crate::widgets::small_muted(ui,"Opcional: marque documentos já importados e, depois de preparar, as páginas que a IA deve considerar.").on_hover_text("A seleção vale para a próxima análise ou minuta; análises anteriores guardam as fontes que usaram. O documento atual e o contexto são sempre incluídos. Texto obtido por OCR exige conferência.");
             match store.list_documents(""){Ok(documents)=>{for document in documents{if document.id!=id{let mut checked=draft.documents.contains(&document.id);if ui.add_enabled(!busy,eframe::egui::Checkbox::new(&mut checked,format!("{} — {}",document.document_number,document.title))).changed(){if checked{draft.documents.insert(document.id);}else{draft.documents.remove(&document.id);}draft.prepared=None;draft.selected.clear();}}}},Err(e)=>{ui.label(format!("Falha ao ler documentos: {e}"));}}
             if ui.add_enabled(!busy,eframe::egui::Button::new(if busy {"Preparando…"} else {"Preparar páginas"})).on_hover_text("Lê os PDFs dos documentos marcados neste computador para você escolher as páginas.").clicked(){request=Some(draft.documents.iter().copied().collect());}
             if !draft.message.is_empty(){ui.label(&draft.message);}

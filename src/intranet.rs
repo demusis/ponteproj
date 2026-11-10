@@ -2269,7 +2269,7 @@ impl Store {
         cfg.validate()?;
         ensure!(
             !key.is_empty(),
-            "Informe a senha de sincronização em Rede e equipe."
+            "Informe a senha de sincronização em Ajustes ▸ Equipe e sincronização."
         );
         let paths = cfg.folder_paths();
         let mut report = FolderSyncReport::default();
@@ -5217,7 +5217,7 @@ impl IntranetPanel {
                 match HostServer::start(db_path.to_path_buf(), &cfg.bind_addr) {
                     Ok(srv) => {
                         self.status_summary = format!(
-                            "Anfitrião ativo em {} • Integrante: {}",
+                            "Computador principal ativo em {} • Integrante: {}",
                             srv.local_addr(),
                             cfg.member_name
                         );
@@ -5225,7 +5225,7 @@ impl IntranetPanel {
                     }
                     Err(e) => {
                         self.error = true;
-                        self.message = format!("Não foi possível iniciar o anfitrião: {e}");
+                        self.message = format!("Não foi possível iniciar o computador principal: {e}");
                     }
                 }
             } else if cfg.mode.queues_changes() {
@@ -5259,7 +5259,8 @@ impl IntranetPanel {
         }
     }
 
-    /// The "Pasta compartilhada" part of the window.
+    /// The "Pasta compartilhada" part of the window: folders, password and
+    /// the main row.
     fn shared_folder_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -5267,99 +5268,143 @@ impl IntranetPanel {
         db_path: &std::path::Path,
         refresh_needed: &mut bool,
     ) {
-        ui.strong("Eu, em mais de um computador");
-        ui.label("Os computadores trocam o acervo por um arquivo cifrado com a sua senha, guardado nas pastas que você escolher: Google Drive, OneDrive, pendrive, pasta da rede. Pode ser mais de uma pasta; o Ponte usa a cópia mais recente e grava em todas as que alcançar.");
-        ui.small("Espere a nuvem terminar de sincronizar antes de abrir o Ponte no outro computador. Sem a senha o arquivo não abre em lugar nenhum, nem para os autores do Ponte.");
-        ui.add_space(4.0);
-        ui.strong("Pastas (o arquivo ponte-sync.ponte dentro de cada uma)");
-        let mut remove: Option<usize> = None;
+        use crate::theme::{self, icon};
+        use crate::widgets::{self, Tone};
         let saved_revision = store
             .load_intranet_config()
             .map(|c| c.synced_revision)
             .unwrap_or(0);
-        for (index, path) in self.draft.folder_files.clone().iter().enumerate() {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!("{}.", index + 1));
-                ui.add(egui::Label::new(path).wrap());
-                let state = match crate::sharedfolder::read_header(std::path::Path::new(path)) {
-                    Ok(Some(header)) => {
-                        if header.revision < saved_revision {
-                            format!(
-                                "({}; atrás deste computador)",
-                                crate::sharedfolder::describe(&header)
-                            )
-                        } else {
-                            format!("({})", crate::sharedfolder::describe(&header))
+        let first_time = saved_revision == 0;
+
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Eu, em mais de um computador");
+            ui.add_space(theme::S1);
+            ui.label("Os computadores trocam o acervo por um arquivo cifrado com a sua senha, guardado nas pastas que você escolher: Google Drive, OneDrive, pendrive, pasta da rede. Pode ser mais de uma pasta; o Ponte usa a cópia mais recente e grava em todas as que alcançar.");
+            widgets::small_muted(ui, "Espere a nuvem terminar de sincronizar antes de abrir o Ponte no outro computador. Sem a senha o arquivo não abre em lugar nenhum, nem para os autores do Ponte.");
+        });
+        ui.add_space(theme::S3);
+
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Pastas");
+            widgets::small_muted(ui, "O arquivo ponte-sync.ponte fica dentro de cada pasta.");
+            ui.add_space(theme::S2);
+            let mut remove: Option<usize> = None;
+            for (index, path) in self.draft.folder_files.clone().iter().enumerate() {
+                let (line, pill_text, tone) =
+                    match crate::sharedfolder::read_header(std::path::Path::new(path)) {
+                        Ok(Some(header)) => {
+                            let line = crate::sharedfolder::describe(&header);
+                            if header.revision < saved_revision {
+                                (line, "Atrás deste computador", Tone::Warn)
+                            } else {
+                                (line, "Em dia", Tone::Ok)
+                            }
                         }
-                    }
-                    Ok(None) => {
-                        if std::path::Path::new(path)
-                            .parent()
-                            .is_some_and(|p| p.is_dir())
-                        {
-                            "(pasta acessível; arquivo ainda não criado)".to_owned()
-                        } else {
-                            "(pasta fora de alcance agora)".to_owned()
+                        Ok(None) => {
+                            if std::path::Path::new(path)
+                                .parent()
+                                .is_some_and(|p| p.is_dir())
+                            {
+                                (
+                                    "Pasta acessível; arquivo ainda não criado.".to_owned(),
+                                    "Arquivo a criar",
+                                    Tone::Info,
+                                )
+                            } else {
+                                (
+                                    "Pasta fora de alcance agora.".to_owned(),
+                                    "Fora de alcance",
+                                    Tone::Danger,
+                                )
+                            }
                         }
-                    }
-                    Err(error) => format!("({error})"),
-                };
-                ui.small(state);
-                if ui.small_button("Remover").clicked() {
-                    remove = Some(index);
+                        Err(error) => (error.to_string(), "Com problema", Tone::Danger),
+                    };
+                if index > 0 {
+                    ui.separator();
                 }
-            });
-        }
-        if let Some(index) = remove {
-            self.draft.folder_files.remove(index);
-        }
-        if self.draft.folder_files.len() < 8
-            && ui
-                .button("Adicionar pasta…")
-                .on_hover_text("Escolha a pasta (do Drive, do OneDrive, do pendrive…) e mantenha o nome ponte-sync.ponte.")
-                .clicked()
-        {
-            if let Some(path) = crate::windows_ui::save_file(
-                "Onde guardar o arquivo de sincronização",
-                "ponte-sync.ponte",
-                &[("Arquivo de sincronização do Ponte", "*.ponte")],
-            ) {
-                let text = path.display().to_string();
-                if !self.draft.folder_files.contains(&text) {
-                    self.draft.folder_files.push(text);
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width((ui.available_width() - 230.0).max(160.0));
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(path)
+                                    .font(theme::font_strong(theme::SIZE_BODY)),
+                            )
+                            .wrap(),
+                        );
+                        widgets::small_muted(ui, line);
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(widgets::quiet("Remover")).clicked() {
+                            remove = Some(index);
+                        }
+                        ui.horizontal(|ui| widgets::pill(ui, pill_text, tone));
+                    });
+                });
+            }
+            if let Some(index) = remove {
+                self.draft.folder_files.remove(index);
+            }
+            if self.draft.folder_files.is_empty() {
+                widgets::muted(ui, "Nenhuma pasta escolhida ainda.");
+            }
+            if self.draft.folder_files.len() < 8 {
+                ui.add_space(theme::S2);
+                if ui
+                    .add(widgets::secondary(format!("{} Adicionar pasta…", icon::FOLDER)))
+                    .on_hover_text("Escolha a pasta (do Drive, do OneDrive, do pendrive…) e mantenha o nome ponte-sync.ponte.")
+                    .clicked()
+                {
+                    if let Some(path) = crate::windows_ui::save_file(
+                        "Onde guardar o arquivo de sincronização",
+                        "ponte-sync.ponte",
+                        &[("Arquivo de sincronização do Ponte", "*.ponte")],
+                    ) {
+                        let text = path.display().to_string();
+                        if !self.draft.folder_files.contains(&text) {
+                            self.draft.folder_files.push(text);
+                        }
+                    }
                 }
             }
-        }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Senha de sincronização:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.draft.folder_key)
-                    .password(!self.show_folder_key)
-                    .desired_width(240.0),
-            );
-            ui.checkbox(&mut self.show_folder_key, "Mostrar");
         });
-        let first_time = saved_revision == 0;
-        if first_time {
+        ui.add_space(theme::S3);
+
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Senha de sincronização");
+            ui.add_space(theme::S2);
+            widgets::field_label(ui, "Senha");
             ui.horizontal(|ui| {
-                ui.label("Repita a senha:");
+                let width = (ui.available_width() - 100.0).max(160.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.draft.folder_key)
+                        .password(!self.show_folder_key)
+                        .desired_width(width),
+                );
+                ui.checkbox(&mut self.show_folder_key, "Mostrar");
+            });
+            if first_time {
+                ui.add_space(theme::S2);
+                widgets::field_label(ui, "Repita a senha");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.folder_key_confirm)
                         .password(!self.show_folder_key)
-                        .desired_width(240.0),
+                        .desired_width(ui.available_width().min(360.0)),
                 );
-            });
-            ui.small("Mínimo de 8 caracteres. A mesma senha vai ser pedida no outro computador. Anote-a em lugar seguro: sem ela, o arquivo é irrecuperável.");
-        }
-        ui.checkbox(&mut self.draft.remember_folder_key, "Guardar a senha neste computador")
-            .on_hover_text("Fica no acervo, cifrada pela sua conta do Windows. Desmarcada, vale só até fechar o Ponte.");
-        ui.add_space(4.0);
+                widgets::small_muted(ui, "Mínimo de 8 caracteres. A mesma senha vai ser pedida no outro computador. Anote-a em lugar seguro: sem ela, o arquivo é irrecuperável.");
+            }
+            ui.add_space(theme::S2);
+            ui.checkbox(&mut self.draft.remember_folder_key, "Guardar a senha neste computador")
+                .on_hover_text("Fica no acervo, cifrada pela sua conta do Windows. Desmarcada, vale só até fechar o Ponte.");
+        });
+        ui.add_space(theme::S3);
+
         if let Some(text) = self.replace_confirmation.clone() {
-            ui.colored_label(egui::Color32::from_rgb(153, 88, 16), format!("⚠ {text}"));
+            soft_note(ui, Tone::Warn, icon::WARNING, &text);
             ui.horizontal(|ui| {
                 if ui
-                    .button("Substituir o acervo deste computador e sincronizar")
+                    .add(widgets::danger("Substituir o acervo deste computador e sincronizar"))
                     .clicked()
                 {
                     self.allow_replace_next = true;
@@ -5367,15 +5412,20 @@ impl IntranetPanel {
                     self.request_full_sync();
                     *refresh_needed = self.refresh_client(store, db_path);
                 }
-                if ui.button("Cancelar").clicked() {
+                if ui.add(widgets::secondary("Cancelar")).clicked() {
                     self.replace_confirmation = None;
                 }
             });
+            ui.add_space(theme::S3);
         }
+
         ui.horizontal_wrapped(|ui| {
             let can_sync = !self.sync_in_flight && !self.draft.folder_files.is_empty();
             if ui
-                .add_enabled(can_sync, egui::Button::new("Salvar e sincronizar agora"))
+                .add_enabled(
+                    can_sync,
+                    widgets::primary(format!("{} Salvar e sincronizar agora", icon::SYNC)),
+                )
                 .clicked()
             {
                 let mut problem = None;
@@ -5404,19 +5454,53 @@ impl IntranetPanel {
                     },
                 }
             }
+            if ui.add(widgets::secondary("Salvar configuração")).clicked() {
+                self.save_configuration(store, db_path, refresh_needed);
+            }
             if self.sync_in_flight {
                 ui.spinner();
-                ui.small(if self.sync_step.is_empty() {
-                    "sincronizando…"
-                } else {
-                    self.sync_step.as_str()
-                });
+                widgets::small_muted(
+                    ui,
+                    if self.sync_step.is_empty() {
+                        "sincronizando…"
+                    } else {
+                        self.sync_step.as_str()
+                    },
+                );
             }
         });
         if !self.last_summary.is_empty() {
-            ui.small(format!("Última sincronização: {}.", self.last_summary));
+            widgets::small_muted(ui, format!("Última sincronização: {}.", self.last_summary));
         }
-        ui.small("O que você importa ou edita fica salvo neste computador e vai para as pastas ao sincronizar: ao abrir o Ponte, a cada 5 minutos, e em “Sincronizar agora”. Ao fechar, o Ponte avisa se algo ainda não foi enviado.");
+        widgets::small_muted(ui, "O que você importa ou edita fica salvo neste computador e vai para as pastas ao sincronizar: ao abrir o Ponte, a cada 5 minutos, e em “Sincronizar agora”. Ao fechar, o Ponte avisa se algo ainda não foi enviado.");
+    }
+
+    /// The "Salvar configuração" action, shared by every mode.
+    fn save_configuration(
+        &mut self,
+        store: &mut Store,
+        db_path: &std::path::Path,
+        refresh_needed: &mut bool,
+    ) {
+        match self.save_draft(store) {
+            Ok(()) => {
+                self.error = false;
+                self.message = "Configuração salva.".into();
+                if self.draft.mode != IntranetMode::Host && self.server.is_some() {
+                    self.server = None;
+                    self.message
+                        .push_str(" Este computador deixou de estar disponível para a equipe.");
+                }
+                if self.draft.mode.queues_changes() {
+                    self.last_sync_request = None;
+                    *refresh_needed = self.refresh_client(store, db_path);
+                }
+            }
+            Err(e) => {
+                self.error = true;
+                self.message = e.to_string();
+            }
+        }
     }
 
     /// Text for the status bar while a synchronization runs.
@@ -5572,7 +5656,7 @@ impl IntranetPanel {
                     if let Some(rest) = error.strip_prefix("[confirmar-substituicao] ") {
                         self.replace_confirmation = Some(rest.to_owned());
                         self.status_summary =
-                            "Pasta compartilhada • aguardando sua confirmação (ver Rede e equipe)"
+                            "Pasta compartilhada • aguardando sua confirmação (ver Ajustes ▸ Equipe e sincronização)"
                                 .into();
                         self.error = false;
                         self.message.clear();
@@ -5646,11 +5730,11 @@ impl IntranetPanel {
         let mut badge = String::new();
         if conflicts > 0 {
             badge.push_str(&format!(
-                " • ⚠ {conflicts} CHOQUE(S) DE EDIÇÃO AGUARDANDO DECISÃO (abra 'Rede / Intranet')"
+                " • ⚠ {conflicts} EDIÇÃO(ÕES) EM CONFLITO AGUARDANDO DECISÃO (abra Ajustes ▸ Equipe e sincronização)"
             ));
         } else if outbox > 0 && cfg.mode == IntranetMode::Client {
             badge.push_str(&format!(
-                " • {outbox} alteração(ões) offline aguardando reconexão com o Anfitrião"
+                " • {outbox} alteração(ões) offline aguardando reconexão com o computador principal"
             ));
         }
         match cfg.mode {
@@ -5678,13 +5762,13 @@ impl IntranetPanel {
                 let rev = store.cabinet_revision().unwrap_or(0);
                 if let Some(srv) = &self.server {
                     format!(
-                        "Modo Anfitrião na Intranet ATIVO ({}) • Integrante: {} • Revisão #{rev}{badge}",
+                        "Computador principal ATIVO ({}) • Integrante: {} • Revisão #{rev}{badge}",
                         srv.local_addr(),
                         cfg.member_name
                     )
                 } else {
                     format!(
-                        "Modo Anfitrião configurado (parado) • Integrante: {} • Revisão #{rev}{badge}",
+                        "Computador principal configurado (parado) • Integrante: {} • Revisão #{rev}{badge}",
                         cfg.member_name
                     )
                 }
@@ -5702,6 +5786,7 @@ impl IntranetPanel {
         }
     }
 
+    /// The team and synchronization settings in their own window.
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -5711,273 +5796,314 @@ impl IntranetPanel {
         if !self.open {
             return false;
         }
+        let mut open = self.open;
+        let mut refresh_needed = false;
+
+        egui::Window::new("Equipe e sincronização")
+            .open(&mut open)
+            .default_size([720.0, 740.0])
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("team-window-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        refresh_needed = self.ui(ui, store, db_path);
+                    });
+            });
+
+        self.open = open;
+        refresh_needed
+    }
+
+    /// The same content, drawn in place (the Ajustes area embeds it).
+    /// Returns true when the library changed.
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &mut Store,
+        db_path: &std::path::Path,
+    ) -> bool {
+        use crate::theme::{self, icon};
+        use crate::widgets::{self, Tone};
         if !self.loaded {
             if let Ok(cfg) = store.load_intranet_config() {
                 self.draft = cfg;
                 self.loaded = true;
             }
         }
-        let mut open = self.open;
         let mut refresh_needed = false;
 
-        egui::Window::new("Rede e equipe")
-            .open(&mut open)
-            .default_size([700.0, 560.0])
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.small("A equipe trabalha no mesmo acervo usando um dos computadores do gabinete como principal, na rede interna.");
-                    crate::help_ui::help(ui, "Nada vai para a nuvem. Cada computador guarda a sua cópia protegida do acervo e conversa com o principal pela rede interna, com um código de acesso do gabinete.");
-                });
-                ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            widgets::small_muted(ui, "A equipe trabalha no mesmo acervo usando um dos computadores do gabinete como principal, na rede interna.");
+            crate::help_ui::help(ui, "Nada vai para a nuvem. Cada computador guarda a sua cópia protegida do acervo e conversa com o principal pela rede interna, com um código de acesso do gabinete.");
+        });
+        ui.add_space(theme::S2);
 
-                ui.horizontal(|ui| {
-                    ui.label("Seu nome na equipe:");
-                    ui.text_edit_singleline(&mut self.draft.member_name)
-                        .on_hover_text("Aparece no histórico de alterações e como responsável ao assumir tarefas.");
-                });
+        widgets::card(ui, |ui| {
+            widgets::field_label(ui, "Seu nome na equipe");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.draft.member_name)
+                    .desired_width(ui.available_width().min(420.0)),
+            )
+            .on_hover_text("Aparece no histórico de alterações e como responsável ao assumir tarefas.");
+        });
+        ui.add_space(theme::S3);
 
-                ui.add_space(6.0);
-                ui.strong("Modo de operação deste computador");
-                for mode in [
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Como este computador trabalha");
+            ui.add_space(theme::S2);
+            for (mode, line) in [
+                (
                     IntranetMode::Local,
+                    "O Ponte opera apenas no acervo deste computador.",
+                ),
+                (
                     IntranetMode::Host,
+                    "Os outros computadores do gabinete se conectam a este pela rede interna.",
+                ),
+                (
                     IntranetMode::Client,
+                    "Este computador usa o acervo do computador principal e guarda uma cópia própria.",
+                ),
+                (
                     IntranetMode::SharedFolder,
-                ] {
-                    ui.radio_value(&mut self.draft.mode, mode, mode.label());
+                    "Você trabalha em mais de um computador e eles trocam o acervo por pastas (Drive, OneDrive, pendrive).",
+                ),
+            ] {
+                if option_card(ui, self.draft.mode == mode, mode.label(), line) {
+                    self.draft.mode = mode;
                 }
+                ui.add_space(theme::S1);
+            }
+        });
+        ui.add_space(theme::S3);
 
-                ui.separator();
-                match self.draft.mode {
-                    IntranetMode::SharedFolder => {
-                        self.shared_folder_section(ui, store, db_path, &mut refresh_needed);
-                    }
-                    IntranetMode::Local => {
-                        ui.label("Neste modo, o Ponte opera apenas no acervo deste computador.");
-                        if self.server.is_some() && ui.button("Parar serviço de Anfitrião").clicked() {
+        match self.draft.mode {
+            IntranetMode::SharedFolder => {
+                self.shared_folder_section(ui, store, db_path, &mut refresh_needed);
+            }
+            IntranetMode::Local => {
+                widgets::card(ui, |ui| {
+                    widgets::section(ui, "Só neste computador");
+                    ui.add_space(theme::S1);
+                    ui.label("Neste modo, o Ponte opera apenas no acervo deste computador.");
+                    if self.server.is_some() {
+                        ui.add_space(theme::S2);
+                        if ui
+                            .add(widgets::secondary("Parar serviço do computador principal"))
+                            .clicked()
+                        {
                             self.server = None;
-                            self.message = "Serviço de anfitrião encerrado.".into();
+                            self.message = "Serviço do computador principal encerrado.".into();
                             self.error = false;
                         }
                     }
-                    IntranetMode::Host => {
-                        ui.strong("Este computador como principal");
-                        ui.checkbox(
-                            &mut self.draft.auto_start_host,
-                            "Ficar disponível para a equipe sempre que o Ponte abrir",
-                        );
-                        let port = self
-                            .draft
-                            .bind_addr
-                            .rsplit_once(':')
-                            .and_then(|(_, p)| p.parse::<u16>().ok())
-                            .unwrap_or(DEFAULT_PORT);
-                        let hints = local_intranet_hints(port);
-                        let saved_token = store
-                            .load_intranet_config()
-                            .map(|c| c.cabinet_token)
-                            .unwrap_or_default();
-                        ui.horizontal_wrapped(|ui| {
-                            if let Some(srv) = &self.server {
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(20, 118, 72),
-                                    format!("● Disponível para a equipe em {}", srv.local_addr()),
-                                );
-                                if ui.button("Parar").clicked() {
-                                    self.server = None;
-                                    self.message = "Este computador deixou de estar disponível para a equipe.".into();
-                                    self.error = false;
-                                }
-                            } else if ui.button("Salvar e ficar disponível agora").clicked() {
-                                match self.save_draft(store) {
-                                    Ok(()) => match HostServer::start(db_path.to_path_buf(), &self.draft.bind_addr) {
-                                        Ok(srv) => {
-                                            self.message = format!(
-                                                "Disponível em {}. Copie o código de conexão e envie aos colegas.",
-                                                srv.local_addr()
-                                            );
-                                            self.error = false;
-                                            self.server = Some(srv);
-                                        }
-                                        Err(e) => {
-                                            self.message = e.to_string();
-                                            self.error = true;
-                                        }
-                                    },
-                                    Err(e) => {
-                                        self.message = e.to_string();
-                                        self.error = true;
-                                    }
-                                }
-                            }
-                            if ui
-                                .button("Copiar código de conexão")
-                                .on_hover_text("Um texto único com endereço e chave. Os colegas colam no Ponte deles em Ajustes ▸ Equipe e sincronização.")
-                                .clicked()
-                            {
-                                let addr = hints.first().cloned().unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
-                                let code = connection_code(&addr, &self.draft.cabinet_token);
-                                ui.ctx().copy_text(format!(
-                                    "Código de conexão do Ponte (gabinete):\n{code}\n\nNo seu Ponte: Ajustes ▸ Equipe e sincronização ▸ “Conectar ao computador principal” ▸ cole o código."
-                                ));
-                                self.message = if self.draft.cabinet_token.trim() != saved_token.trim() && self.server.is_some() {
-                                    "Código copiado com a nova chave. Atenção: até você salvar, o computador principal ainda aceita só a chave anterior.".into()
-                                } else {
-                                    "Código de conexão copiado. Envie aos colegas por um canal seguro.".into()
-                                };
+                });
+                ui.add_space(theme::S3);
+                if ui.add(widgets::primary("Salvar configuração")).clicked() {
+                    self.save_configuration(store, db_path, &mut refresh_needed);
+                }
+            }
+            IntranetMode::Host => {
+                let port = self
+                    .draft
+                    .bind_addr
+                    .rsplit_once(':')
+                    .and_then(|(_, p)| p.parse::<u16>().ok())
+                    .unwrap_or(DEFAULT_PORT);
+                let hints = local_intranet_hints(port);
+                let saved_token = store
+                    .load_intranet_config()
+                    .map(|c| c.cabinet_token)
+                    .unwrap_or_default();
+                widgets::card(ui, |ui| {
+                    widgets::section(ui, "Este computador como principal");
+                    ui.add_space(theme::S2);
+                    ui.checkbox(
+                        &mut self.draft.auto_start_host,
+                        "Ficar disponível para a equipe sempre que o Ponte abrir",
+                    );
+                    ui.add_space(theme::S2);
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some(srv) = &self.server {
+                            widgets::pill(
+                                ui,
+                                format!("Disponível para a equipe em {}", srv.local_addr()),
+                                Tone::Ok,
+                            );
+                            if ui.add(widgets::secondary("Parar")).clicked() {
+                                self.server = None;
+                                self.message = "Este computador deixou de estar disponível para a equipe.".into();
                                 self.error = false;
                             }
-                        });
-                        if hints.len() > 1 {
-                            ui.small(format!(
-                                "Endereços deste computador na rede: {}",
-                                hints.join("  ou  ")
-                            ));
-                        }
-                        ui.small(format!(
-                            "Se os colegas não conseguirem conectar, peça à TI para liberar a porta {port} (TCP) no Firewall do Windows deste computador."
-                        ))
-                        .on_hover_text("Comando para quem administra o computador:\nnetsh advfirewall firewall add rule name=\"Ponte\" dir=in action=allow protocol=TCP localport=PORTA profile=private,domain".replace("PORTA", &port.to_string()));
-                        egui::CollapsingHeader::new("Mais opções")
-                            .id_salt("host-advanced")
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label("Endereço de escuta:");
-                                    ui.text_edit_singleline(&mut self.draft.bind_addr)
-                                        .on_hover_text("IP:porta onde este computador atende a equipe. 0.0.0.0 significa todas as redes deste computador.");
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label("Chave do gabinete:");
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut self.draft.cabinet_token)
-                                            .password(!self.show_token)
-                                            .desired_width(300.0),
-                                    );
-                                    ui.checkbox(&mut self.show_token, "Mostrar");
-                                    if ui.button("Gerar nova chave").clicked() {
-                                        self.draft.cabinet_token = generate_token();
-                                    }
-                                });
-                                if self.draft.cabinet_token.trim() != saved_token.trim() {
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(153, 88, 16),
-                                        "Ao salvar a nova chave, todos os colegas precisarão colar um novo código de conexão.",
-                                    );
-                                }
-                            });
-                        ui.small("Se este computador for desligado, qualquer outro já conectado pode assumir como principal.").on_hover_text("Cada computador conectado mantém uma cópia completa e protegida do acervo.");
-                    }
-                    IntranetMode::Client => {
-                        ui.strong("Conectar ao computador principal");
-                        ui.horizontal(|ui| {
-                            ui.label("Código de conexão:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.connection_code_input)
-                                    .hint_text("cole aqui o código recebido (ponte://conectar?…)")
-                                    .desired_width(360.0),
-                            );
-                            if ui.button("Usar código").clicked() {
-                                match parse_connection_code(&self.connection_code_input) {
-                                    Some((host, key)) => {
-                                        self.draft.host_url = host;
-                                        self.draft.cabinet_token = key;
-                                        self.connection_code_input.clear();
-                                        match ping_host(&self.draft) {
-                                            Ok((_, host_member, docs, _)) => {
-                                                self.message = format!(
-                                                    "Código válido: computador principal de {host_member}, com {docs} documento(s). Clique em “Salvar e sincronizar” para começar."
-                                                );
-                                                self.error = false;
-                                                self.offline = false;
-                                            }
-                                            Err(e) => {
-                                                self.message = format!("O código foi lido, mas o computador principal não respondeu: {e}");
-                                                self.error = true;
-                                            }
-                                        }
-                                    }
-                                    None => {
-                                        self.message = "Código não reconhecido. Peça ao colega do computador principal para copiar de novo em Rede e equipe ▸ “Copiar código de conexão”.".into();
-                                        self.error = true;
-                                    }
-                                }
-                            }
-                        });
-                        egui::CollapsingHeader::new("Informar endereço e chave separadamente")
-                            .id_salt("client-advanced")
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label("Endereço do computador principal:");
-                                    ui.text_edit_singleline(&mut self.draft.host_url)
-                                        .on_hover_text("Ex.: http://192.168.1.10:7878");
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label("Chave do gabinete:");
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut self.draft.cabinet_token)
-                                            .password(!self.show_token)
-                                            .desired_width(300.0),
-                                    );
-                                    ui.checkbox(&mut self.show_token, "Mostrar");
-                                });
-                            });
-                        ui.horizontal_wrapped(|ui| {
-                            if ui.button("Testar conexão").clicked() {
-                                match ping_host(&self.draft) {
-                                    Ok((_, host_member, docs, tasks)) => {
+                        } else if ui.add(widgets::primary("Salvar e ficar disponível agora")).clicked() {
+                            match self.save_draft(store) {
+                                Ok(()) => match HostServer::start(db_path.to_path_buf(), &self.draft.bind_addr) {
+                                    Ok(srv) => {
                                         self.message = format!(
-                                            "Conexão confirmada com o computador principal de {host_member}: {docs} documento(s) e {tasks} tarefa(s)."
+                                            "Disponível em {}. Copie o código de conexão e envie aos colegas.",
+                                            srv.local_addr()
                                         );
                                         self.error = false;
-                                        self.offline = false;
+                                        self.server = Some(srv);
                                     }
                                     Err(e) => {
-                                        self.message = format!("Não foi possível conectar: {e}");
-                                        self.error = true;
-                                    }
-                                }
-                            }
-                            if ui
-                                .add_enabled(!self.sync_in_flight, egui::Button::new("Salvar e sincronizar acervo agora"))
-                                .clicked()
-                            {
-                                match self.save_draft(store) {
-                                    Ok(()) => {
-                                        self.error = false;
-                                        self.message = "Sincronizando com o computador principal…".into();
-                                        self.request_full_sync();
-                                        refresh_needed = self.refresh_client(store, db_path);
-                                    }
-                                    Err(e) => {
-                                        self.error = true;
                                         self.message = e.to_string();
+                                        self.error = true;
                                     }
+                                },
+                                Err(e) => {
+                                    self.message = e.to_string();
+                                    self.error = true;
                                 }
                             }
-                            if self.sync_in_flight {
-                                ui.spinner();
-                                ui.small("sincronizando…");
+                        }
+                        if ui
+                            .add(widgets::secondary(format!("{} Copiar código de conexão", icon::COPY)))
+                            .on_hover_text("Um texto único com endereço e chave. Os colegas colam no Ponte deles em Ajustes ▸ Equipe e sincronização.")
+                            .clicked()
+                        {
+                            let addr = hints.first().cloned().unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
+                            let code = connection_code(&addr, &self.draft.cabinet_token);
+                            ui.ctx().copy_text(format!(
+                                "Código de conexão do Ponte (gabinete):\n{code}\n\nNo seu Ponte: Ajustes ▸ Equipe e sincronização ▸ “Conectar ao computador principal” ▸ cole o código."
+                            ));
+                            self.message = if self.draft.cabinet_token.trim() != saved_token.trim() && self.server.is_some() {
+                                "Código copiado com a nova chave. Atenção: até você salvar, o computador principal ainda aceita só a chave anterior.".into()
+                            } else {
+                                "Código de conexão copiado. Envie aos colegas por um canal seguro.".into()
+                            };
+                            self.error = false;
+                        }
+                    });
+                    if hints.len() > 1 {
+                        ui.add_space(theme::S1);
+                        widgets::small_muted(
+                            ui,
+                            format!("Endereços deste computador na rede: {}", hints.join("  ou  ")),
+                        );
+                    }
+                    widgets::small_muted(ui, format!(
+                        "Se os colegas não conseguirem conectar, peça à TI para liberar a porta {port} (TCP) no Firewall do Windows deste computador."
+                    ))
+                    .on_hover_text("Comando para quem administra o computador:\nnetsh advfirewall firewall add rule name=\"Ponte\" dir=in action=allow protocol=TCP localport=PORTA profile=private,domain".replace("PORTA", &port.to_string()));
+                    widgets::small_muted(ui, "Se este computador for desligado, qualquer outro já conectado pode assumir como principal.").on_hover_text("Cada computador conectado mantém uma cópia completa e protegida do acervo.");
+                    ui.add_space(theme::S2);
+                    egui::CollapsingHeader::new("Mais opções")
+                        .id_salt("host-advanced")
+                        .show(ui, |ui| {
+                            widgets::field_label(ui, "Endereço de escuta");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.draft.bind_addr)
+                                    .desired_width(ui.available_width().min(360.0)),
+                            )
+                            .on_hover_text("IP:porta onde este computador atende a equipe. 0.0.0.0 significa todas as redes deste computador.");
+                            ui.add_space(theme::S2);
+                            widgets::field_label(ui, "Chave do gabinete");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.draft.cabinet_token)
+                                        .password(!self.show_token)
+                                        .desired_width(300.0),
+                                );
+                                ui.checkbox(&mut self.show_token, "Mostrar");
+                                if ui.add(widgets::secondary("Gerar nova chave")).clicked() {
+                                    self.draft.cabinet_token = generate_token();
+                                }
+                            });
+                            if self.draft.cabinet_token.trim() != saved_token.trim() {
+                                soft_note(
+                                    ui,
+                                    Tone::Warn,
+                                    icon::WARNING,
+                                    "Ao salvar a nova chave, todos os colegas precisarão colar um novo código de conexão.",
+                                );
                             }
                         });
-                        ui.small("O que você importa ou edita aqui vai para o computador principal. Se ele estiver desligado, fica salvo neste computador e é enviado quando a conexão voltar.");
-                    }
+                });
+                ui.add_space(theme::S3);
+                if ui.add(widgets::secondary("Salvar configuração")).clicked() {
+                    self.save_configuration(store, db_path, &mut refresh_needed);
                 }
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Salvar configuração").clicked() {
+            }
+            IntranetMode::Client => {
+                widgets::card(ui, |ui| {
+                    widgets::section(ui, "Conectar ao computador principal");
+                    ui.add_space(theme::S2);
+                    widgets::field_label(ui, "Código de conexão");
+                    ui.horizontal(|ui| {
+                        let width = (ui.available_width() - 130.0).max(160.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.connection_code_input)
+                                .hint_text("cole aqui o código recebido (ponte://conectar?…)")
+                                .desired_width(width),
+                        );
+                        if ui.add(widgets::secondary("Usar código")).clicked() {
+                            match parse_connection_code(&self.connection_code_input) {
+                                Some((host, key)) => {
+                                    self.draft.host_url = host;
+                                    self.draft.cabinet_token = key;
+                                    self.connection_code_input.clear();
+                                    match ping_host(&self.draft) {
+                                        Ok((_, host_member, docs, _)) => {
+                                            self.message = format!(
+                                                "Código válido: computador principal de {host_member}, com {docs} documento(s). Clique em “Salvar e sincronizar” para começar."
+                                            );
+                                            self.error = false;
+                                            self.offline = false;
+                                        }
+                                        Err(e) => {
+                                            self.message = format!("O código foi lido, mas o computador principal não respondeu: {e}");
+                                            self.error = true;
+                                        }
+                                    }
+                                }
+                                None => {
+                                    self.message = "Código não reconhecido. Peça ao colega do computador principal para copiar de novo em Ajustes ▸ Equipe e sincronização ▸ “Copiar código de conexão”.".into();
+                                    self.error = true;
+                                }
+                            }
+                        }
+                    });
+                    ui.add_space(theme::S2);
+                    egui::CollapsingHeader::new("Informar endereço e chave separadamente")
+                        .id_salt("client-advanced")
+                        .show(ui, |ui| {
+                            widgets::field_label(ui, "Endereço do computador principal");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.draft.host_url)
+                                    .desired_width(ui.available_width().min(360.0)),
+                            )
+                            .on_hover_text("Ex.: http://192.168.1.10:7878");
+                            ui.add_space(theme::S2);
+                            widgets::field_label(ui, "Chave do gabinete");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.draft.cabinet_token)
+                                        .password(!self.show_token)
+                                        .desired_width(300.0),
+                                );
+                                ui.checkbox(&mut self.show_token, "Mostrar");
+                            });
+                        });
+                    ui.add_space(theme::S2);
+                    widgets::small_muted(ui, "O que você importa ou edita aqui vai para o computador principal. Se ele estiver desligado, fica salvo neste computador e é enviado quando a conexão voltar.");
+                });
+                ui.add_space(theme::S3);
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.sync_in_flight,
+                            widgets::primary(format!("{} Salvar e sincronizar acervo agora", icon::SYNC)),
+                        )
+                        .clicked()
+                    {
                         match self.save_draft(store) {
                             Ok(()) => {
                                 self.error = false;
-                                self.message = "Configuração salva.".into();
-                                if self.draft.mode != IntranetMode::Host && self.server.is_some() {
-                                    self.server = None;
-                                    self.message.push_str(" Este computador deixou de estar disponível para a equipe.");
-                                }
-                                if self.draft.mode.queues_changes() {
-                                    self.last_sync_request = None;
-                                    refresh_needed = self.refresh_client(store, db_path);
-                                }
+                                self.message = "Sincronizando com o computador principal…".into();
+                                self.request_full_sync();
+                                refresh_needed = self.refresh_client(store, db_path);
                             }
                             Err(e) => {
                                 self.error = true;
@@ -5985,216 +6111,356 @@ impl IntranetPanel {
                             }
                         }
                     }
-                });
-
-                if !self.message.is_empty() {
-                    ui.colored_label(
-                        if self.error {
-                            egui::Color32::from_rgb(168, 40, 45)
-                        } else {
-                            egui::Color32::from_rgb(24, 84, 97)
-                        },
-                        &self.message,
-                    );
-                }
-
-                let outbox = store.list_offline_outbox().unwrap_or_default();
-                let conflicts = store.list_sync_conflicts().unwrap_or_default();
-                if !outbox.is_empty() || !conflicts.is_empty() {
-                    ui.separator();
-                    ui.strong("Fila Offline e Resolução de Choques (Sincronização Mútua)");
-                    if !outbox.is_empty() {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(24, 84, 97),
-                            format!(
-                                "{} alteração(ões) gravada(s) localmente enquanto o Anfitrião estava desligado. Elas serão enviadas automaticamente assim que a conexão voltar.",
-                                outbox.len()
-                            ),
-                        );
-                        egui::ScrollArea::vertical()
-                            .id_salt("offline_outbox_scroll")
-                            .max_height(110.0)
-                            .show(ui, |ui| {
-                                for entry in &outbox {
-                                    ui.small(format!(
-                                        "• {} ({} por {})",
-                                        entry.label,
-                                        crate::labels::datetime(&entry.created_at),
-                                        entry.actor
-                                    ));
-                                }
-                            });
+                    if ui.add(widgets::secondary("Testar conexão")).clicked() {
+                        match ping_host(&self.draft) {
+                            Ok((_, host_member, docs, tasks)) => {
+                                self.message = format!(
+                                    "Conexão confirmada com o computador principal de {host_member}: {docs} documento(s) e {tasks} tarefa(s)."
+                                );
+                                self.error = false;
+                                self.offline = false;
+                            }
+                            Err(e) => {
+                                self.message = format!("Não foi possível conectar: {e}");
+                                self.error = true;
+                            }
+                        }
                     }
+                    if ui.add(widgets::secondary("Salvar configuração")).clicked() {
+                        self.save_configuration(store, db_path, &mut refresh_needed);
+                    }
+                    if self.sync_in_flight {
+                        ui.spinner();
+                        widgets::small_muted(ui, "sincronizando…");
+                    }
+                });
+            }
+        }
 
-                    if !conflicts.is_empty() {
-                        ui.add_space(4.0);
-                        ui.colored_label(
-                            egui::Color32::from_rgb(168, 40, 45),
-                            format!(
-                                "⚠ {} conflito(s) de edição: você alterou o item sem conexão e ele também foi alterado no computador principal.",
-                                conflicts.len()
-                            ),
-                        );
-                        let mut resolution_action: Option<(i64, ConflictResolution)> = None;
-                        egui::ScrollArea::vertical()
-                            .id_salt("sync_conflicts_scroll")
-                            .max_height(320.0)
-                            .show(ui, |ui| {
-                                for conflict in &conflicts {
-                                    let differences = store.conflict_differences(conflict);
-                                    let both_sides = differences.iter().filter(|d| d.changed_by() == "pelos dois lados").count();
-                                    ui.group(|ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.strong(format!("Conflito: {}", conflict.item_label));
-                                        ui.small(format!(
-                                            "Sua alteração de {} ({})",
-                                            crate::labels::datetime(&conflict.created_at),
-                                            conflict.actor
-                                        ));
-                                        if differences.is_empty() {
-                                            ui.label("As duas versões já coincidem campo a campo.");
-                                            ui.small(format!("Resumo da sua versão: {}", conflict.local_summary));
-                                        } else {
-                                            egui::Grid::new(("conflict-diff", conflict.id))
-                                                .striped(true)
-                                                .num_columns(4)
-                                                .max_col_width(220.0)
-                                                .show(ui, |ui| {
-                                                    ui.strong("Campo");
-                                                    ui.strong("No computador principal");
-                                                    ui.strong("Sua versão");
-                                                    ui.strong("Alterado");
+        if !self.message.is_empty() {
+            ui.add_space(theme::S3);
+            let tone = if self.error { Tone::Danger } else { Tone::Info };
+            let (fg, bg) = tone.colors();
+            let mut close = false;
+            egui::Frame::new()
+                .fill(bg)
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::icon_button(ui, icon::CLOSE, "Fechar o aviso").clicked() {
+                            close = true;
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(if self.error { icon::ERROR } else { icon::INFO })
+                                    .size(18.0)
+                                    .color(fg),
+                            );
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&self.message).color(fg)).wrap(),
+                            );
+                        });
+                    });
+                });
+            if close {
+                self.message.clear();
+            }
+        }
+
+        let outbox = store.list_offline_outbox().unwrap_or_default();
+        let conflicts = store.list_sync_conflicts().unwrap_or_default();
+
+        if !conflicts.is_empty() {
+            ui.add_space(theme::S3);
+            let mut resolution_action: Option<(i64, ConflictResolution)> = None;
+            widgets::card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    widgets::section(ui, "Edições em conflito");
+                    widgets::pill(ui, conflicts.len().to_string(), Tone::Danger);
+                });
+                ui.add_space(theme::S1);
+                ui.label(format!(
+                    "{} conflito(s) de edição: você alterou o item sem conexão e ele também foi alterado no computador principal.",
+                    conflicts.len()
+                ));
+                ui.add_space(theme::S2);
+                egui::ScrollArea::vertical()
+                    .id_salt("sync_conflicts_scroll")
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        for conflict in &conflicts {
+                            let differences = store.conflict_differences(conflict);
+                            let both_sides = differences.iter().filter(|d| d.changed_by() == "pelos dois lados").count();
+                            egui::Frame::new()
+                                .fill(theme::c().sunken)
+                                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                                .inner_margin(egui::Margin::same(12))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.label(
+                                        egui::RichText::new(format!("Conflito: {}", conflict.item_label))
+                                            .font(theme::font_strong(theme::SIZE_BODY)),
+                                    );
+                                    widgets::small_muted(ui, format!(
+                                        "Sua alteração de {} ({})",
+                                        crate::labels::datetime(&conflict.created_at),
+                                        conflict.actor
+                                    ));
+                                    ui.add_space(theme::S2);
+                                    if differences.is_empty() {
+                                        ui.label("As duas versões já coincidem campo a campo.");
+                                        widgets::small_muted(ui, format!("Resumo da sua versão: {}", conflict.local_summary));
+                                    } else {
+                                        egui::Grid::new(("conflict-diff", conflict.id))
+                                            .striped(true)
+                                            .num_columns(4)
+                                            .spacing([theme::S3, theme::S1])
+                                            .max_col_width(220.0)
+                                            .show(ui, |ui| {
+                                                for head in ["Campo", "No computador principal", "Sua versão", "Alterado"] {
+                                                    widgets::field_label(ui, head);
+                                                }
+                                                ui.end_row();
+                                                for d in &differences {
+                                                    ui.label(egui::RichText::new(&d.label).font(theme::font_strong(theme::SIZE_BODY)));
+                                                    ui.add(egui::Label::new(if d.host.is_empty() { "(vazio)" } else { &d.host }).wrap());
+                                                    ui.add(egui::Label::new(if d.local.is_empty() { "(vazio)" } else { &d.local }).wrap());
+                                                    widgets::small_muted(ui, d.changed_by());
                                                     ui.end_row();
-                                                    for d in &differences {
-                                                        ui.label(&d.label);
-                                                        ui.add(egui::Label::new(if d.host.is_empty() { "(vazio)" } else { &d.host }).wrap());
-                                                        ui.add(egui::Label::new(if d.local.is_empty() { "(vazio)" } else { &d.local }).wrap());
-                                                        ui.small(d.changed_by());
-                                                        ui.end_row();
-                                                    }
-                                                });
+                                                }
+                                            });
+                                    }
+                                    ui.add_space(theme::S2);
+                                    let pending_here = self
+                                        .pending_resolution
+                                        .filter(|(id, _)| *id == conflict.id);
+                                    match pending_here {
+                                        None if conflict.unresolved => {
+                                            widgets::small_muted(ui, "Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.");
+                                            ui.add_space(theme::S1);
+                                            if ui.add(widgets::secondary("Dispensar o aviso")).clicked() {
+                                                self.pending_resolution = Some((conflict.id, ConflictResolution::KeepHost));
+                                            }
                                         }
-                                        ui.add_space(4.0);
-                                        let pending_here = self
-                                            .pending_resolution
-                                            .filter(|(id, _)| *id == conflict.id);
-                                        match pending_here {
-                                            None if conflict.unresolved => {
-                                                ui.label(egui::RichText::new("Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.").small());
-                                                if ui.button("Dispensar o aviso").clicked() {
+                                        None => {
+                                            ui.horizontal_wrapped(|ui| {
+                                                if ui
+                                                    .add(widgets::secondary("Combinar as duas versões…"))
+                                                    .on_hover_text("Cada campo fica com o lado que o alterou. Textos alterados dos dois lados são juntados; nos demais campos alterados dos dois lados, sua versão prevalece e o valor do computador principal fica registrado no próprio item.")
+                                                    .clicked()
+                                                {
+                                                    self.pending_resolution = Some((conflict.id, ConflictResolution::Merge));
+                                                }
+                                                if ui
+                                                    .add(widgets::secondary("Usar só a minha versão…"))
+                                                    .on_hover_text("Substitui a versão do computador principal pela sua em todos os campos.")
+                                                    .clicked()
+                                                {
+                                                    self.pending_resolution = Some((conflict.id, ConflictResolution::KeepLocal));
+                                                }
+                                                if ui
+                                                    .add(widgets::secondary("Usar só a do computador principal…"))
+                                                    .on_hover_text("Descarta a sua alteração feita sem conexão.")
+                                                    .clicked()
+                                                {
                                                     self.pending_resolution = Some((conflict.id, ConflictResolution::KeepHost));
                                                 }
-                                            }
-                                            None => {
-                                                ui.horizontal_wrapped(|ui| {
-                                                    if ui
-                                                        .button("Combinar as duas versões…")
-                                                        .on_hover_text("Cada campo fica com o lado que o alterou. Textos alterados dos dois lados são juntados; nos demais campos alterados dos dois lados, sua versão prevalece e o valor do computador principal fica registrado no próprio item.")
-                                                        .clicked()
-                                                    {
-                                                        self.pending_resolution = Some((conflict.id, ConflictResolution::Merge));
-                                                    }
-                                                    if ui
-                                                        .button("Usar só a minha versão…")
-                                                        .on_hover_text("Substitui a versão do computador principal pela sua em todos os campos.")
-                                                        .clicked()
-                                                    {
-                                                        self.pending_resolution = Some((conflict.id, ConflictResolution::KeepLocal));
-                                                    }
-                                                    if ui
-                                                        .button("Usar só a do computador principal…")
-                                                        .on_hover_text("Descarta a sua alteração feita sem conexão.")
-                                                        .clicked()
-                                                    {
-                                                        self.pending_resolution = Some((conflict.id, ConflictResolution::KeepHost));
-                                                    }
-                                                });
-                                            }
-                                            Some((_, resolution)) => {
-                                                let description = match resolution {
-                                                    ConflictResolution::Merge => {
-                                                        if both_sides > 0 {
-                                                            format!("Combinar: {} campo(s) alterado(s) só de um lado seguem esse lado; {both_sides} alterado(s) dos dois lados ficam com a sua versão (textos são juntados) e o valor do computador principal é anotado no item.", differences.len() - both_sides)
-                                                        } else {
-                                                            "Combinar: cada campo fica com o lado que o alterou. Nenhum campo foi alterado dos dois lados.".to_owned()
-                                                        }
-                                                    }
-                                                    ConflictResolution::KeepLocal => "Usar só a minha versão: o que está no computador principal será substituído.".to_owned(),
-                                                    ConflictResolution::KeepHost => "Usar só a do computador principal: a sua alteração será descartada.".to_owned(),
-                                                };
-                                                ui.colored_label(egui::Color32::from_rgb(153, 88, 16), description);
-                                                ui.horizontal(|ui| {
-                                                    if ui.button("Confirmar").clicked() {
-                                                        resolution_action = Some((conflict.id, resolution));
-                                                        self.pending_resolution = None;
-                                                    }
-                                                    if ui.button("Cancelar").clicked() {
-                                                        self.pending_resolution = None;
-                                                    }
-                                                });
-                                            }
+                                            });
                                         }
-                                    });
-                                }
-                            });
-
-                        if let Some((conflict_id, res)) = resolution_action {
-                            match store.resolve_sync_conflict(conflict_id, res) {
-                                Ok(()) => {
-                                    self.error = false;
-                                    self.message = match res {
-                                        ConflictResolution::Merge => {
-                                            "Conflito resolvido: as duas versões foram combinadas.".into()
+                                        Some((_, resolution)) => {
+                                            let description = match resolution {
+                                                ConflictResolution::Merge => {
+                                                    if both_sides > 0 {
+                                                        format!("Combinar: {} campo(s) alterado(s) só de um lado seguem esse lado; {both_sides} alterado(s) dos dois lados ficam com a sua versão (textos são juntados) e o valor do computador principal é anotado no item.", differences.len() - both_sides)
+                                                    } else {
+                                                        "Combinar: cada campo fica com o lado que o alterou. Nenhum campo foi alterado dos dois lados.".to_owned()
+                                                    }
+                                                }
+                                                ConflictResolution::KeepLocal => "Usar só a minha versão: o que está no computador principal será substituído.".to_owned(),
+                                                ConflictResolution::KeepHost => "Usar só a do computador principal: a sua alteração será descartada.".to_owned(),
+                                            };
+                                            soft_note(ui, Tone::Warn, icon::WARNING, &description);
+                                            ui.add_space(theme::S1);
+                                            ui.horizontal(|ui| {
+                                                if ui.add(widgets::primary("Confirmar")).clicked() {
+                                                    resolution_action = Some((conflict.id, resolution));
+                                                    self.pending_resolution = None;
+                                                }
+                                                if ui.add(widgets::secondary("Cancelar")).clicked() {
+                                                    self.pending_resolution = None;
+                                                }
+                                            });
                                         }
-                                        ConflictResolution::KeepLocal => {
-                                            "Conflito resolvido: a sua versão foi aplicada.".into()
-                                        }
-                                        ConflictResolution::KeepHost => {
-                                            "Conflito resolvido: a versão do computador principal foi mantida.".into()
-                                        }
-                                    };
-                                    self.last_sync_request = None;
-                                    let _ = self.refresh_client(store, db_path);
-                                    refresh_needed = true;
-                                }
-                                Err(e) => {
-                                    self.error = true;
-                                    self.message =
-                                        format!("Não foi possível resolver o choque agora: {e}");
-                                }
-                            }
+                                    }
+                                });
+                            ui.add_space(theme::S2);
                         }
-                    }
-                }
-
-                ui.separator();
-                ui.collapsing("Histórico recente de atividade da equipe", |ui| {
-                    match store.list_team_events(30) {
-                        Ok(events) => {
-                            if events.is_empty() {
-                                ui.label("Nenhuma atividade registrada ainda.");
-                            }
-                            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                                for ev in events {
-                                    ui.small(format!(
-                                        "{} • {} • {}",
-                                        crate::labels::datetime(&ev.created_at),
-                                        ev.actor,
-                                        ev.details
-                                    ));
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            ui.label(format!("Falha ao ler eventos: {e}"));
-                        }
-                    }
-                });
+                    });
             });
 
-        self.open = open;
+            if let Some((conflict_id, res)) = resolution_action {
+                match store.resolve_sync_conflict(conflict_id, res) {
+                    Ok(()) => {
+                        self.error = false;
+                        self.message = match res {
+                            ConflictResolution::Merge => {
+                                "Conflito resolvido: as duas versões foram combinadas.".into()
+                            }
+                            ConflictResolution::KeepLocal => {
+                                "Conflito resolvido: a sua versão foi aplicada.".into()
+                            }
+                            ConflictResolution::KeepHost => {
+                                "Conflito resolvido: a versão do computador principal foi mantida.".into()
+                            }
+                        };
+                        self.last_sync_request = None;
+                        let _ = self.refresh_client(store, db_path);
+                        refresh_needed = true;
+                    }
+                    Err(e) => {
+                        self.error = true;
+                        self.message =
+                            format!("Não foi possível resolver o choque agora: {e}");
+                    }
+                }
+            }
+        }
+
+        if !outbox.is_empty() {
+            ui.add_space(theme::S3);
+            widgets::card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    widgets::section(ui, "Alterações a enviar");
+                    widgets::pill(ui, outbox.len().to_string(), Tone::Info);
+                });
+                ui.add_space(theme::S1);
+                ui.label(format!(
+                    "{} alteração(ões) gravada(s) localmente enquanto o computador principal estava desligado. Elas serão enviadas automaticamente assim que a conexão voltar.",
+                    outbox.len()
+                ));
+                ui.add_space(theme::S2);
+                egui::ScrollArea::vertical()
+                    .id_salt("offline_outbox_scroll")
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        for (index, entry) in outbox.iter().enumerate() {
+                            if index > 0 {
+                                ui.separator();
+                            }
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(&entry.label);
+                                widgets::small_muted(ui, format!(
+                                    "{} por {}",
+                                    crate::labels::datetime(&entry.created_at),
+                                    entry.actor
+                                ));
+                            });
+                        }
+                    });
+            });
+        }
+
+        ui.add_space(theme::S3);
+        widgets::card(ui, |ui| {
+            ui.collapsing("Histórico recente de atividade da equipe", |ui| {
+                match store.list_team_events(30) {
+                    Ok(events) => {
+                        if events.is_empty() {
+                            widgets::muted(ui, "Nenhuma atividade registrada ainda.");
+                        }
+                        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                            for (index, ev) in events.into_iter().enumerate() {
+                                if index > 0 {
+                                    ui.separator();
+                                }
+                                ui.horizontal_wrapped(|ui| {
+                                    widgets::small_muted(ui, crate::labels::datetime(&ev.created_at));
+                                    ui.label(
+                                        egui::RichText::new(&ev.actor)
+                                            .font(theme::font_strong(theme::SIZE_BODY)),
+                                    );
+                                    ui.label(&ev.details);
+                                });
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        widgets::muted(ui, format!("Falha ao ler eventos: {e}"));
+                    }
+                }
+            });
+        });
         refresh_needed
     }
+}
+
+/// A short note in a soft-coloured frame: icon and text.
+#[cfg(feature = "desktop")]
+fn soft_note(ui: &mut egui::Ui, tone: crate::widgets::Tone, icon: &str, text: &str) {
+    let (fg, bg) = tone.colors();
+    egui::Frame::new()
+        .fill(bg)
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(icon).size(18.0).color(fg));
+                ui.add(egui::Label::new(egui::RichText::new(text).color(fg)).wrap());
+            });
+        });
+}
+
+/// One way of working: a card with a radio, the chosen one tinted and
+/// outlined. Returns true when it was clicked.
+#[cfg(feature = "desktop")]
+fn option_card(ui: &mut egui::Ui, selected: bool, title: &str, line: &str) -> bool {
+    use crate::theme;
+    let p = theme::c();
+    let (fill, stroke) = if selected {
+        (p.primary_soft, egui::Stroke::new(1.5, p.primary))
+    } else {
+        (p.surface, egui::Stroke::new(1.0, p.outline))
+    };
+    let response = egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                let center = egui::pos2(dot.center().x, dot.top() + 10.0);
+                let ring = if selected { p.primary } else { p.muted };
+                ui.painter().circle_stroke(center, 8.0, egui::Stroke::new(1.5, ring));
+                if selected {
+                    ui.painter().circle_filled(center, 4.5, p.primary);
+                }
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(title).font(theme::font_strong(theme::SIZE_BODY)),
+                        )
+                        .selectable(false),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(line)
+                                .size(theme::SIZE_SMALL)
+                                .color(p.muted),
+                        )
+                        .selectable(false),
+                    );
+                });
+            });
+        })
+        .response;
+    ui.interact(response.rect, ui.auto_id_with(("team-mode", title)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
 }
 
 #[cfg(test)]
@@ -7622,10 +7888,27 @@ mod tests {
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
-pub const SHOTS: &[&str] = &[];
+pub const SHOTS: &[&str] = &["pasta", "principal", "conectar", "local"];
 
 #[cfg(feature = "shots")]
 impl IntranetPanel {
-    /// Puts the panel in the state called `view` (see `SHOTS`).
-    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
+    /// Puts the panel in the state called `view` (see `SHOTS`): the mode
+    /// is chosen in the form only, nothing is saved or started.
+    pub fn shots_open(&mut self, store: &mut crate::storage::Store, view: &str) {
+        if let Ok(cfg) = store.load_intranet_config() {
+            self.draft = cfg;
+        }
+        self.loaded = true;
+        self.open = true;
+        self.draft.mode = match view {
+            "pasta" => {
+                self.draft.folder_files =
+                    vec![r"C:\Users\Exemplo\Google Drive\Ponte\ponte-sync.ponte".to_owned()];
+                IntranetMode::SharedFolder
+            }
+            "principal" => IntranetMode::Host,
+            "conectar" => IntranetMode::Client,
+            _ => IntranetMode::Local,
+        };
+    }
 }

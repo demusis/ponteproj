@@ -125,7 +125,40 @@ impl DraftTools {
     pub fn comparison(&mut self, ctx: &egui::Context) {
         let mut open = true;
         if let Some((label, left, right)) = &self.comparison {
-            egui::Window::new("Comparação de minutas").open(&mut open).default_size([1000.0,650.0]).show(ctx,|ui|{ui.small("Comparação dos textos no momento em que você abriu esta janela; edições posteriores não alteram esta visualização.");ui.columns(2,|columns|{columns[0].strong(label);columns[1].strong("Texto do editor");let mut before=left.as_str();let mut after=right.as_str();egui::ScrollArea::vertical().id_salt("compare-before").max_height(550.0).show(&mut columns[0],|ui|{ui.add(egui::TextEdit::multiline(&mut before).desired_rows(30).desired_width(f32::INFINITY));});egui::ScrollArea::vertical().id_salt("compare-after").max_height(550.0).show(&mut columns[1],|ui|{ui.add(egui::TextEdit::multiline(&mut after).desired_rows(30).desired_width(f32::INFINITY));});});});
+            egui::Window::new("Comparação de minutas")
+                .open(&mut open)
+                .default_size([1000.0, 650.0])
+                .show(ctx, |ui| {
+                    use crate::{theme, widgets};
+                    widgets::small_muted(ui, "Comparação dos textos no momento em que você abriu esta janela; edições posteriores não alteram esta visualização.");
+                    ui.add_space(theme::S2);
+                    ui.columns(2, |columns| {
+                        widgets::section(&mut columns[0], label.as_str());
+                        widgets::section(&mut columns[1], "Texto do editor");
+                        let mut before = left.as_str();
+                        let mut after = right.as_str();
+                        egui::ScrollArea::vertical()
+                            .id_salt("compare-before")
+                            .max_height(550.0)
+                            .show(&mut columns[0], |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut before)
+                                        .desired_rows(30)
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+                        egui::ScrollArea::vertical()
+                            .id_salt("compare-after")
+                            .max_height(550.0)
+                            .show(&mut columns[1], |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut after)
+                                        .desired_rows(30)
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+                    });
+                });
         }
         if !open {
             self.comparison = None;

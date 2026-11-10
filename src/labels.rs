@@ -217,13 +217,17 @@ pub fn date_field(
     let valid = value.trim().is_empty() || parse_typed_date(value).is_some();
     let response = ui
         .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
             let mut edit = egui::TextEdit::singleline(&mut state.0)
                 .hint_text("dd/mm/aaaa")
-                .desired_width(96.0);
+                .desired_width(98.0);
             if !valid {
-                edit = edit.text_color(egui::Color32::from_rgb(168, 40, 45));
+                edit = edit.text_color(crate::theme::error());
             }
             let response = ui.add(edit);
+            if !valid {
+                crate::widgets::outline(ui, response.rect, crate::theme::error());
+            }
             if response.changed() {
                 *value = match parse_typed_date(&state.0) {
                     Some(iso) => iso,
@@ -232,15 +236,17 @@ pub fn date_field(
                 };
                 state.1 = value.clone();
             }
-            let picker = ui
-                .small_button("📅")
-                .on_hover_text("Escolher a data num calendário");
+            let picker = crate::widgets::icon_button(
+                ui,
+                crate::theme::icon::CALENDAR,
+                "Escolher a data num calendário",
+            );
             if let Some(chosen) = calendar_popup(id, &picker, value) {
                 *value = chosen;
                 state = (date(value), value.clone());
             }
             if ui
-                .small_button("Hoje")
+                .add(crate::widgets::quiet("Hoje"))
                 .on_hover_text("Preenche com a data de hoje")
                 .clicked()
             {
@@ -248,8 +254,12 @@ pub fn date_field(
                 state = (date(value), value.clone());
             }
             if !valid {
-                ui.colored_label(egui::Color32::from_rgb(168, 40, 45), "⚠ data inválida")
-                    .on_hover_text("Use o formato dd/mm/aaaa.");
+                ui.label(
+                    egui::RichText::new(crate::theme::icon::WARNING)
+                        .size(16.0)
+                        .color(crate::theme::error()),
+                )
+                .on_hover_text("Data inválida. Use o formato dd/mm/aaaa.");
             }
             response
         })
@@ -334,7 +344,7 @@ fn calendar_popup(
             const WIDTH: f32 = CELL * 7.0 + 2.0 * 6.0;
             ui.set_width(WIDTH);
             ui.horizontal(|ui| {
-                let previous = ui.small_button("◀").on_hover_text("Mês anterior");
+                let previous = ui.add(crate::widgets::quiet(crate::theme::icon::LEFT)).on_hover_text("Mês anterior");
                 if previous.clicked() {
                     if month == 1 {
                         month = 12;
@@ -352,7 +362,7 @@ fn calendar_popup(
                     )
                     .selectable(false),
                 );
-                if ui.small_button("▶").on_hover_text("Mês seguinte").clicked() {
+                if ui.add(crate::widgets::quiet(crate::theme::icon::RIGHT)).on_hover_text("Mês seguinte").clicked() {
                     if month == 12 {
                         month = 1;
                         year += 1;
@@ -371,7 +381,7 @@ fn calendar_popup(
                             egui::Label::new(
                                 egui::RichText::new(name)
                                     .small()
-                                    .color(egui::Color32::from_rgb(120, 130, 140)),
+                                    .color(crate::theme::muted()),
                             ),
                         );
                     }
@@ -388,7 +398,7 @@ fn calendar_popup(
                                     if is_today {
                                         text = text
                                             .strong()
-                                            .color(egui::Color32::from_rgb(24, 84, 97));
+                                            .color(crate::theme::accent());
                                     }
                                     let response = ui.add_sized(
                                         [CELL, 22.0],
@@ -408,11 +418,11 @@ fn calendar_popup(
                     }
                 });
             ui.horizontal(|ui| {
-                if ui.small_button("Hoje").clicked() {
+                if ui.add(crate::widgets::quiet("Hoje")).clicked() {
                     chosen = Some(today.format("%Y-%m-%d").to_string());
                     ui.close();
                 }
-                if !value.trim().is_empty() && ui.small_button("Limpar").clicked() {
+                if !value.trim().is_empty() && ui.add(crate::widgets::quiet("Limpar")).clicked() {
                     chosen = Some(String::new());
                     ui.close();
                 }

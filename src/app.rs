@@ -5,6 +5,8 @@ use crate::model::{Analysis, DocumentDetail, DocumentSummary};
 use crate::storage::Store;
 use anyhow::{Context, Result};
 use eframe::egui::{self, Color32, RichText};
+use crate::theme::{self, icon, S1, S2, S3, S4};
+use crate::widgets::{self, Tone};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -227,6 +229,66 @@ impl DocTaskStatusSummary {
         }
     }
 
+    /// Short label and tone of the pill in the document list.
+    fn short_pill(&self) -> (String, Tone) {
+        if self.overdue > 0 {
+            let text = if self.overdue == 1 {
+                "1 tarefa atrasada".to_owned()
+            } else {
+                format!("{} tarefas atrasadas", self.overdue)
+            };
+            (text, Tone::Danger)
+        } else if self.open_on_time > 0 {
+            if self.due_today > 0 {
+                let text = if self.due_today == 1 {
+                    "Vence hoje".to_owned()
+                } else {
+                    format!("{} vencem hoje", self.due_today)
+                };
+                (text, Tone::Warn)
+            } else if self.open_on_time == 1 {
+                ("1 em aberto, no prazo".to_owned(), Tone::Info)
+            } else {
+                (format!("{} em aberto, no prazo", self.open_on_time), Tone::Info)
+            }
+        } else if self.completed > 0 {
+            let text = if self.completed == 1 {
+                "1 tarefa concluída".to_owned()
+            } else {
+                format!("{} tarefas concluídas", self.completed)
+            };
+            (text, Tone::Ok)
+        } else {
+            ("Sem tarefas".to_owned(), Tone::Neutral)
+        }
+    }
+
+    /// The full label and tone of the pill in the ficha header: the text of
+    /// `badge` without its leading symbol.
+    fn pill_parts(&self) -> (String, Tone) {
+        let (label, _, _) = self.badge();
+        let text = label
+            .trim_start_matches(|ch: char| {
+                matches!(ch, '⚠' | '⏰' | '●' | '✓' | '○' | ' ')
+            })
+            .replace(" • ✓ ", " • concluídas: ")
+            .replace(" • ", " · ");
+        let tone = if self.overdue > 0 {
+            Tone::Danger
+        } else if self.open_on_time > 0 {
+            if self.due_today > 0 {
+                Tone::Warn
+            } else {
+                Tone::Info
+            }
+        } else if self.completed > 0 {
+            Tone::Ok
+        } else {
+            Tone::Neutral
+        };
+        (text, tone)
+    }
+
     /// The label under a document card: text, text colour and background.
     /// The worst situation wins: overdue, then due today, then open on
     /// time, then all done, then no tasks.
@@ -243,7 +305,7 @@ impl DocTaskStatusSummary {
             if let Some(due) = &self.nearest_due {
                 label.push_str(&format!(" • Prazo: {}", crate::labels::date(due)));
             }
-            (label, crate::theme::error(), Color32::from_rgb(252, 232, 233))
+            (label, crate::theme::error(), crate::theme::c().danger_soft)
         } else if self.open_on_time > 0 {
             let mut label = if self.due_today > 0 {
                 // Only the tasks due today are counted as such; the other
@@ -272,7 +334,7 @@ impl DocTaskStatusSummary {
                 label.push_str(&format!(" • ✓ {}", self.completed));
             }
             if self.due_today > 0 {
-                (label, crate::theme::warning(), Color32::from_rgb(254, 243, 224))
+                (label, crate::theme::warning(), crate::theme::c().warn_soft)
             } else {
                 (label, crate::theme::on_time(), crate::theme::on_time_bg())
             }
@@ -282,12 +344,12 @@ impl DocTaskStatusSummary {
             } else {
                 format!("✓ {} tarefas concluídas", self.completed)
             };
-            (label, crate::theme::success(), Color32::from_rgb(228, 246, 236))
+            (label, crate::theme::success(), crate::theme::c().ok_soft)
         } else {
             (
                 "○ Sem tarefas".to_owned(),
-                Color32::from_rgb(100, 112, 125),
-                Color32::from_rgb(238, 240, 242),
+                crate::theme::c().muted,
+                crate::theme::c().sunken,
             )
         }
     }
@@ -396,14 +458,260 @@ fn sender_line(from: &str) -> String {
 }
 
 
-fn pill(ui: &mut egui::Ui, text: impl Into<String>, fg: Color32, bg: Color32, size: f32) {
+/// A pill in the colours of a tone (kept as the name the screens already use).
+fn pill(ui: &mut egui::Ui, text: impl Into<String>, tone: Tone) -> egui::Response {
+    widgets::pill(ui, text, tone)
+}
+
+/// A soft-coloured line for a warning or a remark inside a card.
+fn notice_line(ui: &mut egui::Ui, tone: Tone, text: impl Into<String>) {
+    let (fg, bg) = tone.colors();
     egui::Frame::new()
         .fill(bg)
-        .corner_radius(4.0)
-        .inner_margin(egui::Margin::symmetric(6, 2))
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
-            ui.label(RichText::new(text.into()).size(size).color(fg).strong());
+            ui.set_width(ui.available_width());
+            ui.add(egui::Label::new(RichText::new(text.into()).color(fg)).wrap());
         });
+}
+
+/// A card with a title; `actions` are drawn on the right of the title row
+/// (the first one added ends up at the far right).
+fn titled_card<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    actions: impl FnOnce(&mut egui::Ui),
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    widgets::card(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = S2;
+        ui.horizontal(|ui| {
+            widgets::section(ui, title);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), actions);
+        });
+        body(ui)
+    })
+}
+
+/// Label and value pairs, labels muted, values wrapping.
+fn facts(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, rows: &[(&str, String)]) {
+    let value_width = (ui.available_width() - 140.0 - S3).max(160.0);
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([S3, S1 + 2.0])
+        .min_col_width(130.0)
+        .max_col_width(value_width)
+        .show(ui, |ui| {
+            for (label, value) in rows {
+                ui.label(RichText::new(*label).color(theme::c().muted));
+                ui.add(egui::Label::new(value.as_str()).wrap());
+                ui.end_row();
+            }
+        });
+}
+
+/// "dd/mm" of an RFC 3339 moment or a plain date, empty when unreadable.
+fn short_date(value: &str) -> String {
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(value.trim()) {
+        return parsed
+            .with_timezone(&chrono::Local)
+            .format("%d/%m")
+            .to_string();
+    }
+    let day = value.trim().get(..10).unwrap_or("");
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
+        .map(|d| d.format("%d/%m").to_string())
+        .unwrap_or_default()
+}
+
+/// The pill of a task's deadline: late, today, on time or none.
+fn due_pill(ui: &mut egui::Ui, task: &crate::tasks::Task, today_iso: &str) {
+    if task.due_date.is_empty() {
+        pill(ui, "Sem prazo", Tone::Neutral);
+        return;
+    }
+    let date = crate::labels::date(&task.due_date);
+    if task.overdue() {
+        pill(ui, format!("Atrasada · {date}"), Tone::Danger);
+    } else if task.due_date == today_iso {
+        pill(ui, "Vence hoje", Tone::Warn);
+    } else {
+        pill(ui, date, Tone::Info);
+    }
+}
+
+/// Side margin of the library panel, which the rows of the list bleed into.
+const LIST_BLEED: f32 = 14.0;
+
+/// What one row of the document list shows.
+struct DocRow<'a> {
+    document: &'a DocumentSummary,
+    number: String,
+    summary: &'a DocTaskStatusSummary,
+    attachments: usize,
+    indent: f32,
+    selected: bool,
+    editing: bool,
+    joined: Option<String>,
+}
+
+/// One document of the list: number and date, title, then its pills. The
+/// whole row is the click target; rows are told apart by thin lines.
+fn document_row(ui: &mut egui::Ui, row: &DocRow) -> egui::Response {
+    let p = theme::c();
+    let avail = ui.available_rect_before_wrap();
+    let left = avail.left() - LIST_BLEED;
+    let right = avail.right() + LIST_BLEED;
+    let pad = S4;
+    let content_rect = egui::Rect::from_min_max(
+        egui::pos2(left + pad + row.indent, avail.top() + S3 - 2.0),
+        egui::pos2(right - pad, avail.bottom()),
+    );
+    let background = ui.painter().add(egui::Shape::Noop);
+    let mut content = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(content_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    content.spacing_mut().item_spacing = egui::vec2(S2, S1);
+    let document = row.document;
+    {
+        // Number on the left (cut with "…" when long), date on the right.
+        let date = short_date(&document.last_seen_at);
+        let width = content.available_width();
+        let date_galley = content.painter().layout_no_wrap(
+            date,
+            theme::font(theme::SIZE_SMALL),
+            p.muted,
+        );
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            row.number.clone(),
+            theme::font_strong(theme::SIZE_SMALL),
+            p.primary,
+        );
+        job.wrap.max_width = (width - date_galley.size().x - S2).max(40.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let number_galley = content.painter().layout_job(job);
+        let height = number_galley.size().y.max(date_galley.size().y);
+        let (line, _) = content.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+        content
+            .painter()
+            .galley(line.left_top(), number_galley, p.primary);
+        content.painter().galley(
+            egui::pos2(line.right() - date_galley.size().x, line.top()),
+            date_galley,
+            p.muted,
+        );
+    }
+    content.add(
+        egui::Label::new(RichText::new(&document.title).font(theme::font(theme::SIZE_BODY)))
+            .wrap()
+            .selectable(false),
+    );
+    content.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(S1 + 2.0, S1);
+        let (text, tone) = row.summary.short_pill();
+        pill(ui, text, tone);
+        if row.editing {
+            pill(ui, "Em edição", Tone::Warn);
+        }
+        if document.manual {
+            pill(
+                ui,
+                if document.email { "E-mail" } else { "Manual" },
+                Tone::Neutral,
+            );
+        }
+        if let Some(text) = &row.joined {
+            pill(
+                ui,
+                text.trim_start_matches('\u{21B3}').trim().to_owned(),
+                Tone::Violet,
+            );
+        }
+        if document.joined_children_count > 0 {
+            pill(
+                ui,
+                format!("{} juntado(s)", document.joined_children_count),
+                Tone::Violet,
+            );
+        }
+        if row.attachments > 0 {
+            pill(
+                ui,
+                format!("{} {}", icon::CLIP, row.attachments),
+                Tone::Neutral,
+            )
+            .on_hover_text("Anexos juntados a este documento");
+        }
+        match document.priority.as_str() {
+            "urgente" => {
+                pill(ui, "Prioridade urgente", Tone::Danger);
+            }
+            "alta" => {
+                pill(ui, "Prioridade alta", Tone::Warn);
+            }
+            _ => {}
+        }
+        if document.analysis_stale {
+            pill(ui, "análise desatualizada", Tone::Warn).on_hover_text(
+                "O documento, o contexto ou as notas mudaram depois da última análise.",
+            );
+        }
+    });
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(left, avail.top()),
+        egui::pos2(right, content.min_rect().bottom() + S3 - 2.0),
+    );
+    // Only the width of the panel is claimed; the click target and the
+    // painted row reach the panel edges.
+    ui.allocate_rect(
+        egui::Rect::from_min_max(
+            egui::pos2(avail.left(), rect.top()),
+            egui::pos2(avail.right(), rect.bottom()),
+        ),
+        egui::Sense::hover(),
+    );
+    let response = ui
+        .interact(rect, ui.make_persistent_id("row"), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let mut shapes = Vec::new();
+    if row.selected {
+        shapes.push(egui::Shape::rect_filled(rect, 0.0, p.primary_soft));
+        shapes.push(egui::Shape::rect_filled(
+            egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
+            0.0,
+            p.primary,
+        ));
+    } else if response.hovered() {
+        shapes.push(egui::Shape::rect_filled(rect, 0.0, p.sunken));
+    }
+    shapes.push(egui::Shape::hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, p.outline),
+    ));
+    ui.painter().set(background, egui::Shape::Vec(shapes));
+    response
+}
+
+/// A discreet button that opens an https link of the SIGADOC in the browser;
+/// anything else is shown as plain text with the reason on hover.
+fn link_button(ui: &mut egui::Ui, label: &str, raw_url: &str) {
+    // Only links present in the currently rendered import reach this function.
+    if allowed_sigadoc_url(raw_url) {
+        if ui
+            .add(widgets::quiet(format!("{} {label}", icon::OPEN_OUT)))
+            .on_hover_text("Abre no navegador (exige login no SIGADOC).")
+            .clicked()
+        {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(raw_url));
+        }
+    } else {
+        safe_link(ui, label, raw_url);
+    }
 }
 
 /// Pill text for a juntado document, or None for an ordinary one.
@@ -1093,83 +1401,124 @@ impl PonteApp {
     }
 
     /// First screen: how to import, and whether the browser bridge is ready.
+    /// First screen: how to import, and whether the browser bridge is ready.
     fn welcome(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(32.0);
-        ui.heading("Seu espaço de trabalho documental");
-        ui.label("Escolha um documento na lista à esquerda, ou importe um novo pelo navegador.");
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Primeira vez por aqui?");
-            if ui
-                .button("Abrir o guia do usuário")
-                .on_hover_text("Guia curto, em dez seções, aberto no navegador. Também em Ajuda, na barra lateral.")
-                .clicked()
-            {
-                self.open_guide();
-            }
-        });
-        ui.add_space(16.0);
-        ui.strong("Para importar um documento");
-        ui.label("1. Abra o documento no SIGADOC, no Chrome ou no Edge.");
-        ui.label("2. Clique em “Importar para o assistente”, no canto da página.");
-        ui.label("3. O documento aparece aqui com o texto, os PDFs e o histórico.");
-        ui.add_space(12.0);
-        ui.strong("Algo que não está no SIGADOC?");
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Uma ligação, um memorando, um e-mail ou um papel podem virar um registro manual, marcado como tal e com tarefas, notas e anexos como qualquer documento.");
-        });
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("+ Criar registro manual…").clicked() {
-                self.manual_form.open_new();
-            }
-            if ui
-                .button("+ Importar e-mail (.eml)…")
-                .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro do tipo E-mail recebido (número EMAIL-ano/sequência), com os anexos. Nada é lido da sua conta de e-mail.")
-                .clicked()
-            {
-                self.import_eml_dialog();
-            }
-        });
-        ui.add_space(16.0);
         let status = self.install_status();
-        ui.group(|ui| {
-            ui.set_width(ui.available_width());
-            ui.strong("Ligação com o navegador");
-            let ok = status.browser_bridge_ok();
-            let browsers = match (status.chrome_registered, status.edge_registered) {
-                (true, true) => "Chrome e Edge",
-                (true, false) => "Chrome",
-                (false, true) => "Edge",
-                (false, false) => "nenhum navegador",
-            };
-            if ok {
-                ui.colored_label(crate::theme::success(), format!("✓ O Ponte está registrado para o {browsers}."));
-                ui.small("Se o botão “Importar para o assistente” não aparece no SIGADOC, a extensão ainda não foi carregada no navegador: siga os passos abaixo.");
-            } else if status.chrome_registered || status.edge_registered {
-                ui.colored_label(crate::theme::warning(), format!("⚠ Registrado para o {browsers}, mas o programa apontado não foi encontrado. Reinstale o Ponte."));
-            } else {
-                ui.colored_label(crate::theme::error(), "✗ O navegador ainda não foi ligado ao Ponte. Execute o instalador neste computador, com a sua conta do Windows.");
-            }
-            match &status.extension_dir {
-                Some(dir) => {
+        let p = theme::c();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_max_width(780.0);
+                ui.spacing_mut().item_spacing.y = S4;
+                ui.add_space(S2);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = S1;
+                    widgets::heading(ui, "Seu espaço de trabalho documental");
+                    widgets::muted(ui, "Escolha um documento na lista à esquerda, ou importe um novo pelo navegador.");
+                });
+                widgets::card(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = S3;
+                    widgets::section(ui, "Para importar um documento");
+                    let steps = [
+                        "Abra o documento no SIGADOC, no Chrome ou no Edge.",
+                        "Clique em “Importar para o assistente”, no canto da página.",
+                        "O documento aparece aqui com o texto, os PDFs e o histórico.",
+                    ];
+                    for (index, step) in steps.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(26.0, 26.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().circle_filled(rect.center(), 13.0, p.primary_soft);
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                (index + 1).to_string(),
+                                theme::font_strong(theme::SIZE_BODY),
+                                p.primary,
+                            );
+                            ui.add(egui::Label::new(*step).wrap());
+                        });
+                    }
                     ui.horizontal_wrapped(|ui| {
-                        ui.small("Extensão do navegador:");
-                        ui.small(dir.display().to_string());
-                        if ui.small_button("Copiar caminho").on_hover_text("Cole este caminho em “Carregar sem compactação”, na página de extensões do navegador.").clicked() {
-                            ui.ctx().copy_text(dir.display().to_string());
-                            self.message("Caminho copiado. No navegador, abra a página de extensões, ative o Modo do desenvolvedor, clique em “Carregar sem compactação” e cole o caminho.");
-                        }
-                        if ui.small_button("Abrir pasta").clicked() {
-                            crate::windows_ui::reveal_in_explorer(dir);
+                        widgets::muted(ui, "Primeira vez por aqui?");
+                        if ui
+                            .add(widgets::secondary(format!("{} Abrir o guia do usuário", icon::BOOK)))
+                            .on_hover_text("Guia curto, em dez seções, aberto no navegador. Também em Ajuda, na barra lateral.")
+                            .clicked()
+                        {
+                            self.open_guide();
                         }
                     });
-                }
-                None => {
-                    ui.small("A pasta da extensão do navegador não foi encontrada ao lado do programa.");
-                }
-            }
-        });
-        ui.add_space(12.0);
-        ui.small("A IA é opcional e só funciona quando você clica. Assinaturas e tramitação continuam no SIGADOC.");
+                });
+                widgets::card(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = S2;
+                    widgets::section(ui, "Algo que não está no SIGADOC?");
+                    ui.add(egui::Label::new("Uma ligação, um memorando, um e-mail ou um papel podem virar um registro manual, marcado como tal e com tarefas, notas e anexos como qualquer documento.").wrap());
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add(widgets::primary(format!("{} Criar registro manual…", icon::PLUS)))
+                            .clicked()
+                        {
+                            self.manual_form.open_new();
+                        }
+                        if ui
+                            .add(widgets::secondary(format!("{} Importar e-mail (.eml)…", icon::MAIL)))
+                            .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro do tipo E-mail recebido (número EMAIL-ano/sequência), com os anexos. Nada é lido da sua conta de e-mail.")
+                            .clicked()
+                        {
+                            self.import_eml_dialog();
+                        }
+                    });
+                });
+                widgets::card(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = S2;
+                    widgets::section(ui, "Ligação com o navegador");
+                    let ok = status.browser_bridge_ok();
+                    let browsers = match (status.chrome_registered, status.edge_registered) {
+                        (true, true) => "Chrome e Edge",
+                        (true, false) => "Chrome",
+                        (false, true) => "Edge",
+                        (false, false) => "nenhum navegador",
+                    };
+                    if ok {
+                        ui.horizontal_wrapped(|ui| {
+                            pill(ui, "Pronto", Tone::Ok);
+                            ui.label(format!("O Ponte está registrado para o {browsers}."));
+                        });
+                        widgets::small_muted(ui, "Se o botão “Importar para o assistente” não aparece no SIGADOC, a extensão ainda não foi carregada no navegador: siga os passos abaixo.");
+                    } else if status.chrome_registered || status.edge_registered {
+                        notice_line(ui, Tone::Warn, format!("Registrado para o {browsers}, mas o programa apontado não foi encontrado. Reinstale o Ponte."));
+                    } else {
+                        notice_line(ui, Tone::Danger, "O navegador ainda não foi ligado ao Ponte. Execute o instalador neste computador, com a sua conta do Windows.");
+                    }
+                    match &status.extension_dir {
+                        Some(dir) => {
+                            widgets::field_label(ui, "Extensão do navegador");
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(dir.display().to_string()).color(p.muted),
+                                )
+                                .wrap(),
+                            );
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.add(widgets::secondary(format!("{} Copiar caminho", icon::COPY))).on_hover_text("Cole este caminho em “Carregar sem compactação”, na página de extensões do navegador.").clicked() {
+                                    ui.ctx().copy_text(dir.display().to_string());
+                                    self.message("Caminho copiado. No navegador, abra a página de extensões, ative o Modo do desenvolvedor, clique em “Carregar sem compactação” e cole o caminho.");
+                                }
+                                if ui.add(widgets::secondary(format!("{} Abrir pasta", icon::FOLDER))).clicked() {
+                                    crate::windows_ui::reveal_in_explorer(dir);
+                                }
+                            });
+                        }
+                        None => {
+                            widgets::small_muted(ui, "A pasta da extensão do navegador não foi encontrada ao lado do programa.");
+                        }
+                    }
+                });
+                widgets::small_muted(ui, "A IA é opcional e só funciona quando você clica. Assinaturas e tramitação continuam no SIGADOC.");
+            });
     }
 
     fn message(&mut self, text: impl Into<String>) {
@@ -1405,6 +1754,7 @@ impl PonteApp {
     }
 
     /// Authors, version, licence and where to find the project.
+    /// Authors, version, licence and where to find the project.
     fn about_window(&mut self, ctx: &egui::Context) {
         if !self.about_open {
             return;
@@ -1418,27 +1768,48 @@ impl PonteApp {
             .default_width(440.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.heading(RichText::new("PONTE").color(crate::theme::accent()).strong());
+                ui.spacing_mut().item_spacing.y = S2;
+                ui.label(
+                    RichText::new("PONTE")
+                        .font(theme::font_strong(24.0))
+                        .color(theme::c().primary),
+                );
                 ui.label("Assistente documental para o SIGADOC");
-                ui.small(format!(
-                    "Versão {} • extensão do navegador {}",
-                    env!("CARGO_PKG_VERSION"),
-                    EXTENSION_VERSION
-                ));
-                ui.add_space(10.0);
-                ui.strong("Autoria");
-                ui.label("Carlo Ralph De Musis");
-                ui.label("João Gabriel Bezerra Estrela");
-                ui.add_space(10.0);
-                ui.strong("Licença");
-                ui.label("MIT. O código-fonte é aberto e pode ser usado, copiado e modificado livremente, mantendo o aviso de autoria.");
-                ui.add_space(10.0);
-                ui.strong("Código, instalador e notas de versão");
-                ui.hyperlink_to(PROJECT_URL, PROJECT_URL);
-                ui.add_space(6.0);
-                ui.small("O Ponte guarda os documentos no seu computador, protegidos pela sua conta do Windows. Nada é enviado ao SIGADOC nem à nuvem.");
-                ui.add_space(8.0);
-                if ui.button("Fechar").clicked() {
+                widgets::small_muted(
+                    ui,
+                    format!(
+                        "Versão {} • extensão do navegador {}",
+                        env!("CARGO_PKG_VERSION"),
+                        EXTENSION_VERSION
+                    ),
+                );
+                ui.add_space(S2);
+                widgets::card(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = S1;
+                    widgets::overline(ui, "Autoria", None);
+                    ui.label("Carlo Ralph De Musis");
+                    ui.label("João Gabriel Bezerra Estrela");
+                });
+                widgets::card(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = S1;
+                    widgets::overline(ui, "Licença", None);
+                    ui.add(egui::Label::new("MIT. O código-fonte é aberto e pode ser usado, copiado e modificado livremente, mantendo o aviso de autoria.").wrap());
+                });
+                widgets::card(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = S1;
+                    widgets::overline(ui, "Código, instalador e notas de versão", None);
+                    ui.hyperlink_to(PROJECT_URL, PROJECT_URL);
+                });
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("O Ponte guarda os documentos no seu computador, protegidos pela sua conta do Windows. Nada é enviado ao SIGADOC nem à nuvem.")
+                            .size(theme::SIZE_SMALL)
+                            .color(theme::c().muted),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(S1);
+                if ui.add(widgets::primary("Fechar")).clicked() {
                     close = true;
                 }
             });
@@ -1461,39 +1832,55 @@ impl PonteApp {
             .resizable(true)
             .collapsible(true)
             .show(ctx, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(&detail.summary.title);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if ui.add(widgets::secondary("Fechar")).clicked() {
+                            close = true;
+                        }
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            widgets::title(ui, &detail.summary.title);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new("Só leitura: a tarefa continua aberta atrás desta janela. Para editar notas ou minutas, use “Ir para o documento”.")
+                                        .size(theme::SIZE_SMALL)
+                                        .color(theme::c().muted),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    });
                 });
-                ui.horizontal_wrapped(|ui| {
-                    ui.small("Só leitura: a tarefa continua aberta atrás desta janela. Para editar notas ou minutas, use “Ir para o documento”.");
-                    if ui.small_button("Fechar").clicked() {
-                        close = true;
-                    }
-                });
-                ui.separator();
+                ui.add_space(S2);
                 egui::ScrollArea::vertical()
                     .id_salt("consult-scroll")
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.strong("Texto importado");
-                        if detail.capture.text.is_empty() {
-                            ui.colored_label(crate::theme::warning(), "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
-                        } else {
-                            let mut text = detail.capture.text.as_str();
-                            egui::ScrollArea::horizontal()
-                                .id_salt("consult-text")
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut text)
-                                            .font(egui::TextStyle::Monospace)
-                                            .desired_width(f32::INFINITY)
-                                            .desired_rows(18)
-                                            .code_editor(),
-                                    );
-                                });
-                        }
-                        ui.add_space(8.0);
-                        ui.strong("Arquivos (PDF)");
-                        self.files_list(ui, detail);
+                        ui.spacing_mut().item_spacing.y = S3;
+                        widgets::card(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = S2;
+                            widgets::section(ui, "Texto importado");
+                            if detail.capture.text.is_empty() {
+                                notice_line(ui, Tone::Warn, "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
+                            } else {
+                                let mut text = detail.capture.text.as_str();
+                                egui::ScrollArea::horizontal()
+                                    .id_salt("consult-text")
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut text)
+                                                .font(egui::TextStyle::Monospace)
+                                                .desired_width(f32::INFINITY)
+                                                .desired_rows(18)
+                                                .code_editor(),
+                                        );
+                                    });
+                            }
+                        });
+                        widgets::card(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = S2;
+                            widgets::section(ui, "Arquivos (PDF)");
+                            self.files_list(ui, detail);
+                        });
                     });
             });
         if open && !close {
@@ -2828,14 +3215,66 @@ impl PonteApp {
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Documentos");
-        let response = ui
-            .add(
-                egui::TextEdit::singleline(&mut self.query)
-                    .hint_text("Buscar número, assunto ou texto…")
-                    .desired_width(f32::INFINITY),
-            )
-            .accessible_name("Buscar documentos na biblioteca");
+        let p = theme::c();
+        let mut new_manual = false;
+        let mut new_eml = false;
+        let mut new_mail = false;
+        ui.horizontal(|ui| {
+            widgets::heading(ui, "Documentos");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let button = widgets::primary(format!("{} Novo {}", icon::PLUS, icon::DOWN));
+                egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                    ui.set_min_width(250.0);
+                    if ui
+                        .button("Registro manual…")
+                        .on_hover_text("Cria um documento que não existe no SIGADOC: ligação, memorando, e-mail, papel. Fica marcado como manual e é compartilhado com a equipe como os demais.")
+                        .clicked()
+                    {
+                        new_manual = true;
+                        ui.close();
+                    }
+                    if ui
+                        .button("Importar e-mail de um arquivo (.eml)…")
+                        .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro do tipo E-mail recebido (número EMAIL-ano/sequência), com os anexos. Nada é lido da sua conta de e-mail.")
+                        .clicked()
+                    {
+                        new_eml = true;
+                        ui.close();
+                    }
+                    if ui
+                        .button("Importar da conta de e-mail…")
+                        .on_hover_text("Lista as mensagens da sua conta de e-mail na última pasta e filtro usados (por exemplo, as com estrela), para marcar e importar. A configuração fica em Ajustes ▸ E-mail.")
+                        .clicked()
+                    {
+                        new_mail = true;
+                        ui.close();
+                    }
+                });
+            });
+        });
+        if new_manual {
+            self.manual_form.open_new();
+        }
+        if new_eml {
+            self.import_eml_dialog();
+        }
+        if new_mail {
+            let busy = match &self.worker {
+                None => crate::mail_ui::MailBusy::Free,
+                Some(worker) if worker.kind == WorkKind::Mail => crate::mail_ui::MailBusy::Mail,
+                Some(_) => crate::mail_ui::MailBusy::Other,
+            };
+            self.mail.open_quick(&self.store, busy);
+        }
+        ui.add_space(S1);
+        let search_width = ui.available_width();
+        let response = widgets::search(
+            ui,
+            &mut self.query,
+            "Buscar número, assunto ou texto",
+            search_width,
+        )
+        .accessible_name("Buscar documentos na biblioteca");
         if response.changed() {
             self.search_changed = Some(Instant::now());
         }
@@ -2864,135 +3303,133 @@ impl PonteApp {
             }
             summaries.insert(doc.id, s);
         }
+        let attachment_counts = self.store.attachment_counts("document").unwrap_or_default();
 
         let filters_active = self.doc_task_filter != DocTaskFilter::All
             || self.doc_priority_filter != DocPriorityFilter::All
             || self.doc_origin_filter != DocOriginFilter::All;
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let label = if self.filters_open { "Filtrar ▴" } else { "Filtrar ▾" };
-            if ui
-                .add_enabled(!self.documents.is_empty() || filters_active, egui::Button::new(label).small())
+        // Filters that only the "Filtros" chip shows; the chip stays filled
+        // while one of them (or the panel) is on.
+        let hidden_filter_on = matches!(
+            self.doc_task_filter,
+            DocTaskFilter::OpenOnTime | DocTaskFilter::Completed
+        ) || self.doc_priority_filter != DocPriorityFilter::All
+            || self.doc_origin_filter != DocOriginFilter::All;
+        ui.add_space(S1);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(S1 + 2.0, S1 + 2.0);
+            if widgets::chip(ui, self.doc_task_filter == DocTaskFilter::All, "Todos").clicked() {
+                self.doc_task_filter = DocTaskFilter::All;
+            }
+            if widgets::chip(ui, self.doc_task_filter == DocTaskFilter::OpenAny, "Com tarefa")
+                .on_hover_text(format!("Documentos com tarefa aberta ({count_open_any})"))
                 .clicked()
+            {
+                self.doc_task_filter = DocTaskFilter::OpenAny;
+            }
+            if count_overdue > 0 || self.doc_task_filter == DocTaskFilter::Overdue {
+                if widgets::chip(
+                    ui,
+                    self.doc_task_filter == DocTaskFilter::Overdue,
+                    format!("Atrasados · {count_overdue}"),
+                )
+                .on_hover_text("Mostrar só documentos com tarefa atrasada")
+                .clicked()
+                {
+                    self.doc_task_filter = DocTaskFilter::Overdue;
+                }
+            }
+            let label = format!(
+                "Filtros {}",
+                if self.filters_open { icon::UP } else { icon::DOWN }
+            );
+            let enabled = !self.documents.is_empty() || filters_active;
+            if widgets::chip(ui, self.filters_open || hidden_filter_on, label).clicked()
+                && enabled
             {
                 self.filters_open = !self.filters_open;
             }
-            if ui
-                .add(egui::Button::new("+ Registro manual").small())
-                .on_hover_text("Cria um documento que não existe no SIGADOC: ligação, memorando, e-mail, papel. Fica marcado como manual e é compartilhado com a equipe como os demais.")
-                .clicked()
-            {
-                self.manual_form.open_new();
-            }
-            if ui
-                .add(egui::Button::new("✉ E-mails").small())
-                .on_hover_text("Lista as mensagens da sua conta de e-mail na última pasta e filtro usados (por exemplo, as com estrela), para marcar e importar. A configuração fica em Ajustes ▸ E-mail.")
-                .clicked()
-            {
-                let busy = match &self.worker {
-                    None => crate::mail_ui::MailBusy::Free,
-                    Some(worker) if worker.kind == WorkKind::Mail => crate::mail_ui::MailBusy::Mail,
-                    Some(_) => crate::mail_ui::MailBusy::Other,
-                };
-                self.mail.open_quick(&self.store, busy);
-            }
-            if count_overdue > 0 && !self.filters_open
-                && ui
-                    .add(egui::Button::new(RichText::new(format!("⚠ {count_overdue} atrasado(s)")).color(crate::theme::error()).size(12.0)).small())
-                    .on_hover_text("Mostrar só documentos com tarefa atrasada")
-                    .clicked()
-                {
-                    self.doc_task_filter = DocTaskFilter::Overdue;
-                    self.filters_open = true;
-                }
-            if (filters_active || !self.query.is_empty()) && ui.small_button("Limpar").clicked() {
-                self.doc_task_filter = DocTaskFilter::All;
-                self.doc_priority_filter = DocPriorityFilter::All;
-                self.doc_origin_filter = DocOriginFilter::All;
-                if !self.query.is_empty() {
-                    self.query.clear();
-                    self.search_changed = Some(Instant::now());
-                }
-            }
         });
-        if self.filters_open || filters_active {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
-                ui.selectable_value(
-                    &mut self.doc_task_filter,
-                    DocTaskFilter::All,
-                    format!("Todos ({})", self.documents.len()),
-                );
-                ui.selectable_value(
-                    &mut self.doc_task_filter,
-                    DocTaskFilter::OpenAny,
-                    format!("Com tarefa aberta ({count_open_any})"),
-                );
-                ui.selectable_value(
-                    &mut self.doc_task_filter,
-                    DocTaskFilter::OpenOnTime,
-                    RichText::new(format!("● No prazo ({count_on_time})")).color(crate::theme::on_time()),
-                );
-                ui.selectable_value(
-                    &mut self.doc_task_filter,
-                    DocTaskFilter::Overdue,
-                    RichText::new(format!("⚠ Atrasados ({count_overdue})")).color(crate::theme::error()),
-                );
-                ui.selectable_value(
-                    &mut self.doc_task_filter,
-                    DocTaskFilter::Completed,
-                    RichText::new(format!("✓ Concluídos ({count_completed})")).color(crate::theme::success()),
-                );
-            });
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
-                egui::ComboBox::from_id_salt("doc_priority_filter_combo")
-                    .selected_text(self.doc_priority_filter.label())
-                    .width(175.0)
-                    .show_ui(ui, |ui| {
-                        for pf in [
-                            DocPriorityFilter::All,
-                            DocPriorityFilter::Urgent,
-                            DocPriorityFilter::High,
-                            DocPriorityFilter::Normal,
-                            DocPriorityFilter::Low,
-                            DocPriorityFilter::Unclassified,
-                        ] {
-                            ui.selectable_value(&mut self.doc_priority_filter, pf, pf.label());
+        if self.filters_open {
+            ui.add_space(S1);
+            egui::Frame::new()
+                .fill(p.sunken)
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::same(10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing = egui::vec2(S1 + 2.0, S1 + 2.0);
+                    widgets::field_label(ui, "Tarefas");
+                    ui.horizontal_wrapped(|ui| {
+                        if widgets::chip(
+                            ui,
+                            self.doc_task_filter == DocTaskFilter::OpenOnTime,
+                            format!("No prazo · {count_on_time}"),
+                        )
+                        .clicked()
+                        {
+                            self.doc_task_filter = DocTaskFilter::OpenOnTime;
+                        }
+                        if widgets::chip(
+                            ui,
+                            self.doc_task_filter == DocTaskFilter::Completed,
+                            format!("Concluídos · {count_completed}"),
+                        )
+                        .clicked()
+                        {
+                            self.doc_task_filter = DocTaskFilter::Completed;
                         }
                     });
-                ui.small("Ordem:");
-                egui::ComboBox::from_id_salt("doc_sort_combo")
-                    .selected_text(self.doc_sort.label())
-                    .width(215.0)
-                    .show_ui(ui, |ui| {
-                        for sort in DocSort::ALL {
-                            ui.selectable_value(&mut self.doc_sort, sort, sort.label());
-                        }
-                    })
-                    .response
-                    .on_hover_text(
-                        "Ordena a lista; documentos juntados continuam abaixo do principal.",
-                    );
-            });
-            let manual_count = self.documents.iter().filter(|d| d.manual).count();
-            if manual_count > 0 || self.doc_origin_filter != DocOriginFilter::All {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
-                    ui.small("Origem:");
-                    ui.selectable_value(&mut self.doc_origin_filter, DocOriginFilter::All, "Todos");
-                    ui.selectable_value(
-                        &mut self.doc_origin_filter,
-                        DocOriginFilter::Sigadoc,
-                        "SIGADOC",
-                    );
-                    ui.selectable_value(
-                        &mut self.doc_origin_filter,
-                        DocOriginFilter::Manual,
-                        format!("Manuais ({manual_count})"),
-                    );
+                    ui.add_space(S1);
+                    widgets::field_label(ui, "Prioridade");
+                    egui::ComboBox::from_id_salt("doc_priority_filter_combo")
+                        .selected_text(self.doc_priority_filter.label())
+                        .width(ui.available_width() - 8.0)
+                        .show_ui(ui, |ui| {
+                            for pf in [
+                                DocPriorityFilter::All,
+                                DocPriorityFilter::Urgent,
+                                DocPriorityFilter::High,
+                                DocPriorityFilter::Normal,
+                                DocPriorityFilter::Low,
+                                DocPriorityFilter::Unclassified,
+                            ] {
+                                ui.selectable_value(&mut self.doc_priority_filter, pf, pf.label());
+                            }
+                        });
+                    ui.add_space(S1);
+                    widgets::field_label(ui, "Ordem");
+                    egui::ComboBox::from_id_salt("doc_sort_combo")
+                        .selected_text(self.doc_sort.label())
+                        .width(ui.available_width() - 8.0)
+                        .show_ui(ui, |ui| {
+                            for sort in DocSort::ALL {
+                                ui.selectable_value(&mut self.doc_sort, sort, sort.label());
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Ordena a lista; documentos juntados continuam abaixo do principal.",
+                        );
+                    let manual_count = self.documents.iter().filter(|d| d.manual).count();
+                    if manual_count > 0 || self.doc_origin_filter != DocOriginFilter::All {
+                        ui.add_space(S1);
+                        widgets::field_label(ui, "Origem");
+                        ui.horizontal_wrapped(|ui| {
+                            for (value, label) in [
+                                (DocOriginFilter::All, "Todos".to_owned()),
+                                (DocOriginFilter::Sigadoc, "SIGADOC".to_owned()),
+                                (DocOriginFilter::Manual, format!("Manuais ({manual_count})")),
+                            ] {
+                                if widgets::chip(ui, self.doc_origin_filter == value, label)
+                                    .clicked()
+                                {
+                                    self.doc_origin_filter = value;
+                                }
+                            }
+                        });
+                    }
                 });
-            }
         }
 
         let mut filtered_docs: Vec<&DocumentSummary> = self
@@ -3011,16 +3448,46 @@ impl PonteApp {
             summaries.get(&id).and_then(|s| s.nearest_due.clone())
         });
 
-        if filtered_docs.len() != self.documents.len() {
-            ui.small(format!(
-                "{} de {} documento(s)",
-                filtered_docs.len(),
-                self.documents.len()
-            ));
+        ui.add_space(S1);
+        let mut clear = false;
+        ui.horizontal(|ui| {
+            let count = if filtered_docs.len() == self.documents.len() {
+                format!("{} documento(s)", self.documents.len())
+            } else {
+                format!(
+                    "{} de {} documento(s)",
+                    filtered_docs.len(),
+                    self.documents.len()
+                )
+            };
+            widgets::small_muted(ui, count);
+            if filters_active || !self.query.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(widgets::quiet("Limpar")).clicked() {
+                        clear = true;
+                    }
+                });
+            }
+        });
+        if clear {
+            self.doc_task_filter = DocTaskFilter::All;
+            self.doc_priority_filter = DocPriorityFilter::All;
+            self.doc_origin_filter = DocOriginFilter::All;
+            if !self.query.is_empty() {
+                self.query.clear();
+                self.search_changed = Some(Instant::now());
+            }
         }
-        ui.separator();
+        ui.add_space(S1);
+        // The rows run edge to edge: the line above them spans the panel.
+        let line_y = ui.cursor().top();
+        let panel_x = ui.max_rect().expand2(egui::vec2(LIST_BLEED, 0.0)).x_range();
+        ui.painter()
+            .hline(panel_x, line_y, egui::Stroke::new(1.0, p.outline));
         let mut selected = None;
         egui::ScrollArea::vertical().id_salt("document-list").show(ui, |ui| {
+            ui.set_clip_rect(ui.clip_rect().expand2(egui::vec2(LIST_BLEED, 0.0)));
+            ui.spacing_mut().item_spacing.y = 0.0;
             for (document, depth) in group_joined(&filtered_docs) {
                 ui.push_id(document.id, |ui| {
                     let joined = joined_label(document);
@@ -3036,110 +3503,63 @@ impl PonteApp {
                     let editing = self.editors.get(&document.id).is_some_and(Editor::dirty);
                     // An e-mail is recognized by who sent it, not by its
                     // internal number (which stays in the hover and the ficha).
-                    let heading = if document.email && !document.email_from.trim().is_empty() {
+                    let number = if document.email && !document.email_from.trim().is_empty() {
                         sender_line(&document.email_from)
                     } else {
                         document.document_number.clone()
                     };
-                    let number = if editing {
-                        format!("{heading} • edição")
-                    } else {
-                        heading
-                    };
                     let summary = summaries.get(&document.id).cloned().unwrap_or_default();
-                    let (badge_text, badge_fg, badge_bg) = summary.badge();
-
-                    // Left edge of the card, so that the labels start under it
-                    // whatever the indent and the width of the ↳ mark.
-                    let card_left = ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        if indent > 0.0 {
-                            ui.add_space(indent - 6.0);
-                            ui.label(RichText::new("↳").size(15.0).color(crate::theme::c().violet))
-                                .on_hover_text(joined.clone().unwrap_or_default());
-                        }
-                        // The title wraps instead of being cut; the card grows with it.
-                        let label = format!("{}\n{}", number, document.title);
-                        // The trailing grow atom keeps a short title (a manual
-                        // record, say) at the left instead of centred.
-                        let response = ui.add(
-                            egui::Button::new((RichText::new(label).size(14.0), egui::Atom::grow()))
-                                .wrap()
-                                .min_size(egui::vec2(ui.available_width(), 60.0))
-                                .selected(self.selected_id == Some(document.id)),
-                        );
-                        let response = if document.email {
-                            response.on_hover_text(format!(
-                                "{} • importado em {}",
-                                document.document_number,
-                                crate::labels::datetime(&document.added_at)
-                            ))
-                        } else {
-                            response
-                        };
-                        if response.clicked() {
-                            selected = Some(document.id);
-                        }
-                        response.rect.left()
-                    })
-                    .inner;
-
-                    ui.horizontal_wrapped(|ui| {
-                        let offset = card_left - ui.cursor().min.x;
-                        if offset > 0.0 {
-                            ui.add_space(offset);
-                        }
-                        pill(ui, badge_text, badge_fg, badge_bg, 11.5);
-                        if document.manual {
-                            let kind = if document.email {
-                                "E-mail"
-                            } else {
-                                "Manual"
-                            };
-                            pill(ui, kind, crate::theme::c().warn, crate::theme::c().warn_soft, 11.5);
-                        }
-                        if document.email && !document.added_at.is_empty() {
-                            ui.small(format!(
-                                "importado em {}",
-                                crate::labels::datetime(&document.added_at)
-                            ));
-                        }
-                        if let Some(text) = &joined {
-                            pill(ui, text, crate::theme::c().violet, crate::theme::c().violet_soft, 11.5);
-                        }
-                        if document.joined_children_count > 0 {
-                            pill(
-                                ui,
-                                format!("📎 {} juntado(s)", document.joined_children_count),
-                                crate::theme::c().violet,
-                                crate::theme::c().violet_soft,
-                                11.5,
-                            );
-                        }
-                        if matches!(document.priority.as_str(), "alta" | "urgente") {
-                            ui.small(crate::labels::priority(&document.priority));
-                        }
-                        if document.analysis_stale {
-                            ui.small("análise desatualizada").on_hover_text("O documento, o contexto ou as notas mudaram depois da última análise.");
-                        }
-                    });
-                    ui.add_space(6.0);
+                    let row = DocRow {
+                        document,
+                        number,
+                        summary: &summary,
+                        attachments: attachment_counts.get(&document.id).copied().unwrap_or(0),
+                        indent,
+                        selected: self.selected_id == Some(document.id),
+                        editing,
+                        joined,
+                    };
+                    let response = document_row(ui, &row);
+                    let response = if document.email {
+                        response.on_hover_text(format!(
+                            "{} • importado em {}",
+                            document.document_number,
+                            crate::labels::datetime(&document.added_at)
+                        ))
+                    } else {
+                        response
+                    };
+                    if response.clicked() {
+                        selected = Some(document.id);
+                    }
                 });
             }
             if filtered_docs.is_empty() {
+                ui.add_space(S3);
                 if self.documents.is_empty() {
-                    ui.label(if self.query.is_empty() {
-                        "Nenhum documento importado ainda."
-                    } else {
-                        "Nenhum documento encontrado."
-                    });
+                    widgets::muted(
+                        ui,
+                        if self.query.is_empty() {
+                            "Nenhum documento importado ainda."
+                        } else {
+                            "Nenhum documento encontrado."
+                        },
+                    );
                     if self.query.is_empty() {
-                        ui.add_space(8.0);
-                        ui.small("Abra um documento no SIGADOC e clique em “Importar para o assistente”.");
+                        ui.add_space(S2);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new("Abra um documento no SIGADOC e clique em “Importar para o assistente”.")
+                                    .size(theme::SIZE_SMALL)
+                                    .color(p.muted),
+                            )
+                            .wrap(),
+                        );
                     }
                 } else {
-                    ui.label("Nenhum documento corresponde à busca ou aos filtros.");
-                    if ui.button("Limpar busca e filtros").clicked() {
+                    widgets::muted(ui, "Nenhum documento corresponde à busca ou aos filtros.");
+                    ui.add_space(S2);
+                    if ui.add(widgets::secondary("Limpar busca e filtros")).clicked() {
                         self.doc_task_filter = DocTaskFilter::All;
                         self.doc_priority_filter = DocPriorityFilter::All;
                         self.doc_origin_filter = DocOriginFilter::All;
@@ -3158,31 +3578,53 @@ impl PonteApp {
 
     fn document(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         let id = detail.summary.id;
+        let p = theme::c();
         let doc_tasks = self.store.list_tasks().unwrap_or_default();
         let today_iso = chrono::Local::now().format("%Y-%m-%d").to_string();
         let task_summary = DocTaskStatusSummary::from_tasks(&doc_tasks, id, &today_iso);
-        let (badge_text, badge_fg, badge_bg) = task_summary.badge();
+        let (badge_text, badge_tone) = task_summary.pill_parts();
+        let source_link_ok = !detail.summary.manual && allowed_sigadoc_url(&detail.capture.source_url);
 
-        ui.horizontal_wrapped(|ui| {
-            ui.heading(&detail.summary.document_number);
-            egui::Frame::new()
-                .fill(badge_bg)
-                .corner_radius(5.0)
-                .inner_margin(egui::Margin::symmetric(8, 3))
-                .show(ui, |ui| {
-                    ui.label(RichText::new(badge_text).size(12.5).color(badge_fg).strong());
-                });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(&detail.summary.document_number)
+                        .font(theme::font_strong(theme::SIZE_SMALL))
+                        .color(p.muted),
+                )
+                .selectable(false),
+            );
+            pill(ui, badge_text, badge_tone);
             if detail.summary.manual {
                 let kind = if detail.summary.email {
                     "E-mail importado"
                 } else {
                     "Registro manual"
                 };
-                pill(ui, kind, crate::theme::c().warn, crate::theme::c().warn_soft, 12.5);
+                pill(ui, kind, Tone::Neutral);
+            }
+            match detail.summary.priority.as_str() {
+                "urgente" => {
+                    pill(ui, "Prioridade urgente", Tone::Danger);
+                }
+                "alta" => {
+                    pill(ui, "Prioridade alta", Tone::Warn);
+                }
+                "normal" | "baixa" => {
+                    pill(
+                        ui,
+                        format!(
+                            "Prioridade {}",
+                            crate::labels::priority(&detail.summary.priority).to_lowercase()
+                        ),
+                        Tone::Neutral,
+                    );
+                }
+                _ => {}
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(self.worker.is_none(), egui::Button::new("Excluir…"))
+                    .add_enabled(self.worker.is_none(), widgets::danger("Excluir…"))
                     .clicked()
                 {
                     self.request_trash(crate::trash::Target {
@@ -3192,29 +3634,43 @@ impl PonteApp {
                 }
                 if detail.summary.manual
                     && ui
-                        .button("Editar registro…")
+                        .add(widgets::secondary(format!("{} Editar registro", icon::EDIT)))
                         .on_hover_text("Altera tipo, título, origem, data ou texto. Cada edição fica guardada como uma versão.")
                         .clicked()
                 {
                     self.manual_form.open_edit(detail);
                 }
+                if !detail.summary.manual
+                    && ui
+                        .add_enabled(
+                            source_link_ok,
+                            widgets::secondary(format!("{} Abrir no SIGADOC", icon::OPEN_OUT)),
+                        )
+                        .on_hover_text("Abre a página do documento no SIGADOC, no navegador (exige login).")
+                        .on_disabled_hover_text("Link indisponível: somente endereços HTTPS do SIGADOC presentes nesta importação podem ser abertos.")
+                        .clicked()
+                {
+                    ui.ctx()
+                        .open_url(egui::OpenUrl::new_tab(&detail.capture.source_url));
+                }
             });
         });
-        ui.add(egui::Label::new(RichText::new(&detail.summary.title).size(18.0)).wrap());
+        ui.add_space(S1);
+        widgets::title(ui, &detail.summary.title);
         let mut open_joined = None;
         if let Some(text) = joined_label(&detail.summary) {
             ui.horizontal_wrapped(|ui| {
                 let text = match &detail.summary.joined_to_number {
                     Some(number) if detail.summary.joined_to_id.is_some() => {
-                        format!("↳ Juntado ao documento {number}")
+                        format!("Juntado ao documento {number}")
                     }
-                    _ => text,
+                    _ => text.trim_start_matches('\u{21B3}').trim().to_owned(),
                 };
-                pill(ui, text, crate::theme::c().violet, crate::theme::c().violet_soft, 12.5);
+                pill(ui, text, Tone::Violet);
                 match detail.summary.joined_to_id {
                     Some(parent) => {
                         if ui
-                            .button("Abrir documento principal")
+                            .add(widgets::secondary("Abrir documento principal"))
                             .on_hover_text("Abre a ficha do documento ao qual este foi juntado")
                             .clicked()
                         {
@@ -3222,10 +3678,10 @@ impl PonteApp {
                         }
                     }
                     None if detail.summary.joined_to_number.is_some() => {
-                        ui.small("Documento principal ainda não importado; importe-o pela extensão para vincular automaticamente.");
+                        widgets::small_muted(ui, "Documento principal ainda não importado; importe-o pela extensão para vincular automaticamente.");
                     }
                     None => {
-                        ui.small("A via indica juntada, mas o número do documento principal não aparece nesta captura.");
+                        widgets::small_muted(ui, "A via indica juntada, mas o número do documento principal não aparece nesta importação.");
                     }
                 }
             });
@@ -3234,14 +3690,12 @@ impl PonteApp {
             ui.horizontal_wrapped(|ui| {
                 pill(
                     ui,
-                    format!("📎 {} documento(s) juntado(s)", self.joined_children.len()),
-                    crate::theme::c().violet,
-                    crate::theme::c().violet_soft,
-                    12.5,
+                    format!("{} documento(s) juntado(s)", self.joined_children.len()),
+                    Tone::Violet,
                 );
                 for child in &self.joined_children {
                     if ui
-                        .small_button(format!("↳ {}", child.document_number))
+                        .add(widgets::quiet(format!("{} {}", icon::JOINED, child.document_number)))
                         .on_hover_text(format!("Abrir {} — {}", child.document_number, child.title))
                         .clicked()
                     {
@@ -3268,50 +3722,63 @@ impl PonteApp {
                 .cloned()
                 .unwrap_or_else(|| "esta equipe".into());
             ui.horizontal_wrapped(|ui| {
-                ui.small(format!(
-                    "Registro criado no Ponte por {by} • versão {versions}, salva em {} • sem página no SIGADOC",
+                widgets::small_muted(ui, format!(
+                    "Registro criado no Ponte por {by} · versão {versions}, salva em {} · sem página no SIGADOC",
                     display_date(&detail.capture.captured_at)
                 ));
                 if detail.summary.document_number == crate::model::MANUAL_PENDING {
-                    ui.colored_label(crate::theme::warning(), "Número definitivo será dado pelo computador principal na próxima sincronização.");
+                    pill(ui, "Número definitivo será dado pelo computador principal na próxima sincronização", Tone::Warn);
                 }
             });
         } else {
-            ui.horizontal_wrapped(|ui| {
-                ui.small(format!(
-                    "Captura #{} • {}",
+            widgets::small_muted(
+                ui,
+                format!(
+                    "Importação nº {} · importado em {}",
                     detail.summary.latest_capture_id,
                     display_date(&detail.capture.captured_at)
-                ));
-                safe_link(ui, "Abrir documento no SIGADOC", &detail.capture.source_url);
-            });
+                ),
+            );
         }
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Overview, "Resumo");
-            ui.selectable_value(&mut self.tab, Tab::Document, "Documento");
+        ui.add_space(S2);
+        let notes_dirty = {
             let editor = &self.editors[&id];
-            let notes_label = if editor.note_dirty() || editor.draft_dirty() {
-                RichText::new("Anotações e minutas ●").color(crate::theme::warning())
-            } else {
-                RichText::new("Anotações e minutas")
-            };
-            ui.selectable_value(&mut self.tab, Tab::Notes, notes_label);
-            ui.selectable_value(&mut self.tab, Tab::More, "Mais");
+            editor.note_dirty() || editor.draft_dirty()
+        };
+        widgets::tab_row(ui, |ui| {
+            if widgets::tab(ui, self.tab == Tab::Overview, "Resumo", false).clicked() {
+                self.tab = Tab::Overview;
+            }
+            if widgets::tab(ui, self.tab == Tab::Document, "Documento", false).clicked() {
+                self.tab = Tab::Document;
+            }
+            let notes_tab = widgets::tab(ui, self.tab == Tab::Notes, "Notas e minutas", notes_dirty);
+            if notes_dirty {
+                notes_tab.clone().on_hover_text("Há alterações não salvas.");
+            }
+            if notes_tab.clicked() {
+                self.tab = Tab::Notes;
+            }
+            if widgets::tab(ui, self.tab == Tab::More, "Mais", false).clicked() {
+                self.tab = Tab::More;
+            }
         });
-        ui.separator();
+        ui.add_space(S2);
         egui::ScrollArea::vertical()
             .id_salt(("document-content", id, self.tab as u8))
-            .show(ui, |ui| match self.tab {
-                Tab::Overview => self.overview(ui, detail),
-                Tab::Document => self.document_tab(ui, detail),
-                Tab::Notes => {
-                    self.notes(ui, detail);
-                    ui.add_space(14.0);
-                    ui.separator();
-                    self.drafts(ui, detail);
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = S4;
+                match self.tab {
+                    Tab::Overview => self.overview(ui, detail),
+                    Tab::Document => self.document_tab(ui, detail),
+                    Tab::Notes => {
+                        self.notes(ui, detail);
+                        self.drafts(ui, detail);
+                    }
+                    Tab::More => self.more_tab(ui, detail),
                 }
-                Tab::More => self.more_tab(ui, detail),
+                ui.add_space(S2);
             });
     }
 
@@ -3322,13 +3789,27 @@ impl PonteApp {
         default_open: bool,
         add: impl FnOnce(&mut egui::Ui) -> R,
     ) -> Option<R> {
-        egui::CollapsingHeader::new(RichText::new(title).size(15.0).strong())
-            .id_salt(("doc-section", id, title))
-            .default_open(default_open)
-            .show(ui, add)
-            .body_returned
+        widgets::card(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = S2;
+            let state_id = ui.make_persistent_id(("doc-section", id, title));
+            let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                state_id,
+                default_open,
+            );
+            let (_, _, body) = state
+                .show_header(ui, |ui| {
+                    widgets::section(ui, title);
+                })
+                .body(|ui| {
+                    ui.spacing_mut().item_spacing.y = S2;
+                    add(ui)
+                });
+            body.map(|body| body.inner)
+        })
     }
 
+    /// Everything imported from the SIGADOC page, in reading order.
     /// Everything imported from the SIGADOC page, in reading order.
     fn document_tab(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         let id = detail.summary.id;
@@ -3339,30 +3820,35 @@ impl PonteApp {
             "Texto importado"
         };
         Self::section(ui, id, text_title, true, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if manual {
-                    ui.small("Texto digitado por quem criou o registro. Para alterá-lo, use “Editar registro…” no topo.");
+                    widgets::small_muted(ui, "Texto digitado por quem criou o registro. Para alterá-lo, use “Editar registro” no topo.");
                 } else {
-                    ui.small("Texto da página e dos PDFs lidos.");
+                    widgets::small_muted(ui, "Texto da página e dos PDFs lidos.");
                     info(ui, "Parágrafos, listas e tabelas mantêm a organização da página. Para a aparência original, abra o PDF na seção Arquivos.");
                 }
             });
             if detail.capture.text.is_empty() {
                 if manual {
-                    ui.small("Registro sem texto. Use “Editar registro…” para acrescentar, ou anexe o arquivo original abaixo.");
+                    widgets::muted(ui, "Registro sem texto. Use “Editar registro” para acrescentar, ou anexe o arquivo original abaixo.");
                 } else {
-                    ui.colored_label(crate::theme::warning(), "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
+                    notice_line(ui, Tone::Warn, "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
                 }
             } else {
                 let mut text = detail.capture.text.as_str();
+                let width = ui.available_width().min(900.0);
+                let edit = egui::TextEdit::multiline(&mut text)
+                    .desired_width(width)
+                    .desired_rows(24);
+                // Typed text reads in the ordinary font; the imported page keeps
+                // the alignment of its tables, so it stays in fixed width.
+                let edit = if manual {
+                    edit
+                } else {
+                    edit.font(egui::TextStyle::Monospace).code_editor()
+                };
                 egui::ScrollArea::horizontal().show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut text)
-                            .font(egui::TextStyle::Monospace)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(24)
-                            .code_editor(),
-                    );
+                    ui.add(edit);
                 });
             }
         });
@@ -3385,7 +3871,7 @@ impl PonteApp {
         Self::section(ui, id, "Anexos", has_attachments, |ui| {
             ui.horizontal_wrapped(|ui| {
                 info(ui, "Arquivos do seu computador juntados a este documento (ofício em Word, foto de um despacho, e-mail). Ficam guardados protegidos no acervo e visíveis para a equipe. Nada é enviado ao SIGADOC.");
-                ui.small("Arquivos anexados por pessoas; os PDFs do SIGADOC ficam na seção acima.");
+                widgets::small_muted(ui, "Arquivos anexados por pessoas; os PDFs do SIGADOC ficam na seção acima.");
             });
             self.attachments.show(
                 ui,
@@ -3416,6 +3902,7 @@ impl PonteApp {
     }
 
     /// The "Registro manual" window.
+    /// The "Registro manual" window.
     fn manual_window(&mut self, ctx: &egui::Context) {
         if !self.manual_form.open {
             return;
@@ -3435,46 +3922,45 @@ impl PonteApp {
             .resizable(true)
             .show(ctx, |ui| {
                 let form = &mut self.manual_form;
-                ui.colored_label(crate::theme::warning(), "Registro criado por você, fora do SIGADOC. Ele fica marcado como manual em todo o Ponte e é compartilhado com a equipe como os demais documentos.");
+                ui.spacing_mut().item_spacing.y = S2;
+                notice_line(ui, Tone::Warn, "Registro criado por você, fora do SIGADOC. Ele fica marcado como manual em todo o Ponte e é compartilhado com a equipe como os demais documentos.");
                 if !editing {
-                    ui.small("Recebe um número próprio (MANUAL-ano/sequência) ao salvar. Anexe o arquivo original em Documento ▸ Anexos depois de salvar; aqui, resuma o que importa.");
+                    widgets::small_muted(ui, "Recebe um número próprio (MANUAL-ano/sequência) ao salvar. Anexe o arquivo original em Documento ▸ Anexos depois de salvar; aqui, resuma o que importa.");
                 }
-                ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Tipo:");
-                    egui::ComboBox::from_id_salt("manual-kind")
-                        .selected_text(crate::manual::kind_label(&form.fields.kind))
-                        .width(260.0)
-                        .show_ui(ui, |ui| {
-                            for (key, label) in crate::manual::KINDS {
-                                ui.selectable_value(&mut form.fields.kind, (*key).to_string(), *label);
-                            }
-                        });
-                });
-                ui.label("Título");
+                ui.add_space(S1);
+                widgets::field_label(ui, "Tipo");
+                egui::ComboBox::from_id_salt("manual-kind")
+                    .selected_text(crate::manual::kind_label(&form.fields.kind))
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        for (key, label) in crate::manual::KINDS {
+                            ui.selectable_value(&mut form.fields.kind, (*key).to_string(), *label);
+                        }
+                    });
+                widgets::field_label(ui, "Título");
                 ui.add(egui::TextEdit::singleline(&mut form.fields.title).hint_text("ex.: Ligação do gabinete sobre a reforma").desired_width(f32::INFINITY));
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Origem (de quem, de onde):");
-                    ui.add(egui::TextEdit::singleline(&mut form.fields.origin).hint_text("órgão, setor ou pessoa").desired_width(300.0));
-                    ui.label("Data do documento:");
-                    crate::labels::date_field(ui, "manual-document-date", &mut form.fields.document_date);
+                ui.columns(2, |columns| {
+                    widgets::field_label(&mut columns[0], "Origem (de quem, de onde)");
+                    columns[0].add(egui::TextEdit::singleline(&mut form.fields.origin).hint_text("órgão, setor ou pessoa").desired_width(f32::INFINITY));
+                    widgets::field_label(&mut columns[1], "Data do documento");
+                    crate::labels::date_field(&mut columns[1], "manual-document-date", &mut form.fields.document_date);
                 });
-                ui.label("Texto (o que foi pedido, decidido ou recebido)");
+                widgets::field_label(ui, "Texto (o que foi pedido, decidido ou recebido)");
                 ui.add(
                     egui::TextEdit::multiline(&mut form.fields.text)
                         .desired_rows(12)
                         .desired_width(f32::INFINITY),
                 );
                 if !form.message.is_empty() {
-                    ui.colored_label(crate::theme::error(), format!("✗ {}", form.message));
+                    notice_line(ui, Tone::Danger, form.message.clone());
                 }
-                ui.add_space(6.0);
+                ui.add_space(S1);
                 ui.horizontal(|ui| {
                     let can_save = !editing || form.dirty();
-                    save = ui.add_enabled(can_save, egui::Button::new(if editing { "Salvar nova versão" } else { "Criar registro" })).clicked();
-                    cancel = ui.button("Cancelar").clicked();
+                    save = ui.add_enabled(can_save, widgets::primary(if editing { "Salvar nova versão" } else { "Criar registro" })).clicked();
+                    cancel = ui.add(widgets::secondary("Cancelar")).clicked();
                     if editing && !form.dirty() {
-                        ui.small("sem alterações");
+                        widgets::small_muted(ui, "sem alterações");
                     }
                 });
             });
@@ -3554,50 +4040,96 @@ impl PonteApp {
     }
 
     fn overview(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
-        self.document_summary(ui, detail);
-        self.document_tasks(ui, detail);
-        self.saiop_links(ui, detail);
-        ui.separator();
-        self.analysis_section(ui, detail);
-        ui.separator();
+        ui.spacing_mut().item_spacing = egui::vec2(S4, S4);
+        if ui.available_width() >= 900.0 {
+            ui.columns(2, |columns| {
+                self.analysis_section(&mut columns[0], detail);
+                self.document_summary(&mut columns[0], detail);
+                self.document_tasks(&mut columns[1], detail);
+                self.saiop_links(&mut columns[1], detail);
+                self.overview_note(&mut columns[1], detail);
+            });
+        } else {
+            self.analysis_section(ui, detail);
+            self.document_summary(ui, detail);
+            self.document_tasks(ui, detail);
+            self.saiop_links(ui, detail);
+            self.overview_note(ui, detail);
+        }
         ui.horizontal(|ui| {
-            ui.strong("Antes de usar a IA");
+            widgets::overline(ui, "Antes de usar a IA", None);
             info(ui, "O contexto e as fontes abaixo são opcionais. Quando preenchidos, a análise e a minuta levam em conta o que você informou.");
         });
-        if self
-            .work_context
-            .show(ui, &mut self.store, detail.summary.id)
-        {
+        let changed = widgets::card(ui, |ui| {
+            self.work_context
+                .show(ui, &mut self.store, detail.summary.id)
+        });
+        if changed {
             self.reload(detail.summary.id);
         }
-        if let Some(documents) =
+        let documents = widgets::card(ui, |ui| {
             self.sources
                 .show(ui, &self.store, detail.summary.id, self.worker.is_some())
-        {
+        });
+        if let Some(documents) = documents {
             self.prepare_sources(detail.summary.id, documents, ui.ctx());
         }
-        ui.separator();
-        ui.collapsing("Documentos parecidos na biblioteca", |ui| {
-            ui.horizontal(|ui| {
-                ui.small("Semelhança por palavras em comum.");
-                info(ui, "Não indica vínculo oficial entre os documentos.");
-            });
-            let mut selected = None;
-            for similar in &self.similar {
-                if ui
-                    .link(format!("{} — {}", similar.document_number, similar.title))
-                    .clicked()
-                {
-                    selected = Some(similar.id);
+        widgets::card(ui, |ui| {
+            egui::CollapsingHeader::new(
+                RichText::new("Documentos parecidos na biblioteca")
+                    .font(theme::font_strong(theme::SIZE_SECTION)),
+            )
+            .id_salt(("similar", detail.summary.id))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    widgets::small_muted(ui, "Semelhança por palavras em comum.");
+                    info(ui, "Não indica vínculo oficial entre os documentos.");
+                });
+                let mut selected = None;
+                for similar in &self.similar {
+                    if ui
+                        .add(widgets::quiet(format!(
+                            "{} — {}",
+                            similar.document_number, similar.title
+                        )))
+                        .clicked()
+                    {
+                        selected = Some(similar.id);
+                    }
                 }
+                if self.similar.is_empty() {
+                    widgets::muted(ui, "Nenhum documento parecido encontrado.");
+                }
+                if let Some(id) = selected {
+                    self.select(id);
+                }
+            });
+        });
+    }
+
+    /// The saved note of the document, with the way to edit it.
+    fn overview_note(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
+        let note = self
+            .editors
+            .get(&detail.summary.id)
+            .map(|editor| editor.note.clone())
+            .unwrap_or_else(|| detail.note.clone());
+        let mut edit = false;
+        titled_card(ui, "Nota", |_| {}, |ui| {
+            if note.trim().is_empty() {
+                widgets::muted(ui, "Nenhuma nota ainda.");
+            } else {
+                ui.add(
+                    egui::Label::new(RichText::new(note.trim()).color(theme::c().muted)).wrap(),
+                );
             }
-            if self.similar.is_empty() {
-                ui.label("Nenhum documento parecido encontrado.");
-            }
-            if let Some(id) = selected {
-                self.select(id);
+            if ui.add(widgets::quiet("Editar nota")).clicked() {
+                edit = true;
             }
         });
+        if edit {
+            self.tab = Tab::Notes;
+        }
     }
 
     /// Attendances of the cabinet control that point at this document.
@@ -3613,273 +4145,393 @@ impl PonteApp {
             return;
         }
         let today = chrono::Local::now().date_naive();
-        ui.group(|ui| {
-            ui.set_width(ui.available_width());
-            ui.strong(format!(
-                "{} atendimento(s) deste documento em Atendimentos",
-                mine.len()
-            ));
-            for att in mine {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(if att.reference_raw.is_empty() {
-                        att.subject.clone()
-                    } else {
-                        att.reference_raw.clone()
+        let mut open_attendance = None;
+        let title = if mine.len() == 1 {
+            "Atendimento"
+        } else {
+            "Atendimentos"
+        };
+        titled_card(ui, title, |_| {}, |ui| {
+            for (index, att) in mine.iter().enumerate() {
+                if index > 0 {
+                    ui.separator();
+                }
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(widgets::quiet("Abrir")).clicked() {
+                            open_attendance = Some(att.id);
+                        }
+                        let tone = match att.status.as_str() {
+                            "concluida" => Tone::Ok,
+                            "aguardando" => Tone::Violet,
+                            _ => Tone::Info,
+                        };
+                        pill(ui, crate::saiop::status_label(&att.status), tone);
+                        if let Some(delta) = att.due_delta_days(today) {
+                            if delta > 0 {
+                                pill(ui, format!("vencido há {delta} d"), Tone::Danger);
+                            } else if delta == 0 {
+                                pill(ui, "vence hoje", Tone::Warn);
+                            } else {
+                                pill(
+                                    ui,
+                                    format!("prazo {}", crate::labels::date(&att.due_date)),
+                                    Tone::Neutral,
+                                );
+                            }
+                        }
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            let name = if att.reference_raw.is_empty() {
+                                att.subject.clone()
+                            } else {
+                                att.reference_raw.clone()
+                            };
+                            ui.add(egui::Label::new(name).wrap());
+                            if !att.assignee.is_empty() {
+                                widgets::small_muted(ui, format!("resp.: {}", att.assignee));
+                            }
+                        });
                     });
-                    ui.label(crate::saiop::status_label(&att.status));
-                    if !att.assignee.is_empty() {
-                        ui.small(format!("resp.: {}", att.assignee));
-                    }
-                    if let Some(delta) = att.due_delta_days(today) {
-                        if delta > 0 {
-                            ui.colored_label(crate::theme::error(), format!("vencido há {delta} d"));
-                        } else if delta == 0 {
-                            ui.colored_label(crate::theme::warning(), "vence hoje");
-                        } else {
-                            ui.small(format!("prazo {}", crate::labels::date(&att.due_date)));
-                        }
-                    }
-                    if ui.small_button("Abrir").clicked() {
-                        if self.saiop.focus_attendance(&self.store, att.id) {
-                            self.area = Area::Saiop;
-                        } else {
-                            self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
-                        }
-                    }
                 });
             }
         });
+        if let Some(att_id) = open_attendance {
+            if self.saiop.focus_attendance(&self.store, att_id) {
+                self.area = Area::Saiop;
+            } else {
+                self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
+            }
+        }
     }
 
     fn analysis_section(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("Análise assistida por IA");
-            let busy = self.worker.is_some();
-            let label = match &self.worker {
-                Some(worker) if worker.kind == WorkKind::Analysis => {
-                    format!("Analisando… {}", worker.short_step())
-                }
-                _ => "Analisar e sugerir providências".to_owned(),
-            };
-            if ui
-                .add_enabled(!busy, egui::Button::new(label))
-                .on_hover_text(self.ai_disclosure_text(false))
-                .clicked()
-            {
-                self.analyze(detail, ui.ctx());
+        let busy = self.worker.is_some();
+        let has_analysis = detail.analysis.is_some();
+        let label = match &self.worker {
+            Some(worker) if worker.kind == WorkKind::Analysis => {
+                format!("Analisando… {}", worker.short_step())
             }
-            self.ai_destination(ui);
-        });
-        if let Some(analysis) = &detail.analysis {
-            let stale = detail.summary.analysis_stale
-                || self.work_context.document_dirty(detail.summary.id)
-                || self.editors[&detail.summary.id].note_dirty();
-            if stale {
-                ui.colored_label(crate::theme::warning(), format!("Análise da captura #{}: a captura, o contexto ou as notas mudaram. Salve as edições e analise novamente.", analysis.capture_id));
-            }
-            ui.label(&analysis.summary);
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(format!(
-                    "Prioridade sugerida: {}",
-                    crate::labels::priority(&analysis.priority)
-                ));
-                if !analysis.subjects.is_empty() {
-                    ui.label(analysis.subjects.join(" • "));
+            _ if has_analysis => "Analisar de novo".to_owned(),
+            _ => format!("{} Analisar…", icon::AI),
+        };
+        let hover = self.ai_disclosure_text(false);
+        let mut analyze = false;
+        titled_card(
+            ui,
+            "Análise",
+            |ui| {
+                let button = if has_analysis {
+                    widgets::quiet(label)
+                } else {
+                    widgets::primary(label)
+                };
+                if ui
+                    .add_enabled(!busy, button)
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    analyze = true;
                 }
-            });
-            ui.label(format!("Motivo: {}", analysis.reason));
-            if !analysis.suggested_actions.is_empty() {
-                ui.strong("Providências sugeridas — revisão necessária");
-                // A suggestion already turned into a task of this document
-                // is shown folded, with the task, so it is not prepared twice
-                // by mistake (another one can still be prepared on purpose).
-                let document_tasks: Vec<crate::tasks::Task> = self
-                    .store
-                    .list_tasks()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|t| t.document_id == detail.summary.id)
-                    .collect();
-                for suggestion in &analysis.suggested_actions {
-                    if let Some(task) = document_tasks
-                        .iter()
-                        .find(|t| t.action == suggestion.action)
-                    {
-                        ui.group(|ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal_wrapped(|ui| {
-                                ui.colored_label(
-                                    crate::theme::success(),
-                                    format!(
-                                        "✓ {} — tarefa criada: {}",
-                                        suggestion.action, task.title
-                                    ),
-                                );
-                                if ui.small_button("Abrir tarefa").clicked() {
-                                    self.navigate(Leave::OpenTask(task.clone()));
-                                }
-                                if ui
-                                    .add_enabled(
-                                        !stale,
-                                        egui::Button::new("Preparar outra").small(),
-                                    )
-                                    .on_hover_text(
-                                        "Cria mais uma tarefa com esta mesma providência.",
-                                    )
-                                    .clicked()
-                                {
-                                    self.navigate(Leave::Suggestion {
-                                        document_id: detail.summary.id,
-                                        suggestion: suggestion.clone(),
-                                        priority: analysis.priority.clone(),
-                                    });
-                                }
-                            });
-                        });
-                        continue;
-                    }
-                    ui.group(|ui| {
-                        ui.set_width(ui.available_width());
-                        ui.strong(&suggestion.action);
-                        ui.label(&suggestion.reason);
-                        ui.label(format!("Base indicada: {}", suggestion.evidence));
-                        if ui
-                            .add_enabled(
-                                !stale,
-                                egui::Button::new(format!(
-                                    "Preparar tarefa: {}",
-                                    suggestion.action
-                                )),
-                            )
-                            .clicked()
-                        {
-                            self.navigate(Leave::Suggestion {
-                                document_id: detail.summary.id,
-                                suggestion: suggestion.clone(),
-                                priority: analysis.priority.clone(),
-                            });
-                        }
+            },
+            |ui| {
+                let Some(analysis) = &detail.analysis else {
+                    widgets::muted(
+                        ui,
+                        "Ainda sem análise. Importar, buscar e anotar funcionam sem IA.",
+                    );
+                    self.ai_destination(ui);
+                    return;
+                };
+                let stale = detail.summary.analysis_stale
+                    || self.work_context.document_dirty(detail.summary.id)
+                    || self.editors[&detail.summary.id].note_dirty();
+                if stale {
+                    notice_line(ui, Tone::Warn, format!("Análise da importação nº {}: o documento, o contexto ou as notas mudaram. Salve as edições e analise novamente.", analysis.capture_id));
+                }
+                ui.add(egui::Label::new(&analysis.summary).wrap());
+                if let Some(deadline) = &analysis.deadline_candidate {
+                    ui.horizontal_wrapped(|ui| {
+                        pill(ui, format!("Prazo: {deadline}"), Tone::Warn);
+                        widgets::small_muted(ui, "Confirme a data e a regra na fonte.");
                     });
                 }
-            }
-            if !analysis.citations.is_empty() {
-                ui.strong("Trechos conferidos nas fontes selecionadas");
-                ui.small("O programa confere a presença literal dos trechos; a interpretação da IA ainda exige revisão.");
-                for citation in &analysis.citations {
-                    if let Some(source) = analysis
-                        .materials
-                        .iter()
-                        .find(|s| s.id == citation.source_id)
-                    {
-                        ui.group(|ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(&citation.claim);
-                            ui.strong(&source.label);
-                            ui.label(format!("Trecho: {}", citation.quote));
-                            ui.small(format!(
-                                "Fonte {} • captura #{} • método {}",
-                                source.id, source.capture_id, source.method
-                            ));
-                            ui.collapsing("Texto da fonte utilizada", |ui| {
-                                let mut text = source.text.as_str();
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut text)
-                                        .desired_rows(6)
-                                        .desired_width(f32::INFINITY),
-                                );
-                            });
+                ui.horizontal_wrapped(|ui| {
+                    widgets::field_label(ui, "Prioridade sugerida");
+                    let tone = match analysis.priority.as_str() {
+                        "urgente" => Tone::Danger,
+                        "alta" => Tone::Warn,
+                        _ => Tone::Neutral,
+                    };
+                    pill(ui, crate::labels::priority(&analysis.priority), tone);
+                    if !analysis.subjects.is_empty() {
+                        widgets::muted(ui, analysis.subjects.join(" • "));
+                    }
+                });
+                ui.add(egui::Label::new(format!("Motivo: {}", analysis.reason)).wrap());
+                let mut prepare: Option<crate::model::ActionSuggestion> = None;
+                let mut open_task: Option<crate::tasks::Task> = None;
+                if !analysis.suggested_actions.is_empty() {
+                    ui.separator();
+                    widgets::field_label(ui, "Providências sugeridas — revisão necessária");
+                    // A suggestion already turned into a task of this document
+                    // is shown folded, with the task, so it is not prepared twice
+                    // by mistake (another one can still be prepared on purpose).
+                    let document_tasks: Vec<crate::tasks::Task> = self
+                        .store
+                        .list_tasks()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|t| t.document_id == detail.summary.id)
+                        .collect();
+                    for (index, suggestion) in analysis.suggested_actions.iter().enumerate() {
+                        if index > 0 {
+                            ui.separator();
+                        }
+                        let existing = document_tasks
+                            .iter()
+                            .find(|t| t.action == suggestion.action);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Min),
+                                |ui| {
+                                    if let Some(task) = existing {
+                                        if ui
+                                            .add_enabled(!stale, widgets::quiet("Preparar outra"))
+                                            .on_hover_text(
+                                                "Cria mais uma tarefa com esta mesma providência.",
+                                            )
+                                            .clicked()
+                                        {
+                                            prepare = Some(suggestion.clone());
+                                        }
+                                        if ui.add(widgets::quiet("Abrir tarefa")).clicked() {
+                                            open_task = Some(task.clone());
+                                        }
+                                    } else if ui
+                                        .add_enabled(!stale, widgets::secondary("Criar tarefa"))
+                                        .on_hover_text(format!(
+                                            "Prepara uma tarefa: {}",
+                                            suggestion.action
+                                        ))
+                                        .clicked()
+                                    {
+                                        prepare = Some(suggestion.clone());
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(&suggestion.action).font(
+                                                        theme::font_strong(theme::SIZE_BODY),
+                                                    ),
+                                                )
+                                                .wrap(),
+                                            );
+                                            match existing {
+                                                Some(task) => {
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        pill(ui, "Tarefa criada", Tone::Ok);
+                                                        widgets::small_muted(
+                                                            ui,
+                                                            task.title.as_str(),
+                                                        );
+                                                    });
+                                                }
+                                                None => {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(&suggestion.reason)
+                                                                .color(theme::c().muted),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(format!(
+                                                                "Base indicada: {}",
+                                                                suggestion.evidence
+                                                            ))
+                                                            .size(theme::SIZE_SMALL)
+                                                            .color(theme::c().muted),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                }
+                                            }
+                                        },
+                                    );
+                                },
+                            );
                         });
                     }
                 }
-            }
-            if !analysis.missing_context.is_empty() {
-                ui.strong("Informações a conferir");
-                for missing in &analysis.missing_context {
-                    ui.label(format!("• {missing}"));
+                if let Some(task) = open_task {
+                    self.navigate(Leave::OpenTask(task));
                 }
-            }
-            if !analysis.human_context.is_empty() {
-                ui.collapsing("Contexto salvo utilizado nesta análise", |ui| {
-                    crate::work_context::show_analysis_context(ui, &analysis.human_context);
-                });
-            }
-            if let Some(deadline) = &analysis.deadline_candidate {
-                ui.colored_label(
-                    crate::theme::warning(),
-                    format!("Prazo candidato: {deadline}. Confirme a data e a regra na fonte."),
+                if let Some(suggestion) = prepare {
+                    self.navigate(Leave::Suggestion {
+                        document_id: detail.summary.id,
+                        suggestion,
+                        priority: analysis.priority.clone(),
+                    });
+                }
+                if !analysis.citations.is_empty() {
+                    ui.separator();
+                    widgets::field_label(ui, "Trechos conferidos nas fontes selecionadas");
+                    widgets::small_muted(ui, "O programa confere a presença literal dos trechos; a interpretação da IA ainda exige revisão.");
+                    for citation in &analysis.citations {
+                        if let Some(source) = analysis
+                            .materials
+                            .iter()
+                            .find(|s| s.id == citation.source_id)
+                        {
+                            egui::Frame::new()
+                                .fill(theme::c().sunken)
+                                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                                .inner_margin(egui::Margin::same(10))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.add(egui::Label::new(&citation.claim).wrap());
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&source.label)
+                                                .font(theme::font_strong(theme::SIZE_BODY)),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(format!("Trecho: {}", citation.quote))
+                                            .wrap(),
+                                    );
+                                    widgets::small_muted(ui, format!(
+                                        "Fonte {} • importação nº {} • método {}",
+                                        source.id, source.capture_id, source.method
+                                    ));
+                                    ui.collapsing("Texto da fonte utilizada", |ui| {
+                                        let mut text = source.text.as_str();
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut text)
+                                                .desired_rows(6)
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                    });
+                                });
+                        }
+                    }
+                }
+                if !analysis.missing_context.is_empty() {
+                    ui.separator();
+                    widgets::field_label(ui, "Informações a conferir");
+                    for missing in &analysis.missing_context {
+                        ui.add(egui::Label::new(format!("• {missing}")).wrap());
+                    }
+                }
+                if !analysis.human_context.is_empty() {
+                    ui.collapsing("Contexto salvo utilizado nesta análise", |ui| {
+                        crate::work_context::show_analysis_context(ui, &analysis.human_context);
+                    });
+                }
+                widgets::small_muted(
+                    ui,
+                    format!(
+                        "Modelo {} • {}",
+                        analysis.model,
+                        display_date(&analysis.created_at)
+                    ),
                 );
-            }
-            ui.small(format!(
-                "Modelo {} • {}",
-                analysis.model,
-                display_date(&analysis.created_at)
-            ));
-        } else {
-            ui.small("Ainda sem análise. Importar, buscar e anotar funcionam sem IA.");
+                self.ai_destination(ui);
+            },
+        );
+        if analyze {
+            self.analyze(detail, ui.ctx());
         }
     }
+
+    /// Attendances of the cabinet control that point at this document.
 
     fn files_list(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         match self.store.list_files(detail.summary.latest_capture_id) {
             Ok(files) if files.is_empty() => {
-                ui.label("Nenhum PDF veio com esta importação.");
-                ui.small("Se o documento tem PDF no SIGADOC, importe de novo pela extensão para tentar baixá-lo.");
+                widgets::muted(ui, "Nenhum PDF veio com esta importação.");
+                widgets::small_muted(ui, "Se o documento tem PDF no SIGADOC, importe de novo pela extensão para tentar baixá-lo.");
             }
             Ok(files) => {
                 ui.horizontal_wrapped(|ui| {
                     info(ui, "“Ler no Ponte” abre a cópia local, sem precisar do SIGADOC. “Abrir no SIGADOC” vai à versão oficial no navegador (exige login). “Exportar” cria uma cópia legível na pasta local \"exportados\".");
-                    ui.small("Cópias baixadas na importação, guardadas protegidas no acervo.");
+                    widgets::small_muted(ui, "Cópias baixadas na importação, guardadas protegidas no acervo.");
                 });
-                for file in files {
+                for (index, file) in files.into_iter().enumerate() {
+                    if index > 0 {
+                        ui.separator();
+                    }
                     let origin = detail.capture.references.iter().find(|r| r.url == file.url);
-                    ui.group(|ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal_wrapped(|ui| {
-                            ui.strong(&file.label);
-                            if let Some(reference) = origin {
-                                ui.small(crate::labels::downloaded_kind(&reference.kind));
-                            }
-                            ui.small(format!("{} KB", file.size.div_ceil(1024)));
-                            ui.small(&file.text_status);
-                        });
-                        ui.horizontal_wrapped(|ui| {
-                            if let Some(reference) = origin {
-                                safe_link(ui, "Abrir no SIGADOC", &reference.url);
-                            }
-                            if ui.button("Ler no Ponte").clicked() {
-                                self.pdf_reader.open(
-                                    &self.store,
-                                    file.id,
-                                    detail.summary.latest_capture_id,
-                                    &file.label,
-                                    ui.ctx(),
-                                );
-                            }
-                            if ui.button("Exportar e abrir pasta").clicked() {
-                                match self
-                                    .store
-                                    .export_pdf(file.id, detail.summary.latest_capture_id)
-                                {
-                                    Ok(path) => {
-                                        self.message(format!("PDF exportado: {}", path.display()));
-                                        if let Some(parent) = path.parent() {
-                                            crate::windows_ui::reveal_in_explorer(parent);
-                                        }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(icon::PDF)
+                                .size(18.0)
+                                .color(theme::c().primary),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&file.label)
+                                    .font(theme::font_strong(theme::SIZE_BODY)),
+                            )
+                            .wrap(),
+                        );
+                        if let Some(reference) = origin {
+                            pill(
+                                ui,
+                                crate::labels::downloaded_kind(&reference.kind),
+                                Tone::Neutral,
+                            );
+                        }
+                        pill(ui, format!("{} KB", file.size.div_ceil(1024)), Tone::Neutral);
+                        widgets::small_muted(ui, file.text_status.as_str());
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add(widgets::secondary("Ler no Ponte")).clicked() {
+                            self.pdf_reader.open(
+                                &self.store,
+                                file.id,
+                                detail.summary.latest_capture_id,
+                                &file.label,
+                                ui.ctx(),
+                            );
+                        }
+                        if ui
+                            .add(widgets::secondary("Exportar e abrir pasta"))
+                            .clicked()
+                        {
+                            match self
+                                .store
+                                .export_pdf(file.id, detail.summary.latest_capture_id)
+                            {
+                                Ok(path) => {
+                                    self.message(format!("PDF exportado: {}", path.display()));
+                                    if let Some(parent) = path.parent() {
+                                        crate::windows_ui::reveal_in_explorer(parent);
                                     }
-                                    Err(e) => self.error(format!("PDF não exportado: {e}")),
                                 }
+                                Err(e) => self.error(format!("PDF não exportado: {e}")),
                             }
-                            ui.small(format!(
+                        }
+                        if let Some(reference) = origin {
+                            link_button(ui, "Abrir no SIGADOC", &reference.url);
+                        }
+                        widgets::small_muted(
+                            ui,
+                            format!(
                                 "identificação {}…",
                                 &file.sha256[..file.sha256.len().min(12)]
-                            ))
-                            .on_hover_text(format!("SHA-256 completo: {}", file.sha256));
-                        });
+                            ),
+                        )
+                        .on_hover_text(format!("SHA-256 completo: {}", file.sha256));
                     });
                 }
             }
             Err(e) => {
-                ui.colored_label(crate::theme::warning(), format!("Falha ao ler arquivos: {e}"));
+                notice_line(ui, Tone::Warn, format!("Falha ao ler arquivos: {e}"));
             }
         }
     }
@@ -3891,10 +4543,7 @@ impl PonteApp {
             detail.capture.references.len()
         ));
         if detail.capture.coverage.recognized.is_empty() {
-            ui.colored_label(
-                crate::theme::warning(),
-                "Nenhuma parte da página foi marcada como reconhecida.",
-            );
+            notice_line(ui, Tone::Warn, "Nenhuma parte da página foi marcada como reconhecida.");
         } else {
             ui.label("Reconhecido na página:");
             for item in &detail.capture.coverage.recognized {
@@ -3902,18 +4551,18 @@ impl PonteApp {
             }
         }
         if !detail.capture.coverage.pending.is_empty() {
-            ui.colored_label(crate::theme::warning(), "Observações da importação:");
+            widgets::field_label(ui, "Observações da importação:");
             for pending in &detail.capture.coverage.pending {
                 ui.label(format!("• {pending}"));
             }
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.strong("Links encontrados na página");
+            widgets::field_label(ui, "Links encontrados na página");
             info(ui, "Abrem o SIGADOC no navegador e exigem login. Os PDFs que foram baixados na importação têm a cópia local em Documento ▸ Arquivos.");
         });
         if detail.capture.references.is_empty() {
-            ui.small("Nenhum link foi identificado nesta página.");
+            widgets::small_muted(ui, "Nenhum link foi identificado nesta página.");
         }
         // Only consult the stored files when there is a link to match them to.
         let downloaded = if detail.capture.references.is_empty() {
@@ -3927,11 +4576,11 @@ impl PonteApp {
         for (index, reference) in detail.capture.references.iter().enumerate() {
             ui.push_id(("reference", index), |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.small(reference_kind(&reference.kind));
-                    safe_link(ui, &reference.label, &reference.url);
+                    pill(ui, reference_kind(&reference.kind), Tone::Neutral);
+                    link_button(ui, &reference.label, &reference.url);
                     if let Some(file) = downloaded.iter().find(|f| f.url == reference.url) {
                         if ui
-                            .small_button("cópia baixada: ler no Ponte")
+                            .add(widgets::secondary("Ler cópia baixada no Ponte"))
                             .on_hover_text("Este PDF foi baixado na importação; abre a cópia local no leitor do Ponte.")
                             .clicked()
                         {
@@ -4005,78 +4654,174 @@ impl PonteApp {
 
     fn document_summary(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         let metadata = &detail.capture.metadata;
-        ui.group(|ui|{
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui|{
-                ui.strong("Resumo do documento");
+        titled_card(
+            ui,
+            "Dados do documento",
+            |ui| {
                 info(ui,"Os dados oficiais são um retrato do momento da importação. Finalidade, assuntos e prioridade locais não alteram o SIGADOC.");
-            });
-            ui.horizontal_wrapped(|ui|{
-                ui.label(format!("Tipo: {}",metadata.get("document_type").map(String::as_str).unwrap_or("não disponível na captura")));
-                ui.separator();ui.label(format!("Data documental: {}",metadata.get("document_date").map(String::as_str).unwrap_or("não disponível na captura")));
-                if let Some(value)=metadata.get("medium"){ui.separator();ui.label(value);}
-            });
-            if detail.summary.email {
-                // Where the e-mail arrived: the account it was downloaded
-                // from, or (from a .eml file, or imported before this was
-                // kept) the addresses it was sent to.
-                let account = metadata.get("mail_account").filter(|a| !a.trim().is_empty());
-                let line = match (account, metadata.get("mail_account_name")) {
-                    (Some(address), Some(name)) if !name.trim().is_empty() => {
-                        format!("Recebido na conta: {name} ({address})")
-                    }
-                    (Some(address), _) => format!("Recebido na conta: {address}"),
-                    (None, _) => match metadata.get("mail_to").filter(|t| !t.trim().is_empty()) {
-                        Some(to) => format!("Destinatário: {to}"),
-                        None => "Conta de recebimento: não registrada".to_owned(),
-                    },
-                };
-                ui.add(egui::Label::new(line).wrap());
-                if let Some(from) = metadata.get("mail_from").filter(|f| !f.trim().is_empty()) {
-                    ui.add(egui::Label::new(format!("Remetente: {from}")).wrap());
+            },
+            |ui| {
+                let none = "não disponível na importação";
+                let mut rows: Vec<(&str, String)> = vec![
+                    (
+                        "Tipo",
+                        metadata
+                            .get("document_type")
+                            .cloned()
+                            .unwrap_or_else(|| none.into()),
+                    ),
+                    (
+                        "Data documental",
+                        metadata
+                            .get("document_date")
+                            .cloned()
+                            .unwrap_or_else(|| none.into()),
+                    ),
+                ];
+                if let Some(value) = metadata.get("medium") {
+                    rows.push(("Suporte", value.clone()));
                 }
-            }
-            if let Some(value)=metadata.get("document_model"){ui.add(egui::Label::new(format!("Modelo do SIGADOC: {value}")).wrap());}
-            if let Some(value)=metadata.get("via_status"){ui.add(egui::Label::new(format!("Situação no SIGADOC: {value}")).wrap());}
-            ui.label(format!("Finalidade local salva: {}",crate::work_context::purpose_label(&detail.work_context.purpose)));
-            if !detail.work_context.subjects.trim().is_empty(){ui.add(egui::Label::new(format!("Assuntos confirmados: {}",detail.work_context.subjects)).wrap());}
-            if !detail.work_context.priority.is_empty(){ui.label(format!("Prioridade documental local: {}",crate::tasks::priority_label(&detail.work_context.priority)));}
-            if let Some(value)=metadata.get("classification"){
-                let code=value.split(" - ").next().unwrap_or(value);
-                ui.collapsing(format!("Classificação documental oficial: {code}"),|ui|{ui.label(value);ui.small("Código do SIGADOC; distinto de assuntos, finalidade e prioridade locais.");});
-            }
-            match self.store.list_files(detail.summary.latest_capture_id){
-                Ok(files)=>{
-                    ui.small(format!("{} PDF(s) • {} caracteres de texto • {} referência(s)",files.len(),detail.capture.text.chars().count(),detail.capture.references.len()));
-                    if !detail.capture.coverage.pending.is_empty(){
-                        ui.horizontal(|ui|{
-                            ui.colored_label(crate::theme::warning(),format!("{} observação(ões) da importação",detail.capture.coverage.pending.len()));
-                            if ui.small_button("ver").clicked(){self.tab=Tab::More;}
+                if detail.summary.email {
+                    // Where the e-mail arrived: the account it was downloaded
+                    // from, or (from a .eml file, or imported before this was
+                    // kept) the addresses it was sent to.
+                    let account = metadata.get("mail_account").filter(|a| !a.trim().is_empty());
+                    match (account, metadata.get("mail_account_name")) {
+                        (Some(address), Some(name)) if !name.trim().is_empty() => {
+                            rows.push(("Recebido na conta", format!("{name} ({address})")));
+                        }
+                        (Some(address), _) => rows.push(("Recebido na conta", address.clone())),
+                        (None, _) => match metadata.get("mail_to").filter(|t| !t.trim().is_empty()) {
+                            Some(to) => rows.push(("Destinatário", to.clone())),
+                            None => rows.push(("Conta de recebimento", "não registrada".to_owned())),
+                        },
+                    }
+                    if let Some(from) = metadata.get("mail_from").filter(|f| !f.trim().is_empty()) {
+                        rows.push(("Remetente", from.clone()));
+                    }
+                }
+                if let Some(value) = metadata.get("document_model") {
+                    rows.push(("Modelo do SIGADOC", value.clone()));
+                }
+                if let Some(value) = metadata.get("via_status") {
+                    rows.push(("Situação no SIGADOC", value.clone()));
+                }
+                rows.push((
+                    "Finalidade",
+                    crate::work_context::purpose_label(&detail.work_context.purpose).to_owned(),
+                ));
+                if !detail.work_context.subjects.trim().is_empty() {
+                    rows.push(("Assuntos", detail.work_context.subjects.clone()));
+                }
+                if !detail.work_context.priority.is_empty() {
+                    rows.push((
+                        "Prioridade local",
+                        crate::tasks::priority_label(&detail.work_context.priority).to_owned(),
+                    ));
+                }
+                match self.store.list_files(detail.summary.latest_capture_id) {
+                    Ok(files) => {
+                        rows.push((
+                            "Arquivos",
+                            format!(
+                                "{} PDF(s) • {} caracteres de texto • {} referência(s)",
+                                files.len(),
+                                detail.capture.text.chars().count(),
+                                detail.capture.references.len()
+                            ),
+                        ));
+                        facts(ui, ("doc-facts", detail.summary.id), &rows);
+                        if let Some(value) = metadata.get("classification") {
+                            let code = value.split(" - ").next().unwrap_or(value);
+                            ui.collapsing(
+                                format!("Classificação documental oficial: {code}"),
+                                |ui| {
+                                    ui.add(egui::Label::new(value.as_str()).wrap());
+                                    widgets::small_muted(ui, "Código do SIGADOC; distinto de assuntos, finalidade e prioridade locais.");
+                                },
+                            );
+                        }
+                        if !detail.capture.coverage.pending.is_empty() {
+                            ui.horizontal(|ui| {
+                                pill(
+                                    ui,
+                                    format!(
+                                        "{} observação(ões) da importação",
+                                        detail.capture.coverage.pending.len()
+                                    ),
+                                    Tone::Warn,
+                                );
+                                if ui.add(widgets::quiet("Ver")).clicked() {
+                                    self.tab = Tab::More;
+                                }
+                            });
+                        }
+                        let original = files.iter().find(|file| {
+                            detail
+                                .capture
+                                .references
+                                .iter()
+                                .any(|r| r.url == file.url && r.kind == "original")
+                        });
+                        ui.horizontal(|ui| {
+                            if let Some(file) = original {
+                                if ui
+                                    .add(widgets::secondary("Ler o PDF"))
+                                    .on_hover_text("PDF do documento baixado na importação, aberto no leitor do Ponte sem precisar do SIGADOC. O mesmo arquivo está em Documento ▸ Arquivos, com a opção de abri-lo no SIGADOC.")
+                                    .clicked()
+                                {
+                                    self.pdf_reader.open(
+                                        &self.store,
+                                        file.id,
+                                        detail.summary.latest_capture_id,
+                                        &file.label,
+                                        ui.ctx(),
+                                    );
+                                }
+                            }
+                            if ui
+                                .add(widgets::quiet("Completar contexto"))
+                                .on_hover_text("Finalidade, assuntos, prioridade e orientações que só você sabe.")
+                                .clicked()
+                            {
+                                self.work_context.reveal(detail.summary.id);
+                            }
                         });
                     }
-                    let original=files.iter().find(|file|detail.capture.references.iter().any(|r|r.url==file.url&&r.kind=="original"));
-                    ui.horizontal_wrapped(|ui|{
-                        if let Some(file)=original {if ui.button("Ler PDF (cópia no Ponte)").on_hover_text("PDF do documento baixado na importação, aberto no leitor do Ponte sem precisar do SIGADOC. O mesmo arquivo está em Documento ▸ Arquivos, com a opção de abri-lo no SIGADOC.").clicked(){self.pdf_reader.open(&self.store,file.id,detail.summary.latest_capture_id,&file.label,ui.ctx());}}
-                        if ui.button("Completar contexto").on_hover_text("Finalidade, assuntos, prioridade e orientações que só você sabe.").clicked(){self.work_context.reveal(detail.summary.id);}
-                    });
-                },Err(error)=>{ui.label(format!("Não foi possível conferir os arquivos locais: {error}"));}
-            }
-        });
+                    Err(error) => {
+                        facts(ui, ("doc-facts", detail.summary.id), &rows);
+                        notice_line(
+                            ui,
+                            Tone::Warn,
+                            format!("Não foi possível conferir os arquivos locais: {error}"),
+                        );
+                    }
+                }
+            },
+        );
     }
+
     fn document_tasks(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
-        ui.group(|ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.strong("Tarefas deste documento");
-                if ui.button("Nova tarefa").clicked() {
-                    self.navigate(Leave::NewTask(detail.summary.id));
+        let mut new_task = false;
+        let mut see_all = false;
+        let mut complete: Option<i64> = None;
+        let mut edit: Option<crate::tasks::Task> = None;
+        let today_iso = chrono::Local::now().format("%Y-%m-%d").to_string();
+        titled_card(
+            ui,
+            "Tarefas",
+            |ui| {
+                if ui
+                    .add(widgets::primary(format!("{} Nova tarefa", icon::PLUS)))
+                    .clicked()
+                {
+                    new_task = true;
                 }
-                if ui.button("Ver todas").clicked() {
-                    self.tasks.focus_document(detail.summary.id);
-                    self.area = Area::Tasks;
+                if ui.add(widgets::quiet("Ver todas")).clicked() {
+                    see_all = true;
                 }
-            });
-            match self.store.list_tasks() {
+            },
+            |ui| match self.store.list_tasks() {
                 Ok(tasks) => {
                     let tasks = tasks
                         .into_iter()
@@ -4087,28 +4832,31 @@ impl PonteApp {
                         .filter(|task| task.status != "concluida")
                         .count();
                     if tasks.is_empty() {
-                        ui.small("Nenhuma tarefa ainda.");
+                        widgets::muted(ui, "Nenhuma tarefa ainda.");
                     } else {
-                        ui.small(format!(
-                            "{} pendente(s) • {} concluída(s)",
-                            pending,
-                            tasks.len() - pending
-                        ));
+                        widgets::small_muted(
+                            ui,
+                            format!("{} pendente(s) • {} concluída(s)", pending, tasks.len() - pending),
+                        );
                     }
                     if pending > 5 {
-                        ui.small(
+                        widgets::small_muted(
+                            ui,
                             "As cinco mais urgentes estão abaixo; \"Ver todas\" mostra o restante.",
                         );
                     }
                     // Same order and signals as the Tarefas panel: a task after
-                    // what it depends on, ⛓ while something before it is open.
+                    // what it depends on, a mark while something before it is open.
                     let deps = crate::tasks::Dependencies::new(&tasks);
                     let open: Vec<&crate::tasks::Task> = tasks
                         .iter()
                         .filter(|task| task.status != "concluida")
                         .collect();
                     let open = deps.order(&open);
-                    for task in open.into_iter().take(5) {
+                    for (index, task) in open.into_iter().take(5).enumerate() {
+                        if index > 0 {
+                            ui.separator();
+                        }
                         let blockers = deps.open_blockers(task.id);
                         let blocked = !blockers.is_empty();
                         let names = blockers
@@ -4117,105 +4865,149 @@ impl PonteApp {
                             .collect::<Vec<_>>()
                             .join(", ");
                         let indent = 18.0 * deps.level(task.id).min(4) as f32;
-                        ui.horizontal_wrapped(|ui| {
-                            if indent > 0.0 {
-                                ui.add_space(indent);
-                            }
-                            if blocked {
-                                ui.label(RichText::new("⛓").color(crate::theme::warning()))
-                                    .on_hover_text(format!("Aguardando: {names}"));
-                            }
-                            ui.label(&task.title);
-                            ui.label(crate::tasks::status_label(&task.status));
-                            ui.label(format!(
-                                "Prioridade da tarefa: {}",
-                                crate::tasks::priority_label(&task.priority)
-                            ));
-                            if !task.due_date.is_empty() {
-                                let date =
-                                    chrono::NaiveDate::parse_from_str(&task.due_date, "%Y-%m-%d")
-                                        .map(|date| date.format("%d/%m/%Y").to_string())
-                                        .unwrap_or_else(|_| task.due_date.clone());
-                                ui.label(format!("Prazo local: {date}"));
-                            }
-                            if task.overdue() {
-                                ui.colored_label(crate::theme::error(), "Atrasada");
-                            }
-                            if blocked {
-                                ui.small(
-                                    RichText::new(format!("↳ depende de: {names}")).color(crate::theme::muted()),
-                                );
-                            }
-                            if ui
-                                .add_enabled(
-                                    !self.tasks.task_dirty(task.id) && !blocked,
-                                    egui::Button::new("✓ Concluir").small(),
-                                )
-                                .on_hover_text(
-                                    "Marca a tarefa como concluída. Nada é enviado ao SIGADOC.",
-                                )
-                                .on_disabled_hover_text(if blocked {
-                                    format!("Conclua antes: {names}")
-                                } else {
-                                    "Salve ou cancele a edição desta tarefa antes de concluí-la."
-                                        .to_owned()
-                                })
-                                .clicked()
-                            {
-                                match self.store.complete_task(task.id) {
-                                    Ok(done) => {
-                                        self.tasks.forget_task(task.id);
-                                        let mut text = format!("Tarefa concluída: {}", done.title);
-                                        for note in self.store.take_cascade_notes() {
-                                            text.push_str(" • ");
-                                            text.push_str(&note);
-                                        }
-                                        self.message(text);
+                        let editing = self.tasks.task_dirty(task.id);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.add(widgets::quiet("Editar")).clicked() {
+                                        edit = Some(task.clone());
                                     }
-                                    Err(e) => self
-                                        .error(format!("Não foi possível concluir a tarefa: {e}")),
-                                }
-                            }
-                            if ui.button("Editar").clicked() {
-                                self.navigate(Leave::EditTask(task.clone()));
-                            }
+                                    due_pill(ui, task, &today_iso);
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            if indent > 0.0 {
+                                                ui.add_space(indent);
+                                            }
+                                            let done = egui::Button::new(
+                                                RichText::new(icon::CHECK)
+                                                    .size(14.0)
+                                                    .color(theme::c().muted),
+                                            )
+                                            .min_size(egui::vec2(24.0, 24.0))
+                                            .corner_radius(egui::CornerRadius::same(5));
+                                            if ui
+                                                .add_enabled(!editing && !blocked, done)
+                                                .on_hover_text(
+                                                    "Concluir: marca a tarefa como concluída. Nada é enviado ao SIGADOC.",
+                                                )
+                                                .on_disabled_hover_text(if blocked {
+                                                    format!("Conclua antes: {names}")
+                                                } else {
+                                                    "Salve ou cancele a edição desta tarefa antes de concluí-la."
+                                                        .to_owned()
+                                                })
+                                                .clicked()
+                                            {
+                                                complete = Some(task.id);
+                                            }
+                                            ui.with_layout(
+                                                egui::Layout::top_down(egui::Align::Min),
+                                                |ui| {
+                                                    ui.add(egui::Label::new(&task.title).wrap());
+                                                    let mut detail_line = format!(
+                                                        "{} · Prioridade {}",
+                                                        crate::tasks::status_label(&task.status),
+                                                        crate::tasks::priority_label(&task.priority)
+                                                            .to_lowercase()
+                                                    );
+                                                    if blocked {
+                                                        detail_line.push_str(&format!(
+                                                            " · {} depende de: {names}",
+                                                            icon::LOCK
+                                                        ));
+                                                    }
+                                                    let line = ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(detail_line)
+                                                                .size(theme::SIZE_SMALL)
+                                                                .color(theme::c().muted),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                    if blocked {
+                                                        line.on_hover_text(format!(
+                                                            "Aguardando: {names}"
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        },
+                                    );
+                                },
+                            );
                         });
                     }
                 }
                 Err(error) => {
-                    ui.label(format!("Não foi possível ler as tarefas: {error}"));
+                    widgets::muted(ui, format!("Não foi possível ler as tarefas: {error}"));
                 }
+            },
+        );
+        if new_task {
+            self.navigate(Leave::NewTask(detail.summary.id));
+        }
+        if see_all {
+            self.tasks.focus_document(detail.summary.id);
+            self.area = Area::Tasks;
+        }
+        if let Some(task_id) = complete {
+            match self.store.complete_task(task_id) {
+                Ok(done) => {
+                    self.tasks.forget_task(task_id);
+                    let mut text = format!("Tarefa concluída: {}", done.title);
+                    for note in self.store.take_cascade_notes() {
+                        text.push_str(" • ");
+                        text.push_str(&note);
+                    }
+                    self.message(text);
+                }
+                Err(e) => self.error(format!("Não foi possível concluir a tarefa: {e}")),
             }
-        });
+        }
+        if let Some(task) = edit {
+            self.navigate(Leave::EditTask(task));
+        }
     }
 
     fn notes(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         let id = detail.summary.id;
         let mut save = false;
         let mut discard = false;
-        {
-            let editor = self.editors.get_mut(&id).expect("editor exists");
-            ui.horizontal_wrapped(|ui| {
-                ui.strong("Notas");
-                info(ui, "Suas anotações e correções sobre este documento. Ficam só na biblioteca protegida deste computador (ou do gabinete, se estiver em equipe).");
-                save = ui
-                    .add_enabled(editor.note_dirty(), egui::Button::new("Salvar notas"))
-                    .clicked();
-                discard = ui
-                    .add_enabled(editor.note_dirty(), egui::Button::new("Desfazer alterações"))
-                    .on_hover_text("Volta ao texto salvo pela última vez.")
-                    .clicked();
-                if editor.note_dirty() {
-                    ui.colored_label(crate::theme::warning(), "● não salvas");
+        let dirty = self.editors[&id].note_dirty();
+        titled_card(
+            ui,
+            "Notas",
+            |ui| {
+                if ui
+                    .add_enabled(dirty, widgets::primary(format!("{} Salvar notas", icon::SAVE)))
+                    .clicked()
+                {
+                    save = true;
                 }
-            });
-            ui.add(
-                egui::TextEdit::multiline(&mut editor.note)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(12)
-                    .hint_text("Registre observações, pontos a verificar e correções…"),
-            );
-        }
+                if ui
+                    .add_enabled(dirty, widgets::quiet("Desfazer alterações"))
+                    .on_hover_text("Volta ao texto salvo pela última vez.")
+                    .clicked()
+                {
+                    discard = true;
+                }
+                if dirty {
+                    pill(ui, "não salvas", Tone::Warn);
+                }
+                info(ui, "Suas anotações e correções sobre este documento. Ficam só na biblioteca protegida deste computador (ou do gabinete, se estiver em equipe).");
+            },
+            |ui| {
+                let editor = self.editors.get_mut(&id).expect("editor exists");
+                ui.add(
+                    egui::TextEdit::multiline(&mut editor.note)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(10)
+                        .hint_text("Registre observações, pontos a verificar e correções…"),
+                );
+            },
+        );
         if save {
             self.save_note(id);
         }
@@ -4237,7 +5029,7 @@ impl PonteApp {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    ui.label(format!("Captura da minuta não disponível: {e}"));
+                    widgets::muted(ui, format!("Importação da minuta não disponível: {e}"));
                     return;
                 }
             }
@@ -4291,279 +5083,304 @@ impl PonteApp {
             .map(|w| format!("Gerando… {}", w.short_step()));
         let disclosure = self.ai_disclosure_text(true);
         let suggestion_pending = self.suggestion.is_some();
-        {
-            let editor = self.editors.get_mut(&id).expect("editor exists");
-            ui.horizontal_wrapped(|ui| {
-                ui.strong("Minuta");
+        titled_card(
+            ui,
+            "Minuta",
+            |ui| {
                 info(ui, "Texto editável para revisão. Confira fatos, destinatário e fundamentos antes de usar no SIGADOC. Nada é enviado ao SIGADOC por aqui.");
-                ui.label("Tipo:");
-                egui::ComboBox::from_id_salt("draft-kind")
-                    .selected_text(kind_label(&editor.kind).to_owned())
-                    .show_ui(ui, |ui| {
-                        for kind in ["resposta", "encaminhamento", "complementacao"] {
-                            ui.selectable_value(&mut editor.kind, kind.into(), kind_label(kind));
-                        }
-                    });
-                ui.label("Modelo de trabalho:");
-                // A template no longer offered (other kind, archived or
-                // unpublished meanwhile) is dropped, not kept hidden.
-                if editor
-                    .template_uid
-                    .as_ref()
-                    .is_some_and(|uid| !offered.iter().any(|t| &t.uid == uid))
+            },
+            |ui| {
                 {
-                    editor.template_uid = None;
-                    editor.selected_blocks.clear();
-                }
-                let chosen = editor
-                    .template_uid
-                    .as_ref()
-                    .and_then(|uid| offered.iter().find(|t| &t.uid == uid));
-                let chosen_name = chosen
-                    .map(|t| t.name.clone())
-                    .unwrap_or_else(|| "Nenhum".into());
-                egui::ComboBox::from_id_salt("draft-template")
-                    .selected_text(chosen_name)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(editor.template_uid.is_none(), "Nenhum")
-                            .clicked()
+                    let editor = self.editors.get_mut(&id).expect("editor exists");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = S3;
+                        widgets::field_label(ui, "Tipo");
+                        egui::ComboBox::from_id_salt("draft-kind")
+                            .selected_text(kind_label(&editor.kind).to_owned())
+                            .show_ui(ui, |ui| {
+                                for kind in ["resposta", "encaminhamento", "complementacao"] {
+                                    ui.selectable_value(&mut editor.kind, kind.into(), kind_label(kind));
+                                }
+                            });
+                        widgets::field_label(ui, "Modelo de trabalho");
+                        // A template no longer offered (other kind, archived or
+                        // unpublished meanwhile) is dropped, not kept hidden.
+                        if editor
+                            .template_uid
+                            .as_ref()
+                            .is_some_and(|uid| !offered.iter().any(|t| &t.uid == uid))
                         {
                             editor.template_uid = None;
                             editor.selected_blocks.clear();
                         }
-                        for candidate in &offered {
-                            let selected = editor.template_uid.as_deref() == Some(&candidate.uid);
-                            let response = ui.selectable_label(selected, &candidate.name);
-                            let response = if candidate.purpose.is_empty() {
-                                response
-                            } else {
-                                response.on_hover_text(&candidate.purpose)
-                            };
-                            if response.clicked() {
-                                editor.template_uid = Some(candidate.uid.clone());
+                        let chosen = editor
+                            .template_uid
+                            .as_ref()
+                            .and_then(|uid| offered.iter().find(|t| &t.uid == uid));
+                        let chosen_name = chosen
+                            .map(|t| t.name.clone())
+                            .unwrap_or_else(|| "Nenhum".into());
+                        egui::ComboBox::from_id_salt("draft-template")
+                            .selected_text(chosen_name)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(editor.template_uid.is_none(), "Nenhum")
+                                    .clicked()
+                                {
+                                    editor.template_uid = None;
+                                    editor.selected_blocks.clear();
+                                }
+                                for candidate in &offered {
+                                    let selected = editor.template_uid.as_deref() == Some(&candidate.uid);
+                                    let response = ui.selectable_label(selected, &candidate.name);
+                                    let response = if candidate.purpose.is_empty() {
+                                        response
+                                    } else {
+                                        response.on_hover_text(&candidate.purpose)
+                                    };
+                                    if response.clicked() {
+                                        editor.template_uid = Some(candidate.uid.clone());
+                                        editor.selected_blocks.clear();
+                                    }
+                                }
+                            });
+                        template = ui
+                            .add(widgets::secondary("Começar por um modelo"))
+                            .on_hover_text("Preenche o editor com a estrutura do modelo escolhido (ou um texto-base) sem usar IA.")
+                            .clicked();
+                        save_as_template = ui
+                            .add_enabled(
+                                !editor.body.trim().is_empty(),
+                                widgets::quiet("Guardar como modelo"),
+                            )
+                            .on_hover_text("Leva este texto para a área Modelos como rascunho de um novo modelo de trabalho.")
+                            .clicked();
+                    });
+                    if let Some(ranked) = &suggested {
+                        ui.horizontal_wrapped(|ui| {
+                            widgets::small_muted(ui, format!(
+                                "Modelo sugerido pelas palavras do documento: {} ({}% de semelhança)",
+                                ranked.item.name,
+                                ranked.percent()
+                            ))
+                            .on_hover_text("Comparação lexical entre o documento e o nome, a finalidade, os critérios de uso e os exemplos aprovados de cada modelo publicado. É só uma sugestão.");
+                            if ui.add(widgets::quiet("Usar este modelo")).clicked() {
+                                editor.template_uid = Some(ranked.item.uid.clone());
                                 editor.selected_blocks.clear();
                             }
-                        }
-                    });
-                template = ui
-                    .button("Começar por um modelo")
-                    .on_hover_text("Preenche o editor com a estrutura do modelo escolhido (ou um texto-base) sem usar IA.")
-                    .clicked();
-                save_as_template = ui
-                    .add_enabled(
-                        !editor.body.trim().is_empty(),
-                        egui::Button::new("Guardar como modelo"),
-                    )
-                    .on_hover_text("Leva este texto para a área Modelos como rascunho de um novo modelo de trabalho.")
-                    .clicked();
-            });
-            if let Some(ranked) = &suggested {
-                ui.horizontal_wrapped(|ui| {
-                    ui.small(format!(
-                        "Modelo sugerido pelas palavras do documento: {} ({}% de semelhança)",
-                        ranked.item.name,
-                        ranked.percent()
-                    ))
-                    .on_hover_text("Comparação lexical entre o documento e o nome, a finalidade, os critérios de uso e os exemplos aprovados de cada modelo publicado. É só uma sugestão.");
-                    if ui.small_button("Usar este modelo").clicked() {
-                        editor.template_uid = Some(ranked.item.uid.clone());
-                        editor.selected_blocks.clear();
+                        });
                     }
-                });
-            }
-            // Optional and conditional blocks of the chosen template.
-            if let Some(version) = editor
-                .template_uid
-                .as_ref()
-                .and_then(|uid| offered.iter().find(|t| &t.uid == uid))
-                .and_then(|t| t.published_version())
-            {
-                use crate::work_templates::BlockMode;
-                let optional: Vec<_> = version
-                    .block_refs
-                    .iter()
-                    .filter(|r| r.mode != BlockMode::Mandatory)
-                    .collect();
-                if !optional.is_empty() {
+                    // Optional and conditional blocks of the chosen template.
+                    if let Some(version) = editor
+                        .template_uid
+                        .as_ref()
+                        .and_then(|uid| offered.iter().find(|t| &t.uid == uid))
+                        .and_then(|t| t.published_version())
+                    {
+                        use crate::work_templates::BlockMode;
+                        let optional: Vec<_> = version
+                            .block_refs
+                            .iter()
+                            .filter(|r| r.mode != BlockMode::Mandatory)
+                            .collect();
+                        if !optional.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                widgets::field_label(ui, "Instruções opcionais");
+                                for reference in optional {
+                                    let name = blocks
+                                        .iter()
+                                        .find(|b| b.uid == reference.block_uid)
+                                        .map(|b| b.name.clone())
+                                        .unwrap_or_else(|| "instrução".into());
+                                    let label = match &reference.mode {
+                                        BlockMode::Conditional { condition } => {
+                                            format!("{name} (se: {condition})")
+                                        }
+                                        _ => name,
+                                    };
+                                    let mut on = editor.selected_blocks.contains(&reference.block_uid);
+                                    if ui.checkbox(&mut on, label).changed() {
+                                        if on {
+                                            editor.selected_blocks.insert(reference.block_uid.clone());
+                                        } else {
+                                            editor.selected_blocks.remove(&reference.block_uid);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    widgets::field_label(ui, "Pedido desta minuta (opcional)");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut editor.instructions)
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Ex.: solicitar a informação que falta, com tom objetivo."),
+                    );
                     ui.horizontal_wrapped(|ui| {
-                        ui.small("Instruções opcionais:");
-                        for reference in optional {
-                            let name = blocks
-                                .iter()
-                                .find(|b| b.uid == reference.block_uid)
-                                .map(|b| b.name.clone())
-                                .unwrap_or_else(|| "instrução".into());
-                            let label = match &reference.mode {
-                                BlockMode::Conditional { condition } => {
-                                    format!("{name} (se: {condition})")
-                                }
-                                _ => name,
-                            };
-                            let mut on = editor.selected_blocks.contains(&reference.block_uid);
-                            if ui.checkbox(&mut on, label).changed() {
-                                if on {
-                                    editor.selected_blocks.insert(reference.block_uid.clone());
-                                } else {
-                                    editor.selected_blocks.remove(&reference.block_uid);
-                                }
-                            }
+                        use crate::work_templates::Intent;
+                        let can_generate = !busy_generating && !suggestion_pending;
+                        let has_text = !editor.body.trim().is_empty();
+                        let disabled_reason = if suggestion_pending {
+                            "Há uma sugestão pronta aguardando revisão (barra inferior)."
+                        } else {
+                            "Aguarde a geração em andamento."
+                        };
+                        if ui
+                            .add_enabled(
+                                can_generate,
+                                widgets::primary(
+                                    generating_label
+                                        .clone()
+                                        .unwrap_or_else(|| format!("{} Gerar com IA", icon::AI)),
+                                ),
+                            )
+                            .on_hover_text(&disclosure)
+                            .on_disabled_hover_text(disabled_reason)
+                            .clicked()
+                        {
+                            generate = Some(Intent::New);
+                        }
+                        if ui
+                            .add_enabled(
+                                can_generate && has_text,
+                                widgets::secondary("Completar"),
+                            )
+                            .on_hover_text("Completar texto atual: a IA preserva o que você escreveu, preenche os [preencher] e acrescenta as seções que faltam.")
+                            .on_disabled_hover_text(if has_text { disabled_reason } else { "Escreva ou carregue um texto antes." })
+                            .clicked()
+                        {
+                            generate = Some(Intent::Complete);
+                        }
+                        let has_request = !editor.instructions.trim().is_empty();
+                        if ui
+                            .add_enabled(
+                                can_generate && has_text && has_request,
+                                widgets::secondary("Revisar"),
+                            )
+                            .on_hover_text("Revisar texto atual: a IA altera só o necessário para atender ao pedido; o resultado abre lado a lado com o texto atual.")
+                            .on_disabled_hover_text(if !has_text {
+                                "Escreva ou carregue um texto antes."
+                            } else if !has_request {
+                                "Escreva em \"Pedido desta minuta\" o que deve ser revisado."
+                            } else {
+                                disabled_reason
+                            })
+                            .clicked()
+                        {
+                            generate = Some(Intent::Revise);
                         }
                     });
                 }
-            }
-            ui.add(
-                egui::TextEdit::multiline(&mut editor.instructions)
-                    .desired_rows(1)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Pedido desta minuta (opcional): ex. solicitar a informação que falta, com tom objetivo."),
-            );
-            ui.horizontal_wrapped(|ui| {
-                use crate::work_templates::Intent;
-                let can_generate = !busy_generating && !suggestion_pending;
-                let has_text = !editor.body.trim().is_empty();
-                let disabled_reason = if suggestion_pending {
-                    "Há uma sugestão pronta aguardando revisão (barra inferior)."
-                } else {
-                    "Aguarde a geração em andamento."
-                };
-                if ui
-                    .add_enabled(
-                        can_generate,
-                        egui::Button::new(
-                            generating_label
-                                .clone()
-                                .unwrap_or_else(|| "Gerar nova com IA".into()),
-                        ),
-                    )
-                    .on_hover_text(&disclosure)
-                    .on_disabled_hover_text(disabled_reason)
-                    .clicked()
                 {
-                    generate = Some(Intent::New);
-                }
-                if ui
-                    .add_enabled(
-                        can_generate && has_text,
-                        egui::Button::new("Completar texto atual"),
-                    )
-                    .on_hover_text("A IA preserva o que você escreveu, preenche os [preencher] e acrescenta as seções que faltam.")
-                    .on_disabled_hover_text(if has_text { disabled_reason } else { "Escreva ou carregue um texto antes." })
-                    .clicked()
-                {
-                    generate = Some(Intent::Complete);
-                }
-                let has_request = !editor.instructions.trim().is_empty();
-                if ui
-                    .add_enabled(
-                        can_generate && has_text && has_request,
-                        egui::Button::new("Revisar texto atual"),
-                    )
-                    .on_hover_text("A IA altera só o necessário para atender ao pedido; o resultado abre lado a lado com o texto atual.")
-                    .on_disabled_hover_text(if !has_text {
-                        "Escreva ou carregue um texto antes."
-                    } else if !has_request {
-                        "Escreva em \"Pedido desta minuta\" o que deve ser revisado."
-                    } else {
-                        disabled_reason
-                    })
-                    .clicked()
-                {
-                    generate = Some(Intent::Revise);
-                }
-            });
-        }
-        ui.add_space(6.0);
-        {
-            let editor = self.editors.get_mut(&id).expect("editor exists");
-            ui.horizontal_wrapped(|ui| {
-                save = ui
-                    .add_enabled(
-                        editor.draft_dirty() && !editor.body.trim().is_empty(),
-                        egui::Button::new("Salvar nova versão"),
-                    )
-                    .clicked();
-                if ui
-                    .add_enabled(!editor.body.is_empty(), egui::Button::new("Copiar texto"))
-                    .on_hover_text("Copiar não salva uma versão.")
-                    .clicked()
-                {
-                    ui.ctx().copy_text(editor.body.clone());
-                }
-                export = ui
-                    .add_enabled(!editor.body.trim().is_empty(), egui::Button::new("Exportar (RTF)"))
-                    .on_hover_text("Cria uma cópia legível fora do acervo protegido, para abrir no Word ou similar. Não salva uma versão.")
-                    .clicked();
-                if !detail.drafts.is_empty() {
-                    ui.menu_button("Comparar com versão ▾", |ui| {
-                        for draft in &detail.drafts {
-                            if ui
-                                .button(format!(
-                                    "#{} • {} • {}",
-                                    draft.id,
-                                    kind_label(&draft.kind),
-                                    display_date(&draft.created_at)
-                                ))
-                                .clicked()
-                            {
-                                compare = Some(draft.clone());
-                                ui.close();
-                            }
+                    let editor = self.editors.get_mut(&id).expect("editor exists");
+                    if editor.capture_id != detail.summary.latest_capture_id
+                        || self.store.sources_stale(&editor.materials)
+                    {
+                        notice_line(ui, Tone::Warn, "Este texto foi feito sobre uma importação anterior ou fontes que mudaram. Revise antes de aproveitar.");
+                    }
+                    ui.add(
+                        egui::TextEdit::multiline(&mut editor.body)
+                            .desired_rows(16)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Escreva livremente ou comece por um modelo…"),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        save = ui
+                            .add_enabled(
+                                editor.draft_dirty() && !editor.body.trim().is_empty(),
+                                widgets::primary(format!("{} Salvar nova versão", icon::SAVE)),
+                            )
+                            .clicked();
+                        if ui
+                            .add_enabled(
+                                !editor.body.is_empty(),
+                                widgets::secondary(format!("{} Copiar", icon::COPY)),
+                            )
+                            .on_hover_text("Copiar texto. Não salva uma versão.")
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(editor.body.clone());
                         }
+                        export = ui
+                            .add_enabled(
+                                !editor.body.trim().is_empty(),
+                                widgets::secondary("Exportar (RTF)"),
+                            )
+                            .on_hover_text("Cria uma cópia legível fora do acervo protegido, para abrir no Word ou similar. Não salva uma versão.")
+                            .clicked();
+                        if !detail.drafts.is_empty() {
+                            egui::containers::menu::MenuButton::from_button(widgets::secondary(
+                                format!("Comparar com versão {}", icon::DOWN),
+                            ))
+                            .ui(ui, |ui| {
+                                for draft in &detail.drafts {
+                                    if ui
+                                        .button(format!(
+                                            "#{} • {} • {}",
+                                            draft.id,
+                                            kind_label(&draft.kind),
+                                            display_date(&draft.created_at)
+                                        ))
+                                        .clicked()
+                                    {
+                                        compare = Some(draft.clone());
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        }
+                        if editor.draft_dirty() {
+                            pill(ui, "não salva", Tone::Warn);
+                        }
+                        widgets::small_muted(ui, editor.origin.as_str());
                     });
                 }
-                if editor.draft_dirty() {
-                    ui.colored_label(crate::theme::warning(), "● não salva");
-                }
-                ui.small(&editor.origin);
-            });
-            if editor.capture_id != detail.summary.latest_capture_id
-                || self.store.sources_stale(&editor.materials)
-            {
-                ui.colored_label(crate::theme::warning(), "Este texto foi feito sobre uma importação anterior ou fontes que mudaram. Revise antes de aproveitar.");
-            }
-            ui.add(
-                egui::TextEdit::multiline(&mut editor.body)
-                    .desired_rows(16)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Escreva livremente ou comece por um modelo…"),
-            );
-        }
-        ui.add_space(6.0);
-        ui.collapsing(format!("Versões salvas ({})", detail.drafts.len()), |ui| {
-            for draft in &detail.drafts {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Abrir").clicked() {
-                        loaded = Some(draft.clone());
-                    }
-                    ui.label(format!(
-                        "#{} • {} • {}",
-                        draft.id,
-                        kind_label(&draft.kind),
-                        display_date(&draft.created_at)
-                    ));
-                    if draft.stale || draft.capture_id != detail.summary.latest_capture_id {
-                        ui.colored_label(crate::theme::warning(), "importação anterior");
-                    }
-                    if let Some(provenance) = &draft.provenance {
-                        if let Some(uid) = &provenance.generation_uid {
-                            if ui
-                                .small_button("Material utilizado")
-                                .on_hover_text("Modelo, instruções, pedido, exemplos, fontes e IA que produziram este texto.")
-                                .clicked()
-                            {
-                                material = Some(uid.clone());
-                            }
-                        } else if !provenance.template_name.is_empty() {
-                            ui.small(format!("modelo {}", provenance.template_name));
+                ui.collapsing(format!("Versões salvas ({})", detail.drafts.len()), |ui| {
+                    for (index, draft) in detail.drafts.iter().enumerate() {
+                        if index > 0 {
+                            ui.separator();
                         }
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.add(widgets::secondary("Abrir")).clicked() {
+                                loaded = Some(draft.clone());
+                            }
+                            ui.label(format!(
+                                "#{} • {} • {}",
+                                draft.id,
+                                kind_label(&draft.kind),
+                                display_date(&draft.created_at)
+                            ));
+                            if draft.stale || draft.capture_id != detail.summary.latest_capture_id {
+                                pill(ui, "importação anterior", Tone::Warn);
+                            }
+                            if let Some(provenance) = &draft.provenance {
+                                if let Some(uid) = &provenance.generation_uid {
+                                    if ui
+                                        .add(widgets::quiet("Material utilizado"))
+                                        .on_hover_text("Modelo, instruções, pedido, exemplos, fontes e IA que produziram este texto.")
+                                        .clicked()
+                                    {
+                                        material = Some(uid.clone());
+                                    }
+                                } else if !provenance.template_name.is_empty() {
+                                    widgets::small_muted(
+                                        ui,
+                                        format!("modelo {}", provenance.template_name),
+                                    );
+                                }
+                            }
+                        });
+                    }
+                    if detail.drafts.is_empty() {
+                        widgets::small_muted(
+                            ui,
+                            "As versões aparecerão aqui após “Salvar nova versão”.",
+                        );
                     }
                 });
-            }
-            if detail.drafts.is_empty() {
-                ui.small("As versões aparecerão aqui após “Salvar nova versão”.");
-            }
-        });
+            },
+        );
         if export {
             let body = self.editors[&id].body.clone();
             match crate::draft_tools::export(&export_capture, &body) {
@@ -4691,7 +5508,7 @@ impl PonteApp {
             AiProvider::Local => format!("{provider}, sem envio externo"),
             _ => format!("envia dados ao {provider}: {destination}"),
         };
-        ui.small(text).on_hover_text(self.ai_disclosure_text(false));
+        widgets::small_muted(ui, text).on_hover_text(self.ai_disclosure_text(false));
     }
 
     /// Opens "Configurar IA" and asks the server for its models.
@@ -4918,32 +5735,40 @@ impl PonteApp {
             .open(&mut open)
             .default_size([720.0, 570.0])
             .show(ctx, |ui| {
-                ui.strong(format!(
-                    "{} • {}",
-                    suggestion.number,
-                    kind_label(&suggestion.kind)
-                ));
-                ui.small(format!(
-                    "Baseada na captura #{} • ainda não salva",
-                    suggestion.capture_id
-                ));
-                ui.label("Leia o texto e leve ao editor para corrigir e salvar uma versão.");
-                egui::ScrollArea::vertical()
-                    .max_height(380.0)
-                    .show(ui, |ui| {
-                        let mut text = suggestion.body.as_str();
-                        ui.add(
-                            egui::TextEdit::multiline(&mut text)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(20),
-                        );
-                    });
+                ui.spacing_mut().item_spacing.y = S2;
                 ui.horizontal(|ui| {
-                    use_text = ui.button("Levar ao editor").clicked();
-                    if ui.button("Copiar sugestão").clicked() {
+                    ui.label(
+                        RichText::new(&suggestion.number)
+                            .font(theme::font_strong(theme::SIZE_SECTION)),
+                    );
+                    pill(ui, kind_label(&suggestion.kind), Tone::Neutral);
+                    pill(ui, "ainda não salva", Tone::Warn);
+                });
+                widgets::small_muted(
+                    ui,
+                    format!("Baseada na importação nº {}", suggestion.capture_id),
+                );
+                ui.label("Leia o texto e leve ao editor para corrigir e salvar uma versão.");
+                widgets::card(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(380.0)
+                        .show(ui, |ui| {
+                            let mut text = suggestion.body.as_str();
+                            ui.add(
+                                egui::TextEdit::multiline(&mut text)
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(20),
+                            );
+                        });
+                });
+                ui.horizontal(|ui| {
+                    use_text = ui.add(widgets::primary("Levar ao editor")).clicked();
+                    if ui.add(widgets::secondary(format!("{} Copiar sugestão", icon::COPY))).clicked() {
                         ui.ctx().copy_text(suggestion.body.clone());
                     }
-                    discard = ui.button("Descartar sugestão").clicked();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        discard = ui.add(widgets::danger("Descartar sugestão")).clicked();
+                    });
                 });
             });
         self.suggestion_open = open;
@@ -5010,82 +5835,115 @@ impl PonteApp {
             .default_size([700.0, 560.0])
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.label(format!("O que foi pedido: {}", record.intent.label()));
-                    match &record.template_uid {
-                        Some(_) => ui.label(format!(
-                            "Modelo de trabalho: {} (versão {})",
-                            record.template_name,
-                            record.template_version.unwrap_or(0)
-                        )),
-                        None => ui.label("Modelo de trabalho: nenhum"),
-                    };
-                    ui.label(format!("IA: {} ({})", record.model, record.provider));
-                    ui.label(format!(
-                        "Por {} em {}",
-                        record.created_by,
-                        display_date(&record.created_at)
-                    ));
-                    match &record.outcome {
-                        crate::work_templates::Outcome::Accepted => {
-                            ui.label("Resultado: texto aceito pelo programa e levado à revisão.");
+                    ui.spacing_mut().item_spacing.y = S3;
+                    widgets::card(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = S2;
+                        let template = match &record.template_uid {
+                            Some(_) => format!(
+                                "{} (versão {})",
+                                record.template_name,
+                                record.template_version.unwrap_or(0)
+                            ),
+                            None => "nenhum".to_owned(),
+                        };
+                        facts(
+                            ui,
+                            "material-facts",
+                            &[
+                                ("O que foi pedido", record.intent.label().to_owned()),
+                                ("Modelo de trabalho", template),
+                                ("IA", format!("{} ({})", record.model, record.provider)),
+                                (
+                                    "Feito",
+                                    format!(
+                                        "por {} em {}",
+                                        record.created_by,
+                                        display_date(&record.created_at)
+                                    ),
+                                ),
+                            ],
+                        );
+                        match &record.outcome {
+                            crate::work_templates::Outcome::Accepted => {
+                                ui.horizontal_wrapped(|ui| {
+                                    pill(ui, "Aceito", Tone::Ok);
+                                    ui.label("Texto aceito pelo programa e levado à revisão.");
+                                });
+                            }
+                            crate::work_templates::Outcome::Refused { reason } => {
+                                notice_line(ui, Tone::Warn, format!("Resultado: recusado — {reason}"));
+                            }
                         }
-                        crate::work_templates::Outcome::Refused { reason } => {
-                            ui.colored_label(crate::theme::warning(), format!("Resultado: recusado — {reason}"));
-                        }
-                    }
+                    });
                     if !record.request_guidance.trim().is_empty() {
-                        ui.add_space(6.0);
-                        ui.strong("Pedido desta minuta");
-                        ui.label(&record.request_guidance);
+                        widgets::card(ui, |ui| {
+                            widgets::section(ui, "Pedido desta minuta");
+                            ui.add(egui::Label::new(&record.request_guidance).wrap());
+                        });
                     }
                     if !record.blocks.is_empty() {
-                        ui.add_space(6.0);
-                        ui.strong("Instruções aplicadas");
-                        for block in &record.blocks {
-                            ui.collapsing(
-                                format!("{} (versão {}, {})", block.name, block.version, block.mode),
-                                |ui| {
-                                    ui.label(&block.text);
-                                },
-                            );
-                        }
+                        widgets::card(ui, |ui| {
+                            widgets::section(ui, "Instruções aplicadas");
+                            for block in &record.blocks {
+                                ui.collapsing(
+                                    format!("{} (versão {}, {})", block.name, block.version, block.mode),
+                                    |ui| {
+                                        ui.add(egui::Label::new(&block.text).wrap());
+                                    },
+                                );
+                            }
+                        });
                     }
                     if !record.example_uids.is_empty() {
-                        ui.add_space(6.0);
-                        ui.strong(format!(
-                            "Exemplos aprovados mostrados: {}",
-                            record.example_uids.len()
-                        ));
-                        ui.small("Os exemplos mostram só a forma; seus fatos não valem para este caso.");
+                        widgets::card(ui, |ui| {
+                            widgets::section(
+                                ui,
+                                format!(
+                                    "Exemplos aprovados mostrados: {}",
+                                    record.example_uids.len()
+                                ),
+                            );
+                            widgets::small_muted(ui, "Os exemplos mostram só a forma; seus fatos não valem para este caso.");
+                        });
                     }
                     if !record.sources.is_empty() {
-                        ui.add_space(6.0);
-                        ui.strong("Fontes selecionadas");
-                        for source in &record.sources {
-                            ui.label(format!("{} — {}", source.id, source.label));
-                        }
-                        ui.small("Um trecho citado foi encontrado literalmente na fonte; isso não comprova a conclusão.");
+                        widgets::card(ui, |ui| {
+                            widgets::section(ui, "Fontes selecionadas");
+                            for source in &record.sources {
+                                ui.add(
+                                    egui::Label::new(format!("{} — {}", source.id, source.label))
+                                        .wrap(),
+                                );
+                            }
+                            widgets::small_muted(ui, "Um trecho citado foi encontrado literalmente na fonte; isso não comprova a conclusão.");
+                        });
                     }
                     if !record.conflicts_shown.is_empty() {
-                        ui.add_space(6.0);
-                        ui.strong("Avisos de conflito exibidos antes de gerar");
-                        for conflict in &record.conflicts_shown {
-                            ui.colored_label(crate::theme::warning(), conflict);
-                        }
+                        widgets::card(ui, |ui| {
+                            widgets::section(ui, "Avisos de conflito exibidos antes de gerar");
+                            for conflict in &record.conflicts_shown {
+                                notice_line(ui, Tone::Warn, conflict.as_str());
+                            }
+                        });
                     }
-                    ui.add_space(6.0);
-                    ui.small(format!(
-                        "Instruções enviadas: {} • dados: {} • assinatura {}",
-                        crate::labels::file_size(record.system_bytes as u64),
-                        crate::labels::file_size(record.data_bytes as u64),
-                        record.system_sha256.chars().take(12).collect::<String>()
-                    ));
+                    widgets::small_muted(
+                        ui,
+                        format!(
+                            "Instruções enviadas: {} • dados: {} • assinatura {}",
+                            crate::labels::file_size(record.system_bytes as u64),
+                            crate::labels::file_size(record.data_bytes as u64),
+                            record.system_sha256.chars().take(12).collect::<String>()
+                        ),
+                    );
                 });
             });
         if !open {
             self.material = None;
         }
     }
+
+    /// The window "Material utilizado": everything a generation used, as
+    /// recorded at the time, so the text can be read with its basis.
 
     fn request_trash(&mut self, target: crate::trash::Target) {
         use crate::trash::Kind;
@@ -5653,10 +6511,14 @@ impl eframe::App for PonteApp {
 impl PonteApp {
     const TOUR: &'static [&'static str] = &[
         "documentos-inicio",
+        "documentos-filtros",
         "ficha-resumo",
         "ficha-documento",
         "ficha-notas",
         "ficha-mais",
+        "ficha-manual",
+        "ficha-email",
+        "ficha-juntada",
         "tarefas",
         "tarefa-aberta",
         "atendimentos",
@@ -5669,6 +6531,7 @@ impl PonteApp {
         "janela-lixeira",
         "janela-registro-manual",
         "janela-sobre",
+        "janela-consulta",
     ];
 
     /// The screens of the app itself, then the views each panel declares
@@ -5730,6 +6593,8 @@ impl PonteApp {
         self.trash.open = false;
         self.manual_form.open = false;
         self.about_open = false;
+        self.consult = None;
+        self.filters_open = false;
         self.notice = None;
         let dark = name.starts_with("escuro-");
         crate::theme::set_appearance(
@@ -5747,6 +6612,40 @@ impl PonteApp {
                 self.area = Area::Documents;
                 self.selected_id = None;
                 self.detail = None;
+            }
+            "documentos-filtros" => {
+                self.area = Area::Documents;
+                self.selected_id = None;
+                self.detail = None;
+                self.filters_open = true;
+            }
+            "ficha-manual" | "ficha-email" | "ficha-juntada" => {
+                let found = self
+                    .store
+                    .list_documents("")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|d| match name {
+                        "ficha-manual" => d.manual && !d.email,
+                        "ficha-email" => d.email,
+                        _ => d.joined_children_count > 0,
+                    })
+                    .map(|d| d.id);
+                if let Some(id) = found {
+                    self.area = Area::Documents;
+                    self.select(id);
+                }
+                self.tab = if name == "ficha-juntada" {
+                    Tab::Overview
+                } else {
+                    Tab::Document
+                };
+            }
+            "janela-consulta" => {
+                self.area = Area::Documents;
+                if let Some(id) = document {
+                    self.open_consult(id);
+                }
             }
             "ficha-resumo" | "ficha-documento" | "ficha-notas" | "ficha-mais" => {
                 if let Some(id) = document {
@@ -5851,6 +6750,7 @@ fn display_date(value: &str) -> String {
 }
 
 /// "Dados do registro" of a manual record.
+/// "Dados do registro" of a manual record.
 fn manual_facts(ui: &mut egui::Ui, detail: &DocumentDetail) {
     let metadata = &detail.capture.metadata;
     let value = |key: &str| {
@@ -5859,36 +6759,28 @@ fn manual_facts(ui: &mut egui::Ui, detail: &DocumentDetail) {
             .cloned()
             .unwrap_or_else(|| "não informado".into())
     };
-    ui.small("Informado por quem criou o registro; nada disto vem do SIGADOC.");
-    egui::Grid::new(("manual-facts", detail.summary.id))
-        .num_columns(2)
-        .striped(true)
-        .max_col_width(600.0)
-        .show(ui, |ui| {
-            ui.label("Número no Ponte");
-            ui.label(&detail.summary.document_number);
-            ui.end_row();
-            ui.label("Tipo");
-            ui.label(value("document_type"));
-            ui.end_row();
-            ui.label("Origem");
-            ui.add(egui::Label::new(value("origin")).wrap());
-            ui.end_row();
-            ui.label("Data do documento");
-            ui.label(
+    widgets::small_muted(
+        ui,
+        "Informado por quem criou o registro; nada disto vem do SIGADOC.",
+    );
+    facts(
+        ui,
+        ("manual-facts", detail.summary.id),
+        &[
+            ("Número no Ponte", detail.summary.document_number.clone()),
+            ("Tipo", value("document_type")),
+            ("Origem", value("origin")),
+            (
+                "Data do documento",
                 metadata
                     .get("document_date")
                     .map(|d| crate::labels::date(d))
                     .unwrap_or_else(|| "não informada".into()),
-            );
-            ui.end_row();
-            ui.label("Registrado por");
-            ui.label(value("registered_by"));
-            ui.end_row();
-            ui.label("Última versão");
-            ui.label(display_date(&detail.capture.captured_at));
-            ui.end_row();
-        });
+            ),
+            ("Registrado por", value("registered_by")),
+            ("Última versão", display_date(&detail.capture.captured_at)),
+        ],
+    );
 }
 
 fn kind_label(kind: &str) -> &str {

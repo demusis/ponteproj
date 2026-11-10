@@ -229,30 +229,29 @@ pub fn detect_juntada(capture: &Capture) -> Option<JuntadaInfo> {
 #[cfg(feature = "desktop")]
 pub fn show_history(ui: &mut eframe::egui::Ui, capture: &Capture, document: i64) {
     use eframe::egui;
-    ui.group(|ui|{
-        ui.set_width(ui.available_width());
+    {
         match movements(capture){
             Ok(events)=>{
-                ui.strong(format!("Histórico importado do SIGADOC • {} evento(s)",events.len()));
-                if events.is_empty(){ui.label("Nenhum histórico importado nesta captura. Reimporte com a extensão atualizada para tentar obter os registros.");return;}
-                ui.small("Fonte: tabela de eventos da visualização detalhada. Ordem e datas preservadas como exibidas; não são calculadas a partir da data documental.");
+                crate::widgets::field_label(ui,&format!("Histórico importado do SIGADOC • {} evento(s)",events.len()));
+                if events.is_empty(){ui.label("Nenhum histórico importado nesta importação. Reimporte com a extensão atualizada para tentar obter os registros.");return;}
+                crate::widgets::small_muted(ui,"Fonte: tabela de eventos da visualização detalhada. Ordem e datas preservadas como exibidas; não são calculadas a partir da data documental.");
                 for (index,event) in events.iter().enumerate(){
                     ui.push_id(("history-record",document,index),|ui|{
                         ui.separator();
                         ui.horizontal_wrapped(|ui|{
                             ui.strong(&event.event);ui.label(if event.date.is_empty(){"Data não exibida neste registro"}else{&event.date});
                         });
-                        ui.small(&event.scope);
+                        crate::widgets::small_muted(ui,event.scope.as_str());
                         ui.label(format!("Cadastrante: {} / {}",if event.registered_person.is_empty(){"não informado"}else{&event.registered_person},if event.registered_unit.is_empty(){"lotação não informada"}else{&event.registered_unit}));
                         ui.label(format!("Atendente: {} / {}",if event.attendant_person.is_empty(){"não informado"}else{&event.attendant_person},if event.attendant_unit.is_empty(){"lotação não informada"}else{&event.attendant_unit}));
                         if !event.description.is_empty(){ui.add(egui::Label::new(format!("Descrição: {}",event.description)).wrap());}
                     });
                 }
-                ui.small("Cadastrante e atendente mantêm os papéis escritos no histórico. Uma data vazia não foi completada por inferência.");
+                crate::widgets::small_muted(ui,"Cadastrante e atendente mantêm os papéis escritos no histórico. Uma data vazia não foi completada por inferência.");
                 if let Some(source)=capture.metadata.get("movement_source"){ui.hyperlink_to("Consultar histórico no SIGADOC",source);}
             },Err(error)=>{ui.label(format!("Não foi possível apresentar o histórico: {error}"));}
         }
-    });
+    }
 }
 
 /// Kind of the automatic link: the parent is the antecedent of the juntado piece.
@@ -745,10 +744,10 @@ impl DossierPanel {
                             .find(|doc| doc.id == document)
                             .is_some_and(|doc| doc.latest_capture_id == version.id)
                         {
-                            ui.strong("Captura em uso");
+                            ui.strong("Importação em uso");
                         }
                         if ui
-                            .small_button(format!("Excluir captura #{}…", version.id))
+                            .add(crate::widgets::quiet(format!("Excluir importação nº {}…", version.id)))
                             .clicked()
                         {
                             self.trash_requested = Some(crate::trash::Target {
@@ -757,22 +756,22 @@ impl DossierPanel {
                             });
                         }
                     });
-                    ui.collapsing(format!("Captura #{} • salva em {}",version.id,version.saved_at),|ui|{
+                    ui.collapsing(format!("Importação nº {} • salva em {}",version.id,version.saved_at),|ui|{
                 ui.label(format!("Obtida em {}",version.capture.captured_at));ui.label(format!("Fonte: {}",version.capture.source_url));
                 if let Some(previous)=versions.get(index+1){
                     if previous.capture.title!=version.capture.title{ui.label(format!("Título: {} → {}",previous.capture.title,version.capture.title));}
                     for (key,old,new) in changed_metadata(&previous.capture,&version.capture){ui.collapsing(format!("Campo alterado: {key}"),|ui|{ui.label(format!("Antes: {}",old.as_deref().unwrap_or("ausente")));ui.label(format!("Depois: {}",new.as_deref().unwrap_or("ausente")));});}
-                    ui.label(if previous.capture.text==version.capture.text{"Texto sem alteração"}else{"Texto diferente da captura anterior; consulte as duas versões abaixo"});
-                    if previous.capture.references!=version.capture.references{ui.label("Referências diferentes da captura anterior");}
-                    if previous.capture.text!=version.capture.text{ui.collapsing("Texto da captura anterior",|ui|{let mut text=previous.capture.text.as_str();ui.add(egui::TextEdit::multiline(&mut text).desired_rows(8).desired_width(f32::INFINITY));});}
-                }else{ui.label("Primeira captura preservada.");}
-                ui.collapsing("Texto desta captura",|ui|{let mut text=version.capture.text.as_str();ui.add(egui::TextEdit::multiline(&mut text).desired_rows(8).desired_width(f32::INFINITY));});
+                    ui.label(if previous.capture.text==version.capture.text{"Texto sem alteração"}else{"Texto diferente da importação anterior; consulte as duas versões abaixo"});
+                    if previous.capture.references!=version.capture.references{ui.label("Referências diferentes da importação anterior");}
+                    if previous.capture.text!=version.capture.text{ui.collapsing("Texto da importação anterior",|ui|{let mut text=previous.capture.text.as_str();ui.add(egui::TextEdit::multiline(&mut text).desired_rows(8).desired_width(f32::INFINITY));});}
+                }else{ui.label("Primeira importação preservada.");}
+                ui.collapsing("Texto desta importação",|ui|{let mut text=version.capture.text.as_str();ui.add(egui::TextEdit::multiline(&mut text).desired_rows(8).desired_width(f32::INFINITY));});
                 match store.list_files(version.id){Ok(files)=>{for file in files{ui.label(format!("PDF: {} • SHA256 {}",file.label,file.sha256));}},Err(e)=>{ui.label(format!("Falha ao ler arquivos: {e}"));}}
             });
                 }
             }
             Err(e) => {
-                ui.label(format!("Falha ao ler capturas: {e}"));
+                ui.label(format!("Falha ao ler importações: {e}"));
             }
         }
         open

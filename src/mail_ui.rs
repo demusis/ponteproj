@@ -9,6 +9,8 @@ use crate::{
     mail::MailImport,
     storage::Store,
 };
+use crate::theme::{self, icon};
+use crate::widgets::{self, Tone};
 use eframe::egui::{self, Color32, RichText};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -448,11 +450,7 @@ impl MailPanel {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        let shown = if self.quick {
-                            self.quick_contents(ui, busy)
-                        } else {
-                            self.contents(ui, store, busy)
-                        };
+                        let shown = self.ui(ui, store, busy);
                         if !matches!(shown, MailAction::None) {
                             action = shown;
                         }
@@ -473,6 +471,23 @@ impl MailPanel {
         action
     }
 
+    /// The same contents as the window, drawn in place (the Ajustes area
+    /// embeds it). Never touches the network: it returns the request.
+    pub fn ui(&mut self, ui: &mut egui::Ui, store: &mut Store, busy: MailBusy) -> MailAction {
+        if !self.accounts_loaded {
+            self.reload_accounts(store);
+        }
+        if self.pending_check {
+            self.pending_check = false;
+            self.refresh_imported(store);
+        }
+        if self.quick {
+            self.quick_contents(ui, busy)
+        } else {
+            self.contents(ui, store, busy)
+        }
+    }
+
     fn contents(&mut self, ui: &mut egui::Ui, store: &mut Store, state: MailBusy) -> MailAction {
         // Where the contents start, to measure what is above the list
         // independently of the outer scroll position.
@@ -480,42 +495,24 @@ impl MailPanel {
         let busy = state != MailBusy::Free;
         let mut action = MailAction::None;
 
-        // 4. Notice line (kept at the top).
+        // Notice line (kept at the top).
         if let Some((msg, error)) = self.notice.clone() {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(if error { crate::theme::error() } else { crate::theme::success() }, msg);
-                if ui
-                    .small_button("✕")
-                    .on_hover_text("Fechar o aviso")
-                    .clicked()
-                {
-                    self.notice = None;
-                }
-            });
-            ui.separator();
-        }
-        match state {
-            MailBusy::Free => {}
-            MailBusy::Mail => {
-                ui.colored_label(
-                    crate::theme::warning(),
-                    "Aguarde: o Ponte está conversando com o servidor de e-mail…",
-                );
+            if notice_line(ui, &msg, error) {
+                self.notice = None;
             }
-            MailBusy::Other => {
-                ui.colored_label(crate::theme::warning(), "Aguarde a operação em andamento.");
-            }
+            ui.add_space(theme::S2);
         }
+        busy_note(ui, state, false);
 
         self.accounts_section(ui, store, busy);
-        ui.separator();
+        ui.add_space(theme::S3);
         if self.form.is_none() {
             if let a @ (MailAction::ListFolders(_) | MailAction::ListMessages { .. }) =
                 self.folder_section(ui, busy)
             {
                 action = a;
             }
-            ui.separator();
+            ui.add_space(theme::S3);
             if self.messages_loaded {
                 if let a @ MailAction::Fetch { .. } = self.messages_section(ui, busy) {
                     action = a;
@@ -532,31 +529,24 @@ impl MailPanel {
         let busy = state != MailBusy::Free;
         let mut action = MailAction::None;
         if let Some((msg, error)) = self.notice.clone() {
-            ui.colored_label(if error { crate::theme::error() } else { crate::theme::success() }, msg);
-        }
-        match state {
-            MailBusy::Free => {}
-            MailBusy::Mail => {
-                ui.colored_label(crate::theme::warning(), "Buscando as mensagens…");
+            if notice_line(ui, &msg, error) {
+                self.notice = None;
             }
-            MailBusy::Other => {
-                ui.colored_label(
-                    crate::theme::warning(),
-                    "Aguarde a operação em andamento; a lista vem em seguida.",
-                );
-            }
+            ui.add_space(theme::S2);
         }
+        busy_note(ui, state, true);
         let account = self.effective_account();
         let filter = self.filter.unwrap_or_default();
         ui.horizontal_wrapped(|ui| {
             let name = account.as_ref().map(|a| a.name.clone()).unwrap_or_default();
-            ui.strong(name);
-            ui.label("·");
-            ui.label(crate::imap::folder_display_name(&self.folder_raw));
-            ui.label("·");
-            ui.label(filter.label());
+            ui.label(RichText::new(name).font(theme::font_strong(theme::SIZE_BODY)));
+            widgets::pill(ui, crate::imap::folder_display_name(&self.folder_raw), Tone::Neutral);
+            widgets::pill(ui, filter.label(), Tone::Neutral);
             if ui
-                .add_enabled(!busy && account.is_some(), egui::Button::new("⟳ Atualizar"))
+                .add_enabled(
+                    !busy && account.is_some(),
+                    widgets::secondary(format!("{} Atualizar", icon::SYNC)),
+                )
                 .clicked()
             {
                 if let Some(a) = account.clone() {
@@ -565,20 +555,23 @@ impl MailPanel {
                 }
             }
             if ui
-                .add_enabled(!busy, egui::Button::new("Trocar pasta ou conta…"))
+                .add_enabled(!busy, widgets::quiet("Trocar pasta ou conta…"))
                 .on_hover_text("Abre a janela completa: contas, pastas e filtro.")
                 .clicked()
             {
                 self.quick = false;
             }
         });
-        ui.separator();
+        ui.add_space(theme::S2);
         if self.messages_loaded {
             if let a @ MailAction::Fetch { .. } = self.messages_section(ui, busy) {
                 action = a;
             }
         } else if !busy && self.notice.is_some() {
-            ui.label("A lista não pôde ser lida. Use Atualizar ou Trocar pasta ou conta…");
+            widgets::muted(
+                ui,
+                "A lista não pôde ser lida. Use Atualizar ou Trocar pasta ou conta…",
+            );
         }
         action
     }
@@ -586,200 +579,221 @@ impl MailPanel {
     // -- 1. Accounts ------------------------------------------------------
 
     fn accounts_section(&mut self, ui: &mut egui::Ui, store: &mut Store, busy: bool) {
-        ui.strong("Conta de e-mail");
         let mut new_account = false;
         let mut edit = false;
         let mut delete = false;
         let mut changed_to: Option<String> = None;
-        ui.horizontal_wrapped(|ui| {
-            let label = self
-                .selected
-                .as_ref()
-                .and_then(|uid| self.accounts.iter().find(|a| &a.uid == uid))
-                .map(|a| format!("{} — {}", a.name, a.user))
-                .unwrap_or_else(|| "(nenhuma conta salva)".into());
-            ui.add_enabled_ui(self.form.is_none() && !busy, |ui| {
-                egui::ComboBox::from_id_salt("mail_account")
-                    .width(320.0)
-                    .selected_text(label)
-                    .show_ui(ui, |ui| {
-                        for a in &self.accounts {
-                            let is_sel = self.selected.as_deref() == Some(a.uid.as_str());
-                            if ui
-                                .selectable_label(is_sel, format!("{} — {}", a.name, a.user))
-                                .clicked()
-                                && !is_sel
-                            {
-                                changed_to = Some(a.uid.clone());
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Conta de e-mail");
+            ui.add_space(theme::S2);
+            ui.horizontal_wrapped(|ui| {
+                let label = self
+                    .selected
+                    .as_ref()
+                    .and_then(|uid| self.accounts.iter().find(|a| &a.uid == uid))
+                    .map(|a| format!("{} — {}", a.name, a.user))
+                    .unwrap_or_else(|| "(nenhuma conta salva)".into());
+                ui.add_enabled_ui(self.form.is_none() && !busy, |ui| {
+                    egui::ComboBox::from_id_salt("mail_account")
+                        .width(320.0)
+                        .selected_text(label)
+                        .show_ui(ui, |ui| {
+                            for a in &self.accounts {
+                                let is_sel = self.selected.as_deref() == Some(a.uid.as_str());
+                                if ui
+                                    .selectable_label(is_sel, format!("{} — {}", a.name, a.user))
+                                    .clicked()
+                                    && !is_sel
+                                {
+                                    changed_to = Some(a.uid.clone());
+                                }
                             }
-                        }
-                    });
-                if ui.button("Nova conta…").clicked() {
-                    new_account = true;
-                }
-                if ui
-                    .add_enabled(self.selected.is_some(), egui::Button::new("Editar…"))
-                    .clicked()
-                {
-                    edit = true;
-                }
-                if ui
-                    .add_enabled(self.selected.is_some(), egui::Button::new("Excluir"))
-                    .clicked()
-                {
-                    delete = true;
-                }
-            });
-        });
-        if let Some(uid) = changed_to {
-            self.selected = Some(uid);
-            self.confirm_delete_account = false;
-            self.reset_mailbox();
-        }
-        if new_account || edit {
-            self.confirm_delete_account = false;
-        }
-        if new_account {
-            self.form = Some(AccountForm::new(MailAccount {
-                host: "imap.gmail.com".into(),
-                port: DEFAULT_PORT,
-                folder: "INBOX".into(),
-                ..MailAccount::default()
-            }));
-        }
-        if edit {
-            if let Some(mut account) = self
-                .selected
-                .as_ref()
-                .and_then(|uid| self.accounts.iter().find(|a| &a.uid == uid))
-                .cloned()
-            {
-                if account.password.is_empty() {
-                    if let Some(p) = self.session_passwords.get(&account.uid) {
-                        account.password = p.clone();
+                        });
+                    if ui
+                        .add(widgets::secondary(format!("{} Nova conta", icon::PLUS)))
+                        .clicked()
+                    {
+                        new_account = true;
                     }
-                }
-                self.form = Some(AccountForm::new(account));
+                    if ui
+                        .add_enabled(self.selected.is_some(), widgets::quiet("Editar"))
+                        .clicked()
+                    {
+                        edit = true;
+                    }
+                    if ui
+                        .add_enabled(self.selected.is_some(), widgets::danger("Excluir"))
+                        .clicked()
+                    {
+                        delete = true;
+                    }
+                });
+            });
+            if let Some(uid) = changed_to.take() {
+                self.selected = Some(uid);
+                self.confirm_delete_account = false;
+                self.reset_mailbox();
             }
-        }
-        if delete {
-            self.confirm_delete_account = true;
-        }
-        if self.confirm_delete_account && self.form.is_none() {
-            let name = self
-                .selected
-                .as_ref()
-                .and_then(|uid| self.accounts.iter().find(|a| &a.uid == uid))
-                .map(|a| a.name.clone())
-                .unwrap_or_default();
-            ui.colored_label(
-                crate::theme::warning(),
-                format!(
-                    "Excluir a conta “{name}” deste computador? A senha guardada também é apagada."
-                ),
-            );
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Sim, excluir"))
-                    .clicked()
+            if new_account || edit {
+                self.confirm_delete_account = false;
+            }
+            if new_account {
+                self.form = Some(AccountForm::new(MailAccount {
+                    host: "imap.gmail.com".into(),
+                    port: DEFAULT_PORT,
+                    folder: "INBOX".into(),
+                    ..MailAccount::default()
+                }));
+            }
+            if edit {
+                if let Some(mut account) = self
+                    .selected
+                    .as_ref()
+                    .and_then(|uid| self.accounts.iter().find(|a| &a.uid == uid))
+                    .cloned()
                 {
-                    self.confirm_delete_account = false;
-                    if let Some(uid) = self.selected.clone() {
-                        match store.delete_mail_account(&uid) {
-                            Ok(()) => {
-                                self.session_passwords.remove(&uid);
-                                self.selected = None;
-                                self.reload_accounts(store);
-                                self.reset_mailbox();
-                                self.set_notice("Conta excluída.", false);
-                            }
-                            Err(e) => self
-                                .set_notice(format!("Não foi possível excluir a conta: {e}"), true),
+                    if account.password.is_empty() {
+                        if let Some(p) = self.session_passwords.get(&account.uid) {
+                            account.password = p.clone();
                         }
                     }
+                    self.form = Some(AccountForm::new(account));
                 }
-                if ui.button("Cancelar").clicked() {
-                    self.confirm_delete_account = false;
-                }
-            });
-        }
-
-        if self.form.is_some() {
-            self.form_ui(ui, store);
-        } else if let Some(uid) = self.selected.clone() {
-            // A remembered-less account needs the password once per session.
-            let stored_empty = self
-                .accounts
-                .iter()
-                .find(|a| a.uid == uid)
-                .is_some_and(|a| a.password.is_empty());
-            if stored_empty {
+            }
+            if delete {
+                self.confirm_delete_account = true;
+            }
+            if self.confirm_delete_account && self.form.is_none() {
+                let name = self
+                    .selected
+                    .as_ref()
+                    .and_then(|uid| self.accounts.iter().find(|a| &a.uid == uid))
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
+                ui.add_space(theme::S2);
+                soft_note(
+                    ui,
+                    Tone::Warn,
+                    icon::WARNING,
+                    &format!(
+                        "Excluir a conta “{name}” deste computador? A senha guardada também é apagada."
+                    ),
+                );
+                ui.add_space(theme::S1);
                 ui.horizontal(|ui| {
-                    ui.label("Senha de app desta sessão");
+                    if ui
+                        .add_enabled(!busy, widgets::danger("Sim, excluir"))
+                        .clicked()
+                    {
+                        self.confirm_delete_account = false;
+                        if let Some(uid) = self.selected.clone() {
+                            match store.delete_mail_account(&uid) {
+                                Ok(()) => {
+                                    self.session_passwords.remove(&uid);
+                                    self.selected = None;
+                                    self.reload_accounts(store);
+                                    self.reset_mailbox();
+                                    self.set_notice("Conta excluída.", false);
+                                }
+                                Err(e) => self.set_notice(
+                                    format!("Não foi possível excluir a conta: {e}"),
+                                    true,
+                                ),
+                            }
+                        }
+                    }
+                    if ui.add(widgets::secondary("Cancelar")).clicked() {
+                        self.confirm_delete_account = false;
+                    }
+                });
+            }
+
+            if self.form.is_some() {
+                ui.add_space(theme::S3);
+                self.form_ui(ui, store);
+            } else if let Some(uid) = self.selected.clone() {
+                // A remembered-less account needs the password once per session.
+                let stored_empty = self
+                    .accounts
+                    .iter()
+                    .find(|a| a.uid == uid)
+                    .is_some_and(|a| a.password.is_empty());
+                if stored_empty {
+                    ui.add_space(theme::S2);
+                    widgets::field_label(ui, "Senha de app desta sessão");
                     let entry = self.session_passwords.entry(uid).or_default();
                     ui.add(
                         egui::TextEdit::singleline(entry)
                             .password(true)
-                            .desired_width(240.0),
+                            .desired_width(280.0),
                     );
-                });
+                }
             }
-        }
-        ui.small(
-            "No Gmail pessoal, ative a verificação em duas etapas e crie uma senha de app em Conta Google ▸ Segurança ▸ Senhas de app. A senha normal não funciona. O Ponte só lê; nada é marcado como lido, movido ou apagado.",
-        );
+            ui.add_space(theme::S2);
+            widgets::small_muted(
+                ui,
+                "No Gmail pessoal, ative a verificação em duas etapas e crie uma senha de app em Conta Google ▸ Segurança ▸ Senhas de app. A senha normal não funciona. O Ponte só lê; nada é marcado como lido, movido ou apagado.",
+            );
+        });
     }
 
     fn form_ui(&mut self, ui: &mut egui::Ui, store: &mut Store) {
         let mut save = false;
         let mut cancel = false;
         if let Some(form) = self.form.as_mut() {
-            ui.group(|ui| {
-                egui::Grid::new("mail_account_form")
-                    .num_columns(2)
-                    .spacing([8.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("Nome");
-                        ui.add(egui::TextEdit::singleline(&mut form.account.name).desired_width(300.0));
-                        ui.end_row();
-                        ui.label("Servidor IMAP");
-                        ui.add(egui::TextEdit::singleline(&mut form.account.host).desired_width(300.0));
-                        ui.end_row();
-                        ui.label("Porta");
-                        ui.add(egui::TextEdit::singleline(&mut form.port_text).desired_width(70.0));
-                        ui.end_row();
-                        ui.label("Usuário (e-mail)");
-                        ui.add(egui::TextEdit::singleline(&mut form.account.user).desired_width(300.0));
-                        ui.end_row();
-                        ui.label("Senha de app");
-                        ui.add(
+            egui::Frame::new()
+                .fill(theme::c().sunken)
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.columns(2, |cols| {
+                        let width = cols[0].available_width();
+                        widgets::field_label(&mut cols[0], "Nome");
+                        cols[0].add(egui::TextEdit::singleline(&mut form.account.name).desired_width(width));
+                        let width = cols[1].available_width();
+                        widgets::field_label(&mut cols[1], "Pasta (a última listada)");
+                        cols[1].add(egui::TextEdit::singleline(&mut form.account.folder).desired_width(width));
+                    });
+                    ui.add_space(theme::S2);
+                    ui.columns(2, |cols| {
+                        let width = cols[0].available_width();
+                        widgets::field_label(&mut cols[0], "Servidor IMAP");
+                        cols[0].add(egui::TextEdit::singleline(&mut form.account.host).desired_width(width));
+                        widgets::field_label(&mut cols[1], "Porta");
+                        cols[1].add(egui::TextEdit::singleline(&mut form.port_text).desired_width(70.0));
+                    });
+                    ui.add_space(theme::S2);
+                    ui.columns(2, |cols| {
+                        let width = cols[0].available_width();
+                        widgets::field_label(&mut cols[0], "Usuário (e-mail)");
+                        cols[0].add(egui::TextEdit::singleline(&mut form.account.user).desired_width(width));
+                        let width = cols[1].available_width();
+                        widgets::field_label(&mut cols[1], "Senha de app");
+                        cols[1].add(
                             egui::TextEdit::singleline(&mut form.account.password)
                                 .password(true)
-                                .desired_width(300.0),
+                                .desired_width(width),
                         );
-                        ui.end_row();
-                        ui.label("");
-                        ui.checkbox(&mut form.account.remember, "Lembrar a senha neste computador")
-                            .on_hover_text(
-                                "A senha fica guardada, selada, no acervo deste computador. Sem marcar, ela é pedida a cada sessão.",
-                            );
-                        ui.end_row();
-                        ui.label("Pasta (a última listada)");
-                        ui.add(egui::TextEdit::singleline(&mut form.account.folder).desired_width(300.0));
-                        ui.end_row();
                     });
-                ui.horizontal(|ui| {
-                    if ui.button("Salvar").clicked() {
-                        save = true;
-                    }
-                    if ui.button("Cancelar").clicked() {
-                        cancel = true;
-                    }
-                    if form.dirty() {
-                        ui.colored_label(crate::theme::warning(), "● não salvo");
-                    }
+                    ui.add_space(theme::S2);
+                    ui.checkbox(&mut form.account.remember, "Lembrar a senha neste computador")
+                        .on_hover_text(
+                            "A senha fica guardada, selada, no acervo deste computador. Sem marcar, ela é pedida a cada sessão.",
+                        );
+                    ui.add_space(theme::S3);
+                    ui.horizontal(|ui| {
+                        if ui.add(widgets::primary("Salvar")).clicked() {
+                            save = true;
+                        }
+                        if ui.add(widgets::secondary("Cancelar")).clicked() {
+                            cancel = true;
+                        }
+                        if form.dirty() {
+                            widgets::pill(ui, "Não salvo", Tone::Warn);
+                        }
+                    });
                 });
-            });
         }
         if cancel {
             self.form = None;
@@ -824,143 +838,183 @@ impl MailPanel {
 
     fn folder_section(&mut self, ui: &mut egui::Ui, busy: bool) -> MailAction {
         let mut action = MailAction::None;
-        ui.strong("Pasta e filtro");
         let account = self.effective_account();
-        ui.horizontal_wrapped(|ui| {
-            let can_connect = account.is_some() && !busy;
-            if ui
-                .add_enabled(can_connect, egui::Button::new("Conectar e listar pastas"))
-                .clicked()
-            {
-                if let Some(a) = account.clone() {
-                    if a.password.is_empty() {
-                        self.notice = Some((
-                            "Digite a senha de app desta conta antes de conectar.".into(),
-                            true,
-                        ));
-                    } else {
-                        action = MailAction::ListFolders(a);
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Pasta e filtro");
+            ui.add_space(theme::S2);
+            ui.horizontal_wrapped(|ui| {
+                let can_connect = account.is_some() && !busy;
+                let connect = widgets::secondary(format!("{} Conectar e listar pastas", icon::SYNC));
+                if ui.add_enabled(can_connect, connect).clicked() {
+                    if let Some(a) = account.clone() {
+                        if a.password.is_empty() {
+                            self.notice = Some((
+                                "Digite a senha de app desta conta antes de conectar.".into(),
+                                true,
+                            ));
+                        } else {
+                            action = MailAction::ListFolders(a);
+                        }
                     }
                 }
-            }
-            if account.is_none() {
-                ui.label("Salve uma conta para começar.");
-            }
-        });
-        let mut list_request = None;
-        if !self.folders.is_empty() {
-            let filter = self.filter.get_or_insert(Filter::All);
-            let current = self
-                .folders
-                .iter()
-                .find(|f| f.raw == self.folder_raw)
-                .map(|f| f.name.clone())
-                .unwrap_or_else(|| "(escolha)".into());
-            let mut folder_changed = false;
-            ui.horizontal_wrapped(|ui| {
-                // While the server is being read, the choice stays put.
-                ui.add_enabled_ui(!busy, |ui| {
-                    ui.label("Pasta");
-                    egui::ComboBox::from_id_salt("mail_folder")
-                        .width(280.0)
-                        .selected_text(current)
-                        .show_ui(ui, |ui| {
-                            for f in self.folders.iter().filter(|f| !f.no_select) {
-                                if ui
-                                    .selectable_label(self.folder_raw == f.raw, &f.name)
-                                    .clicked()
-                                    && self.folder_raw != f.raw
-                                {
-                                    self.folder_raw = f.raw.clone();
-                                    folder_changed = true;
-                                }
-                            }
-                        });
-                    ui.label("Filtro");
-                    egui::ComboBox::from_id_salt("mail_filter")
-                        .selected_text(filter.label())
-                        .show_ui(ui, |ui| {
-                            for f in [Filter::All, Filter::Flagged, Filter::Unseen] {
-                                ui.selectable_value(filter, f, f.label());
-                            }
-                        });
-                });
-                let can_list = account.is_some() && !busy && !self.folder_raw.is_empty();
-                if ui
-                    .add_enabled(can_list, egui::Button::new("Listar mensagens"))
-                    .clicked()
-                {
-                    if let Some(a) = account.clone() {
-                        list_request = Some((a, self.folder_raw.clone(), *filter));
-                    }
+                if account.is_none() {
+                    widgets::muted(ui, "Salve uma conta para começar.");
                 }
             });
-            if folder_changed {
-                self.clear_messages();
+            let mut list_request = None;
+            if !self.folders.is_empty() {
+                ui.add_space(theme::S2);
+                let filter = self.filter.get_or_insert(Filter::All);
+                let current = self
+                    .folders
+                    .iter()
+                    .find(|f| f.raw == self.folder_raw)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| "(escolha)".into());
+                let mut folder_changed = false;
+                ui.horizontal_wrapped(|ui| {
+                    // While the server is being read, the choice stays put.
+                    ui.add_enabled_ui(!busy, |ui| {
+                        widgets::field_label(ui, "Pasta");
+                        egui::ComboBox::from_id_salt("mail_folder")
+                            .width(260.0)
+                            .selected_text(current)
+                            .show_ui(ui, |ui| {
+                                for f in self.folders.iter().filter(|f| !f.no_select) {
+                                    if ui
+                                        .selectable_label(self.folder_raw == f.raw, &f.name)
+                                        .clicked()
+                                        && self.folder_raw != f.raw
+                                    {
+                                        self.folder_raw = f.raw.clone();
+                                        folder_changed = true;
+                                    }
+                                }
+                            });
+                        ui.add_space(theme::S2);
+                        widgets::field_label(ui, "Filtro");
+                        for f in [Filter::All, Filter::Flagged, Filter::Unseen] {
+                            if widgets::chip(ui, *filter == f, f.label()).clicked() {
+                                *filter = f;
+                            }
+                        }
+                    });
+                    let can_list = account.is_some() && !busy && !self.folder_raw.is_empty();
+                    if ui
+                        .add_enabled(can_list, widgets::secondary("Listar mensagens"))
+                        .clicked()
+                    {
+                        if let Some(a) = account.clone() {
+                            list_request = Some((a, self.folder_raw.clone(), *filter));
+                        }
+                    }
+                });
+                if folder_changed {
+                    self.clear_messages();
+                }
+                if let Some((a, folder, filter)) = list_request {
+                    action = self.list_action(a, folder, filter);
+                }
+                widgets::small_muted(ui, "Listadas as 100 mais recentes.");
             }
-            if let Some((a, folder, filter)) = list_request {
-                action = self.list_action(a, folder, filter);
-            }
-            ui.small("Listadas as 100 mais recentes.");
-        }
+        });
         action
     }
 
     // -- 3. Messages ------------------------------------------------------
 
-    /// The outcome of the last import, in one coloured line with the details
-    /// below it, above the message list so it is always in sight.
+    /// The outcome of the last import, in one soft-coloured frame with the
+    /// details below it, above the message list so it is always in sight.
     fn result_block(&mut self, ui: &mut egui::Ui) {
         let Some((headline, ok)) = self.result.clone() else {
             return;
         };
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(headline).strong().color(if ok {
-                    crate::theme::success()
-                } else {
-                    crate::theme::error()
-                }));
-                if ui
-                    .small_button("✕")
-                    .on_hover_text("Fechar o resultado")
-                    .clicked()
-                {
-                    self.result = None;
-                    self.summary.clear();
-                }
-            });
-            if !self.summary.is_empty() {
-                egui::ScrollArea::vertical()
-                    .id_salt("mail_result")
-                    .max_height(110.0)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        for (color, line) in &self.summary {
-                            ui.colored_label(*color, line);
-                        }
+        // The text keeps its old glyph; here the glyph becomes an icon.
+        let partial = headline.starts_with('⚠');
+        let text = headline
+            .trim_start_matches(['✓', '✗', '⚠'])
+            .trim_start()
+            .to_owned();
+        let (tone, glyph) = if ok {
+            (Tone::Ok, icon::CHECK)
+        } else if partial {
+            (Tone::Warn, icon::WARNING)
+        } else {
+            (Tone::Danger, icon::ERROR)
+        };
+        let (fg, bg) = tone.colors();
+        let mut close = false;
+        egui::Frame::new()
+            .fill(bg)
+            .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if widgets::icon_button(ui, icon::CLOSE, "Fechar o resultado").clicked() {
+                        close = true;
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(glyph).size(18.0).color(fg));
+                                ui.label(
+                                    RichText::new(text)
+                                        .font(theme::font_strong(theme::SIZE_BODY))
+                                        .color(fg),
+                                );
+                            });
+                            if !self.summary.is_empty() {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("mail_result")
+                                    .max_height(110.0)
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| {
+                                        for (color, line) in &self.summary {
+                                            let line = line
+                                                .trim_start_matches(['✓', '✗', '⚠'])
+                                                .trim_start_matches(' ');
+                                            ui.add(
+                                                egui::Label::new(RichText::new(line).color(*color))
+                                                    .wrap(),
+                                            );
+                                        }
+                                    });
+                            }
+                        });
                     });
-            }
-        });
-        ui.add_space(4.0);
+                });
+            });
+        if close {
+            self.result = None;
+            self.summary.clear();
+        }
+        ui.add_space(theme::S2);
     }
 
     fn messages_section(&mut self, ui: &mut egui::Ui, busy: bool) -> MailAction {
         let mut action = MailAction::None;
         self.result_block(ui);
-        ui.strong("Mensagens");
-        if self.messages.is_empty() {
-            ui.label("Nenhuma mensagem encontrada com esse filtro.");
-        } else {
+        widgets::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                widgets::section(ui, "Mensagens");
+                if !self.messages.is_empty() {
+                    widgets::pill(ui, self.messages.len().to_string(), Tone::Neutral);
+                }
+            });
+            if self.messages.is_empty() {
+                ui.add_space(theme::S2);
+                widgets::muted(ui, "Nenhuma mensagem encontrada com esse filtro.");
+                return;
+            }
             ui.horizontal_wrapped(|ui| {
-                if ui.button("Marcar todas").clicked() {
+                if ui.add(widgets::quiet("Marcar todas")).clicked() {
                     self.checked = self.messages.iter().map(|m| m.uid).collect();
                 }
-                if ui.button("Desmarcar").clicked() {
+                if ui.add(widgets::quiet("Desmarcar")).clicked() {
                     self.checked.clear();
                 }
-                if ui.button("Marcar só as não importadas").clicked() {
+                if ui.add(widgets::quiet("Marcar só as não importadas")).clicked() {
                     self.checked = self
                         .messages
                         .iter()
@@ -970,82 +1024,101 @@ impl MailPanel {
                 }
             });
             // The list takes the height the window has left, keeping room
-            // for the import button and the result lines below it; it never
-            // gets shorter than a few rows.
+            // for the footer and the result lines below it; it never gets
+            // shorter than a few rows.
             let row = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
-            let below = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 2.0 + 8.0;
+            let below = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 2.0 + 48.0;
             // The window's visible height minus what is above the list, both
             // independent of the outer scroll (inside it the available height
             // is unbounded), so the list does not resize while scrolling.
             let visible = ui.clip_rect().height() - (ui.cursor().top() - self.contents_top);
-            let list_height = (visible - below).max(row * 6.0);
+            let list_height = (visible - below).max(row * 12.0);
+            let p = theme::c();
             egui::ScrollArea::vertical()
                 .id_salt("mail_messages")
                 .max_height(list_height)
                 .auto_shrink([false, true])
+                .min_scrolled_height(list_height.min(260.0))
                 .show(ui, |ui| {
-                    egui::Grid::new("mail_messages_grid")
-                        .num_columns(7)
-                        .striped(true)
-                        .spacing([10.0, 4.0])
-                        .show(ui, |ui| {
-                            for h in ["", "Data", "De", "Assunto", "", "Tamanho", "No acervo"] {
-                                ui.strong(h);
-                            }
-                            ui.end_row();
-                            for m in &self.messages {
-                                let mut on = self.checked.contains(&m.uid);
-                                if ui.checkbox(&mut on, "").changed() {
-                                    if on {
-                                        self.checked.insert(m.uid);
-                                    } else {
-                                        self.checked.remove(&m.uid);
-                                    }
+                    for (index, m) in self.messages.iter().enumerate() {
+                        if index > 0 {
+                            ui.separator();
+                        }
+                        ui.horizontal(|ui| {
+                            let mut on = self.checked.contains(&m.uid);
+                            if ui.checkbox(&mut on, "").changed() {
+                                if on {
+                                    self.checked.insert(m.uid);
+                                } else {
+                                    self.checked.remove(&m.uid);
                                 }
-                                let text = |s: String| {
-                                    let t = RichText::new(s);
-                                    if m.seen {
-                                        t
-                                    } else {
-                                        t.strong()
-                                    }
-                                };
-                                ui.label(text(m.date.clone()));
-                                ui.label(text(truncate(&m.from, 32))).on_hover_text(&m.from);
+                            }
+                            ui.vertical(|ui| {
+                                ui.set_width((ui.available_width() - 250.0).max(180.0));
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(truncate(&m.from, 40))
+                                            .font(theme::font_strong(theme::SIZE_BODY)),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(&m.from);
                                 let subject = if m.subject.trim().is_empty() {
                                     "(sem assunto)".to_string()
                                 } else {
-                                    truncate(&m.subject, 60)
+                                    truncate(&m.subject, 80)
                                 };
-                                ui.label(text(subject)).on_hover_text(&m.subject);
-                                if m.flagged {
-                                    ui.colored_label(crate::theme::warning(), "★");
+                                let text = if m.seen {
+                                    RichText::new(subject).color(p.muted)
                                 } else {
-                                    ui.label("");
-                                }
-                                ui.label(crate::labels::file_size(m.size as u64));
-                                if self.imported.contains(&m.uid) {
-                                    ui.colored_label(crate::theme::warning(), "já importada");
-                                } else {
-                                    ui.label("");
-                                }
-                                ui.end_row();
-                            }
+                                    RichText::new(subject)
+                                };
+                                ui.add(egui::Label::new(text).truncate())
+                                    .on_hover_text(&m.subject);
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    widgets::small_muted(ui, m.date.clone());
+                                    widgets::small_muted(ui, crate::labels::file_size(m.size as u64));
+                                    if self.imported.contains(&m.uid) {
+                                        ui.horizontal(|ui| {
+                                            widgets::pill(ui, "Já no acervo", Tone::Warn)
+                                        });
+                                    }
+                                    if m.flagged {
+                                        ui.label(RichText::new(icon::STAR).size(16.0).color(p.warn));
+                                    }
+                                },
+                            );
                         });
+                    }
                 });
+            ui.add_space(theme::S2);
             let count = self.checked.len();
             let can_fetch = count > 0 && !busy;
-            if ui
-                .add_enabled(
-                    can_fetch,
-                    egui::Button::new(if count == 1 {
-                        "Importar 1 marcada".to_string()
+            let mut fetch = false;
+            ui.horizontal(|ui| {
+                widgets::muted(
+                    ui,
+                    if count == 1 {
+                        "1 marcada".to_string()
                     } else {
-                        format!("Importar {count} marcadas")
-                    }),
-                )
-                .clicked()
-            {
+                        format!("{count} marcadas")
+                    },
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let text = if count == 0 {
+                        "Importar".to_string()
+                    } else {
+                        format!("Importar {count}")
+                    };
+                    if ui.add_enabled(can_fetch, widgets::primary(text)).clicked() {
+                        fetch = true;
+                    }
+                });
+            });
+            if fetch {
                 if let (Some(account), false) =
                     (self.effective_account(), self.messages_folder.is_empty())
                 {
@@ -1100,18 +1173,142 @@ impl MailPanel {
                     }
                 }
             }
-        }
+        });
         action
     }
+}
+
+/// A short note in a soft-coloured frame: icon and text.
+fn soft_note(ui: &mut egui::Ui, tone: Tone, glyph: &str, text: &str) {
+    let (fg, bg) = tone.colors();
+    egui::Frame::new()
+        .fill(bg)
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(glyph).size(18.0).color(fg));
+                ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+            });
+        });
+}
+
+/// The notice line at the top, with a close button. True when closed.
+fn notice_line(ui: &mut egui::Ui, text: &str, error: bool) -> bool {
+    let (tone, glyph) = if error {
+        (Tone::Danger, icon::ERROR)
+    } else {
+        (Tone::Ok, icon::CHECK)
+    };
+    let (fg, bg) = tone.colors();
+    let mut close = false;
+    egui::Frame::new()
+        .fill(bg)
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::icon_button(ui, icon::CLOSE, "Fechar o aviso").clicked() {
+                    close = true;
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(glyph).size(18.0).color(fg));
+                    ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                });
+            });
+        });
+    close
+}
+
+/// The "wait" line while something else runs.
+fn busy_note(ui: &mut egui::Ui, state: MailBusy, quick: bool) {
+    let text = match (state, quick) {
+        (MailBusy::Free, _) => return,
+        (MailBusy::Mail, false) => "Aguarde: o Ponte está conversando com o servidor de e-mail…",
+        (MailBusy::Mail, true) => "Buscando as mensagens…",
+        (MailBusy::Other, false) => "Aguarde a operação em andamento.",
+        (MailBusy::Other, true) => "Aguarde a operação em andamento; a lista vem em seguida.",
+    };
+    soft_note(ui, Tone::Warn, icon::CLOCK, text);
+    ui.add_space(theme::S2);
 }
 
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
-pub const SHOTS: &[&str] = &[];
+pub const SHOTS: &[&str] = &["contas", "nova-conta", "mensagens"];
 
 #[cfg(feature = "shots")]
 impl MailPanel {
-    /// Puts the panel in the state called `view` (see `SHOTS`).
-    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
+    /// Puts the panel in the state called `view` (see `SHOTS`). Nothing
+    /// here starts a network call; "mensagens" uses made-up data kept in
+    /// memory only.
+    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, view: &str) {
+        self.open_full();
+        match view {
+            "nova-conta" => {
+                self.form = Some(AccountForm::new(MailAccount {
+                    host: "imap.gmail.com".into(),
+                    port: DEFAULT_PORT,
+                    folder: "INBOX".into(),
+                    ..MailAccount::default()
+                }));
+            }
+            "mensagens" => {
+                let account = MailAccount {
+                    uid: "exemplo".into(),
+                    name: "Gmail pessoal".into(),
+                    host: "imap.gmail.com".into(),
+                    port: DEFAULT_PORT,
+                    user: "exemplo@gmail.com".into(),
+                    password: "x".into(),
+                    folder: "INBOX".into(),
+                    ..MailAccount::default()
+                };
+                self.accounts = vec![account];
+                self.accounts_loaded = true;
+                self.selected = Some("exemplo".into());
+                self.folders = vec![Folder {
+                    raw: "INBOX".into(),
+                    name: "Caixa de entrada".into(),
+                    no_select: false,
+                }];
+                self.folder_raw = "INBOX".into();
+                self.filter = Some(Filter::All);
+                self.messages_folder = "INBOX".into();
+                let rows = [
+                    ("Maria Souza <maria@orgao.gov.br>", "Ofício 123/2026 - solicitação de informações", "2026-11-09", false, false, 184_000),
+                    ("Departamento Jurídico", "Re: Processo 2026/00431 - parecer", "2026-11-08", true, true, 2_400_000),
+                    ("João Pereira", "", "2026-11-05", true, false, 52_000),
+                    ("Secretaria de Segurança Pública", "Convocação para reunião de segunda-feira", "2026-11-03", true, false, 91_000),
+                ];
+                self.messages = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (from, subject, date, seen, flagged, size))| MessageSummary {
+                        uid: i as u32 + 1,
+                        from: (*from).into(),
+                        subject: (*subject).into(),
+                        date: (*date).into(),
+                        message_id: format!("<exemplo-{i}@exemplo>"),
+                        flagged: *flagged,
+                        seen: *seen,
+                        size: *size,
+                    })
+                    .collect();
+                self.messages_loaded = true;
+                self.imported.insert(3);
+                self.checked.insert(1);
+                self.checked.insert(2);
+                self.result = Some(("✓ 1 mensagem importada.".into(), true));
+                self.summary = vec![(
+                    crate::theme::success(),
+                    "✓ Ofício 122/2026 — 2 anexo(s)".into(),
+                )];
+            }
+            _ => {}
+        }
+    }
 }

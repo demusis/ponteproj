@@ -620,7 +620,7 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(doc) => return Ok(doc),
-                _ => anyhow::bail!("Resposta inesperada do anfitrião ao restaurar item."),
+                _ => anyhow::bail!("Resposta inesperada do computador principal ao restaurar item."),
             }
         }
         let actor = self.active_actor();
@@ -724,81 +724,319 @@ impl Panel {
         std::mem::take(&mut self.purged)
     }
 
-    /// The retention setting and the manual purge, inside the window.
+    /// The retention setting and the manual purge, at the top of the list.
     fn retention_row(&mut self, ui: &mut eframe::egui::Ui, store: &mut Store, busy: bool) {
+        use crate::{theme, widgets};
         use eframe::egui;
         let on_client = store
             .load_intranet_config()
             .is_ok_and(|cfg| cfg.mode == crate::intranet::IntranetMode::Client);
         let mut days = store.trash_retention_days().unwrap_or(0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Apagar de vez os itens excluídos há mais de:");
-            let before = days;
-            ui.add_enabled_ui(!on_client, |ui| {
-                egui::ComboBox::from_id_salt("trash-retention")
-                    .selected_text(retention_label(days))
-                    .width(110.0)
-                    .show_ui(ui, |ui| {
-                        for choice in RETENTION_CHOICES {
-                            ui.selectable_value(&mut days, choice, retention_label(choice));
-                        }
-                    });
-            });
-            if days != before {
-                match store.set_trash_retention_days(days) {
-                    Ok(()) => {
-                        self.message = if days == 0 {
-                            "A lixeira não será esvaziada sozinha.".into()
-                        } else {
-                            format!("Itens excluídos há mais de {} serão apagados de vez ao abrir o Ponte e uma vez por dia.", retention_label(days))
-                        }
-                    }
-                    Err(error) => self.message = error.to_string(),
-                }
-            }
-            if on_client {
-                ui.small("Definido no computador principal.");
-            } else if days > 0 {
-                let expired = store.expired_trash(days).map(|v| v.len()).unwrap_or(0);
-                if ui
-                    .add_enabled(!busy && expired > 0, egui::Button::new(format!("Apagar agora os vencidos ({expired})")))
-                    .on_hover_text("Apaga de vez, agora, os itens que já passaram do prazo. Não há como restaurar depois.")
-                    .clicked()
-                {
-                    match store.purge_expired_trash(days) {
-                        Ok(count) => {
-                            self.purged = count > 0;
-                            self.message = format!("{count} item(ns) apagado(s) de vez.");
+        widgets::card(ui, |ui| {
+            widgets::field_label(ui, "Apagar de vez os itens excluídos há mais de");
+            ui.horizontal_wrapped(|ui| {
+                let before = days;
+                ui.add_enabled_ui(!on_client, |ui| {
+                    egui::ComboBox::from_id_salt("trash-retention")
+                        .selected_text(retention_label(days))
+                        .width(110.0)
+                        .show_ui(ui, |ui| {
+                            for choice in RETENTION_CHOICES {
+                                ui.selectable_value(&mut days, choice, retention_label(choice));
+                            }
+                        });
+                });
+                if days != before {
+                    match store.set_trash_retention_days(days) {
+                        Ok(()) => {
+                            self.message = if days == 0 {
+                                "A lixeira não será esvaziada sozinha.".into()
+                            } else {
+                                format!(
+                                    "Itens excluídos há mais de {} serão apagados de vez ao abrir o Ponte e uma vez por dia.",
+                                    retention_label(days)
+                                )
+                            }
                         }
                         Err(error) => self.message = error.to_string(),
                     }
                 }
-            }
-        });
-        ui.small(if days == 0 {
-            "Itens excluídos podem ser restaurados a qualquer momento; a lixeira não é esvaziada sozinha e os arquivos continuam ocupando espaço no acervo."
-        } else {
-            "Um documento apagado de vez leva junto versões, PDFs, notas, minutas, tarefas e anexos. Backups anteriores não são afetados."
+                if on_client {
+                    widgets::small_muted(ui, "Definido no computador principal.");
+                } else if days > 0 {
+                    let expired = store.expired_trash(days).map(|v| v.len()).unwrap_or(0);
+                    if ui
+                        .add_enabled(
+                            !busy && expired > 0,
+                            widgets::secondary(format!("Apagar agora os vencidos ({expired})")),
+                        )
+                        .on_hover_text("Apaga de vez, agora, os itens que já passaram do prazo. Não há como restaurar depois.")
+                        .clicked()
+                    {
+                        match store.purge_expired_trash(days) {
+                            Ok(count) => {
+                                self.purged = count > 0;
+                                self.message = format!("{count} item(ns) apagado(s) de vez.");
+                            }
+                            Err(error) => self.message = error.to_string(),
+                        }
+                    }
+                }
+            });
+            ui.add_space(theme::S1);
+            widgets::small_muted(
+                ui,
+                if days == 0 {
+                    "Itens excluídos podem ser restaurados a qualquer momento; a lixeira não é esvaziada sozinha e os arquivos continuam ocupando espaço no acervo."
+                } else {
+                    "Um documento apagado de vez leva junto versões, PDFs, notas, minutas, tarefas e anexos. Backups anteriores não são afetados."
+                },
+            );
         });
     }
+
+    /// A note in a soft-coloured frame with a close button. True when closed.
+    fn message_line(&mut self, ui: &mut eframe::egui::Ui) -> bool {
+        use crate::{theme, widgets};
+        use eframe::egui;
+        let (fg, bg) = widgets::Tone::Info.colors();
+        let mut close = false;
+        egui::Frame::new()
+            .fill(bg)
+            .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::icon_button(ui, theme::icon::CLOSE, "Fechar o aviso").clicked() {
+                        close = true;
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(theme::icon::INFO)
+                                .size(18.0)
+                                .color(fg),
+                        );
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&self.message).color(fg)).wrap(),
+                        );
+                    });
+                });
+            });
+        close
+    }
+
+    /// The content of the trash window, drawn in place (the Ajustes area
+    /// embeds it): retention, the notice and the list of deleted items.
+    pub fn ui(&mut self, ui: &mut eframe::egui::Ui, store: &mut Store, busy: bool) -> Option<Change> {
+        use crate::{theme, widgets};
+        use eframe::egui;
+        let confirming = self.pending.is_some();
+        let mut change = None;
+        self.retention_row(ui, store, busy || confirming);
+        if !self.message.is_empty() {
+            ui.add_space(theme::S2);
+            if self.message_line(ui) {
+                self.message.clear();
+            }
+        }
+        ui.add_space(theme::S3);
+        let retention = store.trash_retention_days().unwrap_or(0);
+        let local = |text: &str| {
+            chrono::DateTime::parse_from_rfc3339(text)
+                .map(|date| date.with_timezone(&chrono::Local))
+                .ok()
+        };
+        let when = |text: &str| match local(text) {
+            Some(date) => date.format("%d/%m/%Y %H:%M").to_string(),
+            None => text.to_owned(),
+        };
+        let entries = match store.trash_entries() {
+            Ok(entries) => entries,
+            Err(error) => {
+                widgets::card(ui, |ui| {
+                    widgets::muted(ui, format!("Não foi possível ler a lixeira: {error}"));
+                });
+                return change;
+            }
+        };
+        widgets::card(ui, |ui| {
+            if entries.is_empty() {
+                ui.add_space(theme::S4);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(theme::icon::TRASH)
+                            .size(32.0)
+                            .color(theme::c().muted),
+                    );
+                    widgets::muted(ui, "A lixeira está vazia.");
+                });
+                ui.add_space(theme::S4);
+                return;
+            }
+            egui::ScrollArea::vertical()
+                .max_height(420.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (index, entry) in entries.into_iter().enumerate() {
+                        if index > 0 {
+                            ui.separator();
+                        }
+                        let expires = match (retention, local(&entry.deleted_at)) {
+                            (0, _) => "Não é apagado sozinho.".to_owned(),
+                            (days, Some(date)) => format!(
+                                "Será apagado de vez em {}.",
+                                (date + chrono::Duration::days(i64::from(days)))
+                                    .format("%d/%m/%Y")
+                            ),
+                            (_, None) => String::new(),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.set_width((ui.available_width() - 130.0).max(200.0));
+                                ui.horizontal_wrapped(|ui| {
+                                    widgets::pill(
+                                        ui,
+                                        kind_name(entry.target.kind),
+                                        widgets::Tone::Neutral,
+                                    );
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&entry.label)
+                                                .font(theme::font_strong(theme::SIZE_BODY)),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                                widgets::small_muted(
+                                    ui,
+                                    format!(
+                                        "Excluído localmente em {}. {expires}",
+                                        when(&entry.deleted_at)
+                                    ),
+                                );
+                                if entry.parent_trashed {
+                                    widgets::small_muted(ui, "Restaure o documento primeiro para recuperar este item individualmente.");
+                                }
+                                if entry.target.kind == Kind::Capture {
+                                    widgets::small_muted(ui, "Restaurar devolve a versão ao histórico; não troca a versão em uso.");
+                                }
+                                if entry.target.kind == Kind::Attachment {
+                                    widgets::small_muted(ui, "Restaurar devolve o arquivo à lista de anexos do documento ou da tarefa.");
+                                }
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !busy && !entry.parent_trashed && !confirming,
+                                            widgets::secondary(format!(
+                                                "{} Restaurar",
+                                                theme::icon::UNDO
+                                            )),
+                                        )
+                                        .clicked()
+                                    {
+                                        match store.restore_item(entry.target.clone()) {
+                                            Ok(document) => {
+                                                self.message = "Item restaurado. A biblioteca e o painel foram atualizados.".into();
+                                                change = Some(Change {
+                                                    target: entry.target.clone(),
+                                                    document,
+                                                    restored: true,
+                                                });
+                                            }
+                                            Err(error) => self.message = error.to_string(),
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    }
+                });
+        });
+        change
+    }
+
     pub fn show(
         &mut self,
         ctx: &eframe::egui::Context,
         store: &mut Store,
         busy: bool,
     ) -> Option<Change> {
+        use crate::{theme, widgets};
         use eframe::egui;
         let mut change = None;
-        let confirming = self.pending.is_some();
         if let Some(target) = self.pending.clone() {
             let mut confirm = false;
             let mut cancel = false;
-            egui::Window::new("Excluir para a lixeira?").collapsible(false).resizable(false).default_width(590.0).anchor(egui::Align2::CENTER_CENTER,[0.0,0.0]).show(ctx,|ui|{
-                match store.trash_plan(target.clone()){
-                    Ok(plan)=>{ui.strong(&plan.label);ui.label(&plan.explanation);ui.small("A exclusão é local e reversível. Nada será excluído ou tramitado no SIGADOC; arquivos exportados e backups permanecem.");if let Some(blocker)=&plan.blocker{ui.colored_label(egui::Color32::DARK_RED,blocker);}ui.horizontal(|ui|{cancel=ui.button("Cancelar").clicked();confirm=ui.add_enabled(!busy&&plan.blocker.is_none(),egui::Button::new("Mover para a lixeira")).clicked();});},Err(error)=>{ui.label(error.to_string());cancel=ui.button("Fechar").clicked();}
-                }
-                if !self.message.is_empty(){ui.label(&self.message);}
-            });
+            egui::Window::new("Excluir para a lixeira?")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(590.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    match store.trash_plan(target.clone()) {
+                        Ok(plan) => {
+                            widgets::section(ui, &plan.label);
+                            ui.add_space(theme::S1);
+                            ui.label(&plan.explanation);
+                            widgets::small_muted(ui, "A exclusão é local e reversível. Nada será excluído ou tramitado no SIGADOC; arquivos exportados e backups permanecem.");
+                            if let Some(blocker) = &plan.blocker {
+                                ui.add_space(theme::S2);
+                                let (fg, bg) = widgets::Tone::Danger.colors();
+                                egui::Frame::new()
+                                    .fill(bg)
+                                    .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                                    .inner_margin(egui::Margin::symmetric(12, 8))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(theme::icon::ERROR)
+                                                    .size(18.0)
+                                                    .color(fg),
+                                            );
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(blocker).color(fg),
+                                                )
+                                                .wrap(),
+                                            );
+                                        });
+                                    });
+                            }
+                            ui.add_space(theme::S3);
+                            ui.horizontal(|ui| {
+                                cancel = ui.add(widgets::secondary("Cancelar")).clicked();
+                                let p = theme::c();
+                                let delete = egui::Button::new(
+                                    egui::RichText::new(format!(
+                                        "{} Mover para a lixeira",
+                                        theme::icon::TRASH
+                                    ))
+                                    .font(theme::font_strong(theme::SIZE_BODY))
+                                    .color(p.on_primary),
+                                )
+                                .fill(p.danger)
+                                .stroke(egui::Stroke::NONE);
+                                confirm = ui
+                                    .add_enabled(!busy && plan.blocker.is_none(), delete)
+                                    .clicked();
+                            });
+                        }
+                        Err(error) => {
+                            ui.label(error.to_string());
+                            ui.add_space(theme::S2);
+                            cancel = ui.add(widgets::secondary("Fechar")).clicked();
+                        }
+                    }
+                    if !self.message.is_empty() {
+                        ui.add_space(theme::S2);
+                        widgets::muted(ui, &self.message);
+                    }
+                });
             if cancel {
                 self.pending = None;
             }
@@ -820,24 +1058,26 @@ impl Panel {
         }
         if self.open {
             let mut open = self.open;
-            egui::Window::new("Lixeira local").open(&mut open).default_size([830.0,560.0]).show(ctx,|ui|{
-                self.retention_row(ui, store, busy || confirming);
-                if !self.message.is_empty(){ui.label(&self.message);}
-                match store.trash_entries(){Ok(entries)=>{
-                    if entries.is_empty(){ui.label("A lixeira está vazia.");}
-                    egui::ScrollArea::vertical().max_height(420.0).show(ui,|ui|{for entry in entries{ui.group(|ui|{
-                        ui.set_width(ui.available_width());
-                        ui.strong(format!("{} • {}",entry.target.kind.label(),entry.label));ui.small(format!("Excluído localmente em {}",chrono::DateTime::parse_from_rfc3339(&entry.deleted_at).map(|date|date.with_timezone(&chrono::Local).format("%d/%m/%Y %H:%M").to_string()).unwrap_or_else(|_|entry.deleted_at.clone())));
-                        if entry.parent_trashed{ui.label("Restaure o documento primeiro para recuperar este item individualmente.");}
-                        if entry.target.kind==Kind::Capture{ui.small("Restaurar devolve a captura ao histórico; não troca a captura em uso.");}
-                        if entry.target.kind==Kind::Attachment{ui.small("Restaurar devolve o arquivo à lista de anexos do documento ou da tarefa.");}
-                        if ui.add_enabled(!busy&&!entry.parent_trashed&&!confirming,egui::Button::new("Restaurar")).clicked(){match store.restore_item(entry.target.clone()){Ok(document)=>{self.message="Item restaurado. A biblioteca e o painel foram atualizados.".into();change=Some(Change{target:entry.target,document,restored:true});},Err(error)=>self.message=error.to_string()}}
-                    });}});
-                },Err(error)=>{ui.label(format!("Não foi possível ler a lixeira: {error}"));}}
-            });
+            egui::Window::new("Lixeira local")
+                .open(&mut open)
+                .default_size([830.0, 560.0])
+                .show(ctx, |ui| {
+                    if let Some(done) = self.ui(ui, store, busy) {
+                        change = Some(done);
+                    }
+                });
             self.open = open;
         }
         change
+    }
+}
+
+/// What an item of the trash is called to the person.
+#[cfg(feature = "desktop")]
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Capture => "Versão",
+        other => other.label(),
     }
 }
 

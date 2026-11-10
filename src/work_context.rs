@@ -233,8 +233,8 @@ impl ContextPanel {
         let (draft, saved) = self.drafts.get_mut(&id).unwrap();
         let mut changed = false;
         let mut new_ver = None;
-        egui::CollapsingHeader::new(if draft!=saved {"Contexto de trabalho ●"} else {"Contexto de trabalho"}).id_salt(("work-context",id)).default_open(false).open(if force_open{Some(true)}else{None}).show(ui,|ui| {
-            ui.small("Finalidade, assuntos e orientações que só você sabe. Nada disto altera o SIGADOC.");
+        egui::CollapsingHeader::new(eframe::egui::RichText::new(if draft!=saved {"Contexto de trabalho ●"} else {"Contexto de trabalho"}).font(crate::theme::font_strong(crate::theme::SIZE_SECTION))).id_salt(("work-context",id)).default_open(false).open(if force_open{Some(true)}else{None}).show(ui,|ui| {
+            crate::widgets::small_muted(ui, "Finalidade, assuntos e orientações que só você sabe. Nada disto altera o SIGADOC.");
             egui::ComboBox::from_id_salt(("purpose",id)).selected_text(format!("Finalidade: {}",purpose_label(&draft.purpose))).show_ui(ui,|ui| {
                 for purpose in PURPOSES { ui.selectable_value(&mut draft.purpose, purpose.to_string(), purpose_label(purpose)); }
             });
@@ -255,10 +255,10 @@ impl ContextPanel {
             ui.label("Orientação e contexto (por exemplo: apenas baixar e tomar ciência; não foi solicitada resposta)");
             ui.add(egui::TextEdit::multiline(&mut draft.notes).desired_rows(2).desired_width(f32::INFINITY));
             ui.horizontal(|ui| {
-                if ui.button("Salvar contexto").clicked() {
+                if ui.add(crate::widgets::primary("Salvar contexto")).clicked() {
                     match store.save_work_context_checked(id,draft,expected_ver) { Ok(())=>{*saved=draft.clone();new_ver=store.item_version("work_context",id).ok().map(|v|v.version);self.message="Contexto salvo. A próxima análise considerará estas informações.".into();changed=true;},Err(e)=>self.message=format!("Contexto não salvo: {e}") }
                 }
-                if ui.button("Cancelar edição do contexto").clicked() { *draft=saved.clone();self.message.clear(); }
+                if ui.add(crate::widgets::secondary("Cancelar edição do contexto")).clicked() { *draft=saved.clone();self.message.clear(); }
                 if draft!=saved {ui.label("Alterações não salvas");}
             });
             if !self.message.is_empty() {ui.label(&self.message);}
@@ -363,21 +363,20 @@ pub fn metadata_label(key: &str) -> &str {
 pub fn provenance(ui: &mut eframe::egui::Ui, detail: &crate::model::DocumentDetail) {
     use eframe::egui;
     let metadata = &detail.capture.metadata;
-    ui.group(|ui| {
-        ui.set_width(ui.available_width());
-        ui.strong("Dados do documento no SIGADOC");
-        ui.small("Informações efetivamente importadas. Situação e datas correspondem à captura, não a uma consulta em tempo real.");
+    {
+        crate::widgets::field_label(ui, "Dados do documento no SIGADOC");
+        crate::widgets::small_muted(ui, "Informações efetivamente importadas. Situação e datas correspondem à importação, não a uma consulta em tempo real.");
         egui::Grid::new(("document-facts",detail.summary.id)).num_columns(2).striped(true).max_col_width(600.0).show(ui,|ui| {
             ui.label("Documento");ui.label(&detail.capture.document_number);ui.end_row();
             for key in ["document_type","document_date","medium","document_model","classification","process_number","via_code"] {
                 ui.label(metadata_label(key));ui.add(egui::Label::new(metadata.get(key).map(String::as_str).unwrap_or("Não disponível nos campos importados")).wrap());ui.end_row();
             }
         });
-        ui.small("A classificação documental oficial é distinta dos assuntos e da prioridade definidos no aplicativo.");
-    });
-    ui.group(|ui| {
-        ui.set_width(ui.available_width());
-        ui.strong("Pessoas, situação e acesso no SIGADOC");
+        crate::widgets::small_muted(ui, "A classificação documental oficial é distinta dos assuntos e da prioridade definidos no aplicativo.");
+    }
+    ui.separator();
+    {
+        crate::widgets::field_label(ui, "Pessoas, situação e acesso no SIGADOC");
         egui::Grid::new(("source-facts",detail.summary.id)).num_columns(2).striped(true).max_col_width(600.0).show(ui,|ui| {
             for key in ["origin","registered_by","recipient","current_holder","via_status","signature_status","signature_person","access_level","access_people"] {
                 ui.label(metadata_label(key));ui.add(egui::Label::new(metadata.get(key).map(String::as_str).unwrap_or("Não disponível nos campos importados")).wrap());ui.end_row();
@@ -386,9 +385,9 @@ pub fn provenance(ui: &mut eframe::egui::Ui, detail: &crate::model::DocumentDeta
                 if let Some(value)=metadata.get(key){ui.label(metadata_label(key));ui.add(egui::Label::new(value).wrap());ui.end_row();}
             }
         });
-        ui.small("De/origem não identifica necessariamente quem tramitou. Recebimento e transferência também podem estar registrados na aba Histórico, com os rótulos da fonte.");
-        ui.small("Marca de assinatura e nível de acesso são transcritos da fonte; não representam validação criptográfica nem alteração de permissões. Ciência/conclusão local não tramita no SIGADOC.");
-    });
+        crate::widgets::small_muted(ui, "De/origem não identifica necessariamente quem tramitou. Recebimento e transferência também podem estar registrados na aba Histórico, com os rótulos da fonte.");
+        crate::widgets::small_muted(ui, "Marca de assinatura e nível de acesso são transcritos da fonte; não representam validação criptográfica nem alteração de permissões. Ciência/conclusão local não tramita no SIGADOC.");
+    }
 }
 
 #[cfg(test)]

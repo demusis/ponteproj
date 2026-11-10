@@ -1,8 +1,9 @@
 //! The Tarefas panel: list views, the task form, dependency marks and
 //! attachments of a task.
+use crate::theme::{self, c, icon, S1, S2, S3, S4};
+use crate::widgets::{self, Tone};
 use crate::{storage::Store, tasks::Task};
-use eframe::egui::{self, Color32, RichText};
-
+use eframe::egui::{self, RichText};
 
 /// Views over the task list. The first four are the everyday ones; the rest
 /// live under "Mais".
@@ -17,28 +18,46 @@ const VIEWS: [&str; 9] = [
     "Sem prazo",
     "Prontas para fazer",
 ];
-const PRIMARY_VIEWS: [usize; 4] = [2, 3, 4, 0];
+const PRIMARY_VIEWS: [usize; 4] = [0, 2, 3, 4];
 const SECONDARY_VIEWS: [usize; 5] = [8, 1, 5, 6, 7];
+/// Width of the side panel with the task form.
+const FORM_WIDTH: f32 = 420.0;
+/// Room kept on the right of a row for the priority and deadline pills.
+const PILLS_WIDTH: f32 = 170.0;
+/// Size of the round conclude control of a row.
+const CONTROL: f32 = 22.0;
 
+/// "2026-11-07" → "07/11"; anything else as it is written.
+fn short_date(iso: &str) -> String {
+    chrono::NaiveDate::parse_from_str(iso.trim(), "%Y-%m-%d")
+        .map(|d| d.format("%d/%m").to_string())
+        .unwrap_or_else(|_| crate::labels::date(iso))
+}
 
-/// A clickable chip naming a related task with its state; returns the task
+/// Icon and colour that say where a related task stands.
+fn state_mark(task: &Task) -> (&'static str, egui::Color32) {
+    if task.status == "concluida" {
+        (icon::CHECK, c().muted)
+    } else if task.overdue() {
+        (icon::WARNING, c().danger)
+    } else {
+        (icon::CLOCK, c().warn)
+    }
+}
+
+/// A clickable link naming a related task with its state; returns the task
 /// when clicked, so the list can open it.
 fn dependency_chip(ui: &mut egui::Ui, task: &Task) -> Option<Task> {
-    let (mark, color) = if task.status == "concluida" {
-        ("✓", crate::theme::muted())
-    } else if task.overdue() {
-        ("⚠", crate::theme::error())
-    } else {
-        ("○", crate::theme::warning())
-    };
+    let (mark, color) = state_mark(task);
     let mut text = RichText::new(format!("{mark} {}", task.title))
-        .small()
+        .size(theme::SIZE_SMALL)
         .color(color);
     if task.status == "concluida" {
         text = text.strikethrough();
     }
     let response = ui
-        .add(egui::Button::new(text).small().frame(false))
+        .add(egui::Button::new(text).frame(false))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!(
             "{}{} • clique para abrir",
             crate::tasks::status_label(&task.status),
@@ -64,28 +83,382 @@ fn titles(tasks: &[&Task]) -> String {
 /// One line of the "Cadeia de dependências" block: state, title, "Abrir".
 fn chain_row(ui: &mut egui::Ui, task: &Task, open: &mut Option<Task>) {
     ui.horizontal_wrapped(|ui| {
-        ui.add_space(12.0);
-        if task.status == "concluida" {
-            ui.small(RichText::new("✓").color(crate::theme::muted()));
-        } else if task.overdue() {
-            ui.small(RichText::new("⚠").color(crate::theme::error()));
-        } else {
-            ui.small(RichText::new("○").color(crate::theme::warning()));
-        }
-        ui.small(&task.title);
-        ui.small(
-            RichText::new(format!("• {}", crate::tasks::status_label(&task.status))).color(crate::theme::muted()),
-        );
+        ui.add_space(S3);
+        let (mark, color) = state_mark(task);
+        ui.label(RichText::new(mark).color(color));
+        ui.label(&task.title);
+        widgets::small_muted(ui, format!("• {}", crate::tasks::status_label(&task.status)));
         if !task.due_date.is_empty() {
-            ui.small(
-                RichText::new(format!("• prazo {}", crate::labels::date(&task.due_date)))
-                    .color(crate::theme::muted()),
-            );
+            widgets::small_muted(ui, format!("• prazo {}", crate::labels::date(&task.due_date)));
         }
-        if ui.small_button("Abrir").clicked() {
+        if ui.add(widgets::quiet("Abrir")).clicked() {
             *open = Some(task.clone());
         }
     });
+}
+
+/// Two fields side by side; `frac` is the share of the left one.
+fn two_columns(
+    ui: &mut egui::Ui,
+    frac: f32,
+    left: impl FnOnce(&mut egui::Ui),
+    right: impl FnOnce(&mut egui::Ui),
+) {
+    let gap = S3;
+    let total = ui.available_width();
+    let left_width = ((total - gap) * frac).floor();
+    let right_width = total - gap - left_width;
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.allocate_ui_with_layout(
+            egui::vec2(left_width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(left_width);
+                left(ui);
+            },
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(right_width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(right_width);
+                right(ui);
+            },
+        );
+    });
+}
+
+/// What the list needs to draw its rows.
+struct ListEnv<'a> {
+    tasks: &'a [Task],
+    documents: &'a [crate::model::DocumentSummary],
+    deps: &'a crate::tasks::Dependencies<'a>,
+    attachment_counts: &'a std::collections::BTreeMap<i64, usize>,
+    focus_before: &'a [i64],
+    focus_after: &'a [i64],
+    today: &'a str,
+    /// Task open in the form, and whether its edit is unsaved.
+    editing: Option<i64>,
+    editing_dirty: bool,
+}
+
+/// What the person asked for in the list during this frame.
+#[derive(Default)]
+struct RowOut {
+    select: Option<Task>,
+    complete: Option<i64>,
+    reopen: Option<i64>,
+}
+
+/// The round control on the left of a row: concludes a pending task, reopens
+/// a concluded one. Returns true when clicked.
+fn conclude_control(ui: &mut egui::Ui, done: bool, enabled: bool, hint: &str, disabled_hint: &str) -> bool {
+    let p = c();
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(CONTROL, CONTROL), sense);
+    let hovered = enabled && response.hovered();
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let center = rect.center();
+        if done {
+            painter.circle_filled(center, CONTROL / 2.0 - 1.0, p.ok);
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                icon::CHECK,
+                theme::font(14.0),
+                p.on_primary,
+            );
+        } else {
+            let (stroke, fill) = if hovered {
+                (p.primary, p.primary_soft)
+            } else if enabled {
+                (p.muted, egui::Color32::TRANSPARENT)
+            } else {
+                (p.outline, egui::Color32::TRANSPARENT)
+            };
+            painter.circle(center, CONTROL / 2.0 - 1.5, fill, egui::Stroke::new(1.5, stroke));
+            if hovered {
+                painter.text(
+                    center,
+                    egui::Align2::CENTER_CENTER,
+                    icon::CHECK,
+                    theme::font(14.0),
+                    p.primary,
+                );
+            }
+        }
+    }
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if enabled {
+        response.on_hover_text(hint).clicked()
+    } else {
+        response.on_hover_text(disabled_hint);
+        false
+    }
+}
+
+/// One task of the list. `first`/`last` round the corners of the card.
+fn task_row(
+    ui: &mut egui::Ui,
+    env: &ListEnv,
+    task: &Task,
+    first: bool,
+    last: bool,
+    out: &mut RowOut,
+) {
+    let p = c();
+    let editing_this = env.editing == Some(task.id);
+    let pending = task.status != "concluida";
+    let document = env.documents.iter().find(|d| d.id == task.document_id);
+    let level = env.deps.level(task.id);
+    let indent = 18.0 * level.min(4) as f32;
+    let direct = env.deps.direct(task.id);
+    let blockers = env.deps.open_blockers(task.id);
+    let blocked = pending && !blockers.is_empty();
+    let releases: Vec<&Task> = env
+        .tasks
+        .iter()
+        .filter(|t| t.dependencies.contains(&task.id))
+        .collect();
+    let relation = if env.focus_before.contains(&task.id) {
+        Some((p.warn, "Esta tarefa vem ANTES da tarefa aberta na ficha."))
+    } else if env.focus_after.contains(&task.id) {
+        Some((p.ok, "Esta tarefa vem DEPOIS da tarefa aberta na ficha (depende dela)."))
+    } else {
+        None
+    };
+
+    // The row answers clicks on its empty parts. Its area is registered
+    // before the content (from the last frame), so the controls inside stay
+    // on top of it.
+    let id = ui.make_persistent_id(("task-row", task.id));
+    let cached: Option<egui::Rect> = ui.data(|d| d.get_temp(id));
+    let row = cached.map(|rect| ui.interact(rect, id, egui::Sense::click()));
+    let background = ui.painter().add(egui::Shape::Noop);
+
+    let inner = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(S3 as i8, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = S3;
+                if indent > 0.0 {
+                    ui.add_space(indent);
+                }
+                if pending {
+                    let enabled = !(editing_this && env.editing_dirty) && !blocked;
+                    let disabled_hint = if blocked {
+                        format!("Conclua antes: {}", titles(&blockers))
+                    } else {
+                        "Salve ou cancele a edição desta tarefa antes de concluí-la.".to_owned()
+                    };
+                    if conclude_control(
+                        ui,
+                        false,
+                        enabled,
+                        "Concluir: marca como concluída. Nada é enviado ao SIGADOC.",
+                        &disabled_hint,
+                    ) {
+                        out.complete = Some(task.id);
+                    }
+                } else if conclude_control(
+                    ui,
+                    true,
+                    !(editing_this && env.editing_dirty),
+                    "Reabrir esta tarefa",
+                    "Salve ou cancele a edição desta tarefa antes de reabri-la.",
+                ) {
+                    out.reopen = Some(task.id);
+                }
+                let middle = (ui.available_width() - PILLS_WIDTH - S3).max(120.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(middle, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(middle);
+                        ui.spacing_mut().item_spacing.y = S1;
+                        ui.spacing_mut().interact_size.y = 18.0;
+                        ui.spacing_mut().button_padding.y = 0.0;
+                        let mut title = RichText::new(&task.title).font(theme::font_strong(theme::SIZE_BODY));
+                        if !pending {
+                            title = title.color(p.muted).strikethrough();
+                        }
+                        ui.add(egui::Label::new(title).selectable(false).wrap());
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = S1;
+                            if let Some(d) = document.filter(|d| d.manual) {
+                                let email = d.email;
+                                widgets::pill(ui, if email { "E-mail" } else { "Manual" }, Tone::Warn)
+                                    .on_hover_text(if email {
+                                        "E-mail importado no Ponte, fora do SIGADOC."
+                                    } else {
+                                        "Registro criado no Ponte, fora do SIGADOC."
+                                    });
+                            }
+                            let mut line = document
+                                .map(|d| format!("{} · {}", d.document_number, d.title))
+                                .unwrap_or_else(|| "documento".to_owned());
+                            if pending && task.status != "pendente" {
+                                line.push_str(&format!(" · {}", crate::tasks::status_label(&task.status)));
+                            }
+                            if !task.assignee.trim().is_empty() {
+                                line.push_str(&format!(" · {}", task.assignee.trim()));
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(line).size(theme::SIZE_SMALL).color(p.muted),
+                                )
+                                .selectable(false),
+                            );
+                            if level > 4 {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!("· nível {level}"))
+                                            .size(theme::SIZE_SMALL)
+                                            .color(p.muted),
+                                    )
+                                    .selectable(false),
+                                )
+                                .on_hover_text("Profundidade na cadeia de dependências; o recuo para em 4 níveis.");
+                            }
+                            if let Some(count) = env.attachment_counts.get(&task.id) {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!("{} {count}", icon::CLIP))
+                                            .size(theme::SIZE_SMALL)
+                                            .color(p.muted),
+                                    )
+                                    .selectable(false),
+                                )
+                                .on_hover_text(format!("{count} anexo(s) nesta tarefa"));
+                            }
+                        });
+                        if !direct.is_empty() {
+                            let (color, text) = if blocked {
+                                (
+                                    p.warn,
+                                    format!("{} de {} anterior(es) em aberto", blockers.len(), direct.len()),
+                                )
+                            } else if pending {
+                                (p.ok, format!("{} anterior(es) concluída(s)", direct.len()))
+                            } else {
+                                (p.muted, format!("{} anterior(es)", direct.len()))
+                            };
+                            let detail = direct
+                                .iter()
+                                .map(|d| format!("{} {}", state_mark(d).0, d.title))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = S1;
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!("{} {text}", icon::LINK))
+                                            .size(theme::SIZE_SMALL)
+                                            .color(color),
+                                    )
+                                    .selectable(false),
+                                )
+                                .on_hover_text(if blocked {
+                                    format!("Só pode ser concluída depois de:\n{detail}")
+                                } else {
+                                    format!("Depende de:\n{detail}")
+                                });
+                                widgets::small_muted(ui, "depende de");
+                                for dependency in &direct {
+                                    if let Some(clicked) = dependency_chip(ui, dependency) {
+                                        out.select = Some(clicked);
+                                    }
+                                }
+                            });
+                        }
+                        if !releases.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = S1;
+                                widgets::small_muted(ui, "libera")
+                                    .on_hover_text("Tarefas que só podem ser concluídas depois desta.");
+                                for next in &releases {
+                                    if let Some(clicked) = dependency_chip(ui, next) {
+                                        out.select = Some(clicked);
+                                    }
+                                }
+                            });
+                        }
+                    },
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.x = S2;
+                    if !pending {
+                        widgets::pill(ui, "Concluída", Tone::Ok);
+                    } else if task.due_date.is_empty() {
+                        widgets::pill(ui, "Sem prazo", Tone::Neutral);
+                    } else if task.overdue() {
+                        widgets::pill(ui, format!("Atrasada · {}", short_date(&task.due_date)), Tone::Danger);
+                    } else if task.due_date == env.today {
+                        widgets::pill(ui, "Hoje", Tone::Warn);
+                    } else {
+                        widgets::pill(ui, short_date(&task.due_date), Tone::Info);
+                    }
+                    if task.priority != "normal" && !task.priority.is_empty() {
+                        let tone = match task.priority.as_str() {
+                            "urgente" => Tone::Danger,
+                            "alta" => Tone::Warn,
+                            _ => Tone::Neutral,
+                        };
+                        widgets::pill(ui, crate::labels::priority(&task.priority), tone);
+                    }
+                });
+            });
+        });
+
+    let rect = inner.response.rect;
+    ui.data_mut(|d| d.insert_temp(id, rect));
+    let r = theme::RADIUS_CARD.saturating_sub(1);
+    let rounding = egui::CornerRadius {
+        nw: if first { r } else { 0 },
+        ne: if first { r } else { 0 },
+        sw: if last { r } else { 0 },
+        se: if last { r } else { 0 },
+    };
+    let hovered = row.as_ref().is_some_and(|r| r.hovered());
+    let fill = if editing_this {
+        Some(p.primary_soft)
+    } else if hovered {
+        Some(p.sunken)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter()
+            .set(background, egui::Shape::rect_filled(rect, rounding, fill));
+    }
+    // Quiet dependency line and the mark of the tasks around the open one.
+    if level > 0 {
+        let x = rect.left() + S3 + indent - 9.0;
+        ui.painter().vline(
+            x,
+            rect.y_range().shrink(6.0),
+            egui::Stroke::new(2.0, p.primary.gamma_multiply(0.5)),
+        );
+    }
+    if let Some((color, hint)) = relation {
+        let bar = egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + 3.0, rect.bottom()));
+        ui.painter().rect_filled(bar, 0.0, color);
+        if let Some(row) = &row {
+            row.clone().on_hover_text(hint);
+        }
+    }
+    if !last {
+        ui.painter()
+            .hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, p.outline));
+    }
+    if let Some(row) = row {
+        if row.clicked() {
+            out.select = Some(task.clone());
+        }
+    }
 }
 
 /// Something the person asked for while another task edit was still unsaved.
@@ -128,6 +501,12 @@ pub struct TaskPanel {
     consult_requested: Option<i64>,
     /// "Abrir" clicked in the dependency chain of the form.
     open_task_requested: Option<Task>,
+    /// Development only: keeps "Mais detalhes" open for the picture.
+    #[cfg(feature = "shots")]
+    shots_details: bool,
+    /// Development only: scroll of the list, to picture its lower groups.
+    #[cfg(feature = "shots")]
+    shots_scroll: f32,
 }
 impl TaskPanel {
     pub fn take_trash_request(&mut self) -> Option<crate::trash::Target> {
@@ -370,112 +749,6 @@ impl TaskPanel {
                 .unwrap_or("documento não disponível")
         };
 
-        ui.horizontal_wrapped(|ui| {
-            ui.heading("Tarefas");
-            crate::help_ui::help(ui,
-                "Cada documento importado recebe uma tarefa de triagem. As tarefas são locais: concluir aqui não tramita nem assina nada no SIGADOC.",
-            );
-            let new_label = match selected_document {
-                Some(id) => format!("Nova tarefa para {}", number_of(id)),
-                None => "Nova tarefa".to_owned(),
-            };
-            if ui
-                .add_enabled(selected_document.is_some(), egui::Button::new(new_label))
-                .on_disabled_hover_text("Abra um documento para criar uma tarefa ligada a ele.")
-                .clicked()
-            {
-                if let Some(id) = selected_document {
-                    if !self.start_new(id) {
-                        self.blocked = Some(Intent::New(id));
-                    }
-                }
-            }
-            ui.checkbox(&mut self.show_done, "Mostrar concluídas");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.query)
-                    .hint_text("Buscar tarefa ou documento")
-                    .desired_width(220.0),
-            );
-        });
-        let belongs = |task: &&Task| self.document_filter.is_none_or(|id| task.document_id == id);
-        let pending_count = tasks
-            .iter()
-            .filter(belongs)
-            .filter(|t| t.status != "concluida")
-            .count();
-        let overdue_count = tasks.iter().filter(belongs).filter(|t| t.overdue()).count();
-        // "Todas" counts what that view lists: pending tasks, plus the
-        // concluded ones when "Mostrar concluídas" is on.
-        let all_count = if self.show_done {
-            tasks.iter().filter(belongs).count()
-        } else {
-            pending_count
-        };
-        ui.horizontal_wrapped(|ui| {
-            for index in PRIMARY_VIEWS {
-                let label = match index {
-                    4 if overdue_count > 0 => {
-                        RichText::new(format!("{} ({overdue_count})", VIEWS[index])).color(crate::theme::error())
-                    }
-                    0 => RichText::new(format!("{} ({all_count})", VIEWS[index])),
-                    _ => RichText::new(VIEWS[index]),
-                };
-                ui.selectable_value(&mut self.view, index, label);
-            }
-            let more_label = if SECONDARY_VIEWS.contains(&self.view) {
-                format!("{} ▾", VIEWS[self.view])
-            } else {
-                "Mais ▾".to_owned()
-            };
-            ui.menu_button(more_label, |ui| {
-                for index in SECONDARY_VIEWS {
-                    if ui
-                        .selectable_value(&mut self.view, index, VIEWS[index])
-                        .clicked()
-                    {
-                        ui.close();
-                    }
-                }
-            });
-            ui.separator();
-            if let Some(id) = self.document_filter {
-                ui.label(format!("Só {}", number_of(id)))
-                    .on_hover_text("A lista segue o documento aberto na biblioteca.");
-                if ui.small_button("Todos os documentos").clicked() {
-                    self.document_filter = None;
-                    self.show_all_documents = true;
-                }
-            } else {
-                ui.label("Todos os documentos");
-                if let Some(id) = selected_document {
-                    if ui
-                        .small_button(format!("Só {}", number_of(id)))
-                        .on_hover_text("Volta a mostrar apenas as tarefas do documento aberto.")
-                        .clicked()
-                    {
-                        self.document_filter = Some(id);
-                        self.show_all_documents = false;
-                    }
-                }
-            }
-        });
-        if !self.message.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(
-                    if self.message_is_error {
-                        crate::theme::error()
-                    } else {
-                        Color32::from_rgb(24, 84, 97)
-                    },
-                    &self.message,
-                );
-                if ui.small_button("Fechar").clicked() {
-                    self.message.clear();
-                }
-            });
-        }
-        ui.separator();
-
         let contexts: std::collections::BTreeMap<_, _> = documents
             .iter()
             .filter_map(|d| store.load_work_context(d.id).ok().map(|c| (d.id, c)))
@@ -485,6 +758,35 @@ impl TaskPanel {
         let week_text = (today + chrono::Duration::days(7))
             .format("%Y-%m-%d")
             .to_string();
+        let belongs = |task: &&Task| self.document_filter.is_none_or(|id| task.document_id == id);
+        let pending_count = tasks
+            .iter()
+            .filter(belongs)
+            .filter(|t| t.status != "concluida")
+            .count();
+        let overdue_count = tasks.iter().filter(belongs).filter(|t| t.overdue()).count();
+        let today_count = tasks
+            .iter()
+            .filter(belongs)
+            .filter(|t| t.status != "concluida" && !t.due_date.is_empty() && t.due_date == today_text)
+            .count();
+        let week_count = tasks
+            .iter()
+            .filter(belongs)
+            .filter(|t| {
+                t.status != "concluida"
+                    && !t.due_date.is_empty()
+                    && t.due_date >= today_text
+                    && t.due_date <= week_text
+            })
+            .count();
+        // "Todas" counts what that view lists: pending tasks, plus the
+        // concluded ones when "Mostrar concluídas" is on.
+        let all_count = if self.show_done {
+            tasks.iter().filter(belongs).count()
+        } else {
+            pending_count
+        };
         let deps = crate::tasks::Dependencies::new(&tasks);
         let visible: Vec<&Task> = tasks
             .iter()
@@ -552,226 +854,253 @@ impl TaskPanel {
         // Each task after the ones it depends on; ties keep the usual order.
         let visible = deps.order(&visible);
 
-        let mut complete_request: Option<i64> = None;
-        let mut reopen_request: Option<i64> = None;
-        let mut select_request: Option<Task> = None;
+        let mut out = RowOut::default();
         let attachment_counts = store.attachment_counts("task").unwrap_or_default();
-        let form_open = self.draft.is_some();
-        let total_width = ui.available_width();
-        let height = ui.available_height();
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(if form_open {
-                    (total_width * 0.46).max(360.0)
-                } else {
-                    total_width
+
+        // The task form is the side panel on the right; the rest is the area.
+        if self.draft.is_some() {
+            egui::Panel::right("task-form")
+                .exact_size(FORM_WIDTH)
+                .resizable(false)
+                .frame(egui::Frame::new().fill(c().surface))
+                .show(ui, |ui| {
+                    if let Some(id) = self.show_form(ui, store, &tasks, &documents) {
+                        open = Some(id);
+                    }
                 });
-                egui::ScrollArea::vertical()
-                    .id_salt("task-manager")
-                    .max_height(height)
-                    .show(ui, |ui| {
-                        if visible.is_empty() {
-                            ui.label("Nenhuma tarefa nesta visão.");
-                        }
-                        // The task open in the form: its predecessors and
-                        // successors get a coloured bar so the chain is
-                        // visible even when the list is long.
-                        let focus = self.draft.as_ref().map(|t| t.id).filter(|id| *id > 0);
-                        let focus_before: Vec<i64> = focus
-                            .map(|id| deps.direct(id).iter().map(|t| t.id).collect())
-                            .unwrap_or_default();
-                        let focus_after: Vec<i64> = focus
-                            .map(|id| {
-                                tasks
-                                    .iter()
-                                    .filter(|t| t.dependencies.contains(&id))
-                                    .map(|t| t.id)
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        for task in &visible {
-                            let editing_this = self.draft.as_ref().is_some_and(|t| t.id == task.id);
-                            let pending = task.status != "concluida";
-                            let document = documents.iter().find(|d| d.id == task.document_id);
-                            // Depth in the dependency chain, shown as indent like
-                            // the joined documents in the library list.
-                            let level = deps.level(task.id);
-                            let indent = 18.0 * level.min(4) as f32;
-                            let direct = deps.direct(task.id);
-                            let blockers = deps.open_blockers(task.id);
-                            let blocked = pending && !blockers.is_empty();
-                            let releases: Vec<&Task> = tasks
-                                .iter()
-                                .filter(|t| t.dependencies.contains(&task.id))
-                                .collect();
-                            let relation = if focus_before.contains(&task.id) {
-                                Some((crate::theme::warning(), "Esta tarefa vem ANTES da tarefa aberta na ficha."))
-                            } else if focus_after.contains(&task.id) {
-                                Some((crate::theme::on_time(), "Esta tarefa vem DEPOIS da tarefa aberta na ficha (depende dela)."))
-                            } else {
-                                None
-                            };
-                            ui.horizontal(|ui| {
-                            if indent > 0.0 {
-                                ui.add_space(indent);
+        }
+
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(S4 as i8, S3 as i8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = S2;
+                // Area header: name, search and the one primary action.
+                ui.horizontal(|ui| {
+                    widgets::heading(ui, "Tarefas");
+                    crate::help_ui::help(ui,
+                        "Cada documento importado recebe uma tarefa de triagem. As tarefas são locais: concluir aqui não tramita nem assina nada no SIGADOC.",
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let new_task = ui
+                            .add_enabled(
+                                selected_document.is_some(),
+                                widgets::primary(format!("{} Nova tarefa", icon::PLUS)),
+                            )
+                            .on_disabled_hover_text("Abra um documento para criar uma tarefa ligada a ele.");
+                        let new_task = match selected_document {
+                            Some(id) => new_task.on_hover_text(format!("Cria uma tarefa para {}", number_of(id))),
+                            None => new_task,
+                        };
+                        if new_task.clicked() {
+                            if let Some(id) = selected_document {
+                                if !self.start_new(id) {
+                                    self.blocked = Some(Intent::New(id));
+                                }
                             }
-                            ui.vertical(|ui| {
-                            let card = ui.group(|ui| {
-                                ui.set_width(ui.available_width());
-                                ui.horizontal_wrapped(|ui| {
-                                    if task.overdue() {
-                                        ui.colored_label(crate::theme::error(), "ATRASADA");
-                                    }
-                                    if !direct.is_empty() {
-                                        let (color, text) = if blocked {
-                                            (crate::theme::warning(), format!("⛓ {} de {} anterior(es) em aberto", blockers.len(), direct.len()))
-                                        } else if pending {
-                                            (crate::theme::success(), format!("⛓ {} anterior(es) concluída(s)", direct.len()))
-                                        } else {
-                                            (crate::theme::muted(), format!("⛓ {} anterior(es)", direct.len()))
-                                        };
-                                        let detail = direct
-                                            .iter()
-                                            .map(|d| format!("{} {}", if d.status == "concluida" { "✓" } else if d.overdue() { "⚠" } else { "○" }, d.title))
-                                            .collect::<Vec<_>>()
-                                            .join("\n");
-                                        ui.small(RichText::new(text).color(color)).on_hover_text(if blocked {
-                                            format!("Só pode ser concluída depois de:\n{detail}")
-                                        } else {
-                                            format!("Depende de:\n{detail}")
-                                        });
-                                    }
-                                    let title = RichText::new(&task.title).strong();
-                                    if ui.selectable_label(editing_this, title).clicked() {
-                                        select_request = Some((*task).clone());
-                                    }
-                                });
-                                if !direct.is_empty() {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.small(RichText::new("↳ depende de:").color(crate::theme::muted()));
-                                        for dependency in &direct {
-                                            if let Some(clicked) = dependency_chip(ui, dependency) {
-                                                select_request = Some(clicked);
-                                            }
-                                        }
-                                    });
+                        }
+                        widgets::search(ui, &mut self.query, "Buscar tarefa ou documento", 280.0);
+                    });
+                });
+                // Second row: the views as chips, and the checkbox on the right.
+                let checkbox_width = 170.0;
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2((ui.available_width() - checkbox_width).max(200.0), 0.0),
+                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                        |ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(S2, S2);
+                            for index in PRIMARY_VIEWS {
+                                let label = match index {
+                                    0 => format!("{} · {all_count}", VIEWS[index]),
+                                    2 => format!("{} · {today_count}", VIEWS[index]),
+                                    3 => format!("{} · {week_count}", VIEWS[index]),
+                                    _ => format!("{} · {overdue_count}", VIEWS[index]),
+                                };
+                                if widgets::chip(ui, self.view == index, label).clicked() {
+                                    self.view = index;
                                 }
-                                if !releases.is_empty() {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.small(RichText::new("↱ libera:").color(crate::theme::muted()))
-                                            .on_hover_text("Tarefas que só podem ser concluídas depois desta.");
-                                        for next in &releases {
-                                            if let Some(clicked) = dependency_chip(ui, next) {
-                                                select_request = Some(clicked);
-                                            }
-                                        }
-                                    });
+                            }
+                            let in_more = SECONDARY_VIEWS.contains(&self.view);
+                            let more_label = if in_more {
+                                format!("{} {}", VIEWS[self.view], icon::DOWN)
+                            } else {
+                                format!("Mais {}", icon::DOWN)
+                            };
+                            let more = widgets::chip(ui, in_more, more_label);
+                            egui::Popup::menu(&more).show(|ui| {
+                                for index in SECONDARY_VIEWS {
+                                    if ui.selectable_label(self.view == index, VIEWS[index]).clicked() {
+                                        self.view = index;
+                                    }
                                 }
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.small(document.map(|d| d.document_number.as_str()).unwrap_or("documento"));
-                                    if let Some(d) = document.filter(|d| d.manual) {
-                                        let email = d.email;
-                                        ui.small(
-                                            RichText::new(if email { "E-mail" } else { "Manual" })
-                                                .color(crate::theme::warning()),
-                                        )
-                                        .on_hover_text(if email {
-                                            "E-mail importado no Ponte, fora do SIGADOC."
-                                        } else {
-                                            "Registro criado no Ponte, fora do SIGADOC."
-                                        });
-                                    }
-                                    ui.small("•");
-                                    ui.small(crate::tasks::status_label(&task.status));
-                                    if level > 4 {
-                                        ui.small("•");
-                                        ui.small(format!("·· nível {level}"))
-                                            .on_hover_text("Profundidade na cadeia de dependências; o recuo para em 4 níveis.");
-                                    }
-                                    if matches!(task.priority.as_str(), "alta" | "urgente") {
-                                        ui.small("•");
-                                        ui.small(crate::labels::priority(&task.priority));
-                                    }
-                                    if !task.due_date.is_empty() {
-                                        ui.small("•");
-                                        ui.small(format!("prazo {}", crate::labels::date(&task.due_date)));
-                                    }
-                                    if !task.assignee.trim().is_empty() {
-                                        ui.small("•");
-                                        ui.small(task.assignee.trim());
-                                    }
-                                    if let Some(count) = attachment_counts.get(&task.id) {
-                                        ui.small("•");
-                                        ui.small(format!("📎 {count}"))
-                                            .on_hover_text(format!("{count} anexo(s) nesta tarefa"));
-                                    }
-                                    if pending {
-                                        let disabled_hint = if blocked {
-                                            format!("Conclua antes: {}", titles(&blockers))
-                                        } else {
-                                            "Salve ou cancele a edição desta tarefa antes de concluí-la.".to_owned()
-                                        };
-                                        if ui
-                                            .add_enabled(
-                                                !(editing_this && self.dirty()) && !blocked,
-                                                egui::Button::new("✓ Concluir").small(),
-                                            )
-                                            .on_hover_text("Marca como concluída. Nada é enviado ao SIGADOC.")
-                                            .on_disabled_hover_text(disabled_hint)
-                                            .clicked()
-                                        {
-                                            complete_request = Some(task.id);
-                                        }
-                                    } else if ui
-                                        .add_enabled(
-                                            !(editing_this && self.dirty()),
-                                            egui::Button::new("Reabrir").small(),
-                                        )
+                            });
+                            // Which documents the list covers.
+                            if let Some(id) = self.document_filter {
+                                widgets::chip(ui, true, format!("Só {}", number_of(id)))
+                                    .on_hover_text("A lista segue o documento aberto na biblioteca.");
+                                if widgets::chip(ui, false, "Todos os documentos").clicked() {
+                                    self.document_filter = None;
+                                    self.show_all_documents = true;
+                                }
+                            } else {
+                                if let Some(id) = selected_document {
+                                    if widgets::chip(ui, false, format!("Só {}", number_of(id)))
+                                        .on_hover_text("Volta a mostrar apenas as tarefas do documento aberto.")
                                         .clicked()
                                     {
-                                        reopen_request = Some(task.id);
+                                        self.document_filter = Some(id);
+                                        self.show_all_documents = false;
+                                    }
+                                }
+                                widgets::chip(ui, true, "Todos os documentos");
+                            }
+                        },
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        ui.add_space(S1);
+                        ui.checkbox(&mut self.show_done, "Mostrar concluídas");
+                    });
+                });
+                if !self.message.is_empty() {
+                    let (fg, bg) = if self.message_is_error { Tone::Danger } else { Tone::Ok }.colors();
+                    let text = self.message.clone();
+                    egui::Frame::new()
+                        .fill(bg)
+                        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                        .inner_margin(egui::Margin::symmetric(S3 as i8, S2 as i8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let width = (ui.available_width() - 40.0).max(100.0);
+                                ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
+                                    ui.set_width(width);
+                                    ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                                });
+                                if widgets::icon_button(ui, icon::CLOSE, "Fechar").clicked() {
+                                    self.message.clear();
+                                }
+                            });
+                        });
+                }
+
+                // The list: tasks grouped by deadline, one card per group.
+                let focus = self.draft.as_ref().map(|t| t.id).filter(|id| *id > 0);
+                let focus_before: Vec<i64> = focus
+                    .map(|id| deps.direct(id).iter().map(|t| t.id).collect())
+                    .unwrap_or_default();
+                let focus_after: Vec<i64> = focus
+                    .map(|id| {
+                        tasks
+                            .iter()
+                            .filter(|t| t.dependencies.contains(&id))
+                            .map(|t| t.id)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let env = ListEnv {
+                    tasks: &tasks,
+                    documents: &documents,
+                    deps: &deps,
+                    attachment_counts: &attachment_counts,
+                    focus_before: &focus_before,
+                    focus_after: &focus_after,
+                    today: &today_text,
+                    editing: self.draft.as_ref().map(|t| t.id),
+                    editing_dirty: self.dirty(),
+                };
+                let mut groups: [Vec<&Task>; 5] = Default::default();
+                for task in &visible {
+                    let slot = if task.status == "concluida" {
+                        4
+                    } else if task.overdue() {
+                        0
+                    } else if task.due_date.is_empty() {
+                        3
+                    } else if task.due_date == today_text {
+                        1
+                    } else {
+                        2
+                    };
+                    groups[slot].push(task);
+                }
+                let titles_of_groups = [
+                    ("Atrasadas", Some(c().danger)),
+                    ("Para hoje", None),
+                    ("Próximas", None),
+                    ("Sem prazo", None),
+                    ("Concluídas", None),
+                ];
+                // A view that already is one deadline group needs no overline.
+                let single_group = matches!(self.view, 2 | 4 | 7);
+                #[allow(unused_mut)]
+                let mut list_scroll = egui::ScrollArea::vertical()
+                    .id_salt("task-manager")
+                    .auto_shrink([false, false]);
+                #[cfg(feature = "shots")]
+                {
+                    list_scroll = list_scroll.vertical_scroll_offset(self.shots_scroll);
+                }
+                list_scroll.show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        if visible.is_empty() {
+                            ui.add_space(S2);
+                            widgets::muted(ui, "Nenhuma tarefa nesta visão.");
+                        }
+                        for (index, group) in groups.iter().enumerate() {
+                            if group.is_empty() {
+                                continue;
+                            }
+                            if !single_group {
+                                ui.add_space(S3);
+                                let (name, color) = titles_of_groups[index];
+                                widgets::overline(ui, name, color);
+                                ui.add_space(S1);
+                            } else {
+                                ui.add_space(S2);
+                            }
+                            widgets::card_frame()
+                                .inner_margin(egui::Margin::ZERO)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    for (position, task) in group.iter().enumerate() {
+                                        task_row(
+                                            ui,
+                                            &env,
+                                            task,
+                                            position == 0,
+                                            position + 1 == group.len(),
+                                            &mut out,
+                                        );
                                     }
                                 });
-                            });
-                            if let Some((color, hint)) = relation {
-                                let rect = card.response.rect;
-                                let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(4.0, rect.height()));
-                                ui.painter().rect_filled(bar, 2.0, color);
-                                card.response.on_hover_text(hint);
-                            }
-                            });
-                            });
                         }
+                        ui.add_space(S4);
                     });
             });
-            if form_open {
-                ui.separator();
-                ui.vertical(|ui| {
-                    ui.set_width(ui.available_width());
-                    egui::ScrollArea::vertical()
-                        .id_salt("task-form")
-                        .max_height(height)
-                        .show(ui, |ui| {
-                            if let Some(id) = self.show_form(ui, store, &tasks, &documents) {
-                                open = Some(id);
-                            }
-                        });
-                });
-            }
-        });
 
-        if let Some(task) = select_request.or_else(|| self.open_task_requested.take()) {
+        if let Some(task) = out.select.or_else(|| self.open_task_requested.take()) {
             if !self.open_task(&task, store) {
                 self.blocked = Some(Intent::Open(task));
             }
         }
-        if let Some(id) = complete_request {
+        if let Some(id) = out.complete {
             self.apply_status_change(store, id, true);
         }
-        if let Some(id) = reopen_request {
+        if let Some(id) = out.reopen {
             self.apply_status_change(store, id, false);
         }
         open
+    }
+
+    /// Closes the form of a task nobody has changed.
+    fn close_form(&mut self) {
+        self.draft = None;
+        self.original = None;
+        self.base_version = None;
+        self.message.clear();
+        self.attachments.forget();
     }
 
     fn show_form(
@@ -792,318 +1121,450 @@ impl TaskPanel {
         let mut save = false;
         let mut cancel = false;
         let mut conclude = false;
+        let mut delete = false;
+        let mut close = false;
         let mut open_task: Option<Task> = None;
         let dirty = self.dirty();
+        let (task_id, task_status, document_id) = {
+            let task = self.draft.as_ref()?;
+            (task.id, task.status.clone(), task.document_id)
+        };
+        let panel_margin = egui::Margin::symmetric(S4 as i8, S3 as i8);
+
+        // Header: name of the panel, the unsaved mark and the close button.
+        egui::Frame::new().inner_margin(panel_margin).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(if task_id > 0 { "Tarefa" } else { "Nova tarefa" })
+                        .font(theme::font_strong(17.0)),
+                );
+                if dirty {
+                    widgets::pill(ui, "Não salva", Tone::Warn);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let response = ui.add_enabled_ui(!dirty, |ui| {
+                        widgets::icon_button(ui, icon::CLOSE, "Fechar o painel")
+                    });
+                    if response.inner.clicked() {
+                        close = true;
+                    }
+                    response
+                        .response
+                        .on_disabled_hover_text("Salve ou cancele as alterações antes de fechar.");
+                });
+            });
+            widgets::small_muted(
+                ui,
+                format!(
+                    "Documento: {}",
+                    documents
+                        .iter()
+                        .find(|d| d.id == document_id)
+                        .map(|d| d.document_number.as_str())
+                        .unwrap_or("não disponível")
+                ),
+            );
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(widgets::quiet(format!("{} Consultar documento", icon::EYE)))
+                    .on_hover_text("Mostra o texto e os PDFs do documento numa janela por cima desta ficha, para copiar um prazo ou conferir um trecho sem sair da tarefa.")
+                    .clicked()
+                {
+                    self.consult_requested = Some(document_id);
+                }
+                if ui
+                    .add(widgets::quiet(format!("{} Ir para o documento", icon::DOCUMENT)))
+                    .on_hover_text("Abre a ficha completa do documento. Se a tarefa tiver alterações não salvas, o Ponte pergunta antes o que fazer com elas.")
+                    .clicked()
+                {
+                    open = Some(document_id);
+                }
+            });
+        });
+        ui.separator();
+
+        // Footer, fixed at the bottom: Salvar, Concluir, Cancelar; Excluir apart.
+        egui::Panel::bottom("task-form-foot")
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(c().surface)
+                    .inner_margin(panel_margin),
+            )
+            .show(ui, |ui| {
+                let top = ui.max_rect();
+                ui.painter().hline(
+                    (top.left() - S4)..=(top.right() + S4),
+                    top.top() - S3,
+                    egui::Stroke::new(1.0, c().outline),
+                );
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = S2;
+                    save = ui
+                        .add_enabled(dirty || task_id == 0, widgets::primary("Salvar"))
+                        .clicked();
+                    if task_id > 0 && task_status != "concluida" {
+                        conclude = ui
+                            .add_enabled(!dirty, widgets::secondary("Concluir"))
+                            .on_disabled_hover_text("Salve ou cancele as alterações antes de concluir.")
+                            .clicked();
+                    }
+                    cancel = ui
+                        .add_enabled(dirty || task_id == 0, widgets::quiet("Cancelar"))
+                        .clicked();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        delete = ui
+                            .add_enabled(task_id > 0 && !dirty, widgets::danger("Excluir…"))
+                            .on_disabled_hover_text(
+                                "Salve ou cancele as alterações antes de excluir esta tarefa.",
+                            )
+                            .clicked();
+                    });
+                });
+            });
+
         let Some(task) = &mut self.draft else {
             return None;
         };
-        ui.horizontal_wrapped(|ui| {
-            ui.heading(if task.id > 0 { "Tarefa" } else { "Nova tarefa" });
-            if dirty {
-                ui.colored_label(crate::theme::warning(), "● não salva");
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.small(format!(
-                "Documento: {}",
-                documents
-                    .iter()
-                    .find(|d| d.id == task.document_id)
-                    .map(|d| d.document_number.as_str())
-                    .unwrap_or("não disponível")
-            ));
-            if ui
-                .small_button("Consultar documento")
-                .on_hover_text("Mostra o texto e os PDFs do documento numa janela por cima desta ficha, para copiar um prazo ou conferir um trecho sem sair da tarefa.")
-                .clicked()
-            {
-                self.consult_requested = Some(task.document_id);
-            }
-            if ui
-                .small_button("Ir para o documento")
-                .on_hover_text("Abre a ficha completa do documento. Se a tarefa tiver alterações não salvas, o Ponte pergunta antes o que fazer com elas.")
-                .clicked()
-            {
-                open = Some(task.document_id);
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            save = ui
-                .add_enabled(dirty || task.id == 0, egui::Button::new("Salvar"))
-                .clicked();
-            cancel = ui
-                .add_enabled(dirty || task.id == 0, egui::Button::new("Cancelar"))
-                .clicked();
-            if task.id > 0 && task.status != "concluida" {
-                conclude = ui
-                    .add_enabled(!dirty, egui::Button::new("✓ Concluir"))
-                    .on_disabled_hover_text("Salve ou cancele as alterações antes de concluir.")
-                    .clicked();
-            }
-            if ui
-                .add_enabled(task.id > 0 && !dirty, egui::Button::new("Excluir…"))
-                .on_disabled_hover_text(
-                    "Salve ou cancele as alterações antes de excluir esta tarefa.",
-                )
-                .clicked()
-            {
-                self.trash_requested = Some(crate::trash::Target {
-                    kind: crate::trash::Kind::Task,
-                    id: task.id,
-                });
-            }
-        });
-        ui.add_space(4.0);
-        ui.label("Título");
-        ui.add(egui::TextEdit::singleline(&mut task.title).desired_width(f32::INFINITY));
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Responsável:");
-            ui.add(egui::TextEdit::singleline(&mut task.assignee).desired_width(180.0));
-            if ui
-                .small_button("Eu")
-                .on_hover_text(format!("Atribuir a {current_actor}"))
-                .clicked()
-            {
-                task.assignee = current_actor.clone();
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            for (name, value, choices) in [
-                ("Ação", &mut task.action, crate::tasks::ACTIONS),
-                (
-                    "Situação",
-                    &mut task.status,
-                    &["pendente", "em analise", "aguardando", "concluida"][..],
-                ),
-                (
-                    "Prioridade",
-                    &mut task.priority,
-                    &["baixa", "normal", "alta", "urgente"][..],
-                ),
-            ] {
-                let label_of = |v: &str| -> String {
-                    match name {
-                        "Ação" => crate::tasks::action_label(v).to_owned(),
-                        "Situação" => crate::tasks::status_label(v).to_owned(),
-                        _ => crate::labels::priority(v).to_owned(),
-                    }
-                };
-                egui::ComboBox::from_id_salt(name)
-                    .selected_text(format!("{name}: {}", label_of(value)))
-                    .show_ui(ui, |ui| {
-                        for choice in choices {
-                            ui.selectable_value(value, choice.to_string(), label_of(choice));
-                        }
-                    });
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Prazo:");
-            crate::labels::date_field(ui, ("task-due", task.id), &mut task.due_date);
-            crate::help_ui::help(
-                ui,
-                "Deixe vazio se não houver prazo confirmado. Anote a origem em “Mais detalhes”.",
-            );
-        });
-        ui.label("Observações");
-        ui.add(
-            egui::TextEdit::multiline(&mut task.notes)
-                .desired_rows(3)
-                .desired_width(f32::INFINITY),
-        );
-        if let Some(at) = &task.completed_at {
-            ui.small(format!("Concluída em {}", crate::labels::datetime(at)));
+        #[cfg(feature = "shots")]
+        let force_details = self.shots_details;
+        #[allow(unused_mut)]
+        let mut form_scroll = egui::ScrollArea::vertical()
+            .id_salt("task-form")
+            .auto_shrink([false, false]);
+        #[cfg(feature = "shots")]
+        {
+            form_scroll = form_scroll.vertical_scroll_offset(if force_details { 330.0 } else { 0.0 });
         }
-        let task_id = task.id;
-        let document_id = task.document_id;
-        ui.add_space(4.0);
-        ui.strong("Anexos");
-        if task_id > 0 {
-            self.attachments
-                .show(ui, store, crate::attachments::Owner::Task(task_id), false);
-        } else {
-            ui.small("Salve a tarefa para poder anexar arquivos a ela.");
-        }
-        if task_id > 0 {
-            let before = deps.ancestors(task_id);
-            let after = deps.descendants(task_id);
-            if !before.is_empty() || !after.is_empty() {
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong("Cadeia de dependências");
-                    crate::help_ui::help(ui,
-                        "Tudo o que vem antes desta tarefa (em qualquer nível) e tudo o que espera por ela. Para mudar as dependências diretas, use “Mais detalhes ▸ Depende de outras tarefas”.",
-                    );
-                });
-                if !before.is_empty() {
-                    ui.small("Antes desta (precisam ser concluídas primeiro):");
-                    for previous in &before {
-                        chain_row(ui, previous, &mut open_task);
-                    }
-                }
-                if !after.is_empty() {
-                    ui.small("Depois desta (esperam por ela):");
-                    for next in &after {
-                        chain_row(ui, next, &mut open_task);
-                    }
-                }
-            }
-        }
-        egui::CollapsingHeader::new("Mais detalhes")
-            .id_salt(("task-more", task_id))
-            .show(ui, |ui| {
-                ui.label("Origem do prazo (trecho, arquivo ou orientação)");
-                ui.add(egui::TextEdit::singleline(&mut task.due_source).desired_width(f32::INFINITY));
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Lembrar a partir de:");
-                    crate::labels::date_field(ui, ("task-reminder", task_id), &mut task.reminder_date);
-                    crate::help_ui::help(ui, "Lembrete local, mostrado na visão “Lembretes” enquanto o Ponte estiver aberto.");
-                });
-                ui.label("Resultado (número da resposta, data de envio, observações)");
-                ui.add(
-                    egui::TextEdit::multiline(&mut task.outcome)
-                        .desired_rows(2)
-                        .desired_width(f32::INFINITY),
-                );
-                ui.collapsing("Checklist de providências", |ui| {
-                    let mut remove = None;
-                    for (index, (done, text)) in task.checklist.iter_mut().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.checkbox(done, "");
-                            ui.add(egui::TextEdit::singleline(text).desired_width(ui.available_width() - 40.0));
-                            if ui.small_button("✕").on_hover_text("Remover etapa").clicked() {
-                                remove = Some(index);
-                            }
-                        });
-                    }
-                    if let Some(index) = remove {
-                        task.checklist.remove(index);
-                    }
-                    if task.checklist.len() < 100 && ui.button("Adicionar etapa").clicked() {
-                        task.checklist.push((false, String::new()));
-                    }
-                });
-                if let Ok(doc) = store.load_document(document_id) {
-                    if let Some(analysis) = doc.analysis {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.small(format!(
-                                "Sugestão da IA: prioridade {} • prazo mencionado: {}{}",
-                                crate::labels::priority(&analysis.priority),
-                                analysis
-                                    .deadline_candidate
-                                    .as_deref()
-                                    .unwrap_or("não identificado"),
-                                if doc.summary.analysis_stale {
-                                    " • análise desatualizada"
-                                } else {
-                                    ""
+        form_scroll.show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(S4 as i8, S3 as i8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = S1;
+                        widgets::field_label(ui, "Título");
+                        ui.add(egui::TextEdit::singleline(&mut task.title).desired_width(f32::INFINITY));
+                        ui.add_space(S2);
+                        two_columns(
+                            ui,
+                            0.62,
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    widgets::field_label(ui, "Prazo");
+                                    crate::help_ui::help(
+                                        ui,
+                                        "Deixe vazio se não houver prazo confirmado. Anote a origem em “Mais detalhes”.",
+                                    );
+                                });
+                                let response =
+                                    crate::labels::date_field(ui, ("task-due", task_id), &mut task.due_date);
+                                if !task.due_date.trim().is_empty()
+                                    && crate::labels::parse_typed_date(&task.due_date).is_none()
+                                {
+                                    widgets::outline(ui, response.rect.expand(2.0), c().danger);
                                 }
-                            ));
-                            if !doc.summary.analysis_stale
-                                && ui.small_button("Usar prioridade sugerida").clicked()
-                            {
-                                task.priority = analysis.priority;
-                            }
-                        });
-                    }
-                }
-                if let Ok(context) = store.load_work_context(document_id) {
-                    let action = match context.purpose.as_str() {
-                        "ciencia e download" => "tomar ciencia",
-                        "responder" => "responder",
-                        "examinar" => "examinar",
-                        "encaminhar" => "encaminhar",
-                        "acompanhar" => "acompanhar",
-                        _ => "",
-                    };
-                    ui.horizontal_wrapped(|ui| {
-                        if !action.is_empty()
-                            && ui
-                                .small_button(format!(
-                                    "Usar a finalidade da ficha: {}",
-                                    crate::tasks::action_label(action)
-                                ))
-                                .on_hover_text("Define a ação da tarefa. O título só é preenchido se estiver vazio.")
-                                .clicked()
-                        {
-                            task.action = action.into();
-                            if task.title.trim().is_empty() {
-                                task.title =
-                                    format!("{} o documento", crate::tasks::action_label(action));
-                            }
+                            },
+                            |ui| {
+                                widgets::field_label(ui, "Prioridade");
+                                egui::ComboBox::from_id_salt("Prioridade")
+                                    .selected_text(crate::labels::priority(&task.priority).to_owned())
+                                    .width(ui.available_width() - 24.0)
+                                    .show_ui(ui, |ui| {
+                                        for choice in ["baixa", "normal", "alta", "urgente"] {
+                                            ui.selectable_value(
+                                                &mut task.priority,
+                                                choice.to_string(),
+                                                crate::labels::priority(choice),
+                                            );
+                                        }
+                                    });
+                            },
+                        );
+                        ui.add_space(S2);
+                        two_columns(
+                            ui,
+                            0.55,
+                            |ui| {
+                                widgets::field_label(ui, "Responsável");
+                                ui.horizontal(|ui| {
+                                    let width = (ui.available_width() - 52.0).max(60.0);
+                                    ui.add(egui::TextEdit::singleline(&mut task.assignee).desired_width(width));
+                                    if ui
+                                        .add(widgets::secondary("Eu"))
+                                        .on_hover_text(format!("Atribuir a {current_actor}"))
+                                        .clicked()
+                                    {
+                                        task.assignee = current_actor.clone();
+                                    }
+                                });
+                            },
+                            |ui| {
+                                widgets::field_label(ui, "Situação");
+                                egui::ComboBox::from_id_salt("Situação")
+                                    .selected_text(crate::tasks::status_label(&task.status).to_owned())
+                                    .width(ui.available_width() - 24.0)
+                                    .show_ui(ui, |ui| {
+                                        for choice in ["pendente", "em analise", "aguardando", "concluida"] {
+                                            ui.selectable_value(
+                                                &mut task.status,
+                                                choice.to_string(),
+                                                crate::tasks::status_label(choice),
+                                            );
+                                        }
+                                    });
+                            },
+                        );
+                        ui.add_space(S2);
+                        widgets::field_label(ui, "Ação");
+                        egui::ComboBox::from_id_salt("Ação")
+                            .selected_text(crate::tasks::action_label(&task.action).to_owned())
+                            .width(ui.available_width() - 24.0)
+                            .show_ui(ui, |ui| {
+                                for choice in crate::tasks::ACTIONS {
+                                    ui.selectable_value(
+                                        &mut task.action,
+                                        choice.to_string(),
+                                        crate::tasks::action_label(choice),
+                                    );
+                                }
+                            });
+                        ui.add_space(S2);
+                        widgets::field_label(ui, "Observações");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut task.notes)
+                                .desired_rows(3)
+                                .desired_width(f32::INFINITY),
+                        );
+                        if let Some(at) = &task.completed_at {
+                            widgets::small_muted(ui, format!("Concluída em {}", crate::labels::datetime(at)));
                         }
-                        if !context.priority.is_empty()
-                            && ui
-                                .small_button(format!(
-                                    "Usar a prioridade da ficha: {}",
-                                    crate::labels::priority(&context.priority)
-                                ))
-                                .clicked()
-                        {
-                            task.priority = context.priority;
+                        ui.add_space(S2);
+                        ui.separator();
+                        ui.add_space(S1);
+                        #[allow(unused_mut)]
+                        let mut more = egui::CollapsingHeader::new(
+                            RichText::new("Mais detalhes").font(theme::font_strong(theme::SIZE_BODY)),
+                        )
+                        .id_salt(("task-more", task_id));
+                        #[cfg(feature = "shots")]
+                        if force_details {
+                            more = more.open(Some(true));
                         }
-                    });
-                }
-                ui.collapsing("Depende de outras tarefas", |ui| {
-                    ui.small("Uma tarefa só pode ser concluída depois das que ela depende. Tarefas que já dependem desta ficam desabilitadas: marcá-las formaria um ciclo.");
-                    // Marking a task that already waits for this one would
-                    // close a loop; saving would refuse it anyway.
-                    let cycle_makers: std::collections::BTreeSet<i64> = if task_id > 0 {
-                        deps.descendants(task_id).iter().map(|t| t.id).collect()
-                    } else {
-                        Default::default()
-                    };
-                    let mut options: Vec<&Task> = tasks.iter().filter(|t| t.id != task_id).collect();
-                    // Concluded tasks last, greyed, so the live ones stand out.
-                    options.sort_by_key(|t| t.status == "concluida");
-                    egui::ScrollArea::vertical().id_salt("dependency-options").max_height(180.0).show(ui, |ui| {
-                        for previous in options {
-                            let mut checked = task.dependencies.contains(&previous.id);
-                            let would_cycle = cycle_makers.contains(&previous.id);
-                            let label = format!(
-                                "{} — {}",
-                                previous.title,
-                                crate::tasks::status_label(&previous.status)
+                        more.show(ui, |ui| {
+                            widgets::small_muted(
+                                ui,
+                                "Lembrete, dependências, lista de providências e anexos.",
                             );
-                            let text = if previous.status == "concluida" {
-                                RichText::new(label).color(crate::theme::muted())
-                            } else {
-                                RichText::new(label)
-                            };
-                            let response = ui.add_enabled(
-                                !would_cycle || checked,
-                                egui::Checkbox::new(&mut checked, text),
+                            ui.add_space(S1);
+                            widgets::field_label(ui, "Origem do prazo (trecho, arquivo ou orientação)");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut task.due_source)
+                                    .desired_width(f32::INFINITY),
                             );
-                            let response = if would_cycle {
-                                response.on_disabled_hover_text(format!(
-                                    "“{}” já depende desta tarefa (direta ou indiretamente); marcar formaria um ciclo.",
-                                    previous.title
-                                ))
-                            } else {
-                                response
-                            };
-                            if response.changed() {
-                                if checked {
-                                    task.dependencies.push(previous.id);
-                                } else {
-                                    task.dependencies.retain(|id| *id != previous.id);
+                            ui.add_space(S2);
+                            ui.horizontal(|ui| {
+                                widgets::field_label(ui, "Lembrar a partir de");
+                                crate::help_ui::help(ui, "Lembrete local, mostrado na visão “Lembretes” enquanto o Ponte estiver aberto.");
+                            });
+                            crate::labels::date_field(ui, ("task-reminder", task_id), &mut task.reminder_date);
+                            ui.add_space(S2);
+                            widgets::field_label(ui, "Resultado (número da resposta, data de envio, observações)");
+                            ui.add(
+                                egui::TextEdit::multiline(&mut task.outcome)
+                                    .desired_rows(2)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.add_space(S2);
+                            ui.collapsing("Checklist de providências", |ui| {
+                                let mut remove = None;
+                                for (index, (done, text)) in task.checklist.iter_mut().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        ui.checkbox(done, "");
+                                        ui.add(
+                                            egui::TextEdit::singleline(text)
+                                                .desired_width((ui.available_width() - 40.0).max(60.0)),
+                                        );
+                                        if widgets::icon_button(ui, icon::CLOSE, "Remover etapa").clicked() {
+                                            remove = Some(index);
+                                        }
+                                    });
+                                }
+                                if let Some(index) = remove {
+                                    task.checklist.remove(index);
+                                }
+                                if task.checklist.len() < 100
+                                    && ui.add(widgets::secondary(format!("{} Adicionar etapa", icon::PLUS))).clicked()
+                                {
+                                    task.checklist.push((false, String::new()));
+                                }
+                            });
+                            if let Ok(doc) = store.load_document(document_id) {
+                                if let Some(analysis) = doc.analysis {
+                                    ui.horizontal_wrapped(|ui| {
+                                        widgets::small_muted(
+                                            ui,
+                                            format!(
+                                                "{} Sugestão da IA: prioridade {} • prazo mencionado: {}{}",
+                                                icon::AI,
+                                                crate::labels::priority(&analysis.priority),
+                                                analysis
+                                                    .deadline_candidate
+                                                    .as_deref()
+                                                    .unwrap_or("não identificado"),
+                                                if doc.summary.analysis_stale {
+                                                    " • análise desatualizada"
+                                                } else {
+                                                    ""
+                                                }
+                                            ),
+                                        );
+                                        if !doc.summary.analysis_stale
+                                            && ui.add(widgets::quiet("Usar prioridade sugerida")).clicked()
+                                        {
+                                            task.priority = analysis.priority;
+                                        }
+                                    });
                                 }
                             }
-                        }
+                            if let Ok(context) = store.load_work_context(document_id) {
+                                let action = match context.purpose.as_str() {
+                                    "ciencia e download" => "tomar ciencia",
+                                    "responder" => "responder",
+                                    "examinar" => "examinar",
+                                    "encaminhar" => "encaminhar",
+                                    "acompanhar" => "acompanhar",
+                                    _ => "",
+                                };
+                                ui.horizontal_wrapped(|ui| {
+                                    if !action.is_empty()
+                                        && ui
+                                            .add(widgets::quiet(format!(
+                                                "Usar a finalidade da ficha: {}",
+                                                crate::tasks::action_label(action)
+                                            )))
+                                            .on_hover_text("Define a ação da tarefa. O título só é preenchido se estiver vazio.")
+                                            .clicked()
+                                    {
+                                        task.action = action.into();
+                                        if task.title.trim().is_empty() {
+                                            task.title =
+                                                format!("{} o documento", crate::tasks::action_label(action));
+                                        }
+                                    }
+                                    if !context.priority.is_empty()
+                                        && ui
+                                            .add(widgets::quiet(format!(
+                                                "Usar a prioridade da ficha: {}",
+                                                crate::labels::priority(&context.priority)
+                                            )))
+                                            .clicked()
+                                    {
+                                        task.priority = context.priority;
+                                    }
+                                });
+                            }
+                            ui.collapsing("Depende de outras tarefas", |ui| {
+                                widgets::small_muted(ui, "Uma tarefa só pode ser concluída depois das que ela depende. Tarefas que já dependem desta ficam desabilitadas: marcá-las formaria um ciclo.");
+                                // Marking a task that already waits for this one would
+                                // close a loop; saving would refuse it anyway.
+                                let cycle_makers: std::collections::BTreeSet<i64> = if task_id > 0 {
+                                    deps.descendants(task_id).iter().map(|t| t.id).collect()
+                                } else {
+                                    Default::default()
+                                };
+                                let mut options: Vec<&Task> = tasks.iter().filter(|t| t.id != task_id).collect();
+                                // Concluded tasks last, greyed, so the live ones stand out.
+                                options.sort_by_key(|t| t.status == "concluida");
+                                egui::ScrollArea::vertical().id_salt("dependency-options").max_height(180.0).show(ui, |ui| {
+                                    for previous in options {
+                                        let mut checked = task.dependencies.contains(&previous.id);
+                                        let would_cycle = cycle_makers.contains(&previous.id);
+                                        let label = format!(
+                                            "{} — {}",
+                                            previous.title,
+                                            crate::tasks::status_label(&previous.status)
+                                        );
+                                        let text = if previous.status == "concluida" {
+                                            RichText::new(label).color(c().muted)
+                                        } else {
+                                            RichText::new(label)
+                                        };
+                                        let response = ui.add_enabled(
+                                            !would_cycle || checked,
+                                            egui::Checkbox::new(&mut checked, text),
+                                        );
+                                        let response = if would_cycle {
+                                            response.on_disabled_hover_text(format!(
+                                                "“{}” já depende desta tarefa (direta ou indiretamente); marcar formaria um ciclo.",
+                                                previous.title
+                                            ))
+                                        } else {
+                                            response
+                                        };
+                                        if response.changed() {
+                                            if checked {
+                                                task.dependencies.push(previous.id);
+                                            } else {
+                                                task.dependencies.retain(|id| *id != previous.id);
+                                            }
+                                        }
+                                    }
+                                });
+                                for missing in task.dependencies.clone() {
+                                    if !tasks.iter().any(|t| t.id == missing)
+                                        && ui
+                                            .add(widgets::secondary(format!("Remover dependência #{missing} (tarefa não disponível)")))
+                                            .clicked()
+                                    {
+                                        task.dependencies.retain(|id| *id != missing);
+                                    }
+                                }
+                            });
+                            if task_id > 0 {
+                                let before = deps.ancestors(task_id);
+                                let after = deps.descendants(task_id);
+                                if !before.is_empty() || !after.is_empty() {
+                                    ui.add_space(S2);
+                                    ui.horizontal_wrapped(|ui| {
+                                        widgets::field_label(ui, "Cadeia de dependências");
+                                        crate::help_ui::help(ui,
+                                            "Tudo o que vem antes desta tarefa (em qualquer nível) e tudo o que espera por ela. Para mudar as dependências diretas, use “Mais detalhes ▸ Depende de outras tarefas”.",
+                                        );
+                                    });
+                                    if !before.is_empty() {
+                                        widgets::small_muted(ui, "Antes desta (precisam ser concluídas primeiro):");
+                                        for previous in &before {
+                                            chain_row(ui, previous, &mut open_task);
+                                        }
+                                    }
+                                    if !after.is_empty() {
+                                        widgets::small_muted(ui, "Depois desta (esperam por ela):");
+                                        for next in &after {
+                                            chain_row(ui, next, &mut open_task);
+                                        }
+                                    }
+                                }
+                            }
+                            ui.add_space(S2);
+                            widgets::field_label(ui, "Anexos");
+                            if task_id > 0 {
+                                self.attachments
+                                    .show(ui, store, crate::attachments::Owner::Task(task_id), false);
+                            } else {
+                                widgets::small_muted(ui, "Salve a tarefa para poder anexar arquivos a ela.");
+                            }
+                        });
                     });
-                    for missing in task.dependencies.clone() {
-                        if !tasks.iter().any(|t| t.id == missing)
-                            && ui
-                                .button(format!("Remover dependência #{missing} (tarefa não disponível)"))
-                                .clicked()
-                        {
-                            task.dependencies.retain(|id| *id != missing);
-                        }
-                    }
-                });
             });
         if open_task.is_some() {
             self.open_task_requested = open_task;
+        }
+        if delete {
+            self.trash_requested = Some(crate::trash::Target {
+                kind: crate::trash::Kind::Task,
+                id: task_id,
+            });
         }
         if save {
             // The panel already shows the reason when saving fails.
@@ -1115,8 +1576,12 @@ impl TaskPanel {
         if conclude {
             self.apply_status_change(store, task_id, true);
         }
+        if close && !self.dirty() {
+            self.close_form();
+        }
         open
     }
+
 
     fn apply_status_change(&mut self, store: &mut Store, id: i64, complete: bool) {
         let result = if complete {
@@ -1240,10 +1705,48 @@ mod navigation_tests {
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
-pub const SHOTS: &[&str] = &[];
+pub const SHOTS: &[&str] = &["lista", "aberta", "nova", "concluidas", "detalhes"];
 
 #[cfg(feature = "shots")]
 impl TaskPanel {
     /// Puts the panel in the state called `view` (see `SHOTS`).
-    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
+    pub fn shots_open(&mut self, store: &mut crate::storage::Store, view: &str) {
+        let tasks = store.list_tasks().unwrap_or_default();
+        self.show_all_documents = true;
+        self.document_filter = None;
+        match view {
+            "aberta" => {
+                if let Some(task) = tasks.iter().find(|t| t.overdue()) {
+                    self.open_task(task, store);
+                }
+            }
+            "nova" => {
+                let target = store
+                    .list_documents("")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|d| d.document_number == "SESP-OFI-2026/00431");
+                if let Some(document) = target {
+                    self.start_new(document.id);
+                    self.show_all_documents = true;
+                    self.document_filter = None;
+                }
+            }
+            "concluidas" => {
+                self.show_done = true;
+                self.shots_scroll = 520.0;
+            }
+            "detalhes" => {
+                let task = tasks
+                    .iter()
+                    .find(|t| !t.dependencies.is_empty())
+                    .or_else(|| tasks.iter().find(|t| t.overdue()));
+                if let Some(task) = task {
+                    self.open_task(task, store);
+                }
+                self.shots_details = true;
+            }
+            _ => {}
+        }
+    }
 }

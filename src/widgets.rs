@@ -253,43 +253,44 @@ pub fn chip(ui: &mut Ui, selected: bool, label: impl Into<String>) -> Response {
 /// The search box of an area, with the magnifying glass.
 pub fn search(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> Response {
     let p = c();
-    egui::Frame::new()
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.outline))
-        .corner_radius(CornerRadius::same(theme::RADIUS))
-        .inner_margin(Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(theme::icon::SEARCH).size(16.0).color(p.muted));
-                let inner = (width - 46.0).max(60.0);
-                let response = ui.add(
-                    egui::TextEdit::singleline(text)
-                        .hint_text(hint)
-                        .frame(egui::Frame::NONE)
-                        .desired_width(inner),
-                );
-                if !text.is_empty()
-                    && ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(theme::icon::CLOSE).size(13.0).color(p.muted),
-                            )
-                            .frame(false),
-                        )
-                        .on_hover_text("Limpar a busca")
-                        .clicked()
-                {
-                    text.clear();
-                    let mut response = response;
-                    response.mark_changed();
-                    return response;
-                }
-                response
-            })
-            .inner
-        })
-        .inner
+    // A box of fixed size, whatever the layout around it: glass on the left,
+    // text centred on the line, the clear button at the end.
+    let width = width.max(120.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 32.0), Sense::hover());
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(theme::RADIUS),
+        p.surface,
+        Stroke::new(1.0, p.outline),
+        StrokeKind::Inside,
+    );
+    let mut inner = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(9.0, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    inner.spacing_mut().item_spacing.x = 6.0;
+    inner.label(RichText::new(theme::icon::SEARCH).size(16.0).color(p.muted));
+    let clear = if text.is_empty() { 0.0 } else { 26.0 };
+    let mut response = inner.add(
+        egui::TextEdit::singleline(text)
+            .hint_text(hint)
+            .frame(egui::Frame::NONE)
+            .desired_width((width - 48.0 - clear).max(40.0)),
+    );
+    if !text.is_empty()
+        && inner
+            .add(
+                egui::Button::new(RichText::new(theme::icon::CLOSE).size(13.0).color(p.muted))
+                    .frame(false),
+            )
+            .on_hover_text("Limpar a busca")
+            .clicked()
+    {
+        text.clear();
+        response.mark_changed();
+    }
+    response
 }
 
 /// One area in the rail on the left: icon over name. `badge` is a count on

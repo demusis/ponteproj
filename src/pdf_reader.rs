@@ -405,26 +405,61 @@ impl PdfPanel {
         }
         let mut open = self.open;
         let mut request = None;
+        use crate::theme::{self, icon};
+        use crate::widgets;
         egui::Window::new("Leitor PDF local").open(&mut open).default_size([900.0,700.0]).resizable(true).show(ctx,|ui|{
-            if let Some(selection)=&mut self.selection{
-                ui.strong(&selection.label);
-                ui.small(match selection.source {
-                    Source::File { file, capture } => format!("Arquivo local #{file} • captura #{capture} • original preservado"),
+            if let Some(selection) = &mut self.selection {
+                widgets::section(ui, &selection.label);
+                widgets::small_muted(ui, match selection.source {
+                    Source::File { file, capture } => format!("Arquivo local #{file} • versão #{capture} • original preservado"),
                     Source::Attachment(id) => format!("Anexo #{id} • cópia protegida no acervo"),
                 });
-                ui.horizontal_wrapped(|ui|{
-                    let busy=self.job.is_some();
-                    if ui.add_enabled(!busy&&selection.page>0,egui::Button::new("Anterior")).clicked(){selection.page-=1;request=Some(false);}
-                    ui.label(format!("Página {} de {}",selection.page+1,selection.pages));
-                    if ui.add_enabled(!busy&&selection.page+1<selection.pages,egui::Button::new("Próxima")).clicked(){selection.page+=1;request=Some(false);}
-                    if ui.add_enabled(!busy,egui::Button::new("OCR local desta página")).clicked(){request=Some(true);}
-                    let previous=selection.width;ui.add_enabled(!busy,egui::Slider::new(&mut selection.width,600..=2200).text("Resolução"));
-                    if previous!=selection.width{request=Some(false);}
+                ui.add_space(theme::S2);
+                ui.horizontal_wrapped(|ui| {
+                    let busy = self.job.is_some();
+                    if ui
+                        .add_enabled(!busy && selection.page > 0, widgets::secondary(format!("{} Anterior", icon::LEFT)))
+                        .clicked()
+                    {
+                        selection.page -= 1;
+                        request = Some(false);
+                    }
+                    widgets::muted(ui, format!("Página {} de {}", selection.page + 1, selection.pages));
+                    if ui
+                        .add_enabled(!busy && selection.page + 1 < selection.pages, widgets::secondary(format!("Próxima {}", icon::RIGHT)))
+                        .clicked()
+                    {
+                        selection.page += 1;
+                        request = Some(false);
+                    }
+                    if ui.add_enabled(!busy, widgets::secondary(format!("{} OCR local desta página", icon::SEARCH))).clicked() {
+                        request = Some(true);
+                    }
+                    let previous = selection.width;
+                    ui.add_enabled(!busy, egui::Slider::new(&mut selection.width, 600..=2200).text("Resolução"));
+                    if previous != selection.width {
+                        request = Some(false);
+                    }
                 });
-                ui.small("OCR usa o idioma disponível no perfil Windows. O resultado pode conter erros e não é incorporado automaticamente à análise por IA.");
-                if !self.message.is_empty(){ui.label(&self.message);}
-                egui::ScrollArea::both().max_height(520.0).show(ui,|ui|{if let Some(texture)=&selection.texture{let size=texture.size_vec2();let ratio=(ui.available_width()/size.x).min(1.0);ui.image((texture.id(),size*ratio));}});
-                if let Some(text)=&selection.text{ui.collapsing(format!("Texto OCR salvo • página {} • {}",selection.page+1,text.language),|ui|{ui.small(format!("Obtido localmente em {}",text.created_at));let mut value=text.text.as_str();ui.add(egui::TextEdit::multiline(&mut value).desired_rows(8).desired_width(f32::INFINITY));});}
+                widgets::small_muted(ui, "OCR usa o idioma disponível no perfil Windows. O resultado pode conter erros e não é incorporado automaticamente à análise por IA.");
+                if !self.message.is_empty() {
+                    widgets::muted(ui, &self.message);
+                }
+                ui.add_space(theme::S2);
+                egui::ScrollArea::both().max_height(520.0).show(ui, |ui| {
+                    if let Some(texture) = &selection.texture {
+                        let size = texture.size_vec2();
+                        let ratio = (ui.available_width() / size.x).min(1.0);
+                        ui.image((texture.id(), size * ratio));
+                    }
+                });
+                if let Some(text) = &selection.text {
+                    ui.collapsing(format!("Texto OCR salvo • página {} • {}", selection.page + 1, text.language), |ui| {
+                        widgets::small_muted(ui, format!("Obtido localmente em {}", text.created_at));
+                        let mut value = text.text.as_str();
+                        ui.add(egui::TextEdit::multiline(&mut value).desired_rows(8).desired_width(f32::INFINITY));
+                    });
+                }
             }
         });
         self.open = open;

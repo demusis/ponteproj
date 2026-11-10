@@ -2610,25 +2610,149 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
 }
 
 // ============================================================================
+// Interface gráfica "Atendimentos" (Controle do gabinete do SAIOP)
+// ============================================================================
 
 #[cfg(feature = "desktop")]
-/// A titled block of the atendimento form: label on the left, field on the
-/// right, one row per field.
-fn form_section(
+use crate::theme::{self, c, icon, S1, S2, S3, S4};
+#[cfg(feature = "desktop")]
+use crate::widgets::{self, Tone};
+
+#[cfg(feature = "desktop")]
+/// Width of the side panel (the ficha).
+const FICHA_WIDTH: f32 = 440.0;
+#[cfg(feature = "desktop")]
+const ROW_HEIGHT: f32 = 40.0;
+
+#[cfg(feature = "desktop")]
+/// The pill colour of a situation.
+fn status_tone(status: &str) -> Tone {
+    match status {
+        "em_analise" | "em_elaboracao" => Tone::Info,
+        "aguardando_resposta" | "suspenso" => Tone::Warn,
+        "aguardando_deliberacao" => Tone::Violet,
+        "encerrado" => Tone::Ok,
+        _ => Tone::Neutral,
+    }
+}
+
+#[cfg(feature = "desktop")]
+/// `dd/mm`, with the year only when it is not this year's.
+fn short_date(iso: &str, today: NaiveDate) -> String {
+    match NaiveDate::parse_from_str(iso.trim(), "%Y-%m-%d") {
+        Ok(d) if d.year() == today.year() => d.format("%d/%m").to_string(),
+        Ok(d) => d.format("%d/%m/%y").to_string(),
+        Err(_) => crate::labels::date(iso),
+    }
+}
+
+#[cfg(feature = "desktop")]
+/// The deadline of an atendimento as a pill (text, tone, hover).
+fn due_pill(att: &SaiopAttendance, today: NaiveDate) -> (String, Tone, Option<String>) {
+    if !att.due_date.is_empty() {
+        let short = short_date(&att.due_date, today);
+        match att.due_delta_days(today) {
+            Some(delta) if delta > 0 => (
+                format!("Vencido · {short}"),
+                Tone::Danger,
+                Some(format!("Vencido há {delta} dia(s)")),
+            ),
+            Some(0) => ("Hoje".to_owned(), Tone::Warn, Some("Vence hoje".to_owned())),
+            Some(delta) => (short, Tone::Info, Some(format!("Vence em {} dia(s)", -delta))),
+            None => (short, Tone::Info, None),
+        }
+    } else if !att.due_date_raw.is_empty() {
+        (
+            format!("Conferir: {}", att.due_date_raw),
+            Tone::Warn,
+            Some("O prazo veio como texto na planilha; confira e informe a data.".to_owned()),
+        )
+    } else {
+        ("Sem prazo".to_owned(), Tone::Neutral, None)
+    }
+}
+
+#[cfg(feature = "desktop")]
+/// A message of the screen: one soft-coloured line with a close button.
+/// Returns true when it was closed.
+fn notice_line(ui: &mut egui::Ui, text: &str, tone: Tone) -> bool {
+    let (fg, bg) = tone.colors();
+    let mut closed = false;
+    egui::Frame::new()
+        .fill(bg)
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let glyph = if tone == Tone::Danger { icon::ERROR } else { icon::INFO };
+                ui.label(RichText::new(glyph).size(16.0).color(fg));
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - 36.0).max(80.0));
+                    ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::icon_button(ui, icon::CLOSE, "Fechar").clicked() {
+                        closed = true;
+                    }
+                });
+            });
+        });
+    closed
+}
+
+#[cfg(feature = "desktop")]
+/// A titled block of the ficha: small capitals, then the rows.
+fn form_section(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(S3);
+    widgets::overline(ui, title, None);
+    ui.add_space(S1);
+    rows(ui);
+}
+
+#[cfg(feature = "desktop")]
+/// A field with its name above it.
+fn labeled(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui)) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 3.0;
+        widgets::field_label(ui, label);
+        field(ui);
+    });
+}
+
+#[cfg(feature = "desktop")]
+/// A combo box that fills the width it is in.
+fn pick(
+    ui: &mut egui::Ui,
+    id: &str,
+    text: String,
+    options: impl FnOnce(&mut egui::Ui),
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(text)
+        .width(ui.available_width().max(80.0))
+        .show_ui(ui, options);
+}
+
+#[cfg(feature = "desktop")]
+/// A less-used part of the ficha: a title row that opens and closes.
+fn fold<R>(
     ui: &mut egui::Ui,
     title: &str,
     id: impl egui::AsIdSalt,
-    rows: impl FnOnce(&mut egui::Ui),
+    open: bool,
+    body: impl FnOnce(&mut egui::Ui) -> R,
 ) {
-    ui.add_space(6.0);
-    ui.strong(title);
-    egui::Grid::new(id)
-        .num_columns(2)
-        .spacing([8.0, 4.0])
-        .show(ui, rows);
+    ui.separator();
+    egui::CollapsingHeader::new(RichText::new(title).font(theme::font_strong(theme::SIZE_BODY)))
+        .id_salt(id)
+        .default_open(open)
+        .show(ui, |ui| {
+            ui.add_space(S1);
+            body(ui);
+            ui.add_space(S1);
+        });
 }
-// Interface gráfica "Atendimentos" (Controle do gabinete do SAIOP)
-// ============================================================================
 
 #[cfg(feature = "desktop")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2865,7 +2989,7 @@ impl SaiopPanel {
         let all_items = match store.list_saiop_attendances() {
             Ok(list) => list,
             Err(e) => {
-                ui.colored_label(crate::theme::error(), format!("Erro ao carregar Atendimentos: {e}"));
+                widgets::muted(ui, format!("Erro ao carregar Atendimentos: {e}"));
                 return None;
             }
         };
@@ -2881,361 +3005,130 @@ impl SaiopPanel {
             .filter(|a| a.due_delta_days(today).is_some_and(|d| d > 0))
             .count();
 
-        ui.horizontal_wrapped(|ui| {
-            ui.heading("Atendimentos");
+        // The ficha is a panel on the right; the rest is drawn after it.
+        if self.editor.is_some() {
+            self.show_ficha(ui, store, &all_items, &mut open_document);
+        }
+
+        ui.spacing_mut().item_spacing.y = S2;
+        // ---- Area header ---------------------------------------------------
+        ui.horizontal(|ui| {
+            widgets::heading(ui, "Atendimentos");
             crate::help_ui::help(ui, format!(
                     "Controle operacional do gabinete (SAIOP). {} atendimento(s) no total, {} referência(s) distinta(s).",
                     all_items.len(),
                     distinct_refs.len()
                 ));
-            ui.label(format!("{open_count} em aberto"));
+            ui.add_space(S2);
+            widgets::pill(ui, format!("{open_count} em aberto"), Tone::Info);
             if overdue_count > 0 {
-                ui.colored_label(crate::theme::error(), format!("• {overdue_count} com prazo vencido"));
+                widgets::pill(ui, format!("{overdue_count} com prazo vencido"), Tone::Danger);
             }
-            if ui
-                .button("Importar planilha…")
-                .on_hover_text("Lê a aba PROCESSOS de um arquivo .xlsx do controle do gabinete.")
-                .clicked()
-            {
-                self.import_open = true;
-            }
-            if ui.button("Registrar nova entrada").clicked() {
-                if self.dirty() {
-                    self.set_notice(
-                        "Salve ou descarte o atendimento em edição antes de iniciar outro.",
-                        true,
-                    );
-                } else {
-                    let mut fresh = SaiopAttendance::new_manual();
-                    if let Ok(cfg) = store.load_intranet_config() {
-                        fresh.assignee = cfg.member_name;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(widgets::primary(format!("{} Nova entrada", icon::PLUS)))
+                    .on_hover_text("Registra um atendimento novo; com um documento aberto na biblioteca, ele já vem ligado a esse documento.")
+                    .clicked()
+                {
+                    if self.dirty() {
+                        self.set_notice(
+                            "Salve ou descarte o atendimento em edição antes de iniciar outro.",
+                            true,
+                        );
+                    } else {
+                        let mut fresh = SaiopAttendance::new_manual();
+                        if let Ok(cfg) = store.load_intranet_config() {
+                            fresh.assignee = cfg.member_name;
+                        }
+                        // With a document open in the library, the new entry is a
+                        // passage of that document: linked, with its number
+                        // (whatever the list filter; "Desligar" undoes it).
+                        if let Some((id, number)) = self.context_document.clone() {
+                            fresh.document_id = Some(id);
+                            fresh.reference_norm = normalize_reference(&number);
+                            fresh.reference_raw = number;
+                        }
+                        self.load_into_editor(store, fresh);
                     }
-                    // With a document open in the library, the new entry is a
-                    // passage of that document: linked, with its number
-                    // (whatever the list filter; "Desligar" undoes it).
-                    if let Some((id, number)) = self.context_document.clone() {
-                        fresh.document_id = Some(id);
-                        fresh.reference_norm = normalize_reference(&number);
-                        fresh.reference_raw = number;
-                    }
-                    self.load_into_editor(store, fresh);
                 }
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            // On a connected computer the import is recorded by the main
-            // one, with its own setting: the box would have no effect here.
-            let on_client = store
-                .load_intranet_config()
-                .is_ok_and(|cfg| cfg.mode == crate::intranet::IntranetMode::Client);
-            let mut auto = store.auto_attendance_enabled().unwrap_or(true);
-            let response = ui.add_enabled(
-                !on_client,
-                egui::Checkbox::new(&mut auto, "Criar atendimento ao importar do SIGADOC"),
-            );
-            let response = if on_client {
-                response.on_disabled_hover_text("Definido no computador principal: é ele que registra as importações da equipe. Sem conexão, a cópia local segue a configuração daqui até a próxima sincronização.")
-            } else {
-                response.on_hover_text("Na primeira importação de cada documento do SIGADOC, registra aqui a entrada dele no gabinete: referência, assunto, data, responsável e ligação ao documento. Documentos juntados a outro não entram. Você pode editar ou excluir o atendimento depois.")
-            };
-            if response.changed() {
-                if let Err(e) = store.set_auto_attendance(auto) {
-                    self.set_notice(format!("Não foi possível salvar a preferência: {e}"), true);
+                if ui
+                    .add(widgets::secondary("Importar planilha"))
+                    .on_hover_text("Lê a aba PROCESSOS de um arquivo .xlsx do controle do gabinete.")
+                    .clicked()
+                {
+                    self.import_open = true;
                 }
-            }
+            });
         });
+
         // Imports (often made from the browser, with no window to tell) whose
         // automatic atendimento could not be recorded.
         let failures = store.auto_attendance_failures().unwrap_or_default();
         if !failures.is_empty() {
-            ui.group(|ui| {
-                ui.colored_label(
-                    crate::theme::warning(),
-                    format!(
-                        "⚠ {} importação(ões) sem o atendimento automático:",
-                        failures.len()
-                    ),
-                );
-                for failure in failures.iter().take(5) {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(&failure.number).strong())
-                            .on_hover_text(format!(
-                                "Importado {}",
-                                crate::labels::elapsed(&failure.at).unwrap_or_default()
-                            ));
-                        ui.label(RichText::new(&failure.message).small());
-                        if ui.small_button("Tentar de novo").clicked() {
-                            match store.retry_auto_attendance(failure.document_id) {
-                                Ok(()) => self.set_notice(
-                                    format!("Atendimento de {} registrado.", failure.number),
-                                    false,
-                                ),
-                                Err(e) => {
-                                    self.set_notice(format!("Ainda não foi possível: {e:#}"), true)
+            let (fg, bg) = Tone::Warn.colors();
+            egui::Frame::new()
+                .fill(bg)
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(icon::WARNING).size(16.0).color(fg));
+                        ui.label(
+                            RichText::new(format!(
+                                "{} importação(ões) sem o atendimento automático",
+                                failures.len()
+                            ))
+                            .font(theme::font_strong(theme::SIZE_BODY))
+                            .color(fg),
+                        );
+                    });
+                    for failure in failures.iter().take(5) {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(&failure.number).font(theme::font_strong(theme::SIZE_BODY)))
+                                .on_hover_text(format!(
+                                    "Importado {}",
+                                    crate::labels::elapsed(&failure.at).unwrap_or_default()
+                                ));
+                            widgets::small_muted(ui, &failure.message);
+                            if ui.add(widgets::secondary("Tentar de novo")).clicked() {
+                                match store.retry_auto_attendance(failure.document_id) {
+                                    Ok(()) => self.set_notice(
+                                        format!("Atendimento de {} registrado.", failure.number),
+                                        false,
+                                    ),
+                                    Err(e) => {
+                                        self.set_notice(format!("Ainda não foi possível: {e:#}"), true)
+                                    }
                                 }
                             }
-                        }
-                        if ui
-                            .small_button("Dispensar")
-                            .on_hover_text("Some o aviso; registre o atendimento à mão, se quiser.")
-                            .clicked()
-                        {
-                            if let Err(e) =
-                                store.dismiss_auto_attendance_failure(failure.document_id)
+                            if ui
+                                .add(widgets::quiet("Dispensar"))
+                                .on_hover_text("Some o aviso; registre o atendimento à mão, se quiser.")
+                                .clicked()
                             {
-                                self.set_notice(format!("Não foi possível dispensar: {e}"), true);
+                                if let Err(e) =
+                                    store.dismiss_auto_attendance_failure(failure.document_id)
+                                {
+                                    self.set_notice(format!("Não foi possível dispensar: {e}"), true);
+                                }
                             }
-                        }
-                    });
-                }
-                if failures.len() > 5 {
-                    ui.small(format!("e mais {}…", failures.len() - 5));
-                }
-            });
-        }
-        if let Some((context_id, context_number)) = self.context_document.clone() {
-            ui.horizontal_wrapped(|ui| {
-                if self.document_filter == Some(context_id) {
-                    ui.label(format!("Só {context_number}"))
-                        .on_hover_text("A lista segue o documento aberto na biblioteca; Registrar nova entrada cria um atendimento ligado a ele.");
-                    if ui.small_button("Todos os atendimentos").clicked() {
-                        self.document_filter = None;
-                        self.show_all_documents = true;
+                        });
                     }
-                } else {
-                    ui.label("Todos os atendimentos");
-                    if ui
-                        .small_button(format!("Só {context_number}"))
-                        .on_hover_text("Volta a mostrar só os atendimentos do documento aberto.")
-                        .clicked()
-                    {
-                        self.document_filter = Some(context_id);
-                        self.show_all_documents = false;
+                    if failures.len() > 5 {
+                        widgets::small_muted(ui, format!("e mais {}…", failures.len() - 5));
                     }
-                }
-            });
+                });
         }
 
         if !self.message.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(if self.error { crate::theme::error() } else { crate::theme::accent() }, &self.message);
-                if ui.small_button("Fechar").clicked() {
-                    self.message.clear();
-                }
-            });
+            let tone = if self.error { Tone::Danger } else { Tone::Info };
+            if notice_line(ui, &self.message.clone(), tone) {
+                self.message.clear();
+            }
         }
 
-        // Importador assistido da planilha PROCESSOS (.xlsx) e gestão de lotes
-        let mut close_import = false;
-        let mut import_open = self.import_open;
-        egui::Window::new("Importar planilha do controle")
-            .open(&mut import_open)
-            .default_width(860.0)
-            .resizable(true)
-            .show(ui.ctx(), |ui| {
-            ui.small("Escolha o arquivo .xlsx do controle do gabinete. A aba PROCESSOS é lida; nada é gravado antes de você confirmar.");
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Escolher planilha…").clicked() {
-                    if let Some(path) = crate::windows_ui::pick_file(
-                        "Escolher a planilha do controle (aba PROCESSOS)",
-                        &[("Planilhas Excel", "*.xlsx"), ("Todos os arquivos", "*.*")],
-                    ) {
-                        self.xlsx_path = path.display().to_string();
-                    }
-                }
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.xlsx_path)
-                        .hint_text("ou cole o caminho do arquivo .xlsx")
-                        .desired_width(360.0),
-                );
-                ui.checkbox(
-                    &mut self.tramitado_keep_open,
-                    "“Tramitado” com retorno da UAS fica aberto",
-                )
-                .on_hover_text("Quando a planilha diz “Tramitado” e “Retorno para UAS = Sim”, o atendimento entra como “Aguardando resposta” em vez de “Encerrado”.");
-                if ui.button("Ler a planilha").clicked() {
-                    let path = Path::new(self.xlsx_path.trim().trim_matches('"'));
-                    match store.preview_saiop_xlsx(path, self.tramitado_keep_open) {
-                        Ok(prev) => {
-                            self.set_notice(
-                                format!(
-                                    "Prévia pronta: {} atendimento(s) identificados na aba {}. Confira abaixo antes de confirmar.",
-                                    prev.items.len(),
-                                    prev.sheet_name
-                                ),
-                                false,
-                            );
-                            self.import_preview = Some(prev);
-                        }
-                        Err(e) => self.set_notice(format!("Falha ao ler planilha: {e}"), true),
-                    }
-                }
-            });
-
-            if let Some(prev) = self.import_preview.clone() {
-                ui.group(|ui| {
-                    ui.set_width(ui.available_width());
-                    ui.strong(format!(
-                        "Prévia: {} (aba {})",
-                        prev.file_name, prev.sheet_name
-                    ));
-                    let new_rows = prev.new_rows();
-                    let repeated_rows = prev.items.len() - new_rows;
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(format!("{} linha(s) lida(s)", prev.items.len()));
-                        ui.separator();
-                        ui.label(format!("{new_rows} nova(s)"));
-                        if repeated_rows > 0 {
-                            ui.separator();
-                            ui.colored_label(crate::theme::warning(), format!("{repeated_rows} já registrada(s) no controle"));
-                        }
-                        if prev.flagged_count > 0 {
-                            ui.separator();
-                            ui.colored_label(crate::theme::warning(), format!("{} com alerta para conferir", prev.flagged_count));
-                        }
-                        if prev.linked_documents > 0 {
-                            ui.separator();
-                            ui.label(format!("{} ligada(s) a documentos importados", prev.linked_documents));
-                        }
-                        if prev.ignored_formula_rows > 0 {
-                            ui.separator();
-                            ui.small(format!("{} linha(s) vazias ignoradas", prev.ignored_formula_rows));
-                        }
-                    });
-                    egui::ScrollArea::vertical()
-                        .id_salt("saiop-preview-rows")
-                        .max_height(240.0)
-                        .show(ui, |ui| {
-                            egui::Grid::new("saiop-preview-grid").striped(true).min_col_width(60.0).show(ui, |ui| {
-                                for title in ["Linha", "Referência", "Assunto", "Responsável", "Entrada", "Situação", "Prazo", "Alertas", "No controle"] {
-                                    ui.strong(title);
-                                }
-                                ui.end_row();
-                                for ((att, raw), existing) in prev.items.iter().zip(&prev.already_registered) {
-                                    ui.label(raw.row_number.to_string());
-                                    ui.label(if att.reference_raw.is_empty() { "(sem referência)" } else { &att.reference_raw });
-                                    let subject: String = att.subject.chars().take(40).collect();
-                                    ui.label(subject).on_hover_text(&att.subject);
-                                    ui.label(if att.assignee.is_empty() { "—" } else { &att.assignee });
-                                    ui.label(crate::labels::date(&att.entry_date));
-                                    ui.label(status_label(&att.status));
-                                    ui.label(if att.due_date.is_empty() {
-                                        if att.due_date_raw.is_empty() { "—".to_owned() } else { format!("conferir: {}", att.due_date_raw) }
-                                    } else {
-                                        crate::labels::date(&att.due_date)
-                                    });
-                                    if att.review_flags.is_empty() {
-                                        ui.label("—");
-                                    } else {
-                                        ui.colored_label(crate::theme::warning(), format!("{} ⚠", att.review_flags.len()))
-                                            .on_hover_text(att.review_flags.join("\n"));
-                                    }
-                                    match existing {
-                                        Some(id) => { ui.colored_label(crate::theme::warning(), format!("já registrada (#{id})")); }
-                                        None => { ui.label("nova"); }
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                        });
-                    ui.horizontal_wrapped(|ui| {
-                        let mut to_commit: Option<SaiopImportPreview> = None;
-                        if repeated_rows > 0 {
-                            if ui
-                                .add_enabled(new_rows > 0, egui::Button::new(format!("Importar só as {new_rows} nova(s)")))
-                                .clicked()
-                            {
-                                to_commit = Some(prev.only_new());
-                            }
-                            if ui
-                                .button(format!("Importar todas ({}) e duplicar as já registradas", prev.items.len()))
-                                .clicked()
-                            {
-                                to_commit = Some(prev.clone());
-                            }
-                        } else if ui.button(format!("Importar {} atendimento(s)", prev.items.len())).clicked() {
-                            to_commit = Some(prev.clone());
-                        }
-                        if ui.button("Cancelar").clicked() {
-                            self.import_preview = None;
-                        }
-                        if let Some(chosen) = to_commit {
-                            match store.commit_saiop_import(&chosen) {
-                                Ok(batch) => {
-                                    self.set_notice(
-                                        format!(
-                                            "Importação concluída: {} atendimento(s) de {}.",
-                                            batch.total_rows, batch.file_name
-                                        ),
-                                        false,
-                                    );
-                                    self.import_preview = None;
-                                    close_import = true;
-                                }
-                                Err(e) => self.set_notice(format!("Importação recusada: {e}"), true),
-                            }
-                        }
-                    });
-                });
-            }
-
-            if let Ok(batches) = store.list_saiop_batches() {
-                if !batches.is_empty() {
-                    ui.separator();
-                    ui.collapsing(format!("Importações anteriores ({})", batches.len()), |ui| {
-                    for b in batches {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.small(format!(
-                                "{} • {} (aba {}) • {} linha(s), {} com alerta • por {}",
-                                crate::labels::datetime(&b.imported_at),
-                                b.file_name,
-                                b.sheet_name,
-                                b.total_rows,
-                                b.flagged_rows,
-                                b.actor
-                            ));
-                            let pending_here = self.pending_undo.as_ref().is_some_and(|(p, _, _)| p.id == b.id);
-                            if !pending_here && ui.small_button("Desfazer importação…").clicked() {
-                                match store.undo_saiop_batch_plan(b.id) {
-                                    Ok((removed, kept)) => self.pending_undo = Some((b.clone(), removed, kept)),
-                                    Err(e) => self.set_notice(format!("Não foi possível conferir a importação: {e}"), true),
-                                }
-                            }
-                        });
-                        if let Some((pending, removed, kept)) = self.pending_undo.clone() {
-                            if pending.id == b.id {
-                                ui.group(|ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.colored_label(crate::theme::warning(), format!(
-                                        "Desfazer a importação de {}? {} atendimento(s) serão removidos. {} serão mantidos porque foram editados ou têm tarefa.",
-                                        pending.file_name, removed, kept
-                                    ));
-                                    ui.horizontal(|ui| {
-                                        if ui.button("Desfazer importação").clicked() {
-                                            match store.undo_saiop_batch(pending.id) {
-                                                Ok((removed, kept)) => self.set_notice(
-                                                    format!(
-                                                        "Importação desfeita: {removed} atendimento(s) removidos e {kept} mantidos por terem edição ou tarefa."
-                                                    ),
-                                                    false,
-                                                ),
-                                                Err(e) => self.set_notice(format!("Não foi possível desfazer: {e}"), true),
-                                            }
-                                            self.pending_undo = None;
-                                        }
-                                        if ui.button("Cancelar").clicked() {
-                                            self.pending_undo = None;
-                                        }
-                                    });
-                                });
-                            }
-                        }
-                    }
-                    });
-                }
-            }
-        });
-        self.import_open = import_open && !close_import;
+        self.import_window(ui, store);
 
         let current_member = store
             .load_intranet_config()
@@ -3290,19 +3183,15 @@ impl SaiopPanel {
             || !self.dest_filter.trim().is_empty()
             || !self.status_filter.is_empty();
 
-        ui.horizontal_wrapped(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.query)
-                    .hint_text("Buscar referência, assunto, observação…")
-                    .desired_width(240.0),
-            );
+        // ---- Queue, search, filters ------------------------------------------
+        ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("saiop-queue")
                 .selected_text(format!(
                     "Fila: {} ({})",
                     self.queue.label(),
                     queue_count(self.queue)
                 ))
-                .width(260.0)
+                .width(250.0)
                 .show_ui(ui, |ui| {
                     for q in queues {
                         ui.selectable_value(
@@ -3312,32 +3201,62 @@ impl SaiopPanel {
                         );
                     }
                 });
+            let mut reserve = 130.0;
             if self.queue == SaiopQueue::DueSoon {
-                ui.label("até");
+                widgets::muted(ui, "até");
                 ui.add(
                     egui::DragValue::new(&mut self.due_soon_days)
                         .range(1..=60)
                         .suffix(" dias"),
                 );
+                reserve += 110.0;
             } else if self.queue == SaiopQueue::StaleDays {
-                ui.label("parado há");
+                widgets::muted(ui, "parado há");
                 ui.add(
                     egui::DragValue::new(&mut self.stale_days_threshold)
                         .range(1..=365)
                         .suffix(" dias"),
                 );
+                reserve += 130.0;
             }
-            let toggle = if self.filters_open {
-                "Filtros ▴"
-            } else {
-                "Filtros ▾"
-            };
-            if ui.add(egui::Button::new(toggle).small()).clicked() {
+            if self.context_document.is_some() {
+                reserve += 330.0;
+            }
+            let clearable = advanced_active || !self.query.is_empty() || self.queue != SaiopQueue::All;
+            if clearable {
+                reserve += 70.0;
+            }
+            let width = (ui.available_width() - reserve).max(160.0);
+            widgets::search(ui, &mut self.query, "Buscar referência, assunto ou observação", width);
+            if widgets::chip(
+                ui,
+                self.filters_open || advanced_active,
+                format!(
+                    "{} Filtros {}",
+                    icon::FILTER,
+                    if self.filters_open { icon::UP } else { icon::DOWN }
+                ),
+            )
+            .clicked()
+            {
                 self.filters_open = !self.filters_open;
             }
-            if (advanced_active || !self.query.is_empty() || self.queue != SaiopQueue::All)
-                && ui.small_button("Limpar").clicked()
-            {
+            if let Some((context_id, context_number)) = self.context_document.clone() {
+                let only = self.document_filter == Some(context_id);
+                if widgets::chip(ui, only, format!("Só {context_number}"))
+                    .on_hover_text("A lista segue o documento aberto na biblioteca; Nova entrada cria um atendimento ligado a ele.")
+                    .clicked()
+                    && !only
+                {
+                    self.document_filter = Some(context_id);
+                    self.show_all_documents = false;
+                }
+                if widgets::chip(ui, !only, "Todos os atendimentos").clicked() && only {
+                    self.document_filter = None;
+                    self.show_all_documents = true;
+                }
+            }
+            if clearable && ui.add(widgets::quiet("Limpar")).clicked() {
                 self.query.clear();
                 self.assignee_filter.clear();
                 self.origin_filter.clear();
@@ -3347,34 +3266,47 @@ impl SaiopPanel {
             }
         });
         if self.filters_open || advanced_active {
-            ui.horizontal_wrapped(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.assignee_filter)
-                        .hint_text("Responsável…")
-                        .desired_width(140.0),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.origin_filter)
-                        .hint_text("Recebido de…")
-                        .desired_width(140.0),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.dest_filter)
-                        .hint_text("Enviado para…")
-                        .desired_width(140.0),
-                );
-                egui::ComboBox::from_id_salt("saiop-status-filter")
-                    .selected_text(if self.status_filter.is_empty() {
-                        "Situação: todas"
-                    } else {
-                        status_label(&self.status_filter)
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.status_filter, String::new(), "Todas");
-                        for (k, label) in STATUS_OPTIONS {
-                            ui.selectable_value(&mut self.status_filter, (*k).to_owned(), *label);
-                        }
+            widgets::card(ui, |ui| {
+                ui.columns(4, |cols| {
+                    labeled(&mut cols[0], "Responsável", |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.assignee_filter)
+                                .hint_text("Nome…")
+                                .desired_width(f32::INFINITY),
+                        );
                     });
+                    labeled(&mut cols[1], "Recebido de", |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.origin_filter)
+                                .hint_text("Origem…")
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                    labeled(&mut cols[2], "Enviado para", |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.dest_filter)
+                                .hint_text("Destino…")
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                    labeled(&mut cols[3], "Situação", |ui| {
+                        pick(
+                            ui,
+                            "saiop-status-filter",
+                            if self.status_filter.is_empty() {
+                                "Todas".to_owned()
+                            } else {
+                                status_label(&self.status_filter).to_owned()
+                            },
+                            |ui| {
+                                ui.selectable_value(&mut self.status_filter, String::new(), "Todas");
+                                for (k, label) in STATUS_OPTIONS {
+                                    ui.selectable_value(&mut self.status_filter, (*k).to_owned(), *label);
+                                }
+                            },
+                        );
+                    });
+                });
             });
         }
 
@@ -3426,68 +3358,242 @@ impl SaiopPanel {
             filtered.reverse();
         }
 
-        if filtered.len() != all_items.len() {
-            ui.small(format!(
-                "{} de {} atendimento(s)",
+        // ---- Table -----------------------------------------------------------
+        let below = 62.0;
+        let table_height = (ui.available_height() - below).max(120.0);
+        self.table(ui, store, &filtered, today, table_height);
+
+        let count_text = if filtered.len() != all_items.len() {
+            format!(
+                "{} de {} atendimento(s) · clique no título da coluna para ordenar",
                 filtered.len(),
                 all_items.len()
-            ));
-        }
-        ui.separator();
+            )
+        } else {
+            format!(
+                "{} atendimento(s) · clique no título da coluna para ordenar",
+                all_items.len()
+            )
+        };
+        widgets::small_muted(ui, count_text);
 
-        // Grade (esquerda) e ficha do atendimento selecionado (direita)
-        let ficha_open = self.editor.is_some();
-        let total_width = ui.available_width();
-        let height = ui.available_height();
-        ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-        ui.set_width(if ficha_open { (total_width * 0.5).max(420.0) } else { total_width });
-        egui::ScrollArea::both()
-            .id_salt("saiop-grid-scroll")
-            .max_height(height)
+        // Quiet setting, kept within reach.
+        // On a connected computer the import is recorded by the main
+        // one, with its own setting: the box would have no effect here.
+        let on_client = store
+            .load_intranet_config()
+            .is_ok_and(|cfg| cfg.mode == crate::intranet::IntranetMode::Client);
+        let mut auto = store.auto_attendance_enabled().unwrap_or(true);
+        let response = ui.add_enabled(
+            !on_client,
+            egui::Checkbox::new(
+                &mut auto,
+                RichText::new("Criar atendimento ao importar do SIGADOC")
+                    .size(theme::SIZE_SMALL)
+                    .color(c().muted),
+            ),
+        );
+        let response = if on_client {
+            response.on_disabled_hover_text("Definido no computador principal: é ele que registra as importações da equipe. Sem conexão, a cópia local segue a configuração daqui até a próxima sincronização.")
+        } else {
+            response.on_hover_text("Na primeira importação de cada documento do SIGADOC, registra aqui a entrada dele no gabinete: referência, assunto, data, responsável e ligação ao documento. Documentos juntados a outro não entram. Você pode editar ou excluir o atendimento depois.")
+        };
+        if response.changed() {
+            if let Err(e) = store.set_auto_attendance(auto) {
+                self.set_notice(format!("Não foi possível salvar a preferência: {e}"), true);
+            }
+        }
+
+        open_document
+    }
+
+    /// The table of atendimentos, in one card.
+    fn table(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &Store,
+        filtered: &[&SaiopAttendance],
+        today: NaiveDate,
+        height: f32,
+    ) {
+        use egui::{pos2, vec2, Rect, Sense, Stroke, UiBuilder};
+        let p = c();
+        let columns = [
+            (SaiopSort::Reference, 195.0),
+            (SaiopSort::Subject, 240.0),
+            (SaiopSort::Assignee, 110.0),
+            (SaiopSort::Entry, 100.0),
+            (SaiopSort::Status, 190.0),
+            (SaiopSort::Due, 150.0),
+            (SaiopSort::Age, 120.0),
+            (SaiopSort::Destination, 160.0),
+        ];
+        let min_total: f32 = columns.iter().map(|(_, w)| w).sum();
+        widgets::card_frame()
+            .inner_margin(egui::Margin::ZERO)
             .show(ui, |ui| {
-                egui::Grid::new("saiop-attendances-grid")
-                    .striped(true)
-                    .min_col_width(70.0)
+                let avail = ui.available_width();
+                // The subject takes whatever the window has to spare.
+                let extra = (avail - min_total).max(0.0);
+                let widths: Vec<f32> = columns
+                    .iter()
+                    .map(|(col, w)| if *col == SaiopSort::Subject { w + extra } else { *w })
+                    .collect();
+                let total = widths.iter().sum::<f32>();
+                egui::ScrollArea::both()
+                    .id_salt("saiop-grid-scroll")
+                    .auto_shrink([false, true])
+                    .max_height(height)
                     .show(ui, |ui| {
-                        for column in [
-                            SaiopSort::Reference,
-                            SaiopSort::Subject,
-                            SaiopSort::Assignee,
-                            SaiopSort::Entry,
-                            SaiopSort::Status,
-                            SaiopSort::Due,
-                            SaiopSort::Age,
-                            SaiopSort::Destination,
-                        ] {
-                            let marker = if self.sort == column {
-                                if self.sort_ascending { " ▲" } else { " ▼" }
+                        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                        // Header row
+                        let (head, _) = ui.allocate_exact_size(vec2(total, 36.0), Sense::hover());
+                        let mut x = head.left();
+                        for ((column, _), w) in columns.iter().zip(&widths) {
+                            let cell = Rect::from_min_size(pos2(x + 6.0, head.top()), vec2(w - 8.0, head.height()));
+                            x += w;
+                            let mut child = ui.new_child(
+                                UiBuilder::new()
+                                    .max_rect(cell)
+                                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                            );
+                            let arrow = if self.sort == *column {
+                                format!(" {}", if self.sort_ascending { icon::UP } else { icon::DOWN })
                             } else {
-                                ""
+                                String::new()
                             };
-                            if ui
-                                .add(egui::Button::new(RichText::new(format!("{}{marker}", column.title())).strong()).frame(false))
+                            let clicked = child
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(format!("{}{arrow}", column.title()))
+                                            .font(theme::font_strong(theme::SIZE_SMALL))
+                                            .color(p.muted),
+                                    )
+                                    .frame(false),
+                                )
                                 .on_hover_text("Ordenar por esta coluna")
-                                .clicked()
-                            {
-                                if self.sort == column {
+                                .clicked();
+                            if clicked {
+                                if self.sort == *column {
                                     self.sort_ascending = !self.sort_ascending;
                                 } else {
-                                    self.sort = column;
-                                    self.sort_ascending = !matches!(column, SaiopSort::Entry | SaiopSort::Age);
+                                    self.sort = *column;
+                                    self.sort_ascending =
+                                        !matches!(column, SaiopSort::Entry | SaiopSort::Age);
                                 }
                             }
                         }
-                        ui.end_row();
+                        ui.painter()
+                            .hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, p.outline));
 
-                        for att in &filtered {
+                        for att in filtered {
                             let is_sel = self.selected_id == Some(att.id);
-                            let ref_label = if att.reference_raw.is_empty() {
-                                "(sem referência)".to_owned()
-                            } else {
-                                att.reference_raw.clone()
-                            };
-                            if ui.selectable_label(is_sel, ref_label).clicked() {
+                            let (row, response) =
+                                ui.allocate_exact_size(vec2(total, ROW_HEIGHT), Sense::click());
+                            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if is_sel {
+                                ui.painter().rect_filled(row, 0.0, p.primary_soft);
+                                ui.painter().rect_filled(
+                                    Rect::from_min_size(row.min, vec2(3.0, row.height())),
+                                    0.0,
+                                    p.primary,
+                                );
+                            } else if response.hovered() {
+                                ui.painter().rect_filled(row, 0.0, p.bg);
+                            }
+                            ui.painter()
+                                .hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, p.outline));
+
+                            let mut x = row.left();
+                            for ((column, _), w) in columns.iter().zip(&widths) {
+                                let cell = Rect::from_min_size(
+                                    pos2(x + 12.0, row.top()),
+                                    vec2(w - 16.0, row.height()),
+                                );
+                                x += w;
+                                let mut child = ui.new_child(
+                                    UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                );
+                                child.set_clip_rect(cell.intersect(ui.clip_rect()));
+                                let text = |child: &mut egui::Ui, t: String, color: egui::Color32| {
+                                    child.add(
+                                        egui::Label::new(RichText::new(t).color(color))
+                                            .truncate()
+                                            .selectable(false),
+                                    );
+                                };
+                                match column {
+                                    SaiopSort::Reference => {
+                                        let (label, color) = if att.reference_raw.is_empty() {
+                                            ("(sem referência)".to_owned(), p.muted)
+                                        } else {
+                                            (att.reference_raw.clone(), p.text)
+                                        };
+                                        child.add(
+                                            egui::Label::new(
+                                                RichText::new(label)
+                                                    .font(theme::font_strong(theme::SIZE_BODY))
+                                                    .color(color),
+                                            )
+                                            .truncate()
+                                            .selectable(false),
+                                        );
+                                    }
+                                    SaiopSort::Subject => text(&mut child, att.subject.clone(), p.text),
+                                    SaiopSort::Assignee => {
+                                        if att.assignee.is_empty() {
+                                            text(&mut child, "—".to_owned(), p.muted);
+                                        } else {
+                                            text(&mut child, att.assignee.clone(), p.text);
+                                        }
+                                    }
+                                    SaiopSort::Entry => {
+                                        if att.entry_date.is_empty() {
+                                            text(&mut child, "—".to_owned(), p.muted);
+                                        } else {
+                                            text(&mut child, crate::labels::date(&att.entry_date), p.text);
+                                        }
+                                    }
+                                    SaiopSort::Status => {
+                                        child.horizontal(|ui| { widgets::pill(ui, status_label(&att.status), status_tone(&att.status)); });
+                                    }
+                                    SaiopSort::Due => {
+                                        let (label, tone, hover) = due_pill(att, today);
+                                        let r = child.horizontal(|ui| widgets::pill(ui, label, tone)).inner;
+                                        if let Some(hover) = hover {
+                                            r.on_hover_text(hover);
+                                        }
+                                    }
+                                    SaiopSort::Age => {
+                                        // Idade e espera calculadas por eventos (nunca pela fórmula DATEDIF cacheada)
+                                        let age = att
+                                            .age_days(today)
+                                            .map(|d| format!("{d} d"))
+                                            .unwrap_or_else(|| "—".into());
+                                        let wait = att
+                                            .external_wait_days(today)
+                                            .map(|w| format!(" • {w} d fora"))
+                                            .unwrap_or_default();
+                                        let r = child.add(
+                                            egui::Label::new(RichText::new(format!("{age}{wait}")).color(p.muted))
+                                                .truncate()
+                                                .selectable(false),
+                                        );
+                                        r.on_hover_text("Dias desde a entrada • dias aguardando retorno externo");
+                                    }
+                                    SaiopSort::Destination => {
+                                        let t = if att.sent_to.is_empty() {
+                                            crate::labels::date(&att.exit_date)
+                                        } else {
+                                            att.sent_to.clone()
+                                        };
+                                        text(&mut child, if t.is_empty() { "—".to_owned() } else { t }, p.muted);
+                                    }
+                                }
+                            }
+                            if response.clicked() {
                                 if self.dirty() {
                                     self.set_notice(
                                         "Salve ou descarte as alterações na ficha antes de trocar de linha.",
@@ -3497,617 +3603,923 @@ impl SaiopPanel {
                                     self.load_into_editor(store, (*att).clone());
                                 }
                             }
-                            let subj_short: String = att.subject.chars().take(46).collect();
-                            ui.label(subj_short);
-                            ui.label(if att.assignee.is_empty() {
-                                "—"
-                            } else {
-                                &att.assignee
-                            });
-                            ui.label(if att.entry_date.is_empty() {
-                                "—".to_owned()
-                            } else {
-                                crate::labels::date(&att.entry_date)
-                            });
-                            ui.label(status_label(&att.status));
-
-                            // Coluna Prazo (explícita quando sem prazo ou com texto ambíguo)
-                            let due_text = crate::labels::date(&att.due_date);
-                            if !att.due_date.is_empty() {
-                                if let Some(delta) = att.due_delta_days(today) {
-                                    if delta > 0 {
-                                        ui.colored_label(
-                                            crate::theme::error(),
-                                            format!("{due_text} (vencido há {delta} d)"),
-                                        );
-                                    } else if delta == 0 {
-                                        ui.colored_label(crate::theme::warning(), format!("{due_text} (vence hoje)"));
-                                    } else {
-                                        ui.label(format!("{due_text} (em {} d)", -delta));
-                                    }
-                                } else {
-                                    ui.label(due_text);
-                                }
-                            } else if !att.due_date_raw.is_empty() {
-                                ui.colored_label(
-                                    crate::theme::warning(),
-                                    format!("Conferir: {}", att.due_date_raw),
-                                );
-                            } else {
-                                ui.small("Sem prazo");
-                            }
-
-                            // Idade e espera calculadas por eventos (nunca pela fórmula DATEDIF cacheada)
-                            let age = att
-                                .age_days(today)
-                                .map(|d| format!("{d} d"))
-                                .unwrap_or_else(|| "—".into());
-                            let wait = att
-                                .external_wait_days(today)
-                                .map(|w| format!(" • {w} d fora"))
-                                .unwrap_or_default();
-                            ui.label(format!("{age}{wait}"))
-                                .on_hover_text("Dias desde a entrada • dias aguardando retorno externo");
-
-                            ui.label(if att.sent_to.is_empty() {
-                                crate::labels::date(&att.exit_date)
-                            } else {
-                                att.sent_to.clone()
-                            });
-                            ui.end_row();
                         }
-                    });
-                if filtered.is_empty() {
-                    ui.label("Nenhum atendimento nesta fila ou busca.");
-                }
-            });
-        });
-
-        // Ficha do atendimento selecionado
-        if let Some(mut ed) = self.editor.clone() {
-            ui.separator();
-            ui.vertical(|ui| {
-            ui.set_width(ui.available_width());
-            let mut save_clicked = false;
-            let mut revert_clicked = false;
-            let mut create_task_clicked = false;
-            let mut close_clicked = false;
-            let mut delete_confirmed = false;
-            let is_dirty = self.dirty();
-
-            ui.horizontal_wrapped(|ui| {
-                ui.heading(if ed.id > 0 {
-                    if ed.reference_raw.is_empty() {
-                        "Atendimento sem referência".to_owned()
-                    } else {
-                        ed.reference_raw.clone()
-                    }
-                } else {
-                    "Novo atendimento".into()
-                });
-                if is_dirty {
-                    ui.colored_label(crate::theme::warning(), "● não salvo");
-                }
-            });
-            // Actions stay at the top so they are visible without scrolling.
-            ui.horizontal_wrapped(|ui| {
-                save_clicked = ui.add_enabled(is_dirty || ed.id == 0, egui::Button::new("Salvar")).clicked();
-                revert_clicked = ui
-                    .add_enabled(is_dirty, egui::Button::new("Descartar alterações"))
-                    .clicked();
-                if ed.is_open() && ed.id > 0 && ui.button("Encerrar").on_hover_text("Marca como encerrado e salva.").clicked() {
-                    ed.status = "encerrado".into();
-                    ed.closed_at = Local::now().format("%Y-%m-%d").to_string();
-                    save_clicked = true;
-                } else if !ed.is_open() && ui.button("Reabrir").on_hover_text("Volta para “Em análise” e salva.").clicked() {
-                    ed.status = "em_analise".into();
-                    ed.closed_at.clear();
-                    save_clicked = true;
-                }
-                close_clicked = ui
-                    .add_enabled(!is_dirty, egui::Button::new("Fechar ficha"))
-                    .on_disabled_hover_text("Salve ou descarte as alterações antes de fechar.")
-                    .clicked();
-                if ed.id > 0
-                    && ui
-                        .add_enabled(!is_dirty, egui::Button::new("Excluir…"))
-                        .on_hover_text("Apaga o atendimento de vez (não há Lixeira para atendimentos). As tarefas criadas a partir dele continuam nos documentos.")
-                        .on_disabled_hover_text("Salve ou descarte as alterações antes de excluir.")
-                        .clicked()
-                {
-                    self.confirm_delete = Some(ed.id);
-                }
-            });
-            if self.confirm_delete == Some(ed.id) && ed.id > 0 {
-                ui.group(|ui| {
-                    ui.set_width(ui.available_width());
-                    ui.colored_label(
-                        crate::theme::warning(),
-                        format!(
-                            "Excluir o atendimento {}? Não vai para a Lixeira: anexos do atendimento são apagados; tarefas e documento ligado permanecem.",
-                            if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
-                        ),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Excluir de vez").clicked() {
-                            delete_confirmed = true;
-                        }
-                        if ui.button("Cancelar").clicked() {
-                            self.confirm_delete = None;
-                        }
-                    });
-                });
-            }
-
-            egui::ScrollArea::vertical()
-                .id_salt("saiop-detail-scroll")
-                .max_height(height - 70.0)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if let Some(doc_id) = ed.document_id {
-                            if ui.button("Abrir documento importado").clicked() {
-                                open_document = Some(doc_id);
-                            }
-                            if ui.small_button("Desligar do documento").clicked() {
-                                ed.document_id = None;
-                            }
-                        } else {
-                            if let Some(url) = ed.composed_sigadoc_url() {
-                                ui.hyperlink_to("Abrir no SIGADOC", url)
-                                    .on_hover_text("Endereço montado a partir da referência; confira na página.");
-                            }
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.link_number)
-                                    .hint_text("número do documento importado")
-                                    .desired_width(200.0),
-                            );
-                            if ui.small_button("Ligar a documento").on_hover_text("Liga este atendimento a um documento já importado, pelo número oficial.").clicked() {
-                                let wanted = normalize_reference(&self.link_number);
-                                match store.list_documents("") {
-                                    Ok(docs) => match docs.into_iter().find(|d| normalize_reference(&d.document_number) == wanted) {
-                                        Some(doc) => {
-                                            // The linked document's number becomes the reference.
-                                            ed.document_id = Some(doc.id);
-                                            ed.reference_norm = normalize_reference(&doc.document_number);
-                                            ed.reference_raw = doc.document_number;
-                                            self.link_number.clear();
-                                        }
-                                        None => self.set_notice(format!("Nenhum documento importado com o número {}.", self.link_number.trim()), true),
-                                    },
-                                    Err(e) => self.set_notice(format!("Não foi possível consultar a biblioteca: {e}"), true),
-                                }
-                            }
-                        }
-                        if !ed.reference_norm.is_empty() {
-                            let same_ref_count = all_items
-                                .iter()
-                                .filter(|a| a.reference_norm == ed.reference_norm)
-                                .count();
-                            if same_ref_count > 1 {
-                                ui.colored_label(
-                                    crate::theme::accent(),
-                                    format!("{same_ref_count} passagens desta referência"),
-                                ).on_hover_text("A mesma referência entrou no gabinete mais de uma vez; cada passagem é um atendimento.");
-                            }
-                        }
-                    });
-
-                    if !ed.review_flags.is_empty() {
-                        ui.group(|ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal_wrapped(|ui| {
-                                ui.colored_label(
-                                    crate::theme::warning(),
-                                    format!(
-                                        "Alertas de conferência ({}):",
-                                        ed.review_flags.len()
-                                    ),
-                                );
-                                if ui
-                                    .small_button("Conferido: limpar alertas")
-                                    .on_hover_text("Os alertas somem ao salvar o atendimento.")
-                                    .clicked()
-                                {
-                                    ed.review_flags.clear();
-                                }
-                            });
-                            for flag in &ed.review_flags {
-                                ui.small(format!("• {flag}"));
-                            }
-                        });
-                    }
-
-                    // One column of label/field rows per section: fields size
-                    // to the ficha, so nothing overflows into a neighbour or
-                    // gets cut at the edge.
-                    let combo_width = (ui.available_width() - 160.0).clamp(150.0, 320.0);
-                    let ed_id = ed.id;
-                    form_section(ui, "Identificação", ("saiop-form-id", ed_id), |ui| {
-                        ui.label("Referência:");
-                        if ed.document_id.is_some() {
-                            ui.add_enabled(
-                                false,
-                                egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY),
-                            )
-                            .on_disabled_hover_text("É o número do documento ligado. Para mudar, desligue do documento.");
-                        } else {
-                            ui.add(egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY))
-                                .on_hover_text("Número do processo ou documento, ou um código provisório. Informe a referência ou o assunto.");
-                        }
-                        ui.end_row();
-                        ui.label("Entrada:");
-                        crate::labels::date_field(ui, ("saiop-entry", ed_id), &mut ed.entry_date);
-                        ui.end_row();
-                        ui.label("Responsável:");
-                        ui.horizontal(|ui| {
-                            let width = (ui.available_width() - 120.0).max(80.0);
-                            ui.add(egui::TextEdit::singleline(&mut ed.assignee).desired_width(width));
-                            if ui.small_button("Atribuir a mim").clicked() {
-                                if let Ok(cfg) = store.load_intranet_config() {
-                                    ed.assignee = cfg.member_name;
-                                }
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("Recebido de:");
-                        ui.add(egui::TextEdit::singleline(&mut ed.received_from).desired_width(f32::INFINITY));
-                        ui.end_row();
-                    });
-                    form_section(ui, "Situação e prioridade", ("saiop-form-status", ed_id), |ui| {
-                        ui.label("Situação:");
-                        egui::ComboBox::from_id_salt("ed-saiop-status")
-                            .selected_text(status_label(&ed.status))
-                            .width(combo_width)
-                            .show_ui(ui, |ui| {
-                                for (k, label) in STATUS_OPTIONS {
-                                    ui.selectable_value(&mut ed.status, (*k).to_owned(), *label);
-                                }
-                            });
-                        ui.end_row();
-                        ui.label("Prioridade:");
-                        egui::ComboBox::from_id_salt("ed-saiop-priority")
-                            .selected_text(priority_label(&ed.priority))
-                            .width(combo_width)
-                            .show_ui(ui, |ui| {
-                                for (k, label) in PRIORITY_OPTIONS {
-                                    ui.selectable_value(&mut ed.priority, (*k).to_owned(), *label);
-                                }
-                            });
-                        ui.end_row();
-                        ui.label("Motivo da prioridade:");
-                        ui.add(egui::TextEdit::singleline(&mut ed.priority_reason).desired_width(f32::INFINITY));
-                        ui.end_row();
-                    });
-                    form_section(ui, "Prazo", ("saiop-form-due", ed_id), |ui| {
-                        ui.label("Prazo:");
-                        crate::labels::date_field(ui, ("saiop-due", ed_id), &mut ed.due_date);
-                        ui.end_row();
-                        ui.label("Tipo de prazo:");
-                        egui::ComboBox::from_id_salt("ed-saiop-due-kind")
-                            .selected_text(due_kind_label(&ed.due_kind))
-                            .width(combo_width)
-                            .show_ui(ui, |ui| {
-                                for (k, label) in DUE_KIND_OPTIONS {
-                                    ui.selectable_value(&mut ed.due_kind, (*k).to_owned(), *label);
-                                }
-                            });
-                        ui.end_row();
-                    });
-                    form_section(ui, "Condições e relações", ("saiop-form-conditions", ed_id), |ui| {
-                        ui.label("Retorno para UAS?:");
-                        egui::ComboBox::from_id_salt("ed-saiop-uas")
-                            .selected_text(tri_state_label(&ed.uas_return))
-                            .width(combo_width)
-                            .show_ui(ui, |ui| {
-                                for (k, label) in TRI_STATE_OPTIONS {
-                                    ui.selectable_value(&mut ed.uas_return, (*k).to_owned(), *label);
-                                }
-                            });
-                        ui.end_row();
-                        ui.label("Assinado?:");
-                        egui::ComboBox::from_id_salt("ed-saiop-signed")
-                            .selected_text(tri_state_label(&ed.signed_status))
-                            .width(combo_width)
-                            .show_ui(ui, |ui| {
-                                for (k, label) in TRI_STATE_OPTIONS {
-                                    ui.selectable_value(&mut ed.signed_status, (*k).to_owned(), *label);
-                                }
-                            });
-                        ui.end_row();
-                        ui.label("");
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut ed.scheduled, "Agendado");
-                            ui.checkbox(&mut ed.sensitive, "Documento sensível");
-                        });
-                        ui.end_row();
-                        ui.label("Apensado / juntado:");
-                        ui.add(egui::TextEdit::singleline(&mut ed.attachment_relation).desired_width(f32::INFINITY))
-                            .on_hover_text("Relação de apensamento ou juntada informada na planilha ou por você.");
-                        ui.end_row();
-                    });
-                    form_section(ui, "Resultado", ("saiop-form-result", ed_id), |ui| {
-                        ui.label("Entrega prevista:");
-                        egui::ComboBox::from_id_salt("ed-saiop-doctype")
-                            .selected_text(if ed.planned_doc_type.is_empty() {
-                                "Não definida"
-                            } else {
-                                &ed.planned_doc_type
-                            })
-                            .width(combo_width)
-                            .show_ui(ui, |ui| {
-                                for opt in DOC_TYPE_OPTIONS {
-                                    ui.selectable_value(
-                                        &mut ed.planned_doc_type,
-                                        (*opt).to_owned(),
-                                        if opt.is_empty() { "Não definida" } else { *opt },
-                                    );
-                                }
-                            });
-                        ui.end_row();
-                        ui.label("Resultado da etapa:");
-                        egui::ComboBox::from_id_salt("ed-saiop-outcome")
-                            .selected_text(outcome_label(&ed.outcome))
-                            .width(combo_width)
-                            .show_ui(ui, |ui| {
-                                for (k, label) in OUTCOME_OPTIONS {
-                                    ui.selectable_value(&mut ed.outcome, (*k).to_owned(), *label);
-                                }
-                            });
-                        ui.end_row();
-                        ui.label("Data de saída:");
-                        crate::labels::date_field(ui, ("saiop-exit", ed_id), &mut ed.exit_date);
-                        ui.end_row();
-                        ui.label("Enviado para:");
-                        ui.add(egui::TextEdit::singleline(&mut ed.sent_to).desired_width(f32::INFINITY));
-                        ui.end_row();
-                    });
-                    if !ed.verification_raw.is_empty() {
-                        ui.small(format!("Verificação na planilha: {}", ed.verification_raw));
-                    }
-                    ui.add_space(6.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("Assunto:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut ed.subject)
-                                .desired_width(f32::INFINITY),
-                        );
-                    });
-                    ui.label("Observações:");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut ed.observation)
-                            .desired_rows(3)
-                            .desired_width(f32::INFINITY),
-                    );
-
-                    ui.add_space(4.0);
-                    ui.strong("Anexos");
-                    if ed.id > 0 {
-                        self.attachments
-                            .show(ui, store, crate::attachments::Owner::Attendance(ed.id), false);
-                    } else {
-                        ui.small("Salve o atendimento para poder anexar arquivos a ele.");
-                    }
-
-                    // Tarefas criadas a partir deste atendimento. Tarefas pertencem
-                    // a documentos, por isso só há criação com documento ligado.
-                    if ed.id > 0 {
-                        ui.add_space(4.0);
-                        ui.strong("Tarefas deste atendimento");
-                        let linked: Vec<Task> = if ed.task_ids.is_empty() {
-                            Vec::new()
-                        } else {
-                            store
-                                .list_tasks()
-                                .map(|tasks| tasks.into_iter().filter(|t| ed.task_ids.contains(&t.id)).collect())
-                                .unwrap_or_default()
-                        };
-                        if linked.is_empty() {
-                            ui.small("Nenhuma tarefa criada a partir deste atendimento.");
-                        }
-                        for task in linked {
-                            ui.horizontal_wrapped(|ui| {
-                                let done = task.completed_at.is_some();
-                                ui.label(if done { "✓" } else { "○" });
-                                ui.label(&task.title);
-                                ui.small(crate::labels::task_status(&task.status));
-                                if !task.due_date.is_empty() {
-                                    ui.small(format!("prazo {}", crate::labels::date(&task.due_date)));
-                                }
-                                if ui.small_button("Abrir").on_hover_text("Abre a tarefa no painel Tarefas.").clicked() {
-                                    self.open_task = Some(task.clone());
-                                }
-                            });
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            let can_create = ed.document_id.is_some();
-                            ui.add_enabled(
-                                can_create,
-                                egui::TextEdit::singleline(&mut self.new_task_title)
-                                    .hint_text("Título da nova tarefa (opcional)…")
-                                    .desired_width(240.0),
-                            );
-                            if ui
-                                .add_enabled(can_create, egui::Button::new("Criar tarefa"))
-                                .on_hover_text("Cria, no painel Tarefas, uma tarefa do documento ligado com a prioridade, o prazo e o responsável deste atendimento. Sem título, ela se chama “Analisar atendimento …”.")
-                                .on_disabled_hover_text("Tarefas pertencem a documentos: ligue o atendimento a um documento importado (acima) para criar uma tarefa.")
-                                .clicked()
-                            {
-                                create_task_clicked = true;
-                            }
-                        });
-                    }
-
-                    // Histórico de eventos e registro original da planilha
-                    if ed.id > 0 {
-                        ui.collapsing("Linha do tempo", |ui| {
+                        if filtered.is_empty() {
+                            ui.add_space(S4);
                             ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.new_event_note)
-                                        .hint_text("Registrar evento datado (ex.: cobrado retorno por telefone)…")
-                                        .desired_width(360.0),
-                                );
-                                        if ui
-                                    .button("Adicionar evento")
-                                    .on_hover_text("Registra o evento e salva o atendimento, inclusive outras alterações desta ficha.")
-                                    .clicked()
-                                    && !self.new_event_note.trim().is_empty()
-                                {
-                                    ed.events.push(SaiopEvent {
-                                        when: Utc::now().to_rfc3339(),
-                                        actor: store.active_actor(),
-                                        kind: "anotacao".into(),
-                                        detail: self.new_event_note.trim().to_owned(),
-                                    });
-                                    self.new_event_note.clear();
-                                    save_clicked = true;
-                                }
+                                ui.add_space(S4);
+                                widgets::muted(ui, "Nenhum atendimento nesta fila ou busca.");
                             });
-                            for ev in ed.events.iter().rev() {
-                                ui.small(format!(
-                                    "• {} • {} • {}: {}",
-                                    crate::labels::datetime(&ev.when),
-                                    ev.actor,
-                                    crate::labels::saiop_event_kind(&ev.kind),
-                                    ev.detail
-                                ));
-                            }
-                        });
-                        if let Ok(Some(raw_row)) = store.load_saiop_raw_row(ed.id) {
-                            ui.collapsing(
-                                format!(
-                                    "Linha original da planilha (aba {}, linha {})",
-                                    raw_row.sheet_name, raw_row.row_number
-                                ),
-                                |ui| {
-                                    egui::Grid::new(("saiop-raw-row", ed.id))
-                                        .striped(true)
-                                        .num_columns(2)
-                                        .show(ui, |ui| {
-                                            for (column, value) in &raw_row.cells {
-                                                if value.trim().is_empty() {
-                                                    continue;
-                                                }
-                                                ui.label(format!(
-                                                    "{} ({column})",
-                                                    crate::labels::spreadsheet_column(column)
-                                                ));
-                                                ui.add(egui::Label::new(value).wrap());
-                                                ui.end_row();
-                                            }
-                                            for (column, formula) in &raw_row.formulas {
-                                                ui.label(format!("Fórmula em {column}"));
-                                                ui.add(egui::Label::new(formula).wrap());
-                                                ui.end_row();
-                                            }
-                                        });
-                                },
-                            );
+                            ui.add_space(S4);
                         }
+                    });
+            });
+    }
+
+    /// "Importar planilha do controle": file, preview, commit, earlier imports.
+    fn import_window(&mut self, ui: &mut egui::Ui, store: &mut Store) {
+        let p = c();
+        let mut close_import = false;
+        let mut import_open = self.import_open;
+        egui::Window::new("Importar planilha do controle")
+            .open(&mut import_open)
+            .default_width(860.0)
+            .resizable(true)
+            .show(ui.ctx(), |ui| {
+            ui.spacing_mut().item_spacing.y = S2;
+            widgets::small_muted(ui, "Escolha o arquivo .xlsx do controle do gabinete. A aba PROCESSOS é lida; nada é gravado antes de você confirmar.");
+            widgets::overline(ui, "Arquivo", None);
+            ui.horizontal(|ui| {
+                if ui.add(widgets::secondary(format!("{} Escolher planilha…", icon::FOLDER))).clicked() {
+                    if let Some(path) = crate::windows_ui::pick_file(
+                        "Escolher a planilha do controle (aba PROCESSOS)",
+                        &[("Planilhas Excel", "*.xlsx"), ("Todos os arquivos", "*.*")],
+                    ) {
+                        self.xlsx_path = path.display().to_string();
                     }
-                });
-
-            self.editor = Some(ed.clone());
-
-            if delete_confirmed {
-                self.confirm_delete = None;
-                match store.delete_saiop_attendance(ed.id) {
-                    Ok(()) => {
-                        self.editor = None;
-                        self.saved_snapshot = None;
-                        self.selected_id = None;
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.xlsx_path)
+                        .hint_text("ou cole o caminho do arquivo .xlsx")
+                        .desired_width(ui.available_width()),
+                );
+            });
+            ui.checkbox(
+                &mut self.tramitado_keep_open,
+                "“Tramitado” com retorno da UAS fica aberto",
+            )
+            .on_hover_text("Quando a planilha diz “Tramitado” e “Retorno para UAS = Sim”, o atendimento entra como “Aguardando resposta” em vez de “Encerrado”.");
+            let read_button = if self.import_preview.is_some() {
+                widgets::secondary("Ler a planilha")
+            } else {
+                widgets::primary("Ler a planilha")
+            };
+            if ui.add(read_button).clicked() {
+                let path = Path::new(self.xlsx_path.trim().trim_matches('"'));
+                match store.preview_saiop_xlsx(path, self.tramitado_keep_open) {
+                    Ok(prev) => {
                         self.set_notice(
                             format!(
-                                "Atendimento {} excluído.",
-                                if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
+                                "Prévia pronta: {} atendimento(s) identificados na aba {}. Confira abaixo antes de confirmar.",
+                                prev.items.len(),
+                                prev.sheet_name
                             ),
                             false,
                         );
+                        self.import_preview = Some(prev);
                     }
-                    Err(e) => self.set_notice(format!("Não foi possível excluir: {e}"), true),
+                    Err(e) => self.set_notice(format!("Falha ao ler planilha: {e}"), true),
                 }
-            } else if close_clicked {
-                self.confirm_delete = None;
-                self.editor = None;
-                self.saved_snapshot = None;
-                self.selected_id = None;
-            } else if revert_clicked {
-                self.editor = self.saved_snapshot.clone();
-            } else if create_task_clicked {
-                let title = if self.new_task_title.trim().is_empty() {
-                    format!(
-                        "Analisar atendimento {}",
-                        if ed.reference_raw.is_empty() {
-                            &ed.subject
-                        } else {
-                            &ed.reference_raw
+            }
+
+            if let Some(prev) = self.import_preview.clone() {
+                ui.add_space(S1);
+                ui.horizontal(|ui| {
+                    widgets::overline(ui, "Prévia", None);
+                    widgets::muted(ui, format!("{} (aba {})", prev.file_name, prev.sheet_name));
+                });
+                let new_rows = prev.new_rows();
+                let repeated_rows = prev.items.len() - new_rows;
+                ui.horizontal_wrapped(|ui| {
+                    widgets::pill(ui, format!("{} linha(s) lida(s)", prev.items.len()), Tone::Neutral);
+                    widgets::pill(ui, format!("{new_rows} nova(s)"), Tone::Ok);
+                    if repeated_rows > 0 {
+                        widgets::pill(ui, format!("{repeated_rows} já registrada(s) no controle"), Tone::Warn);
+                    }
+                    if prev.flagged_count > 0 {
+                        widgets::pill(ui, format!("{} com alerta para conferir", prev.flagged_count), Tone::Warn);
+                    }
+                    if prev.linked_documents > 0 {
+                        widgets::pill(ui, format!("{} ligada(s) a documentos importados", prev.linked_documents), Tone::Info);
+                    }
+                    if prev.ignored_formula_rows > 0 {
+                        widgets::small_muted(ui, format!("{} linha(s) vazias ignoradas", prev.ignored_formula_rows));
+                    }
+                });
+                widgets::card_frame().inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::both()
+                        .id_salt("saiop-preview-rows")
+                        .max_height(240.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            egui::Grid::new("saiop-preview-grid")
+                                .min_col_width(60.0)
+                                .spacing([S4, S2])
+                                .show(ui, |ui| {
+                                    for title in ["Linha", "Referência", "Assunto", "Responsável", "Entrada", "Situação", "Prazo", "Alertas", "No controle"] {
+                                        ui.label(RichText::new(title).font(theme::font_strong(theme::SIZE_SMALL)).color(p.muted));
+                                    }
+                                    ui.end_row();
+                                    for ((att, raw), existing) in prev.items.iter().zip(&prev.already_registered) {
+                                        widgets::muted(ui, raw.row_number.to_string());
+                                        ui.label(RichText::new(if att.reference_raw.is_empty() { "(sem referência)" } else { &att.reference_raw }).font(theme::font_strong(theme::SIZE_BODY)));
+                                        let subject: String = att.subject.chars().take(40).collect();
+                                        ui.label(subject).on_hover_text(&att.subject);
+                                        ui.label(if att.assignee.is_empty() { "—" } else { &att.assignee });
+                                        ui.label(crate::labels::date(&att.entry_date));
+                                        widgets::pill(ui, status_label(&att.status), status_tone(&att.status));
+                                        if att.due_date.is_empty() {
+                                            if att.due_date_raw.is_empty() {
+                                                widgets::muted(ui, "—");
+                                            } else {
+                                                widgets::pill(ui, format!("conferir: {}", att.due_date_raw), Tone::Warn);
+                                            }
+                                        } else {
+                                            ui.label(crate::labels::date(&att.due_date));
+                                        }
+                                        if att.review_flags.is_empty() {
+                                            widgets::muted(ui, "—");
+                                        } else {
+                                            widgets::pill(ui, format!("{} {}", icon::WARNING, att.review_flags.len()), Tone::Warn)
+                                                .on_hover_text(att.review_flags.join("\n"));
+                                        }
+                                        match existing {
+                                            Some(id) => { widgets::pill(ui, format!("já registrada (#{id})"), Tone::Warn); }
+                                            None => { widgets::pill(ui, "nova", Tone::Ok); }
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                });
+                ui.horizontal_wrapped(|ui| {
+                    let mut to_commit: Option<SaiopImportPreview> = None;
+                    if repeated_rows > 0 {
+                        if ui
+                            .add_enabled(new_rows > 0, widgets::primary(format!("Importar só as {new_rows} nova(s)")))
+                            .clicked()
+                        {
+                            to_commit = Some(prev.only_new());
                         }
-                    )
-                } else {
-                    self.new_task_title.trim().to_owned()
-                };
-                // Unsaved edits of the ficha are saved first; they are never discarded.
-                let saved_first = if self.dirty() {
-                    match store.save_saiop_attendance(&ed, self.base_version) {
-                        Ok(_) => true,
-                        Err(e) => {
-                            self.set_notice(format!("Salve o atendimento antes de criar a tarefa: {e}"), true);
-                            false
+                        if ui
+                            .add(widgets::secondary(format!("Importar todas ({}) e duplicar as já registradas", prev.items.len())))
+                            .clicked()
+                        {
+                            to_commit = Some(prev.clone());
+                        }
+                    } else if ui.add(widgets::primary(format!("Importar {} atendimento(s)", prev.items.len()))).clicked() {
+                        to_commit = Some(prev.clone());
+                    }
+                    if ui.add(widgets::quiet("Cancelar")).clicked() {
+                        self.import_preview = None;
+                    }
+                    if let Some(chosen) = to_commit {
+                        match store.commit_saiop_import(&chosen) {
+                            Ok(batch) => {
+                                self.set_notice(
+                                    format!(
+                                        "Importação concluída: {} atendimento(s) de {}.",
+                                        batch.total_rows, batch.file_name
+                                    ),
+                                    false,
+                                );
+                                self.import_preview = None;
+                                close_import = true;
+                            }
+                            Err(e) => self.set_notice(format!("Importação recusada: {e}"), true),
                         }
                     }
-                } else {
-                    true
-                };
-                if saved_first {
-                    match store.create_task_for_saiop(
-                        ed.id,
-                        &title,
-                        &ed.priority,
-                        &ed.due_date,
-                        &ed.assignee,
-                    ) {
-                        Ok(created) => {
-                            self.new_task_title.clear();
-                            if let Ok(updated_list) = store.list_saiop_attendances() {
-                                if let Some(reloaded) = updated_list.into_iter().find(|a| a.id == ed.id)
-                                {
-                                    self.load_into_editor(store, reloaded);
+                });
+            }
+
+            if let Ok(batches) = store.list_saiop_batches() {
+                if !batches.is_empty() {
+                    ui.separator();
+                    ui.collapsing(format!("Importações anteriores ({})", batches.len()), |ui| {
+                    for b in batches {
+                        ui.horizontal_wrapped(|ui| {
+                            widgets::small_muted(ui, format!(
+                                "{} • {} (aba {}) • {} linha(s), {} com alerta • por {}",
+                                crate::labels::datetime(&b.imported_at),
+                                b.file_name,
+                                b.sheet_name,
+                                b.total_rows,
+                                b.flagged_rows,
+                                b.actor
+                            ));
+                            let pending_here = self.pending_undo.as_ref().is_some_and(|(p, _, _)| p.id == b.id);
+                            if !pending_here && ui.add(widgets::danger("Desfazer importação…")).clicked() {
+                                match store.undo_saiop_batch_plan(b.id) {
+                                    Ok((removed, kept)) => self.pending_undo = Some((b.clone(), removed, kept)),
+                                    Err(e) => self.set_notice(format!("Não foi possível conferir a importação: {e}"), true),
                                 }
                             }
-                            match created {
-                                Some(_) => self.set_notice(
-                                    format!("Tarefa criada no painel Tarefas: {title}"),
-                                    false,
-                                ),
-                                None => self.set_notice(
-                                    "Providência registrada na linha do tempo. Nenhuma tarefa foi criada porque este atendimento não está ligado a um documento importado.",
-                                    false,
-                                ),
+                        });
+                        if let Some((pending, removed, kept)) = self.pending_undo.clone() {
+                            if pending.id == b.id {
+                                let (fg, bg) = Tone::Warn.colors();
+                                egui::Frame::new()
+                                    .fill(bg)
+                                    .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                                    .inner_margin(egui::Margin::symmetric(12, 8))
+                                    .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.add(egui::Label::new(RichText::new(format!(
+                                        "Desfazer a importação de {}? {} atendimento(s) serão removidos. {} serão mantidos porque foram editados ou têm tarefa.",
+                                        pending.file_name, removed, kept
+                                    )).color(fg)).wrap());
+                                    ui.horizontal(|ui| {
+                                        if ui.add(widgets::danger("Desfazer importação")).clicked() {
+                                            match store.undo_saiop_batch(pending.id) {
+                                                Ok((removed, kept)) => self.set_notice(
+                                                    format!(
+                                                        "Importação desfeita: {removed} atendimento(s) removidos e {kept} mantidos por terem edição ou tarefa."
+                                                    ),
+                                                    false,
+                                                ),
+                                                Err(e) => self.set_notice(format!("Não foi possível desfazer: {e}"), true),
+                                            }
+                                            self.pending_undo = None;
+                                        }
+                                        if ui.add(widgets::secondary("Cancelar")).clicked() {
+                                            self.pending_undo = None;
+                                        }
+                                    });
+                                });
                             }
                         }
-                        Err(e) => self.set_notice(format!("Não foi possível criar a tarefa: {e}"), true),
+                    }
+                    });
+                }
+            }
+        });
+        self.import_open = import_open && !close_import;
+    }
+
+    /// The ficha of the atendimento being edited: a panel on the right with
+    /// its buttons fixed at the bottom.
+    fn show_ficha(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &mut Store,
+        all_items: &[SaiopAttendance],
+        open_document: &mut Option<i64>,
+    ) {
+        let Some(mut ed) = self.editor.clone() else {
+            return;
+        };
+        let p = c();
+        let today = Local::now().date_naive();
+        let mut save_clicked = false;
+        let mut revert_clicked = false;
+        let mut create_task_clicked = false;
+        let mut close_clicked = false;
+        let mut delete_confirmed = false;
+        let is_dirty = self.dirty();
+        let width = FICHA_WIDTH.min(ui.available_width() * 0.62);
+
+        egui::Panel::right("saiop-ficha")
+            .exact_size(width)
+            .resizable(false)
+            .frame(egui::Frame::new().fill(p.surface))
+            .show(ui, |ui| {
+                // ---- Footer, fixed at the bottom ---------------------------------
+                egui::Panel::bottom("saiop-ficha-foot")
+                    .frame(
+                        egui::Frame::new()
+                            .fill(p.surface)
+                            .inner_margin(egui::Margin::symmetric(16, 10)),
+                    )
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = S2;
+                        if self.confirm_delete == Some(ed.id) && ed.id > 0 {
+                            let (fg, bg) = Tone::Warn.colors();
+                            egui::Frame::new()
+                                .fill(bg)
+                                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                                .inner_margin(egui::Margin::symmetric(12, 8))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!(
+                                                "Excluir o atendimento {}? Não vai para a Lixeira: anexos do atendimento são apagados; tarefas e documento ligado permanecem.",
+                                                if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
+                                            ))
+                                            .color(fg),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.horizontal(|ui| {
+                                        if ui.add(widgets::danger("Excluir de vez")).clicked() {
+                                            delete_confirmed = true;
+                                        }
+                                        if ui.add(widgets::secondary("Cancelar")).clicked() {
+                                            self.confirm_delete = None;
+                                        }
+                                    });
+                                });
+                        }
+                        ui.horizontal(|ui| {
+                            save_clicked = ui
+                                .add_enabled(is_dirty || ed.id == 0, widgets::primary("Salvar"))
+                                .clicked();
+                            if ed.is_open() && ed.id > 0 {
+                                if ui
+                                    .add(widgets::secondary("Encerrar"))
+                                    .on_hover_text("Marca como encerrado e salva.")
+                                    .clicked()
+                                {
+                                    ed.status = "encerrado".into();
+                                    ed.closed_at = Local::now().format("%Y-%m-%d").to_string();
+                                    save_clicked = true;
+                                }
+                            } else if !ed.is_open()
+                                && ui
+                                    .add(widgets::secondary("Reabrir"))
+                                    .on_hover_text("Volta para “Em análise” e salva.")
+                                    .clicked()
+                            {
+                                ed.status = "em_analise".into();
+                                ed.closed_at.clear();
+                                save_clicked = true;
+                            }
+                            revert_clicked = ui
+                                .add_enabled(is_dirty, widgets::quiet("Descartar alterações"))
+                                .clicked();
+                            if ed.id > 0 {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .add_enabled(!is_dirty, widgets::danger("Excluir…"))
+                                            .on_hover_text("Apaga o atendimento de vez (não há Lixeira para atendimentos). As tarefas criadas a partir dele continuam nos documentos.")
+                                            .on_disabled_hover_text("Salve ou descarte as alterações antes de excluir.")
+                                            .clicked()
+                                        {
+                                            self.confirm_delete = Some(ed.id);
+                                        }
+                                    },
+                                );
+                            }
+                        });
+                    });
+
+                // ---- Header ------------------------------------------------------
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = S2;
+                        ui.horizontal(|ui| {
+                            let reserve = 40.0 + if is_dirty { 90.0 } else { 0.0 };
+                            ui.scope(|ui| {
+                                ui.set_max_width((ui.available_width() - reserve).max(80.0));
+                                let title = if ed.id > 0 {
+                                    if ed.reference_raw.is_empty() {
+                                        "Atendimento sem referência".to_owned()
+                                    } else {
+                                        ed.reference_raw.clone()
+                                    }
+                                } else {
+                                    "Novo atendimento".to_owned()
+                                };
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(title).font(theme::font_strong(17.0)),
+                                    )
+                                    .truncate(),
+                                );
+                            });
+                            if is_dirty {
+                                widgets::pill(ui, "não salvo", Tone::Warn);
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .add_enabled_ui(!is_dirty, |ui| {
+                                        widgets::icon_button(ui, icon::CLOSE, "Fechar ficha")
+                                    })
+                                    .inner
+                                    .on_disabled_hover_text("Salve ou descarte as alterações antes de fechar.")
+                                    .clicked()
+                                {
+                                    close_clicked = true;
+                                }
+                            });
+                        });
+                        if !ed.subject.trim().is_empty() {
+                            ui.add(egui::Label::new(&ed.subject).wrap());
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            widgets::pill(ui, status_label(&ed.status), status_tone(&ed.status));
+                            let (label, tone, hover) = due_pill(&ed, today);
+                            let r = widgets::pill(ui, label, tone);
+                            if let Some(hover) = hover {
+                                r.on_hover_text(hover);
+                            }
+                            if !ed.reference_norm.is_empty() {
+                                let same_ref_count = all_items
+                                    .iter()
+                                    .filter(|a| a.reference_norm == ed.reference_norm)
+                                    .count();
+                                if same_ref_count > 1 {
+                                    widgets::pill(
+                                        ui,
+                                        format!("{same_ref_count} passagens desta referência"),
+                                        Tone::Violet,
+                                    )
+                                    .on_hover_text("A mesma referência entrou no gabinete mais de uma vez; cada passagem é um atendimento.");
+                                }
+                            }
+                            if let Some(doc_id) = ed.document_id {
+                                if ui
+                                    .add(widgets::quiet(format!("{} abrir o documento", icon::OPEN_OUT)))
+                                    .on_hover_text("Abre o documento importado ligado a este atendimento.")
+                                    .clicked()
+                                {
+                                    *open_document = Some(doc_id);
+                                }
+                            }
+                        });
+                    });
+
+                // ---- Form --------------------------------------------------------
+                egui::ScrollArea::vertical()
+                    .id_salt("saiop-detail-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(16, 0))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = S2;
+                                self.ficha_form(ui, store, &mut ed, &mut save_clicked, &mut create_task_clicked);
+                                ui.add_space(S4);
+                            });
+                    });
+            });
+
+        self.editor = Some(ed.clone());
+
+        if delete_confirmed {
+            self.confirm_delete = None;
+            match store.delete_saiop_attendance(ed.id) {
+                Ok(()) => {
+                    self.editor = None;
+                    self.saved_snapshot = None;
+                    self.selected_id = None;
+                    self.set_notice(
+                        format!(
+                            "Atendimento {} excluído.",
+                            if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
+                        ),
+                        false,
+                    );
+                }
+                Err(e) => self.set_notice(format!("Não foi possível excluir: {e}"), true),
+            }
+        } else if close_clicked {
+            self.confirm_delete = None;
+            self.editor = None;
+            self.saved_snapshot = None;
+            self.selected_id = None;
+        } else if revert_clicked {
+            self.editor = self.saved_snapshot.clone();
+        } else if create_task_clicked {
+            let title = if self.new_task_title.trim().is_empty() {
+                format!(
+                    "Analisar atendimento {}",
+                    if ed.reference_raw.is_empty() {
+                        &ed.subject
+                    } else {
+                        &ed.reference_raw
+                    }
+                )
+            } else {
+                self.new_task_title.trim().to_owned()
+            };
+            // Unsaved edits of the ficha are saved first; they are never discarded.
+            let saved_first = if self.dirty() {
+                match store.save_saiop_attendance(&ed, self.base_version) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        self.set_notice(format!("Salve o atendimento antes de criar a tarefa: {e}"), true);
+                        false
                     }
                 }
-            } else if save_clicked {
-                match store.save_saiop_attendance(&ed, self.base_version) {
-                    Ok(saved_id) => {
+            } else {
+                true
+            };
+            if saved_first {
+                match store.create_task_for_saiop(
+                    ed.id,
+                    &title,
+                    &ed.priority,
+                    &ed.due_date,
+                    &ed.assignee,
+                ) {
+                    Ok(created) => {
+                        self.new_task_title.clear();
                         if let Ok(updated_list) = store.list_saiop_attendances() {
-                            if let Some(reloaded) =
-                                updated_list.into_iter().find(|a| a.id == saved_id)
+                            if let Some(reloaded) = updated_list.into_iter().find(|a| a.id == ed.id)
                             {
                                 self.load_into_editor(store, reloaded);
                             }
                         }
-                        self.set_notice("Atendimento salvo.", false);
+                        match created {
+                            Some(_) => self.set_notice(
+                                format!("Tarefa criada no painel Tarefas: {title}"),
+                                false,
+                            ),
+                            None => self.set_notice(
+                                "Providência registrada na linha do tempo. Nenhuma tarefa foi criada porque este atendimento não está ligado a um documento importado.",
+                                false,
+                            ),
+                        }
                     }
-                    Err(e) => self.set_notice(format!("Atendimento não salvo: {e}"), true),
+                    Err(e) => self.set_notice(format!("Não foi possível criar a tarefa: {e}"), true),
                 }
             }
-            });
+        } else if save_clicked {
+            match store.save_saiop_attendance(&ed, self.base_version) {
+                Ok(saved_id) => {
+                    if let Ok(updated_list) = store.list_saiop_attendances() {
+                        if let Some(reloaded) =
+                            updated_list.into_iter().find(|a| a.id == saved_id)
+                        {
+                            self.load_into_editor(store, reloaded);
+                        }
+                    }
+                    self.set_notice("Atendimento salvo.", false);
+                }
+                Err(e) => self.set_notice(format!("Atendimento não salvo: {e}"), true),
+            }
         }
+    }
+
+    /// The fields of the ficha, in sections.
+    fn ficha_form(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &mut Store,
+        ed: &mut SaiopAttendance,
+        save_clicked: &mut bool,
+        create_task_clicked: &mut bool,
+    ) {
+        let ed_id = ed.id;
+
+        if !ed.review_flags.is_empty() {
+            let (fg, bg) = Tone::Warn.colors();
+            egui::Frame::new()
+                .fill(bg)
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Alertas de conferência ({})",
+                            icon::WARNING,
+                            ed.review_flags.len()
+                        ))
+                        .font(theme::font_strong(theme::SIZE_BODY))
+                        .color(fg),
+                    );
+                    for flag in &ed.review_flags {
+                        ui.add(egui::Label::new(RichText::new(format!("• {flag}")).size(theme::SIZE_SMALL).color(fg)).wrap());
+                    }
+                    if ui
+                        .add(widgets::secondary("Conferido: limpar alertas"))
+                        .on_hover_text("Os alertas somem ao salvar o atendimento.")
+                        .clicked()
+                    {
+                        ed.review_flags.clear();
+                    }
+                });
+        }
+
+        form_section(ui, "Situação e prazo", |ui| {
+            ui.columns(2, |cols| {
+                labeled(&mut cols[0], "Situação", |ui| {
+                    pick(ui, "ed-saiop-status", status_label(&ed.status).to_owned(), |ui| {
+                        for (k, label) in STATUS_OPTIONS {
+                            ui.selectable_value(&mut ed.status, (*k).to_owned(), *label);
+                        }
+                    });
+                });
+                labeled(&mut cols[1], "Prioridade", |ui| {
+                    pick(ui, "ed-saiop-priority", priority_label(&ed.priority).to_owned(), |ui| {
+                        for (k, label) in PRIORITY_OPTIONS {
+                            ui.selectable_value(&mut ed.priority, (*k).to_owned(), *label);
+                        }
+                    });
+                });
+            });
+            labeled(ui, "Prazo", |ui| {
+                crate::labels::date_field(ui, ("saiop-due", ed_id), &mut ed.due_date);
+            });
+            labeled(ui, "Tipo de prazo", |ui| {
+                pick(ui, "ed-saiop-due-kind", due_kind_label(&ed.due_kind).to_owned(), |ui| {
+                    for (k, label) in DUE_KIND_OPTIONS {
+                        ui.selectable_value(&mut ed.due_kind, (*k).to_owned(), *label);
+                    }
+                });
+            });
+            labeled(ui, "Responsável", |ui| {
+                ui.horizontal(|ui| {
+                    let width = (ui.available_width() - 130.0).max(80.0);
+                    ui.add(egui::TextEdit::singleline(&mut ed.assignee).desired_width(width));
+                    if ui.add(widgets::quiet("Atribuir a mim")).clicked() {
+                        if let Ok(cfg) = store.load_intranet_config() {
+                            ed.assignee = cfg.member_name;
+                        }
+                    }
+                });
+            });
+            labeled(ui, "Motivo da prioridade", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut ed.priority_reason).desired_width(f32::INFINITY));
+            });
         });
 
-        open_document
+        form_section(ui, "Identificação", |ui| {
+            labeled(ui, "Referência", |ui| {
+                if ed.document_id.is_some() {
+                    ui.add_enabled(
+                        false,
+                        egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY),
+                    )
+                    .on_disabled_hover_text("É o número do documento ligado. Para mudar, desligue do documento.");
+                } else {
+                    ui.add(egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY))
+                        .on_hover_text("Número do processo ou documento, ou um código provisório. Informe a referência ou o assunto.");
+                }
+            });
+            // Link with an imported document
+            if ed.document_id.is_some() {
+                if ui.add(widgets::quiet("Desligar do documento")).clicked() {
+                    ed.document_id = None;
+                }
+            } else {
+                ui.horizontal(|ui| {
+                    let width = (ui.available_width() - 150.0).max(80.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.link_number)
+                            .hint_text("número do documento importado")
+                            .desired_width(width),
+                    );
+                    if ui
+                        .add(widgets::secondary("Ligar a documento"))
+                        .on_hover_text("Liga este atendimento a um documento já importado, pelo número oficial.")
+                        .clicked()
+                    {
+                        let wanted = normalize_reference(&self.link_number);
+                        match store.list_documents("") {
+                            Ok(docs) => match docs.into_iter().find(|d| normalize_reference(&d.document_number) == wanted) {
+                                Some(doc) => {
+                                    // The linked document's number becomes the reference.
+                                    ed.document_id = Some(doc.id);
+                                    ed.reference_norm = normalize_reference(&doc.document_number);
+                                    ed.reference_raw = doc.document_number;
+                                    self.link_number.clear();
+                                }
+                                None => self.set_notice(format!("Nenhum documento importado com o número {}.", self.link_number.trim()), true),
+                            },
+                            Err(e) => self.set_notice(format!("Não foi possível consultar a biblioteca: {e}"), true),
+                        }
+                    }
+                });
+                if let Some(url) = ed.composed_sigadoc_url() {
+                    ui.hyperlink_to("Abrir no SIGADOC", url)
+                        .on_hover_text("Endereço montado a partir da referência; confira na página.");
+                }
+            }
+            labeled(ui, "Assunto", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut ed.subject).desired_width(f32::INFINITY));
+            });
+            labeled(ui, "Entrada", |ui| {
+                crate::labels::date_field(ui, ("saiop-entry", ed_id), &mut ed.entry_date);
+            });
+            labeled(ui, "Recebido de", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut ed.received_from).desired_width(f32::INFINITY));
+            });
+            labeled(ui, "Observações", |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut ed.observation)
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        });
+
+        fold(ui, "Condições e relações", ("saiop-fold-cond", ed_id), false, |ui| {
+            ui.spacing_mut().item_spacing.y = S2;
+            ui.columns(2, |cols| {
+                labeled(&mut cols[0], "Retorno para UAS?", |ui| {
+                    pick(ui, "ed-saiop-uas", tri_state_label(&ed.uas_return).to_owned(), |ui| {
+                        for (k, label) in TRI_STATE_OPTIONS {
+                            ui.selectable_value(&mut ed.uas_return, (*k).to_owned(), *label);
+                        }
+                    });
+                });
+                labeled(&mut cols[1], "Assinado?", |ui| {
+                    pick(ui, "ed-saiop-signed", tri_state_label(&ed.signed_status).to_owned(), |ui| {
+                        for (k, label) in TRI_STATE_OPTIONS {
+                            ui.selectable_value(&mut ed.signed_status, (*k).to_owned(), *label);
+                        }
+                    });
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut ed.scheduled, "Agendado");
+                ui.checkbox(&mut ed.sensitive, "Documento sensível");
+            });
+            labeled(ui, "Apensado / juntado", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut ed.attachment_relation).desired_width(f32::INFINITY))
+                    .on_hover_text("Relação de apensamento ou juntada informada na planilha ou por você.");
+            });
+        });
+
+        fold(ui, "Resultado", ("saiop-fold-result", ed_id), false, |ui| {
+            ui.spacing_mut().item_spacing.y = S2;
+            labeled(ui, "Entrega prevista", |ui| {
+                pick(
+                    ui,
+                    "ed-saiop-doctype",
+                    if ed.planned_doc_type.is_empty() { "Não definida".to_owned() } else { ed.planned_doc_type.clone() },
+                    |ui| {
+                        for opt in DOC_TYPE_OPTIONS {
+                            ui.selectable_value(
+                                &mut ed.planned_doc_type,
+                                (*opt).to_owned(),
+                                if opt.is_empty() { "Não definida" } else { *opt },
+                            );
+                        }
+                    },
+                );
+            });
+            labeled(ui, "Resultado da etapa", |ui| {
+                pick(ui, "ed-saiop-outcome", outcome_label(&ed.outcome).to_owned(), |ui| {
+                    for (k, label) in OUTCOME_OPTIONS {
+                        ui.selectable_value(&mut ed.outcome, (*k).to_owned(), *label);
+                    }
+                });
+            });
+            labeled(ui, "Data de saída", |ui| {
+                crate::labels::date_field(ui, ("saiop-exit", ed_id), &mut ed.exit_date);
+            });
+            labeled(ui, "Enviado para", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut ed.sent_to).desired_width(f32::INFINITY));
+            });
+            if !ed.verification_raw.is_empty() {
+                widgets::small_muted(ui, format!("Verificação na planilha: {}", ed.verification_raw));
+            }
+        });
+
+        // Tarefas criadas a partir deste atendimento. Tarefas pertencem
+        // a documentos, por isso só há criação com documento ligado.
+        if ed.id > 0 {
+            let linked: Vec<Task> = if ed.task_ids.is_empty() {
+                Vec::new()
+            } else {
+                store
+                    .list_tasks()
+                    .map(|tasks| tasks.into_iter().filter(|t| ed.task_ids.contains(&t.id)).collect())
+                    .unwrap_or_default()
+            };
+            fold(
+                ui,
+                &format!("Tarefas deste atendimento ({})", linked.len()),
+                ("saiop-fold-tasks", ed_id),
+                !linked.is_empty(),
+                |ui| {
+                    if linked.is_empty() {
+                        widgets::small_muted(ui, "Nenhuma tarefa criada a partir deste atendimento.");
+                    }
+                    for task in linked {
+                        ui.horizontal_wrapped(|ui| {
+                            let done = task.completed_at.is_some();
+                            if done {
+                                ui.label(RichText::new(icon::CHECK).color(c().ok));
+                            } else {
+                                ui.label(RichText::new(icon::CLOCK).color(c().muted));
+                            }
+                            ui.label(RichText::new(&task.title).font(theme::font_strong(theme::SIZE_BODY)));
+                            widgets::small_muted(ui, crate::labels::task_status(&task.status));
+                            if !task.due_date.is_empty() {
+                                widgets::small_muted(ui, format!("prazo {}", crate::labels::date(&task.due_date)));
+                            }
+                            if ui
+                                .add(widgets::quiet("Abrir"))
+                                .on_hover_text("Abre a tarefa no painel Tarefas.")
+                                .clicked()
+                            {
+                                self.open_task = Some(task.clone());
+                            }
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        let can_create = ed.document_id.is_some();
+                        let width = (ui.available_width() - 120.0).max(80.0);
+                        ui.add_enabled(
+                            can_create,
+                            egui::TextEdit::singleline(&mut self.new_task_title)
+                                .hint_text("Título da nova tarefa (opcional)…")
+                                .desired_width(width),
+                        );
+                        if ui
+                            .add_enabled(can_create, widgets::secondary("Criar tarefa"))
+                            .on_hover_text("Cria, no painel Tarefas, uma tarefa do documento ligado com a prioridade, o prazo e o responsável deste atendimento. Sem título, ela se chama “Analisar atendimento …”.")
+                            .on_disabled_hover_text("Tarefas pertencem a documentos: ligue o atendimento a um documento importado (acima) para criar uma tarefa.")
+                            .clicked()
+                        {
+                            *create_task_clicked = true;
+                        }
+                    });
+                },
+            );
+        }
+
+        fold(ui, "Anexos", ("saiop-fold-attach", ed_id), false, |ui| {
+            if ed.id > 0 {
+                self.attachments
+                    .show(ui, store, crate::attachments::Owner::Attendance(ed.id), false);
+            } else {
+                widgets::small_muted(ui, "Salve o atendimento para poder anexar arquivos a ele.");
+            }
+        });
+
+        // Histórico de eventos e registro original da planilha
+        if ed.id > 0 {
+            fold(ui, "Linha do tempo", ("saiop-fold-events", ed_id), false, |ui| {
+                ui.horizontal(|ui| {
+                    let width = (ui.available_width() - 150.0).max(80.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_event_note)
+                            .hint_text("Registrar evento datado (ex.: cobrado retorno por telefone)…")
+                            .desired_width(width),
+                    );
+                    if ui
+                        .add(widgets::secondary("Adicionar evento"))
+                        .on_hover_text("Registra o evento e salva o atendimento, inclusive outras alterações desta ficha.")
+                        .clicked()
+                        && !self.new_event_note.trim().is_empty()
+                    {
+                        ed.events.push(SaiopEvent {
+                            when: Utc::now().to_rfc3339(),
+                            actor: store.active_actor(),
+                            kind: "anotacao".into(),
+                            detail: self.new_event_note.trim().to_owned(),
+                        });
+                        self.new_event_note.clear();
+                        *save_clicked = true;
+                    }
+                });
+                for ev in ed.events.iter().rev() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "• {} • {} • {}: {}",
+                                crate::labels::datetime(&ev.when),
+                                ev.actor,
+                                crate::labels::saiop_event_kind(&ev.kind),
+                                ev.detail
+                            ))
+                            .size(theme::SIZE_SMALL)
+                            .color(c().muted),
+                        )
+                        .wrap(),
+                    );
+                }
+            });
+            if let Ok(Some(raw_row)) = store.load_saiop_raw_row(ed.id) {
+                fold(
+                    ui,
+                    &format!(
+                        "Linha original da planilha (aba {}, linha {})",
+                        raw_row.sheet_name, raw_row.row_number
+                    ),
+                    ("saiop-fold-raw", ed_id),
+                    false,
+                    |ui| {
+                        egui::Grid::new(("saiop-raw-row", ed.id))
+                            .num_columns(2)
+                            .spacing([S3, S1])
+                            .show(ui, |ui| {
+                                for (column, value) in &raw_row.cells {
+                                    if value.trim().is_empty() {
+                                        continue;
+                                    }
+                                    widgets::small_muted(
+                                        ui,
+                                        format!(
+                                            "{} ({column})",
+                                            crate::labels::spreadsheet_column(column)
+                                        ),
+                                    );
+                                    ui.add(egui::Label::new(value).wrap());
+                                    ui.end_row();
+                                }
+                                for (column, formula) in &raw_row.formulas {
+                                    widgets::small_muted(ui, format!("Fórmula em {column}"));
+                                    ui.add(egui::Label::new(formula).wrap());
+                                    ui.end_row();
+                                }
+                            });
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -4542,10 +4954,23 @@ mod tests {
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
-pub const SHOTS: &[&str] = &[];
+pub const SHOTS: &[&str] = &["lista", "aberto", "filtros", "importar"];
 
 #[cfg(feature = "shots")]
 impl SaiopPanel {
     /// Puts the panel in the state called `view` (see `SHOTS`).
-    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
+    pub fn shots_open(&mut self, store: &mut crate::storage::Store, view: &str) {
+        match view {
+            "aberto" => {
+                if let Ok(list) = store.list_saiop_attendances() {
+                    if let Some(first) = list.into_iter().next() {
+                        self.load_into_editor(store, first);
+                    }
+                }
+            }
+            "filtros" => self.filters_open = true,
+            "importar" => self.import_open = true,
+            _ => {}
+        }
+    }
 }

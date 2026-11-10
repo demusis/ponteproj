@@ -10,6 +10,10 @@ use crate::{
         WorkTemplate, MAX_BLOCKS_PER_TEMPLATE,
     },
 };
+use crate::{
+    theme::{self, icon},
+    widgets::{self, Tone},
+};
 use eframe::egui::{self, RichText};
 use std::{
     collections::BTreeSet,
@@ -136,49 +140,71 @@ fn status_label_f(status: Status) -> &'static str {
     }
 }
 
-fn text_row(ui: &mut egui::Ui, label: &str, value: &mut String) {
-    ui.label(label);
-    ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
+/// Width of the three icon buttons (up, down, remove) of a list row.
+const OPS_WIDTH: f32 = 3.0 * 30.0 + 2.0 * theme::S1;
+/// Room taken by an "Obrigatória" checkbox next to a field.
+const CHECK_WIDTH: f32 = 112.0;
+/// The forms stay readable on wide windows.
+const FORM_WIDTH: f32 = 840.0;
+
+fn tone_of_status(status: Status) -> Tone {
+    match status {
+        Status::Draft => Tone::Warn,
+        Status::Published => Tone::Ok,
+        Status::Archived => Tone::Neutral,
+    }
 }
 
-fn multiline(ui: &mut egui::Ui, label: &str, value: &mut String, rows: usize) {
-    ui.label(label);
+fn short_scope(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Personal => "Pessoal",
+        Scope::Shared => "Equipe",
+    }
+}
+
+fn text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    widgets::field_label(ui, label);
+    ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
+    ui.add_space(theme::S2);
+}
+
+fn text_area(ui: &mut egui::Ui, label: &str, value: &mut String, rows: usize) {
+    widgets::field_label(ui, label);
     ui.add(
         egui::TextEdit::multiline(value)
             .desired_rows(rows)
             .desired_width(f32::INFINITY),
     );
+    ui.add_space(theme::S2);
 }
 
+/// Move up, move down and remove, as icon buttons.
 fn list_ops(ui: &mut egui::Ui, index: usize, len: usize) -> Option<Op> {
-    let mut op = None;
-    if ui
-        .add_enabled(index > 0, egui::Button::new("↑").small())
-        .clicked()
-    {
-        op = Some(Op::Up);
-    }
-    if ui
-        .add_enabled(index + 1 < len, egui::Button::new("↓").small())
-        .clicked()
-    {
-        op = Some(Op::Down);
-    }
-    if ui.small_button("Remover").clicked() {
-        op = Some(Op::Remove);
-    }
-    op
-}
-
-fn apply_op<T>(items: &mut Vec<T>, index: usize, op: Op) {
-    match op {
-        Op::Up if index > 0 => items.swap(index, index - 1),
-        Op::Down if index + 1 < items.len() => items.swap(index, index + 1),
-        Op::Remove => {
-            items.remove(index);
+    ui.horizontal(|ui| {
+        let mut op = None;
+        ui.spacing_mut().item_spacing.x = theme::S1;
+        if ui
+            .add_enabled_ui(index > 0, |ui| widgets::icon_button(ui, icon::UP, "Subir"))
+            .inner
+            .clicked()
+        {
+            op = Some(Op::Up);
         }
-        _ => {}
-    }
+        if ui
+            .add_enabled_ui(index + 1 < len, |ui| {
+                widgets::icon_button(ui, icon::DOWN, "Descer")
+            })
+            .inner
+            .clicked()
+        {
+            op = Some(Op::Down);
+        }
+        if widgets::icon_button(ui, icon::TRASH, "Remover").clicked() {
+            op = Some(Op::Remove);
+        }
+        op
+    })
+    .inner
 }
 
 fn string_list(ui: &mut egui::Ui, id: &str, items: &mut Vec<String>, hint: &str, max: usize) {
@@ -190,7 +216,7 @@ fn string_list(ui: &mut egui::Ui, id: &str, items: &mut Vec<String>, hint: &str,
                 ui.add(
                     egui::TextEdit::singleline(item)
                         .hint_text(hint)
-                        .desired_width(ui.available_width() - 190.0),
+                        .desired_width(ui.available_width() - OPS_WIDTH - theme::S2),
                 );
                 if let Some(op) = list_ops(ui, i, len) {
                     pending = Some((i, op));
@@ -201,20 +227,131 @@ fn string_list(ui: &mut egui::Ui, id: &str, items: &mut Vec<String>, hint: &str,
     if let Some((i, op)) = pending {
         apply_op(items, i, op);
     }
-    if items.len() < max && ui.button("Adicionar").clicked() {
+    if items.len() < max
+        && ui
+            .add(widgets::secondary(format!("{} Adicionar", icon::PLUS)))
+            .clicked()
+    {
         items.push(String::new());
     }
 }
 
-fn badges((scope, status): (&'static str, &'static str), current: u32, pending: bool) -> String {
-    let mut text = format!("{scope} · {status}");
+/// "v3 · rascunho pendente" under a list row.
+fn version_text(current: u32, pending: bool) -> String {
+    let mut text = String::new();
     if current > 0 {
-        text.push_str(&format!(" · v{current}"));
+        text.push_str(&format!("v{current}"));
     }
     if pending {
-        text.push_str(" · rascunho pendente");
+        if !text.is_empty() {
+            text.push_str(" · ");
+        }
+        text.push_str("rascunho pendente");
     }
     text
+}
+
+/// One row of a list: thin line below, soft fill and a bar on the left when
+/// selected. `pad` is the side padding.
+fn pick_row(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    selected: bool,
+    pad: i8,
+    add: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    let p = theme::c();
+    let full = ui.available_width();
+    let shape = ui.painter().add(egui::Shape::Noop);
+    let rect = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(pad, 8))
+        .show(ui, |ui| {
+            ui.set_width((full - 2.0 * f32::from(pad)).max(0.0));
+            ui.style_mut().interaction.selectable_labels = false;
+            ui.spacing_mut().item_spacing.y = theme::S1;
+            add(ui);
+        })
+        .response
+        .rect;
+    let response = ui
+        .interact(rect, ui.make_persistent_id(id), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let fill = if selected {
+        Some(p.primary_soft)
+    } else if response.hovered() {
+        Some(p.sunken)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter()
+            .set(shape, egui::Shape::rect_filled(rect, egui::CornerRadius::ZERO, fill));
+    }
+    if selected {
+        let bar = egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + 3.0, rect.bottom()));
+        ui.painter()
+            .rect_filled(bar, egui::CornerRadius::ZERO, p.primary);
+    }
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, p.outline),
+    );
+    response
+}
+
+/// The name of a row, semibold when selected.
+fn row_name(ui: &mut egui::Ui, name: &str, selected: bool) {
+    let font = if selected {
+        theme::font_strong(theme::SIZE_BODY)
+    } else {
+        theme::font(theme::SIZE_BODY)
+    };
+    ui.add(egui::Label::new(RichText::new(name).font(font)).truncate());
+}
+
+/// A short question in a soft frame with a confirm and a cancel button.
+/// `Some(true)` = confirmed, `Some(false)` = cancelled.
+fn confirm_line(ui: &mut egui::Ui, text: &str, yes: &str, no: &str) -> Option<bool> {
+    let (fg, bg) = Tone::Warn.colors();
+    let mut out = None;
+    egui::Frame::new()
+        .fill(bg)
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("{} {text}", icon::WARNING)).color(fg));
+                if ui.add(widgets::danger(yes)).clicked() {
+                    out = Some(true);
+                }
+                if ui.add(widgets::secondary(no)).clicked() {
+                    out = Some(false);
+                }
+            });
+        });
+    out
+}
+
+fn pill_for_example(ui: &mut egui::Ui, status: ExampleStatus) {
+    let tone = match status {
+        ExampleStatus::Unverified => Tone::Warn,
+        ExampleStatus::Approved => Tone::Ok,
+        ExampleStatus::Rejected => Tone::Neutral,
+    };
+    widgets::pill(ui, status.label(), tone);
+}
+
+fn apply_op<T>(items: &mut Vec<T>, index: usize, op: Op) {
+    match op {
+        Op::Up if index > 0 => items.swap(index, index - 1),
+        Op::Down if index + 1 < items.len() => items.swap(index, index + 1),
+        Op::Remove => {
+            items.remove(index);
+        }
+        _ => {}
+    }
 }
 
 impl TemplatesPanel {
@@ -534,63 +671,120 @@ impl TemplatesPanel {
             .map(|c| c.member_name)
             .unwrap_or_default();
         let mut action = TemplatesAction::None;
+        let p = theme::c();
 
-        ui.horizontal(|ui| {
-            ui.heading("Modelos de trabalho");
-            crate::help_ui::help(ui,
-                "Modelos guardam estrutura, instruções, exemplos e referências. Os publicados \
-                 ficam disponíveis no editor de minutas; os compartilhados valem para toda a equipe.",
-            );
-        });
-        ui.separator();
-
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(300.0);
+        egui::Panel::left("tpl_list")
+            .exact_size(300.0)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(p.surface)
+                    .stroke(egui::Stroke::new(1.0, p.outline))
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS_CARD))
+                    .inner_margin(egui::Margin::same(0)),
+            )
+            .show(ui, |ui| {
                 self.left_column(ui, store, &member);
             });
-            ui.separator();
-            ui.vertical(|ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().inner_margin(egui::Margin {
+                left: 16,
+                ..Default::default()
+            }))
+            .show(ui, |ui| {
                 if let Some(a) = self.right_column(ui, store, &member, open_document.as_ref()) {
                     action = a;
                 }
             });
-        });
         action
+    }
+
+    /// "Novo modelo": an empty personal template, unless there is unsaved work.
+    fn start_new(&mut self, store: &Store) {
+        if self.dirty() {
+            self.notice(
+                "Salve ou descarte as alterações antes de trocar de modelo.",
+                true,
+            );
+        } else {
+            let mut t = WorkTemplate::new("", "resposta", "");
+            t.scope = Scope::Personal;
+            self.load_template(store, t, false);
+        }
     }
 
     fn left_column(&mut self, ui: &mut egui::Ui, store: &mut Store, member: &str) {
         egui::ScrollArea::vertical()
             .id_salt("tpl_left")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Tipo");
-                    let current = if self.filter_kind.is_empty() {
-                        "Todos"
-                    } else {
-                        crate::labels::draft_kind(&self.filter_kind)
-                    };
-                    egui::ComboBox::from_id_salt("tpl_kind_filter")
-                        .selected_text(current)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.filter_kind, String::new(), "Todos");
-                            for k in KINDS {
-                                ui.selectable_value(
-                                    &mut self.filter_kind,
-                                    k.to_owned(),
-                                    crate::labels::draft_kind(k),
-                                );
+                ui.spacing_mut().item_spacing.y = 0.0;
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::same(16))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = theme::S2;
+                        ui.horizontal(|ui| {
+                            widgets::heading(ui, "Modelos");
+                            crate::help_ui::help(ui,
+                                "Modelos guardam estrutura, instruções, exemplos e referências. Os publicados \
+                                 ficam disponíveis no editor de minutas; os compartilhados valem para toda a equipe.",
+                            );
+                        });
+                        if ui
+                            .add_sized(
+                                [ui.available_width(), 34.0],
+                                widgets::primary(format!("{} Novo modelo", icon::PLUS)),
+                            )
+                            .clicked()
+                        {
+                            self.start_new(store);
+                        }
+                        ui.add_space(theme::S1);
+                        widgets::field_label(ui, "Tipo");
+                        let current = if self.filter_kind.is_empty() {
+                            "Todos"
+                        } else {
+                            crate::labels::draft_kind(&self.filter_kind)
+                        };
+                        egui::ComboBox::from_id_salt("tpl_kind_filter")
+                            .selected_text(current)
+                            .width(ui.available_width())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.filter_kind, String::new(), "Todos");
+                                for k in KINDS {
+                                    ui.selectable_value(
+                                        &mut self.filter_kind,
+                                        k.to_owned(),
+                                        crate::labels::draft_kind(k),
+                                    );
+                                }
+                            });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(theme::S2, theme::S2);
+                            if widgets::chip(ui, self.show_archived, "Mostrar arquivados").clicked()
+                            {
+                                self.show_archived = !self.show_archived;
+                            }
+                            if widgets::chip(ui, self.only_mine, "Só os meus").clicked() {
+                                self.only_mine = !self.only_mine;
                             }
                         });
-                });
-                ui.checkbox(&mut self.show_archived, "Mostrar arquivados");
-                ui.checkbox(&mut self.only_mine, "Só os meus");
-                ui.add_space(4.0);
+                    });
+                // The line above the first row.
+                let y = ui.cursor().top();
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    y,
+                    egui::Stroke::new(1.0, theme::c().outline),
+                );
 
                 let mine = owner_key(member);
                 let mut pick: Option<WorkTemplate> = None;
                 let selected = self.edit.as_ref().map(|t| t.uid.clone());
-                for t in &self.templates {
+                let mut shown = 0;
+                for (i, t) in self.templates.iter().enumerate() {
                     if !t.visible_to(member)
                         || (!self.filter_kind.is_empty() && t.kind != self.filter_kind)
                         || (!self.show_archived && t.status == Status::Archived)
@@ -598,19 +792,34 @@ impl TemplatesPanel {
                     {
                         continue;
                     }
+                    shown += 1;
                     let is_sel = selected.as_deref() == Some(t.uid.as_str());
-                    if ui.selectable_label(is_sel, &t.name).clicked() && !is_sel {
+                    let response = pick_row(ui, ("tpl", i), is_sel, 16, |ui| {
+                        row_name(ui, &t.name, is_sel);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(theme::S1, theme::S1);
+                            widgets::pill(ui, short_scope(t.scope), Tone::Neutral);
+                            widgets::pill(ui, t.status.label(), tone_of_status(t.status));
+                            let version = version_text(
+                                t.current_version,
+                                t.draft_version().is_some() && t.current_version > 0,
+                            );
+                            if !version.is_empty() {
+                                widgets::small_muted(ui, version);
+                            }
+                        });
+                    })
+                    .on_hover_text(t.scope.label());
+                    if response.clicked() && !is_sel {
                         pick = Some(t.clone());
                     }
-                    ui.label(
-                        RichText::new(badges(
-                            (t.scope.label(), t.status.label()),
-                            t.current_version,
-                            t.draft_version().is_some() && t.current_version > 0,
-                        ))
-                        .small()
-                        .weak(),
-                    );
+                }
+                if shown == 0 {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(16, 12))
+                        .show(ui, |ui| {
+                            widgets::small_muted(ui, "Nenhum modelo para mostrar.");
+                        });
                 }
                 if let Some(t) = pick {
                     if self.dirty() {
@@ -623,130 +832,37 @@ impl TemplatesPanel {
                     }
                 }
 
-                ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Novo modelo").clicked() {
-                        if self.dirty() {
-                            self.notice(
-                                "Salve ou descarte as alterações antes de trocar de modelo.",
-                                true,
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 16,
+                        right: 16,
+                        top: 20,
+                        bottom: 8,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = theme::S1;
+                        ui.horizontal(|ui| {
+                            widgets::overline(ui, "Instruções (biblioteca)", None);
+                            crate::help_ui::help(ui,
+                                "Instruções são orientações para a IA que valem para vários modelos, \
+                                 escritas uma vez e reaproveitadas: \"Use linguagem simples\", \
+                                 \"Cite a norma aplicável\", \"Não prometa prazos\". Crie e publique a \
+                                 instrução aqui; depois, no modelo, aba Instruções, inclua-a como \
+                                 obrigatória (sempre vai), opcional (você marca ao gerar) ou condicional \
+                                 (vale só no caso descrito). Mudar a instrução não altera minutas já feitas.",
                             );
-                        } else {
-                            let mut t = WorkTemplate::new("", "resposta", "");
-                            t.scope = Scope::Personal;
-                            self.load_template(store, t, false);
-                        }
-                    }
-                    let stored = self.stored().cloned();
-                    if ui
-                        .add_enabled(stored.is_some(), egui::Button::new("Duplicar…"))
-                        .clicked()
-                    {
-                        self.dup_name = stored.as_ref().map(|t| format!("Cópia de {}", t.name));
-                    }
-                    if let Some(t) = &stored {
-                        let wanted = if t.status == Status::Archived {
-                            ui.button("Desarquivar")
-                                .clicked()
-                                .then_some(Status::Published)
-                        } else {
-                            ui.button("Arquivar").clicked().then_some(Status::Archived)
-                        };
-                        if let Some(status) = wanted {
-                            if self.dirty() {
-                                self.notice(
-                                    "Salve ou descarte as alterações antes de arquivar ou desarquivar.",
-                                    true,
-                                );
-                            } else {
-                                self.set_status(store, status);
-                            }
-                        }
-                        if ui.button("Excluir").clicked() {
-                            self.confirm = Some(Confirm::Template);
-                        }
-                    }
-                });
-                if let Some(name) = self.dup_name.as_mut() {
-                    ui.add(egui::TextEdit::singleline(name).hint_text("Nome da cópia"));
-                    let name = name.clone();
-                    ui.horizontal(|ui| {
-                        if ui.button("Criar cópia").clicked() {
-                            if self.dirty() {
-                                self.notice(
-                                    "Salve ou descarte as alterações antes de trocar de modelo.",
-                                    true,
-                                );
-                            } else {
-                                let uid = self
-                                    .edit
-                                    .as_ref()
-                                    .map(|t| t.uid.clone())
-                                    .unwrap_or_default();
-                                match store.duplicate_template(&uid, name.trim()) {
-                                    Ok(copy) => {
-                                        self.load_template(store, copy, false);
-                                        self.stale = true;
-                                        self.notice("Cópia criada como rascunho pessoal.", false);
-                                    }
-                                    Err(e) => self.notice(format!("{e:#}"), true),
-                                }
-                            }
-                            self.dup_name = None;
-                        }
-                        if ui.button("Cancelar").clicked() {
-                            self.dup_name = None;
-                        }
+                        });
+                        widgets::small_muted(
+                            ui,
+                            "Orientações reutilizáveis que os modelos podem incluir.",
+                        );
                     });
-                }
-                if self.confirm == Some(Confirm::Template) {
-                    ui.colored_label(
-                        crate::theme::warning(),
-                        "Excluir este modelo de vez, com exemplos e versões?",
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Sim, excluir").clicked() {
-                            let uid = self
-                                .edit
-                                .as_ref()
-                                .map(|t| t.uid.clone())
-                                .unwrap_or_default();
-                            match store.delete_template(&uid) {
-                                Ok(()) => {
-                                    self.edit = None;
-                                    self.base.clear();
-                                    self.example_edit = None;
-                                    self.close_example_files();
-                                    self.stale = true;
-                                    self.notice("Modelo excluído.", false);
-                                }
-                                Err(e) => self.notice(format!("{e:#}"), true),
-                            }
-                            self.confirm = None;
-                        }
-                        if ui.button("Cancelar").clicked() {
-                            self.confirm = None;
-                        }
-                    });
-                }
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.strong("Instruções (biblioteca)");
-                    crate::help_ui::help(ui,
-                        "Instruções são orientações para a IA que valem para vários modelos, \
-                         escritas uma vez e reaproveitadas: \"Use linguagem simples\", \
-                         \"Cite a norma aplicável\", \"Não prometa prazos\". Crie e publique a \
-                         instrução aqui; depois, no modelo, aba Instruções, inclua-a como \
-                         obrigatória (sempre vai), opcional (você marca ao gerar) ou condicional \
-                         (vale só no caso descrito). Mudar a instrução não altera minutas já feitas.",
-                    );
-                });
-                ui.label(
-                    RichText::new("Orientações reutilizáveis que os modelos podem incluir.")
-                        .small()
-                        .weak(),
+                let y = ui.cursor().top();
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    y,
+                    egui::Stroke::new(1.0, theme::c().outline),
                 );
                 self.block_list(ui, store, member);
             });
@@ -755,23 +871,30 @@ impl TemplatesPanel {
     fn block_list(&mut self, ui: &mut egui::Ui, store: &Store, member: &str) {
         let mut pick: Option<InstructionBlock> = None;
         let selected = self.block_edit.as_ref().map(|b| b.uid.clone());
-        for b in &self.blocks {
+        for (i, b) in self.blocks.iter().enumerate() {
             if !b.visible_to(member) || (!self.show_archived && b.status == Status::Archived) {
                 continue;
             }
             let is_sel = selected.as_deref() == Some(b.uid.as_str());
-            if ui.selectable_label(is_sel, &b.name).clicked() && !is_sel {
+            let response = pick_row(ui, ("blk", i), is_sel, 16, |ui| {
+                row_name(ui, &b.name, is_sel);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(theme::S1, theme::S1);
+                    widgets::pill(ui, short_scope(b.scope), Tone::Neutral);
+                    widgets::pill(ui, status_label_f(b.status), tone_of_status(b.status));
+                    let version = version_text(
+                        b.current_version,
+                        b.draft_version().is_some() && b.current_version > 0,
+                    );
+                    if !version.is_empty() {
+                        widgets::small_muted(ui, version);
+                    }
+                });
+            })
+            .on_hover_text(scope_label_f(b.scope));
+            if response.clicked() && !is_sel {
                 pick = Some(b.clone());
             }
-            ui.label(
-                RichText::new(badges(
-                    (scope_label_f(b.scope), status_label_f(b.status)),
-                    b.current_version,
-                    b.draft_version().is_some() && b.current_version > 0,
-                ))
-                .small()
-                .weak(),
-            );
         }
         if let Some(b) = pick {
             if self.block_dirty() {
@@ -784,16 +907,57 @@ impl TemplatesPanel {
                 self.tab = Tab::Blocks;
             }
         }
-        if ui.button("Nova instrução").clicked() {
-            if self.block_dirty() {
-                self.notice(
-                    "Salve ou descarte as alterações da instrução antes de trocar.",
-                    true,
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(16, 8))
+            .show(ui, |ui| {
+                if ui
+                    .add(widgets::quiet(format!("{} Nova instrução", icon::PLUS)))
+                    .clicked()
+                {
+                    if self.block_dirty() {
+                        self.notice(
+                            "Salve ou descarte as alterações da instrução antes de trocar.",
+                            true,
+                        );
+                    } else {
+                        self.load_block(store, InstructionBlock::new("", "", ""), false);
+                        self.tab = Tab::Blocks;
+                    }
+                }
+            });
+    }
+
+    /// The panel's message, in a soft frame with a close button.
+    fn message_line(&mut self, ui: &mut egui::Ui) {
+        if self.message.is_empty() {
+            return;
+        }
+        let tone = if self.error { Tone::Danger } else { Tone::Ok };
+        let (fg, bg) = tone.colors();
+        let mark = if self.error { icon::ERROR } else { icon::CHECK };
+        let mut close = false;
+        egui::Frame::new()
+            .fill(bg)
+            .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+            .inner_margin(egui::Margin::symmetric(12, 4))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::containers::Sides::new().shrink_left().wrap().show(
+                    ui,
+                    |ui| {
+                        ui.label(RichText::new(mark).size(16.0).color(fg));
+                        ui.add(egui::Label::new(RichText::new(&self.message).color(fg)).wrap());
+                    },
+                    |ui| {
+                        if widgets::icon_button(ui, icon::CLOSE, "Fechar").clicked() {
+                            close = true;
+                        }
+                    },
                 );
-            } else {
-                self.load_block(store, InstructionBlock::new("", "", ""), false);
-                self.tab = Tab::Blocks;
-            }
+            });
+        ui.add_space(theme::S2);
+        if close {
+            self.message.clear();
         }
     }
 
@@ -804,48 +968,70 @@ impl TemplatesPanel {
         member: &str,
         doc: Option<&(i64, String, Capture)>,
     ) -> Option<TemplatesAction> {
-        if !self.message.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(if self.error { crate::theme::error() } else { crate::theme::accent() }, &self.message);
-                if ui.small_button("Fechar").clicked() {
-                    self.message.clear();
-                }
-            });
-        }
+        self.message_line(ui);
         if self.edit.is_none() {
-            ui.label("Escolha um modelo na lista ou crie um novo.");
+            self.empty_state(ui, store);
             return None;
         }
         let mut action = None;
-        self.action_row(ui, store, doc.is_some(), &mut action);
-        ui.separator();
-        ui.horizontal(|ui| {
-            for (tab, label) in [
-                (Tab::Structure, "Estrutura"),
-                (Tab::Blocks, "Instruções"),
-                (Tab::Examples, "Exemplos"),
-                (Tab::References, "Referências"),
-                (Tab::Test, "Testar"),
+        self.header(ui, store, doc.is_some(), &mut action);
+        ui.add_space(theme::S2);
+        let block_dirty = self.block_dirty();
+        let example_dirty = self.example_area_dirty();
+        widgets::tab_row(ui, |ui| {
+            for (tab, label, dirty) in [
+                (Tab::Structure, "Estrutura", false),
+                (Tab::Blocks, "Instruções", block_dirty),
+                (Tab::Examples, "Exemplos", example_dirty),
+                (Tab::References, "Referências", false),
+                (Tab::Test, "Testar", false),
             ] {
-                if ui.selectable_label(self.tab == tab, label).clicked() {
+                if widgets::tab(ui, self.tab == tab, label, dirty).clicked() {
                     self.tab = tab;
                 }
             }
         });
-        ui.separator();
+        ui.add_space(theme::S3);
         egui::ScrollArea::vertical()
             .id_salt("tpl_right")
-            .show(ui, |ui| match self.tab {
-                Tab::Structure => self.tab_structure(ui),
-                Tab::Blocks => self.tab_blocks(ui, store, member),
-                Tab::Examples => self.tab_examples(ui, store),
-                Tab::References => self.tab_references(ui),
-                Tab::Test => self.tab_test(ui, store, doc),
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_max_width(FORM_WIDTH);
+                ui.spacing_mut().item_spacing.y = theme::S3;
+                match self.tab {
+                    Tab::Structure => self.tab_structure(ui),
+                    Tab::Blocks => self.tab_blocks(ui, store, member),
+                    Tab::Examples => self.tab_examples(ui, store),
+                    Tab::References => self.tab_references(ui),
+                    Tab::Test => self.tab_test(ui, store, doc),
+                }
+                ui.add_space(theme::S4);
             });
         action
     }
 
-    fn action_row(
+    fn empty_state(&mut self, ui: &mut egui::Ui, store: &Store) {
+        ui.add_space((ui.available_height() * 0.28).max(theme::S5));
+        ui.vertical_centered(|ui| {
+            ui.spacing_mut().item_spacing.y = theme::S2;
+            ui.label(
+                RichText::new(icon::TEMPLATES)
+                    .size(44.0)
+                    .color(theme::c().muted),
+            );
+            widgets::muted(ui, "Escolha um modelo na lista ou crie um novo.");
+            ui.add_space(theme::S1);
+            if ui
+                .add(widgets::primary(format!("{} Novo modelo", icon::PLUS)))
+                .clicked()
+            {
+                self.start_new(store);
+            }
+        });
+    }
+
+    /// Name, status, the actions on the template and the confirmations.
+    fn header(
         &mut self,
         ui: &mut egui::Ui,
         store: &mut Store,
@@ -853,93 +1039,243 @@ impl TemplatesPanel {
         action: &mut Option<TemplatesAction>,
     ) {
         let stored = self.stored().cloned();
-        if let Some(t) = &stored {
-            if let Some(v) = t.published_version() {
-                ui.label(format!(
+        let dirty = self.template_dirty();
+        let Some(edit) = self.edit.as_ref() else {
+            return;
+        };
+        let name = edit.name.clone();
+        let scope = edit.scope;
+        let draft_number = edit.versions.last().map(|v| v.version).unwrap_or(1);
+        let has_draft = stored.as_ref().is_some_and(|t| t.draft_version().is_some());
+        let archived = stored
+            .as_ref()
+            .is_some_and(|t| t.status == Status::Archived);
+        // A published template without a draft has nothing new to publish;
+        // the store would refuse, so say it up front.
+        let nothing_new = !dirty
+            && stored
+                .as_ref()
+                .is_some_and(|t| t.published_version().is_some() && t.draft_version().is_none());
+        let can_use = has_doc
+            && stored.as_ref().is_some_and(|t| {
+                t.status == Status::Published && t.published_version().is_some()
+            });
+
+        let mut do_dup = false;
+        let mut do_status: Option<Status> = None;
+        let mut do_delete = false;
+        egui::containers::Sides::new().shrink_left().wrap().show(
+            ui,
+            |ui| {
+                widgets::title(ui, if name.trim().is_empty() { "Novo modelo" } else { &name });
+            },
+            |ui| {
+                if stored.is_some() {
+                    if ui.add(widgets::danger("Excluir")).clicked() {
+                        do_delete = true;
+                    }
+                    ui.add_space(theme::S3);
+                    let (label, wanted) = if archived {
+                        ("Desarquivar", Status::Published)
+                    } else {
+                        ("Arquivar", Status::Archived)
+                    };
+                    if ui.add(widgets::quiet(label)).clicked() {
+                        do_status = Some(wanted);
+                    }
+                }
+                if ui
+                    .add_enabled(
+                        stored.is_some(),
+                        widgets::secondary(format!("{} Duplicar…", icon::COPY)),
+                    )
+                    .clicked()
+                {
+                    do_dup = true;
+                }
+            },
+        );
+        ui.add_space(theme::S1);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(theme::S2, theme::S1);
+            widgets::pill(ui, scope.label(), Tone::Neutral);
+            if let Some(t) = &stored {
+                widgets::pill(ui, t.status.label(), tone_of_status(t.status));
+            }
+            if has_draft {
+                widgets::pill(ui, format!("Rascunho: versão {draft_number}"), Tone::Warn);
+            }
+            if dirty {
+                widgets::pill(
+                    ui,
+                    format!("{} Alterações não salvas", icon::WARNING),
+                    Tone::Warn,
+                );
+            }
+        });
+        if let Some(v) = stored.as_ref().and_then(|t| t.published_version()) {
+            widgets::small_muted(
+                ui,
+                format!(
                     "Publicada: versão {} por {} em {}",
                     v.version,
                     v.author,
                     crate::labels::datetime(&v.created_at)
-                ));
-            }
+                ),
+            );
         }
-        let draft_number = self
-            .edit
-            .as_ref()
-            .and_then(|t| t.versions.last())
-            .map(|v| v.version)
-            .unwrap_or(1);
-        if stored.as_ref().is_some_and(|t| t.draft_version().is_some()) {
-            ui.label(format!("Rascunho: versão {draft_number}"));
-        }
-        if self.template_dirty() {
-            ui.colored_label(crate::theme::warning(), "● alterações não salvas");
-        }
+        ui.add_space(theme::S2);
+
+        let mut do_save = false;
+        let mut do_publish = false;
+        let mut do_discard = false;
+        let publish_primary = !dirty && !nothing_new;
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Salvar rascunho").clicked() {
-                self.save_template(store);
-            }
-            // A published template without a draft has nothing new to publish;
-            // the store would refuse, so say it up front.
-            let nothing_new = !self.template_dirty()
-                && stored.as_ref().is_some_and(|t| {
-                    t.published_version().is_some() && t.draft_version().is_none()
-                });
-            if ui
-                .add_enabled(
-                    !nothing_new,
-                    egui::Button::new(format!("Publicar versão {draft_number}")),
-                )
+            let save = if dirty {
+                widgets::primary("Salvar rascunho")
+            } else {
+                widgets::secondary("Salvar rascunho")
+            };
+            do_save = ui.add(save).clicked();
+            let publish_text = format!("Publicar versão {draft_number}");
+            let publish = if publish_primary {
+                widgets::primary(publish_text)
+            } else {
+                widgets::secondary(publish_text)
+            };
+            do_publish = ui
+                .add_enabled(!nothing_new, publish)
                 .on_disabled_hover_text(
                     "Não há alterações a publicar. Altere o modelo e salve o rascunho antes.",
                 )
-                .clicked()
-            {
-                self.publish_template(store);
-            }
-            if ui.button("Descartar alterações").clicked() {
-                if self.template_dirty() {
-                    self.confirm_discard_template = true;
-                } else {
-                    self.discard_template(store);
-                }
-            }
-            let can_use = has_doc
-                && stored.as_ref().is_some_and(|t| {
-                    t.status == Status::Published && t.published_version().is_some()
-                });
-            if can_use && ui.button("Usar este modelo na minuta").clicked() {
+                .clicked();
+            do_discard = ui.add(widgets::quiet("Descartar alterações")).clicked();
+            if can_use && ui.add(widgets::secondary("Usar este modelo na minuta")).clicked() {
                 if let Some(t) = &stored {
                     *action = Some(TemplatesAction::UseTemplate { uid: t.uid.clone() });
                 }
             }
         });
-        if self.confirm_discard_template {
-            ui.colored_label(
-                crate::theme::warning(),
-                "Descartar todas as alterações não salvas do modelo?",
-            );
-            ui.horizontal(|ui| {
-                if ui.button("Sim, descartar").clicked() {
-                    self.discard_template(store);
-                }
-                if ui.button("Cancelar").clicked() {
-                    self.confirm_discard_template = false;
-                }
-            });
-        }
-    }
 
-    fn discard_template(&mut self, store: &Store) {
-        self.confirm_discard_template = false;
-        match self.stored().cloned() {
-            Some(t) => self.reload_template(store, t),
-            None => {
-                self.edit = None;
-                self.base.clear();
+        if do_save {
+            self.save_template(store);
+        }
+        if do_publish {
+            self.publish_template(store);
+        }
+        if do_discard {
+            if self.template_dirty() {
+                self.confirm_discard_template = true;
+            } else {
+                self.discard_template(store);
             }
         }
-        self.notice("Alterações descartadas.", false);
+        if do_dup {
+            self.dup_name = stored.as_ref().map(|t| format!("Cópia de {}", t.name));
+        }
+        if let Some(status) = do_status {
+            if self.dirty() {
+                self.notice(
+                    "Salve ou descarte as alterações antes de arquivar ou desarquivar.",
+                    true,
+                );
+            } else {
+                self.set_status(store, status);
+            }
+        }
+        if do_delete {
+            self.confirm = Some(Confirm::Template);
+        }
+
+        if self.confirm_discard_template {
+            ui.add_space(theme::S2);
+            match confirm_line(
+                ui,
+                "Descartar todas as alterações não salvas do modelo?",
+                "Sim, descartar",
+                "Cancelar",
+            ) {
+                Some(true) => self.discard_template(store),
+                Some(false) => self.confirm_discard_template = false,
+                None => {}
+            }
+        }
+        if self.dup_name.is_some() {
+            ui.add_space(theme::S2);
+            let mut create = false;
+            let mut cancel = false;
+            let mut copy_name = String::new();
+            if let Some(name) = self.dup_name.as_mut() {
+                widgets::field_label(ui, "Nome da cópia");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(name)
+                            .hint_text("Nome da cópia")
+                            .desired_width(360.0),
+                    );
+                    create = ui.add(widgets::secondary("Criar cópia")).clicked();
+                    cancel = ui.add(widgets::quiet("Cancelar")).clicked();
+                });
+                copy_name = name.clone();
+            }
+            if create {
+                if self.dirty() {
+                    self.notice(
+                        "Salve ou descarte as alterações antes de trocar de modelo.",
+                        true,
+                    );
+                } else {
+                    let uid = self
+                        .edit
+                        .as_ref()
+                        .map(|t| t.uid.clone())
+                        .unwrap_or_default();
+                    match store.duplicate_template(&uid, copy_name.trim()) {
+                        Ok(copy) => {
+                            self.load_template(store, copy, false);
+                            self.stale = true;
+                            self.notice("Cópia criada como rascunho pessoal.", false);
+                        }
+                        Err(e) => self.notice(format!("{e:#}"), true),
+                    }
+                }
+                self.dup_name = None;
+            }
+            if cancel {
+                self.dup_name = None;
+            }
+        }
+        if self.confirm == Some(Confirm::Template) {
+            ui.add_space(theme::S2);
+            match confirm_line(
+                ui,
+                "Excluir este modelo de vez, com exemplos e versões?",
+                "Sim, excluir",
+                "Cancelar",
+            ) {
+                Some(true) => {
+                    let uid = self
+                        .edit
+                        .as_ref()
+                        .map(|t| t.uid.clone())
+                        .unwrap_or_default();
+                    match store.delete_template(&uid) {
+                        Ok(()) => {
+                            self.edit = None;
+                            self.base.clear();
+                            self.example_edit = None;
+                            self.close_example_files();
+                            self.stale = true;
+                            self.notice("Modelo excluído.", false);
+                        }
+                        Err(e) => self.notice(format!("{e:#}"), true),
+                    }
+                    self.confirm = None;
+                }
+                Some(false) => self.confirm = None,
+                None => {}
+            }
+        }
     }
 
     // -- tabs ---------------------------------------------------------------
@@ -949,10 +1285,12 @@ impl TemplatesPanel {
         let Some(v) = t.versions.last_mut() else {
             return;
         };
-        text_row(ui, "Nome", &mut t.name);
-        text_row(ui, "Finalidade", &mut t.purpose);
-        ui.horizontal(|ui| {
-            ui.label("Tipo de minuta");
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Dados do modelo");
+            ui.add_space(theme::S1);
+            text_field(ui, "Nome", &mut t.name);
+            text_field(ui, "Finalidade", &mut t.purpose);
+            widgets::field_label(ui, "Tipo de minuta");
             egui::ComboBox::from_id_salt("tpl_kind")
                 .selected_text(crate::labels::draft_kind(&t.kind))
                 .show_ui(ui, |ui| {
@@ -964,31 +1302,40 @@ impl TemplatesPanel {
                         );
                     }
                 });
-        });
-        multiline(
-            ui,
-            "Critérios de uso (quando usar este modelo)",
-            &mut t.usage_criteria,
-            3,
-        );
-        ui.horizontal(|ui| {
-            ui.label("Quem vê");
-            ui.radio_value(&mut t.scope, Scope::Personal, "Pessoal");
-            ui.radio_value(&mut t.scope, Scope::Shared, "Compartilhado com a equipe");
+            ui.add_space(theme::S2);
+            text_area(
+                ui,
+                "Critérios de uso (quando usar este modelo)",
+                &mut t.usage_criteria,
+                3,
+            );
+            widgets::field_label(ui, "Quem vê");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut t.scope, Scope::Personal, "Pessoal");
+                ui.radio_value(&mut t.scope, Scope::Shared, "Compartilhado com a equipe");
+            });
         });
 
-        ui.add_space(6.0);
-        ui.strong("Seções");
-        let mut pending: Option<(usize, Op)> = None;
-        let len = v.sections.len();
-        for (i, s) in v.sections.iter_mut().enumerate() {
-            ui.push_id(("section", i), |ui| {
-                ui.group(|ui| {
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Seções");
+            ui.add_space(theme::S1);
+            let mut pending: Option<(usize, Op)> = None;
+            let len = v.sections.len();
+            for (i, s) in v.sections.iter_mut().enumerate() {
+                if i > 0 {
+                    ui.separator();
+                }
+                ui.push_id(("section", i), |ui| {
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut s.title)
                                 .hint_text("Título da seção")
-                                .desired_width(260.0),
+                                .desired_width(
+                                    ui.available_width()
+                                        - OPS_WIDTH
+                                        - CHECK_WIDTH
+                                        - 2.0 * theme::S2,
+                                ),
                         );
                         ui.checkbox(&mut s.required, "Obrigatória");
                         if let Some(op) = list_ops(ui, i, len) {
@@ -1002,95 +1349,125 @@ impl TemplatesPanel {
                             .desired_width(f32::INFINITY),
                     );
                 });
-            });
-        }
-        if let Some((i, op)) = pending {
-            apply_op(&mut v.sections, i, op);
-        }
-        if ui.button("Adicionar seção").clicked() {
-            v.sections.push(Section::default());
-        }
-
-        ui.add_space(6.0);
-        ui.strong("Variáveis");
-        ui.small("Trechos como {{nome}} nas seções são preenchidos pela pessoa.");
-        let mut remove: Option<usize> = None;
-        for (i, var) in v.variables.iter_mut().enumerate() {
-            ui.push_id(("var", i), |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut var.name)
-                            .hint_text("nome")
-                            .desired_width(130.0),
-                    );
-                    ui.add(
-                        egui::TextEdit::singleline(&mut var.label)
-                            .hint_text("como aparece")
-                            .desired_width(220.0),
-                    );
-                    ui.checkbox(&mut var.required, "Obrigatória");
-                    if ui.small_button("Remover").clicked() {
-                        remove = Some(i);
-                    }
-                });
-            });
-        }
-        if let Some(i) = remove {
-            v.variables.remove(i);
-        }
-        ui.horizontal(|ui| {
-            if ui.button("Adicionar variável").clicked() {
-                v.variables.push(Variable::default());
             }
-            if ui.button("Detectar variáveis").clicked() {
-                let all: String = v
-                    .sections
-                    .iter()
-                    .map(|s| format!("{}\n{}\n", s.title, s.guidance))
-                    .collect();
-                for found in detect_variables(&all) {
-                    if !v.variables.iter().any(|x| x.name == found.name) {
-                        v.variables.push(found);
-                    }
-                }
+            if let Some((i, op)) = pending {
+                apply_op(&mut v.sections, i, op);
+            }
+            ui.add_space(theme::S1);
+            if ui
+                .add(widgets::secondary(format!("{} Adicionar seção", icon::PLUS)))
+                .clicked()
+            {
+                v.sections.push(Section::default());
             }
         });
 
-        ui.add_space(6.0);
-        ui.strong("Critérios de conferência");
-        ui.small("O que conferir antes de concluir a minuta.");
-        string_list(
-            ui,
-            "criteria",
-            &mut v.criteria,
-            "ex.: confirmar o prazo informado",
-            crate::work_templates::MAX_CRITERIA,
-        );
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Variáveis");
+            widgets::small_muted(
+                ui,
+                "Trechos como {{nome}} nas seções são preenchidos pela pessoa.",
+            );
+            ui.add_space(theme::S1);
+            let mut remove: Option<usize> = None;
+            for (i, var) in v.variables.iter_mut().enumerate() {
+                ui.push_id(("var", i), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut var.name)
+                                .hint_text("nome")
+                                .desired_width(150.0),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut var.label)
+                                .hint_text("como aparece")
+                                .desired_width(
+                                    ui.available_width() - CHECK_WIDTH - 30.0 - 2.0 * theme::S2,
+                                ),
+                        );
+                        ui.checkbox(&mut var.required, "Obrigatória");
+                        if widgets::icon_button(ui, icon::TRASH, "Remover").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                });
+            }
+            if let Some(i) = remove {
+                v.variables.remove(i);
+            }
+            ui.add_space(theme::S1);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(widgets::secondary(format!(
+                        "{} Adicionar variável",
+                        icon::PLUS
+                    )))
+                    .clicked()
+                {
+                    v.variables.push(Variable::default());
+                }
+                if ui.add(widgets::quiet("Detectar variáveis")).clicked() {
+                    let all: String = v
+                        .sections
+                        .iter()
+                        .map(|s| format!("{}\n{}\n", s.title, s.guidance))
+                        .collect();
+                    for found in detect_variables(&all) {
+                        if !v.variables.iter().any(|x| x.name == found.name) {
+                            v.variables.push(found);
+                        }
+                    }
+                }
+            });
+        });
 
-        ui.add_space(6.0);
-        text_row(ui, "Nota desta versão", &mut v.change_note);
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Critérios de conferência");
+            widgets::small_muted(ui, "O que conferir antes de concluir a minuta.");
+            ui.add_space(theme::S1);
+            string_list(
+                ui,
+                "criteria",
+                &mut v.criteria,
+                "ex.: confirmar o prazo informado",
+                crate::work_templates::MAX_CRITERIA,
+            );
+        });
+
+        widgets::card(ui, |ui| {
+            text_field(ui, "Nota desta versão", &mut v.change_note);
+        });
     }
 
     fn tab_references(&mut self, ui: &mut egui::Ui) {
         let Some(v) = self.edit.as_mut().and_then(|t| t.versions.last_mut()) else {
             return;
         };
-        ui.small("Referências são indicadas à pessoa; o Ponte não as consulta sozinho.");
-        let mut pending: Option<(usize, Op)> = None;
-        let len = v.references.len();
-        for (i, r) in v.references.iter_mut().enumerate() {
-            ui.push_id(("ref", i), |ui| {
-                ui.group(|ui| {
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Referências");
+            widgets::small_muted(
+                ui,
+                "Referências são indicadas à pessoa; o Ponte não as consulta sozinho.",
+            );
+            ui.add_space(theme::S1);
+            let mut pending: Option<(usize, Op)> = None;
+            let len = v.references.len();
+            for (i, r) in v.references.iter_mut().enumerate() {
+                if i > 0 {
+                    ui.separator();
+                }
+                ui.push_id(("ref", i), |ui| {
                     ui.horizontal(|ui| {
+                        let room = ui.available_width() - OPS_WIDTH - 2.0 * theme::S2;
                         ui.add(
                             egui::TextEdit::singleline(&mut r.label)
                                 .hint_text("Nome")
-                                .desired_width(240.0),
+                                .desired_width(room * 0.4),
                         );
                         ui.add(
                             egui::TextEdit::singleline(&mut r.locator)
                                 .hint_text("Onde encontrar (número, endereço, pasta)")
-                                .desired_width(300.0),
+                                .desired_width(room * 0.6),
                         );
                         if let Some(op) = list_ops(ui, i, len) {
                             pending = Some((i, op));
@@ -1102,83 +1479,149 @@ impl TemplatesPanel {
                             .desired_width(f32::INFINITY),
                     );
                 });
-            });
-        }
-        if let Some((i, op)) = pending {
-            apply_op(&mut v.references, i, op);
-        }
-        if v.references.len() < crate::work_templates::MAX_REFERENCES
-            && ui.button("Adicionar referência").clicked()
-        {
-            v.references.push(Reference::default());
-        }
+            }
+            if let Some((i, op)) = pending {
+                apply_op(&mut v.references, i, op);
+            }
+            if v.references.len() < crate::work_templates::MAX_REFERENCES {
+                ui.add_space(theme::S1);
+                if ui
+                    .add(widgets::secondary(format!(
+                        "{} Adicionar referência",
+                        icon::PLUS
+                    )))
+                    .clicked()
+                {
+                    v.references.push(Reference::default());
+                }
+            }
+        });
     }
 
     fn tab_blocks(&mut self, ui: &mut egui::Ui, store: &mut Store, member: &str) {
-        ui.columns(2, |cols| {
-            self.block_editor(&mut cols[0], store);
-            self.block_refs(&mut cols[1], member);
-        });
+        // The instruction being edited comes first: it was just picked from
+        // the library on the left.
+        if self.block_edit.is_some() {
+            self.block_editor(ui, store);
+            self.block_refs(ui, member);
+        } else {
+            self.block_refs(ui, member);
+            self.block_editor(ui, store);
+        }
     }
 
     fn block_editor(&mut self, ui: &mut egui::Ui, store: &mut Store) {
-        ui.strong("Instrução da biblioteca");
         let dirty = self.block_dirty();
-        let Some(b) = self.block_edit.as_mut() else {
-            ui.label("Escolha uma instrução na lista à esquerda ou crie uma nova.");
-            return;
-        };
-        let stored_status = if b.uid.is_empty() {
-            None
-        } else {
-            Some(b.status)
-        };
-        let draft_number = b.versions.last().map(|v| v.version).unwrap_or(1);
-        text_row(ui, "Nome", &mut b.name);
-        text_row(ui, "Tema", &mut b.topic);
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut b.scope, Scope::Personal, "Pessoal");
-            ui.radio_value(&mut b.scope, Scope::Shared, "Compartilhada");
-        });
-        if let Some(v) = b.versions.last_mut() {
-            multiline(ui, "Texto da instrução", &mut v.text, 8);
-            text_row(ui, "Nota desta versão", &mut v.change_note);
-        }
-        if dirty {
-            ui.colored_label(crate::theme::warning(), "● alterações não salvas");
-        }
+        let confirm_discard = self.confirm_discard_block;
+        let confirm_delete = self.confirm == Some(Confirm::Block);
         let mut do_save = false;
         let mut do_publish = false;
         let mut do_status: Option<Status> = None;
         let mut do_delete = false;
         let mut do_discard = false;
-        ui.horizontal_wrapped(|ui| {
-            do_save = ui.button("Salvar rascunho da instrução").clicked();
-            do_publish = ui
-                .button(format!("Publicar versão {draft_number}"))
-                .clicked();
-            do_discard = ui.button("Descartar").clicked();
-            match stored_status {
-                Some(Status::Archived) => {
-                    do_status = ui
-                        .button("Desarquivar")
-                        .clicked()
-                        .then_some(Status::Published)
+        let mut discard_answer: Option<bool> = None;
+        let mut delete_answer: Option<bool> = None;
+        let mut has_block = true;
+        widgets::card(ui, |ui| {
+            let Some(b) = self.block_edit.as_mut() else {
+                has_block = false;
+                widgets::section(ui, "Instrução da biblioteca");
+                widgets::muted(
+                    ui,
+                    "Escolha uma instrução na lista à esquerda ou crie uma nova.",
+                );
+                return;
+            };
+            let stored_status = if b.uid.is_empty() {
+                None
+            } else {
+                Some(b.status)
+            };
+            let draft_number = b.versions.last().map(|v| v.version).unwrap_or(1);
+            ui.horizontal(|ui| {
+                widgets::section(ui, "Instrução da biblioteca");
+                if dirty {
+                    widgets::pill(
+                        ui,
+                        format!("{} Alterações não salvas", icon::WARNING),
+                        Tone::Warn,
+                    );
                 }
-                Some(_) => do_status = ui.button("Arquivar").clicked().then_some(Status::Archived),
-                None => {}
+            });
+            ui.add_space(theme::S1);
+            text_field(ui, "Nome", &mut b.name);
+            text_field(ui, "Tema", &mut b.topic);
+            widgets::field_label(ui, "Quem vê");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut b.scope, Scope::Personal, "Pessoal");
+                ui.radio_value(&mut b.scope, Scope::Shared, "Compartilhada");
+            });
+            ui.add_space(theme::S2);
+            if let Some(v) = b.versions.last_mut() {
+                text_area(ui, "Texto da instrução", &mut v.text, 8);
+                text_field(ui, "Nota desta versão", &mut v.change_note);
             }
-            if do_status.is_some() && self.dirty() {
-                do_status = None;
-                self.notice(
-                    "Salve ou descarte as alterações antes de arquivar ou desarquivar.",
-                    true,
+            egui::containers::Sides::new().shrink_left().wrap().show(
+                ui,
+                |ui| {
+                    do_save = ui
+                        .add(widgets::secondary("Salvar rascunho da instrução"))
+                        .clicked();
+                    do_publish = ui
+                        .add(widgets::secondary(format!("Publicar versão {draft_number}")))
+                        .clicked();
+                    do_discard = ui.add(widgets::quiet("Descartar")).clicked();
+                    match stored_status {
+                        Some(Status::Archived) => {
+                            do_status = ui
+                                .add(widgets::quiet("Desarquivar"))
+                                .clicked()
+                                .then_some(Status::Published)
+                        }
+                        Some(_) => {
+                            do_status = ui
+                                .add(widgets::quiet("Arquivar"))
+                                .clicked()
+                                .then_some(Status::Archived)
+                        }
+                        None => {}
+                    }
+                },
+                |ui| {
+                    if stored_status.is_some() && ui.add(widgets::danger("Excluir")).clicked() {
+                        do_delete = true;
+                    }
+                },
+            );
+            if confirm_discard {
+                ui.add_space(theme::S2);
+                discard_answer = confirm_line(
+                    ui,
+                    "Descartar as alterações não salvas desta instrução?",
+                    "Sim, descartar",
+                    "Cancelar",
                 );
             }
-            if stored_status.is_some() && ui.button("Excluir").clicked() {
-                do_delete = true;
+            if confirm_delete {
+                ui.add_space(theme::S2);
+                delete_answer = confirm_line(
+                    ui,
+                    "Excluir esta instrução de vez?",
+                    "Sim, excluir",
+                    "Cancelar",
+                );
             }
         });
+        if !has_block {
+            return;
+        }
+        if do_status.is_some() && self.dirty() {
+            do_status = None;
+            self.notice(
+                "Salve ou descarte as alterações antes de arquivar ou desarquivar.",
+                true,
+            );
+        }
         if do_save {
             self.save_block(store);
         }
@@ -1198,46 +1641,388 @@ impl TemplatesPanel {
                 self.discard_block(store);
             }
         }
-        if self.confirm_discard_block {
-            ui.colored_label(
-                crate::theme::warning(),
-                "Descartar as alterações não salvas desta instrução?",
-            );
-            ui.horizontal(|ui| {
-                if ui.button("Sim, descartar").clicked() {
-                    self.discard_block(store);
+        match discard_answer {
+            Some(true) => self.discard_block(store),
+            Some(false) => self.confirm_discard_block = false,
+            None => {}
+        }
+        match delete_answer {
+            Some(true) => {
+                let uid = self
+                    .block_edit
+                    .as_ref()
+                    .map(|b| b.uid.clone())
+                    .unwrap_or_default();
+                match store.delete_block(&uid) {
+                    Ok(()) => {
+                        self.block_edit = None;
+                        self.block_base.clear();
+                        self.stale = true;
+                        self.notice("Instrução excluída.", false);
+                    }
+                    Err(e) => self.notice(format!("{e:#}"), true),
                 }
-                if ui.button("Cancelar").clicked() {
-                    self.confirm_discard_block = false;
+                self.confirm = None;
+            }
+            Some(false) => self.confirm = None,
+            None => {}
+        }
+    }
+
+    fn block_refs(&mut self, ui: &mut egui::Ui, member: &str) {
+        let blocks = &self.blocks;
+        let Some(v) = self.edit.as_mut().and_then(|t| t.versions.last_mut()) else {
+            return;
+        };
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Instruções deste modelo");
+            widgets::small_muted(
+                ui,
+                "As alterações valem no rascunho do modelo; use \"Salvar rascunho\" no alto, \
+                 não o botão da instrução.",
+            );
+            ui.add_space(theme::S1);
+            let mut pending: Option<(usize, Op)> = None;
+            let len = v.block_refs.len();
+            for (i, r) in v.block_refs.iter_mut().enumerate() {
+                if i > 0 {
+                    ui.separator();
+                }
+                let name = blocks
+                    .iter()
+                    .find(|b| b.uid == r.block_uid)
+                    .map(|b| b.name.as_str())
+                    .unwrap_or("(instrução removida)");
+                ui.push_id(("bref", i), |ui| {
+                    let version = match r.version {
+                        Some(n) => format!("v{n}"),
+                        None => "versão publicada atual".to_owned(),
+                    };
+                    egui::containers::Sides::new().shrink_left().truncate().show(
+                        ui,
+                        |ui| {
+                            ui.label(
+                                RichText::new(name).font(theme::font_strong(theme::SIZE_BODY)),
+                            );
+                            widgets::small_muted(ui, version);
+                        },
+                        |ui| {
+                            if let Some(op) = list_ops(ui, i, len) {
+                                pending = Some((i, op));
+                            }
+                        },
+                    );
+                    let mut kind = match r.mode {
+                        BlockMode::Mandatory => 0,
+                        BlockMode::Optional => 1,
+                        BlockMode::Conditional { .. } => 2,
+                    };
+                    let before = kind;
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt(("bmode", i))
+                            .selected_text(r.mode.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut kind, 0, "Obrigatória");
+                                ui.selectable_value(&mut kind, 1, "Opcional");
+                                ui.selectable_value(&mut kind, 2, "Condicional");
+                            });
+                        if kind != before {
+                            r.mode = match kind {
+                                0 => BlockMode::Mandatory,
+                                1 => BlockMode::Optional,
+                                _ => BlockMode::Conditional {
+                                    condition: String::new(),
+                                },
+                            };
+                        }
+                        if let BlockMode::Conditional { condition } = &mut r.mode {
+                            ui.add(
+                                egui::TextEdit::singleline(condition)
+                                    .hint_text("Condição (quando usar)")
+                                    .desired_width(f32::INFINITY),
+                            );
+                        }
+                    });
+                });
+            }
+            if let Some((i, op)) = pending {
+                apply_op(&mut v.block_refs, i, op);
+            }
+            let available: Vec<&InstructionBlock> = blocks
+                .iter()
+                .filter(|b| {
+                    b.status == Status::Published
+                        && b.published_version().is_some()
+                        && b.visible_to(member)
+                        && !v.block_refs.iter().any(|r| r.block_uid == b.uid)
+                })
+                .collect();
+            ui.add_space(theme::S1);
+            if v.block_refs.len() >= MAX_BLOCKS_PER_TEMPLATE {
+                widgets::small_muted(
+                    ui,
+                    format!("Máximo de {MAX_BLOCKS_PER_TEMPLATE} instruções por modelo."),
+                );
+            } else {
+                let mut add: Option<String> = None;
+                egui::ComboBox::from_id_salt("bref_add")
+                    .selected_text(format!("{} Adicionar instrução ao modelo", icon::PLUS))
+                    .show_ui(ui, |ui| {
+                        for b in &available {
+                            if ui.selectable_label(false, &b.name).clicked() {
+                                add = Some(b.uid.clone());
+                            }
+                        }
+                        if available.is_empty() {
+                            ui.label("Nenhuma instrução publicada disponível.");
+                        }
+                    });
+                if let Some(uid) = add {
+                    v.block_refs.push(BlockRef {
+                        block_uid: uid,
+                        version: None,
+                        mode: BlockMode::Mandatory,
+                    });
+                }
+            }
+        });
+    }
+
+    fn tab_examples(&mut self, ui: &mut egui::Ui, store: &mut Store) {
+        let Some(uid) = self.stored().map(|t| t.uid.clone()) else {
+            widgets::card(ui, |ui| {
+                widgets::muted(ui, "Salve o rascunho do modelo para cadastrar exemplos.");
+            });
+            return;
+        };
+        let examples = match store.examples_of(&uid) {
+            Ok(list) => list,
+            Err(e) => {
+                widgets::card(ui, |ui| {
+                    let (fg, bg) = Tone::Danger.colors();
+                    widgets::pill_colored(ui, format!("{e:#}"), fg, bg);
+                });
+                return;
+            }
+        };
+        let mut pick: Option<Example> = None;
+        let mut new_example = false;
+        let selected = self.example_edit.as_ref().map(|e| e.uid.clone());
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Exemplos do modelo");
+            widgets::small_muted(
+                ui,
+                "Só exemplos aprovados são mostrados à IA; os fatos deles nunca valem para o caso.",
+            );
+            ui.add_space(theme::S1);
+            if examples.is_empty() {
+                widgets::muted(ui, "Nenhum exemplo cadastrado.");
+            }
+            for (i, e) in examples.iter().enumerate() {
+                let is_sel = selected.as_deref() == Some(e.uid.as_str());
+                let response = pick_row(ui, ("ex", i), is_sel, 8, |ui| {
+                    egui::containers::Sides::new().shrink_left().truncate().show(
+                        ui,
+                        |ui| row_name(ui, &e.title, is_sel),
+                        |ui| pill_for_example(ui, e.status),
+                    );
+                });
+                if response.clicked() && !is_sel {
+                    pick = Some(e.clone());
+                }
+            }
+            ui.add_space(theme::S2);
+            if ui
+                .add(widgets::secondary(format!("{} Novo exemplo", icon::PLUS)))
+                .clicked()
+            {
+                new_example = true;
+            }
+        });
+        if let Some(e) = pick {
+            if self.example_area_dirty() {
+                self.notice(
+                    "Salve ou descarte as alterações do exemplo (ou dos seus arquivos) antes de trocar.",
+                    true,
+                );
+            } else {
+                self.close_example_files();
+                self.example_version_seen = expected(store, "example", &e.uid);
+                self.example_base = json(&e);
+                self.example_edit = Some(e);
+                self.confirm_discard_example = false;
+                self.confirm = None;
+            }
+        }
+        if new_example {
+            if self.example_area_dirty() {
+                self.notice(
+                    "Salve ou descarte as alterações do exemplo (ou dos seus arquivos) antes de trocar.",
+                    true,
+                );
+            } else {
+                self.close_example_files();
+                let fresh = Example {
+                    template_uid: uid.clone(),
+                    ..Default::default()
+                };
+                // Same as "Nova instrução": the empty form is the baseline, so
+                // it only counts as changed once something is typed.
+                self.example_base = json(&fresh);
+                self.example_edit = Some(fresh);
+                self.example_version_seen = None;
+                self.confirm_discard_example = false;
+            }
+        }
+        let dirty = self.example_dirty();
+        if self.example_edit.is_none() {
+            return;
+        }
+        let confirm_discard = self.confirm_discard_example;
+        let confirm_delete = self.confirm == Some(Confirm::Example);
+        let (mut save, mut approve, mut reject, mut delete) = (false, false, false, false);
+        let mut discard = false;
+        let mut discard_answer: Option<bool> = None;
+        let mut delete_answer: Option<bool> = None;
+        widgets::card(ui, |ui| {
+            let Some(e) = self.example_edit.as_mut() else {
+                return;
+            };
+            let is_new = e.uid.is_empty();
+            ui.horizontal(|ui| {
+                widgets::section(ui, "Exemplo");
+                if dirty {
+                    widgets::pill(
+                        ui,
+                        format!("{} Alterações não salvas", icon::WARNING),
+                        Tone::Warn,
+                    );
                 }
             });
-        }
-        if self.confirm == Some(Confirm::Block) {
-            ui.colored_label(crate::theme::warning(), "Excluir esta instrução de vez?");
-            ui.horizontal(|ui| {
-                if ui.button("Sim, excluir").clicked() {
-                    let uid = self
-                        .block_edit
-                        .as_ref()
-                        .map(|b| b.uid.clone())
-                        .unwrap_or_default();
-                    match store.delete_block(&uid) {
-                        Ok(()) => {
-                            self.block_edit = None;
-                            self.block_base.clear();
-                            self.stale = true;
-                            self.notice("Instrução excluída.", false);
-                        }
-                        Err(e) => self.notice(format!("{e:#}"), true),
+            ui.add_space(theme::S1);
+            text_field(ui, "Título", &mut e.title);
+            text_area(ui, "Demanda", &mut e.demand, 4);
+            text_area(ui, "Resposta revisada", &mut e.reply, 8);
+            text_area(ui, "Explicação das escolhas", &mut e.explanation, 3);
+            widgets::field_label(ui, "Comentários");
+            string_list(
+                ui,
+                "ex_comments",
+                &mut e.comments,
+                "ex.: aproveitar a organização das seções; não reutilizar fatos nem fundamentação",
+                10,
+            );
+            ui.add_space(theme::S2);
+            widgets::field_label(ui, "Origem");
+            ui.add(
+                egui::TextEdit::singleline(&mut e.origin)
+                    .hint_text("ex.: ofício de 2024, anonimizado")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(theme::S2);
+            egui::containers::Sides::new().shrink_left().wrap().show(
+                ui,
+                |ui| {
+                    save = ui.add(widgets::secondary("Salvar exemplo")).clicked();
+                    approve = ui.add(widgets::secondary("Aprovar")).clicked();
+                    reject = ui.add(widgets::quiet("Rejeitar")).clicked();
+                    discard = ui.add(widgets::quiet("Descartar")).clicked();
+                },
+                |ui| {
+                    if !is_new {
+                        delete = ui.add(widgets::danger("Excluir")).clicked();
                     }
-                    self.confirm = None;
+                },
+            );
+            if confirm_discard {
+                ui.add_space(theme::S2);
+                discard_answer = confirm_line(
+                    ui,
+                    "Descartar as alterações não salvas deste exemplo?",
+                    "Sim, descartar",
+                    "Cancelar",
+                );
+            }
+            if confirm_delete {
+                ui.add_space(theme::S2);
+                delete_answer = confirm_line(
+                    ui,
+                    "Excluir este exemplo de vez?",
+                    "Sim, excluir",
+                    "Cancelar",
+                );
+            }
+        });
+        if save {
+            self.save_example(store, None);
+        } else if approve {
+            self.save_example(store, Some(ExampleStatus::Approved));
+        } else if reject {
+            self.save_example(store, Some(ExampleStatus::Rejected));
+        }
+        if discard {
+            if dirty {
+                self.confirm_discard_example = true;
+            } else {
+                self.discard_example(store);
+            }
+        }
+        match discard_answer {
+            Some(true) => self.discard_example(store),
+            Some(false) => self.confirm_discard_example = false,
+            None => {}
+        }
+        if delete {
+            self.confirm = Some(Confirm::Example);
+        }
+        match delete_answer {
+            Some(true) => {
+                let uid = self
+                    .example_edit
+                    .as_ref()
+                    .map(|e| e.uid.clone())
+                    .unwrap_or_default();
+                match store.delete_example(&uid) {
+                    Ok(()) => {
+                        self.example_edit = None;
+                        self.example_base.clear();
+                        self.close_example_files();
+                        self.stale = true;
+                        self.notice("Exemplo excluído.", false);
+                    }
+                    Err(e) => self.notice(format!("{e:#}"), true),
                 }
-                if ui.button("Cancelar").clicked() {
-                    self.confirm = None;
-                }
+                self.confirm = None;
+            }
+            Some(false) => self.confirm = None,
+            None => {}
+        }
+        let example_id = self
+            .example_edit
+            .as_ref()
+            .filter(|e| !e.uid.is_empty())
+            .map(|e| e.id)
+            .filter(|id| *id > 0);
+        if let Some(example_id) = example_id {
+            widgets::card_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                self.example_files_section(ui, store, example_id);
             });
         }
     }
+
+    fn discard_template(&mut self, store: &Store) {
+        self.confirm_discard_template = false;
+        match self.stored().cloned() {
+            Some(t) => self.reload_template(store, t),
+            None => {
+                self.edit = None;
+                self.base.clear();
+            }
+        }
+        self.notice("Alterações descartadas.", false);
+    }
+
 
     /// Goes back to the stored instruction; a new, never-saved one is closed.
     fn discard_block(&mut self, store: &Store) {
@@ -1258,105 +2043,6 @@ impl TemplatesPanel {
         self.notice("Alterações da instrução descartadas.", false);
     }
 
-    fn block_refs(&mut self, ui: &mut egui::Ui, member: &str) {
-        ui.strong("Instruções deste modelo");
-        ui.small(
-            "As alterações valem no rascunho do modelo; use \"Salvar rascunho\" no alto, \
-             não o botão da instrução.",
-        );
-        let blocks = &self.blocks;
-        let Some(v) = self.edit.as_mut().and_then(|t| t.versions.last_mut()) else {
-            return;
-        };
-        let mut pending: Option<(usize, Op)> = None;
-        let len = v.block_refs.len();
-        for (i, r) in v.block_refs.iter_mut().enumerate() {
-            let name = blocks
-                .iter()
-                .find(|b| b.uid == r.block_uid)
-                .map(|b| b.name.as_str())
-                .unwrap_or("(instrução removida)");
-            ui.push_id(("bref", i), |ui| {
-                ui.group(|ui| {
-                    ui.label(RichText::new(name).strong());
-                    ui.small(match r.version {
-                        Some(n) => format!("v{n}"),
-                        None => "versão publicada atual".to_owned(),
-                    });
-                    let mut kind = match r.mode {
-                        BlockMode::Mandatory => 0,
-                        BlockMode::Optional => 1,
-                        BlockMode::Conditional { .. } => 2,
-                    };
-                    let before = kind;
-                    egui::ComboBox::from_id_salt(("bmode", i))
-                        .selected_text(r.mode.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut kind, 0, "Obrigatória");
-                            ui.selectable_value(&mut kind, 1, "Opcional");
-                            ui.selectable_value(&mut kind, 2, "Condicional");
-                        });
-                    if kind != before {
-                        r.mode = match kind {
-                            0 => BlockMode::Mandatory,
-                            1 => BlockMode::Optional,
-                            _ => BlockMode::Conditional {
-                                condition: String::new(),
-                            },
-                        };
-                    }
-                    if let BlockMode::Conditional { condition } = &mut r.mode {
-                        ui.add(
-                            egui::TextEdit::singleline(condition)
-                                .hint_text("Condição (quando usar)")
-                                .desired_width(f32::INFINITY),
-                        );
-                    }
-                    if let Some(op) = list_ops(ui, i, len) {
-                        pending = Some((i, op));
-                    }
-                });
-            });
-        }
-        if let Some((i, op)) = pending {
-            apply_op(&mut v.block_refs, i, op);
-        }
-        let available: Vec<&InstructionBlock> = blocks
-            .iter()
-            .filter(|b| {
-                b.status == Status::Published
-                    && b.published_version().is_some()
-                    && b.visible_to(member)
-                    && !v.block_refs.iter().any(|r| r.block_uid == b.uid)
-            })
-            .collect();
-        if v.block_refs.len() >= MAX_BLOCKS_PER_TEMPLATE {
-            ui.small(format!(
-                "Máximo de {MAX_BLOCKS_PER_TEMPLATE} instruções por modelo."
-            ));
-        } else {
-            let mut add: Option<String> = None;
-            egui::ComboBox::from_id_salt("bref_add")
-                .selected_text("Adicionar instrução ao modelo")
-                .show_ui(ui, |ui| {
-                    for b in &available {
-                        if ui.selectable_label(false, &b.name).clicked() {
-                            add = Some(b.uid.clone());
-                        }
-                    }
-                    if available.is_empty() {
-                        ui.label("Nenhuma instrução publicada disponível.");
-                    }
-                });
-            if let Some(uid) = add {
-                v.block_refs.push(BlockRef {
-                    block_uid: uid,
-                    version: None,
-                    mode: BlockMode::Mandatory,
-                });
-            }
-        }
-    }
 
     /// Goes back to the stored example; a new, never-saved one is closed.
     fn discard_example(&mut self, store: &Store) {
@@ -1389,176 +2075,7 @@ impl TemplatesPanel {
         self.notice("Alterações do exemplo descartadas.", false);
     }
 
-    fn tab_examples(&mut self, ui: &mut egui::Ui, store: &mut Store) {
-        let Some(uid) = self.stored().map(|t| t.uid.clone()) else {
-            ui.label("Salve o rascunho do modelo para cadastrar exemplos.");
-            return;
-        };
-        ui.small(
-            "Só exemplos aprovados são mostrados à IA; os fatos deles nunca valem para o caso.",
-        );
-        let examples = match store.examples_of(&uid) {
-            Ok(list) => list,
-            Err(e) => {
-                ui.colored_label(crate::theme::error(), format!("{e:#}"));
-                return;
-            }
-        };
-        let mut pick: Option<Example> = None;
-        let selected = self.example_edit.as_ref().map(|e| e.uid.clone());
-        for e in &examples {
-            ui.horizontal(|ui| {
-                let is_sel = selected.as_deref() == Some(e.uid.as_str());
-                if ui.selectable_label(is_sel, &e.title).clicked() && !is_sel {
-                    pick = Some(e.clone());
-                }
-                let color = if e.status == ExampleStatus::Unverified {
-                    crate::theme::warning()
-                } else {
-                    ui.visuals().weak_text_color()
-                };
-                ui.colored_label(color, e.status.label());
-            });
-        }
-        if let Some(e) = pick {
-            if self.example_area_dirty() {
-                self.notice(
-                    "Salve ou descarte as alterações do exemplo (ou dos seus arquivos) antes de trocar.",
-                    true,
-                );
-            } else {
-                self.close_example_files();
-                self.example_version_seen = expected(store, "example", &e.uid);
-                self.example_base = json(&e);
-                self.example_edit = Some(e);
-                self.confirm_discard_example = false;
-                self.confirm = None;
-            }
-        }
-        if ui.button("Novo exemplo").clicked() {
-            if self.example_area_dirty() {
-                self.notice(
-                    "Salve ou descarte as alterações do exemplo (ou dos seus arquivos) antes de trocar.",
-                    true,
-                );
-            } else {
-                self.close_example_files();
-                let fresh = Example {
-                    template_uid: uid.clone(),
-                    ..Default::default()
-                };
-                // Same as "Nova instrução": the empty form is the baseline, so
-                // it only counts as changed once something is typed.
-                self.example_base = json(&fresh);
-                self.example_edit = Some(fresh);
-                self.example_version_seen = None;
-                self.confirm_discard_example = false;
-            }
-        }
-        ui.separator();
-        let dirty = self.example_dirty();
-        let Some(e) = self.example_edit.as_mut() else {
-            return;
-        };
-        let is_new = e.uid.is_empty();
-        text_row(ui, "Título", &mut e.title);
-        multiline(ui, "Demanda", &mut e.demand, 4);
-        multiline(ui, "Resposta revisada", &mut e.reply, 8);
-        multiline(ui, "Explicação das escolhas", &mut e.explanation, 3);
-        ui.label("Comentários");
-        string_list(
-            ui,
-            "ex_comments",
-            &mut e.comments,
-            "ex.: aproveitar a organização das seções; não reutilizar fatos nem fundamentação",
-            10,
-        );
-        ui.label("Origem");
-        ui.add(
-            egui::TextEdit::singleline(&mut e.origin)
-                .hint_text("ex.: ofício de 2024, anonimizado")
-                .desired_width(f32::INFINITY),
-        );
-        if dirty {
-            ui.colored_label(crate::theme::warning(), "● alterações não salvas");
-        }
-        let (mut save, mut approve, mut reject, mut delete) = (false, false, false, false);
-        let mut discard = false;
-        ui.horizontal_wrapped(|ui| {
-            save = ui.button("Salvar exemplo").clicked();
-            approve = ui.button("Aprovar").clicked();
-            reject = ui.button("Rejeitar").clicked();
-            discard = ui.button("Descartar").clicked();
-            if !is_new {
-                delete = ui.button("Excluir").clicked();
-            }
-        });
-        if save {
-            self.save_example(store, None);
-        } else if approve {
-            self.save_example(store, Some(ExampleStatus::Approved));
-        } else if reject {
-            self.save_example(store, Some(ExampleStatus::Rejected));
-        }
-        if discard {
-            if dirty {
-                self.confirm_discard_example = true;
-            } else {
-                self.discard_example(store);
-            }
-        }
-        if self.confirm_discard_example {
-            ui.colored_label(crate::theme::warning(), "Descartar as alterações não salvas deste exemplo?");
-            ui.horizontal(|ui| {
-                if ui.button("Sim, descartar").clicked() {
-                    self.discard_example(store);
-                }
-                if ui.button("Cancelar").clicked() {
-                    self.confirm_discard_example = false;
-                }
-            });
-        }
-        if delete {
-            self.confirm = Some(Confirm::Example);
-        }
-        if self.confirm == Some(Confirm::Example) {
-            ui.colored_label(crate::theme::warning(), "Excluir este exemplo de vez?");
-            ui.horizontal(|ui| {
-                if ui.button("Sim, excluir").clicked() {
-                    let uid = self
-                        .example_edit
-                        .as_ref()
-                        .map(|e| e.uid.clone())
-                        .unwrap_or_default();
-                    match store.delete_example(&uid) {
-                        Ok(()) => {
-                            self.example_edit = None;
-                            self.example_base.clear();
-                            self.close_example_files();
-                            self.stale = true;
-                            self.notice("Exemplo excluído.", false);
-                        }
-                        Err(e) => self.notice(format!("{e:#}"), true),
-                    }
-                    self.confirm = None;
-                }
-                if ui.button("Cancelar").clicked() {
-                    self.confirm = None;
-                }
-            });
-        }
-        let example_id = self
-            .example_edit
-            .as_ref()
-            .filter(|e| !e.uid.is_empty())
-            .map(|e| e.id)
-            .filter(|id| *id > 0);
-        if let Some(example_id) = example_id {
-            self.example_files_section(ui, store, example_id);
-        }
-    }
 
-    /// Files attached to a saved example, with the state of their text.
     /// Edits in the example's own fields or in its files (descriptions, a
     /// text being reviewed).
     fn example_area_dirty(&self) -> bool {
@@ -1578,12 +2095,14 @@ impl TemplatesPanel {
         self.pdf_request.take()
     }
 
+
     fn example_files_section(&mut self, ui: &mut egui::Ui, store: &mut Store, example_id: i64) {
-        ui.separator();
-        ui.strong("Arquivos do exemplo");
-        ui.small(
+        widgets::section(ui, "Arquivos do exemplo");
+        widgets::small_muted(
+            ui,
             "Os arquivos mostram à IA a forma de uma resposta real. Só o texto extraído ou conferido de um exemplo aprovado é enviado; os fatos dos arquivos nunca valem para o caso. PDF com texto, .txt e .docx têm extração; PDF digitalizado precisa de OCR, que esta versão não faz para exemplos.",
         );
+        ui.add_space(theme::S2);
         self.attachments.show(
             ui,
             store,
@@ -1596,7 +2115,8 @@ impl TemplatesPanel {
         let metas = match store.list_attachments(crate::attachments::Owner::Example(example_id)) {
             Ok(m) => m,
             Err(e) => {
-                ui.colored_label(crate::theme::error(), format!("{e:#}"));
+                let (fg, bg) = Tone::Danger.colors();
+                widgets::pill_colored(ui, format!("{e:#}"), fg, bg);
                 return;
             }
         };
@@ -1623,28 +2143,29 @@ impl TemplatesPanel {
         let mut extract: Option<(i64, String)> = None;
         let mut open_review: Option<(i64, String)> = None;
         for (meta, record) in metas.iter().zip(records.iter()) {
+            ui.separator();
             ui.horizontal_wrapped(|ui| {
-                ui.label(&meta.name);
+                ui.label(RichText::new(&meta.name).font(theme::font_strong(theme::SIZE_BODY)));
                 match &record {
                     None => {
-                        ui.colored_label(crate::theme::warning(), "Texto ainda não extraído");
+                        widgets::pill(ui, "Texto ainda não extraído", Tone::Warn);
                     }
                     Some(t) if !t.current_for(&meta.sha256) => {
-                        ui.colored_label(crate::theme::warning(), "Texto desatualizado (extraia de novo)");
+                        widgets::pill(ui, "Texto desatualizado (extraia de novo)", Tone::Warn);
                     }
                     Some(t) => {
                         use crate::extraction::TextStatus;
                         let warn = matches!(t.status, TextStatus::Empty | TextStatus::Failed);
-                        if warn {
-                            ui.colored_label(crate::theme::warning(), t.status.label());
-                        } else {
-                            ui.label(t.status.label());
-                        }
+                        widgets::pill(
+                            ui,
+                            t.status.label(),
+                            if warn { Tone::Warn } else { Tone::Neutral },
+                        );
                         if t.status == TextStatus::Reviewed && !t.reviewed_by.is_empty() {
-                            ui.small(format!("por {}", t.reviewed_by));
+                            widgets::small_muted(ui, format!("por {}", t.reviewed_by));
                         }
                         if !t.note.is_empty() {
-                            ui.small(&t.note);
+                            widgets::small_muted(ui, &t.note);
                         }
                     }
                 }
@@ -1654,22 +2175,22 @@ impl TemplatesPanel {
                 if reviewed {
                     // A person's correction is not thrown away by one click.
                     if self.confirm_reextract == Some(meta.id) {
-                        ui.small("Substitui o texto conferido.");
-                        if ui.small_button("Confirmar").clicked() {
+                        widgets::small_muted(ui, "Substitui o texto conferido.");
+                        if ui.add(widgets::danger("Confirmar")).clicked() {
                             extract = Some((meta.id, meta.name.clone()));
                         }
-                        if ui.small_button("Cancelar").clicked() {
+                        if ui.add(widgets::secondary("Cancelar")).clicked() {
                             self.confirm_reextract = None;
                         }
-                    } else if ui.small_button("Extrair de novo…").clicked() {
+                    } else if ui.add(widgets::quiet("Extrair de novo…")).clicked() {
                         self.confirm_reextract = Some(meta.id);
                     }
-                } else if ui.small_button("Extrair texto").clicked() {
+                } else if ui.add(widgets::secondary("Extrair texto")).clicked() {
                     extract = Some((meta.id, meta.name.clone()));
                 }
                 if let Some(t) = record {
                     if (t.status.usable() || t.status == crate::extraction::TextStatus::Empty)
-                        && ui.small_button("Conferir texto…").clicked()
+                        && ui.add(widgets::quiet("Conferir texto…")).clicked()
                     {
                         open_review = Some((meta.id, t.text.clone()));
                     }
@@ -1703,6 +2224,7 @@ impl TemplatesPanel {
         let mut review: Option<(i64, String)> = None;
         if let Some((id, text)) = self.file_review.as_mut() {
             if metas.iter().any(|m| m.id == *id) {
+                ui.add_space(theme::S2);
                 egui::ScrollArea::vertical()
                     .max_height(240.0)
                     .show(ui, |ui| {
@@ -1713,10 +2235,10 @@ impl TemplatesPanel {
                         );
                     });
                 ui.horizontal(|ui| {
-                    if ui.button("Marcar como conferido").clicked() {
+                    if ui.add(widgets::secondary("Marcar como conferido")).clicked() {
                         review = Some((*id, text.clone()));
                     }
-                    if ui.button("Cancelar").clicked() {
+                    if ui.add(widgets::quiet("Cancelar")).clicked() {
                         done = true;
                     }
                 });
@@ -1741,11 +2263,15 @@ impl TemplatesPanel {
 
     fn tab_test(&mut self, ui: &mut egui::Ui, store: &Store, doc: Option<&(i64, String, Capture)>) {
         let Some(doc) = doc else {
-            ui.label("Abra um documento na Ficha para testar o modelo com ele.");
+            widgets::card(ui, |ui| {
+                widgets::section(ui, "Testar o modelo");
+                widgets::muted(
+                    ui,
+                    "Abra um documento na Ficha para testar o modelo com ele.",
+                );
+            });
             return;
         };
-        ui.label(format!("Documento: {}", doc.1));
-        ui.small("Nada é enviado à IA nesta prévia.");
         let optional: Vec<(String, String)> = self
             .edit
             .as_ref()
@@ -1766,49 +2292,86 @@ impl TemplatesPanel {
                     .collect()
             })
             .unwrap_or_default();
-        if !optional.is_empty() {
-            ui.strong("Instruções opcionais ou condicionais");
-            for (uid, name) in &optional {
-                let mut on = self.test_selected.contains(uid);
-                if ui.checkbox(&mut on, name).changed() {
-                    if on {
-                        self.test_selected.insert(uid.clone());
-                    } else {
-                        self.test_selected.remove(uid);
+        let mut build = false;
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Testar o modelo");
+            widgets::muted(ui, format!("Documento: {}", doc.1));
+            widgets::small_muted(ui, "Nada é enviado à IA nesta prévia.");
+            ui.add_space(theme::S2);
+            if !optional.is_empty() {
+                widgets::field_label(ui, "Instruções opcionais ou condicionais");
+                for (uid, name) in &optional {
+                    let mut on = self.test_selected.contains(uid);
+                    if ui.checkbox(&mut on, name).changed() {
+                        if on {
+                            self.test_selected.insert(uid.clone());
+                        } else {
+                            self.test_selected.remove(uid);
+                        }
                     }
                 }
+                ui.add_space(theme::S2);
             }
-        }
-        text_row(ui, "Pedido desta minuta", &mut self.test_guidance);
-        if ui.button("Montar prévia").clicked() {
+            text_field(ui, "Pedido desta minuta", &mut self.test_guidance);
+            build = ui.add(widgets::secondary("Montar prévia")).clicked();
+        });
+        if build {
             self.run_preview(store, doc);
         }
         match &self.test_result {
             None => {}
             Some(Err(msg)) => {
-                ui.colored_label(crate::theme::error(), msg);
+                let (fg, bg) = Tone::Danger.colors();
+                widgets::pill_colored(ui, msg.clone(), fg, bg);
             }
             Some(Ok(p)) => {
-                ui.label(format!(
-                    "Tamanho da parte de instruções: {}",
-                    crate::labels::file_size(p.trusted as u64)
-                ));
-                ui.label(format!("Instruções incluídas: {}", p.blocks));
-                ui.label(format!(
-                    "Exemplos aprovados que seriam enviados: {}",
-                    p.examples
-                ));
-                ui.label(format!("Arquivos de exemplo: {}", p.files));
-                for c in &p.conflicts {
-                    ui.colored_label(crate::theme::warning(), c);
-                }
-                let mut text = p.system.as_str();
-                ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .desired_rows(14)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::TextStyle::Monospace),
-                );
+                widgets::card(ui, |ui| {
+                    widgets::section(ui, "O que seria enviado");
+                    ui.add_space(theme::S1);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(theme::S2, theme::S2);
+                        widgets::pill(
+                            ui,
+                            format!(
+                                "Tamanho da parte de instruções: {}",
+                                crate::labels::file_size(p.trusted as u64)
+                            ),
+                            Tone::Neutral,
+                        );
+                        widgets::pill(ui, format!("Instruções incluídas: {}", p.blocks), Tone::Neutral);
+                        widgets::pill(
+                            ui,
+                            format!("Exemplos aprovados que seriam enviados: {}", p.examples),
+                            Tone::Neutral,
+                        );
+                        widgets::pill(ui, format!("Arquivos de exemplo: {}", p.files), Tone::Neutral);
+                    });
+                    for c in &p.conflicts {
+                        ui.add_space(theme::S1);
+                        let (fg, bg) = Tone::Warn.colors();
+                        egui::Frame::new()
+                            .fill(bg)
+                            .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                            .inner_margin(egui::Margin::symmetric(12, 6))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!("{} {c}", icon::WARNING)).color(fg),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                    }
+                    ui.add_space(theme::S2);
+                    let mut text = p.system.as_str();
+                    ui.add(
+                        egui::TextEdit::multiline(&mut text)
+                            .desired_rows(14)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                });
             }
         }
     }
@@ -1879,13 +2442,85 @@ fn fresh_template(store: &Store, template: WorkTemplate) -> WorkTemplate {
         .unwrap_or(template)
 }
 
+
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
-pub const SHOTS: &[&str] = &[];
+pub const SHOTS: &[&str] = &[
+    "lista",
+    "estrutura",
+    "instrucoes",
+    "exemplos",
+    "referencias",
+    "testar",
+    "rascunho",
+    "instrucao",
+];
 
 #[cfg(feature = "shots")]
 impl TemplatesPanel {
     /// Puts the panel in the state called `view` (see `SHOTS`).
-    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
+    pub fn shots_open(&mut self, store: &mut crate::storage::Store, view: &str) {
+        self.refresh(store);
+        let find = |panel: &Self, name: &str| {
+            panel.templates.iter().find(|t| t.name == name).cloned()
+        };
+        let tab = match view {
+            "instrucoes" | "instrucao" => Tab::Blocks,
+            "exemplos" => Tab::Examples,
+            "referencias" => Tab::References,
+            "testar" => Tab::Test,
+            _ => Tab::Structure,
+        };
+        match view {
+            "lista" => {}
+            "rascunho" => {
+                if let Some(t) = find(self, "Encaminhamento a setor") {
+                    self.load_template(store, t, false);
+                }
+            }
+            _ => {
+                let Some(t) = find(self, "Resposta a pedido de informações") else {
+                    return;
+                };
+                self.load_template(store, t, false);
+                self.tab = tab;
+                if view == "exemplos" {
+                    let uid = self
+                        .edit
+                        .as_ref()
+                        .map(|t| t.uid.clone())
+                        .unwrap_or_default();
+                    let existing = store.examples_of(&uid).unwrap_or_default();
+                    let example = match existing.into_iter().next() {
+                        Some(e) => Some(e),
+                        None => store
+                            .save_example(
+                                &Example {
+                                    template_uid: uid,
+                                    title: "Resposta sobre prazo de atendimento".into(),
+                                    demand: "O requerente pergunta o prazo para resposta.".into(),
+                                    reply: "Prezado(a), informamos que o prazo é de vinte dias."
+                                        .into(),
+                                    origin: "ofício de 2024, anonimizado".into(),
+                                    ..Default::default()
+                                },
+                                None,
+                            )
+                            .ok(),
+                    };
+                    if let Some(e) = example {
+                        self.example_version_seen = expected(store, "example", &e.uid);
+                        self.example_base = json(&e);
+                        self.example_edit = Some(e);
+                    }
+                }
+                if view == "instrucao" {
+                    if let Some(b) = self.blocks.first().cloned() {
+                        self.load_block(store, b, false);
+                    }
+                }
+            }
+        }
+    }
 }

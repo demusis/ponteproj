@@ -728,27 +728,21 @@ impl AttachmentsPanel {
     }
 
     pub fn show(&mut self, ui: &mut eframe::egui::Ui, store: &mut Store, owner: Owner, busy: bool) {
-        use eframe::egui::{self, Color32};
+        use crate::theme::{self, icon};
+        use crate::widgets::{self, Tone};
+        use eframe::egui;
 
         let list = match store.list_attachments(owner) {
             Ok(list) => list,
             Err(error) => {
-                ui.colored_label(crate::theme::warning(), format!("Não foi possível ler os anexos: {error}"));
+                soft_note(ui, Tone::Warn, icon::WARNING, &format!("Não foi possível ler os anexos: {error}"), None);
                 return;
             }
         };
         let full = list.len() >= MAX_PER_OWNER;
         let mut pick = false;
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(!busy && !full, egui::Button::new("Anexar arquivo…"))
-                .on_hover_text(format!("Escolhe um arquivo deste computador (até {}). Ele fica guardado protegido no acervo e visível para a equipe.", labels::file_size(MAX_ATTACHMENT_BYTES as u64)))
-                .on_disabled_hover_text(if full { "Limite de anexos atingido. Exclua um anexo para abrir espaço." } else { "Aguarde a operação em andamento." })
-                .clicked()
-            {
-                pick = true;
-            }
-            ui.small(format!("{} de {MAX_PER_OWNER}", list.len()));
+            widgets::small_muted(ui, format!("{} de {MAX_PER_OWNER}", list.len()));
             let on_delete = if owner.deletes_for_good() {
                 "Excluir um anexo o remove em definitivo."
             } else {
@@ -758,6 +752,16 @@ impl AttachmentsPanel {
                 "Até {MAX_PER_OWNER} anexos de até {} cada. Tipos aceitos: {ACCEPTED_TYPES_TEXT}. Programas, scripts, atalhos e arquivos compactados não são aceitos. {on_delete}",
                 labels::file_size(MAX_ATTACHMENT_BYTES as u64)
             ));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(!busy && !full, widgets::secondary(format!("{} Anexar arquivo…", icon::CLIP)))
+                    .on_hover_text(format!("Escolhe um arquivo deste computador (até {}). Ele fica guardado protegido no acervo e visível para a equipe.", labels::file_size(MAX_ATTACHMENT_BYTES as u64)))
+                    .on_disabled_hover_text(if full { "Limite de anexos atingido. Exclua um anexo para abrir espaço." } else { "Aguarde a operação em andamento." })
+                    .clicked()
+                {
+                    pick = true;
+                }
+            });
         });
         if pick {
             if let Some(path) = crate::windows_ui::pick_file(
@@ -771,20 +775,18 @@ impl AttachmentsPanel {
             }
         }
         if !self.message.is_empty() {
-            let color = if self.message_is_error {
-                crate::theme::error()
-            } else {
-                Color32::from_rgb(30, 110, 60)
-            };
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(color, &self.message);
-                if ui.small_button("✕").clicked() {
-                    self.message.clear();
-                }
-            });
+            ui.add_space(theme::S1);
+            let tone = if self.message_is_error { Tone::Danger } else { Tone::Ok };
+            let glyph = if self.message_is_error { icon::ERROR } else { icon::CHECK };
+            let mut close = false;
+            soft_note(ui, tone, glyph, &self.message, Some(&mut close));
+            if close {
+                self.message.clear();
+            }
         }
         if list.is_empty() {
-            ui.small(match owner {
+            ui.add_space(theme::S1);
+            widgets::small_muted(ui, match owner {
                 Owner::Document(_) => "Nenhum arquivo anexado a este documento.",
                 Owner::Task(_) => "Nenhum arquivo anexado a esta tarefa.",
                 Owner::Attendance(_) => "Nenhum arquivo anexado a este atendimento.",
@@ -792,52 +794,122 @@ impl AttachmentsPanel {
             });
         }
         let mut save_description: Option<(i64, String)> = None;
-        for meta in &list {
-            ui.group(|ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(&meta.name);
-                    ui.small(format!(
+        for (index, meta) in list.iter().enumerate() {
+            if index == 0 {
+                ui.add_space(theme::S1);
+            }
+            ui.separator();
+            let is_pdf = meta.kind == "PDF";
+            ui.horizontal_top(|ui| {
+                ui.label(
+                    egui::RichText::new(if is_pdf { icon::PDF } else { icon::CLIP })
+                        .size(20.0)
+                        .color(theme::c().muted),
+                );
+                ui.vertical(|ui| {
+                    ui.set_width((ui.available_width() - 190.0).max(200.0));
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&meta.name)
+                                .font(theme::font_strong(theme::SIZE_BODY)),
+                        )
+                        .wrap(),
+                    );
+                    widgets::small_muted(ui, format!(
                         "{} • {} • por {} em {}",
                         meta.kind,
                         labels::file_size(meta.size as u64),
                         if meta.added_by.trim().is_empty() { "—" } else { meta.added_by.trim() },
                         labels::datetime(&meta.added_at)
                     ));
-                });
-                let mut text = self
-                    .descriptions
-                    .get(&meta.id)
-                    .cloned()
-                    .unwrap_or_else(|| meta.description.clone());
-                ui.horizontal_wrapped(|ui| {
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut text)
-                            .hint_text("Descrição (opcional): o que é este arquivo")
-                            .desired_width((ui.available_width() - 200.0).max(160.0)),
-                    );
-                    let changed = text != meta.description;
-                    if changed {
-                        if ui.add_enabled(!busy, egui::Button::new("Salvar descrição").small()).clicked()
-                            || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                        {
-                            save_description = Some((meta.id, text.clone()));
+                    let mut text = self
+                        .descriptions
+                        .get(&meta.id)
+                        .cloned()
+                        .unwrap_or_else(|| meta.description.clone());
+                    ui.horizontal_wrapped(|ui| {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut text)
+                                .hint_text("Descrição (opcional): o que é este arquivo")
+                                .desired_width((ui.available_width() - 200.0).max(160.0)),
+                        );
+                        let changed = text != meta.description;
+                        if changed {
+                            if ui.add_enabled(!busy, widgets::secondary("Salvar descrição")).clicked()
+                                || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                            {
+                                save_description = Some((meta.id, text.clone()));
+                            }
+                            if ui.add(widgets::quiet("Desfazer")).clicked() {
+                                text = meta.description.clone();
+                            }
                         }
-                        if ui.small_button("Desfazer").clicked() {
-                            text = meta.description.clone();
-                        }
+                    });
+                    if text != meta.description {
+                        self.descriptions.insert(meta.id, text);
+                    } else {
+                        self.descriptions.remove(&meta.id);
+                    }
+                    widgets::small_muted(ui, format!("identificação {}…", &meta.sha256[..meta.sha256.len().min(12)]))
+                        .on_hover_text(format!("SHA-256 completo: {}", meta.sha256));
+                    if self.confirm_delete == Some(meta.id) {
+                        ui.add_space(theme::S1);
+                        soft_note(ui, Tone::Warn, icon::WARNING, &format!("Apagar “{}” de vez? Não há como restaurar.", meta.name), None);
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(!busy, widgets::danger("Apagar de vez")).clicked() {
+                                self.confirm_delete = None;
+                                match store.delete_attachment(meta.id) {
+                                    Ok(()) => self.notice(format!("Anexo “{}” apagado.", meta.name), false),
+                                    Err(error) => self.notice(error.to_string(), true),
+                                }
+                            }
+                            if ui.add(widgets::secondary("Cancelar")).clicked() {
+                                self.confirm_delete = None;
+                            }
+                        });
                     }
                 });
-                if text != meta.description {
-                    self.descriptions.insert(meta.id, text);
-                } else {
-                    self.descriptions.remove(&meta.id);
-                }
-                ui.horizontal_wrapped(|ui| {
-                    let is_pdf = meta.kind == "PDF";
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    // Removal sits at the far right, apart from the others.
+                    let remove_hint = if owner.deletes_for_good() {
+                        "Excluir de vez: apaga o anexo definitivamente (anexos de atendimentos e de exemplos não vão para a Lixeira)."
+                    } else {
+                        "Excluir: move o anexo para a Lixeira; pode ser restaurado depois."
+                    };
+                    let remove = ui
+                        .add_enabled_ui(!busy, |ui| widgets::icon_button(ui, icon::TRASH, remove_hint))
+                        .inner;
+                    if remove.clicked() {
+                        if owner.deletes_for_good() {
+                            // Atendimentos and examples have no trash: the
+                            // removal is final.
+                            self.confirm_delete = Some(meta.id);
+                        } else {
+                            self.trash_request = Some(crate::trash::Target {
+                                kind: crate::trash::Kind::Attachment,
+                                id: meta.id,
+                            });
+                        }
+                    }
+                    if ui
+                        .add_enabled(!busy, widgets::quiet("Exportar"))
+                        .on_hover_text("Grava uma cópia onde você escolher.")
+                        .clicked()
+                    {
+                        if let Some(destination) = crate::windows_ui::save_file(
+                            "Salvar cópia do anexo",
+                            &sanitize_file_name(&meta.name),
+                            &[("Todos os arquivos", "*.*")],
+                        ) {
+                            match store.export_attachment(meta.id, &destination) {
+                                Ok(()) => self.notice(format!("Cópia salva em {}.", destination.display()), false),
+                                Err(error) => self.notice(error.to_string(), true),
+                            }
+                        }
+                    }
                     let open_label = if is_pdf { "Ler no Ponte" } else { "Abrir" };
                     if ui
-                        .add_enabled(!busy, egui::Button::new(open_label))
+                        .add_enabled(!busy, widgets::quiet(open_label))
                         .on_hover_text(if is_pdf {
                             "Abre no leitor de PDF do Ponte, sem sair do aplicativo.".to_owned()
                         } else {
@@ -857,60 +929,7 @@ impl AttachmentsPanel {
                             }
                         }
                     }
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Salvar como…"))
-                        .on_hover_text("Grava uma cópia onde você escolher.")
-                        .clicked()
-                    {
-                        if let Some(destination) = crate::windows_ui::save_file(
-                            "Salvar cópia do anexo",
-                            &sanitize_file_name(&meta.name),
-                            &[("Todos os arquivos", "*.*")],
-                        ) {
-                            match store.export_attachment(meta.id, &destination) {
-                                Ok(()) => self.notice(format!("Cópia salva em {}.", destination.display()), false),
-                                Err(error) => self.notice(error.to_string(), true),
-                            }
-                        }
-                    }
-                    if owner.deletes_for_good() {
-                        // Atendimentos and examples have no trash: the
-                        // removal is final.
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("Excluir de vez…"))
-                            .on_hover_text("Apaga o anexo definitivamente (anexos de atendimentos e de exemplos não vão para a Lixeira).")
-                            .clicked()
-                        {
-                            self.confirm_delete = Some(meta.id);
-                        }
-                    } else if ui
-                        .add_enabled(!busy, egui::Button::new("Excluir…"))
-                        .on_hover_text("Move o anexo para a Lixeira; pode ser restaurado depois.")
-                        .clicked()
-                    {
-                        self.trash_request = Some(crate::trash::Target {
-                            kind: crate::trash::Kind::Attachment,
-                            id: meta.id,
-                        });
-                    }
-                    ui.small(format!("identificação {}…", &meta.sha256[..meta.sha256.len().min(12)]))
-                        .on_hover_text(format!("SHA-256 completo: {}", meta.sha256));
                 });
-                if self.confirm_delete == Some(meta.id) {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(crate::theme::warning(), format!("Apagar “{}” de vez? Não há como restaurar.", meta.name));
-                        if ui.add_enabled(!busy, egui::Button::new("Apagar de vez").small()).clicked() {
-                            self.confirm_delete = None;
-                            match store.delete_attachment(meta.id) {
-                                Ok(()) => self.notice(format!("Anexo “{}” apagado.", meta.name), false),
-                                Err(error) => self.notice(error.to_string(), true),
-                            }
-                        }
-                        if ui.small_button("Cancelar").clicked() {
-                            self.confirm_delete = None;
-                        }
-                    });
-                }
             });
         }
         if let Some((id, description)) = save_description {
@@ -960,6 +979,40 @@ impl AttachmentsPanel {
             Err(error) => self.notice(error.to_string(), true),
         }
     }
+}
+
+/// A short note in a soft-coloured frame: icon, text and, when asked for,
+/// a close button (`close` is set when it is clicked).
+#[cfg(feature = "desktop")]
+fn soft_note(
+    ui: &mut eframe::egui::Ui,
+    tone: crate::widgets::Tone,
+    glyph: &str,
+    text: &str,
+    close: Option<&mut bool>,
+) {
+    use eframe::egui;
+    let (fg, bg) = tone.colors();
+    egui::Frame::new()
+        .fill(bg)
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(close) = close {
+                    if crate::widgets::icon_button(ui, crate::theme::icon::CLOSE, "Fechar o aviso")
+                        .clicked()
+                    {
+                        *close = true;
+                    }
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(glyph).size(18.0).color(fg));
+                    ui.add(egui::Label::new(egui::RichText::new(text).color(fg)).wrap());
+                });
+            });
+        });
 }
 
 #[cfg(test)]
