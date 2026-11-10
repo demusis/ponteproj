@@ -192,7 +192,11 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listDocuments<'loc
             // Open tasks by document: how many, and the earliest due date.
             let mut open = std::collections::HashMap::<i64, (usize, String)>::new();
             for task in store.list_tasks()?.iter().filter(|t| t.status != "concluida") {
-                let entry = open.entry(task.document_id).or_default();
+                // Tasks without a document count for no document.
+                let Some(document) = task.document_id else {
+                    continue;
+                };
+                let entry = open.entry(document).or_default();
                 entry.0 += 1;
                 if !task.due_date.is_empty() && (entry.1.is_empty() || task.due_date < entry.1) {
                     entry.1 = task.due_date.clone();
@@ -268,8 +272,12 @@ fn task_json(task: &ponteproj::tasks::Task, numbers: &std::collections::HashMap<
     let open = task.status != "concluida";
     json!({
         "id": task.id,
-        "document_id": task.document_id,
-        "document_number": numbers.get(&task.document_id).cloned().unwrap_or_default(),
+        // 0 and an empty number: a task without a document.
+        "document_id": task.document_id.unwrap_or(0),
+        "document_number": task
+            .document_id
+            .and_then(|id| numbers.get(&id).cloned())
+            .unwrap_or_default(),
         "title": task.title,
         "action": task.action,
         "action_label": ponteproj::tasks::action_label(&task.action),
@@ -320,7 +328,7 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_getDocument<'local
             let tasks = store
                 .list_tasks()?
                 .iter()
-                .filter(|t| t.document_id == document_id)
+                .filter(|t| t.document_id == Some(document_id))
                 .map(|t| task_json(t, &numbers))
                 .collect::<Vec<_>>();
             let analysis = detail.analysis.as_ref().map(|a| {

@@ -398,7 +398,10 @@ impl Store {
                 }
             }
         }
-        tx.pragma_update(None, "user_version", 8)?;
+        // Never lowers the number a later step has already written.
+        if previous < 8 {
+            tx.pragma_update(None, "user_version", 8)?;
+        }
         tx.commit()?;
         Ok(())
     }

@@ -520,7 +520,8 @@ pub struct LinkRow {
 pub struct TrashRow {
     pub kind: String,
     pub item_id: i64,
-    pub document_id: i64,
+    /// `None` for a task without document (and its attachments).
+    pub document_id: Option<i64>,
     pub deleted_at: String,
 }
 
@@ -8400,6 +8401,36 @@ mod standalone_task_sync_tests {
             .into_iter()
             .find(|t| t.title == title)
             .unwrap_or_else(|| panic!("task {title:?} missing"))
+    }
+
+    #[test]
+    fn a_task_without_document_in_the_lixeira_does_not_stop_the_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, _) = pair(dir.path());
+        let id = a
+            .save_task(&standalone("Devolver a chave da sala"))
+            .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        assert_eq!(find(&b, "Devolver a chave da sala").id, id);
+        // In the Lixeira its row has no document: the snapshot still travels.
+        a.trash_item(crate::trash::Target {
+            kind: crate::trash::Kind::Task,
+            id,
+        })
+        .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        assert!(b.list_tasks().unwrap().iter().all(|t| t.id != id));
+        // And it comes back on both when restored.
+        a.restore_item(crate::trash::Target {
+            kind: crate::trash::Kind::Task,
+            id,
+        })
+        .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        assert_eq!(find(&b, "Devolver a chave da sala").document_id, None);
     }
 
     #[test]

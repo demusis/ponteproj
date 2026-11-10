@@ -173,6 +173,8 @@ fn migrate_task_links(tx: &Connection) -> Result<()> {
             |r| r.get(0),
         )
         .optional()?;
+    // Everything below runs in the caller's transaction: a failure leaves
+    // the library exactly as it was.
     tx.execute_batch(
         "DROP TABLE IF EXISTS tasks_new;
          CREATE TABLE tasks_new(id INTEGER PRIMARY KEY AUTOINCREMENT,document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL);
@@ -180,7 +182,12 @@ fn migrate_task_links(tx: &Connection) -> Result<()> {
          DROP TABLE tasks;
          ALTER TABLE tasks_new RENAME TO tasks;
          CREATE INDEX IF NOT EXISTS tasks_document ON tasks(document_id);",
-    )?;
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "Não foi possível atualizar as tarefas do acervo para esta versão ({error}). Nada foi alterado. Feche o Ponte e avise quem cuida dele; a cópia de segurança feita pelo instalador fica na pasta de cópias do acervo."
+        )
+    })?;
     let highest: i64 = tx.query_row("SELECT coalesce(max(id),0) FROM tasks", [], |r| r.get(0))?;
     let keep = sequence.unwrap_or(0).max(highest);
     if tx.execute(
@@ -209,15 +216,24 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute_batch("CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY AUTOINCREMENT,document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL); CREATE INDEX IF NOT EXISTS tasks_document ON tasks(document_id);")?;
         migrate_task_links(&tx)?;
-        let ids = tx
-            .prepare("SELECT id FROM documents")?
-            .query_map([], |r| r.get::<_, i64>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for id in ids {
-            ensure_document_task(&tx, id)?;
-        }
-        if tx.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 2 {
+        let version = tx.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?;
+        if version < 2 {
+            // A library from before tasks existed: every document gets its
+            // triage task, once. Later a document may well have no task (its
+            // only one was moved to another document, or left without one).
+            let ids = tx
+                .prepare("SELECT id FROM documents")?
+                .query_map([], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for id in ids {
+                ensure_document_task(&tx, id)?;
+            }
             tx.pragma_update(None, "user_version", 2)?;
+        } else if (10..crate::storage::SCHEMA_VERSION).contains(&version) {
+            // Every earlier step of this library is done (they end at 10):
+            // the new shape of the table and its number are committed
+            // together, so an older Ponte never opens a table it cannot read.
+            tx.pragma_update(None, "user_version", crate::storage::SCHEMA_VERSION)?;
         }
         tx.commit()?;
         Ok(())

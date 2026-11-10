@@ -101,7 +101,8 @@ internal fun TasksScreen(state: TasksState, onToggle: (TaskItem) -> Unit, onOpen
 private fun TaskCard(t: TaskItem, onToggle: (TaskItem) -> Unit, onOpen: (TaskItem) -> Unit) {
     PonteCard {
         TaskRow(
-            t, listOf(t.actionLabel, t.documentNumber).filter { it.isNotEmpty() }.joinToString(" · "),
+            t, listOf(t.actionLabel, if (t.documentId <= 0) "Sem documento" else t.documentNumber)
+                .filter { it.isNotEmpty() }.joinToString(" · "),
             onToggle = { onToggle(t) }, onOpen = { onOpen(t) },
             modifier = Modifier.padding(start = 6.dp, end = 12.dp, top = 6.dp, bottom = 6.dp)
         )

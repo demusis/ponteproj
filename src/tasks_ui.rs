@@ -934,10 +934,11 @@ impl TaskPanel {
         self.focus_search = true;
     }
     /// Ctrl+N: what "Nova tarefa" does: a task for the document the list is
-    /// narrowed to or the one open in Documentos, or without document when
-    /// there is none.
-    pub fn key_new(&mut self, selected_document: Option<i64>) {
-        let target = self.document_filter.or(selected_document);
+    /// narrowed to (the band says which), otherwise without document. The
+    /// document last opened in Documentos is not on this screen, so it does
+    /// not decide; the form offers "Escolher documento…".
+    pub fn key_new(&mut self, _selected_document: Option<i64>) {
+        let target = self.document_filter;
         if !self.start_new(target) {
             self.blocked = Some(Intent::New(target));
         }
@@ -1123,9 +1124,9 @@ impl TaskPanel {
                         "Cada documento importado recebe uma tarefa de triagem. Também é possível criar tarefas sem documento (tarefas avulsas) e vinculá-las a um documento depois. As tarefas são locais: concluir aqui não tramita nem assina nada no SIGADOC.",
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // With a document open (or the list narrowed to one) the
-                        // task is for it; otherwise it belongs to no document.
-                        let target = self.document_filter.or(selected_document);
+                        // With the list narrowed to a document the task is
+                        // for it; otherwise it belongs to no document.
+                        let target = self.document_filter;
                         let new_task = ui.add(widgets::primary(format!("{} Nova tarefa", icon::PLUS)));
                         let new_task = match target {
                             Some(id) => new_task.on_hover_text(format!("Cria uma tarefa para {}", number_of(id))),
@@ -2287,7 +2288,12 @@ mod navigation_tests {
         assert_eq!(panel.open_task_id(), Some(10));
         panel.key_new(None);
         assert_eq!(panel.take_blocked(), Some(Intent::New(None)));
+        // The document last opened in Documentos does not decide...
         panel.key_new(Some(1));
+        assert_eq!(panel.take_blocked(), Some(Intent::New(None)));
+        // ...the one the list is narrowed to does.
+        panel.document_filter = Some(1);
+        panel.key_new(None);
         assert_eq!(panel.take_blocked(), Some(Intent::New(Some(1))));
     }
 
