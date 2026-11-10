@@ -706,7 +706,11 @@ mod tests {
         assert!(tasks.len() >= 8, "tasks: {}", tasks.len());
         assert!(tasks.iter().any(|t| t.overdue()));
         let attendances = store.list_saiop_attendances().unwrap();
-        assert!(attendances.len() >= 5, "atendimentos: {}", attendances.len());
+        assert!(
+            attendances.len() >= 5,
+            "atendimentos: {}",
+            attendances.len()
+        );
         assert!(store.list_templates().unwrap().len() >= 2);
         assert!(store.auto_attendance_enabled().unwrap());
     }

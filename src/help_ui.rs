@@ -9,12 +9,8 @@ pub fn help(ui: &mut egui::Ui, text: impl ToString) {
     let text = text.to_string();
     let response = ui
         .add(
-            egui::Label::new(
-                RichText::new(icon::INFO)
-                    .size(16.0)
-                    .color(theme::c().muted),
-            )
-            .sense(Sense::click()),
+            egui::Label::new(RichText::new(icon::INFO).size(16.0).color(theme::c().muted))
+                .sense(Sense::click()),
         )
         .on_hover_cursor(CursorIcon::PointingHand);
     let id = response.id.with("open");

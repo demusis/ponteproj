@@ -143,7 +143,9 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
             let result = if request.action == "import_bundle" {
                 store.import_bundle(&capture, &request.files.unwrap_or_default())
             } else if request.files.is_some() {
-                Err(anyhow::anyhow!("Esta importação inclui arquivos; atualize a extensão e o Ponte."))
+                Err(anyhow::anyhow!(
+                    "Esta importação inclui arquivos; atualize a extensão e o Ponte."
+                ))
             } else {
                 store.import_capture(&capture)
             };
@@ -190,7 +192,10 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
             }
         }
         _ => (
-            error("unsupported_action", "O Ponte não reconhece este pedido da extensão. Atualize a extensão e o Ponte."),
+            error(
+                "unsupported_action",
+                "O Ponte não reconhece este pedido da extensão. Atualize a extensão e o Ponte.",
+            ),
             None,
         ),
     }

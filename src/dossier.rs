@@ -230,26 +230,78 @@ pub fn detect_juntada(capture: &Capture) -> Option<JuntadaInfo> {
 pub fn show_history(ui: &mut eframe::egui::Ui, capture: &Capture, document: i64) {
     use eframe::egui;
     {
-        match movements(capture){
-            Ok(events)=>{
-                crate::widgets::field_label(ui,&format!("Histórico importado do SIGADOC • {}",if events.len()==1{"1 evento".to_owned()}else{format!("{} eventos",events.len())}));
-                if events.is_empty(){ui.label("Nenhum histórico importado nesta importação. Reimporte com a extensão atualizada para tentar obter os registros.");return;}
+        match movements(capture) {
+            Ok(events) => {
+                crate::widgets::field_label(
+                    ui,
+                    &format!(
+                        "Histórico importado do SIGADOC • {}",
+                        if events.len() == 1 {
+                            "1 evento".to_owned()
+                        } else {
+                            format!("{} eventos", events.len())
+                        }
+                    ),
+                );
+                if events.is_empty() {
+                    ui.label("Nenhum histórico importado nesta importação. Reimporte com a extensão atualizada para tentar obter os registros.");
+                    return;
+                }
                 crate::widgets::small_muted(ui,"Fonte: tabela de eventos da visualização detalhada. Ordem e datas preservadas como exibidas; não são calculadas a partir da data documental.");
-                for (index,event) in events.iter().enumerate(){
-                    ui.push_id(("history-record",document,index),|ui|{
+                for (index, event) in events.iter().enumerate() {
+                    ui.push_id(("history-record", document, index), |ui| {
                         ui.separator();
-                        ui.horizontal_wrapped(|ui|{
-                            ui.strong(&event.event);ui.label(if event.date.is_empty(){"Data não exibida neste registro"}else{&event.date});
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(&event.event);
+                            ui.label(if event.date.is_empty() {
+                                "Data não exibida neste registro"
+                            } else {
+                                &event.date
+                            });
                         });
-                        crate::widgets::small_muted(ui,event.scope.as_str());
-                        ui.label(format!("Cadastrante: {} / {}",if event.registered_person.is_empty(){"não informado"}else{&event.registered_person},if event.registered_unit.is_empty(){"lotação não informada"}else{&event.registered_unit}));
-                        ui.label(format!("Atendente: {} / {}",if event.attendant_person.is_empty(){"não informado"}else{&event.attendant_person},if event.attendant_unit.is_empty(){"lotação não informada"}else{&event.attendant_unit}));
-                        if !event.description.is_empty(){ui.add(egui::Label::new(format!("Descrição: {}",event.description)).wrap());}
+                        crate::widgets::small_muted(ui, event.scope.as_str());
+                        ui.label(format!(
+                            "Cadastrante: {} / {}",
+                            if event.registered_person.is_empty() {
+                                "não informado"
+                            } else {
+                                &event.registered_person
+                            },
+                            if event.registered_unit.is_empty() {
+                                "lotação não informada"
+                            } else {
+                                &event.registered_unit
+                            }
+                        ));
+                        ui.label(format!(
+                            "Atendente: {} / {}",
+                            if event.attendant_person.is_empty() {
+                                "não informado"
+                            } else {
+                                &event.attendant_person
+                            },
+                            if event.attendant_unit.is_empty() {
+                                "lotação não informada"
+                            } else {
+                                &event.attendant_unit
+                            }
+                        ));
+                        if !event.description.is_empty() {
+                            ui.add(
+                                egui::Label::new(format!("Descrição: {}", event.description))
+                                    .wrap(),
+                            );
+                        }
                     });
                 }
                 crate::widgets::small_muted(ui,"Cadastrante e atendente mantêm os papéis escritos no histórico. Datas em branco não foram preenchidas pelo Ponte.");
-                if let Some(source)=capture.metadata.get("movement_source"){ui.hyperlink_to("Consultar histórico no SIGADOC",source);}
-            },Err(error)=>{ui.label(format!("Não foi possível apresentar o histórico: {error}"));}
+                if let Some(source) = capture.metadata.get("movement_source") {
+                    ui.hyperlink_to("Consultar histórico no SIGADOC", source);
+                }
+            }
+            Err(error) => {
+                ui.label(format!("Não foi possível apresentar o histórico: {error}"));
+            }
         }
     }
 }
@@ -747,7 +799,10 @@ impl DossierPanel {
                             ui.strong("Importação em uso");
                         }
                         if ui
-                            .add(crate::widgets::quiet(format!("Excluir importação nº {}…", version.id)))
+                            .add(crate::widgets::quiet(format!(
+                                "Excluir importação nº {}…",
+                                version.id
+                            )))
                             .clicked()
                         {
                             self.trash_requested = Some(crate::trash::Target {
@@ -813,10 +868,7 @@ mod tests {
         let info = detect_juntada(&joined_child()).unwrap();
         assert!(info.is_joined);
         assert_eq!(info.parent_document_number.as_deref(), Some(PARENT));
-        assert_eq!(
-            info.raw_target_via.as_deref(),
-            Some("ORG-DIC-2026/97546-A")
-        );
+        assert_eq!(info.raw_target_via.as_deref(), Some("ORG-DIC-2026/97546-A"));
         assert_eq!(
             canonical_parent_number("ORG-DIC-2026/97546-A").as_deref(),
             Some(PARENT)

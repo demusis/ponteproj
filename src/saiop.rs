@@ -885,8 +885,9 @@ impl Store {
         let mut out = Vec::new();
         for row in rows {
             let (id, blob) = row?;
-            let mut batch: SaiopImportBatch = serde_json::from_slice(&unseal(&blob)?)
-                .context("Não foi possível ler uma importação de planilha: o registro está inválido.")?;
+            let mut batch: SaiopImportBatch = serde_json::from_slice(&unseal(&blob)?).context(
+                "Não foi possível ler uma importação de planilha: o registro está inválido.",
+            )?;
             batch.id = id;
             out.push(batch);
         }
@@ -951,7 +952,9 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(id) => Ok(id),
-                _ => bail!("O computador principal respondeu de forma inesperada ao salvar o atendimento."),
+                _ => bail!(
+                    "O computador principal respondeu de forma inesperada ao salvar o atendimento."
+                ),
             };
         }
 
@@ -1454,7 +1457,9 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::SaiopBatch(batch) => Ok(batch),
-                _ => bail!("O computador principal respondeu de forma inesperada ao importar a planilha."),
+                _ => bail!(
+                    "O computador principal respondeu de forma inesperada ao importar a planilha."
+                ),
             };
         }
         self.commit_saiop_import_raw(
@@ -1821,7 +1826,10 @@ impl Store {
                     &att.reference_raw
                 },
                 if removed_files > 0 {
-                    format!(" (com {})", crate::labels::count(removed_files, "anexo", "anexos"))
+                    format!(
+                        " (com {})",
+                        crate::labels::count(removed_files, "anexo", "anexos")
+                    )
                 } else {
                     String::new()
                 }
@@ -1905,7 +1913,10 @@ struct ParsedSheet {
 fn parse_xlsx_processos_sheet(bytes: &[u8]) -> Result<ParsedSheet> {
     let entries = read_zip_entries(bytes)?;
     let shared_strings = if let Some(ss_xml) = entries.get("xl/sharedStrings.xml") {
-        parse_shared_strings(std::str::from_utf8(ss_xml).context("A planilha está danificada ou não é um arquivo .xlsx válido.")?)
+        parse_shared_strings(
+            std::str::from_utf8(ss_xml)
+                .context("A planilha está danificada ou não é um arquivo .xlsx válido.")?,
+        )
     } else {
         Vec::new()
     };
@@ -1914,11 +1925,9 @@ fn parse_xlsx_processos_sheet(bytes: &[u8]) -> Result<ParsedSheet> {
     let sheet_bytes = entries
         .get(&sheet_path)
         .or_else(|| entries.get(sheet_path.trim_start_matches('/')))
-        .with_context(|| {
-            format!("A aba '{sheet_name}' não foi encontrada na planilha.")
-        })?;
-    let sheet_xml =
-        std::str::from_utf8(sheet_bytes).context("A planilha está danificada ou não é um arquivo .xlsx válido.")?;
+        .with_context(|| format!("A aba '{sheet_name}' não foi encontrada na planilha."))?;
+    let sheet_xml = std::str::from_utf8(sheet_bytes)
+        .context("A planilha está danificada ou não é um arquivo .xlsx válido.")?;
 
     let (headers, rows) = parse_worksheet_xml(&sheet_name, sheet_xml, &shared_strings);
     Ok(ParsedSheet {
@@ -2285,7 +2294,10 @@ const MAX_XLSX_EXPANDED_BYTES: usize = 256 * 1024 * 1024;
 /// Lê entradas de um arquivo ZIP (`.xlsx`) a partir do Central Directory e descompacta blocos Stored (0) ou Deflate (8).
 pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut total = 0usize;
-    ensure!(bytes.len() >= 22, "A planilha está danificada ou não é um arquivo .xlsx válido.");
+    ensure!(
+        bytes.len() >= 22,
+        "A planilha está danificada ou não é um arquivo .xlsx válido."
+    );
     // Localiza End of Central Directory (EOCD) signature 0x06054b50
     let min_eocd = bytes.len().saturating_sub(65557);
     let mut eocd_pos = None;
@@ -2393,7 +2405,10 @@ impl<'a> BitReader<'a> {
     }
 
     fn read_bit(&mut self) -> Result<u16> {
-        ensure!(self.byte_pos < self.data.len(), "A planilha está danificada ou não é um arquivo .xlsx válido.");
+        ensure!(
+            self.byte_pos < self.data.len(),
+            "A planilha está danificada ou não é um arquivo .xlsx válido."
+        );
         let bit = ((self.data[self.byte_pos] >> self.bit_pos) & 1) as u16;
         self.bit_pos += 1;
         if self.bit_pos == 8 {
@@ -2428,7 +2443,10 @@ impl HuffmanTree {
     fn from_lengths(lengths: &[u8]) -> Result<Self> {
         let mut counts = [0u16; 16];
         for &len in lengths {
-            ensure!(len <= 15, "A planilha está danificada ou não é um arquivo .xlsx válido.");
+            ensure!(
+                len <= 15,
+                "A planilha está danificada ou não é um arquivo .xlsx válido."
+            );
             if len > 0 {
                 counts[len as usize] += 1;
             }
@@ -2549,9 +2567,9 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                         match sym {
                             0..=15 => all_lens.push(sym as u8),
                             16 => {
-                                let prev = *all_lens
-                                    .last()
-                                    .context("A planilha está danificada ou não é um arquivo .xlsx válido.")?;
+                                let prev = *all_lens.last().context(
+                                    "A planilha está danificada ou não é um arquivo .xlsx válido.",
+                                )?;
                                 let repeat = reader.read_bits(2)? as usize + 3;
                                 all_lens.extend(std::iter::repeat_n(prev, repeat));
                             }
@@ -2563,7 +2581,9 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                                 let repeat = reader.read_bits(7)? as usize + 11;
                                 all_lens.extend(std::iter::repeat_n(0, repeat));
                             }
-                            _ => bail!("A planilha está danificada ou não é um arquivo .xlsx válido."),
+                            _ => bail!(
+                                "A planilha está danificada ou não é um arquivo .xlsx válido."
+                            ),
                         }
                     }
                     (
@@ -2581,11 +2601,17 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
                         break;
                     } else {
                         let len_idx = sym - 257;
-                        ensure!(len_idx < LEN_BASE.len(), "A planilha está danificada ou não é um arquivo .xlsx válido.");
+                        ensure!(
+                            len_idx < LEN_BASE.len(),
+                            "A planilha está danificada ou não é um arquivo .xlsx válido."
+                        );
                         let length =
                             LEN_BASE[len_idx] + reader.read_bits(LEN_EXTRA[len_idx])? as usize;
                         let dist_sym = dist_tree.decode(&mut reader)? as usize;
-                        ensure!(dist_sym < DIST_BASE.len(), "A planilha está danificada ou não é um arquivo .xlsx válido.");
+                        ensure!(
+                            dist_sym < DIST_BASE.len(),
+                            "A planilha está danificada ou não é um arquivo .xlsx válido."
+                        );
                         let distance =
                             DIST_BASE[dist_sym] + reader.read_bits(DIST_EXTRA[dist_sym])? as usize;
                         ensure!(
@@ -2655,10 +2681,20 @@ fn due_pill(att: &SaiopAttendance, today: NaiveDate) -> (String, Tone, Option<St
             Some(delta) if delta > 0 => (
                 format!("Vencido · {short}"),
                 Tone::Danger,
-                Some(format!("Vencido há {}", crate::labels::count(delta as usize, "dia", "dias"))),
+                Some(format!(
+                    "Vencido há {}",
+                    crate::labels::count(delta as usize, "dia", "dias")
+                )),
             ),
             Some(0) => ("Hoje".to_owned(), Tone::Warn, Some("Vence hoje".to_owned())),
-            Some(delta) => (short, Tone::Info, Some(format!("Vence em {}", crate::labels::count((-delta) as usize, "dia", "dias")))),
+            Some(delta) => (
+                short,
+                Tone::Info,
+                Some(format!(
+                    "Vence em {}",
+                    crate::labels::count((-delta) as usize, "dia", "dias")
+                )),
+            ),
             None => (short, Tone::Info, None),
         }
     } else if !att.due_date_raw.is_empty() {
@@ -2685,7 +2721,11 @@ fn notice_line(ui: &mut egui::Ui, text: &str, tone: Tone) -> bool {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                let glyph = if tone == Tone::Danger { icon::ERROR } else { icon::INFO };
+                let glyph = if tone == Tone::Danger {
+                    icon::ERROR
+                } else {
+                    icon::INFO
+                };
                 ui.label(RichText::new(glyph).size(16.0).color(fg));
                 ui.scope(|ui| {
                     ui.set_max_width((ui.available_width() - 36.0).max(80.0));
@@ -2722,12 +2762,7 @@ fn labeled(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui)) {
 
 #[cfg(feature = "desktop")]
 /// A combo box that fills the width it is in.
-fn pick(
-    ui: &mut egui::Ui,
-    id: &str,
-    text: String,
-    options: impl FnOnce(&mut egui::Ui),
-) {
+fn pick(ui: &mut egui::Ui, id: &str, text: String, options: impl FnOnce(&mut egui::Ui)) {
     egui::ComboBox::from_id_salt(id)
         .selected_text(text)
         .width(ui.available_width().max(80.0))
@@ -2989,7 +3024,10 @@ impl SaiopPanel {
         let all_items = match store.list_saiop_attendances() {
             Ok(list) => list,
             Err(e) => {
-                widgets::muted(ui, format!("Não foi possível carregar os atendimentos: {e}"));
+                widgets::muted(
+                    ui,
+                    format!("Não foi possível carregar os atendimentos: {e}"),
+                );
                 return None;
             }
         };
@@ -3310,9 +3348,17 @@ impl SaiopPanel {
                                 status_label(&self.status_filter).to_owned()
                             },
                             |ui| {
-                                ui.selectable_value(&mut self.status_filter, String::new(), "Todas");
+                                ui.selectable_value(
+                                    &mut self.status_filter,
+                                    String::new(),
+                                    "Todas",
+                                );
                                 for (k, label) in STATUS_OPTIONS {
-                                    ui.selectable_value(&mut self.status_filter, (*k).to_owned(), *label);
+                                    ui.selectable_value(
+                                        &mut self.status_filter,
+                                        (*k).to_owned(),
+                                        *label,
+                                    );
                                 }
                             },
                         );
@@ -4078,12 +4124,18 @@ impl SaiopPanel {
                     self.set_notice(
                         format!(
                             "Atendimento {} apagado.",
-                            if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
+                            if ed.reference_raw.is_empty() {
+                                "sem referência"
+                            } else {
+                                &ed.reference_raw
+                            }
                         ),
                         false,
                     );
                 }
-                Err(e) => self.set_notice(format!("Não foi possível apagar o atendimento: {e}"), true),
+                Err(e) => {
+                    self.set_notice(format!("Não foi possível apagar o atendimento: {e}"), true)
+                }
             }
         } else if close_clicked {
             self.confirm_delete = None;
@@ -4144,22 +4196,25 @@ impl SaiopPanel {
                             ),
                         }
                     }
-                    Err(e) => self.set_notice(format!("Não foi possível criar a tarefa: {e}"), true),
+                    Err(e) => {
+                        self.set_notice(format!("Não foi possível criar a tarefa: {e}"), true)
+                    }
                 }
             }
         } else if save_clicked {
             match store.save_saiop_attendance(&ed, self.base_version) {
                 Ok(saved_id) => {
                     if let Ok(updated_list) = store.list_saiop_attendances() {
-                        if let Some(reloaded) =
-                            updated_list.into_iter().find(|a| a.id == saved_id)
+                        if let Some(reloaded) = updated_list.into_iter().find(|a| a.id == saved_id)
                         {
                             self.load_into_editor(store, reloaded);
                         }
                     }
                     self.set_notice("Atendimento salvo.", false);
                 }
-                Err(e) => self.set_notice(format!("Não foi possível salvar o atendimento: {e}"), true),
+                Err(e) => {
+                    self.set_notice(format!("Não foi possível salvar o atendimento: {e}"), true)
+                }
             }
         }
     }
@@ -4193,7 +4248,14 @@ impl SaiopPanel {
                         .color(fg),
                     );
                     for flag in &ed.review_flags {
-                        ui.add(egui::Label::new(RichText::new(format!("• {flag}")).size(theme::SIZE_SMALL).color(fg)).wrap());
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("• {flag}"))
+                                    .size(theme::SIZE_SMALL)
+                                    .color(fg),
+                            )
+                            .wrap(),
+                        );
                     }
                     if ui
                         .add(widgets::secondary("Conferido: limpar alertas"))
@@ -4208,29 +4270,44 @@ impl SaiopPanel {
         form_section(ui, "Situação e prazo", |ui| {
             ui.columns(2, |cols| {
                 labeled(&mut cols[0], "Situação", |ui| {
-                    pick(ui, "ed-saiop-status", status_label(&ed.status).to_owned(), |ui| {
-                        for (k, label) in STATUS_OPTIONS {
-                            ui.selectable_value(&mut ed.status, (*k).to_owned(), *label);
-                        }
-                    });
+                    pick(
+                        ui,
+                        "ed-saiop-status",
+                        status_label(&ed.status).to_owned(),
+                        |ui| {
+                            for (k, label) in STATUS_OPTIONS {
+                                ui.selectable_value(&mut ed.status, (*k).to_owned(), *label);
+                            }
+                        },
+                    );
                 });
                 labeled(&mut cols[1], "Prioridade", |ui| {
-                    pick(ui, "ed-saiop-priority", priority_label(&ed.priority).to_owned(), |ui| {
-                        for (k, label) in PRIORITY_OPTIONS {
-                            ui.selectable_value(&mut ed.priority, (*k).to_owned(), *label);
-                        }
-                    });
+                    pick(
+                        ui,
+                        "ed-saiop-priority",
+                        priority_label(&ed.priority).to_owned(),
+                        |ui| {
+                            for (k, label) in PRIORITY_OPTIONS {
+                                ui.selectable_value(&mut ed.priority, (*k).to_owned(), *label);
+                            }
+                        },
+                    );
                 });
             });
             labeled(ui, "Prazo", |ui| {
                 crate::labels::date_field(ui, ("saiop-due", ed_id), &mut ed.due_date);
             });
             labeled(ui, "Tipo de prazo", |ui| {
-                pick(ui, "ed-saiop-due-kind", due_kind_label(&ed.due_kind).to_owned(), |ui| {
-                    for (k, label) in DUE_KIND_OPTIONS {
-                        ui.selectable_value(&mut ed.due_kind, (*k).to_owned(), *label);
-                    }
-                });
+                pick(
+                    ui,
+                    "ed-saiop-due-kind",
+                    due_kind_label(&ed.due_kind).to_owned(),
+                    |ui| {
+                        for (k, label) in DUE_KIND_OPTIONS {
+                            ui.selectable_value(&mut ed.due_kind, (*k).to_owned(), *label);
+                        }
+                    },
+                );
             });
             labeled(ui, "Responsável", |ui| {
                 ui.horizontal(|ui| {
@@ -4244,7 +4321,10 @@ impl SaiopPanel {
                 });
             });
             labeled(ui, "Motivo da prioridade", |ui| {
-                ui.add(egui::TextEdit::singleline(&mut ed.priority_reason).desired_width(f32::INFINITY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut ed.priority_reason)
+                        .desired_width(f32::INFINITY),
+                );
             });
         });
 
@@ -4253,9 +4333,12 @@ impl SaiopPanel {
                 if ed.document_id.is_some() {
                     ui.add_enabled(
                         false,
-                        egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY),
+                        egui::TextEdit::singleline(&mut ed.reference_raw)
+                            .desired_width(f32::INFINITY),
                     )
-                    .on_disabled_hover_text("É o número do documento ligado. Para mudar, desligue do documento.");
+                    .on_disabled_hover_text(
+                        "É o número do documento ligado. Para mudar, desligue do documento.",
+                    );
                 } else {
                     ui.add(egui::TextEdit::singleline(&mut ed.reference_raw).desired_width(f32::INFINITY))
                         .on_hover_text("Número do processo ou documento, ou um código provisório. Informe a referência ou o assunto.");
@@ -4296,8 +4379,9 @@ impl SaiopPanel {
                     }
                 });
                 if let Some(url) = ed.composed_sigadoc_url() {
-                    ui.hyperlink_to("Abrir no SIGADOC", url)
-                        .on_hover_text("Endereço montado a partir da referência; confira na página.");
+                    ui.hyperlink_to("Abrir no SIGADOC", url).on_hover_text(
+                        "Endereço montado a partir da referência; confira na página.",
+                    );
                 }
             }
             labeled(ui, "Assunto", |ui| {
@@ -4307,7 +4391,9 @@ impl SaiopPanel {
                 crate::labels::date_field(ui, ("saiop-entry", ed_id), &mut ed.entry_date);
             });
             labeled(ui, "Recebido de", |ui| {
-                ui.add(egui::TextEdit::singleline(&mut ed.received_from).desired_width(f32::INFINITY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut ed.received_from).desired_width(f32::INFINITY),
+                );
             });
             labeled(ui, "Observações", |ui| {
                 ui.add(
@@ -4318,33 +4404,62 @@ impl SaiopPanel {
             });
         });
 
-        fold(ui, "Condições e relações", ("saiop-fold-cond", ed_id), false, |ui| {
-            ui.spacing_mut().item_spacing.y = S2;
-            ui.columns(2, |cols| {
-                labeled(&mut cols[0], "Retorno para UAS?", |ui| {
-                    pick(ui, "ed-saiop-uas", tri_state_label(&ed.uas_return).to_owned(), |ui| {
-                        for (k, label) in TRI_STATE_OPTIONS {
-                            ui.selectable_value(&mut ed.uas_return, (*k).to_owned(), *label);
-                        }
+        fold(
+            ui,
+            "Condições e relações",
+            ("saiop-fold-cond", ed_id),
+            false,
+            |ui| {
+                ui.spacing_mut().item_spacing.y = S2;
+                ui.columns(2, |cols| {
+                    labeled(&mut cols[0], "Retorno para UAS?", |ui| {
+                        pick(
+                            ui,
+                            "ed-saiop-uas",
+                            tri_state_label(&ed.uas_return).to_owned(),
+                            |ui| {
+                                for (k, label) in TRI_STATE_OPTIONS {
+                                    ui.selectable_value(
+                                        &mut ed.uas_return,
+                                        (*k).to_owned(),
+                                        *label,
+                                    );
+                                }
+                            },
+                        );
+                    });
+                    labeled(&mut cols[1], "Assinado?", |ui| {
+                        pick(
+                            ui,
+                            "ed-saiop-signed",
+                            tri_state_label(&ed.signed_status).to_owned(),
+                            |ui| {
+                                for (k, label) in TRI_STATE_OPTIONS {
+                                    ui.selectable_value(
+                                        &mut ed.signed_status,
+                                        (*k).to_owned(),
+                                        *label,
+                                    );
+                                }
+                            },
+                        );
                     });
                 });
-                labeled(&mut cols[1], "Assinado?", |ui| {
-                    pick(ui, "ed-saiop-signed", tri_state_label(&ed.signed_status).to_owned(), |ui| {
-                        for (k, label) in TRI_STATE_OPTIONS {
-                            ui.selectable_value(&mut ed.signed_status, (*k).to_owned(), *label);
-                        }
-                    });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut ed.scheduled, "Agendado");
+                    ui.checkbox(&mut ed.sensitive, "Documento sensível");
                 });
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut ed.scheduled, "Agendado");
-                ui.checkbox(&mut ed.sensitive, "Documento sensível");
-            });
-            labeled(ui, "Apensado / juntado", |ui| {
-                ui.add(egui::TextEdit::singleline(&mut ed.attachment_relation).desired_width(f32::INFINITY))
-                    .on_hover_text("Relação de apensamento ou juntada informada na planilha ou por você.");
-            });
-        });
+                labeled(ui, "Apensado / juntado", |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut ed.attachment_relation)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .on_hover_text(
+                        "Relação de apensamento ou juntada informada na planilha ou por você.",
+                    );
+                });
+            },
+        );
 
         fold(ui, "Resultado", ("saiop-fold-result", ed_id), false, |ui| {
             ui.spacing_mut().item_spacing.y = S2;
@@ -4352,24 +4467,37 @@ impl SaiopPanel {
                 pick(
                     ui,
                     "ed-saiop-doctype",
-                    if ed.planned_doc_type.is_empty() { "Não definida".to_owned() } else { ed.planned_doc_type.clone() },
+                    if ed.planned_doc_type.is_empty() {
+                        "Não definida".to_owned()
+                    } else {
+                        ed.planned_doc_type.clone()
+                    },
                     |ui| {
                         for opt in DOC_TYPE_OPTIONS {
                             ui.selectable_value(
                                 &mut ed.planned_doc_type,
                                 (*opt).to_owned(),
-                                if opt.is_empty() { "Não definida" } else { *opt },
+                                if opt.is_empty() {
+                                    "Não definida"
+                                } else {
+                                    *opt
+                                },
                             );
                         }
                     },
                 );
             });
             labeled(ui, "Resultado da etapa", |ui| {
-                pick(ui, "ed-saiop-outcome", outcome_label(&ed.outcome).to_owned(), |ui| {
-                    for (k, label) in OUTCOME_OPTIONS {
-                        ui.selectable_value(&mut ed.outcome, (*k).to_owned(), *label);
-                    }
-                });
+                pick(
+                    ui,
+                    "ed-saiop-outcome",
+                    outcome_label(&ed.outcome).to_owned(),
+                    |ui| {
+                        for (k, label) in OUTCOME_OPTIONS {
+                            ui.selectable_value(&mut ed.outcome, (*k).to_owned(), *label);
+                        }
+                    },
+                );
             });
             labeled(ui, "Data de saída", |ui| {
                 crate::labels::date_field(ui, ("saiop-exit", ed_id), &mut ed.exit_date);
@@ -4378,7 +4506,10 @@ impl SaiopPanel {
                 ui.add(egui::TextEdit::singleline(&mut ed.sent_to).desired_width(f32::INFINITY));
             });
             if !ed.verification_raw.is_empty() {
-                widgets::small_muted(ui, format!("Verificação na planilha: {}", ed.verification_raw));
+                widgets::small_muted(
+                    ui,
+                    format!("Verificação na planilha: {}", ed.verification_raw),
+                );
             }
         });
 
@@ -4390,7 +4521,12 @@ impl SaiopPanel {
             } else {
                 store
                     .list_tasks()
-                    .map(|tasks| tasks.into_iter().filter(|t| ed.task_ids.contains(&t.id)).collect())
+                    .map(|tasks| {
+                        tasks
+                            .into_iter()
+                            .filter(|t| ed.task_ids.contains(&t.id))
+                            .collect()
+                    })
                     .unwrap_or_default()
             };
             fold(
@@ -4400,7 +4536,10 @@ impl SaiopPanel {
                 !linked.is_empty(),
                 |ui| {
                     if linked.is_empty() {
-                        widgets::small_muted(ui, "Nenhuma tarefa criada a partir deste atendimento.");
+                        widgets::small_muted(
+                            ui,
+                            "Nenhuma tarefa criada a partir deste atendimento.",
+                        );
                     }
                     for task in linked {
                         ui.horizontal_wrapped(|ui| {
@@ -4410,10 +4549,16 @@ impl SaiopPanel {
                             } else {
                                 ui.label(RichText::new(icon::CLOCK).color(c().muted));
                             }
-                            ui.label(RichText::new(&task.title).font(theme::font_strong(theme::SIZE_BODY)));
+                            ui.label(
+                                RichText::new(&task.title)
+                                    .font(theme::font_strong(theme::SIZE_BODY)),
+                            );
                             widgets::small_muted(ui, crate::labels::task_status(&task.status));
                             if !task.due_date.is_empty() {
-                                widgets::small_muted(ui, format!("prazo {}", crate::labels::date(&task.due_date)));
+                                widgets::small_muted(
+                                    ui,
+                                    format!("prazo {}", crate::labels::date(&task.due_date)),
+                                );
                             }
                             if ui
                                 .add(widgets::quiet("Abrir"))
@@ -4448,8 +4593,12 @@ impl SaiopPanel {
 
         fold(ui, "Anexos", ("saiop-fold-attach", ed_id), false, |ui| {
             if ed.id > 0 {
-                self.attachments
-                    .show(ui, store, crate::attachments::Owner::Attendance(ed.id), false);
+                self.attachments.show(
+                    ui,
+                    store,
+                    crate::attachments::Owner::Attendance(ed.id),
+                    false,
+                );
             } else {
                 widgets::small_muted(ui, "Salve o atendimento para poder anexar arquivos a ele.");
             }
@@ -4457,8 +4606,13 @@ impl SaiopPanel {
 
         // Histórico de eventos e registro original da planilha
         if ed.id > 0 {
-            fold(ui, "Linha do tempo", ("saiop-fold-events", ed_id), false, |ui| {
-                ui.horizontal(|ui| {
+            fold(
+                ui,
+                "Linha do tempo",
+                ("saiop-fold-events", ed_id),
+                false,
+                |ui| {
+                    ui.horizontal(|ui| {
                     let width = (ui.available_width() - 150.0).max(80.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.new_event_note)
@@ -4481,23 +4635,24 @@ impl SaiopPanel {
                         *save_clicked = true;
                     }
                 });
-                for ev in ed.events.iter().rev() {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!(
-                                "• {} • {} • {}: {}",
-                                crate::labels::datetime(&ev.when),
-                                ev.actor,
-                                crate::labels::saiop_event_kind(&ev.kind),
-                                ev.detail
-                            ))
-                            .size(theme::SIZE_SMALL)
-                            .color(c().muted),
-                        )
-                        .wrap(),
-                    );
-                }
-            });
+                    for ev in ed.events.iter().rev() {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!(
+                                    "• {} • {} • {}: {}",
+                                    crate::labels::datetime(&ev.when),
+                                    ev.actor,
+                                    crate::labels::saiop_event_kind(&ev.kind),
+                                    ev.detail
+                                ))
+                                .size(theme::SIZE_SMALL)
+                                .color(c().muted),
+                            )
+                            .wrap(),
+                        );
+                    }
+                },
+            );
             if let Ok(Some(raw_row)) = store.load_saiop_raw_row(ed.id) {
                 fold(
                     ui,

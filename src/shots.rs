@@ -127,9 +127,10 @@ impl Tour {
             .out
             .join(format!("{:02}-{}.png", self.index, self.name));
         let [width, height] = image.size;
-        let saved = image::RgbaImage::from_raw(width as u32, height as u32, image.as_raw().to_vec())
-            .context("imagem vazia")
-            .and_then(|picture| picture.save(&path).map_err(Into::into));
+        let saved =
+            image::RgbaImage::from_raw(width as u32, height as u32, image.as_raw().to_vec())
+                .context("imagem vazia")
+                .and_then(|picture| picture.save(&path).map_err(Into::into));
         match saved {
             Ok(()) => eprintln!("{}", path.display()),
             Err(error) => eprintln!("{}: {error}", path.display()),

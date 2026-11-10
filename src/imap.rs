@@ -347,7 +347,10 @@ impl Session {
             .to_socket_addrs()
             .with_context(|| format!("Não foi possível encontrar o servidor {}. Confira o nome do servidor e a conexão com a internet.", account.host))?
             .collect();
-        ensure!(!addresses.is_empty(), "O servidor de e-mail não tem um endereço válido.");
+        ensure!(
+            !addresses.is_empty(),
+            "O servidor de e-mail não tem um endereço válido."
+        );
         // Every address the name resolves to is tried: an IPv6 one without
         // a route must not stop an IPv4 one from working.
         let mut tcp = None;

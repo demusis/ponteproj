@@ -3,10 +3,10 @@ use crate::ai::{self, AiConfig, AiProvider, AiSettings, ApiKind, ModelInfo};
 use crate::chatgpt::{self, ChatGptSession, SharedSession};
 use crate::model::{Analysis, DocumentDetail, DocumentSummary};
 use crate::storage::Store;
-use anyhow::{Context, Result};
-use eframe::egui::{self, Color32, RichText};
 use crate::theme::{self, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
+use anyhow::{Context, Result};
+use eframe::egui::{self, Color32, RichText};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -258,7 +258,10 @@ impl DocTaskStatusSummary {
             } else if self.open_on_time == 1 {
                 ("1 em aberto, no prazo".to_owned(), Tone::Info)
             } else {
-                (format!("{} em aberto, no prazo", self.open_on_time), Tone::Info)
+                (
+                    format!("{} em aberto, no prazo", self.open_on_time),
+                    Tone::Info,
+                )
             }
         } else if self.completed > 0 {
             let text = if self.completed == 1 {
@@ -277,9 +280,7 @@ impl DocTaskStatusSummary {
     fn pill_parts(&self) -> (String, Tone) {
         let (label, _, _) = self.badge();
         let text = label
-            .trim_start_matches(|ch: char| {
-                matches!(ch, '⚠' | '⏰' | '●' | '✓' | '○' | ' ')
-            })
+            .trim_start_matches(['⚠', '⏰', '●', '✓', '○', ' '])
             .replace(" • ✓ ", " • concluídas: ")
             .replace(" • ", " · ");
         let tone = if self.overdue > 0 {
@@ -389,7 +390,11 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
             } else {
                 app.error(format!(
                     "{}; não foi possível converter os demais: {}",
-                    plural(count, "modelo antigo foi convertido", "modelos antigos foram convertidos"),
+                    plural(
+                        count,
+                        "modelo antigo foi convertido",
+                        "modelos antigos foram convertidos"
+                    ),
                     problems.join("; ")
                 ));
             }
@@ -419,13 +424,13 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
         app.select(id);
     }
     let viewport = egui::ViewportBuilder::default()
-            .with_title(format!(
-                "Ponte {} • Assistente documental",
-                env!("CARGO_PKG_VERSION")
-            ))
-            .with_icon(crate::icon::app_window_icon())
-            .with_inner_size(window_size())
-            .with_min_inner_size([900.0, 620.0]);
+        .with_title(format!(
+            "Ponte {} • Assistente documental",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .with_icon(crate::icon::app_window_icon())
+        .with_inner_size(window_size())
+        .with_min_inner_size([900.0, 620.0]);
     // The pictures of the screens are taken away from the desktop, without
     // taking the keyboard from whoever is working.
     #[cfg(feature = "shots")]
@@ -452,7 +457,6 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     .map_err(|error| anyhow::anyhow!("Não foi possível iniciar a janela: {error}"))
 }
 
-
 /// The sender of an e-mail for the document list: the address first, then
 /// the name ("Funadesp <f@x.br>" → "f@x.br · Funadesp").
 fn sender_line(from: &str) -> String {
@@ -470,7 +474,6 @@ fn sender_line(from: &str) -> String {
         _ => from.to_owned(),
     }
 }
-
 
 /// A pill in the colours of a tone (kept as the name the screens already use).
 fn pill(ui: &mut egui::Ui, text: impl Into<String>, tone: Tone) -> egui::Response {
@@ -594,11 +597,10 @@ fn document_row(ui: &mut egui::Ui, row: &DocRow) -> egui::Response {
         // Number on the left (cut with "…" when long), date on the right.
         let date = short_date(&document.last_seen_at);
         let width = content.available_width();
-        let date_galley = content.painter().layout_no_wrap(
-            date,
-            theme::font(theme::SIZE_SMALL),
-            p.muted,
-        );
+        let date_galley =
+            content
+                .painter()
+                .layout_no_wrap(date, theme::font(theme::SIZE_SMALL), p.muted);
         let mut job = egui::text::LayoutJob::simple_singleline(
             row.number.clone(),
             theme::font_strong(theme::SIZE_SMALL),
@@ -609,7 +611,8 @@ fn document_row(ui: &mut egui::Ui, row: &DocRow) -> egui::Response {
         job.wrap.break_anywhere = true;
         let number_galley = content.painter().layout_job(job);
         let height = number_galley.size().y.max(date_galley.size().y);
-        let (line, _) = content.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+        let (line, _) =
+            content.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
         content
             .painter()
             .galley(line.left_top(), number_galley, p.primary);
@@ -648,7 +651,7 @@ fn document_row(ui: &mut egui::Ui, row: &DocRow) -> egui::Response {
         if document.joined_children_count > 0 {
             pill(
                 ui,
-                plural(document.joined_children_count as usize, "juntado", "juntados"),
+                plural(document.joined_children_count, "juntado", "juntados"),
                 Tone::Violet,
             );
         }
@@ -836,7 +839,9 @@ impl SettingsSection {
 
     fn summary(self) -> &'static str {
         match self {
-            Self::Team => "Como este computador compartilha o acervo com outros computadores e com o celular.",
+            Self::Team => {
+                "Como este computador compartilha o acervo com outros computadores e com o celular."
+            }
             Self::Mail => "Contas de e-mail para importar mensagens como registros.",
             Self::Ai => "Opcional. Onde a análise e as minutas são geradas.",
             Self::Backup => "Guardar uma cópia do acervo e levar os dados para planilhas.",
@@ -1370,7 +1375,10 @@ impl PonteApp {
                         if result.attachments_added == 1 {
                             "foi acrescentado o anexo que faltava".to_owned()
                         } else {
-                            format!("foram acrescentados {} anexos que faltavam", result.attachments_added)
+                            format!(
+                                "foram acrescentados {} anexos que faltavam",
+                                result.attachments_added
+                            )
                         }
                     )
                 } else if result.already_imported {
@@ -1735,7 +1743,11 @@ impl PonteApp {
             out.push(Pending {
                 label: format!(
                     "{} à pasta compartilhada (botão Sincronizar, no rodapé)",
-                    if unsent == 1 { "1 alteração ainda não enviada".to_owned() } else { format!("{unsent} alterações ainda não enviadas") }
+                    if unsent == 1 {
+                        "1 alteração ainda não enviada".to_owned()
+                    } else {
+                        format!("{unsent} alterações ainda não enviadas")
+                    }
                 ),
                 go: PendingTarget::Network,
             });
@@ -2021,7 +2033,10 @@ impl PonteApp {
         if conflicts > 0 {
             return (
                 crate::theme::error(),
-                format!("⚠ {}", plural(conflicts, "conflito de edição", "conflitos de edição")),
+                format!(
+                    "⚠ {}",
+                    plural(conflicts, "conflito de edição", "conflitos de edição")
+                ),
                 format!("{full}\nDecida campo a campo."),
             );
         }
@@ -2050,27 +2065,55 @@ impl PonteApp {
             ),
             crate::intranet::IntranetMode::Host => {
                 if self.intranet.host_running() {
-                    (crate::theme::success(), "computador principal ativo".into(), full)
+                    (
+                        crate::theme::success(),
+                        "computador principal ativo".into(),
+                        full,
+                    )
                 } else {
-                    (crate::theme::warning(), "computador principal parado".into(), full)
+                    (
+                        crate::theme::warning(),
+                        "computador principal parado".into(),
+                        full,
+                    )
                 }
             }
             crate::intranet::IntranetMode::SharedFolder => {
                 if self.intranet.syncing() {
-                    (crate::theme::accent(), "sincronizando com a pasta…".into(), full)
+                    (
+                        crate::theme::accent(),
+                        "sincronizando com a pasta…".into(),
+                        full,
+                    )
                 } else if self.intranet.offline {
-                    (crate::theme::warning(), pending("pasta fora de alcance"), full)
+                    (
+                        crate::theme::warning(),
+                        pending("pasta fora de alcance"),
+                        full,
+                    )
                 } else if outbox > 0 {
                     (crate::theme::warning(), format!("{outbox} a enviar"), full)
                 } else if let Some((at, _)) = self.intranet.last_sync_finished {
-                    (crate::theme::success(), format!("em dia {}", since(at)), full)
+                    (
+                        crate::theme::success(),
+                        format!("em dia {}", since(at)),
+                        full,
+                    )
                 } else {
-                    (crate::theme::accent(), "pasta ainda não sincronizada".into(), full)
+                    (
+                        crate::theme::accent(),
+                        "pasta ainda não sincronizada".into(),
+                        full,
+                    )
                 }
             }
             crate::intranet::IntranetMode::Client => {
                 if self.intranet.offline {
-                    (crate::theme::warning(), pending("sem conexão com o principal"), full)
+                    (
+                        crate::theme::warning(),
+                        pending("sem conexão com o principal"),
+                        full,
+                    )
                 } else if let Some((at, _)) = self.intranet.last_sync_finished {
                     (
                         crate::theme::success(),
@@ -2078,7 +2121,11 @@ impl PonteApp {
                         full,
                     )
                 } else {
-                    (crate::theme::accent(), "conectando ao principal…".into(), full)
+                    (
+                        crate::theme::accent(),
+                        "conectando ao principal…".into(),
+                        full,
+                    )
                 }
             }
         }
@@ -2089,7 +2136,9 @@ impl PonteApp {
         self.intranet.refresh_client(&mut self.store, &self.db_path);
         match self.store.list_documents(&self.query) {
             Ok(documents) => self.documents = documents,
-            Err(error) => self.error(format!("Não foi possível atualizar a lista de documentos: {error}")),
+            Err(error) => self.error(format!(
+                "Não foi possível atualizar a lista de documentos: {error}"
+            )),
         }
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         self.task_badge = self
@@ -2150,14 +2199,18 @@ impl PonteApp {
                         Ok(children) => self.joined_children = children,
                         Err(error) => {
                             self.joined_children.clear();
-                            self.error(format!("Não foi possível ler os documentos juntados: {error}"));
+                            self.error(format!(
+                                "Não foi possível ler os documentos juntados: {error}"
+                            ));
                         }
                     }
                     detail.summary.joined_children_count = self.joined_children.len();
                     self.detail = Some(detail);
                     match self.store.similar_documents(id, 5) {
                         Ok(items) => self.similar = items,
-                        Err(error) => self.error(format!("Não foi possível buscar documentos parecidos: {error}")),
+                        Err(error) => self.error(format!(
+                            "Não foi possível buscar documentos parecidos: {error}"
+                        )),
                     }
                 }
             }
@@ -2232,7 +2285,9 @@ impl PonteApp {
                 let session = self.ai.chatgpt.clone();
                 self.set_chatgpt_session(session);
             }
-            Err(error) => self.error(format!("Não foi possível carregar a configuração da IA: {error}")),
+            Err(error) => self.error(format!(
+                "Não foi possível carregar a configuração da IA: {error}"
+            )),
         }
     }
 
@@ -2362,7 +2417,9 @@ impl PonteApp {
                 true
             }
             Err(error) => {
-                self.error(format!("Não foi possível salvar a configuração da IA: {error}"));
+                self.error(format!(
+                    "Não foi possível salvar a configuração da IA: {error}"
+                ));
                 false
             }
         }
@@ -2433,7 +2490,8 @@ impl PonteApp {
             }
             Some(Err(TryRecvError::Disconnected)) => {
                 self.model_fetch = None;
-                self.models_error = Some("Não houve resposta ao listar os modelos. Tente de novo.".into());
+                self.models_error =
+                    Some("Não houve resposta ao listar os modelos. Tente de novo.".into());
             }
             _ => {}
         }
@@ -2830,7 +2888,9 @@ impl PonteApp {
             } => {
                 // Every generation is recorded, accepted or refused.
                 if let Err(error) = self.store.record_generation(&record) {
-                    self.error(format!("Não foi possível registrar esta geração no histórico: {error}"));
+                    self.error(format!(
+                        "Não foi possível registrar esta geração no histórico: {error}"
+                    ));
                 }
                 match result {
                     Ok(body) => {
@@ -2865,7 +2925,9 @@ impl PonteApp {
                     self.message(format!("Cópia de segurança concluída: {}", path.display()));
                     self.backup_path = Some(path);
                 }
-                Err(error) => self.error(format!("Não foi possível fazer a cópia de segurança: {error}")),
+                Err(error) => self.error(format!(
+                    "Não foi possível fazer a cópia de segurança: {error}"
+                )),
             },
             WorkResult::MailFolders(result) => self.mail.accept_folders(result),
             WorkResult::MailMessages(result) => {
@@ -2908,9 +2970,9 @@ impl PonteApp {
                 Ok(report) => {
                     self.message(format!(
                         "Exportação concluída: {}, {} e {}, em {}. No CERES, envie cada arquivo .csv como um conjunto.",
-                        plural(report.documents as usize, "documento", "documentos"),
-                        plural(report.tasks as usize, "tarefa", "tarefas"),
-                        plural(report.attendances as usize, "atendimento", "atendimentos"),
+                        plural(report.documents, "documento", "documentos"),
+                        plural(report.tasks, "tarefa", "tarefas"),
+                        plural(report.attendances, "atendimento", "atendimentos"),
                         report.folder.display()
                     ));
                     crate::windows_ui::reveal_in_explorer(&report.folder);
@@ -3053,7 +3115,7 @@ impl PonteApp {
                 tasks.on_hover_text(format!(
                     "{} ou para hoje. (Ctrl+2)",
                     plural(
-                        self.task_badge as usize,
+                        self.task_badge,
                         "tarefa atrasada",
                         "tarefas atrasadas"
                     )
@@ -3533,31 +3595,37 @@ impl PonteApp {
             if widgets::chip(ui, self.doc_task_filter == DocTaskFilter::All, "Todos").clicked() {
                 self.doc_task_filter = DocTaskFilter::All;
             }
-            if widgets::chip(ui, self.doc_task_filter == DocTaskFilter::OpenAny, "Com tarefa")
-                .on_hover_text(format!("Documentos com tarefa aberta ({count_open_any})"))
-                .clicked()
+            if widgets::chip(
+                ui,
+                self.doc_task_filter == DocTaskFilter::OpenAny,
+                "Com tarefa",
+            )
+            .on_hover_text(format!("Documentos com tarefa aberta ({count_open_any})"))
+            .clicked()
             {
                 self.doc_task_filter = DocTaskFilter::OpenAny;
             }
-            if count_overdue > 0 || self.doc_task_filter == DocTaskFilter::Overdue {
-                if widgets::chip(
+            if (count_overdue > 0 || self.doc_task_filter == DocTaskFilter::Overdue)
+                && widgets::chip(
                     ui,
                     self.doc_task_filter == DocTaskFilter::Overdue,
                     format!("Atrasados · {count_overdue}"),
                 )
                 .on_hover_text("Mostrar só documentos com tarefa atrasada")
                 .clicked()
-                {
-                    self.doc_task_filter = DocTaskFilter::Overdue;
-                }
+            {
+                self.doc_task_filter = DocTaskFilter::Overdue;
             }
             let label = format!(
                 "Filtros {}",
-                if self.filters_open { icon::UP } else { icon::DOWN }
+                if self.filters_open {
+                    icon::UP
+                } else {
+                    icon::DOWN
+                }
             );
             let enabled = !self.documents.is_empty() || filters_active;
-            if widgets::chip(ui, self.filters_open || hidden_filter_on, label).clicked()
-                && enabled
+            if widgets::chip(ui, self.filters_open || hidden_filter_on, label).clicked() && enabled
             {
                 self.filters_open = !self.filters_open;
             }
@@ -3795,7 +3863,8 @@ impl PonteApp {
         let today_iso = chrono::Local::now().format("%Y-%m-%d").to_string();
         let task_summary = DocTaskStatusSummary::from_tasks(&doc_tasks, id, &today_iso);
         let (badge_text, badge_tone) = task_summary.pill_parts();
-        let source_link_ok = !detail.summary.manual && allowed_sigadoc_url(&detail.capture.source_url);
+        let source_link_ok =
+            !detail.summary.manual && allowed_sigadoc_url(&detail.capture.source_url);
 
         ui.horizontal(|ui| {
             ui.add(
@@ -3911,7 +3980,11 @@ impl PonteApp {
                 );
                 for child in &self.joined_children {
                     if ui
-                        .add(widgets::quiet(format!("{} {}", icon::JOINED, child.document_number)))
+                        .add(widgets::quiet(format!(
+                            "{} {}",
+                            icon::JOINED,
+                            child.document_number
+                        )))
                         .on_hover_text(format!("Abrir {} — {}", child.document_number, child.title))
                         .clicked()
                     {
@@ -3968,7 +4041,8 @@ impl PonteApp {
             if widgets::tab(ui, self.tab == Tab::Document, "Documento", false).clicked() {
                 self.tab = Tab::Document;
             }
-            let notes_tab = widgets::tab(ui, self.tab == Tab::Notes, "Notas e minutas", notes_dirty);
+            let notes_tab =
+                widgets::tab(ui, self.tab == Tab::Notes, "Notas e minutas", notes_dirty);
             if notes_dirty {
                 notes_tab.clone().on_hover_text("Há alterações não salvas.");
             }
@@ -4331,18 +4405,23 @@ impl PonteApp {
             .map(|editor| editor.note.clone())
             .unwrap_or_else(|| detail.note.clone());
         let mut edit = false;
-        titled_card(ui, "Nota", |_| {}, |ui| {
-            if note.trim().is_empty() {
-                widgets::muted(ui, "Nenhuma nota ainda.");
-            } else {
-                ui.add(
-                    egui::Label::new(RichText::new(note.trim()).color(theme::c().muted)).wrap(),
-                );
-            }
-            if ui.add(widgets::quiet("Editar nota")).clicked() {
-                edit = true;
-            }
-        });
+        titled_card(
+            ui,
+            "Nota",
+            |_| {},
+            |ui| {
+                if note.trim().is_empty() {
+                    widgets::muted(ui, "Nenhuma nota ainda.");
+                } else {
+                    ui.add(
+                        egui::Label::new(RichText::new(note.trim()).color(theme::c().muted)).wrap(),
+                    );
+                }
+                if ui.add(widgets::quiet("Editar nota")).clicked() {
+                    edit = true;
+                }
+            },
+        );
         if edit {
             self.tab = Tab::Notes;
         }
@@ -4367,50 +4446,55 @@ impl PonteApp {
         } else {
             "Atendimentos"
         };
-        titled_card(ui, title, |_| {}, |ui| {
-            for (index, att) in mine.iter().enumerate() {
-                if index > 0 {
-                    ui.separator();
-                }
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(widgets::quiet("Abrir")).clicked() {
-                            open_attendance = Some(att.id);
-                        }
-                        let tone = match att.status.as_str() {
-                            "concluida" => Tone::Ok,
-                            "aguardando" => Tone::Violet,
-                            _ => Tone::Info,
-                        };
-                        pill(ui, crate::saiop::status_label(&att.status), tone);
-                        if let Some(delta) = att.due_delta_days(today) {
-                            if delta > 0 {
-                                pill(ui, format!("vencido há {delta} d"), Tone::Danger);
-                            } else if delta == 0 {
-                                pill(ui, "vence hoje", Tone::Warn);
-                            } else {
-                                pill(
-                                    ui,
-                                    format!("prazo {}", crate::labels::date(&att.due_date)),
-                                    Tone::Neutral,
-                                );
+        titled_card(
+            ui,
+            title,
+            |_| {},
+            |ui| {
+                for (index, att) in mine.iter().enumerate() {
+                    if index > 0 {
+                        ui.separator();
+                    }
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(widgets::quiet("Abrir")).clicked() {
+                                open_attendance = Some(att.id);
                             }
-                        }
-                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            let name = if att.reference_raw.is_empty() {
-                                att.subject.clone()
-                            } else {
-                                att.reference_raw.clone()
+                            let tone = match att.status.as_str() {
+                                "concluida" => Tone::Ok,
+                                "aguardando" => Tone::Violet,
+                                _ => Tone::Info,
                             };
-                            ui.add(egui::Label::new(name).wrap());
-                            if !att.assignee.is_empty() {
-                                widgets::small_muted(ui, format!("resp.: {}", att.assignee));
+                            pill(ui, crate::saiop::status_label(&att.status), tone);
+                            if let Some(delta) = att.due_delta_days(today) {
+                                if delta > 0 {
+                                    pill(ui, format!("vencido há {delta} d"), Tone::Danger);
+                                } else if delta == 0 {
+                                    pill(ui, "vence hoje", Tone::Warn);
+                                } else {
+                                    pill(
+                                        ui,
+                                        format!("prazo {}", crate::labels::date(&att.due_date)),
+                                        Tone::Neutral,
+                                    );
+                                }
                             }
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                let name = if att.reference_raw.is_empty() {
+                                    att.subject.clone()
+                                } else {
+                                    att.reference_raw.clone()
+                                };
+                                ui.add(egui::Label::new(name).wrap());
+                                if !att.assignee.is_empty() {
+                                    widgets::small_muted(ui, format!("resp.: {}", att.assignee));
+                                }
+                            });
                         });
                     });
-                });
-            }
-        });
+                }
+            },
+        );
         if let Some(att_id) = open_attendance {
             if self.saiop.focus_attendance(&self.store, att_id) {
                 self.area = Area::Saiop;
@@ -4441,11 +4525,7 @@ impl PonteApp {
                 } else {
                     widgets::primary(label)
                 };
-                if ui
-                    .add_enabled(!busy, button)
-                    .on_hover_text(hover)
-                    .clicked()
-                {
+                if ui.add_enabled(!busy, button).on_hover_text(hover).clicked() {
                     analyze = true;
                 }
             },
@@ -4507,78 +4587,70 @@ impl PonteApp {
                             .iter()
                             .find(|t| t.action == suggestion.action);
                         ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Min),
-                                |ui| {
-                                    if let Some(task) = existing {
-                                        if ui
-                                            .add_enabled(!stale, widgets::quiet("Preparar outra"))
-                                            .on_hover_text(
-                                                "Cria mais uma tarefa com esta mesma providência.",
-                                            )
-                                            .clicked()
-                                        {
-                                            prepare = Some(suggestion.clone());
-                                        }
-                                        if ui.add(widgets::quiet("Abrir tarefa")).clicked() {
-                                            open_task = Some(task.clone());
-                                        }
-                                    } else if ui
-                                        .add_enabled(!stale, widgets::secondary("Criar tarefa"))
-                                        .on_hover_text(format!(
-                                            "Prepara uma tarefa: {}",
-                                            crate::labels::task_action(&suggestion.action)
-                                        ))
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                if let Some(task) = existing {
+                                    if ui
+                                        .add_enabled(!stale, widgets::quiet("Preparar outra"))
+                                        .on_hover_text(
+                                            "Cria mais uma tarefa com esta mesma providência.",
+                                        )
                                         .clicked()
                                     {
                                         prepare = Some(suggestion.clone());
                                     }
-                                    ui.with_layout(
-                                        egui::Layout::top_down(egui::Align::Min),
-                                        |ui| {
+                                    if ui.add(widgets::quiet("Abrir tarefa")).clicked() {
+                                        open_task = Some(task.clone());
+                                    }
+                                } else if ui
+                                    .add_enabled(!stale, widgets::secondary("Criar tarefa"))
+                                    .on_hover_text(format!(
+                                        "Prepara uma tarefa: {}",
+                                        crate::labels::task_action(&suggestion.action)
+                                    ))
+                                    .clicked()
+                                {
+                                    prepare = Some(suggestion.clone());
+                                }
+                                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(crate::labels::task_action(
+                                                &suggestion.action,
+                                            ))
+                                            .font(theme::font_strong(theme::SIZE_BODY)),
+                                        )
+                                        .wrap(),
+                                    );
+                                    match existing {
+                                        Some(task) => {
+                                            ui.horizontal_wrapped(|ui| {
+                                                pill(ui, "Tarefa criada", Tone::Ok);
+                                                widgets::small_muted(ui, task.title.as_str());
+                                            });
+                                        }
+                                        None => {
                                             ui.add(
                                                 egui::Label::new(
-                                                    RichText::new(crate::labels::task_action(&suggestion.action)).font(
-                                                        theme::font_strong(theme::SIZE_BODY),
-                                                    ),
+                                                    RichText::new(&suggestion.reason)
+                                                        .color(theme::c().muted),
                                                 )
                                                 .wrap(),
                                             );
-                                            match existing {
-                                                Some(task) => {
-                                                    ui.horizontal_wrapped(|ui| {
-                                                        pill(ui, "Tarefa criada", Tone::Ok);
-                                                        widgets::small_muted(
-                                                            ui,
-                                                            task.title.as_str(),
-                                                        );
-                                                    });
-                                                }
-                                                None => {
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            RichText::new(&suggestion.reason)
-                                                                .color(theme::c().muted),
-                                                        )
-                                                        .wrap(),
-                                                    );
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            RichText::new(format!(
-                                                                "Base indicada: {}",
-                                                                suggestion.evidence
-                                                            ))
-                                                            .size(theme::SIZE_SMALL)
-                                                            .color(theme::c().muted),
-                                                        )
-                                                        .wrap(),
-                                                    );
-                                                }
-                                            }
-                                        },
-                                    );
-                                },
-                            );
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(format!(
+                                                        "Base indicada: {}",
+                                                        suggestion.evidence
+                                                    ))
+                                                    .size(theme::SIZE_SMALL)
+                                                    .color(theme::c().muted),
+                                                )
+                                                .wrap(),
+                                            );
+                                        }
+                                    }
+                                });
+                            });
                         });
                     }
                 }
@@ -4620,10 +4692,13 @@ impl PonteApp {
                                         egui::Label::new(format!("Trecho: {}", citation.quote))
                                             .wrap(),
                                     );
-                                    widgets::small_muted(ui, format!(
-                                        "Fonte {} • importação nº {} • método {}",
-                                        source.id, source.capture_id, source.method
-                                    ));
+                                    widgets::small_muted(
+                                        ui,
+                                        format!(
+                                            "Fonte {} • importação nº {} • método {}",
+                                            source.id, source.capture_id, source.method
+                                        ),
+                                    );
                                     ui.collapsing("Texto da fonte utilizada", |ui| {
                                         let mut text = source.text.as_str();
                                         ui.add(
@@ -4664,8 +4739,6 @@ impl PonteApp {
         }
     }
 
-    /// Attendances of the cabinet control that point at this document.
-
     fn files_list(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
         match self.store.list_files(detail.summary.latest_capture_id) {
             Ok(files) if files.is_empty() => {
@@ -4702,7 +4775,11 @@ impl PonteApp {
                                 Tone::Neutral,
                             );
                         }
-                        pill(ui, format!("{} KB", file.size.div_ceil(1024)), Tone::Neutral);
+                        pill(
+                            ui,
+                            format!("{} KB", file.size.div_ceil(1024)),
+                            Tone::Neutral,
+                        );
                         widgets::small_muted(ui, file.text_status.as_str());
                     });
                     ui.horizontal_wrapped(|ui| {
@@ -4729,7 +4806,9 @@ impl PonteApp {
                                         crate::windows_ui::reveal_in_explorer(parent);
                                     }
                                 }
-                                Err(e) => self.error(format!("Não foi possível exportar o PDF: {e}")),
+                                Err(e) => {
+                                    self.error(format!("Não foi possível exportar o PDF: {e}"))
+                                }
                             }
                         }
                         if let Some(reference) = origin {
@@ -4742,12 +4821,19 @@ impl PonteApp {
                                 &file.sha256[..file.sha256.len().min(12)]
                             ),
                         )
-                        .on_hover_text(format!("Identificação completa do arquivo (SHA-256): {}", file.sha256));
+                        .on_hover_text(format!(
+                            "Identificação completa do arquivo (SHA-256): {}",
+                            file.sha256
+                        ));
                     });
                 }
             }
             Err(e) => {
-                notice_line(ui, Tone::Warn, format!("Não foi possível ler os arquivos: {e}"));
+                notice_line(
+                    ui,
+                    Tone::Warn,
+                    format!("Não foi possível ler os arquivos: {e}"),
+                );
             }
         }
     }
@@ -4759,7 +4845,11 @@ impl PonteApp {
             plural(detail.capture.references.len(), "referência", "referências")
         ));
         if detail.capture.coverage.recognized.is_empty() {
-            notice_line(ui, Tone::Warn, "Nenhuma parte da página foi marcada como reconhecida.");
+            notice_line(
+                ui,
+                Tone::Warn,
+                "Nenhuma parte da página foi marcada como reconhecida.",
+            );
         } else {
             ui.label("Reconhecido na página:");
             for item in &detail.capture.coverage.recognized {
@@ -4901,15 +4991,20 @@ impl PonteApp {
                     // Where the e-mail arrived: the account it was downloaded
                     // from, or (from a .eml file, or imported before this was
                     // kept) the addresses it was sent to.
-                    let account = metadata.get("mail_account").filter(|a| !a.trim().is_empty());
+                    let account = metadata
+                        .get("mail_account")
+                        .filter(|a| !a.trim().is_empty());
                     match (account, metadata.get("mail_account_name")) {
                         (Some(address), Some(name)) if !name.trim().is_empty() => {
                             rows.push(("Recebido na conta", format!("{name} ({address})")));
                         }
                         (Some(address), _) => rows.push(("Recebido na conta", address.clone())),
-                        (None, _) => match metadata.get("mail_to").filter(|t| !t.trim().is_empty()) {
+                        (None, _) => match metadata.get("mail_to").filter(|t| !t.trim().is_empty())
+                        {
                             Some(to) => rows.push(("Destinatário", to.clone())),
-                            None => rows.push(("Conta de recebimento", "não registrada".to_owned())),
+                            None => {
+                                rows.push(("Conta de recebimento", "não registrada".to_owned()))
+                            }
                         },
                     }
                     if let Some(from) = metadata.get("mail_from").filter(|f| !f.trim().is_empty()) {
@@ -4943,7 +5038,11 @@ impl PonteApp {
                                 "{} • {} caracteres de texto • {}",
                                 plural(files.len(), "PDF", "PDFs"),
                                 detail.capture.text.chars().count(),
-                                plural(detail.capture.references.len(), "referência", "referências")
+                                plural(
+                                    detail.capture.references.len(),
+                                    "referência",
+                                    "referências"
+                                )
                             ),
                         ));
                         facts(ui, ("doc-facts", detail.summary.id), &rows);
@@ -5205,7 +5304,10 @@ impl PonteApp {
             "Notas",
             |ui| {
                 if ui
-                    .add_enabled(dirty, widgets::primary(format!("{} Salvar notas", icon::SAVE)))
+                    .add_enabled(
+                        dirty,
+                        widgets::primary(format!("{} Salvar notas", icon::SAVE)),
+                    )
                     .clicked()
                 {
                     save = true;
@@ -5253,7 +5355,10 @@ impl PonteApp {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    widgets::muted(ui, format!("Não foi possível ler a importação da minuta: {e}"));
+                    widgets::muted(
+                        ui,
+                        format!("Não foi possível ler a importação da minuta: {e}"),
+                    );
                     return;
                 }
             }
@@ -5422,10 +5527,13 @@ impl PonteApp {
                                         }
                                         _ => name,
                                     };
-                                    let mut on = editor.selected_blocks.contains(&reference.block_uid);
+                                    let mut on =
+                                        editor.selected_blocks.contains(&reference.block_uid);
                                     if ui.checkbox(&mut on, label).changed() {
                                         if on {
-                                            editor.selected_blocks.insert(reference.block_uid.clone());
+                                            editor
+                                                .selected_blocks
+                                                .insert(reference.block_uid.clone());
                                         } else {
                                             editor.selected_blocks.remove(&reference.block_uid);
                                         }
@@ -5833,26 +5941,51 @@ impl PonteApp {
                 }
                 AiProvider::Local => {
                     let label = ui.label("Endereço do Ollama");
-                    ui.add(egui::TextEdit::singleline(&mut self.ai.local_url).desired_width(f32::INFINITY)).labelled_by(label.id);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai.local_url)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label.id);
                     ui.small("Padrão: http://127.0.0.1:11434. Instale o Ollama em ollama.com/download e baixe um modelo (ex.: ollama pull qwen3:4b-instruct).");
                 }
                 AiProvider::Cloud => {
                     ui.label(format!("Endereço: {} (fixo)", ai::CLOUD_URL));
                     let label = ui.label("Chave da sua conta");
-                    ui.add(egui::TextEdit::singleline(&mut self.ai.cloud_key).password(true).hint_text("cole aqui a chave gerada em ollama.com").desired_width(f32::INFINITY)).labelled_by(label.id);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai.cloud_key)
+                            .password(true)
+                            .hint_text("cole aqui a chave gerada em ollama.com")
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label.id);
                     ui.horizontal_wrapped(|ui| {
                         ui.small("Crie a chave em");
-                        ui.hyperlink_to(RichText::new("ollama.com/settings/keys").small(), "https://ollama.com/settings/keys");
+                        ui.hyperlink_to(
+                            RichText::new("ollama.com/settings/keys").small(),
+                            "https://ollama.com/settings/keys",
+                        );
                         ui.small("(conta gratuita por uso ou plano mensal).");
                     });
                     ui.colored_label(crate::theme::warning(), "Os textos enviados à IA saem deste computador para os servidores da Ollama (EUA, com possível roteamento pela Europa). A Ollama declara não registrar nem treinar com os dados.");
                 }
                 AiProvider::Remote => {
                     let label = ui.label("Endereço do servidor (HTTPS)");
-                    ui.add(egui::TextEdit::singleline(&mut self.ai.remote_url).desired_width(f32::INFINITY)).labelled_by(label.id);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai.remote_url)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label.id);
                     let label = ui.label("Chave do servidor (opcional)");
-                    ui.add(egui::TextEdit::singleline(&mut self.ai.remote_token).password(true).desired_width(f32::INFINITY)).labelled_by(label.id);
-                    ui.colored_label(crate::theme::warning(), "Os textos enviados à IA saem deste computador para esse servidor.");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai.remote_token)
+                            .password(true)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(label.id);
+                    ui.colored_label(
+                        crate::theme::warning(),
+                        "Os textos enviados à IA saem deste computador para esse servidor.",
+                    );
                 }
             }
             ui.add_space(6.0);
@@ -5866,7 +5999,13 @@ impl PonteApp {
                         .iter()
                         .find(|m| m.name == current)
                         .map(ModelInfo::label)
-                        .unwrap_or_else(|| if current.is_empty() { "Escolha um modelo".into() } else { current.clone() });
+                        .unwrap_or_else(|| {
+                            if current.is_empty() {
+                                "Escolha um modelo".into()
+                            } else {
+                                current.clone()
+                            }
+                        });
                     egui::ComboBox::from_id_salt("ai-model")
                         .selected_text(selected)
                         .width(320.0)
@@ -5878,11 +6017,25 @@ impl PonteApp {
                         });
                 } else {
                     let model = self.ai.model_mut();
-                    ui.add(egui::TextEdit::singleline(model).hint_text("nome do modelo").desired_width(320.0));
+                    ui.add(
+                        egui::TextEdit::singleline(model)
+                            .hint_text("nome do modelo")
+                            .desired_width(320.0),
+                    );
                 }
                 let fetching = self.model_fetch.is_some();
-                let button = egui::Button::new(if listed { "↻ Atualizar lista" } else { "Listar modelos do servidor" });
-                if ui.add_enabled(!fetching, button).on_hover_text("Consulta o servidor configurado e lista os modelos que ele oferece.").clicked() {
+                let button = egui::Button::new(if listed {
+                    "↻ Atualizar lista"
+                } else {
+                    "Listar modelos do servidor"
+                });
+                if ui
+                    .add_enabled(!fetching, button)
+                    .on_hover_text(
+                        "Consulta o servidor configurado e lista os modelos que ele oferece.",
+                    )
+                    .clicked()
+                {
                     refresh = true;
                 }
                 if fetching {
@@ -5896,10 +6049,15 @@ impl PonteApp {
                 ui.small(if self.models.len() == 1 {
                     "1 modelo oferecido por este servidor.".to_owned()
                 } else {
-                    format!("{} modelos oferecidos por este servidor.", self.models.len())
+                    format!(
+                        "{} modelos oferecidos por este servidor.",
+                        self.models.len()
+                    )
                 });
             } else if self.model_fetch.is_none() {
-                ui.small("Clique em “Listar modelos do servidor” para escolher entre os disponíveis.");
+                ui.small(
+                    "Clique em “Listar modelos do servidor” para escolher entre os disponíveis.",
+                );
             }
             ui.add_space(6.0);
             let remember_label = if self.ai.provider == AiProvider::ChatGpt {
@@ -5997,7 +6155,13 @@ impl PonteApp {
                 });
                 ui.horizontal(|ui| {
                     use_text = ui.add(widgets::primary("Levar ao editor")).clicked();
-                    if ui.add(widgets::secondary(format!("{} Copiar sugestão", icon::COPY))).clicked() {
+                    if ui
+                        .add(widgets::secondary(format!(
+                            "{} Copiar sugestão",
+                            icon::COPY
+                        )))
+                        .clicked()
+                    {
                         ui.ctx().copy_text(suggestion.body.clone());
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -6176,9 +6340,6 @@ impl PonteApp {
         }
     }
 
-    /// The window "Material utilizado": everything a generation used, as
-    /// recorded at the time, so the text can be read with its basis.
-
     fn request_trash(&mut self, target: crate::trash::Target) {
         use crate::trash::Kind;
         if self.worker.is_some() || self.pdf_reader.busy() {
@@ -6239,7 +6400,7 @@ impl PonteApp {
                 self.message(format!(
                     "Lixeira: {} por estar na lixeira há mais de {}.",
                     plural(
-                        count as usize,
+                        count,
                         "item foi apagado de vez",
                         "itens foram apagados de vez"
                     ),
@@ -6247,7 +6408,9 @@ impl PonteApp {
                 ));
                 self.refresh();
             }
-            Err(error) => self.error(format!("Não foi possível esvaziar a lixeira automaticamente: {error}")),
+            Err(error) => self.error(format!(
+                "Não foi possível esvaziar a lixeira automaticamente: {error}"
+            )),
         }
     }
 
@@ -6740,7 +6903,6 @@ impl eframe::App for PonteApp {
     }
 }
 
-
 /// Development only: the screens pictured by `--shots`, in order. Each step
 /// sets everything it needs, so any of them can be taken alone.
 #[cfg(feature = "shots")]
@@ -7053,8 +7215,7 @@ fn allowed_sigadoc_url(raw_url: &str) -> bool {
 mod tests {
     use super::{
         allowed_sigadoc_url, library_panel, DocPriorityFilter, DocSort, DocTaskFilter,
-        DocTaskStatusSummary, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION,
-        LIBRARY_MIN_WIDTH,
+        DocTaskStatusSummary, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION, LIBRARY_MIN_WIDTH,
     };
     use crate::tasks::Task;
 
@@ -7330,7 +7491,11 @@ mod tests {
         assert!(s2.matches(DocTaskFilter::OpenAny));
         assert!(!s2.matches(DocTaskFilter::Overdue));
         assert_eq!(s2.badge().1, crate::theme::on_time());
-        assert_ne!(crate::theme::on_time(), crate::theme::success(), "open and done never share a colour");
+        assert_ne!(
+            crate::theme::on_time(),
+            crate::theme::success(),
+            "open and done never share a colour"
+        );
         assert!(s2.badge().0.contains("no prazo"));
 
         let s3 = DocTaskStatusSummary::from_tasks(&tasks, 3, today);

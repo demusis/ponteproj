@@ -291,7 +291,8 @@ impl PdfPanel {
     fn open_source(&mut self, store: &Store, source: Source, label: &str, ctx: &egui::Context) {
         if self.job.is_some() {
             self.open = true;
-            self.message = "Aguarde o fim da leitura em andamento antes de abrir outro arquivo.".into();
+            self.message =
+                "Aguarde o fim da leitura em andamento antes de abrir outro arquivo.".into();
             return;
         }
         self.selection = Some(Selection {
@@ -374,7 +375,9 @@ impl PdfPanel {
                                                         selection.text = Some(text);
                                                     }
                                                     Err(e) => {
-                                                        self.message = format!("Texto reconhecido não salvo: {e}")
+                                                        self.message = format!(
+                                                            "Texto reconhecido não salvo: {e}"
+                                                        )
                                                     }
                                                 }
                                             }
@@ -383,7 +386,10 @@ impl PdfPanel {
                                                 selection.text = Some(text);
                                             }
                                         },
-                                        Err(e) => self.message = format!("Não foi possível reconhecer o texto: {e}"),
+                                        Err(e) => {
+                                            self.message =
+                                                format!("Não foi possível reconhecer o texto: {e}")
+                                        }
                                     }
                                 }
                             }

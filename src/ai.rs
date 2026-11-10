@@ -906,7 +906,10 @@ pub fn generate_draft(settings: &AiSettings, job: &DraftJob, reporter: &Reporter
                     Ok(body)
                 },
             )?;
-            ensure!(body.len() <= MAX_GENERATED_BYTES, "A minuta passa de 128 KB.");
+            ensure!(
+                body.len() <= MAX_GENERATED_BYTES,
+                "A minuta passa de 128 KB."
+            );
             return Ok(body);
         }
         let sources = &job.sources;
@@ -1035,8 +1038,9 @@ fn endpoint(settings: &AiSettings, route: &str) -> Result<(Url, bool)> {
         settings.token.len() <= 16 * 1024 && !settings.token.chars().any(char::is_control),
         "Chave inválida."
     );
-    let mut url = Url::parse(settings.base_url.trim())
-        .context("Endereço do servidor de IA inválido; informe http://localhost:11434 ou um endereço https.")?;
+    let mut url = Url::parse(settings.base_url.trim()).context(
+        "Endereço do servidor de IA inválido; informe http://localhost:11434 ou um endereço https.",
+    )?;
     ensure!(
         url.username().is_empty() && url.password().is_none(),
         "O endereço não pode conter usuário nem senha."
@@ -1045,7 +1049,9 @@ fn endpoint(settings: &AiSettings, route: &str) -> Result<(Url, bool)> {
         url.query().is_none() && url.fragment().is_none(),
         "O endereço não pode conter parâmetros nem fragmentos; use o campo da chave."
     );
-    let host = url.host_str().context("O endereço do servidor de IA está incompleto.")?;
+    let host = url
+        .host_str()
+        .context("O endereço do servidor de IA está incompleto.")?;
     let local = host.eq_ignore_ascii_case("localhost")
         || host
             .trim_matches(['[', ']'])

@@ -197,7 +197,8 @@ pub fn tab(ui: &mut Ui, selected: bool, label: impl Into<WidgetText>, dirty: boo
             color
         };
         let pos = egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0 - 1.0);
-        ui.painter().galley_with_override_text_color(pos, galley, color);
+        ui.painter()
+            .galley_with_override_text_color(pos, galley, color);
         if dirty {
             ui.painter().circle_filled(
                 egui::pos2(rect.right() - 4.0, rect.center().y - 1.0),

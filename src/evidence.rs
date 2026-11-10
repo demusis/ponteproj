@@ -255,8 +255,7 @@ impl SourcesPanel {
             Ok(value) => {
                 draft.prepared = Some(value);
                 draft.selected.clear();
-                draft.message =
-                    "Marque os textos ou páginas que deseja enviar à IA.".into();
+                draft.message = "Marque os textos ou páginas que deseja enviar à IA.".into();
             }
             Err(e) => draft.message = e,
         }

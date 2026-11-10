@@ -114,7 +114,8 @@ impl Store {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).context("Não foi possível criar a pasta do acervo.")?;
         }
-        let mut conn = Connection::open(path).context("Não foi possível abrir o acervo deste computador.")?;
+        let mut conn =
+            Connection::open(path).context("Não foi possível abrir o acervo deste computador.")?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.create_scalar_function(
             "ponte_client_schema",
@@ -916,7 +917,8 @@ impl Store {
             "Já existe um arquivo neste destino; escolha outro nome."
         );
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent).context("Não foi possível criar a pasta da cópia de segurança.")?;
+            std::fs::create_dir_all(parent)
+                .context("Não foi possível criar a pasta da cópia de segurança.")?;
         }
         // SQLite's online backup includes committed WAL pages as a consistent snapshot.
         self.conn
@@ -1079,8 +1081,9 @@ fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
 }
 
 fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    let plain = unseal(bytes)
-        .context("Não foi possível abrir o conteúdo protegido; use a conta do Windows que o gravou.")?;
+    let plain = unseal(bytes).context(
+        "Não foi possível abrir o conteúdo protegido; use a conta do Windows que o gravou.",
+    )?;
     serde_json::from_slice(&plain)
         .context("O conteúdo protegido está danificado ou em formato incompatível.")
 }

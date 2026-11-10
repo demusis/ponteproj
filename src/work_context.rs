@@ -366,25 +366,77 @@ pub fn provenance(ui: &mut eframe::egui::Ui, detail: &crate::model::DocumentDeta
     {
         crate::widgets::field_label(ui, "Dados do documento no SIGADOC");
         crate::widgets::small_muted(ui, "Informações efetivamente importadas. Situação e datas correspondem à importação, não a uma consulta em tempo real.");
-        egui::Grid::new(("document-facts",detail.summary.id)).num_columns(2).striped(true).max_col_width(600.0).show(ui,|ui| {
-            ui.label("Documento");ui.label(&detail.capture.document_number);ui.end_row();
-            for key in ["document_type","document_date","medium","document_model","classification","process_number","via_code"] {
-                ui.label(metadata_label(key));ui.add(egui::Label::new(metadata.get(key).map(String::as_str).unwrap_or("Não disponível nos campos importados")).wrap());ui.end_row();
-            }
-        });
+        egui::Grid::new(("document-facts", detail.summary.id))
+            .num_columns(2)
+            .striped(true)
+            .max_col_width(600.0)
+            .show(ui, |ui| {
+                ui.label("Documento");
+                ui.label(&detail.capture.document_number);
+                ui.end_row();
+                for key in [
+                    "document_type",
+                    "document_date",
+                    "medium",
+                    "document_model",
+                    "classification",
+                    "process_number",
+                    "via_code",
+                ] {
+                    ui.label(metadata_label(key));
+                    ui.add(
+                        egui::Label::new(
+                            metadata
+                                .get(key)
+                                .map(String::as_str)
+                                .unwrap_or("Não disponível nos campos importados"),
+                        )
+                        .wrap(),
+                    );
+                    ui.end_row();
+                }
+            });
         crate::widgets::small_muted(ui, "A classificação documental oficial é distinta dos assuntos e da prioridade definidos no aplicativo.");
     }
     ui.separator();
     {
         crate::widgets::field_label(ui, "Pessoas, situação e acesso no SIGADOC");
-        egui::Grid::new(("source-facts",detail.summary.id)).num_columns(2).striped(true).max_col_width(600.0).show(ui,|ui| {
-            for key in ["origin","registered_by","recipient","current_holder","via_status","signature_status","signature_person","access_level","access_people"] {
-                ui.label(metadata_label(key));ui.add(egui::Label::new(metadata.get(key).map(String::as_str).unwrap_or("Não disponível nos campos importados")).wrap());ui.end_row();
-            }
-            for key in ["sender","sent_at","received_at"] {
-                if let Some(value)=metadata.get(key){ui.label(metadata_label(key));ui.add(egui::Label::new(value).wrap());ui.end_row();}
-            }
-        });
+        egui::Grid::new(("source-facts", detail.summary.id))
+            .num_columns(2)
+            .striped(true)
+            .max_col_width(600.0)
+            .show(ui, |ui| {
+                for key in [
+                    "origin",
+                    "registered_by",
+                    "recipient",
+                    "current_holder",
+                    "via_status",
+                    "signature_status",
+                    "signature_person",
+                    "access_level",
+                    "access_people",
+                ] {
+                    ui.label(metadata_label(key));
+                    ui.add(
+                        egui::Label::new(
+                            metadata
+                                .get(key)
+                                .map(String::as_str)
+                                .unwrap_or("Não disponível nos campos importados"),
+                        )
+                        .wrap(),
+                    );
+                    ui.end_row();
+                }
+                for key in ["sender", "sent_at", "received_at"] {
+                    if let Some(value) = metadata.get(key) {
+                        ui.label(metadata_label(key));
+                        ui.add(egui::Label::new(value).wrap());
+                        ui.end_row();
+                    }
+                }
+            });
         crate::widgets::small_muted(ui, "De/origem não identifica necessariamente quem tramitou. Recebimento e transferência também podem estar registrados na aba Histórico, com os rótulos da fonte.");
         crate::widgets::small_muted(ui, "Marca de assinatura e nível de acesso são transcritos da fonte; não comprovam a assinatura nem alteram permissões. Ciência/conclusão local não tramita no SIGADOC.");
     }

@@ -812,7 +812,10 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
     for block in &record.blocks {
         ensure_uid(&block.uid)?;
         ensure_text(&block.name, MAX_NAME, "O nome da instrução")?;
-        ensure!(block.mode.len() <= 4096, "Os dados da geração do texto são inválidos.");
+        ensure!(
+            block.mode.len() <= 4096,
+            "Os dados da geração do texto são inválidos."
+        );
     }
     for uid in &record.example_uids {
         ensure_uid(uid)?;
@@ -831,7 +834,10 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
         );
     }
     if let Outcome::Refused { reason } = &record.outcome {
-        ensure!(reason.len() <= 8 * 1024, "Os dados da geração do texto são inválidos.");
+        ensure!(
+            reason.len() <= 8 * 1024,
+            "Os dados da geração do texto são inválidos."
+        );
     }
     let bytes: usize = record.blocks.iter().map(|b| b.text.len()).sum::<usize>()
         + record.request_guidance.len()
@@ -840,7 +846,10 @@ pub(crate) fn validate_record(record: &GenerationRecord) -> Result<()> {
             .iter()
             .map(|c| c.len())
             .sum::<usize>();
-    ensure!(bytes <= 512 * 1024, "Os dados da geração do texto são grandes demais.");
+    ensure!(
+        bytes <= 512 * 1024,
+        "Os dados da geração do texto são grandes demais."
+    );
     Ok(())
 }
 
@@ -2065,7 +2074,11 @@ impl Store {
         ensure!(
             users.is_empty(),
             "Esta instrução é usada {} {}. Arquive-a em vez de apagar.",
-            if users.len() == 1 { "pelo modelo" } else { "pelos modelos" },
+            if users.len() == 1 {
+                "pelo modelo"
+            } else {
+                "pelos modelos"
+            },
             users.join(", ")
         );
         let actor = self.active_actor();

@@ -104,7 +104,7 @@ if (-not [string]::IsNullOrWhiteSpace($ToolsDirectory)) {
     Write-Host "Cargo do PATH: $cargoExecutable"
 }
 
-$actions = if ($Action -eq 'All') { @('Check', 'Test', 'Release') } else { @($Action) }
+$actions = if ($Action -eq 'All') { @('Format', 'Lint', 'Check', 'Test', 'Release') } else { @($Action) }
 $cargoArguments = @{
     'Check' = @('check', '--all-targets', '--locked')
     'Test' = @('test', '--all-targets', '--locked')

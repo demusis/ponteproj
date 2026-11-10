@@ -741,7 +741,13 @@ impl AttachmentsPanel {
         let list = match store.list_attachments(owner) {
             Ok(list) => list,
             Err(error) => {
-                soft_note(ui, Tone::Warn, icon::WARNING, &format!("Não foi possível ler os anexos: {error}"), None);
+                soft_note(
+                    ui,
+                    Tone::Warn,
+                    icon::WARNING,
+                    &format!("Não foi possível ler os anexos: {error}"),
+                    None,
+                );
                 return;
             }
         };
@@ -782,8 +788,16 @@ impl AttachmentsPanel {
         }
         if !self.message.is_empty() {
             ui.add_space(theme::S1);
-            let tone = if self.message_is_error { Tone::Danger } else { Tone::Ok };
-            let glyph = if self.message_is_error { icon::ERROR } else { icon::CHECK };
+            let tone = if self.message_is_error {
+                Tone::Danger
+            } else {
+                Tone::Ok
+            };
+            let glyph = if self.message_is_error {
+                icon::ERROR
+            } else {
+                icon::CHECK
+            };
             let mut close = false;
             soft_note(ui, tone, glyph, &self.message, Some(&mut close));
             if close {
@@ -792,12 +806,15 @@ impl AttachmentsPanel {
         }
         if list.is_empty() {
             ui.add_space(theme::S1);
-            widgets::small_muted(ui, match owner {
-                Owner::Document(_) => "Nenhum arquivo anexado a este documento.",
-                Owner::Task(_) => "Nenhum arquivo anexado a esta tarefa.",
-                Owner::Attendance(_) => "Nenhum arquivo anexado a este atendimento.",
-                Owner::Example(_) => "Nenhum arquivo anexado a este exemplo.",
-            });
+            widgets::small_muted(
+                ui,
+                match owner {
+                    Owner::Document(_) => "Nenhum arquivo anexado a este documento.",
+                    Owner::Task(_) => "Nenhum arquivo anexado a esta tarefa.",
+                    Owner::Attendance(_) => "Nenhum arquivo anexado a este atendimento.",
+                    Owner::Example(_) => "Nenhum arquivo anexado a este exemplo.",
+                },
+            );
         }
         let mut save_description: Option<(i64, String)> = None;
         for (index, meta) in list.iter().enumerate() {

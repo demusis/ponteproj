@@ -1,6 +1,8 @@
 //! The Ponte library crate: every module of the program. `main.rs` only
 //! decides whether to open the window, serve the browser extension or run a
 //! command-line option.
+// The development-only screen tour appends its hooks at the end of the files.
+#![cfg_attr(feature = "shots", allow(clippy::items_after_test_module))]
 pub mod ai;
 #[cfg(feature = "desktop")]
 pub mod app;
@@ -62,8 +64,8 @@ pub mod theme;
 #[cfg(feature = "desktop")]
 pub mod widgets;
 
+#[cfg(feature = "shots")]
+pub mod shots;
 /// Sample library for the pictures of the screens (development only).
 #[cfg(any(test, feature = "shots"))]
 pub mod shots_data;
-#[cfg(feature = "shots")]
-pub mod shots;

@@ -4,16 +4,15 @@
 //! Network work never runs here. `MailPanel::show` returns a `MailAction`
 //! request; the app runs it on a worker thread and hands the outcome back
 //! through `accept_folders`, `accept_messages` and `accept_imports`.
+use crate::theme::{self, icon};
+use crate::widgets::{self, Tone};
 use crate::{
     imap::{Filter, Folder, MailAccount, MessageSummary, DEFAULT_PORT},
     mail::MailImport,
     storage::Store,
 };
-use crate::theme::{self, icon};
-use crate::widgets::{self, Tone};
 use eframe::egui::{self, Color32, RichText};
 use std::collections::{BTreeMap, BTreeSet};
-
 
 /// A request for the app to run on a worker thread.
 pub enum MailAction {
@@ -280,7 +279,14 @@ impl MailPanel {
                     .map(|f| f.raw.clone());
                 self.folder_raw = pick.unwrap_or_default();
                 let n = self.folders.iter().filter(|f| !f.no_select).count();
-                self.set_notice(if n == 1 { "Conectado. 1 pasta disponível.".to_owned() } else { format!("Conectado. {n} pastas disponíveis.") }, false);
+                self.set_notice(
+                    if n == 1 {
+                        "Conectado. 1 pasta disponível.".to_owned()
+                    } else {
+                        format!("Conectado. {n} pastas disponíveis.")
+                    },
+                    false,
+                );
             }
             Err(e) => self.set_notice(e, true),
         }
@@ -359,12 +365,23 @@ impl MailPanel {
                         };
                         self.summary.push((crate::theme::warning(), line));
                     } else {
-                        let mut line = format!("✓ {title} — {}", if done.attachments_added == 1 { "1 anexo".to_owned() } else { format!("{} anexos", done.attachments_added) });
+                        let mut line = format!(
+                            "✓ {title} — {}",
+                            if done.attachments_added == 1 {
+                                "1 anexo".to_owned()
+                            } else {
+                                format!("{} anexos", done.attachments_added)
+                            }
+                        );
                         if !done.attachments_skipped.is_empty() {
                             line.push_str(&format!(
                                 ", {} não anexado{}",
                                 done.attachments_skipped.len(),
-                                if done.attachments_skipped.len() == 1 { "" } else { "s" }
+                                if done.attachments_skipped.len() == 1 {
+                                    ""
+                                } else {
+                                    "s"
+                                }
                             ));
                         }
                         self.summary.push((crate::theme::success(), line));
@@ -376,14 +393,18 @@ impl MailPanel {
                         ));
                     }
                     for note in &done.notes {
-                        self.summary
-                            .push((crate::theme::warning(), format!("    {}", truncate(note, 160))));
+                        self.summary.push((
+                            crate::theme::warning(),
+                            format!("    {}", truncate(note, 160)),
+                        ));
                     }
                     ok += 1;
                 }
                 Err(e) => {
-                    self.summary
-                        .push((crate::theme::error(), format!("✗ {}: {e}", truncate(&subject, 80))));
+                    self.summary.push((
+                        crate::theme::error(),
+                        format!("✗ {}: {e}", truncate(&subject, 80)),
+                    ));
                     failed += 1;
                 }
             }
@@ -410,7 +431,14 @@ impl MailPanel {
                 false,
             )
         } else {
-            (format!("⚠ {} importada{}, {failed} com erro.", ok, if ok == 1 { "" } else { "s" }), false)
+            (
+                format!(
+                    "⚠ {} importada{}, {failed} com erro.",
+                    ok,
+                    if ok == 1 { "" } else { "s" }
+                ),
+                false,
+            )
         });
     }
 
@@ -546,7 +574,11 @@ impl MailPanel {
         ui.horizontal_wrapped(|ui| {
             let name = account.as_ref().map(|a| a.name.clone()).unwrap_or_default();
             ui.label(RichText::new(name).font(theme::font_strong(theme::SIZE_BODY)));
-            widgets::pill(ui, crate::imap::folder_display_name(&self.folder_raw), Tone::Neutral);
+            widgets::pill(
+                ui,
+                crate::imap::folder_display_name(&self.folder_raw),
+                Tone::Neutral,
+            );
             widgets::pill(ui, filter.label(), Tone::Neutral);
             if ui
                 .add_enabled(
@@ -687,10 +719,7 @@ impl MailPanel {
                 );
                 ui.add_space(theme::S1);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!busy, widgets::danger("Excluir"))
-                        .clicked()
-                    {
+                    if ui.add_enabled(!busy, widgets::danger("Excluir")).clicked() {
                         self.confirm_delete_account = false;
                         if let Some(uid) = self.selected.clone() {
                             match store.delete_mail_account(&uid) {
@@ -850,7 +879,8 @@ impl MailPanel {
             ui.add_space(theme::S2);
             ui.horizontal_wrapped(|ui| {
                 let can_connect = account.is_some() && !busy;
-                let connect = widgets::secondary(format!("{} Conectar e listar pastas", icon::SYNC));
+                let connect =
+                    widgets::secondary(format!("{} Conectar e listar pastas", icon::SYNC));
                 if ui.add_enabled(can_connect, connect).clicked() {
                     if let Some(a) = account.clone() {
                         if a.password.is_empty() {
@@ -1020,7 +1050,10 @@ impl MailPanel {
                 if ui.add(widgets::quiet("Desmarcar")).clicked() {
                     self.checked.clear();
                 }
-                if ui.add(widgets::quiet("Marcar só as não importadas")).clicked() {
+                if ui
+                    .add(widgets::quiet("Marcar só as não importadas"))
+                    .clicked()
+                {
                     self.checked = self
                         .messages
                         .iter()
@@ -1086,14 +1119,19 @@ impl MailPanel {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     widgets::small_muted(ui, m.date.clone());
-                                    widgets::small_muted(ui, crate::labels::file_size(m.size as u64));
+                                    widgets::small_muted(
+                                        ui,
+                                        crate::labels::file_size(m.size as u64),
+                                    );
                                     if self.imported.contains(&m.uid) {
                                         ui.horizontal(|ui| {
                                             widgets::pill(ui, "Já no acervo", Tone::Warn)
                                         });
                                     }
                                     if m.flagged {
-                                        ui.label(RichText::new(icon::STAR).size(16.0).color(p.warn));
+                                        ui.label(
+                                            RichText::new(icon::STAR).size(16.0).color(p.warn),
+                                        );
                                     }
                                 },
                             );
@@ -1285,24 +1323,47 @@ impl MailPanel {
                 self.filter = Some(Filter::All);
                 self.messages_folder = "INBOX".into();
                 let rows = [
-                    ("Remetente de exemplo <remetente@exemplo.org>", "Ofício 123/2026 - solicitação de informações", "2026-11-09", false, false, 184_000),
-                    ("Departamento Jurídico", "Re: Processo 2026/00431 - parecer", "2026-11-08", true, true, 2_400_000),
+                    (
+                        "Remetente de exemplo <remetente@exemplo.org>",
+                        "Ofício 123/2026 - solicitação de informações",
+                        "2026-11-09",
+                        false,
+                        false,
+                        184_000,
+                    ),
+                    (
+                        "Departamento Jurídico",
+                        "Re: Processo 2026/00431 - parecer",
+                        "2026-11-08",
+                        true,
+                        true,
+                        2_400_000,
+                    ),
                     ("Setor de Protocolo", "", "2026-11-05", true, false, 52_000),
-                    ("Diretoria-Geral", "Convocação para reunião de segunda-feira", "2026-11-03", true, false, 91_000),
+                    (
+                        "Diretoria-Geral",
+                        "Convocação para reunião de segunda-feira",
+                        "2026-11-03",
+                        true,
+                        false,
+                        91_000,
+                    ),
                 ];
                 self.messages = rows
                     .iter()
                     .enumerate()
-                    .map(|(i, (from, subject, date, seen, flagged, size))| MessageSummary {
-                        uid: i as u32 + 1,
-                        from: (*from).into(),
-                        subject: (*subject).into(),
-                        date: (*date).into(),
-                        message_id: format!("<exemplo-{i}@exemplo>"),
-                        flagged: *flagged,
-                        seen: *seen,
-                        size: *size,
-                    })
+                    .map(
+                        |(i, (from, subject, date, seen, flagged, size))| MessageSummary {
+                            uid: i as u32 + 1,
+                            from: (*from).into(),
+                            subject: (*subject).into(),
+                            date: (*date).into(),
+                            message_id: format!("<exemplo-{i}@exemplo>"),
+                            flagged: *flagged,
+                            seen: *seen,
+                            size: *size,
+                        },
+                    )
                     .collect();
                 self.messages_loaded = true;
                 self.imported.insert(3);

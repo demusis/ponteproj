@@ -131,10 +131,7 @@ struct TaskNode {
 }
 fn all_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
     let count: i64 = conn.query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))?;
-    ensure!(
-        count <= 10000,
-        "Há tarefas demais para esta operação."
-    );
+    ensure!(count <= 10000, "Há tarefas demais para esta operação.");
     let mut statement = conn.prepare("SELECT id,document_id,payload FROM tasks")?;
     let rows = statement.query_map([], |r| {
         Ok((
@@ -297,7 +294,11 @@ fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
                 })
                 .count();
             if dependents > 0 {
-                plan.blocker=Some(if dependents==1{"Há 1 tarefa ativa que depende deste item. Revise as dependências antes de excluir.".to_owned()}else{format!("Há {dependents} tarefas ativas que dependem deste item. Revise as dependências antes de excluir.")});
+                plan.blocker = Some(if dependents == 1 {
+                    "Há 1 tarefa ativa que depende deste item. Revise as dependências antes de excluir.".to_owned()
+                } else {
+                    format!("Há {dependents} tarefas ativas que dependem deste item. Revise as dependências antes de excluir.")
+                });
             }
             plan.explanation=if target.kind==Kind::Document{"O documento sairá do acervo e suas tarefas e anexos ficarão ocultos. Versões importadas, PDFs, anexos, minutas, notas, textos lidos dos PDFs e vínculos ficam guardados para restauração. Itens já excluídos separadamente continuam na lixeira."}else{"A tarefa sairá da lista. Seus campos, checklist, resultado e anexos ficam guardados na lixeira."}.into();
         }
@@ -544,7 +545,9 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(doc) => return Ok(doc),
-                _ => anyhow::bail!("Resposta inesperada do computador principal ao excluir o item."),
+                _ => {
+                    anyhow::bail!("Resposta inesperada do computador principal ao excluir o item.")
+                }
             }
         }
         let actor = self.active_actor();
@@ -621,7 +624,9 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(doc) => return Ok(doc),
-                _ => anyhow::bail!("Resposta inesperada do computador principal ao restaurar item."),
+                _ => {
+                    anyhow::bail!("Resposta inesperada do computador principal ao restaurar item.")
+                }
             }
         }
         let actor = self.active_actor();
@@ -813,11 +818,7 @@ impl Panel {
                         close = true;
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new(theme::icon::INFO)
-                                .size(18.0)
-                                .color(fg),
-                        );
+                        ui.label(egui::RichText::new(theme::icon::INFO).size(18.0).color(fg));
                         ui.add(
                             egui::Label::new(egui::RichText::new(&self.message).color(fg)).wrap(),
                         );
@@ -829,7 +830,12 @@ impl Panel {
 
     /// The content of the trash window, drawn in place (the Ajustes area
     /// embeds it): retention, the notice and the list of deleted items.
-    pub fn ui(&mut self, ui: &mut eframe::egui::Ui, store: &mut Store, busy: bool) -> Option<Change> {
+    pub fn ui(
+        &mut self,
+        ui: &mut eframe::egui::Ui,
+        store: &mut Store,
+        busy: bool,
+    ) -> Option<Change> {
         use crate::{theme, widgets};
         use eframe::egui;
         let confirming = self.pending.is_some();

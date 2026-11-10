@@ -349,7 +349,9 @@ pub fn validate_host_url(raw: &str) -> Result<String> {
             && (url.path() == "/" || url.path().is_empty()),
         "Informe só o endereço do computador principal (ex.: http://192.168.1.10:7878), sem nada depois do número da porta."
     );
-    let host = url.host_str().context("O endereço do computador principal não indica o computador.")?;
+    let host = url
+        .host_str()
+        .context("O endereço do computador principal não indica o computador.")?;
     if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
         ensure!(
             is_allowed_peer_ip(ip),
@@ -2198,7 +2200,9 @@ impl Store {
                         pushed_offline = true;
                     }
                     Ok(_) => {
-                        bail!("Resposta inesperada do computador principal ao enviar as alterações.");
+                        bail!(
+                            "Resposta inesperada do computador principal ao enviar as alterações."
+                        );
                     }
                     Err(RpcError::Unreachable(msg)) => {
                         bail!("{msg}");
@@ -2772,7 +2776,10 @@ impl Store {
             }
         }
         if !targets.is_empty() {
-            reporter.step(format!("Gravando em {}…", plural(targets.len(), "pasta", "pastas")));
+            reporter.step(format!(
+                "Gravando em {}…",
+                plural(targets.len(), "pasta", "pastas")
+            ));
         }
         let mut failures = Vec::new();
         for path in &targets {
@@ -4304,14 +4311,22 @@ impl FolderSyncReport {
             parts.push(format!(
                 "{} deste computador {}",
                 plural(self.pushed, "alteração", "alterações"),
-                if self.pushed == 1 { "enviada" } else { "enviadas" }
+                if self.pushed == 1 {
+                    "enviada"
+                } else {
+                    "enviadas"
+                }
             ));
         }
         if self.merged_foreign > 0 {
             parts.push(format!(
                 "{} de outras pastas {}",
                 plural(self.merged_foreign, "alteração", "alterações"),
-                if self.merged_foreign == 1 { "reunida" } else { "reunidas" }
+                if self.merged_foreign == 1 {
+                    "reunida"
+                } else {
+                    "reunidas"
+                }
             ));
         }
         if self.conflicts > 0 {
@@ -4321,7 +4336,10 @@ impl FolderSyncReport {
             ));
         }
         if !self.written_to.is_empty() {
-            parts.push(format!("gravado em {}", plural(self.written_to.len(), "pasta", "pastas")));
+            parts.push(format!(
+                "gravado em {}",
+                plural(self.written_to.len(), "pasta", "pastas")
+            ));
         }
         if !self.unreachable.is_empty() {
             parts.push(format!(
@@ -4560,7 +4578,10 @@ fn send_rpc_classified(
         return Err(RpcError::Unreachable(
             match response.json::<RpcResponse>() {
                 Ok(RpcResponse::Error { message }) => message,
-                _ => format!("O computador principal não conseguiu responder (código {}).", status.as_u16()),
+                _ => format!(
+                    "O computador principal não conseguiu responder (código {}).",
+                    status.as_u16()
+                ),
             },
         ));
     }
@@ -4929,7 +4950,9 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
         Err(e) => {
             return (
                 500,
-                error(format!("Não foi possível abrir o acervo do computador principal: {e}")),
+                error(format!(
+                    "Não foi possível abrir o acervo do computador principal: {e}"
+                )),
             )
         }
     };
@@ -4938,7 +4961,9 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
         Err(e) => {
             return (
                 500,
-                error(format!("Não foi possível ler os ajustes do computador principal: {e}")),
+                error(format!(
+                    "Não foi possível ler os ajustes do computador principal: {e}"
+                )),
             )
         }
     };
@@ -5239,7 +5264,8 @@ impl IntranetPanel {
                     }
                     Err(e) => {
                         self.error = true;
-                        self.message = format!("Não foi possível iniciar o computador principal: {e}");
+                        self.message =
+                            format!("Não foi possível iniciar o computador principal: {e}");
                     }
                 }
             } else if cfg.mode.queues_changes() {
@@ -5418,7 +5444,9 @@ impl IntranetPanel {
             soft_note(ui, Tone::Warn, icon::WARNING, &text);
             ui.horizontal(|ui| {
                 if ui
-                    .add(widgets::danger("Substituir o acervo deste computador e sincronizar"))
+                    .add(widgets::danger(
+                        "Substituir o acervo deste computador e sincronizar",
+                    ))
                     .clicked()
                 {
                     self.allow_replace_next = true;
@@ -5733,9 +5761,9 @@ impl IntranetPanel {
                 );
                 if conflicts > 0 {
                     extras.push_str(&format!(
-                                " • ⚠ {}",
-                                plural(conflicts, "conflito de edição", "conflitos de edição")
-                            ));
+                        " • ⚠ {}",
+                        plural(conflicts, "conflito de edição", "conflitos de edição")
+                    ));
                 }
                 self.status_summary = format!(
                     "Computador principal fora de alcance ({}){extras}",
@@ -5847,12 +5875,7 @@ impl IntranetPanel {
 
     /// The same content, drawn in place (the Ajustes area embeds it).
     /// Returns true when the library changed.
-    pub fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        store: &mut Store,
-        db_path: &std::path::Path,
-    ) -> bool {
+    pub fn ui(&mut self, ui: &mut egui::Ui, store: &mut Store, db_path: &std::path::Path) -> bool {
         use crate::theme::{self, icon};
         use crate::widgets::{self, Tone};
         if !self.loaded {
@@ -5875,7 +5898,9 @@ impl IntranetPanel {
                 egui::TextEdit::singleline(&mut self.draft.member_name)
                     .desired_width(ui.available_width().min(420.0)),
             )
-            .on_hover_text("Aparece no histórico de alterações e como responsável ao assumir tarefas.");
+            .on_hover_text(
+                "Aparece no histórico de alterações e como responsável ao assumir tarefas.",
+            );
         });
         ui.add_space(theme::S3);
 
@@ -6010,7 +6035,10 @@ impl IntranetPanel {
                         ui.add_space(theme::S1);
                         widgets::small_muted(
                             ui,
-                            format!("Endereços deste computador na rede: {}", hints.join("  ou  ")),
+                            format!(
+                                "Endereços deste computador na rede: {}",
+                                hints.join("  ou  ")
+                            ),
                         );
                     }
                     widgets::small_muted(ui, format!(
@@ -6187,12 +6215,17 @@ impl IntranetPanel {
                         }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.label(
-                                egui::RichText::new(if self.error { icon::ERROR } else { icon::INFO })
-                                    .size(18.0)
-                                    .color(fg),
+                                egui::RichText::new(if self.error {
+                                    icon::ERROR
+                                } else {
+                                    icon::INFO
+                                })
+                                .size(18.0)
+                                .color(fg),
                             );
                             ui.add(
-                                egui::Label::new(egui::RichText::new(&self.message).color(fg)).wrap(),
+                                egui::Label::new(egui::RichText::new(&self.message).color(fg))
+                                    .wrap(),
                             );
                         });
                     });
@@ -6345,7 +6378,8 @@ impl IntranetPanel {
                                 "Conflito resolvido: a sua versão foi aplicada.".into()
                             }
                             ConflictResolution::KeepHost => {
-                                "Conflito resolvido: a versão do computador principal foi mantida.".into()
+                                "Conflito resolvido: a versão do computador principal foi mantida."
+                                    .into()
                             }
                         };
                         self.last_sync_request = None;
@@ -6354,8 +6388,7 @@ impl IntranetPanel {
                     }
                     Err(e) => {
                         self.error = true;
-                        self.message =
-                            format!("Não foi possível resolver o conflito agora: {e}");
+                        self.message = format!("Não foi possível resolver o conflito agora: {e}");
                     }
                 }
             }
@@ -6384,11 +6417,14 @@ impl IntranetPanel {
                             }
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(&entry.label);
-                                widgets::small_muted(ui, format!(
-                                    "{} por {}",
-                                    crate::labels::datetime(&entry.created_at),
-                                    entry.actor
-                                ));
+                                widgets::small_muted(
+                                    ui,
+                                    format!(
+                                        "{} por {}",
+                                        crate::labels::datetime(&entry.created_at),
+                                        entry.actor
+                                    ),
+                                );
                             });
                         }
                     });
@@ -6397,19 +6433,25 @@ impl IntranetPanel {
 
         ui.add_space(theme::S3);
         widgets::card(ui, |ui| {
-            ui.collapsing("Histórico recente de atividade da equipe", |ui| {
-                match store.list_team_events(30) {
-                    Ok(events) => {
-                        if events.is_empty() {
-                            widgets::muted(ui, "Nenhuma atividade registrada ainda.");
-                        }
-                        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+            ui.collapsing("Histórico recente de atividade da equipe", |ui| match store
+                .list_team_events(30)
+            {
+                Ok(events) => {
+                    if events.is_empty() {
+                        widgets::muted(ui, "Nenhuma atividade registrada ainda.");
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(200.0)
+                        .show(ui, |ui| {
                             for (index, ev) in events.into_iter().enumerate() {
                                 if index > 0 {
                                     ui.separator();
                                 }
                                 ui.horizontal_wrapped(|ui| {
-                                    widgets::small_muted(ui, crate::labels::datetime(&ev.created_at));
+                                    widgets::small_muted(
+                                        ui,
+                                        crate::labels::datetime(&ev.created_at),
+                                    );
                                     ui.label(
                                         egui::RichText::new(&ev.actor)
                                             .font(theme::font_strong(theme::SIZE_BODY)),
@@ -6418,10 +6460,9 @@ impl IntranetPanel {
                                 });
                             }
                         });
-                    }
-                    Err(e) => {
-                        widgets::muted(ui, format!("Não foi possível ler o histórico: {e}"));
-                    }
+                }
+                Err(e) => {
+                    widgets::muted(ui, format!("Não foi possível ler o histórico: {e}"));
                 }
             });
         });
@@ -6468,7 +6509,8 @@ fn option_card(ui: &mut egui::Ui, selected: bool, title: &str, line: &str) -> bo
                 let (dot, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
                 let center = egui::pos2(dot.center().x, dot.top() + 10.0);
                 let ring = if selected { p.primary } else { p.muted };
-                ui.painter().circle_stroke(center, 8.0, egui::Stroke::new(1.5, ring));
+                ui.painter()
+                    .circle_stroke(center, 8.0, egui::Stroke::new(1.5, ring));
                 if selected {
                     ui.painter().circle_filled(center, 4.5, p.primary);
                 }
@@ -6493,7 +6535,11 @@ fn option_card(ui: &mut egui::Ui, selected: bool, title: &str, line: &str) -> bo
         .response;
     // Reachable with Tab; Space or Enter chooses it, and the focus shows.
     let choice = ui
-        .interact(response.rect, ui.auto_id_with(("team-mode", title)), egui::Sense::click())
+        .interact(
+            response.rect,
+            ui.auto_id_with(("team-mode", title)),
+            egui::Sense::click(),
+        )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     if choice.has_focus() {
         crate::widgets::outline(ui, choice.rect.expand(2.0), p.primary);
@@ -6723,7 +6769,10 @@ mod tests {
         // Client continues working normally while Host is offline:
         // (a) Client edits the document note twice while offline (coalesced in outbox keeping initial base version 0):
         client_store
-            .save_note(receipt.document_id, "Primeira anotação offline de Servidor A")
+            .save_note(
+                receipt.document_id,
+                "Primeira anotação offline de Servidor A",
+            )
             .unwrap();
         client_store
             .save_note(
@@ -6793,7 +6842,9 @@ mod tests {
             .unwrap()
             .note;
         assert_eq!(merged_host_note, merged_client_note);
-        assert!(merged_host_note.contains("Despacho urgente registrado por Servidor B no Anfitrião"));
+        assert!(
+            merged_host_note.contains("Despacho urgente registrado por Servidor B no Anfitrião")
+        );
         assert!(merged_host_note.contains("Parecer técnico elaborado por Servidor A offline"));
         server2.stop();
 
@@ -7432,7 +7483,10 @@ mod tests {
             .iter()
             .find(|t| t.title == "Tarefa do anfitrião")
             .unwrap();
-        let of_maria = tasks.iter().find(|t| t.title == "Tarefa de Servidor A").unwrap();
+        let of_maria = tasks
+            .iter()
+            .find(|t| t.title == "Tarefa de Servidor A")
+            .unwrap();
         assert!(of_host.notes.is_empty(), "the host's task untouched");
         assert_eq!(of_maria.notes, "Editada sem conexão");
         assert!(host

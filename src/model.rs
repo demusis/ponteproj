@@ -322,7 +322,10 @@ impl Capture {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.schema_version == 1, "Versão do formato de importação não aceita; atualize o Ponte.");
+        ensure!(
+            self.schema_version == 1,
+            "Versão do formato de importação não aceita; atualize o Ponte."
+        );
         uuid::Uuid::parse_str(&self.request_id).context("Identificador da importação inválido.")?;
         if self.is_manual() {
             return self.validate_manual();
@@ -430,8 +433,9 @@ impl Capture {
                 reference.label.len() <= 2000,
                 "Nome da referência grande demais."
             );
-            validate_sigadoc_url(&reference.url)
-                .context("A referência deve apontar para uma página do SIGADOC, sem dados de sessão.")?;
+            validate_sigadoc_url(&reference.url).context(
+                "A referência deve apontar para uma página do SIGADOC, sem dados de sessão.",
+            )?;
         }
         ensure!(
             serde_json::to_vec(self)?.len() <= MAX_CAPTURE_PACKET_BYTES,

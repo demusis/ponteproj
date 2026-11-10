@@ -46,7 +46,10 @@ impl Store {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let count: i64 =
             tx.query_row("SELECT count(*) FROM personal_templates", [], |r| r.get(0))?;
-        ensure!(count < 200, "Limite de 200 versões de modelos pessoais atingido.");
+        ensure!(
+            count < 200,
+            "Limite de 200 versões de modelos pessoais atingido."
+        );
         let value = PersonalTemplate {
             name: name.into(),
             kind: kind.into(),

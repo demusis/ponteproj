@@ -284,11 +284,16 @@ fn pick_row(
         None
     };
     if let Some(fill) = fill {
-        ui.painter()
-            .set(shape, egui::Shape::rect_filled(rect, egui::CornerRadius::ZERO, fill));
+        ui.painter().set(
+            shape,
+            egui::Shape::rect_filled(rect, egui::CornerRadius::ZERO, fill),
+        );
     }
     if selected {
-        let bar = egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + 3.0, rect.bottom()));
+        let bar = egui::Rect::from_min_max(
+            rect.left_top(),
+            egui::pos2(rect.left() + 3.0, rect.bottom()),
+        );
         ui.painter()
             .rect_filled(bar, egui::CornerRadius::ZERO, p.primary);
     }
@@ -1057,9 +1062,9 @@ impl TemplatesPanel {
                 .as_ref()
                 .is_some_and(|t| t.published_version().is_some() && t.draft_version().is_none());
         let can_use = has_doc
-            && stored.as_ref().is_some_and(|t| {
-                t.status == Status::Published && t.published_version().is_some()
-            });
+            && stored
+                .as_ref()
+                .is_some_and(|t| t.status == Status::Published && t.published_version().is_some());
 
         let mut do_dup = false;
         let mut do_status: Option<Status> = None;
@@ -1067,7 +1072,14 @@ impl TemplatesPanel {
         egui::containers::Sides::new().shrink_left().wrap().show(
             ui,
             |ui| {
-                widgets::title(ui, if name.trim().is_empty() { "Novo modelo" } else { &name });
+                widgets::title(
+                    ui,
+                    if name.trim().is_empty() {
+                        "Novo modelo"
+                    } else {
+                        &name
+                    },
+                );
             },
             |ui| {
                 if stored.is_some() {
@@ -1150,7 +1162,11 @@ impl TemplatesPanel {
                 )
                 .clicked();
             do_discard = ui.add(widgets::quiet("Descartar alterações")).clicked();
-            if can_use && ui.add(widgets::secondary("Usar este modelo na minuta")).clicked() {
+            if can_use
+                && ui
+                    .add(widgets::secondary("Usar este modelo na minuta"))
+                    .clicked()
+            {
                 if let Some(t) = &stored {
                     *action = Some(TemplatesAction::UseTemplate { uid: t.uid.clone() });
                 }
@@ -1355,7 +1371,10 @@ impl TemplatesPanel {
             }
             ui.add_space(theme::S1);
             if ui
-                .add(widgets::secondary(format!("{} Adicionar seção", icon::PLUS)))
+                .add(widgets::secondary(format!(
+                    "{} Adicionar seção",
+                    icon::PLUS
+                )))
                 .clicked()
             {
                 v.sections.push(Section::default());
@@ -1568,7 +1587,9 @@ impl TemplatesPanel {
                         .add(widgets::secondary("Salvar rascunho da instrução"))
                         .clicked();
                     do_publish = ui
-                        .add(widgets::secondary(format!("Publicar versão {draft_number}")))
+                        .add(widgets::secondary(format!(
+                            "Publicar versão {draft_number}"
+                        )))
                         .clicked();
                     do_discard = ui.add(widgets::quiet("Descartar")).clicked();
                     match stored_status {
@@ -1588,7 +1609,9 @@ impl TemplatesPanel {
                     }
                 },
                 |ui| {
-                    if stored_status.is_some() && ui.add(widgets::danger("Apagar de vez…")).clicked() {
+                    if stored_status.is_some()
+                        && ui.add(widgets::danger("Apagar de vez…")).clicked()
+                    {
                         do_delete = true;
                     }
                 },
@@ -1698,20 +1721,23 @@ impl TemplatesPanel {
                         Some(n) => format!("v{n}"),
                         None => "versão publicada atual".to_owned(),
                     };
-                    egui::containers::Sides::new().shrink_left().truncate().show(
-                        ui,
-                        |ui| {
-                            ui.label(
-                                RichText::new(name).font(theme::font_strong(theme::SIZE_BODY)),
-                            );
-                            widgets::small_muted(ui, version);
-                        },
-                        |ui| {
-                            if let Some(op) = list_ops(ui, i, len) {
-                                pending = Some((i, op));
-                            }
-                        },
-                    );
+                    egui::containers::Sides::new()
+                        .shrink_left()
+                        .truncate()
+                        .show(
+                            ui,
+                            |ui| {
+                                ui.label(
+                                    RichText::new(name).font(theme::font_strong(theme::SIZE_BODY)),
+                                );
+                                widgets::small_muted(ui, version);
+                            },
+                            |ui| {
+                                if let Some(op) = list_ops(ui, i, len) {
+                                    pending = Some((i, op));
+                                }
+                            },
+                        );
                     let mut kind = match r.mode {
                         BlockMode::Mandatory => 0,
                         BlockMode::Optional => 1,
@@ -1821,11 +1847,14 @@ impl TemplatesPanel {
             for (i, e) in examples.iter().enumerate() {
                 let is_sel = selected.as_deref() == Some(e.uid.as_str());
                 let response = pick_row(ui, ("ex", i), is_sel, 8, |ui| {
-                    egui::containers::Sides::new().shrink_left().truncate().show(
-                        ui,
-                        |ui| row_name(ui, &e.title, is_sel),
-                        |ui| pill_for_example(ui, e.status),
-                    );
+                    egui::containers::Sides::new()
+                        .shrink_left()
+                        .truncate()
+                        .show(
+                            ui,
+                            |ui| row_name(ui, &e.title, is_sel),
+                            |ui| pill_for_example(ui, e.status),
+                        );
                 });
                 if response.clicked() && !is_sel {
                     pick = Some(e.clone());
@@ -2023,7 +2052,6 @@ impl TemplatesPanel {
         self.notice("Alterações descartadas.", false);
     }
 
-
     /// Goes back to the stored instruction; a new, never-saved one is closed.
     fn discard_block(&mut self, store: &Store) {
         self.confirm_discard_block = false;
@@ -2042,7 +2070,6 @@ impl TemplatesPanel {
         }
         self.notice("Alterações da instrução descartadas.", false);
     }
-
 
     /// Goes back to the stored example; a new, never-saved one is closed.
     fn discard_example(&mut self, store: &Store) {
@@ -2075,7 +2102,6 @@ impl TemplatesPanel {
         self.notice("Alterações do exemplo descartadas.", false);
     }
 
-
     /// Edits in the example's own fields or in its files (descriptions, a
     /// text being reviewed).
     fn example_area_dirty(&self) -> bool {
@@ -2094,7 +2120,6 @@ impl TemplatesPanel {
     pub fn take_pdf_request(&mut self) -> Option<(i64, String)> {
         self.pdf_request.take()
     }
-
 
     fn example_files_section(&mut self, ui: &mut egui::Ui, store: &mut Store, example_id: i64) {
         widgets::section(ui, "Arquivos do exemplo");
@@ -2235,7 +2260,10 @@ impl TemplatesPanel {
                         );
                     });
                 ui.horizontal(|ui| {
-                    if ui.add(widgets::secondary("Marcar como conferido")).clicked() {
+                    if ui
+                        .add(widgets::secondary("Marcar como conferido"))
+                        .clicked()
+                    {
                         review = Some((*id, text.clone()));
                     }
                     if ui.add(widgets::quiet("Cancelar")).clicked() {
@@ -2338,13 +2366,21 @@ impl TemplatesPanel {
                             ),
                             Tone::Neutral,
                         );
-                        widgets::pill(ui, format!("Instruções incluídas: {}", p.blocks), Tone::Neutral);
+                        widgets::pill(
+                            ui,
+                            format!("Instruções incluídas: {}", p.blocks),
+                            Tone::Neutral,
+                        );
                         widgets::pill(
                             ui,
                             format!("Exemplos aprovados que seriam enviados: {}", p.examples),
                             Tone::Neutral,
                         );
-                        widgets::pill(ui, format!("Arquivos de exemplo: {}", p.files), Tone::Neutral);
+                        widgets::pill(
+                            ui,
+                            format!("Arquivos de exemplo: {}", p.files),
+                            Tone::Neutral,
+                        );
                     });
                     for c in &p.conflicts {
                         ui.add_space(theme::S1);
@@ -2442,7 +2478,6 @@ fn fresh_template(store: &Store, template: WorkTemplate) -> WorkTemplate {
         .unwrap_or(template)
 }
 
-
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
@@ -2462,9 +2497,8 @@ impl TemplatesPanel {
     /// Puts the panel in the state called `view` (see `SHOTS`).
     pub fn shots_open(&mut self, store: &mut crate::storage::Store, view: &str) {
         self.refresh(store);
-        let find = |panel: &Self, name: &str| {
-            panel.templates.iter().find(|t| t.name == name).cloned()
-        };
+        let find =
+            |panel: &Self, name: &str| panel.templates.iter().find(|t| t.name == name).cloned();
         let tab = match view {
             "instrucoes" | "instrucao" => Tab::Blocks,
             "exemplos" => Tab::Examples,

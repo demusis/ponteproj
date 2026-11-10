@@ -353,7 +353,9 @@ fn calendar_popup(
             const WIDTH: f32 = CELL * 7.0 + 2.0 * 6.0;
             ui.set_width(WIDTH);
             ui.horizontal(|ui| {
-                let previous = ui.add(crate::widgets::quiet(crate::theme::icon::LEFT)).on_hover_text("Mês anterior");
+                let previous = ui
+                    .add(crate::widgets::quiet(crate::theme::icon::LEFT))
+                    .on_hover_text("Mês anterior");
                 if previous.clicked() {
                     if month == 1 {
                         month = 12;
@@ -371,7 +373,11 @@ fn calendar_popup(
                     )
                     .selectable(false),
                 );
-                if ui.add(crate::widgets::quiet(crate::theme::icon::RIGHT)).on_hover_text("Mês seguinte").clicked() {
+                if ui
+                    .add(crate::widgets::quiet(crate::theme::icon::RIGHT))
+                    .on_hover_text("Mês seguinte")
+                    .clicked()
+                {
                     if month == 12 {
                         month = 1;
                         year += 1;
@@ -405,9 +411,7 @@ fn calendar_popup(
                                     let is_today = date == today;
                                     let mut text = egui::RichText::new(day.to_string());
                                     if is_today {
-                                        text = text
-                                            .strong()
-                                            .color(crate::theme::accent());
+                                        text = text.strong().color(crate::theme::accent());
                                     }
                                     let response = ui.add_sized(
                                         [CELL, 22.0],

@@ -87,9 +87,15 @@ fn chain_row(ui: &mut egui::Ui, task: &Task, open: &mut Option<Task>) {
         let (mark, color) = state_mark(task);
         ui.label(RichText::new(mark).color(color));
         ui.label(&task.title);
-        widgets::small_muted(ui, format!("• {}", crate::tasks::status_label(&task.status)));
+        widgets::small_muted(
+            ui,
+            format!("• {}", crate::tasks::status_label(&task.status)),
+        );
         if !task.due_date.is_empty() {
-            widgets::small_muted(ui, format!("• prazo {}", crate::labels::date(&task.due_date)));
+            widgets::small_muted(
+                ui,
+                format!("• prazo {}", crate::labels::date(&task.due_date)),
+            );
         }
         if ui.add(widgets::quiet("Abrir")).clicked() {
             *open = Some(task.clone());
@@ -153,9 +159,19 @@ struct RowOut {
 
 /// The round control on the left of a row: concludes a pending task, reopens
 /// a concluded one. Returns true when clicked.
-fn conclude_control(ui: &mut egui::Ui, done: bool, enabled: bool, hint: &str, disabled_hint: &str) -> bool {
+fn conclude_control(
+    ui: &mut egui::Ui,
+    done: bool,
+    enabled: bool,
+    hint: &str,
+    disabled_hint: &str,
+) -> bool {
     let p = c();
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(CONTROL, CONTROL), sense);
     let hovered = enabled && response.hovered();
     if ui.is_rect_visible(rect) {
@@ -178,7 +194,12 @@ fn conclude_control(ui: &mut egui::Ui, done: bool, enabled: bool, hint: &str, di
             } else {
                 (p.outline, egui::Color32::TRANSPARENT)
             };
-            painter.circle(center, CONTROL / 2.0 - 1.5, fill, egui::Stroke::new(1.5, stroke));
+            painter.circle(
+                center,
+                CONTROL / 2.0 - 1.5,
+                fill,
+                egui::Stroke::new(1.5, stroke),
+            );
             if hovered {
                 painter.text(
                     center,
@@ -228,7 +249,10 @@ fn task_row(
     let relation = if env.focus_before.contains(&task.id) {
         Some((p.warn, "Esta tarefa vem antes da tarefa aberta na ficha."))
     } else if env.focus_after.contains(&task.id) {
-        Some((p.ok, "Esta tarefa vem depois da tarefa aberta na ficha: depende dela."))
+        Some((
+            p.ok,
+            "Esta tarefa vem depois da tarefa aberta na ficha: depende dela.",
+        ))
     } else {
         None
     };
@@ -447,15 +471,21 @@ fn task_row(
         );
     }
     if let Some((color, hint)) = relation {
-        let bar = egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + 3.0, rect.bottom()));
+        let bar = egui::Rect::from_min_max(
+            rect.left_top(),
+            egui::pos2(rect.left() + 3.0, rect.bottom()),
+        );
         ui.painter().rect_filled(bar, 0.0, color);
         if let Some(row) = &row {
             row.clone().on_hover_text(hint);
         }
     }
     if !last {
-        ui.painter()
-            .hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, p.outline));
+        ui.painter().hline(
+            rect.x_range(),
+            rect.bottom(),
+            egui::Stroke::new(1.0, p.outline),
+        );
     }
     // The click only counts when the area it landed on is where this row
     // still is: after the list changes, last frame's area may belong to
@@ -775,7 +805,9 @@ impl TaskPanel {
         let today_count = tasks
             .iter()
             .filter(belongs)
-            .filter(|t| t.status != "concluida" && !t.due_date.is_empty() && t.due_date == today_text)
+            .filter(|t| {
+                t.status != "concluida" && !t.due_date.is_empty() && t.due_date == today_text
+            })
             .count();
         let week_count = tasks
             .iter()
@@ -1226,7 +1258,9 @@ impl TaskPanel {
                     if task_id > 0 && task_status != "concluida" {
                         conclude = ui
                             .add_enabled(!dirty, widgets::secondary("Concluir"))
-                            .on_disabled_hover_text("Salve ou cancele as alterações antes de concluir.")
+                            .on_disabled_hover_text(
+                                "Salve ou cancele as alterações antes de concluir.",
+                            )
                             .clicked();
                     }
                     cancel = ui
@@ -1254,7 +1288,8 @@ impl TaskPanel {
             .auto_shrink([false, false]);
         #[cfg(feature = "shots")]
         if crate::shots::active() {
-            form_scroll = form_scroll.vertical_scroll_offset(if force_details { 330.0 } else { 0.0 });
+            form_scroll =
+                form_scroll.vertical_scroll_offset(if force_details { 330.0 } else { 0.0 });
         }
         form_scroll.show(ui, |ui| {
                 egui::Frame::new()
@@ -1601,7 +1636,6 @@ impl TaskPanel {
         open
     }
 
-
     fn apply_status_change(&mut self, store: &mut Store, id: i64, complete: bool) {
         let result = if complete {
             store.complete_task(id)
@@ -1692,7 +1726,10 @@ mod navigation_tests {
         // A refused save keeps the edit and explains.
         panel.draft.as_mut().unwrap().title = "   ".into();
         let error = panel.save_draft(&mut store).unwrap_err();
-        assert!(error.starts_with("Não foi possível salvar a tarefa:"), "{error}");
+        assert!(
+            error.starts_with("Não foi possível salvar a tarefa:"),
+            "{error}"
+        );
         assert!(panel.dirty());
 
         // "Descartar alterações" on an existing task goes back to what is saved.

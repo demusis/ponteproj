@@ -73,7 +73,10 @@ impl Task {
             self.assignee.len() <= 256 && !self.assignee.chars().any(char::is_control),
             "O nome do responsável é inválido ou longo demais."
         );
-        ensure!(ACTIONS.contains(&self.action.as_str()), "A ação da tarefa é inválida.");
+        ensure!(
+            ACTIONS.contains(&self.action.as_str()),
+            "A ação da tarefa é inválida."
+        );
         ensure!(
             ["pendente", "em analise", "aguardando", "concluida"].contains(&self.status.as_str()),
             "A situação da tarefa é inválida."
@@ -90,8 +93,9 @@ impl Task {
             "A tarefa tem texto ou itens demais."
         );
         if !self.reminder_date.is_empty() {
-            let date = chrono::NaiveDate::parse_from_str(&self.reminder_date, "%Y-%m-%d")
-                .map_err(|_| anyhow::anyhow!("Data do lembrete inválida. Use o formato dd/mm/aaaa."))?;
+            let date = chrono::NaiveDate::parse_from_str(&self.reminder_date, "%Y-%m-%d").map_err(
+                |_| anyhow::anyhow!("Data do lembrete inválida. Use o formato dd/mm/aaaa."),
+            )?;
             ensure!(
                 date.format("%Y-%m-%d").to_string() == self.reminder_date,
                 "Data do lembrete inválida. Use o formato dd/mm/aaaa."
@@ -237,7 +241,9 @@ impl Store {
                 },
             )? {
                 crate::intranet::MutationReply::Id(id) => return Ok(id),
-                _ => anyhow::bail!("O computador principal respondeu de forma inesperada ao salvar a tarefa."),
+                _ => anyhow::bail!(
+                    "O computador principal respondeu de forma inesperada ao salvar a tarefa."
+                ),
             }
         }
         let actor = self.active_actor();
@@ -338,7 +344,10 @@ pub(crate) fn write_task(
         let mut pending = vec![dependency];
         let mut visited = std::collections::BTreeSet::new();
         while let Some(id) = pending.pop() {
-            ensure!(id != saved.id, "As dependências formariam um ciclo: uma tarefa dependeria dela mesma.");
+            ensure!(
+                id != saved.id,
+                "As dependências formariam um ciclo: uma tarefa dependeria dela mesma."
+            );
             if visited.insert(id) {
                 if let Some(value) = graph.get(&id) {
                     pending.extend(value.dependencies.iter().copied());
@@ -440,7 +449,10 @@ impl Store {
                     if concluded.len() == 1 {
                         "1 tarefa de documento juntado foi concluída".to_owned()
                     } else {
-                        format!("{} tarefas de documentos juntados foram concluídas", concluded.len())
+                        format!(
+                            "{} tarefas de documentos juntados foram concluídas",
+                            concluded.len()
+                        )
                     },
                     concluded.join("; ")
                 ));
@@ -905,7 +917,10 @@ mod completion_tests {
         store.complete_task(parent_task.id).unwrap();
         let notes = store.take_cascade_notes();
         assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].starts_with("3 tarefas de documentos juntados foram concluídas"), "{notes:?}");
+        assert!(
+            notes[0].starts_with("3 tarefas de documentos juntados foram concluídas"),
+            "{notes:?}"
+        );
         let tasks = store.list_tasks().unwrap();
         for id in [child.document_id, grandchild.document_id] {
             for task in tasks.iter().filter(|t| t.document_id == id) {
