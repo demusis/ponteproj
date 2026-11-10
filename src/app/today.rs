@@ -986,8 +986,19 @@ fn task_group(
                                 .selectable(false)
                                 .truncate(),
                             );
-                            let document = title_of(task.document_id);
-                            if !document.is_empty() {
+                            // A task without document says so, quietly, and has nothing to open.
+                            let document = task.document_id.map(title_of).unwrap_or_default();
+                            if task.document_id.is_none() {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new("Sem documento")
+                                            .size(theme::SIZE_SMALL)
+                                            .color(p.muted),
+                                    )
+                                    .selectable(false),
+                                )
+                                .on_hover_text("Tarefa avulsa: não pertence a nenhum documento.");
+                            } else if !document.is_empty() {
                                 open_document = ui
                                     .add(
                                         egui::Label::new(
@@ -1034,7 +1045,9 @@ fn task_group(
             if conclude {
                 *asked = Some(Asked::Conclude(task.clone()));
             } else if open_document {
-                *asked = Some(Asked::OpenDocument(task.document_id));
+                if let Some(id) = task.document_id {
+                    *asked = Some(Asked::OpenDocument(id));
+                }
             } else if clicked {
                 *asked = Some(Asked::OpenTask(task.clone()));
             }

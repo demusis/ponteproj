@@ -362,7 +362,7 @@ impl Store {
                 crate::trash::require_active_document(conn, id)?;
                 Ok(Some(id))
             }
-            Owner::Task(id) => crate::trash::require_active_task(conn, id).map(Some),
+            Owner::Task(id) => crate::trash::require_active_task(conn, id),
             Owner::Attendance(id) => {
                 // The atendimento may stand alone; when it is linked to a
                 // document, that document must be active.
@@ -1497,7 +1497,7 @@ mod tests {
         let plan = store.trash_plan(target.clone()).unwrap();
         assert!(plan.blocker.is_none());
         assert!(plan.label.contains("Ofício recebido.pdf"));
-        assert_eq!(store.trash_item(target.clone()).unwrap(), document);
+        assert_eq!(store.trash_item(target.clone()).unwrap(), Some(document));
         assert!(store.list_attachments(owner).unwrap().is_empty());
         assert_eq!(
             store.attachment_counts("document").unwrap().get(&document),

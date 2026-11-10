@@ -268,7 +268,7 @@ fn triage_task(store: &Store, document_id: i64) -> Result<Task> {
     store
         .list_tasks()?
         .into_iter()
-        .find(|t| t.document_id == document_id)
+        .find(|t| t.document_id == Some(document_id))
         .with_context(|| format!("tarefa de triagem do documento #{document_id}"))
 }
 
@@ -420,6 +420,30 @@ fn tasks(store: &mut Store, ids: &Ids) -> Result<()> {
         );
         store.save_task(&presenca)?;
     }
+
+    // Without document: nobody imported anything for them.
+    let certificate = shape(
+        Task::standalone(),
+        "Renovar a assinatura do certificado digital",
+        "acompanhar",
+        "pendente",
+        "alta",
+        Some(4),
+        "Servidor A",
+        "O certificado vence no fim do mês; pedir a renovação ao setor de tecnologia.",
+    );
+    store.save_task(&certificate)?;
+    let room = shape(
+        Task::standalone(),
+        "Confirmar a sala da reunião de quinta-feira",
+        "encaminhar",
+        "pendente",
+        "normal",
+        Some(0),
+        "",
+        "",
+    );
+    store.save_task(&room)?;
     Ok(())
 }
 
@@ -705,6 +729,7 @@ mod tests {
         let tasks = store.list_tasks().unwrap();
         assert!(tasks.len() >= 8, "tasks: {}", tasks.len());
         assert!(tasks.iter().any(|t| t.overdue()));
+        assert!(tasks.iter().any(|t| t.document_id.is_none()));
         let attendances = store.list_saiop_attendances().unwrap();
         assert!(
             attendances.len() >= 5,

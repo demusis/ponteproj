@@ -19,7 +19,10 @@ use std::io::{Read, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: u32 = 1;
+/// Format 2 (schema 14) may carry tasks without document (`document_id: null`).
+/// An older Ponte, which only knows format 1, refuses such a file with the
+/// "versão mais nova" message; files of format 1 are still read.
+pub const FORMAT: u32 = 2;
 const MAGIC: &[u8] = b"PONTE-SYNC1\n";
 pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 /// Journal retention: enough for a few weeks of one person's work.
@@ -160,7 +163,7 @@ pub fn read_header(path: &Path) -> Result<Option<Header>> {
     let header: Header =
         serde_json::from_slice(&line).context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
     ensure!(
-        header.format == FORMAT,
+        (1..=FORMAT).contains(&header.format),
         "O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte."
     );
     Ok(Some(header))
@@ -452,8 +455,12 @@ mod tests {
         // Truncated or tampered copies are refused, never half-applied.
         std::fs::write(&path, &raw[..raw.len() - 5]).unwrap();
         assert!(read(&path, "senha-forte-123").is_err());
+        // A copy written by format 1 (before tasks without document) is still read.
+        let older = String::from_utf8_lossy(&raw).replace("\"format\":2", "\"format\":1");
+        std::fs::write(&path, older.as_bytes()).unwrap();
+        assert_eq!(read_header(&path).unwrap().unwrap().format, 1);
         let mut future = raw.clone();
-        let text = String::from_utf8_lossy(&future).replace("\"format\":1", "\"format\":9");
+        let text = String::from_utf8_lossy(&future).replace("\"format\":2", "\"format\":9");
         future = text.into_bytes();
         std::fs::write(&path, &future).unwrap();
         assert!(read_header(&path)

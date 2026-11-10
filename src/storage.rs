@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const SCHEMA_VERSION: i64 = 13;
+pub(crate) const SCHEMA_VERSION: i64 = 14;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -223,6 +223,19 @@ impl Store {
         store.ensure_mail_accounts()?;
         store.ensure_write_guards()?;
         crate::idmap::init_watermark(&store.conn)?;
+        // Schema 14 (tasks without document) stamps the library, so an older
+        // Ponte refuses to open it with the "versão mais nova" message
+        // instead of misreading a task without document. The other steps keep
+        // their own, lower numbers; this one is the last word.
+        if store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?
+            < SCHEMA_VERSION
+        {
+            store
+                .conn
+                .pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
         // Lazy, idempotent: libraries imported before this feature gain the
         // juntada links too. Unreadable content never prevents opening.
         let _ = store.link_juntadas();

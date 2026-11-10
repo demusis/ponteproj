@@ -216,7 +216,7 @@ struct DocTaskStatusSummary {
 impl DocTaskStatusSummary {
     fn from_tasks(tasks: &[crate::tasks::Task], document_id: i64, today_iso: &str) -> Self {
         let mut summary = Self::default();
-        for task in tasks.iter().filter(|t| t.document_id == document_id) {
+        for task in tasks.iter().filter(|t| t.document_id == Some(document_id)) {
             if task.status == "concluida" {
                 summary.completed += 1;
             } else {
@@ -954,7 +954,7 @@ enum Leave {
     /// Open this document (sidebar, "Ir para o documento").
     Select(i64),
     /// Start a blank task for this document.
-    NewTask(i64),
+    NewTask(Option<i64>),
     /// Open this task in the form, keeping the panel's view and filter.
     OpenTask(crate::tasks::Task),
     /// Open this task from its document's Resumo, filtering the panel to it.
@@ -2685,11 +2685,7 @@ impl PonteApp {
         } else if pressed(Key::N) {
             match self.area {
                 Area::Tasks => {
-                    if !self.tasks.key_new(self.selected_id) {
-                        self.message(
-                            "Para criar uma tarefa, selecione antes um documento em Documentos.",
-                        );
-                    }
+                    self.tasks.key_new(self.selected_id);
                 }
                 Area::Saiop => {
                     self.saiop.key_new(&self.store);
@@ -2843,15 +2839,16 @@ impl PonteApp {
         };
         let blocked = match target.kind {
             Kind::Document => {
+                let document = plan.document.unwrap_or_default();
                 self.templates.dirty()
-                    || self.editors.get(&plan.document).is_some_and(Editor::dirty)
-                    || self.work_context.document_dirty(plan.document)
-                    || self.dossier.document_dirty(plan.document)
-                    || self.tasks.document_dirty(plan.document)
+                    || self.editors.get(&document).is_some_and(Editor::dirty)
+                    || self.work_context.document_dirty(document)
+                    || self.dossier.document_dirty(document)
+                    || self.tasks.document_dirty(document)
                     || self
                         .suggestion
                         .as_ref()
-                        .is_some_and(|s| s.document_id == plan.document)
+                        .is_some_and(|s| s.document_id == document)
             }
             Kind::Capture => self.editors.values().any(|e| {
                 e.draft_dirty()
@@ -2907,21 +2904,25 @@ impl PonteApp {
         if !change.restored {
             match change.target.kind {
                 Kind::Document => {
-                    self.editors.remove(&change.document);
-                    self.sources.forget_document(change.document);
-                    self.dossier.forget_document(change.document);
-                    self.work_context.forget_document(change.document);
-                    self.tasks.forget_document(change.document);
-                    if self.selected_id == Some(change.document) {
-                        self.selected_id = None;
-                        self.detail = None;
-                        self.similar.clear();
+                    if let Some(document) = change.document {
+                        self.editors.remove(&document);
+                        self.sources.forget_document(document);
+                        self.dossier.forget_document(document);
+                        self.work_context.forget_document(document);
+                        self.tasks.forget_document(document);
+                        if self.selected_id == Some(document) {
+                            self.selected_id = None;
+                            self.detail = None;
+                            self.similar.clear();
+                        }
                     }
                 }
                 Kind::Capture => {
-                    self.sources.forget_document(change.document);
-                    if self.selected_id == Some(change.document) {
-                        self.reload(change.document);
+                    if let Some(document) = change.document {
+                        self.sources.forget_document(document);
+                        if self.selected_id == Some(document) {
+                            self.reload(document);
+                        }
                     }
                 }
                 Kind::Task => self.tasks.forget_task(change.target.id),
@@ -2937,8 +2938,10 @@ impl PonteApp {
                 NoticeAction::Restore(change.target.clone()),
             );
         } else {
-            if self.selected_id == Some(change.document) {
-                self.reload(change.document);
+            if let Some(document) = change.document {
+                if self.selected_id == Some(document) {
+                    self.reload(document);
+                }
             }
             self.message(if change.target.kind == Kind::Capture {
                 "Importação restaurada no histórico. A importação em uso foi mantida."

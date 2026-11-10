@@ -256,7 +256,7 @@ mod tests {
             .list_tasks()
             .unwrap()
             .iter()
-            .any(|t| t.document_id == first.document_id));
+            .any(|t| t.document_id == Some(first.document_id)));
 
         let second = store.create_manual_document(&fields()).unwrap();
         assert_eq!(

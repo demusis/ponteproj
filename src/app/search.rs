@@ -31,6 +31,8 @@ struct TaskRow {
     title: String,
     /// "number · title" of the task's document, when known.
     document: String,
+    /// The task belongs to no document: "Sem documento" is shown instead.
+    standalone: bool,
     due_date: String,
     done: bool,
 }
@@ -243,10 +245,12 @@ impl GlobalSearch {
                         .into_iter()
                         .map(|t| TaskRow {
                             id: t.id,
-                            document: index
-                                .get(&t.document_id)
+                            document: t
+                                .document_id
+                                .and_then(|id| index.get(&id))
                                 .map(|(number, _)| number.clone())
                                 .unwrap_or_default(),
+                            standalone: t.document_id.is_none(),
                             done: task_done(&t),
                             due_date: t.due_date,
                             title: t.title,
@@ -653,12 +657,16 @@ fn draw_results(
                                         .selectable(false)
                                         .truncate(),
                                     );
-                                    if !task.document.is_empty() {
+                                    if !task.document.is_empty() || task.standalone {
                                         ui.add(
                                             egui::Label::new(
-                                                RichText::new(&task.document)
-                                                    .size(theme::SIZE_SMALL)
-                                                    .color(p.muted),
+                                                RichText::new(if task.standalone {
+                                                    "Sem documento"
+                                                } else {
+                                                    task.document.as_str()
+                                                })
+                                                .size(theme::SIZE_SMALL)
+                                                .color(p.muted),
                                             )
                                             .selectable(false)
                                             .truncate(),
@@ -854,6 +862,7 @@ mod tests {
             id: 20,
             title: "Tarefa".into(),
             document: String::new(),
+            standalone: false,
             due_date: String::new(),
             done: false,
         }]);

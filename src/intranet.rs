@@ -602,6 +602,14 @@ pub enum IntranetMutation {
         task: Task,
         expected_version: Option<i64>,
     },
+    /// Moves a task to another document, or to none, keeping everything
+    /// else about it (id, attachments, checklist, history). Never a side
+    /// effect of `SaveTask`, which refuses a changed link.
+    RelinkTask {
+        task_id: i64,
+        document_id: Option<i64>,
+        expected_version: Option<i64>,
+    },
     SaveWorkContext {
         document_id: i64,
         value: WorkContext,
@@ -1333,7 +1341,7 @@ impl Store {
             .query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<i64>>(1)?,
                     r.get::<_, Vec<u8>>(2)?,
                 ))
             })?
@@ -2017,6 +2025,13 @@ impl Store {
             } => self
                 .save_task_checked(&task, expected_version)
                 .map(MutationReply::Id),
+            IntranetMutation::RelinkTask {
+                task_id,
+                document_id,
+                expected_version,
+            } => self
+                .relink_task(task_id, document_id, expected_version)
+                .map(MutationReply::Id),
             IntranetMutation::SaveWorkContext {
                 document_id,
                 value,
@@ -2045,12 +2060,12 @@ impl Store {
             IntranetMutation::TrashItem { kind, id } => {
                 let parsed = TrashKind::parse(&kind)?;
                 self.trash_item(TrashTarget { kind: parsed, id })
-                    .map(MutationReply::Id)
+                    .map(|document| MutationReply::Id(document.unwrap_or(0)))
             }
             IntranetMutation::RestoreItem { kind, id } => {
                 let parsed = TrashKind::parse(&kind)?;
                 self.restore_item(TrashTarget { kind: parsed, id })
-                    .map(MutationReply::Id)
+                    .map(|document| MutationReply::Id(document.unwrap_or(0)))
             }
             IntranetMutation::AddAttachment {
                 owner_kind,
@@ -2080,7 +2095,7 @@ impl Store {
             IntranetMutation::PurgeTrash { kind, id } => {
                 let parsed = TrashKind::parse(&kind)?;
                 self.purge_trash_item(TrashTarget { kind: parsed, id })
-                    .map(MutationReply::Id)
+                    .map(|document| MutationReply::Id(document.unwrap_or(0)))
             }
             IntranetMutation::DeleteDocument { id } => {
                 self.delete_document(id).map(|()| MutationReply::Unit)
@@ -3069,6 +3084,19 @@ impl Store {
                     }
                 }
             }
+            IntranetMutation::RelinkTask {
+                task_id,
+                document_id,
+                expected_version,
+            } => {
+                let ver = expected_version
+                    .or_else(|| self.item_version("task", task_id).ok().map(|m| m.version));
+                IntranetMutation::RelinkTask {
+                    task_id,
+                    document_id,
+                    expected_version: ver,
+                }
+            }
             IntranetMutation::SaveWorkContext {
                 document_id,
                 value,
@@ -3243,11 +3271,19 @@ impl Store {
         created: Vec<crate::idmap::CreatedId>,
     ) -> Result<()> {
         let existing = self.list_offline_outbox()?;
-        let target_key = mutation_target_key(&mutation);
+        // A relink is never merged into another change, and nothing is merged
+        // across it: later edits of the task follow it in the queue.
+        let target_key = if matches!(mutation, IntranetMutation::RelinkTask { .. }) {
+            None
+        } else {
+            mutation_target_key(&mutation)
+        };
         if let Some(key) = target_key {
             if let Some(prev) = existing
                 .iter()
+                .rev()
                 .find(|e| mutation_target_key(&e.mutation).as_deref() == Some(key.as_str()))
+                .filter(|e| !matches!(e.mutation, IntranetMutation::RelinkTask { .. }))
                 .cloned()
             {
                 // The merged edit keeps the place of the first one (later
@@ -3435,10 +3471,27 @@ impl Store {
                     expected_version: Some(ver),
                 }
             }
-            IntranetMutation::SaveTask { task, .. } => {
+            IntranetMutation::SaveTask { mut task, .. } => {
                 let ver = self.item_version("task", task.id)?.version;
+                // The link is not edited by a plain save: it follows the one
+                // the task has now (another computer may have relinked it).
+                if let Some(current) = self.list_tasks()?.into_iter().find(|t| t.id == task.id) {
+                    task.document_id = current.document_id;
+                }
                 IntranetMutation::SaveTask {
                     task,
+                    expected_version: Some(ver),
+                }
+            }
+            IntranetMutation::RelinkTask {
+                task_id,
+                document_id,
+                ..
+            } => {
+                let ver = self.item_version("task", task_id)?.version;
+                IntranetMutation::RelinkTask {
+                    task_id,
+                    document_id,
                     expected_version: Some(ver),
                 }
             }
@@ -4078,6 +4131,7 @@ fn mutation_target_key(mutation: &IntranetMutation) -> Option<String> {
     match mutation {
         IntranetMutation::SaveNote { document_id, .. } => Some(format!("note:{document_id}")),
         IntranetMutation::SaveTask { task, .. } if task.id > 0 => Some(format!("task:{}", task.id)),
+        IntranetMutation::RelinkTask { task_id, .. } => Some(format!("task:{task_id}")),
         IntranetMutation::SaveWorkContext { document_id, .. } => {
             Some(format!("work_context:{document_id}"))
         }
@@ -4216,6 +4270,9 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
             } else {
                 format!("Nova tarefa: {}", task.title)
             }
+        }
+        IntranetMutation::RelinkTask { task_id, .. } => {
+            format!("Tarefa #{task_id}: troca de documento")
         }
         IntranetMutation::SaveWorkContext { document_id, .. } => {
             format!("Contexto do documento #{document_id}")
@@ -8164,7 +8221,7 @@ mod tests {
             "the host value of a double-changed field is recorded: {}",
             task.notes
         );
-        assert_eq!(task.document_id, receipt.document_id);
+        assert_eq!(task.document_id, Some(receipt.document_id));
 
         // The differences shown to the person name who changed each field.
         let conflict = SyncConflict {
@@ -8284,5 +8341,184 @@ impl IntranetPanel {
             }
             _ => IntranetMode::Local,
         };
+    }
+}
+
+#[cfg(test)]
+mod standalone_task_sync_tests {
+    use super::*;
+    use crate::tasks::Task;
+
+    const KEY: &str = "senha-de-teste-123";
+
+    fn config(member: &str, files: &[String]) -> IntranetConfig {
+        IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: member.into(),
+            folder_files: files.to_vec(),
+            folder_key: KEY.into(),
+            ..IntranetConfig::default()
+        }
+    }
+
+    fn sync(store: &mut Store) {
+        let cfg = store.load_intranet_config().unwrap();
+        store
+            .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+            .unwrap();
+    }
+
+    /// Two computers that already share a library with one document.
+    fn pair(dir: &std::path::Path) -> (Store, Store, i64) {
+        let folder = dir.join("Drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
+        let files = vec![folder.display().to_string()];
+        let mut a = Store::open(&dir.join("a.sqlite3")).unwrap();
+        a.save_intranet_config(&config("Casa", &files)).unwrap();
+        let document = a
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        sync(&mut a);
+        let mut b = Store::open(&dir.join("b.sqlite3")).unwrap();
+        b.save_intranet_config(&config("Trabalho", &files)).unwrap();
+        sync(&mut b);
+        assert_eq!(b.list_documents("").unwrap().len(), 1);
+        (a, b, document)
+    }
+
+    fn standalone(title: &str) -> Task {
+        let mut task = Task::standalone();
+        task.title = title.into();
+        task
+    }
+
+    fn find(store: &Store, title: &str) -> Task {
+        store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == title)
+            .unwrap_or_else(|| panic!("task {title:?} missing"))
+    }
+
+    #[test]
+    fn a_task_without_document_travels_and_is_attached_as_the_same_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, document) = pair(dir.path());
+
+        // A creates a task without document: B receives it as such.
+        a.save_task(&standalone("Renovar o certificado digital"))
+            .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        let at_b = find(&b, "Renovar o certificado digital");
+        assert_eq!(at_b.document_id, None);
+
+        // A attaches it to the document both have: B sees the same task
+        // attached, not a copy.
+        let id = find(&a, "Renovar o certificado digital").id;
+        assert_eq!(id, at_b.id);
+        a.relink_task(id, Some(document), None).unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        let tasks = b.list_tasks().unwrap();
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|t| t.title == "Renovar o certificado digital")
+                .count(),
+            1
+        );
+        assert_eq!(find(&b, "Renovar o certificado digital").id, id);
+        assert_eq!(
+            find(&b, "Renovar o certificado digital").document_id,
+            Some(document)
+        );
+
+        // And back: B detaches it, A receives it without document.
+        b.relink_task(id, None, None).unwrap();
+        sync(&mut b);
+        sync(&mut a);
+        assert_eq!(find(&a, "Renovar o certificado digital").document_id, None);
+    }
+
+    #[test]
+    fn tasks_without_document_created_on_both_sides_before_syncing_all_arrive() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, _document) = pair(dir.path());
+        a.save_task(&standalone("Pedir a sala da reunião")).unwrap();
+        b.save_task(&standalone("Confirmar o café da manhã"))
+            .unwrap();
+        sync(&mut b);
+        sync(&mut a);
+        sync(&mut b);
+        for store in [&a, &b] {
+            let tasks = store.list_tasks().unwrap();
+            for title in ["Pedir a sala da reunião", "Confirmar o café da manhã"] {
+                let found: Vec<_> = tasks.iter().filter(|t| t.title == title).collect();
+                assert_eq!(found.len(), 1, "{title}");
+                assert_eq!(found[0].document_id, None);
+            }
+        }
+        // Same task ids on both computers.
+        assert_eq!(
+            find(&a, "Pedir a sala da reunião").id,
+            find(&b, "Pedir a sala da reunião").id
+        );
+    }
+
+    #[test]
+    fn relinking_while_another_computer_edits_the_task_follows_the_conflict_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, document) = pair(dir.path());
+        a.save_task(&standalone("Preparar a pauta")).unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        let id = find(&a, "Preparar a pauta").id;
+
+        // B edits the notes (the form's save, link unchanged); A relinks.
+        let mut edited = find(&b, "Preparar a pauta");
+        edited.notes = "Incluir o item da licitação.".into();
+        b.save_task(&edited).unwrap();
+        a.relink_task(id, Some(document), None).unwrap();
+        sync(&mut b);
+        sync(&mut a);
+
+        // The relink was made on an older version of the task: it is a
+        // conflict to resolve, like any other edit.
+        let conflicts = a.list_sync_conflicts().unwrap();
+        assert_eq!(conflicts.len(), 1);
+        a.resolve_sync_conflict(conflicts[0].id, ConflictResolution::KeepLocal)
+            .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        for store in [&a, &b] {
+            let task = find(store, "Preparar a pauta");
+            assert_eq!(task.document_id, Some(document));
+            assert_eq!(task.notes, "Incluir o item da licitação.");
+        }
+    }
+
+    #[test]
+    fn an_edit_queued_after_a_relink_does_not_overtake_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, document) = pair(dir.path());
+        a.save_task(&standalone("Revisar a minuta")).unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        // Offline on B: edit, relink, edit again.
+        let mut task = find(&b, "Revisar a minuta");
+        task.notes = "Primeira nota.".into();
+        b.save_task(&task).unwrap();
+        b.relink_task(task.id, Some(document), None).unwrap();
+        let mut task = find(&b, "Revisar a minuta");
+        task.notes = "Segunda nota.".into();
+        b.save_task(&task).unwrap();
+        sync(&mut b);
+        sync(&mut a);
+        let at_a = find(&a, "Revisar a minuta");
+        assert_eq!(at_a.document_id, Some(document));
+        assert_eq!(at_a.notes, "Segunda nota.");
     }
 }

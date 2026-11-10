@@ -1682,7 +1682,7 @@ impl Store {
             .map(|v| v.version);
         let task = att.document_id.map(|doc_id| Task {
             id: 0,
-            document_id: doc_id,
+            document_id: Some(doc_id),
             title: title.trim().to_owned(),
             action: "examinar".into(),
             status: "pendente".into(),
@@ -1745,7 +1745,9 @@ impl Store {
         let task_id = match task {
             Some(task) => {
                 ensure!(
-                    task.id == 0 && att.document_id == Some(task.document_id),
+                    task.id == 0
+                        && task.document_id.is_some()
+                        && att.document_id == task.document_id,
                     "O atendimento mudou de documento; abra-o de novo e repita."
                 );
                 let saved = crate::tasks::write_task(&tx, &actor, task, None)?;
@@ -5373,7 +5375,7 @@ mod tests {
         let tasks = store.list_tasks().unwrap();
         assert_eq!(tasks.len(), tasks_before + 1);
         let task = tasks.iter().find(|t| t.id == task_id).unwrap();
-        assert_eq!(task.document_id, receipt.document_id);
+        assert_eq!(task.document_id, Some(receipt.document_id));
         assert_eq!(task.priority, "alta");
         let att = store
             .list_saiop_attendances()
@@ -5574,17 +5576,12 @@ impl SaiopPanel {
             }
             "vazia-busca" => self.query = "parecer jurídico".to_owned(),
             "ligar" => {
-                // An atendimento not linked yet, with the search already typed.
+                // An atendimento shown as not linked yet, with the search already typed.
                 if let Ok(list) = store.list_saiop_attendances() {
-                    let pick = list
-                        .iter()
-                        .position(|a| a.document_id.is_none())
-                        .unwrap_or(0);
-                    if let Some(att) = list.into_iter().nth(pick) {
+                    if let Some(att) = list.into_iter().next() {
                         self.load_into_editor(store, att);
                     }
                 }
-                // Shown as not linked yet, so the search is on screen.
                 if let Some(editor) = self.editor.as_mut() {
                     editor.document_id = None;
                 }

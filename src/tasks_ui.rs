@@ -167,7 +167,10 @@ fn in_scope(
     context: Option<&crate::work_context::WorkContext>,
     scope: &Scope,
 ) -> bool {
-    if scope.document.is_some_and(|id| task.document_id != id) {
+    if scope
+        .document
+        .is_some_and(|id| task.document_id != Some(id))
+    {
         return false;
     }
     if !scope.show_done && task.status == "concluida" {
@@ -185,10 +188,15 @@ fn in_scope(
         })
         .unwrap_or_default();
     format!(
-        "{} {} {} {extra} {} {} {} {}",
+        "{} {} {} {} {extra} {} {} {} {}",
         task.title,
         document.map(|d| d.document_number.as_str()).unwrap_or(""),
         document.map(|d| d.title.as_str()).unwrap_or(""),
+        if task.document_id.is_none() {
+            "sem documento avulsa"
+        } else {
+            ""
+        },
         task.status,
         task.priority,
         task.action,
@@ -209,7 +217,12 @@ fn in_view(
     let pending = task.status != "concluida";
     let due = task.due_date.as_str();
     match view {
-        1 => pending && context.is_none_or(|c| c.purpose == "nao definido"),
+        // Triage is about a document: a task without one never needs it.
+        1 => {
+            pending
+                && task.document_id.is_some()
+                && context.is_none_or(|c| c.purpose == "nao definido")
+        }
         2 => pending && !due.is_empty() && due == scope.today,
         3 => pending && !due.is_empty() && due >= scope.today && due <= scope.week,
         4 => pending && !due.is_empty() && due < scope.today,
@@ -234,10 +247,10 @@ fn view_counts(
 ) -> [usize; 4] {
     let mut counts = [0; 4];
     for task in tasks {
-        let context = contexts.get(&task.document_id);
+        let context = task.document_id.and_then(|id| contexts.get(&id));
         if !in_scope(
             task,
-            documents.get(&task.document_id).copied(),
+            task.document_id.and_then(|id| documents.get(&id).copied()),
             context,
             scope,
         ) {
@@ -266,11 +279,15 @@ fn sort_tasks<'a>(
             "normal" | "" => 2,
             _ => 3,
         }),
+        // Tasks without document come first, then by number.
         2 => tasks.sort_by_key(|t| {
-            documents
-                .get(&t.document_id)
-                .map(|d| d.document_number.to_lowercase())
-                .unwrap_or_default()
+            (
+                t.document_id.is_some(),
+                t.document_id
+                    .and_then(|id| documents.get(&id))
+                    .map(|d| d.document_number.to_lowercase())
+                    .unwrap_or_default(),
+            )
         }),
         _ => {}
     }
@@ -286,7 +303,7 @@ fn empty_text(query: &str, narrowed: bool, no_tasks: bool, view: usize, show_don
         return "Este documento não tem tarefas nesta visão.".to_owned();
     }
     if no_tasks {
-        return "Ainda não há tarefas. Cada documento importado ganha uma tarefa de triagem."
+        return "Ainda não há tarefas. Cada documento importado ganha uma tarefa de triagem, e “Nova tarefa” cria uma tarefa sem documento."
             .to_owned();
     }
     match view {
@@ -404,7 +421,9 @@ fn task_row(
     let p = c();
     let editing_this = env.editing == Some(task.id);
     let pending = task.status != "concluida";
-    let document = env.documents.iter().find(|d| d.id == task.document_id);
+    let document = task
+        .document_id
+        .and_then(|id| env.documents.iter().find(|d| d.id == id));
     let level = usize::from(nested && env.deps.level(task.id) > 0);
     let indent = 18.0 * level as f32;
     let direct = env.deps.direct(task.id);
@@ -493,9 +512,11 @@ fn task_row(
                                         "Registro criado no Ponte, fora do SIGADOC."
                                     });
                             }
-                            let mut line = document
-                                .map(|d| format!("{} · {}", d.document_number, d.title))
-                                .unwrap_or_else(|| "documento".to_owned());
+                            let mut line = match (task.document_id, document) {
+                                (None, _) => "Sem documento".to_owned(),
+                                (Some(_), Some(d)) => format!("{} · {}", d.document_number, d.title),
+                                (Some(_), None) => "documento".to_owned(),
+                            };
                             if pending && task.status != "pendente" {
                                 line.push_str(&format!(" · {}", crate::tasks::status_label(&task.status)));
                             }
@@ -677,8 +698,8 @@ fn task_row(
 pub enum Intent {
     /// Open this task in the form.
     Open(Task),
-    /// Start a blank task for this document.
-    New(i64),
+    /// Start a blank task for this document, or without document (`None`).
+    New(Option<i64>),
 }
 
 #[derive(Default)]
@@ -713,6 +734,12 @@ pub struct TaskPanel {
     consult_requested: Option<i64>,
     /// "Abrir" clicked in the dependency chain of the form.
     open_task_requested: Option<Task>,
+    /// The form shows the document search (to choose the document of a new
+    /// task or to move the open one).
+    picking: bool,
+    doc_picker: crate::doc_picker::DocumentPicker,
+    /// "Desvincular do documento" waits for its confirmation.
+    confirm_unlink: bool,
     /// Development only: keeps "Mais detalhes" open for the picture.
     #[cfg(feature = "shots")]
     shots_details: bool,
@@ -803,7 +830,7 @@ impl TaskPanel {
             && self
                 .draft
                 .as_ref()
-                .is_some_and(|task| task.document_id == id)
+                .is_some_and(|task| task.document_id == Some(id))
     }
     pub fn task_dirty(&self, id: i64) -> bool {
         self.dirty() && self.draft.as_ref().is_some_and(|task| task.id == id)
@@ -835,20 +862,24 @@ impl TaskPanel {
     }
     /// Keeps a document filter only when it already covers this document, so
     /// the task about to open stays in the list.
-    fn keep_filter_for(&mut self, document_id: i64) {
-        if self.document_filter.is_some_and(|id| id != document_id) {
+    fn keep_filter_for(&mut self, document_id: Option<i64>) {
+        if self
+            .document_filter
+            .is_some_and(|id| Some(id) != document_id)
+        {
             self.document_filter = None;
         }
         self.view = 0;
         self.query.clear();
     }
-    /// Opens a blank task for this document, unless another edit is pending.
-    pub fn start_new(&mut self, document_id: i64) -> bool {
+    /// Opens a blank task for this document (`None`: a task without document),
+    /// unless another edit is pending.
+    pub fn start_new(&mut self, document_id: Option<i64>) -> bool {
         if self.dirty() {
             return false;
         }
         self.keep_filter_for(document_id);
-        self.draft = Some(Task::new(document_id));
+        self.draft = Some(Task::blank(document_id));
         self.original = None;
         self.base_version = None;
         self.message.clear();
@@ -896,16 +927,14 @@ impl TaskPanel {
     pub fn key_find(&mut self) {
         self.focus_search = true;
     }
-    /// Ctrl+N: what "Nova tarefa" does for this document. False when there is
-    /// no document to attach the task to.
-    pub fn key_new(&mut self, selected_document: Option<i64>) -> bool {
-        let Some(id) = selected_document else {
-            return false;
-        };
-        if !self.start_new(id) {
-            self.blocked = Some(Intent::New(id));
+    /// Ctrl+N: what "Nova tarefa" does: a task for the document the list is
+    /// narrowed to or the one open in Documentos, or without document when
+    /// there is none.
+    pub fn key_new(&mut self, selected_document: Option<i64>) {
+        let target = self.document_filter.or(selected_document);
+        if !self.start_new(target) {
+            self.blocked = Some(Intent::New(target));
         }
-        true
     }
     /// The task as it was before the last conclusion (returned once), so the
     /// app can offer "Desfazer".
@@ -942,7 +971,11 @@ impl TaskPanel {
         if self.document_filter == Some(id) {
             self.document_filter = None;
         }
-        if self.draft.as_ref().is_some_and(|t| t.document_id == id) {
+        if self
+            .draft
+            .as_ref()
+            .is_some_and(|t| t.document_id == Some(id))
+        {
             self.draft = None;
             self.original = None;
             self.base_version = None;
@@ -980,7 +1013,7 @@ impl TaskPanel {
     /// has nothing to lose and does not count.
     pub fn dirty(&self) -> bool {
         match (&self.draft, &self.original) {
-            (Some(draft), None) => *draft != Task::new(draft.document_id),
+            (Some(draft), None) => *draft != Task::blank(draft.document_id),
             (draft, original) => draft != original,
         }
     }
@@ -1044,9 +1077,13 @@ impl TaskPanel {
         let visible: Vec<&Task> = tasks
             .iter()
             .filter(|task| {
-                let context = contexts.get(&task.document_id);
-                in_scope(task, index.get(&task.document_id).copied(), context, &scope)
-                    && in_view(self.view, task, context, &deps, &scope)
+                let context = task.document_id.and_then(|id| contexts.get(&id));
+                in_scope(
+                    task,
+                    task.document_id.and_then(|id| index.get(&id).copied()),
+                    context,
+                    &scope,
+                ) && in_view(self.view, task, context, &deps, &scope)
             })
             .collect();
         // Each task after the ones it depends on; ties keep the usual order.
@@ -1077,25 +1114,19 @@ impl TaskPanel {
                 ui.horizontal(|ui| {
                     widgets::heading(ui, "Tarefas");
                     crate::help_ui::help(ui,
-                        "Cada documento importado recebe uma tarefa de triagem. As tarefas são locais: concluir aqui não tramita nem assina nada no SIGADOC.",
+                        "Cada documento importado recebe uma tarefa de triagem. Também é possível criar tarefas sem documento (tarefas avulsas) e vinculá-las a um documento depois. As tarefas são locais: concluir aqui não tramita nem assina nada no SIGADOC.",
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let new_task = ui
-                            .add_enabled(
-                                selected_document.is_some(),
-                                widgets::primary(format!("{} Nova tarefa", icon::PLUS)),
-                            )
-                            .on_disabled_hover_text("Abra um documento para criar uma tarefa ligada a ele.");
-                        let new_task = match selected_document {
+                        // With a document open (or the list narrowed to one) the
+                        // task is for it; otherwise it belongs to no document.
+                        let target = self.document_filter.or(selected_document);
+                        let new_task = ui.add(widgets::primary(format!("{} Nova tarefa", icon::PLUS)));
+                        let new_task = match target {
                             Some(id) => new_task.on_hover_text(format!("Cria uma tarefa para {}", number_of(id))),
-                            None => new_task,
+                            None => new_task.on_hover_text("Cria uma tarefa sem documento (tarefa avulsa). Ela pode ser vinculada a um documento depois."),
                         };
-                        if new_task.clicked() {
-                            if let Some(id) = selected_document {
-                                if !self.start_new(id) {
-                                    self.blocked = Some(Intent::New(id));
-                                }
-                            }
+                        if new_task.clicked() && !self.start_new(target) {
+                            self.blocked = Some(Intent::New(target));
                         }
                         let search =
                             widgets::search(ui, &mut self.query, "Buscar tarefa ou documento", 280.0);
@@ -1427,6 +1458,10 @@ impl TaskPanel {
         let mut delete = false;
         let mut close = false;
         let mut open_task: Option<Task> = None;
+        // A new task: the document chosen for it (`Some(None)`: none). A saved
+        // one: the document it was asked to move to.
+        let mut new_link: Option<Option<i64>> = None;
+        let mut relink: Option<Option<i64>> = None;
         let dirty = self.dirty();
         let (task_id, task_status, document_id) = {
             let task = self.draft.as_ref()?;
@@ -1457,15 +1492,16 @@ impl TaskPanel {
                         .on_disabled_hover_text("Salve ou cancele as alterações antes de fechar.");
                 });
             });
-            let document = documents.iter().find(|d| d.id == document_id);
+            let document = document_id.and_then(|id| documents.iter().find(|d| d.id == id));
             ui.add(
                 egui::Label::new(
-                    RichText::new(match document {
-                        Some(d) if !d.title.trim().is_empty() => {
+                    RichText::new(match (document_id, document) {
+                        (None, _) => "Sem documento".to_owned(),
+                        (Some(_), Some(d)) if !d.title.trim().is_empty() => {
                             format!("Documento: {} — {}", d.document_number, d.title.trim())
                         }
-                        Some(d) => format!("Documento: {}", d.document_number),
-                        None => "Documento: não disponível".to_owned(),
+                        (Some(_), Some(d)) => format!("Documento: {}", d.document_number),
+                        (Some(_), None) => "Documento: não disponível".to_owned(),
                     })
                     .size(theme::SIZE_SMALL)
                     .color(c().muted),
@@ -1473,21 +1509,109 @@ impl TaskPanel {
                 .wrap(),
             );
             ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add(widgets::quiet(format!("{} Consultar documento", icon::EYE)))
-                    .on_hover_text("Mostra o texto e os PDFs do documento numa janela por cima desta ficha, para copiar um prazo ou conferir um trecho sem sair da tarefa.")
-                    .clicked()
-                {
-                    self.consult_requested = Some(document_id);
+                if let Some(document_id) = document_id {
+                    if ui
+                        .add(widgets::quiet(format!("{} Consultar documento", icon::EYE)))
+                        .on_hover_text("Mostra o texto e os PDFs do documento numa janela por cima desta ficha, para copiar um prazo ou conferir um trecho sem sair da tarefa.")
+                        .clicked()
+                    {
+                        self.consult_requested = Some(document_id);
+                    }
+                    if ui
+                        .add(widgets::quiet(format!("{} Ir para o documento", icon::DOCUMENT)))
+                        .on_hover_text("Abre a ficha completa do documento. Se a tarefa tiver alterações não salvas, o Ponte pergunta antes o que fazer com elas.")
+                        .clicked()
+                    {
+                        open = Some(document_id);
+                    }
                 }
-                if ui
-                    .add(widgets::quiet(format!("{} Ir para o documento", icon::DOCUMENT)))
-                    .on_hover_text("Abre a ficha completa do documento. Se a tarefa tiver alterações não salvas, o Ponte pergunta antes o que fazer com elas.")
-                    .clicked()
-                {
-                    open = Some(document_id);
+                if task_id == 0 {
+                    // A new task: choose the document before saving.
+                    if document_id.is_some() {
+                        if ui
+                            .add(widgets::quiet("Sem documento"))
+                            .on_hover_text("Cria a tarefa sem ligá-la a um documento (tarefa avulsa). Ela pode ser vinculada a um documento depois.")
+                            .clicked()
+                        {
+                            new_link = Some(None);
+                        }
+                    } else if ui
+                        .add(widgets::quiet("Escolher documento…"))
+                        .on_hover_text("Liga a nova tarefa a um documento do acervo.")
+                        .clicked()
+                    {
+                        self.picking = true;
+                    }
+                } else {
+                    // A saved task changes its link only here, never through
+                    // the form's Salvar.
+                    let free = !dirty && !self.attachments.dirty();
+                    let hint = "Salve ou cancele as alterações antes de mudar o documento da tarefa.";
+                    let label = if document_id.is_none() {
+                        "Vincular a um documento…"
+                    } else {
+                        "Trocar de documento…"
+                    };
+                    if ui
+                        .add_enabled(free, widgets::quiet(label))
+                        .on_hover_text(if document_id.is_none() {
+                            "Uma tarefa avulsa não pertence a nenhum documento. Vinculá-la a um documento a leva para a ficha dele; ela continua sendo a mesma tarefa, com anexos e lista de providências."
+                        } else {
+                            "Leva a tarefa para outro documento. Ela continua sendo a mesma tarefa, com anexos e lista de providências."
+                        })
+                        .on_disabled_hover_text(hint)
+                        .clicked()
+                    {
+                        self.picking = true;
+                        self.confirm_unlink = false;
+                    }
+                    if document_id.is_some()
+                        && ui
+                            .add_enabled(free, widgets::quiet("Desvincular do documento"))
+                            .on_hover_text("Tira a tarefa do documento: ela fica em Tarefas, sem documento.")
+                            .on_disabled_hover_text(hint)
+                            .clicked()
+                    {
+                        self.confirm_unlink = true;
+                        self.picking = false;
+                    }
                 }
             });
+            if self.confirm_unlink && document_id.is_some() {
+                ui.horizontal_wrapped(|ui| {
+                    widgets::small_muted(
+                        ui,
+                        "A tarefa continua em Tarefas, sem documento. Os anexos e a lista de providências ficam com ela.",
+                    );
+                    if ui.add(widgets::secondary("Desvincular")).clicked() {
+                        relink = Some(None);
+                        self.confirm_unlink = false;
+                    }
+                    if ui.add(widgets::quiet("Cancelar")).clicked() {
+                        self.confirm_unlink = false;
+                    }
+                });
+            }
+            if self.picking {
+                ui.add_space(S1);
+                widgets::field_label(ui, "Escolher o documento");
+                if let Some(chosen) = self.doc_picker.show(
+                    ui,
+                    store,
+                    "Número ou assunto do documento",
+                ) {
+                    self.picking = false;
+                    if task_id == 0 {
+                        new_link = Some(Some(chosen.id));
+                    } else {
+                        relink = Some(Some(chosen.id));
+                    }
+                }
+                if ui.add(widgets::quiet("Cancelar")).clicked() {
+                    self.picking = false;
+                    self.doc_picker.clear();
+                }
+            }
         });
         ui.separator();
 
@@ -1638,6 +1762,10 @@ impl TaskPanel {
                             .width(ui.available_width() - 24.0)
                             .show_ui(ui, |ui| {
                                 for choice in crate::tasks::ACTIONS {
+                                    // Triage is about a document.
+                                    if document_id.is_none() && *choice == "triar" && task.action != "triar" {
+                                        continue;
+                                    }
                                     ui.selectable_value(
                                         &mut task.action,
                                         choice.to_string(),
@@ -1715,7 +1843,7 @@ impl TaskPanel {
                                     task.checklist.push((false, String::new()));
                                 }
                             });
-                            if let Ok(doc) = store.load_document(document_id) {
+                            if let Some(doc) = document_id.and_then(|id| store.load_document(id).ok()) {
                                 if let Some(analysis) = doc.analysis {
                                     ui.horizontal_wrapped(|ui| {
                                         widgets::small_muted(
@@ -1743,7 +1871,7 @@ impl TaskPanel {
                                     });
                                 }
                             }
-                            if let Ok(context) = store.load_work_context(document_id) {
+                            if let Some(context) = document_id.and_then(|id| store.load_work_context(id).ok()) {
                                 let action = match context.purpose.as_str() {
                                     "ciencia e download" => "tomar ciencia",
                                     "responder" => "responder",
@@ -1873,6 +2001,19 @@ impl TaskPanel {
                         });
                     });
             });
+        if let Some(link) = new_link {
+            self.set_new_task_link(link);
+        }
+        if let Some(target) = relink {
+            let name = target.map(|id| {
+                documents
+                    .iter()
+                    .find(|d| d.id == id)
+                    .map(|d| d.document_number.clone())
+                    .unwrap_or_else(|| "o documento".to_owned())
+            });
+            self.apply_relink(store, task_id, target, name);
+        }
         if open_task.is_some() {
             self.open_task_requested = open_task;
         }
@@ -1896,6 +2037,66 @@ impl TaskPanel {
             self.close_form();
         }
         open
+    }
+
+    /// Chooses the document of the new task in the form (`None`: no
+    /// document). A task nobody has touched is replaced by the blank one for
+    /// that choice (the triage title belongs to a document, not to a task
+    /// without one); an edited one keeps what was typed.
+    fn set_new_task_link(&mut self, document_id: Option<i64>) {
+        let Some(task) = &mut self.draft else {
+            return;
+        };
+        if task.id != 0 {
+            return;
+        }
+        if *task == Task::blank(task.document_id) {
+            *task = Task::blank(document_id);
+        } else {
+            task.document_id = document_id;
+            if document_id.is_none() && task.action == "triar" {
+                task.action = "examinar".into();
+            }
+        }
+        self.focus_title = true;
+    }
+
+    /// Moves the open (saved, unedited) task to another document or to none,
+    /// and shows it again as it is now stored.
+    fn apply_relink(
+        &mut self,
+        store: &mut Store,
+        task_id: i64,
+        target: Option<i64>,
+        name: Option<String>,
+    ) {
+        if self.dirty() || task_id == 0 {
+            return;
+        }
+        match store.relink_task(task_id, target, self.base_version) {
+            Ok(id) => {
+                let task = store
+                    .list_tasks()
+                    .ok()
+                    .and_then(|tasks| tasks.into_iter().find(|t| t.id == id));
+                if task.is_some() {
+                    self.draft = task.clone();
+                    self.original = task;
+                }
+                self.base_version = store.item_version("task", id).ok().map(|v| v.version);
+                self.notice(
+                    match name {
+                        Some(number) => format!("Tarefa vinculada a {number}."),
+                        None => "Tarefa desvinculada: agora está sem documento.".to_owned(),
+                    },
+                    false,
+                );
+            }
+            Err(error) => self.notice(
+                format!("Não foi possível trocar o documento da tarefa: {error}"),
+                true,
+            ),
+        }
     }
 
     fn apply_status_change(
@@ -2059,9 +2260,10 @@ mod navigation_tests {
         assert!(panel.draft.is_some());
         assert!(panel.dirty());
         assert_eq!(panel.open_task_id(), Some(10));
-        assert!(!panel.key_new(None));
-        assert!(panel.key_new(Some(1)));
-        assert_eq!(panel.take_blocked(), Some(Intent::New(1)));
+        panel.key_new(None);
+        assert_eq!(panel.take_blocked(), Some(Intent::New(None)));
+        panel.key_new(Some(1));
+        assert_eq!(panel.take_blocked(), Some(Intent::New(Some(1))));
     }
 
     #[test]
@@ -2111,7 +2313,10 @@ mod navigation_tests {
         );
         assert!(panel.focus_task(&first));
         assert!(panel.dirty());
-        assert!(!panel.start_new(3), "a pending edit is never discarded");
+        assert!(
+            !panel.start_new(Some(3)),
+            "a pending edit is never discarded"
+        );
     }
 
     #[test]
@@ -2125,7 +2330,7 @@ mod navigation_tests {
         let mut panel = TaskPanel::default();
 
         // A new task with text typed in: the question names it.
-        assert!(panel.start_new(document));
+        assert!(panel.start_new(Some(document)));
         assert_eq!(
             panel.editing_title().as_deref(),
             None,
@@ -2159,7 +2364,7 @@ mod navigation_tests {
 
         // Discarding a brand-new task closes the form.
         let mut other = TaskPanel::default();
-        assert!(other.start_new(document));
+        assert!(other.start_new(Some(document)));
         other.draft.as_mut().unwrap().notes = "x".into();
         other.discard_draft();
         assert!(other.draft.is_none());
@@ -2167,13 +2372,13 @@ mod navigation_tests {
         // Blocked intents are handed to the app instead of being refused with a message.
         panel.draft.as_mut().unwrap().notes = "ainda escrevendo".into();
         assert!(panel.editing_title().is_some());
-        assert!(!panel.start_new(document));
+        assert!(!panel.start_new(Some(document)));
         assert!(
             panel.take_blocked().is_none(),
             "start_new itself does not queue; the panel's button does"
         );
-        panel.blocked = Some(Intent::New(document));
-        assert_eq!(panel.take_blocked(), Some(Intent::New(document)));
+        panel.blocked = Some(Intent::New(Some(document)));
+        assert_eq!(panel.take_blocked(), Some(Intent::New(Some(document))));
         assert!(panel.take_blocked().is_none());
     }
 }
@@ -2185,6 +2390,9 @@ pub const SHOTS: &[&str] = &[
     "lista",
     "aberta",
     "nova",
+    "avulsa",
+    "nova-avulsa",
+    "vincular",
     "concluidas",
     "detalhes",
     "filtrada",
@@ -2235,8 +2443,20 @@ impl TaskPanel {
                     .into_iter()
                     .find(|d| d.document_number == "ORG-OFI-2026/00431");
                 if let Some(document) = target {
-                    self.start_new(document.id);
+                    self.start_new(Some(document.id));
                 }
+            }
+            "avulsa" | "vincular" => {
+                if let Some(task) = tasks.iter().find(|t| t.document_id.is_none()) {
+                    self.open_task(task, store);
+                }
+                if view == "vincular" {
+                    self.picking = true;
+                    self.doc_picker.shots_query(store, "ORG-OFI");
+                }
+            }
+            "nova-avulsa" => {
+                self.start_new(None);
             }
             "concluidas" => {
                 self.show_done = true;
@@ -2254,5 +2474,130 @@ impl TaskPanel {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod standalone_tests {
+    use super::*;
+
+    fn loose(id: i64, due: &str) -> Task {
+        let mut t = Task::standalone();
+        t.id = id;
+        t.title = format!("Avulsa {id}");
+        t.due_date = due.into();
+        t
+    }
+
+    fn scope(query: &str) -> Scope<'_> {
+        Scope {
+            document: None,
+            query,
+            show_done: false,
+            today: "2026-11-10",
+            week: "2026-11-17",
+        }
+    }
+
+    #[test]
+    fn a_new_task_without_document_is_not_unsaved_work_until_touched() {
+        let mut panel = TaskPanel::default();
+        assert!(panel.start_new(None));
+        assert!(!panel.dirty());
+        assert_eq!(panel.draft.as_ref().unwrap().document_id, None);
+        assert_ne!(panel.draft.as_ref().unwrap().action, "triar");
+        panel.draft.as_mut().unwrap().title = "Renovar o certificado".into();
+        assert!(panel.dirty());
+        assert!(
+            !panel.start_new(Some(3)),
+            "a pending edit is never discarded"
+        );
+        // With nothing typed, the choice of document replaces the blank task.
+        let mut panel = TaskPanel::default();
+        assert!(panel.start_new(Some(3)));
+        panel.set_new_task_link(None);
+        assert!(!panel.dirty());
+        assert_eq!(panel.draft.as_ref().unwrap().title, "");
+        panel.set_new_task_link(Some(5));
+        assert!(!panel.dirty());
+        assert_eq!(panel.draft.as_ref().unwrap().document_id, Some(5));
+        assert_eq!(panel.draft.as_ref().unwrap().action, "triar");
+        // What was typed is kept; a triage action never stays on a task
+        // without document.
+        panel.draft.as_mut().unwrap().title = "Conferir o parecer".into();
+        panel.set_new_task_link(None);
+        let draft = panel.draft.as_ref().unwrap();
+        assert_eq!(draft.title, "Conferir o parecer");
+        assert_eq!(draft.document_id, None);
+        assert_eq!(draft.action, "examinar");
+    }
+
+    #[test]
+    fn the_list_treats_a_task_without_document_deliberately() {
+        let tasks = vec![loose(1, "2026-11-10")];
+        let deps = crate::tasks::Dependencies::new(&tasks);
+        let scope_all = scope("");
+        // It is counted and listed, never "to triage", and found by
+        // "sem documento".
+        assert!(in_scope(&tasks[0], None, None, &scope_all));
+        assert!(!in_view(1, &tasks[0], None, &deps, &scope_all));
+        assert!(in_view(2, &tasks[0], None, &deps, &scope_all));
+        assert!(in_scope(&tasks[0], None, None, &scope("sem documento")));
+        assert_eq!(
+            view_counts(
+                &tasks,
+                &DocumentIndex::new(),
+                &Contexts::new(),
+                &deps,
+                &scope_all
+            ),
+            [1, 1, 1, 0]
+        );
+        // Narrowed to a document, it is out.
+        let narrowed = Scope {
+            document: Some(1),
+            ..scope("")
+        };
+        assert!(!in_scope(&tasks[0], None, None, &narrowed));
+        // Sorted by document, the ones without document come first.
+        let mut linked = Task::new(1);
+        linked.id = 2;
+        let documents = DocumentIndex::new();
+        let list = vec![&linked, &tasks[0]];
+        let sorted = sort_tasks(list, 2, &documents);
+        assert_eq!(sorted[0].id, 1);
+    }
+
+    #[test]
+    fn relinking_from_the_panel_shows_the_task_again_with_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("avulsa.sqlite3")).unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let mut task = Task::standalone();
+        task.title = "Pedir a sala".into();
+        let id = store.save_task(&task).unwrap();
+        let mut panel = TaskPanel::default();
+        panel.reload(&store);
+        let open = panel
+            .data
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .unwrap()
+            .clone();
+        assert!(panel.open_task(&open, &store));
+        panel.apply_relink(&mut store, id, Some(document), Some("SEFAZ".into()));
+        assert_eq!(panel.draft.as_ref().unwrap().document_id, Some(document));
+        assert!(!panel.dirty());
+        assert_eq!(panel.message, "Tarefa vinculada a SEFAZ.");
+        panel.apply_relink(&mut store, id, None, None);
+        assert_eq!(panel.draft.as_ref().unwrap().document_id, None);
+        // Refused while the form has unsaved changes.
+        panel.draft.as_mut().unwrap().notes = "sem salvar".into();
+        panel.apply_relink(&mut store, id, Some(document), Some("SEFAZ".into()));
+        assert_eq!(panel.draft.as_ref().unwrap().document_id, None);
     }
 }

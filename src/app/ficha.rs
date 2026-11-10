@@ -692,7 +692,7 @@ impl PonteApp {
                 Ok(tasks) => {
                     let tasks = tasks
                         .into_iter()
-                        .filter(|task| task.document_id == detail.summary.id)
+                        .filter(|task| task.document_id == Some(detail.summary.id))
                         .collect::<Vec<_>>();
                     let pending = tasks
                         .iter()
@@ -817,7 +817,7 @@ impl PonteApp {
             },
         );
         if new_task {
-            self.navigate(Leave::NewTask(detail.summary.id));
+            self.navigate(Leave::NewTask(Some(detail.summary.id)));
         }
         if see_all {
             self.tasks.focus_document(detail.summary.id);
@@ -1021,7 +1021,7 @@ impl PonteApp {
                         .list_tasks()
                         .unwrap_or_default()
                         .into_iter()
-                        .filter(|t| t.document_id == detail.summary.id)
+                        .filter(|t| t.document_id == Some(detail.summary.id))
                         .collect();
                     for (index, suggestion) in analysis.suggested_actions.iter().enumerate() {
                         if index > 0 {
@@ -1648,7 +1648,7 @@ impl PonteApp {
             }),
             tasks: all_tasks
                 .iter()
-                .filter(|t| t.document_id == id)
+                .filter(|t| t.document_id == Some(id))
                 .map(|t| fx::TaskLine {
                     title: t.title.clone(),
                     status: t.status.clone(),

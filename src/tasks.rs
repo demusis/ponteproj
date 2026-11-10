@@ -2,7 +2,7 @@
 //! concludes the tasks of joined documents.
 use crate::{protection, storage::Store};
 use anyhow::{ensure, Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 pub const ACTIONS: &[&str] = &[
     "triar",
@@ -18,7 +18,11 @@ pub const ACTIONS: &[&str] = &[
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub id: i64,
-    pub document_id: i64,
+    /// The document the task belongs to; `None` for a task without document
+    /// ("sem documento"). A plain integer stored by older versions reads as
+    /// `Some(n)`.
+    #[serde(default)]
+    pub document_id: Option<i64>,
     pub title: String,
     pub action: String,
     pub status: String,
@@ -41,11 +45,28 @@ pub struct Task {
 }
 impl Task {
     pub fn new(document_id: i64) -> Self {
+        Self::blank(Some(document_id))
+    }
+    /// A task without document, as the form proposes it.
+    pub fn standalone() -> Self {
+        Self::blank(None)
+    }
+    /// What "Nova tarefa" proposes: the triage of the document, or an empty
+    /// task without document.
+    pub fn blank(document_id: Option<i64>) -> Self {
         Self {
             id: 0,
             document_id,
-            title: "Triar documento".into(),
-            action: "triar".into(),
+            title: if document_id.is_some() {
+                "Triar documento".into()
+            } else {
+                String::new()
+            },
+            action: if document_id.is_some() {
+                "triar".into()
+            } else {
+                "examinar".into()
+            },
             status: "pendente".into(),
             priority: "normal".into(),
             due_date: String::new(),
@@ -129,10 +150,65 @@ pub(crate) fn ensure_document_task(conn: &Connection, document_id: i64) -> Resul
     }
     Ok(())
 }
+/// Libraries up to schema 13 declared `tasks.document_id NOT NULL`. SQLite
+/// cannot drop a constraint in place, so the table is rebuilt (the documented
+/// procedure: new table, copy, drop, rename) inside the caller's transaction.
+/// Nothing references `tasks` by foreign key, so no other table is touched;
+/// ids are copied as they are and the AUTOINCREMENT counter keeps the highest
+/// value ever used, so an id is never given twice. Idempotent: a table that
+/// already allows NULL is left alone.
+fn migrate_task_links(tx: &Connection) -> Result<()> {
+    let not_null: bool = tx.query_row(
+        "SELECT \"notnull\" FROM pragma_table_info('tasks') WHERE name='document_id'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !not_null {
+        return Ok(());
+    }
+    let sequence: Option<i64> = tx
+        .query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name='tasks'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS tasks_new;
+         CREATE TABLE tasks_new(id INTEGER PRIMARY KEY AUTOINCREMENT,document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL);
+         INSERT INTO tasks_new(id,document_id,payload) SELECT id,document_id,payload FROM tasks ORDER BY id;
+         DROP TABLE tasks;
+         ALTER TABLE tasks_new RENAME TO tasks;
+         CREATE INDEX IF NOT EXISTS tasks_document ON tasks(document_id);",
+    )?;
+    let highest: i64 = tx.query_row("SELECT coalesce(max(id),0) FROM tasks", [], |r| r.get(0))?;
+    let keep = sequence.unwrap_or(0).max(highest);
+    if tx.execute(
+        "UPDATE sqlite_sequence SET seq=?1 WHERE name='tasks'",
+        [keep],
+    )? == 0
+    {
+        tx.execute(
+            "INSERT INTO sqlite_sequence(name,seq) VALUES('tasks',?1)",
+            [keep],
+        )?;
+    }
+    let broken: i64 = tx.query_row(
+        "SELECT count(*) FROM pragma_foreign_key_check('tasks')",
+        [],
+        |r| r.get(0),
+    )?;
+    ensure!(
+        broken == 0,
+        "Não foi possível atualizar as tarefas: há tarefas ligadas a documentos que não existem."
+    );
+    Ok(())
+}
 impl Store {
     pub(crate) fn ensure_tasks(&mut self) -> Result<()> {
         let tx = self.conn.transaction()?;
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY AUTOINCREMENT,document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL); CREATE INDEX IF NOT EXISTS tasks_document ON tasks(document_id);")?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY AUTOINCREMENT,document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL); CREATE INDEX IF NOT EXISTS tasks_document ON tasks(document_id);")?;
+        migrate_task_links(&tx)?;
         let ids = tx
             .prepare("SELECT id FROM documents")?
             .query_map([], |r| r.get::<_, i64>(0))?
@@ -160,7 +236,7 @@ impl Store {
             .query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<i64>>(1)?,
                     r.get::<_, Vec<u8>>(2)?,
                 ))
             })?
@@ -230,6 +306,88 @@ impl Store {
             .context("Não foi possível encontrar a tarefa depois de reabri-la.")
     }
 
+    /// Moves a task to another document, or (`None`) takes it out of its
+    /// document so that it belongs to none. It is the only way to change the
+    /// link of a saved task: the form's save refuses a changed link. The id,
+    /// attachments, checklist and history stay with the task. Dependencies
+    /// between tasks are not tied to a document, so they are kept. The edit is
+    /// version-checked like any other (`expected_version`) and recorded in
+    /// the team log. On a client computer the request goes to the main one.
+    pub fn relink_task(
+        &mut self,
+        task_id: i64,
+        document_id: Option<i64>,
+        expected_version: Option<i64>,
+    ) -> Result<i64> {
+        if let Some(cfg) = self.client_config()? {
+            match self.remote_mutate(
+                &cfg,
+                crate::intranet::IntranetMutation::RelinkTask {
+                    task_id,
+                    document_id,
+                    expected_version,
+                },
+            )? {
+                crate::intranet::MutationReply::Id(id) => return Ok(id),
+                _ => anyhow::bail!(
+                    "O computador principal respondeu de forma inesperada ao trocar o documento da tarefa."
+                ),
+            }
+        }
+        let actor = self.active_actor();
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let before = crate::trash::require_active_task(&tx, task_id)?;
+        if let Some(target) = document_id {
+            crate::trash::require_active_document(&tx, target)?;
+        }
+        ensure!(
+            before != document_id,
+            "A tarefa já está nesse documento (ou já está sem documento)."
+        );
+        let blob: Vec<u8> =
+            tx.query_row("SELECT payload FROM tasks WHERE id=?1", [task_id], |r| {
+                r.get(0)
+            })?;
+        let mut task: Task = serde_json::from_slice(&protection::unseal(&blob)?)?;
+        task.id = task_id;
+        task.document_id = document_id;
+        tx.execute(
+            "UPDATE tasks SET document_id=?1,payload=?2 WHERE id=?3",
+            params![document_id, encode(&task)?, task_id],
+        )?;
+        // Attachments of a task hang from the task's document.
+        tx.execute(
+            "UPDATE attachments SET document_id=?1 WHERE owner_kind='task' AND owner_id=?2",
+            params![document_id, task_id],
+        )?;
+        tx.execute(
+            "UPDATE trash SET document_id=?1 WHERE kind='attachment' AND item_id IN (SELECT id FROM attachments WHERE owner_kind='task' AND owner_id=?2)",
+            params![document_id, task_id],
+        )?;
+        crate::intranet::record_mutation(
+            &tx,
+            &actor,
+            "task",
+            task_id,
+            expected_version,
+            "relink_task",
+            document_id.or(before),
+            &format!(
+                "Tarefa #{task_id}: {} ({})",
+                task.title,
+                match (before, document_id) {
+                    (None, Some(_)) => "vinculada a um documento",
+                    (Some(_), None) => "desvinculada do documento",
+                    _ => "trocou de documento",
+                }
+            ),
+        )?;
+        tx.commit()?;
+        Ok(task_id)
+    }
+
     pub fn save_task_checked(&mut self, task: &Task, expected_version: Option<i64>) -> Result<i64> {
         task.validate()?;
         if let Some(cfg) = self.client_config()? {
@@ -256,10 +414,13 @@ impl Store {
             // A concluded main document implicitly concludes the pieces
             // joined to it. The parent's own conclusion is already committed;
             // a problem in the cascade is reported, never raised.
-            if let Err(error) = self.cascade_conclusion(task.document_id) {
-                self.cascade_notes.push(format!(
-                    "Não foi possível concluir as peças juntadas automaticamente: {error}"
-                ));
+            // A task without document takes no part in the cascade.
+            if let Some(document_id) = task.document_id {
+                if let Err(error) = self.cascade_conclusion(document_id) {
+                    self.cascade_notes.push(format!(
+                        "Não foi possível concluir as peças juntadas automaticamente: {error}"
+                    ));
+                }
             }
         }
         Ok(saved.id)
@@ -276,7 +437,9 @@ pub(crate) fn write_task(
     expected_version: Option<i64>,
 ) -> Result<Task> {
     task.validate()?;
-    crate::trash::require_active_document(tx, task.document_id)?;
+    if let Some(document_id) = task.document_id {
+        crate::trash::require_active_document(tx, document_id)?;
+    }
     if task.id > 0 {
         ensure!(
             crate::trash::require_active_task(tx, task.id)? == task.document_id,
@@ -300,7 +463,7 @@ pub(crate) fn write_task(
     } else {
         ensure!(
             tx.execute(
-                "UPDATE tasks SET payload=?1 WHERE id=?2 AND document_id=?3",
+                "UPDATE tasks SET payload=?1 WHERE id=?2 AND document_id IS ?3",
                 params![encode(&saved)?, task.id, task.document_id]
             )? == 1,
             "Tarefa não encontrada ou vínculo alterado."
@@ -362,7 +525,7 @@ pub(crate) fn write_task(
         saved.id,
         if task.id > 0 { expected_version } else { None },
         "save_task",
-        Some(task.document_id),
+        task.document_id,
         &format!("Tarefa #{}: {} ({})", saved.id, saved.title, saved.status),
     )?;
     Ok(saved)
@@ -377,7 +540,7 @@ impl Store {
         let open_here = self
             .list_tasks()?
             .iter()
-            .any(|t| t.document_id == document_id && t.status != "concluida");
+            .any(|t| t.document_id == Some(document_id) && t.status != "concluida");
         if open_here {
             return Ok(());
         }
@@ -416,7 +579,7 @@ impl Store {
                 for (child, parent) in &targets {
                     for task in tasks
                         .iter()
-                        .filter(|t| t.document_id == *child && t.status != "concluida")
+                        .filter(|t| t.document_id == Some(*child) && t.status != "concluida")
                     {
                         let mut done = task.clone();
                         done.status = "concluida".into();
@@ -437,10 +600,16 @@ impl Store {
                 }
             }
             for task in self.list_tasks()? {
-                if targets.iter().any(|(child, _)| *child == task.document_id)
+                if targets
+                    .iter()
+                    .any(|(child, _)| Some(*child) == task.document_id)
                     && task.status != "concluida"
                 {
-                    left_open.push(format!("{} — {}", number_of(task.document_id), task.title));
+                    left_open.push(format!(
+                        "{} — {}",
+                        number_of(task.document_id.unwrap_or_default()),
+                        task.title
+                    ));
                 }
             }
             if !concluded.is_empty() {
@@ -481,7 +650,7 @@ mod tests {
         let capture = crate::model::sample_capture();
         let receipt = store.import_capture(&capture).unwrap();
         let mut task = store.list_tasks().unwrap().remove(0);
-        assert_eq!(task.document_id, receipt.document_id);
+        assert_eq!(task.document_id, Some(receipt.document_id));
         task.title = "Responder ofício CONFIDENCIAL_TESTE".into();
         task.priority = "urgente".into();
         task.due_date = "2020-01-01".into();
@@ -900,7 +1069,7 @@ mod completion_tests {
             .list_tasks()
             .unwrap()
             .into_iter()
-            .find(|t| t.document_id == child.document_id)
+            .find(|t| t.document_id == Some(child.document_id))
             .unwrap();
         let mut dependent = Task::new(child.document_id);
         dependent.title = "Arquivar após triagem".into();
@@ -912,7 +1081,7 @@ mod completion_tests {
             .list_tasks()
             .unwrap()
             .into_iter()
-            .find(|t| t.document_id == parent.document_id)
+            .find(|t| t.document_id == Some(parent.document_id))
             .unwrap();
         store.complete_task(parent_task.id).unwrap();
         let notes = store.take_cascade_notes();
@@ -923,7 +1092,7 @@ mod completion_tests {
         );
         let tasks = store.list_tasks().unwrap();
         for id in [child.document_id, grandchild.document_id] {
-            for task in tasks.iter().filter(|t| t.document_id == id) {
+            for task in tasks.iter().filter(|t| t.document_id == Some(id)) {
                 assert_eq!(task.status, "concluida", "{}", task.title);
                 assert!(task.notes.contains("Concluída automaticamente"));
                 assert!(task.completed_at.is_some());
@@ -931,7 +1100,7 @@ mod completion_tests {
         }
         assert!(tasks
             .iter()
-            .find(|t| t.document_id == grandchild.document_id)
+            .find(|t| t.document_id == Some(grandchild.document_id))
             .unwrap()
             .notes
             .contains("ORG-DES-2026/39019"));
@@ -939,7 +1108,7 @@ mod completion_tests {
         assert_eq!(
             tasks
                 .iter()
-                .find(|t| t.document_id == unrelated.document_id)
+                .find(|t| t.document_id == Some(unrelated.document_id))
                 .unwrap()
                 .status,
             "pendente"
@@ -951,7 +1120,7 @@ mod completion_tests {
             .list_tasks()
             .unwrap()
             .iter()
-            .filter(|t| t.document_id == child.document_id)
+            .filter(|t| t.document_id == Some(child.document_id))
             .all(|t| t.status == "concluida"));
     }
     #[test]
@@ -1013,5 +1182,310 @@ pub fn action_label(value: &str) -> &str {
         "pedir complementacao" => "Pedir complementação",
         "acompanhar" => "Acompanhar",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+    use crate::trash::{Kind, Target};
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        (dir, store)
+    }
+
+    fn standalone(title: &str) -> Task {
+        let mut task = Task::standalone();
+        task.title = title.into();
+        task
+    }
+
+    fn find(store: &Store, id: i64) -> Task {
+        store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap()
+    }
+
+    fn second_document(store: &mut Store) -> i64 {
+        let mut capture = crate::model::sample_capture();
+        capture.request_id = uuid::Uuid::new_v4().to_string();
+        capture.document_number = "TESTE-OFI-2026/00099".into();
+        capture.source_url =
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=TESTE-OFI-2026%2F00099"
+                .into();
+        capture.title = "Segundo ofício de exemplo".into();
+        capture.text.push_str(" Segundo.");
+        store.import_capture(&capture).unwrap().document_id
+    }
+
+    #[test]
+    fn a_payload_stored_with_an_integer_document_still_loads() {
+        let mut task = Task::new(7);
+        task.id = 3;
+        let mut value = serde_json::to_value(&task).unwrap();
+        assert_eq!(
+            value["document_id"], 7,
+            "an integer, as older versions wrote"
+        );
+        let loaded: Task = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(loaded.document_id, Some(7));
+        value["document_id"] = serde_json::Value::Null;
+        let loaded: Task = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(loaded.document_id, None);
+        value.as_object_mut().unwrap().remove("document_id");
+        let loaded: Task = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.document_id, None);
+    }
+
+    #[test]
+    fn the_table_of_an_older_library_is_rebuilt_keeping_ids_and_the_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("antigo.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let other = second_document(&mut store);
+        let mut extra = Task::new(document);
+        extra.title = "Segunda tarefa".into();
+        let kept = store.save_task(&extra).unwrap();
+        extra.title = "Terceira tarefa".into();
+        let gone = store.save_task(&extra).unwrap();
+        store
+            .conn
+            .execute("DELETE FROM tasks WHERE id=?1", [gone])
+            .unwrap();
+        let before = store.list_tasks().unwrap();
+        // The table as versions up to 13 declared it, with a counter that is
+        // higher than any id left (tasks were purged).
+        store
+            .conn
+            .execute_batch(
+                "CREATE TABLE tasks_old(id INTEGER PRIMARY KEY AUTOINCREMENT,document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL);
+                 INSERT INTO tasks_old(id,document_id,payload) SELECT id,document_id,payload FROM tasks;
+                 DROP TABLE tasks;
+                 ALTER TABLE tasks_old RENAME TO tasks;
+                 CREATE INDEX tasks_document ON tasks(document_id);
+                 UPDATE sqlite_sequence SET seq=40 WHERE name='tasks';",
+            )
+            .unwrap();
+        drop(store);
+
+        let mut store = Store::open(&path).unwrap();
+        let allows_null: bool = store
+            .conn
+            .query_row(
+                "SELECT NOT \"notnull\" FROM pragma_table_info('tasks') WHERE name='document_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(allows_null);
+        let after = store.list_tasks().unwrap();
+        assert_eq!(after, before, "rows and ids are exactly the same");
+        assert!(after.iter().any(|t| t.id == kept));
+        // The counter was kept: an id is never given twice.
+        let fresh = store.save_task(&standalone("Sem documento")).unwrap();
+        assert_eq!(fresh, 41);
+        // A task without document survives the deletion of any document;
+        // the tasks of a deleted document still go with it.
+        store.delete_document(document).unwrap();
+        let left = store.list_tasks().unwrap();
+        assert!(left.iter().any(|t| t.id == fresh));
+        assert!(left.iter().all(|t| t.document_id != Some(document)));
+        store.delete_document(other).unwrap();
+        assert!(store.list_tasks().unwrap().iter().any(|t| t.id == fresh));
+        // Opening it again changes nothing.
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert!(store.list_tasks().unwrap().iter().any(|t| t.id == fresh));
+    }
+
+    #[test]
+    fn a_task_without_document_is_saved_listed_edited_and_concluded() {
+        let (_dir, mut store) = store();
+        let id = store
+            .save_task(&standalone("Renovar o certificado"))
+            .unwrap();
+        let mut task = find(&store, id);
+        assert_eq!(task.document_id, None);
+        task.notes = "Anotação".into();
+        store.save_task(&task).unwrap();
+        let done = store.complete_task(id).unwrap();
+        assert_eq!(done.status, "concluida");
+        assert_eq!(done.document_id, None);
+        // The ensure step never gives it a triage task of its own.
+        store.ensure_tasks().unwrap();
+        assert_eq!(
+            store
+                .list_tasks()
+                .unwrap()
+                .iter()
+                .filter(|t| t.document_id.is_none())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn relinking_is_explicit_checked_and_keeps_the_task_whole() {
+        let (_dir, mut store) = store();
+        let first = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let second = second_document(&mut store);
+        let mut task = standalone("Preparar a pauta");
+        task.checklist = vec![(true, "Reunir os temas".into())];
+        task.outcome = "Resultado".into();
+        let id = store.save_task(&task).unwrap();
+        let attachment = store
+            .add_attachment(
+                crate::attachments::Owner::Task(id),
+                "pauta.txt",
+                "",
+                b"pauta\n",
+            )
+            .unwrap();
+        let hung_from = |store: &Store| -> Option<i64> {
+            store
+                .conn
+                .query_row(
+                    "SELECT document_id FROM attachments WHERE id=?1",
+                    [attachment],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+
+        // The form's save never changes the link.
+        let mut moved = find(&store, id);
+        moved.document_id = Some(first);
+        assert!(store
+            .save_task(&moved)
+            .unwrap_err()
+            .to_string()
+            .contains("Vínculo da tarefa alterado"));
+
+        // Attach, with the version check.
+        let version = store.item_version("task", id).unwrap().version;
+        assert!(store
+            .relink_task(id, Some(first), Some(version + 5))
+            .is_err());
+        store.relink_task(id, Some(first), Some(version)).unwrap();
+        let linked = find(&store, id);
+        assert_eq!(linked.document_id, Some(first));
+        assert_eq!(linked.checklist, task.checklist);
+        assert_eq!(linked.outcome, "Resultado");
+        assert_eq!(
+            store
+                .list_attachments(crate::attachments::Owner::Task(id))
+                .unwrap()
+                .len(),
+            1,
+            "attachments stay with the task"
+        );
+        assert_eq!(hung_from(&store), Some(first), "and hang from its document");
+        assert!(store
+            .relink_task(id, Some(first), None)
+            .unwrap_err()
+            .to_string()
+            .contains("já está"));
+
+        // From one document to another, then to none.
+        store.relink_task(id, Some(second), None).unwrap();
+        store.relink_task(id, None, None).unwrap();
+        assert_eq!(find(&store, id).document_id, None);
+        assert_eq!(hung_from(&store), None);
+
+        // The target must be an active document that exists.
+        assert!(store.relink_task(id, Some(9999), None).is_err());
+        store
+            .trash_item(Target {
+                kind: Kind::Document,
+                id: second,
+            })
+            .unwrap();
+        assert!(store
+            .relink_task(id, Some(second), None)
+            .unwrap_err()
+            .to_string()
+            .contains("lixeira"));
+        assert!(store.relink_task(9999, Some(first), None).is_err());
+    }
+
+    #[test]
+    fn dependencies_are_kept_across_the_link_and_a_task_without_document_has_no_cascade() {
+        let (_dir, mut store) = store();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let loose = store.save_task(&standalone("Antes de tudo")).unwrap();
+        let mut dependent = Task::new(document);
+        dependent.title = "Depois".into();
+        dependent.dependencies = vec![loose];
+        let dependent = store.save_task(&dependent).unwrap();
+        store.relink_task(loose, Some(document), None).unwrap();
+        store.relink_task(loose, None, None).unwrap();
+        assert_eq!(find(&store, dependent).dependencies, vec![loose]);
+        // Concluding a task without document concludes nothing else.
+        store.complete_task(loose).unwrap();
+        assert!(store.take_cascade_notes().is_empty());
+    }
+
+    #[test]
+    fn a_task_without_document_goes_to_the_trash_and_comes_back_with_its_attachment() {
+        let (_dir, mut store) = store();
+        let id = store.save_task(&standalone("Guardar o recibo")).unwrap();
+        let attachment = store
+            .add_attachment(
+                crate::attachments::Owner::Task(id),
+                "recibo.txt",
+                "",
+                b"recibo\n",
+            )
+            .unwrap();
+        let task = Target {
+            kind: Kind::Task,
+            id,
+        };
+        assert_eq!(store.trash_item(task.clone()).unwrap(), None);
+        assert!(store.list_tasks().unwrap().iter().all(|t| t.id != id));
+        assert!(store
+            .trash_entries()
+            .unwrap()
+            .iter()
+            .any(|e| e.document.is_none()));
+        assert_eq!(store.restore_item(task.clone()).unwrap(), None);
+        assert!(store.list_tasks().unwrap().iter().any(|t| t.id == id));
+        // Its attachment too.
+        let file = Target {
+            kind: Kind::Attachment,
+            id: attachment,
+        };
+        assert_eq!(store.trash_item(file.clone()).unwrap(), None);
+        assert!(store
+            .list_attachments(crate::attachments::Owner::Task(id))
+            .unwrap()
+            .is_empty());
+        store.restore_item(file).unwrap();
+        assert_eq!(
+            store
+                .list_attachments(crate::attachments::Owner::Task(id))
+                .unwrap()
+                .len(),
+            1
+        );
+        // And the task can be removed for good.
+        store.trash_item(task.clone()).unwrap();
+        assert_eq!(store.purge_trash_item(task).unwrap(), None);
+        assert!(store.list_tasks().unwrap().iter().all(|t| t.id != id));
     }
 }

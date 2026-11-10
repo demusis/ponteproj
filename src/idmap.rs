@@ -235,7 +235,7 @@ impl Frame for CabinetSnapshot {
         Ok(self
             .tasks
             .iter()
-            .filter(|t| t.document_id == document)
+            .filter(|t| t.document_id == Some(document))
             .map(|t| t.id)
             .min())
     }
@@ -578,9 +578,21 @@ impl IdMap {
             }
             M::SaveTask { task, .. } => {
                 task.id = t(K::Task, task.id)?;
-                task.document_id = t(K::Document, task.document_id)?;
+                if let Some(document) = task.document_id {
+                    task.document_id = Some(t(K::Document, document)?);
+                }
                 for dependency in &mut task.dependencies {
                     *dependency = t(K::Task, *dependency)?;
+                }
+            }
+            M::RelinkTask {
+                task_id,
+                document_id,
+                ..
+            } => {
+                *task_id = t(K::Task, *task_id)?;
+                if let Some(document) = document_id {
+                    *document_id = Some(t(K::Document, *document)?);
                 }
             }
             M::SavePageText { file_id, .. } => *file_id = t(K::File, *file_id)?,
@@ -628,7 +640,9 @@ impl IdMap {
             } => {
                 *attendance_id = t(K::Saiop, *attendance_id)?;
                 if let Some(task) = task {
-                    task.document_id = t(K::Document, task.document_id)?;
+                    if let Some(document) = task.document_id {
+                        task.document_id = Some(t(K::Document, document)?);
+                    }
                     for dependency in &mut task.dependencies {
                         *dependency = t(K::Task, *dependency)?;
                     }

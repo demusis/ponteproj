@@ -158,7 +158,7 @@ fn documents_table(store: &Store) -> Result<Table> {
         };
         let own_tasks: Vec<_> = tasks
             .iter()
-            .filter(|t| t.document_id == summary.id)
+            .filter(|t| t.document_id == Some(summary.id))
             .collect();
         let open = own_tasks.iter().filter(|t| t.status != "concluida").count();
         let overdue = own_tasks
@@ -258,7 +258,9 @@ fn tasks_table(store: &Store) -> Result<Table> {
         };
         rows.push(vec![
             task.id.to_string(),
-            numbers.get(&task.document_id).cloned().unwrap_or_default(),
+            task.document_id
+                .and_then(|id| numbers.get(&id).cloned())
+                .unwrap_or_default(),
             task.title.clone(),
             crate::tasks::action_label(&task.action).to_owned(),
             crate::tasks::status_label(&task.status).to_owned(),

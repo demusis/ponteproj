@@ -46,7 +46,7 @@ pub struct Target {
 }
 pub struct Plan {
     pub target: Target,
-    pub document: i64,
+    pub document: Option<i64>,
     pub label: String,
     pub explanation: String,
     pub blocker: Option<String>,
@@ -54,7 +54,7 @@ pub struct Plan {
 }
 pub struct Entry {
     pub target: Target,
-    pub document: i64,
+    pub document: Option<i64>,
     pub label: String,
     pub deleted_at: String,
     pub parent_trashed: bool,
@@ -95,14 +95,18 @@ pub fn require_active_capture(conn: &Connection, id: i64) -> Result<i64> {
     );
     Ok(doc)
 }
-pub fn require_active_task(conn: &Connection, id: i64) -> Result<i64> {
-    let doc: i64 = conn
+/// The task must exist and be active; returns its document (`None` for a task
+/// without document).
+pub fn require_active_task(conn: &Connection, id: i64) -> Result<Option<i64>> {
+    let doc: Option<i64> = conn
         .query_row("SELECT document_id FROM tasks WHERE id=?1", [id], |r| {
             r.get(0)
         })
         .optional()?
         .context("Tarefa não encontrada.")?;
-    require_active_document(conn, doc)?;
+    if let Some(doc) = doc {
+        require_active_document(conn, doc)?;
+    }
     ensure!(
         !contains(conn, Kind::Task, id)?,
         "Tarefa na lixeira. Restaure-a antes de editar."
@@ -126,7 +130,7 @@ pub(crate) fn register_refs(
 }
 struct TaskNode {
     id: i64,
-    document_id: i64,
+    document_id: Option<i64>,
     dependencies: Vec<i64>,
 }
 fn all_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
@@ -136,7 +140,7 @@ fn all_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
     let rows = statement.query_map([], |r| {
         Ok((
             r.get::<_, i64>(0)?,
-            r.get::<_, i64>(1)?,
+            r.get::<_, Option<i64>>(1)?,
             r.get::<_, Vec<u8>>(2)?,
         ))
     })?;
@@ -158,7 +162,10 @@ fn active_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
         .into_iter()
         .filter_map(|task| {
             match (
-                contains(conn, Kind::Document, task.document_id),
+                match task.document_id {
+                    Some(document) => contains(conn, Kind::Document, document),
+                    None => Ok(false),
+                },
                 contains(conn, Kind::Task, task.id),
             ) {
                 (Ok(false), Ok(false)) => Some(Ok(task)),
@@ -168,13 +175,15 @@ fn active_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
         })
         .collect()
 }
-fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
+/// The document an item hangs from (`None` for a task without document and its
+/// attachments, and for attachments of atendimentos and examples) and its label.
+fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(Option<i64>, String)> {
     match kind {
         Kind::Document => {
             let bytes:Vec<u8>=conn.query_row("SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id WHERE d.id=?1",[id],|r|r.get(0))?;
             let capture: Capture = serde_json::from_slice(&protection::unseal(&bytes)?)?;
             Ok((
-                id,
+                Some(id),
                 format!("{} — {}", capture.document_number, capture.title),
             ))
         }
@@ -186,7 +195,7 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
             )?;
             let capture: Capture = serde_json::from_slice(&protection::unseal(&bytes)?)?;
             Ok((
-                doc,
+                Some(doc),
                 format!(
                     "Versão importada #{id} — {} — {}",
                     capture.document_number,
@@ -195,7 +204,7 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
             ))
         }
         Kind::Task => {
-            let (doc, bytes): (i64, Vec<u8>) = conn.query_row(
+            let (doc, bytes): (Option<i64>, Vec<u8>) = conn.query_row(
                 "SELECT document_id,payload FROM tasks WHERE id=?1",
                 [id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -214,16 +223,18 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
                 .context("Anexo não encontrado.")?;
             let meta: crate::attachments::AttachmentMeta =
                 serde_json::from_slice(&protection::unseal(&bytes)?)?;
-            // An attachment of an atendimento without document has no
-            // document to hang from in the trash: document 0 marks that.
-            let doc = doc.unwrap_or(0);
+            // No document: an atendimento or example (no trash) or a task
+            // without document.
             let owner = match owner_kind.as_str() {
                 "task" => format!("da tarefa #{owner_id}"),
                 "saiop" => format!("do atendimento #{owner_id}"),
                 "example" => format!("do exemplo #{owner_id}"),
-                _ => label(conn, Kind::Document, doc)
-                    .map(|(_, text)| format!("do documento {text}"))
-                    .unwrap_or_else(|_| format!("do documento #{doc}")),
+                _ => {
+                    let doc = doc.unwrap_or(0);
+                    label(conn, Kind::Document, doc)
+                        .map(|(_, text)| format!("do documento {text}"))
+                        .unwrap_or_else(|_| format!("do documento #{doc}"))
+                }
             };
             Ok((doc, format!("Anexo “{}” {owner}", meta.name)))
         }
@@ -231,11 +242,21 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(i64, String)> {
 }
 fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
     let (doc, label) = label(conn, target.kind, target.id)?;
-    ensure!(
-        doc != 0,
-        "Anexos de atendimentos e de exemplos não vão para a Lixeira: use “Excluir de vez” onde o anexo aparece."
-    );
-    require_active_document(conn, doc)?;
+    if doc.is_none() && target.kind == Kind::Attachment {
+        let owner: String = conn.query_row(
+            "SELECT owner_kind FROM attachments WHERE id=?1",
+            [target.id],
+            |r| r.get(0),
+        )?;
+        ensure!(
+            owner == "task",
+            "Anexos de atendimentos e de exemplos não vão para a Lixeira: use “Excluir de vez” onde o anexo aparece."
+        );
+    }
+    if let Some(doc) = doc {
+        require_active_document(conn, doc)?;
+    }
+    let doc_id = doc.unwrap_or(0);
     ensure!(
         !contains(conn, target.kind, target.id)?,
         "O item já está na lixeira."
@@ -255,10 +276,10 @@ fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
                 [target.id],
                 |r| r.get(0),
             )?;
-            let remaining:Option<i64>=conn.query_row("SELECT c.id FROM captures c WHERE c.document_id=?1 AND c.id<>?2 AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='capture' AND t.item_id=c.id) ORDER BY c.id DESC LIMIT 1",params![doc,target.id],|r|r.get(0)).optional()?;
+            let remaining:Option<i64>=conn.query_row("SELECT c.id FROM captures c WHERE c.document_id=?1 AND c.id<>?2 AND NOT EXISTS(SELECT 1 FROM trash t WHERE t.kind='capture' AND t.item_id=c.id) ORDER BY c.id DESC LIMIT 1",params![doc_id,target.id],|r|r.get(0)).optional()?;
             let current: i64 = conn.query_row(
                 "SELECT latest_capture_id FROM documents WHERE id=?1",
-                [doc],
+                [doc_id],
                 |r| r.get(0),
             )?;
             if refs > 0 {
@@ -314,7 +335,7 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS trash(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task','attachment')),item_id INTEGER NOT NULL,document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id)); CREATE INDEX IF NOT EXISTS trash_document ON trash(document_id); CREATE TABLE IF NOT EXISTS capture_refs(capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('draft','analysis')),owner_id INTEGER NOT NULL,owner_document INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,PRIMARY KEY(capture_id,owner_kind,owner_id)); CREATE TABLE IF NOT EXISTS trash_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS trash(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task','attachment')),item_id INTEGER NOT NULL,document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id)); CREATE INDEX IF NOT EXISTS trash_document ON trash(document_id); CREATE TABLE IF NOT EXISTS capture_refs(capture_id INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,owner_kind TEXT NOT NULL CHECK(owner_kind IN ('draft','analysis')),owner_id INTEGER NOT NULL,owner_document INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,PRIMARY KEY(capture_id,owner_kind,owner_id)); CREATE TABLE IF NOT EXISTS trash_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
         // Libraries created before 0.11.0 have a trash table whose CHECK does
         // not know 'attachment'. SQLite cannot alter a CHECK, so the table is
         // rebuilt once, keeping every row.
@@ -323,7 +344,11 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
-        if !definition.contains("'attachment'") {
+        // Schema 14: a task without document (and its attachments) is trashed
+        // with no document, so `document_id` may be NULL.
+        if !definition.contains("'attachment'")
+            || definition.contains("document_id INTEGER NOT NULL")
+        {
             // Triggers of other tables mention `trash`; SQLite refuses to
             // rename a table while any trigger points at a missing one, so
             // they go first. `ensure_write_guards` recreates all of them.
@@ -337,7 +362,7 @@ impl Store {
                 tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))?;
             }
             tx.execute_batch(
-                "CREATE TABLE trash_v10(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task','attachment')),item_id INTEGER NOT NULL,document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id));
+                "CREATE TABLE trash_v10(kind TEXT NOT NULL CHECK(kind IN ('document','capture','task','attachment')),item_id INTEGER NOT NULL,document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,deleted_at TEXT NOT NULL,PRIMARY KEY(kind,item_id));
                  INSERT INTO trash_v10(kind,item_id,document_id,deleted_at) SELECT kind,item_id,document_id,deleted_at FROM trash;
                  DROP TABLE trash;
                  ALTER TABLE trash_v10 RENAME TO trash;
@@ -451,7 +476,7 @@ impl Store {
     /// Deletes one trashed item for good: a document with everything it
     /// holds, a capture with its files, a task with its attachments, or one
     /// attachment. On a client computer the request goes to the main one.
-    pub fn purge_trash_item(&mut self, target: Target) -> Result<i64> {
+    pub fn purge_trash_item(&mut self, target: Target) -> Result<Option<i64>> {
         if let Some(cfg) = self.client_config()? {
             match self.remote_mutate(
                 &cfg,
@@ -460,7 +485,7 @@ impl Store {
                     id: target.id,
                 },
             )? {
-                crate::intranet::MutationReply::Id(doc) => return Ok(doc),
+                crate::intranet::MutationReply::Id(doc) => return Ok((doc != 0).then_some(doc)),
                 _ => anyhow::bail!("Resposta inesperada do computador principal ao apagar o item."),
             }
         }
@@ -468,7 +493,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let document: i64 = tx
+        let document: Option<i64> = tx
             .query_row(
                 "SELECT document_id FROM trash WHERE kind=?1 AND item_id=?2",
                 params![target.kind.key(), target.id],
@@ -525,7 +550,11 @@ impl Store {
             target.id,
             None,
             "purge_trash",
-            (target.kind != Kind::Document).then_some(document),
+            if target.kind != Kind::Document {
+                document
+            } else {
+                None
+            },
             &format!("Apagou de vez da lixeira: {text}"),
         )?;
         tx.commit()?;
@@ -535,7 +564,7 @@ impl Store {
     /// blocker. Trashing the version in use promotes another one. Returns the
     /// document the item belongs to; on a client computer it is sent to the
     /// main one.
-    pub fn trash_item(&mut self, target: Target) -> Result<i64> {
+    pub fn trash_item(&mut self, target: Target) -> Result<Option<i64>> {
         if let Some(cfg) = self.client_config()? {
             match self.remote_mutate(
                 &cfg,
@@ -544,7 +573,7 @@ impl Store {
                     id: target.id,
                 },
             )? {
-                crate::intranet::MutationReply::Id(doc) => return Ok(doc),
+                crate::intranet::MutationReply::Id(doc) => return Ok((doc != 0).then_some(doc)),
                 _ => {
                     anyhow::bail!("Resposta inesperada do computador principal ao excluir o item.")
                 }
@@ -582,7 +611,7 @@ impl Store {
             target.id,
             None,
             "trash_item",
-            Some(plan.document),
+            plan.document,
             &format!("Moveu para a lixeira: {}", plan.label),
         )?;
         tx.commit()?;
@@ -594,7 +623,7 @@ impl Store {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
+                r.get::<_, Option<i64>>(2)?,
                 r.get::<_, String>(3)?,
             ))
         })?;
@@ -602,8 +631,12 @@ impl Store {
             let (kind, id, document, deleted_at) = row?;
             let kind = Kind::parse(&kind)?;
             let (_, label) = label(&self.conn, kind, id)?;
-            let parent_trashed =
-                kind != Kind::Document && contains(&self.conn, Kind::Document, document)?;
+            let parent_trashed = match document {
+                Some(document) if kind != Kind::Document => {
+                    contains(&self.conn, Kind::Document, document)?
+                }
+                _ => false,
+            };
             Ok(Entry {
                 target: Target { kind, id },
                 document,
@@ -614,7 +647,7 @@ impl Store {
         })
         .collect()
     }
-    pub fn restore_item(&mut self, target: Target) -> Result<i64> {
+    pub fn restore_item(&mut self, target: Target) -> Result<Option<i64>> {
         if let Some(cfg) = self.client_config()? {
             match self.remote_mutate(
                 &cfg,
@@ -623,7 +656,7 @@ impl Store {
                     id: target.id,
                 },
             )? {
-                crate::intranet::MutationReply::Id(doc) => return Ok(doc),
+                crate::intranet::MutationReply::Id(doc) => return Ok((doc != 0).then_some(doc)),
                 _ => {
                     anyhow::bail!("Resposta inesperada do computador principal ao restaurar item.")
                 }
@@ -633,7 +666,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let document: i64 = tx
+        let document: Option<i64> = tx
             .query_row(
                 "SELECT document_id FROM trash WHERE kind=?1 AND item_id=?2",
                 params![target.kind.key(), target.id],
@@ -641,7 +674,7 @@ impl Store {
             )
             .optional()?
             .context("O item não está na lixeira.")?;
-        if target.kind != Kind::Document {
+        if let (true, Some(document)) = (target.kind != Kind::Document, document) {
             require_active_document(&tx, document)?;
         }
         if !matches!(target.kind, Kind::Capture | Kind::Attachment) {
@@ -680,7 +713,7 @@ impl Store {
             target.id,
             None,
             "restore_item",
-            Some(document),
+            document,
             &format!(
                 "Restaurou da lixeira: {} #{}",
                 target.kind.label(),
@@ -717,7 +750,8 @@ pub fn retention_label(days: u32) -> String {
 }
 pub struct Change {
     pub target: Target,
-    pub document: i64,
+    /// The document of the item; `None` for a task without document.
+    pub document: Option<i64>,
     pub restored: bool,
 }
 #[cfg(feature = "desktop")]
@@ -1405,11 +1439,11 @@ mod related_tests {
         let tasks = store.list_tasks().unwrap();
         let first_task = tasks
             .iter()
-            .find(|t| t.document_id == a.document_id)
+            .find(|t| t.document_id == Some(a.document_id))
             .unwrap();
         let mut other = tasks
             .iter()
-            .find(|t| t.document_id == b.document_id)
+            .find(|t| t.document_id == Some(b.document_id))
             .unwrap()
             .clone();
         other.dependencies = vec![first_task.id];
