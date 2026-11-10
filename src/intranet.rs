@@ -6544,12 +6544,12 @@ mod tests {
         let config = IntranetConfig {
             cabinet_token: "ponte-chave-secreta".into(),
             folder_key: "senha-da-pasta".into(),
-            member_name: "MARIA".into(),
+            member_name: "SERVIDOR-A".into(),
             ..IntranetConfig::default()
         };
         let shown = format!("{config:?}");
         assert!(
-            shown.contains("MARIA") && shown.contains("<oculto>"),
+            shown.contains("SERVIDOR-A") && shown.contains("<oculto>"),
             "{shown}"
         );
         assert!(
@@ -6706,14 +6706,14 @@ mod tests {
             .version;
         assert_eq!(new_ver, 1);
 
-        synced_task.notes = "Complementado por Maria após revisão".into();
+        synced_task.notes = "Complementado por Servidor A após revisão".into();
         synced_task.assignee = "MARIA_CLIENTE".into();
         client_store
             .save_task_checked(&synced_task, Some(new_ver))
             .unwrap();
         assert_eq!(
             host_store.list_tasks().unwrap()[0].notes,
-            "Complementado por Maria após revisão"
+            "Complementado por Servidor A após revisão"
         );
 
         // 3. Offline work while Host is stopped + Mutual Sync + Conflict Detection & Merge!
@@ -6723,12 +6723,12 @@ mod tests {
         // Client continues working normally while Host is offline:
         // (a) Client edits the document note twice while offline (coalesced in outbox keeping initial base version 0):
         client_store
-            .save_note(receipt.document_id, "Primeira anotação offline de Maria")
+            .save_note(receipt.document_id, "Primeira anotação offline de Servidor A")
             .unwrap();
         client_store
             .save_note(
                 receipt.document_id,
-                "Parecer técnico elaborado por Maria offline",
+                "Parecer técnico elaborado por Servidor A offline",
             )
             .unwrap();
         assert_eq!(
@@ -6736,20 +6736,20 @@ mod tests {
                 .load_document(receipt.document_id)
                 .unwrap()
                 .note,
-            "Parecer técnico elaborado por Maria offline"
+            "Parecer técnico elaborado por Servidor A offline"
         );
         // (b) Client creates a new task while offline (no conflict):
         let mut offline_new_task = Task::new(receipt.document_id);
-        offline_new_task.title = "Diligência criada por Maria sem servidor".into();
+        offline_new_task.title = "Diligência criada por Servidor A sem servidor".into();
         offline_new_task.assignee = "MARIA_CLIENTE".into();
         client_store.save_task(&offline_new_task).unwrap();
         assert_eq!(client_store.list_offline_outbox().unwrap().len(), 2);
 
-        // Meanwhile, on the Host PC (before reconnecting), Carlo also edits the same document's note!
+        // Meanwhile, on the Host PC (before reconnecting), Servidor B also edits the same document's note!
         host_store
             .save_note(
                 receipt.document_id,
-                "Despacho urgente registrado por Carlo no Anfitrião",
+                "Despacho urgente registrado por Servidor B no Anfitrião",
             )
             .unwrap();
 
@@ -6761,7 +6761,7 @@ mod tests {
 
         // Client triggers mutual sync (`sync_from_host`):
         // - `offline_new_task` has no conflict and is pushed to Host automatically!
-        // - `save_note` collides with Carlo's concurrent edit on Host and is moved to `offline_conflicts`!
+        // - `save_note` collides with Servidor B's concurrent edit on Host and is moved to `offline_conflicts`!
         assert!(client_store.sync_from_host(false).unwrap());
         assert_eq!(client_store.list_offline_outbox().unwrap().len(), 0);
         assert_eq!(host_store.list_tasks().unwrap().len(), 2);
@@ -6769,19 +6769,19 @@ mod tests {
             .list_tasks()
             .unwrap()
             .iter()
-            .any(|t| t.title == "Diligência criada por Maria sem servidor"));
+            .any(|t| t.title == "Diligência criada por Servidor A sem servidor"));
 
         let conflicts = client_store.list_sync_conflicts().unwrap();
         assert_eq!(conflicts.len(), 1);
         assert!(conflicts[0].item_label.contains("Notas do documento"));
         assert!(conflicts[0]
             .local_summary
-            .contains("Parecer técnico elaborado por Maria offline"));
+            .contains("Parecer técnico elaborado por Servidor A offline"));
         assert!(conflicts[0]
             .host_summary
-            .contains("Despacho urgente registrado por Carlo no Anfitrião"));
+            .contains("Despacho urgente registrado por Servidor B no Anfitrião"));
 
-        // Maria chooses to MERGE both versions (`ConflictResolution::Merge`):
+        // Servidor A chooses to MERGE both versions (`ConflictResolution::Merge`):
         client_store
             .resolve_sync_conflict(conflicts[0].id, ConflictResolution::Merge)
             .unwrap();
@@ -6793,8 +6793,8 @@ mod tests {
             .unwrap()
             .note;
         assert_eq!(merged_host_note, merged_client_note);
-        assert!(merged_host_note.contains("Despacho urgente registrado por Carlo no Anfitrião"));
-        assert!(merged_host_note.contains("Parecer técnico elaborado por Maria offline"));
+        assert!(merged_host_note.contains("Despacho urgente registrado por Servidor B no Anfitrião"));
+        assert!(merged_host_note.contains("Parecer técnico elaborado por Servidor A offline"));
         server2.stop();
 
         // 4. Contingency failover: Client switches to Host mode and continues seamlessly!
@@ -6831,9 +6831,9 @@ mod tests {
                 token.as_str(),
                 "CARLO_ANFITRIAO",
                 "MARIA_CLIENTE",
-                "Complementado por Maria",
-                "Parecer técnico elaborado por Maria offline",
-                "Diligência criada por Maria sem servidor",
+                "Complementado por Servidor A",
+                "Parecer técnico elaborado por Servidor A offline",
+                "Diligência criada por Servidor A sem servidor",
                 capture.title.as_str(),
             ] {
                 assert!(
@@ -7377,7 +7377,7 @@ mod tests {
         let mut client = Store::open(&dir.path().join("client.sqlite3")).unwrap();
         let mut client_cfg = IntranetConfig {
             mode: IntranetMode::Client,
-            member_name: "MARIA".into(),
+            member_name: "SERVIDOR-A".into(),
             bind_addr: "127.0.0.1:0".into(),
             host_url: format!("http://{}", server.local_addr()),
             cabinet_token: token.clone(),
@@ -7396,7 +7396,7 @@ mod tests {
 
         // Offline: a new task, its edit and an attachment to it.
         let mut task = Task::new(receipt.document_id);
-        task.title = "Tarefa de Maria".into();
+        task.title = "Tarefa de Servidor A".into();
         let local_id = client.save_task(&task).unwrap();
         let mut task = client
             .list_tasks()
@@ -7411,7 +7411,7 @@ mod tests {
                 crate::attachments::Owner::Task(local_id),
                 "nota.txt",
                 "",
-                b"anexo de Maria",
+                b"anexo de Servidor A",
             )
             .unwrap();
         // Meanwhile the main computer creates a task with the same number.
@@ -7432,7 +7432,7 @@ mod tests {
             .iter()
             .find(|t| t.title == "Tarefa do anfitrião")
             .unwrap();
-        let of_maria = tasks.iter().find(|t| t.title == "Tarefa de Maria").unwrap();
+        let of_maria = tasks.iter().find(|t| t.title == "Tarefa de Servidor A").unwrap();
         assert!(of_host.notes.is_empty(), "the host's task untouched");
         assert_eq!(of_maria.notes, "Editada sem conexão");
         assert!(host
@@ -7517,7 +7517,7 @@ mod tests {
         let mut server = HostServer::start(db.clone(), "127.0.0.1:0").unwrap();
         let cfg = IntranetConfig {
             mode: IntranetMode::Client,
-            member_name: "MARIA".into(),
+            member_name: "SERVIDOR-A".into(),
             host_url: format!("http://{}", server.local_addr()),
             cabinet_token: token,
             ..IntranetConfig::default()
@@ -7818,7 +7818,7 @@ mod tests {
         // Host changed the assignee; the offline edit changed the title and
         // the priority; both changed the status.
         let mut host = base.clone();
-        host.assignee = "CARLO".into();
+        host.assignee = "SERVIDOR-B".into();
         host.status = "em analise".into();
         store.save_task(&host).unwrap();
         let mut local = base.clone();
@@ -7828,7 +7828,7 @@ mod tests {
         local.notes = "Observação feita sem conexão".into();
         let merged = store
             .build_merged_mutation(
-                "MARIA",
+                "SERVIDOR-A",
                 IntranetMutation::SaveTask {
                     task: local.clone(),
                     expected_version: None,
@@ -7844,7 +7844,7 @@ mod tests {
         };
         assert_eq!(task.title, "Título revisto offline");
         assert_eq!(task.priority, "alta");
-        assert_eq!(task.assignee, "CARLO");
+        assert_eq!(task.assignee, "SERVIDOR-B");
         assert_eq!(task.status, "aguardando", "local wins when both changed");
         assert!(task.notes.contains("Observação feita sem conexão"));
         assert!(
@@ -7858,7 +7858,7 @@ mod tests {
         let conflict = SyncConflict {
             id: 0,
             created_at: now_iso(),
-            actor: "MARIA".into(),
+            actor: "SERVIDOR-A".into(),
             item_label: "Tarefa".into(),
             local_summary: String::new(),
             host_summary: String::new(),

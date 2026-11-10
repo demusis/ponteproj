@@ -43,31 +43,31 @@ internal object Samples {
     ) = TaskItem(id, 100 + id, title, action, number, due, chip, done, overdue, today)
 
     val tasks = listOf(
-        task(1, "Responder ofício sobre o efetivo da Operação Fronteira", "Responder", "OF. 0412/2026", "2026-11-05", "há 4 dias", overdue = true),
-        task(2, "Enviar relatório mensal de ocorrências", "Encaminhar", "MEM. 118/2026", "2026-11-07", "há 2 dias", overdue = true),
-        task(3, "Confirmar presença na reunião do GGI", "Responder", "Convite reunião GGI", "2026-11-09", "hoje", today = true),
-        task(4, "Conferir planilha de viaturas", "Analisar", "PROC. 2026/5512", "2026-11-12", "12/11"),
-        task(5, "Preparar minuta de resposta à Corregedoria", "Elaborar minuta", "OF. 0398/2026", "2026-11-20", "20/11"),
+        task(1, "Responder ofício sobre o pessoal do Projeto Alfa", "Responder", "OF. 0412/2026", "2026-11-05", "há 4 dias", overdue = true),
+        task(2, "Enviar relatório mensal de atividades", "Encaminhar", "MEM. 118/2026", "2026-11-07", "há 2 dias", overdue = true),
+        task(3, "Confirmar presença na reunião do Comitê Gestor", "Responder", "Convite reunião Comitê Gestor", "2026-11-09", "hoje", today = true),
+        task(4, "Conferir planilha de veículos", "Analisar", "PROC. 2026/5512", "2026-11-12", "12/11"),
+        task(5, "Preparar minuta de resposta ao Setor Jurídico", "Elaborar minuta", "OF. 0398/2026", "2026-11-20", "20/11"),
         task(6, "Arquivar comprovante de entrega", "Arquivar", "Recibo de entrega", ""),
         task(7, "Ligar para o setor de protocolo", "", "", ""),
         task(8, "Assinar termo de recebimento", "Assinar", "TERMO 22/2026", "2026-11-03", "03/11", done = true),
-        task(9, "Encaminhar escala de serviço", "Encaminhar", "MEM. 101/2026", "", "", done = true)
+        task(9, "Encaminhar escala de trabalho", "Encaminhar", "MEM. 101/2026", "", "", done = true)
     )
 
     val docs = listOf(
         Doc(
-            101, "OF. 0412/2026", "Solicitação de informações sobre o efetivo da Operação Fronteira", "Aguardando dados do 2º BPM.", null,
-            type = "Ofício", date = "03/11/2026", origin = "Secretaria de Estado de Segurança Pública", openTasks = 1,
+            101, "OF. 0412/2026", "Solicitação de informações sobre o pessoal do Projeto Alfa", "Aguardando dados de outro setor.", null,
+            type = "Ofício", date = "03/11/2026", origin = "Diretoria-Geral", openTasks = 1,
             taskDueLabel = "05/11/2026", taskOverdue = true, attachments = 2
         ),
         Doc(
-            102, "", "Convite: reunião do Gabinete de Gestão Integrada", "", null,
-            type = "E-mail recebido", date = "08/11/2026", email = true, emailFrom = "Gabinete GGI <ggi@sesp.mt.gov.br>", openTasks = 1,
+            102, "", "Convite: reunião do Comitê Gestor", "", null,
+            type = "E-mail recebido", date = "08/11/2026", email = true, emailFrom = "Comitê Gestor <comite@exemplo.org>", openTasks = 1,
             taskDueLabel = "09/11/2026", taskDueToday = true, attachments = 1
         ),
         Doc(
-            103, "MEM. 118/2026", "Relatório mensal de ocorrências — outubro", "", null,
-            type = "Memorando", date = "30/10/2026", origin = "Coordenadoria de Estatística", openTasks = 2,
+            103, "MEM. 118/2026", "Relatório mensal de atividades — outubro", "", null,
+            type = "Memorando", date = "30/10/2026", origin = "Coordenação de Planejamento", openTasks = 2,
             taskDueLabel = "07/11/2026", taskOverdue = true
         ),
         Doc(
@@ -75,45 +75,45 @@ internal object Samples {
             type = "Papel", date = "06/11/2026", origin = "Almoxarifado central", manual = true, attachments = 1
         ),
         Doc(
-            105, "PROC. 2026/5512", "Aquisição de viaturas — planilha de distribuição", "", null,
+            105, "PROC. 2026/5512", "Aquisição de veículos — planilha de distribuição", "", null,
             type = "Processo", date = "28/10/2026", origin = "Superintendência de Logística", openTasks = 1, taskDueLabel = "12/11/2026"
         ),
         Doc(
             106, "DESP. 77/2026", "Despacho de encaminhamento", "", "nota ilegível neste aparelho",
-            type = "Despacho", date = "21/10/2026", origin = "Gabinete do Secretário Adjunto"
+            type = "Despacho", date = "21/10/2026", origin = "Gabinete"
         )
     )
 
     val detail = DocDetail(
         id = 101,
         number = "OF. 0412/2026",
-        title = "Solicitação de informações sobre o efetivo da Operação Fronteira",
+        title = "Solicitação de informações sobre o pessoal do Projeto Alfa",
         type = "Ofício",
         date = "03/11/2026",
-        origin = "Secretaria de Estado de Segurança Pública",
-        note = "Aguardando dados do 2º BPM. Cobrar o comandante na segunda-feira.",
+        origin = "Diretoria-Geral",
+        note = "Aguardando dados de outro setor. Cobrar a chefia na segunda-feira.",
         analysis = Analysis(
-            summary = "A Secretaria solicita, em até cinco dias úteis, o quantitativo de policiais empregados na Operação Fronteira " +
+            summary = "A Diretoria-Geral solicita, em até cinco dias úteis, o número de servidores alocados no Projeto Alfa " +
                 "entre agosto e outubro, com a distribuição por unidade e os custos de diárias.",
             priority = "alta",
-            reason = "Prazo curto e pedido vindo do gabinete do Secretário.",
+            reason = "Prazo curto e pedido vindo da Diretoria-Geral.",
             deadline = "5 dias úteis a contar do recebimento",
             suggested = listOf(
                 Suggestion("Responder", "O ofício pede informações com prazo."),
-                Suggestion("Encaminhar", "Os dados estão com o 2º BPM.")
+                Suggestion("Encaminhar", "Os dados estão com outro setor.")
             )
         ),
         tasks = listOf(tasks[0], tasks[7].copy(documentId = 101)),
         files = listOf(
             FileItem("pdf", 1, 1, "Ofício 0412-2026.pdf", 248_000, ""),
-            FileItem("attachment", 2, 0, "Anexo I - Quadro de efetivo.xlsx", 31_500, "Planilha com o quadro por unidade"),
+            FileItem("attachment", 2, 0, "Anexo I - Quadro de pessoal.xlsx", 31_500, "Planilha com o quadro por unidade"),
             FileItem("attachment", 3, 0, "Anexo II - Portaria.pdf", 1_420_000, "")
         ),
-        text = "GOVERNO DO ESTADO\nSECRETARIA DE ESTADO DE SEGURANÇA PÚBLICA\n\nOfício nº 0412/2026\n\nSenhor Comandante,\n\n" +
+        text = "ÓRGÃO DE EXEMPLO\nDIRETORIA-GERAL\n\nOfício nº 0412/2026\n\nSenhor Coordenador,\n\n" +
             "Cumprimentando-o cordialmente, solicito a Vossa Senhoria que informe, no prazo de 5 (cinco) dias úteis, o quantitativo " +
-            "de policiais militares empregados na Operação Fronteira no período de agosto a outubro do corrente ano, discriminando " +
+            "de servidores alocados no Projeto Alfa no período de agosto a outubro do corrente ano, discriminando " +
             "a distribuição por unidade e os valores despendidos com diárias.\n\nAs informações subsidiarão o relatório a ser " +
-            "apresentado ao Conselho Estadual de Segurança Pública.\n\nAtenciosamente,\n\nSecretário Adjunto de Integração Operacional"
+            "apresentado ao Conselho Gestor.\n\nAtenciosamente,\n\nDiretor de Área"
     )
 
     val actions = listOf(
@@ -142,19 +142,19 @@ internal object Samples {
     }
 
     val accounts = listOf(
-        MailAccount("a1", "Institucional", "imap.gmail.com", 993, "carlos.souza@sesp.mt.gov.br", true, true, "INBOX", "todas", "2026-11-09T12:00:00Z"),
-        MailAccount("a2", "", "imap.gmail.com", 993, "carlos.pessoal@gmail.com", false, false, "INBOX", "estrela", "2026-10-02T08:00:00Z")
+        MailAccount("a1", "Institucional", "imap.gmail.com", 993, "servidor@exemplo.org", true, true, "INBOX", "todas", "2026-11-09T12:00:00Z"),
+        MailAccount("a2", "", "imap.gmail.com", 993, "conta@exemplo.org", false, false, "INBOX", "estrela", "2026-10-02T08:00:00Z")
     )
 
     val folders = listOf(MailFolder("INBOX", "Caixa de entrada"), MailFolder("[Gmail]/Com estrela", "Com estrela"), MailFolder("Oficios", "Ofícios"))
 
     val messages = listOf(
-        MailMessage(901, "09/11/2026 10:42", "Gabinete GGI <ggi@sesp.mt.gov.br>", "Convite: reunião do Gabinete de Gestão Integrada", true, false),
-        MailMessage(900, "09/11/2026 08:15", "Protocolo Geral <protocolo@sesp.mt.gov.br>", "Ofício 0431/2026 - Solicitação de apoio logístico para evento", false, false),
-        MailMessage(899, "08/11/2026 17:03", "Maria Albuquerque <maria.albuquerque@pm.mt.gov.br>", "RES: Quadro de efetivo da Operação Fronteira", false, true),
-        MailMessage(898, "08/11/2026 11:20", "Corregedoria <corregedoria@sesp.mt.gov.br>", "", false, false),
-        MailMessage(897, "07/11/2026 16:48", "Superintendência de Logística <logistica@sesp.mt.gov.br>", "Planilha de distribuição de viaturas (versão final)", true, false, error = "anexo acima do limite"),
-        MailMessage(896, "07/11/2026 09:02", "Boletim Diário <boletim@sesp.mt.gov.br>", "Boletim de ocorrências de 06/11", false, false)
+        MailMessage(901, "09/11/2026 10:42", "Comitê Gestor <comite@exemplo.org>", "Convite: reunião do Comitê Gestor", true, false),
+        MailMessage(900, "09/11/2026 08:15", "Protocolo Geral <protocolo@exemplo.org>", "Ofício 0431/2026 - Solicitação de apoio logístico para evento", false, false),
+        MailMessage(899, "08/11/2026 17:03", "Remetente de exemplo <remetente@exemplo.org>", "RES: Quadro de pessoal do Projeto Alfa", false, true),
+        MailMessage(898, "08/11/2026 11:20", "Setor Jurídico <juridico@exemplo.org>", "", false, false),
+        MailMessage(897, "07/11/2026 16:48", "Superintendência de Logística <logistica@exemplo.org>", "Planilha de distribuição de veículos (versão final)", true, false, error = "anexo acima do limite"),
+        MailMessage(896, "07/11/2026 09:02", "Boletim Diário <boletim@exemplo.org>", "Boletim diário de 06/11", false, false)
     )
 
     val mail = MailState(

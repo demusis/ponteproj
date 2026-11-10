@@ -866,22 +866,22 @@ mod completion_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("cascade.sqlite3")).unwrap();
         let parent = store
-            .import_capture(&capture("SESP-DIC-2026/97546", "Processo principal."))
+            .import_capture(&capture("ORG-DIC-2026/97546", "Processo principal."))
             .unwrap();
         let child = store
             .import_capture(&capture(
-                "SESP-DES-2026/39019",
-                "| Juntada | Juntado ao documento: SESP-DIC-2026/97546-A |",
+                "ORG-DES-2026/39019",
+                "| Juntada | Juntado ao documento: ORG-DIC-2026/97546-A |",
             ))
             .unwrap();
         let grandchild = store
             .import_capture(&capture(
-                "SESP-OFI-2026/00500",
-                "| Juntada | Juntado ao documento: SESP-DES-2026/39019-A |",
+                "ORG-OFI-2026/00500",
+                "| Juntada | Juntado ao documento: ORG-DES-2026/39019-A |",
             ))
             .unwrap();
         let unrelated = store
-            .import_capture(&capture("SESP-OFI-2026/00999", "Outro documento."))
+            .import_capture(&capture("ORG-OFI-2026/00999", "Outro documento."))
             .unwrap();
         // The child also has a task that depends on its triage task.
         let child_triage = store
@@ -919,7 +919,7 @@ mod completion_tests {
             .find(|t| t.document_id == grandchild.document_id)
             .unwrap()
             .notes
-            .contains("SESP-DES-2026/39019"));
+            .contains("ORG-DES-2026/39019"));
         // Unrelated documents are untouched; nothing cascades again.
         assert_eq!(
             tasks

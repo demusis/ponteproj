@@ -6802,7 +6802,7 @@ impl PonteApp {
             .list_documents("")
             .ok()?
             .into_iter()
-            .find(|d| d.document_number == "SESP-OFI-2026/00431")
+            .find(|d| d.document_number == "ORG-OFI-2026/00431")
             .map(|d| d.id)
     }
 
@@ -7235,15 +7235,15 @@ mod tests {
 
     #[test]
     fn sidebar_groups_joined_documents_right_below_their_visible_parent() {
-        let parent = "SESP-DIC-2026/97546";
+        let parent = "ORG-DIC-2026/97546";
         // Most recent first: the juntado child arrives before its parent.
         let docs = [
-            summary(3, "SESP-DES-2026/39019", Some((2, parent))),
+            summary(3, "ORG-DES-2026/39019", Some((2, parent))),
             summary(1, "SEFAZ-PRO-2026/00001", None),
             summary(2, parent, None),
-            summary(4, "SESP-OFI-2026/00010", Some((2, parent))),
-            summary(5, "SESP-OFI-2026/00011", Some((0, "SESP-DIC-2026/99999"))),
-            summary(6, "SESP-OFI-2026/00012", Some((3, "SESP-DES-2026/39019"))),
+            summary(4, "ORG-OFI-2026/00010", Some((2, parent))),
+            summary(5, "ORG-OFI-2026/00011", Some((0, "ORG-DIC-2026/99999"))),
+            summary(6, "ORG-OFI-2026/00012", Some((3, "ORG-DES-2026/39019"))),
         ];
         let refs: Vec<_> = docs.iter().collect();
         let order: Vec<(i64, usize)> = super::group_joined(&refs)
@@ -7270,11 +7270,11 @@ mod tests {
 
         assert_eq!(
             super::joined_label(&docs[0]).as_deref(),
-            Some("↳ Juntado a SESP-DIC-2026/97546")
+            Some("↳ Juntado a ORG-DIC-2026/97546")
         );
         assert_eq!(
             super::joined_label(&docs[4]).as_deref(),
-            Some("↳ Juntado a SESP-DIC-2026/99999 (não importado)")
+            Some("↳ Juntado a ORG-DIC-2026/99999 (não importado)")
         );
         let mut via_only = summary(9, "X-2026/1", None);
         via_only.is_joined = true;

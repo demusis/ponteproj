@@ -1744,7 +1744,7 @@ impl TaskPanel {
                     .list_documents("")
                     .unwrap_or_default()
                     .into_iter()
-                    .find(|d| d.document_number == "SESP-OFI-2026/00431");
+                    .find(|d| d.document_number == "ORG-OFI-2026/00431");
                 if let Some(document) = target {
                     self.start_new(document.id);
                     self.show_all_documents = true;

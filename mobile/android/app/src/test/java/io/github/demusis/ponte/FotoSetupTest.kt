@@ -21,7 +21,7 @@ class FotoSetupTest {
 
     @Test fun fotoInteira() {
         paparazzi.tall(3400)
-        photo(filled.copy(text = "Recebido por Sgt. Moura em 06/11."), "inteira")
+        photo(filled.copy(text = "Recebido por Servidor B em 06/11."), "inteira")
     }
 
     /** Just back from the camera, nothing typed yet, the picture still loading. */

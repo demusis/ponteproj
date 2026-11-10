@@ -21,16 +21,16 @@ use std::collections::BTreeMap;
 /// Ids of what the first part created, for the parts that follow.
 #[derive(Default)]
 struct Ids {
-    /// `SESP-OFI-2026/00431`
+    /// `ORG-OFI-2026/00431`
     logistics: i64,
     logistics_capture: i64,
-    /// `SESP-MEM-2026/01207`
+    /// `ORG-MEM-2026/01207`
     staff: i64,
-    /// `SESP-DES-2026/00877`
+    /// `ORG-DES-2026/00877`
     dispatch: i64,
-    /// `SESP-OFI-2026/00398`
+    /// `ORG-OFI-2026/00398`
     vehicles: i64,
-    /// `SESP-OFI-2026/00377`
+    /// `ORG-OFI-2026/00377`
     schedule: i64,
     /// Manual record "Recibo de entrega de equipamentos".
     receipt: i64,
@@ -102,7 +102,7 @@ fn capture(
                 registered_unit: "Protocolo Geral".into(),
                 registered_person: "Servidor do protocolo".into(),
                 attendant_unit: "Gabinete do Secretário".into(),
-                attendant_person: "Carlos".into(),
+                attendant_person: "Servidor A".into(),
                 description: (*description).into(),
             })
             .collect();
@@ -142,22 +142,22 @@ fn documents(store: &mut Store) -> Result<Ids> {
     let mut ids = Ids::default();
 
     let logistics = capture(
-        "SESP-OFI-2026/00431",
+        "ORG-OFI-2026/00431",
         "Ofício",
         "Solicitação de apoio logístico para evento",
         "Protocolo Geral",
         1,
-        "Senhor Secretário,\n\n\
-         Solicitamos o apoio logístico desta Secretaria para o Seminário de Integração das Forças de Segurança, \
+        "Senhor Diretor,\n\n\
+         Solicitamos o apoio logístico desta Diretoria para o Seminário de Integração das Equipes, \
          com o empréstimo de 20 (vinte) cadeiras e de equipamento de sonorização completo, \
          incluindo mesa de som e dois microfones sem fio.\n\n\
-         Pedimos ainda a disponibilização de 2 (duas) viaturas, com motorista, \
+         Pedimos ainda a disponibilização de 2 (dois) veículos, com motorista, \
          para o transporte dos palestrantes entre o aeroporto e o local do evento.\n\n\
          Em razão da data marcada, a resposta deve ser enviada a este Protocolo até o fim da próxima semana, \
          para que a organização possa confirmar a programação.",
         &[
             (2, "Registro do documento", "Documento recebido e registrado no protocolo."),
-            (2, "Despacho", "Encaminhado ao Gabinete do Secretário para providências."),
+            (2, "Despacho", "Encaminhado ao Gabinete para providências."),
             (1, "Recebimento", "Recebido no Gabinete; aguardando distribuição."),
         ],
     );
@@ -166,13 +166,13 @@ fn documents(store: &mut Store) -> Result<Ids> {
     ids.logistics_capture = receipt.capture_id;
 
     let staff = capture(
-        "SESP-MEM-2026/01207",
+        "ORG-MEM-2026/01207",
         "Memorando",
-        "Quadro de efetivo da Operação Fronteira",
-        "Coordenadoria de Operações",
+        "Quadro de pessoal do Projeto Alfa",
+        "Coordenação de Projetos",
         4,
-        "Encaminhamos o quadro de efetivo previsto para a Operação Fronteira no próximo mês: \
-         42 policiais militares, 18 policiais civis e 6 servidores de apoio administrativo, \
+        "Encaminhamos o quadro de pessoal previsto para o Projeto Alfa no próximo mês: \
+         42 técnicos, 18 analistas e 6 servidores de apoio administrativo, \
          distribuídos em três turnos. Solicitamos a conferência dos nomes e a confirmação das escalas.",
         &[(4, "Registro do documento", "Memorando registrado e remetido ao Gabinete.")],
     );
@@ -181,14 +181,14 @@ fn documents(store: &mut Store) -> Result<Ids> {
     // The despacho says it was juntado to the memorando; the library links
     // the two by itself when it reads that line.
     let dispatch = capture(
-        "SESP-DES-2026/00877",
+        "ORG-DES-2026/00877",
         "Despacho",
         "Despacho de encaminhamento",
         "Chefia de Gabinete",
         3,
         &format!(
-            "Encaminhe-se à Coordenadoria de Operações para ciência e providências.\n\
-             Juntado ao documento SESP-MEM-2026/01207 em {}.",
+            "Encaminhe-se à Coordenação de Projetos para ciência e providências.\n\
+             Juntado ao documento ORG-MEM-2026/01207 em {}.",
             br(-3)
         ),
         &[],
@@ -196,25 +196,25 @@ fn documents(store: &mut Store) -> Result<Ids> {
     ids.dispatch = store.import_capture(&dispatch)?.document_id;
 
     let vehicles = capture(
-        "SESP-OFI-2026/00398",
+        "ORG-OFI-2026/00398",
         "Ofício",
-        "Planilha de distribuição de viaturas",
+        "Planilha de distribuição de veículos",
         "Seção de Transportes",
         6,
-        "Segue a planilha de distribuição das viaturas por unidade para o trimestre. \
-         Constam 31 viaturas leves, 8 caminhonetes e 4 veículos de transporte de pessoal. \
+        "Segue a planilha de distribuição dos veículos por unidade para o trimestre. \
+         Constam 31 veículos leves, 8 caminhonetes e 4 veículos de transporte de pessoal. \
          Solicita-se a assinatura do Secretário para a publicação.",
         &[],
     );
     ids.vehicles = store.import_capture(&vehicles)?.document_id;
 
     let schedule = capture(
-        "SESP-OFI-2026/00377",
+        "ORG-OFI-2026/00377",
         "Ofício",
         "Pedido de informações sobre escala",
-        "Corregedoria Setorial",
+        "Setor Jurídico",
         9,
-        "A Corregedoria Setorial solicita informações sobre a escala de serviço dos plantões do último mês, \
+        "A Setor Jurídico solicita informações sobre a escala de serviço dos plantões do último mês, \
          com a indicação dos responsáveis por turno. A resposta já foi enviada por ofício próprio.",
         &[],
     );
@@ -237,7 +237,7 @@ fn documents(store: &mut Store) -> Result<Ids> {
 fn note(store: &mut Store, ids: &Ids) -> Result<()> {
     store.save_note(
         ids.logistics,
-        "Aguardar retorno do Sgt. Moura sobre o auditório antes de responder.",
+        "Aguardar retorno do Servidor B sobre o auditório antes de responder.",
     )
 }
 
@@ -245,19 +245,19 @@ fn note(store: &mut Store, ids: &Ids) -> Result<()> {
 fn mail(store: &mut Store) -> Result<Option<i64>> {
     let date = (Local::now() - Duration::days(1)).to_rfc2822();
     let eml = format!(
-        "From: Gabinete GGI <ggi@exemplo.gov.br>\r\n\
-         To: Carlos <carlos@exemplo.gov.br>\r\n\
-         Subject: Convite: reunião do Gabinete de Gestão Integrada\r\n\
+        "From: Comitê Gestor <comite@exemplo.org>\r\n\
+         To: Servidor A <servidor@exemplo.org>\r\n\
+         Subject: Convite: reunião do Comitê Gestor\r\n\
          Date: {date}\r\n\
-         Message-ID: <amostra-ggi-001@exemplo.gov.br>\r\n\
+         Message-ID: <amostra-ggi-001@exemplo.org>\r\n\
          MIME-Version: 1.0\r\n\
          Content-Type: text/plain; charset=utf-8\r\n\
          Content-Transfer-Encoding: 8bit\r\n\r\n\
-         Prezado Carlos,\r\n\r\n\
-         Convidamos a Secretaria para a reunião ordinária do Gabinete de Gestão Integrada, \
+         Prezado Servidor A,\r\n\r\n\
+         Convidamos a Diretoria para a reunião ordinária do Comitê Gestor, \
          que tratará da integração das ações de fronteira.\r\n\r\n\
          Pedimos a confirmação de presença até amanhã.\r\n\r\n\
-         Atenciosamente,\r\nGabinete GGI\r\n"
+         Atenciosamente,\r\nComitê Gestor\r\n"
     );
     let imported = store.import_eml_bytes(eml.as_bytes())?;
     Ok(Some(imported.receipt.document_id))
@@ -302,8 +302,8 @@ fn tasks(store: &mut Store, ids: &Ids) -> Result<()> {
         "aguardando",
         "alta",
         Some(-3),
-        "Sgt. Moura",
-        "O Sgt. Moura ficou de verificar a agenda do auditório.",
+        "Servidor B",
+        "O Servidor B ficou de verificar a agenda do auditório.",
     );
     let first_id = store.save_task(&first)?;
 
@@ -315,7 +315,7 @@ fn tasks(store: &mut Store, ids: &Ids) -> Result<()> {
         "pendente",
         "alta",
         Some(0),
-        "Carlos",
+        "Servidor A",
         "Responder só depois de confirmado o auditório.",
     );
     reply.dependencies = vec![first_id];
@@ -323,7 +323,7 @@ fn tasks(store: &mut Store, ids: &Ids) -> Result<()> {
 
     let vehicles = shape(
         Task::new(ids.logistics),
-        "Pedir as duas viaturas à Seção de Transportes",
+        "Pedir os dois veículos à Seção de Transportes",
         "encaminhar",
         "pendente",
         "normal",
@@ -336,18 +336,18 @@ fn tasks(store: &mut Store, ids: &Ids) -> Result<()> {
     // Due today.
     let staff = shape(
         triage_task(store, ids.staff)?,
-        "Conferir o quadro de efetivo",
+        "Conferir o quadro de pessoal",
         "examinar",
         "em analise",
         "normal",
         Some(0),
-        "Carlos",
-        "Conferir nomes e turnos com a Coordenadoria de Operações.",
+        "Servidor A",
+        "Conferir nomes e turnos com a Coordenação de Projetos.",
     );
     store.save_task(&staff)?;
     let escala = shape(
         Task::new(ids.staff),
-        "Atualizar a escala do efetivo da Operação Fronteira",
+        "Atualizar a escala da equipe do Projeto Alfa",
         "acompanhar",
         "pendente",
         "normal",
@@ -365,7 +365,7 @@ fn tasks(store: &mut Store, ids: &Ids) -> Result<()> {
         "concluida",
         "baixa",
         None,
-        "Carlos",
+        "Servidor A",
         "",
     );
     store.save_task(&ciencia)?;
@@ -373,12 +373,12 @@ fn tasks(store: &mut Store, ids: &Ids) -> Result<()> {
     // Next week.
     let revisar = shape(
         triage_task(store, ids.vehicles)?,
-        "Revisar a distribuição de viaturas antes da assinatura",
+        "Revisar a distribuição de veículos antes da assinatura",
         "examinar",
         "pendente",
         "normal",
         Some(7),
-        "Carlos",
+        "Servidor A",
         "",
     );
     store.save_task(&revisar)?;
@@ -410,12 +410,12 @@ fn tasks(store: &mut Store, ids: &Ids) -> Result<()> {
     if let Some(mail) = ids.mail {
         let presenca = shape(
             triage_task(store, mail)?,
-            "Confirmar presença na reunião do GGI",
+            "Confirmar presença na reunião do Comitê Gestor",
             "responder",
             "pendente",
             "alta",
             Some(1),
-            "Carlos",
+            "Servidor A",
             "",
         );
         store.save_task(&presenca)?;
@@ -450,7 +450,7 @@ fn attendance(
     a.stage_changed_at = a.entry_date.clone();
     a.events.push(SaiopEvent {
         when: (Utc::now() - Duration::days(entry)).to_rfc3339(),
-        actor: "Carlos".into(),
+        actor: "Servidor A".into(),
         kind: "entrada".into(),
         detail: format!("Demanda recebida de {received_from}"),
     });
@@ -459,11 +459,11 @@ fn attendance(
 
 fn attendances(store: &mut Store, ids: &Ids) -> Result<()> {
     let mut first = attendance(
-        "SESP-OFI-2026/00431",
+        "ORG-OFI-2026/00431",
         "Apoio logístico para o seminário de integração",
         Some(ids.logistics),
         "Protocolo Geral",
-        "Carlos",
+        "Servidor A",
         "em_analise",
         "alta",
         Some(0),
@@ -473,27 +473,27 @@ fn attendances(store: &mut Store, ids: &Ids) -> Result<()> {
     store.save_saiop_attendance(&first, None)?;
 
     let mut second = attendance(
-        "SESP-MEM-2026/01207",
-        "Quadro de efetivo da Operação Fronteira",
+        "ORG-MEM-2026/01207",
+        "Quadro de pessoal do Projeto Alfa",
         Some(ids.staff),
-        "Coordenadoria de Operações",
-        "Carlos",
+        "Coordenação de Projetos",
+        "Servidor A",
         "aguardando_resposta",
         "normal",
         Some(4),
         4,
     );
-    second.sent_to = "Coordenadoria de Operações".into();
+    second.sent_to = "Coordenação de Projetos".into();
     second.due_kind = "cobranca_retorno".into();
     store.save_saiop_attendance(&second, None)?;
 
     // Waiting for the signature.
     let mut third = attendance(
-        "SESP-OFI-2026/00398",
-        "Planilha de distribuição de viaturas",
+        "ORG-OFI-2026/00398",
+        "Planilha de distribuição de veículos",
         Some(ids.vehicles),
         "Seção de Transportes",
-        "Carlos",
+        "Servidor A",
         "aguardando_deliberacao",
         "normal",
         Some(7),
@@ -505,11 +505,11 @@ fn attendances(store: &mut Store, ids: &Ids) -> Result<()> {
 
     // Closed.
     let mut fourth = attendance(
-        "SESP-OFI-2026/00377",
+        "ORG-OFI-2026/00377",
         "Pedido de informações sobre escala",
         Some(ids.schedule),
-        "Corregedoria Setorial",
-        "Carlos",
+        "Setor Jurídico",
+        "Servidor A",
         "encerrado",
         "normal",
         Some(-4),
@@ -520,7 +520,7 @@ fn attendances(store: &mut Store, ids: &Ids) -> Result<()> {
     fourth.exit_date = iso(-5);
     fourth.exit_date_raw = fourth.exit_date.clone();
     fourth.closed_at = iso(-5);
-    fourth.sent_to = "Corregedoria Setorial".into();
+    fourth.sent_to = "Setor Jurídico".into();
     store.save_saiop_attendance(&fourth, None)?;
 
     // Deadline already past.
@@ -529,7 +529,7 @@ fn attendances(store: &mut Store, ids: &Ids) -> Result<()> {
         "Recibo de entrega de equipamentos",
         Some(ids.receipt),
         "Almoxarifado central",
-        "Carlos",
+        "Servidor A",
         "em_elaboracao",
         "urgente",
         Some(-2),
@@ -540,10 +540,10 @@ fn attendances(store: &mut Store, ids: &Ids) -> Result<()> {
 
     // Not assigned yet.
     let sixth = attendance(
-        "Convite do GGI",
-        "Convite: reunião do Gabinete de Gestão Integrada",
+        "Convite do Comitê Gestor",
+        "Convite: reunião do Comitê Gestor",
         ids.mail,
-        "Gabinete GGI",
+        "Comitê Gestor",
         "",
         "a_distribuir",
         "baixa",
@@ -561,9 +561,9 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
         capture_id: ids.logistics_capture,
         subjects: vec!["Apoio logístico".into(), "Evento institucional".into()],
         priority: "alta".into(),
-        reason: "Há prazo para a resposta e o pedido envolve cadeiras, som e viaturas.".into(),
+        reason: "Há prazo para a resposta e o pedido envolve cadeiras, som e veículos.".into(),
         deadline_candidate: Some(format!("{} (fim da próxima semana)", br(7))),
-        summary: "O Protocolo Geral pede apoio para um seminário: 20 cadeiras, equipamento de som e 2 viaturas \
+        summary: "O Protocolo Geral pede apoio para um seminário: 20 cadeiras, equipamento de som e 2 veículos \
                   com motorista. A resposta deve chegar ao Protocolo até o fim da próxima semana."
             .into(),
         model: "amostra".into(),
@@ -576,8 +576,8 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
             },
             ActionSuggestion {
                 action: "encaminhar".into(),
-                reason: "As viaturas dependem da Seção de Transportes.".into(),
-                evidence: "\"2 (duas) viaturas, com motorista\"".into(),
+                reason: "Os veículos dependem da Seção de Transportes.".into(),
+                evidence: "\"2 (dois) veículos, com motorista\"".into(),
             },
         ],
         ..Default::default()
@@ -699,7 +699,7 @@ mod tests {
         assert!(documents.len() >= 6, "documents: {}", documents.len());
         assert!(documents
             .iter()
-            .any(|d| d.document_number == "SESP-OFI-2026/00431"));
+            .any(|d| d.document_number == "ORG-OFI-2026/00431"));
         assert!(documents.iter().any(|d| d.joined_to_number.is_some()));
         assert!(documents.iter().any(|d| d.email));
         let tasks = store.list_tasks().unwrap();

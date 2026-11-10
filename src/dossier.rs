@@ -76,9 +76,9 @@ pub fn movements(capture: &Capture) -> Result<Vec<Movement>> {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JuntadaInfo {
     pub is_joined: bool,
-    /// Canonical parent number, e.g. "SESP-DIC-2026/97546".
+    /// Canonical parent number, e.g. "ORG-DIC-2026/97546".
     pub parent_document_number: Option<String>,
-    /// Number exactly as addressed by the source, e.g. "SESP-DIC-2026/97546-A".
+    /// Number exactly as addressed by the source, e.g. "ORG-DIC-2026/97546-A".
     pub raw_target_via: Option<String>,
 }
 
@@ -781,8 +781,8 @@ impl DossierPanel {
 mod tests {
     use super::*;
 
-    const CHILD: &str = "SESP-DES-2026/39019";
-    const PARENT: &str = "SESP-DIC-2026/97546";
+    const CHILD: &str = "ORG-DES-2026/39019";
+    const PARENT: &str = "ORG-DIC-2026/97546";
 
     fn capture_for(number: &str, text: &str) -> Capture {
         let mut capture = crate::model::sample_capture();
@@ -799,7 +799,7 @@ mod tests {
     fn joined_child() -> Capture {
         let mut capture = capture_for(
             CHILD,
-            "Despacho de encaminhamento.\n\n| Data | Lotação | Evento | Descrição |\n| 02/11/2026 10:15 | SESP-GAB | Juntada | Juntado ao documento: SESP-DIC-2026/97546-A |",
+            "Despacho de encaminhamento.\n\n| Data | Lotação | Evento | Descrição |\n| 02/11/2026 10:15 | ORG-GAB | Juntada | Juntado ao documento: ORG-DIC-2026/97546-A |",
         );
         capture.metadata.insert(
             "via_status".into(),
@@ -815,13 +815,13 @@ mod tests {
         assert_eq!(info.parent_document_number.as_deref(), Some(PARENT));
         assert_eq!(
             info.raw_target_via.as_deref(),
-            Some("SESP-DIC-2026/97546-A")
+            Some("ORG-DIC-2026/97546-A")
         );
         assert_eq!(
-            canonical_parent_number("SESP-DIC-2026/97546-A").as_deref(),
+            canonical_parent_number("ORG-DIC-2026/97546-A").as_deref(),
             Some(PARENT)
         );
-        assert_eq!(canonical_parent_number("SESP-DIC-2026/97546-AA"), None);
+        assert_eq!(canonical_parent_number("ORG-DIC-2026/97546-AA"), None);
         assert_eq!(canonical_parent_number("lixo"), None);
 
         // Without the via heading the explicit text is still enough.
@@ -846,8 +846,8 @@ mod tests {
         // A structured reference produced by the extension.
         let mut by_reference = capture_for(CHILD, "");
         by_reference.references.push(crate::model::DocumentReference {
-            label: "Juntado ao documento: SESP-DIC-2026/97546-A".into(),
-            url: "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibir?sigla=SESP-DIC-2026%2F97546-A".into(),
+            label: "Juntado ao documento: ORG-DIC-2026/97546-A".into(),
+            url: "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibir?sigla=ORG-DIC-2026%2F97546-A".into(),
             kind: "antecedent".into(),
         });
         by_reference.validate().unwrap();
@@ -873,14 +873,14 @@ mod tests {
         };
         by_history.metadata.insert(
             "movement_source".into(),
-            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibirAntigo?sigla=SESPDES202639019".into(),
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibirAntigo?sigla=ORGDES202639019".into(),
         );
         by_history.metadata.insert(
             "movement_history".into(),
             serde_json::to_string(&vec![event(
                 "Juntada",
                 "02/11/2026 10:15",
-                "Juntado ao documento: SESP-DIC-2026/97546-A",
+                "Juntado ao documento: ORG-DIC-2026/97546-A",
             )])
             .unwrap(),
         );
@@ -900,7 +900,7 @@ mod tests {
                 event(
                     "Juntada",
                     "02/11/2026 10:15",
-                    "Juntado ao documento: SESP-DIC-2026/97546-A",
+                    "Juntado ao documento: ORG-DIC-2026/97546-A",
                 ),
             ])
             .unwrap(),
@@ -911,7 +911,7 @@ mod tests {
         assert_eq!(
             detect_juntada(&capture_for(
                 PARENT,
-                "Juntado ao documento: SESP-DIC-2026/97546-A"
+                "Juntado ao documento: ORG-DIC-2026/97546-A"
             )),
             None
         );

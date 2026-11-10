@@ -4621,8 +4621,8 @@ mod tests {
         let shared_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
             <sst>
                 <si><t>SES-PRO-2026/00100</t></si>
-                <si><t>CARLO</t></si>
-                <si><t>MARIA</t></si>
+                <si><t>SERVIDOR-B</t></si>
+                <si><t>SERVIDOR-A</t></si>
                 <si><t>Tramitado</t></si>
                 <si><t>Sim</t></si>
                 <si><t>Aquisição de insumos hospitalares</t></si>

@@ -276,7 +276,7 @@
       const text = safeText(anchor);
       if (!text || text.length > 250) continue;
       const context = label(text + " " + (anchor.closest("[data-reference-kind]")?.getAttribute("data-reference-kind") || "") + " " + (anchor.parentElement?.getAttribute("aria-label") || "") + " " + (anchor.closest("section")?.querySelector("h2, h3") ? safeText(anchor.closest("section").querySelector("h2, h3")) : ""));
-      // SIGA event tables: "Juntada | Juntado ao documento: SESP-DIC-2026/97546-A",
+      // SIGA event tables: "Juntada | Juntado ao documento: ORG-DIC-2026/97546-A",
       // where the sigla links to a via (-A) of the parent document.
       const sigla = documentQueryNumber(text);
       let display = text;

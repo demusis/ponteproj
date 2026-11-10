@@ -1268,7 +1268,7 @@ impl MailPanel {
                     name: "Gmail pessoal".into(),
                     host: "imap.gmail.com".into(),
                     port: DEFAULT_PORT,
-                    user: "exemplo@gmail.com".into(),
+                    user: "conta@exemplo.org".into(),
                     password: "x".into(),
                     folder: "INBOX".into(),
                     ..MailAccount::default()
@@ -1285,10 +1285,10 @@ impl MailPanel {
                 self.filter = Some(Filter::All);
                 self.messages_folder = "INBOX".into();
                 let rows = [
-                    ("Maria Souza <maria@orgao.gov.br>", "Ofício 123/2026 - solicitação de informações", "2026-11-09", false, false, 184_000),
+                    ("Remetente de exemplo <remetente@exemplo.org>", "Ofício 123/2026 - solicitação de informações", "2026-11-09", false, false, 184_000),
                     ("Departamento Jurídico", "Re: Processo 2026/00431 - parecer", "2026-11-08", true, true, 2_400_000),
-                    ("João Pereira", "", "2026-11-05", true, false, 52_000),
-                    ("Secretaria de Segurança Pública", "Convocação para reunião de segunda-feira", "2026-11-03", true, false, 91_000),
+                    ("Setor de Protocolo", "", "2026-11-05", true, false, 52_000),
+                    ("Diretoria-Geral", "Convocação para reunião de segunda-feira", "2026-11-03", true, false, 91_000),
                 ];
                 self.messages = rows
                     .iter()

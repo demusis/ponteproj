@@ -91,7 +91,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | Palavra | O que é |
 |---|---|
 | **Acervo** | O arquivo do Ponte no seu computador, com tudo o que você importou e escreveu. É cifrado pela sua conta do Windows. |
-| **Documento** | Um processo, ofício, memorando ou outro expediente do SIGADOC que você importou. No SIGADOC, processo e expediente são igualmente "documentos", e é assim que o Ponte os trata. Cada um tem um número oficial, como `SESP-OFI-2026/00042`. |
+| **Documento** | Um processo, ofício, memorando ou outro expediente do SIGADOC que você importou. No SIGADOC, processo e expediente são igualmente "documentos", e é assim que o Ponte os trata. Cada um tem um número oficial, como `ORG-OFI-2026/00042`. |
 | **Versão importada** | Uma fotografia do documento no momento da importação. Importar de novo depois de um despacho cria uma nova versão; as anteriores ficam guardadas. |
 | **Registro manual** | Um documento que você mesmo cria, para o que não está no SIGADOC: uma ligação, um e-mail, um ofício em papel. Recebe um número próprio, como `MANUAL-2026/0007`. |
 | **Ficha** | A tela de um documento, com quatro abas: Resumo, Documento, Notas e minutas, Mais. |
@@ -109,11 +109,11 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 
 ```
 ┌──────────────┬───────────────────────────┬──────────────────────────────────────┐
-│ Documentos   │ Documentos      [Novo ▾]  │ SESP-OFI-2026/00042  ● 1 em aberto   │
+│ Documentos   │ Documentos      [Novo ▾]  │ ORG-OFI-2026/00042  ● 1 em aberto   │
 │ Tarefas  2   │ [Buscar...]               │ Abrir no SIGADOC     Excluir…        │
 │ Atendimentos │ Todos Com tarefa Atrasados│ Resumo Documento Notas e minutas Mais│
 │ Modelos      │ Filtros                   │                                      │
-│              │ SESP-OFI-2026/00042       │ Análise      Dados do documento      │
+│              │ ORG-OFI-2026/00042       │ Análise      Dados do documento      │
 │              │ Pedido de revisão...      │ Tarefas      Atendimento      Nota   │
 │              │ ● 1 em aberto             │                                      │
 │              │ MANUAL-2026/0001          │                                      │
@@ -152,7 +152,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 
 ## 4. Um passeio com um documento de exemplo
 
-Suponha que chegou ao gabinete o ofício fictício **SESP-OFI-2026/00042 — Pedido de revisão de materiais de treinamento**, com prazo de resposta em 10 dias.
+Suponha que chegou ao gabinete o ofício fictício **ORG-OFI-2026/00042 — Pedido de revisão de materiais de treinamento**, com prazo de resposta em 10 dias.
 
 ### 4.1 Importar
 
@@ -161,7 +161,7 @@ No SIGADOC, abra o documento (a ficha dele, não a lista de resultados). No cant
 ```
 ┌──────────────────────────────────────────────┐
 │          Importar para o assistente          │
-│ SESP-OFI-2026/00042 — Pedido de revisão de   │
+│ ORG-OFI-2026/00042 — Pedido de revisão de   │
 │ materiais de treinamento                     │
 │ Importa o texto, os PDFs e o histórico deste │
 │ documento para o Ponte.                      │
@@ -325,7 +325,7 @@ Cada documento importado recebe uma tarefa de triagem. Você cria outras no Resu
 
 O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupada em ATRASADAS, PARA HOJE, PRÓXIMAS, SEM PRAZO e CONCLUÍDAS. O círculo à esquerda de cada tarefa a conclui (ou a reabre, se já concluída). Clicar na tarefa abre os dados num painel à direita, com **Salvar**, **Concluir**, **Cancelar** e **Excluir…** embaixo.
 
-- **A área segue o documento selecionado.** Com um documento selecionado em Documentos, ela mostra só as tarefas dele: no alto aparece `Só SESP-OFI-2026/00042` e o botão **Todos os documentos**, que amplia. Selecionar outro documento volta a filtrar por ele.
+- **A área segue o documento selecionado.** Com um documento selecionado em Documentos, ela mostra só as tarefas dele: no alto aparece `Só ORG-OFI-2026/00042` e o botão **Todos os documentos**, que amplia. Selecionar outro documento volta a filtrar por ele.
 - **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*.
 - **Mostrar concluídas** inclui as já concluídas na lista.
 - **Nova tarefa** cria uma tarefa do documento selecionado, quando há um.
@@ -335,7 +335,7 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 | Campo | Opções ou exemplo |
 |---|---|
 | Título | `Responder ao ofício` |
-| Responsável | `MARIA`, ou o botão **Eu** |
+| Responsável | `FULANA`, ou o botão **Eu** |
 | Ação | *Triar*, *Examinar*, *Tomar ciência*, *Baixar documento*, *Responder*, *Encaminhar*, *Pedir complementação*, *Acompanhar* |
 | Situação | *Pendente*, *Em análise*, *Aguardando*, *Concluída* |
 | Prioridade | *Baixa*, *Normal*, *Alta*, *Urgente* |
@@ -384,7 +384,7 @@ Se já existe um atendimento com o mesmo número e sem documento ligado (vindo d
 
 ### 7.2 A área segue o documento selecionado
 
-Com um documento selecionado em Documentos, a área mostra só os atendimentos ligados a ele: no alto aparece `Só SESP-OFI-2026/00042` e o botão **Todos os atendimentos**, que amplia. Nesse estado, **Nova entrada** cria o atendimento já ligado ao documento, com o número dele como referência.
+Com um documento selecionado em Documentos, a área mostra só os atendimentos ligados a ele: no alto aparece `Só ORG-OFI-2026/00042` e o botão **Todos os atendimentos**, que amplia. Nesse estado, **Nova entrada** cria o atendimento já ligado ao documento, com o número dele como referência.
 
 ### 7.3 A ficha do atendimento
 
@@ -392,9 +392,9 @@ Clicar numa linha da tabela abre a ficha num painel à direita, com os botões *
 
 | Seção | Campo | Opções ou exemplo |
 |---|---|---|
-| Identificação | Referência | `SESP-PRO-2026/01234`, ou um código provisório como `DEMANDA-17` |
+| Identificação | Referência | `ORG-PRO-2026/01234`, ou um código provisório como `DEMANDA-17` |
 | | Entrada | `03/11/2026` |
-| | Responsável | `MARIA` (botão **Atribuir a mim**) |
+| | Responsável | `FULANA` (botão **Atribuir a mim**) |
 | | Recebido de | `Gabinete do Secretário` |
 | Situação e prioridade | Situação | *A distribuir*, *Em análise*, *Em elaboração*, *Aguardando deliberação*, *Aguardando resposta*, *Suspenso (Stand By)*, *Encerrado*, *Cancelado* |
 | | Prioridade e motivo | *Alta* / `prazo legal de 15 dias` |
@@ -403,7 +403,7 @@ Clicar numa linha da tabela abre a ficha num painel à direita, com os botões *
 | Condições e relações | Retorno para UAS? | *Não informado*, *Sim*, *Não* |
 | | Assinado? | *Não informado*, *Sim*, *Não* |
 | | Agendado, Documento sensível | caixas de marcar |
-| | Apensado / juntado | `apensado ao SESP-PRO-2026/01200` |
+| | Apensado / juntado | `apensado ao ORG-PRO-2026/01200` |
 | Resultado | Entrega prevista | *Despacho*, *CI*, *Ofício*, *Informação Técnica*, *Parecer*, *Nota Técnica*, *Termo* |
 | | Resultado da etapa | *Em aberto*, *Encaminhado / Tramitado*, *Arquivado no controle local*, *Respondido*, *Ciência registrada* |
 | | Data de saída, Enviado para | `20/11/2026` / `Procuradoria` |
@@ -473,7 +473,7 @@ Um computador do gabinete é o **principal**; os outros se conectam a ele. Nada 
 
 **No computador principal:**
 
-1. *Seu nome na equipe*: `CARLOS`.
+1. *Seu nome na equipe*: `BELTRANO`.
 2. Marque **Este é o computador principal do gabinete** e clique em **Salvar e ficar disponível agora**.
 3. Clique em **Copiar código de conexão** e envie o texto aos colegas. É algo assim:
    ```
@@ -484,7 +484,7 @@ Um computador do gabinete é o **principal**; os outros se conectam a ele. Nada 
 
 **Nos outros computadores:**
 
-1. *Seu nome na equipe*: `MARIA`.
+1. *Seu nome na equipe*: `FULANA`.
 2. Marque **Conectar ao computador principal do gabinete**, cole o código em *Código de conexão* e clique em **Usar código**. O Ponte testa a conexão na hora.
 3. Clique em **Salvar e sincronizar acervo agora**. A partir daí vale neste computador o acervo do gabinete. Se ele já tinha documentos próprios, faça antes uma cópia de segurança (**Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora**): o conteúdo local dá lugar ao do computador principal.
 

@@ -418,7 +418,7 @@ mod tests {
         let mut task = store.list_tasks().unwrap().remove(0);
         task.title = "Responder; com ponto e vírgula".into();
         task.due_date = "2020-01-10".into();
-        task.assignee = "MARIA".into();
+        task.assignee = "SERVIDOR-A".into();
         store.save_task(&task).unwrap();
         let folder = dir.path().join("saida");
         std::fs::create_dir_all(&folder).unwrap();
@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(column("Atrasada"), "Sim");
         assert!(column("Dias de atraso").parse::<i64>().unwrap() > 1000);
         assert_eq!(column("Mês do prazo"), "2020-01-01");
-        assert_eq!(column("Responsável"), "MARIA");
+        assert_eq!(column("Responsável"), "SERVIDOR-A");
         let attendances = std::fs::read_to_string(folder.join("atendimentos.csv")).unwrap();
         assert_eq!(
             parse(&attendances).len(),
