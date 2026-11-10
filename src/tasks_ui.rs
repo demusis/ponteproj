@@ -3,9 +3,6 @@
 use crate::{storage::Store, tasks::Task};
 use eframe::egui::{self, Color32, RichText};
 
-const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
-const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
-const MUTED: Color32 = Color32::from_rgb(120, 130, 140);
 
 /// Views over the task list. The first four are the everyday ones; the rest
 /// live under "Mais".
@@ -23,20 +20,16 @@ const VIEWS: [&str; 9] = [
 const PRIMARY_VIEWS: [usize; 4] = [2, 3, 4, 0];
 const SECONDARY_VIEWS: [usize; 5] = [8, 1, 5, 6, 7];
 
-/// Bar colour of a task that depends on the one open in the form: the same
-/// plain blue the document list uses for "no prazo".
-const RELATED: Color32 = Color32::from_rgb(26, 95, 180);
-const SUCCESS: Color32 = Color32::from_rgb(20, 118, 72);
 
 /// A clickable chip naming a related task with its state; returns the task
 /// when clicked, so the list can open it.
 fn dependency_chip(ui: &mut egui::Ui, task: &Task) -> Option<Task> {
     let (mark, color) = if task.status == "concluida" {
-        ("✓", MUTED)
+        ("✓", crate::theme::muted())
     } else if task.overdue() {
-        ("⚠", ERROR)
+        ("⚠", crate::theme::error())
     } else {
-        ("○", WARNING)
+        ("○", crate::theme::warning())
     };
     let mut text = RichText::new(format!("{mark} {}", task.title))
         .small()
@@ -73,20 +66,20 @@ fn chain_row(ui: &mut egui::Ui, task: &Task, open: &mut Option<Task>) {
     ui.horizontal_wrapped(|ui| {
         ui.add_space(12.0);
         if task.status == "concluida" {
-            ui.small(RichText::new("✓").color(MUTED));
+            ui.small(RichText::new("✓").color(crate::theme::muted()));
         } else if task.overdue() {
-            ui.small(RichText::new("⚠").color(ERROR));
+            ui.small(RichText::new("⚠").color(crate::theme::error()));
         } else {
-            ui.small(RichText::new("○").color(WARNING));
+            ui.small(RichText::new("○").color(crate::theme::warning()));
         }
         ui.small(&task.title);
         ui.small(
-            RichText::new(format!("• {}", crate::tasks::status_label(&task.status))).color(MUTED),
+            RichText::new(format!("• {}", crate::tasks::status_label(&task.status))).color(crate::theme::muted()),
         );
         if !task.due_date.is_empty() {
             ui.small(
                 RichText::new(format!("• prazo {}", crate::labels::date(&task.due_date)))
-                    .color(MUTED),
+                    .color(crate::theme::muted()),
             );
         }
         if ui.small_button("Abrir").clicked() {
@@ -422,7 +415,7 @@ impl TaskPanel {
             for index in PRIMARY_VIEWS {
                 let label = match index {
                     4 if overdue_count > 0 => {
-                        RichText::new(format!("{} ({overdue_count})", VIEWS[index])).color(ERROR)
+                        RichText::new(format!("{} ({overdue_count})", VIEWS[index])).color(crate::theme::error())
                     }
                     0 => RichText::new(format!("{} ({all_count})", VIEWS[index])),
                     _ => RichText::new(VIEWS[index]),
@@ -470,7 +463,7 @@ impl TaskPanel {
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(
                     if self.message_is_error {
-                        ERROR
+                        crate::theme::error()
                     } else {
                         Color32::from_rgb(24, 84, 97)
                     },
@@ -612,9 +605,9 @@ impl TaskPanel {
                                 .filter(|t| t.dependencies.contains(&task.id))
                                 .collect();
                             let relation = if focus_before.contains(&task.id) {
-                                Some((WARNING, "Esta tarefa vem ANTES da tarefa aberta na ficha."))
+                                Some((crate::theme::warning(), "Esta tarefa vem ANTES da tarefa aberta na ficha."))
                             } else if focus_after.contains(&task.id) {
-                                Some((RELATED, "Esta tarefa vem DEPOIS da tarefa aberta na ficha (depende dela)."))
+                                Some((crate::theme::on_time(), "Esta tarefa vem DEPOIS da tarefa aberta na ficha (depende dela)."))
                             } else {
                                 None
                             };
@@ -627,15 +620,15 @@ impl TaskPanel {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal_wrapped(|ui| {
                                     if task.overdue() {
-                                        ui.colored_label(ERROR, "ATRASADA");
+                                        ui.colored_label(crate::theme::error(), "ATRASADA");
                                     }
                                     if !direct.is_empty() {
                                         let (color, text) = if blocked {
-                                            (WARNING, format!("⛓ {} de {} anterior(es) em aberto", blockers.len(), direct.len()))
+                                            (crate::theme::warning(), format!("⛓ {} de {} anterior(es) em aberto", blockers.len(), direct.len()))
                                         } else if pending {
-                                            (SUCCESS, format!("⛓ {} anterior(es) concluída(s)", direct.len()))
+                                            (crate::theme::success(), format!("⛓ {} anterior(es) concluída(s)", direct.len()))
                                         } else {
-                                            (MUTED, format!("⛓ {} anterior(es)", direct.len()))
+                                            (crate::theme::muted(), format!("⛓ {} anterior(es)", direct.len()))
                                         };
                                         let detail = direct
                                             .iter()
@@ -655,7 +648,7 @@ impl TaskPanel {
                                 });
                                 if !direct.is_empty() {
                                     ui.horizontal_wrapped(|ui| {
-                                        ui.small(RichText::new("↳ depende de:").color(MUTED));
+                                        ui.small(RichText::new("↳ depende de:").color(crate::theme::muted()));
                                         for dependency in &direct {
                                             if let Some(clicked) = dependency_chip(ui, dependency) {
                                                 select_request = Some(clicked);
@@ -665,7 +658,7 @@ impl TaskPanel {
                                 }
                                 if !releases.is_empty() {
                                     ui.horizontal_wrapped(|ui| {
-                                        ui.small(RichText::new("↱ libera:").color(MUTED))
+                                        ui.small(RichText::new("↱ libera:").color(crate::theme::muted()))
                                             .on_hover_text("Tarefas que só podem ser concluídas depois desta.");
                                         for next in &releases {
                                             if let Some(clicked) = dependency_chip(ui, next) {
@@ -680,7 +673,7 @@ impl TaskPanel {
                                         let email = d.email;
                                         ui.small(
                                             RichText::new(if email { "E-mail" } else { "Manual" })
-                                                .color(WARNING),
+                                                .color(crate::theme::warning()),
                                         )
                                         .on_hover_text(if email {
                                             "E-mail importado no Ponte, fora do SIGADOC."
@@ -807,7 +800,7 @@ impl TaskPanel {
         ui.horizontal_wrapped(|ui| {
             ui.heading(if task.id > 0 { "Tarefa" } else { "Nova tarefa" });
             if dirty {
-                ui.colored_label(WARNING, "● não salva");
+                ui.colored_label(crate::theme::warning(), "● não salva");
             }
         });
         ui.horizontal_wrapped(|ui| {
@@ -1073,7 +1066,7 @@ impl TaskPanel {
                                 crate::tasks::status_label(&previous.status)
                             );
                             let text = if previous.status == "concluida" {
-                                RichText::new(label).color(MUTED)
+                                RichText::new(label).color(crate::theme::muted())
                             } else {
                                 RichText::new(label)
                             };
@@ -1242,4 +1235,15 @@ mod navigation_tests {
         assert_eq!(panel.take_blocked(), Some(Intent::New(document)));
         assert!(panel.take_blocked().is_none());
     }
+}
+
+/// Development only: the views of this screen pictured by `--shots`, by
+/// name. The tour calls `shots_open` with each one on a fresh panel.
+#[cfg(feature = "shots")]
+pub const SHOTS: &[&str] = &[];
+
+#[cfg(feature = "shots")]
+impl TaskPanel {
+    /// Puts the panel in the state called `view` (see `SHOTS`).
+    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
 }

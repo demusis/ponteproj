@@ -12,9 +12,6 @@ use crate::{
 use eframe::egui::{self, Color32, RichText};
 use std::collections::{BTreeMap, BTreeSet};
 
-const SUCCESS: Color32 = Color32::from_rgb(30, 120, 60);
-const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
-const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
 
 /// A request for the app to run on a worker thread.
 pub enum MailAction {
@@ -324,7 +321,7 @@ impl MailPanel {
     pub fn accept_imports(&mut self, results: Vec<(u32, Result<MailImport, String>)>) {
         self.summary.clear();
         for line in std::mem::take(&mut self.skipped_lines) {
-            self.summary.push((WARNING, line));
+            self.summary.push((crate::theme::warning(), line));
         }
         let (mut ok, mut failed) = (0usize, 0usize);
         for (uid, result) in results {
@@ -353,7 +350,7 @@ impl MailPanel {
                         } else {
                             format!("{title}: já estava no acervo")
                         };
-                        self.summary.push((WARNING, line));
+                        self.summary.push((crate::theme::warning(), line));
                     } else {
                         let mut line = format!("✓ {title} — {} anexo(s)", done.attachments_added);
                         if !done.attachments_skipped.is_empty() {
@@ -362,23 +359,23 @@ impl MailPanel {
                                 done.attachments_skipped.len()
                             ));
                         }
-                        self.summary.push((SUCCESS, line));
+                        self.summary.push((crate::theme::success(), line));
                     }
                     for skipped in &done.attachments_skipped {
                         self.summary.push((
-                            WARNING,
+                            crate::theme::warning(),
                             format!("    não anexado: {}", truncate(skipped, 120)),
                         ));
                     }
                     for note in &done.notes {
                         self.summary
-                            .push((WARNING, format!("    {}", truncate(note, 160))));
+                            .push((crate::theme::warning(), format!("    {}", truncate(note, 160))));
                     }
                     ok += 1;
                 }
                 Err(e) => {
                     self.summary
-                        .push((ERROR, format!("✗ {}: {e}", truncate(&subject, 80))));
+                        .push((crate::theme::error(), format!("✗ {}: {e}", truncate(&subject, 80))));
                     failed += 1;
                 }
             }
@@ -486,7 +483,7 @@ impl MailPanel {
         // 4. Notice line (kept at the top).
         if let Some((msg, error)) = self.notice.clone() {
             ui.horizontal_wrapped(|ui| {
-                ui.colored_label(if error { ERROR } else { SUCCESS }, msg);
+                ui.colored_label(if error { crate::theme::error() } else { crate::theme::success() }, msg);
                 if ui
                     .small_button("✕")
                     .on_hover_text("Fechar o aviso")
@@ -501,12 +498,12 @@ impl MailPanel {
             MailBusy::Free => {}
             MailBusy::Mail => {
                 ui.colored_label(
-                    WARNING,
+                    crate::theme::warning(),
                     "Aguarde: o Ponte está conversando com o servidor de e-mail…",
                 );
             }
             MailBusy::Other => {
-                ui.colored_label(WARNING, "Aguarde a operação em andamento.");
+                ui.colored_label(crate::theme::warning(), "Aguarde a operação em andamento.");
             }
         }
 
@@ -535,16 +532,16 @@ impl MailPanel {
         let busy = state != MailBusy::Free;
         let mut action = MailAction::None;
         if let Some((msg, error)) = self.notice.clone() {
-            ui.colored_label(if error { ERROR } else { SUCCESS }, msg);
+            ui.colored_label(if error { crate::theme::error() } else { crate::theme::success() }, msg);
         }
         match state {
             MailBusy::Free => {}
             MailBusy::Mail => {
-                ui.colored_label(WARNING, "Buscando as mensagens…");
+                ui.colored_label(crate::theme::warning(), "Buscando as mensagens…");
             }
             MailBusy::Other => {
                 ui.colored_label(
-                    WARNING,
+                    crate::theme::warning(),
                     "Aguarde a operação em andamento; a lista vem em seguida.",
                 );
             }
@@ -676,7 +673,7 @@ impl MailPanel {
                 .map(|a| a.name.clone())
                 .unwrap_or_default();
             ui.colored_label(
-                WARNING,
+                crate::theme::warning(),
                 format!(
                     "Excluir a conta “{name}” deste computador? A senha guardada também é apagada."
                 ),
@@ -779,7 +776,7 @@ impl MailPanel {
                         cancel = true;
                     }
                     if form.dirty() {
-                        ui.colored_label(WARNING, "● não salvo");
+                        ui.colored_label(crate::theme::warning(), "● não salvo");
                     }
                 });
             });
@@ -921,9 +918,9 @@ impl MailPanel {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(headline).strong().color(if ok {
-                    SUCCESS
+                    crate::theme::success()
                 } else {
-                    ERROR
+                    crate::theme::error()
                 }));
                 if ui
                     .small_button("✕")
@@ -1022,13 +1019,13 @@ impl MailPanel {
                                 };
                                 ui.label(text(subject)).on_hover_text(&m.subject);
                                 if m.flagged {
-                                    ui.colored_label(WARNING, "★");
+                                    ui.colored_label(crate::theme::warning(), "★");
                                 } else {
                                     ui.label("");
                                 }
                                 ui.label(crate::labels::file_size(m.size as u64));
                                 if self.imported.contains(&m.uid) {
-                                    ui.colored_label(WARNING, "já importada");
+                                    ui.colored_label(crate::theme::warning(), "já importada");
                                 } else {
                                     ui.label("");
                                 }
@@ -1084,7 +1081,7 @@ impl MailPanel {
                         });
                         if uids.is_empty() {
                             self.summary.clear();
-                            self.summary.push((WARNING, line));
+                            self.summary.push((crate::theme::warning(), line));
                             self.result = Some((
                                 "⚠ Nada foi importado: as mensagens marcadas são grandes demais."
                                     .into(),
@@ -1106,4 +1103,15 @@ impl MailPanel {
         }
         action
     }
+}
+
+/// Development only: the views of this screen pictured by `--shots`, by
+/// name. The tour calls `shots_open` with each one on a fresh panel.
+#[cfg(feature = "shots")]
+pub const SHOTS: &[&str] = &[];
+
+#[cfg(feature = "shots")]
+impl MailPanel {
+    /// Puts the panel in the state called `view` (see `SHOTS`).
+    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
 }

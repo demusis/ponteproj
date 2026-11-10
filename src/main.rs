@@ -103,6 +103,12 @@ fn run() -> Result<()> {
                 .parse()?,
         )),
         Some("--templates") => app::run_opening(None, true),
+        #[cfg(feature = "shots")]
+        Some("--shots") => {
+            let out = args.get(1).context("Informe a pasta das imagens")?;
+            ponteproj::shots::prepare(out.into(), args.get(2).cloned().unwrap_or_default())?;
+            app::run(None)
+        }
         Some("--serve") => {
             let db_path = paths::db_path()?;
             let mut store = Store::open(&db_path)?;

@@ -12,15 +12,6 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const ACCENT: Color32 = Color32::from_rgb(24, 84, 97);
-const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
-const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
-const SUCCESS: Color32 = Color32::from_rgb(20, 118, 72);
-/// "Em aberto, no prazo": a plain blue, so that it is never taken for the
-/// green of "concluído" (the accent colour is a greenish teal).
-const ON_TIME: Color32 = Color32::from_rgb(26, 95, 180);
-const ON_TIME_BG: Color32 = Color32::from_rgb(226, 236, 250);
-const MUTED: Color32 = Color32::from_rgb(120, 130, 140);
 /// Public repository with the installer, the source and the release notes.
 const PROJECT_URL: &str = "https://github.com/demusis/ponteproj";
 /// Version of the browser extension shipped with this build (extension/manifest.json).
@@ -252,7 +243,7 @@ impl DocTaskStatusSummary {
             if let Some(due) = &self.nearest_due {
                 label.push_str(&format!(" • Prazo: {}", crate::labels::date(due)));
             }
-            (label, ERROR, Color32::from_rgb(252, 232, 233))
+            (label, crate::theme::error(), Color32::from_rgb(252, 232, 233))
         } else if self.open_on_time > 0 {
             let mut label = if self.due_today > 0 {
                 // Only the tasks due today are counted as such; the other
@@ -281,9 +272,9 @@ impl DocTaskStatusSummary {
                 label.push_str(&format!(" • ✓ {}", self.completed));
             }
             if self.due_today > 0 {
-                (label, WARNING, Color32::from_rgb(254, 243, 224))
+                (label, crate::theme::warning(), Color32::from_rgb(254, 243, 224))
             } else {
-                (label, ON_TIME, ON_TIME_BG)
+                (label, crate::theme::on_time(), crate::theme::on_time_bg())
             }
         } else if self.completed > 0 {
             let label = if self.completed == 1 {
@@ -291,7 +282,7 @@ impl DocTaskStatusSummary {
             } else {
                 format!("✓ {} tarefas concluídas", self.completed)
             };
-            (label, SUCCESS, Color32::from_rgb(228, 246, 236))
+            (label, crate::theme::success(), Color32::from_rgb(228, 246, 236))
         } else {
             (
                 "○ Sem tarefas".to_owned(),
@@ -346,67 +337,46 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     app.load_ai_config();
     app.refresh();
     if open_templates {
-        app.templates_open = true;
+        app.area = Area::Templates;
     }
     if let Some(id) = initial_document {
         app.select(id);
     }
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+    let viewport = egui::ViewportBuilder::default()
             .with_title(format!(
                 "Ponte {} • Assistente documental",
                 env!("CARGO_PKG_VERSION")
             ))
             .with_icon(crate::icon::app_window_icon())
-            .with_inner_size([1240.0, 820.0])
-            .with_min_inner_size([900.0, 620.0]),
+            .with_inner_size(window_size())
+            .with_min_inner_size([900.0, 620.0]);
+    // The pictures of the screens are taken away from the desktop, without
+    // taking the keyboard from whoever is working.
+    #[cfg(feature = "shots")]
+    let viewport = if crate::shots::active() {
+        viewport
+            .with_position([-4000.0, -4000.0])
+            .with_active(false)
+            .with_taskbar(false)
+    } else {
+        viewport
+    };
+    let options = eframe::NativeOptions {
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
         "Ponte — Assistente documental",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::light());
-            install_symbol_fallback(&cc.egui_ctx);
-            cc.egui_ctx.global_style_mut(|style| {
-                style.spacing.item_spacing = egui::vec2(9.0, 8.0);
-                style.spacing.button_padding = egui::vec2(11.0, 7.0);
-                style.visuals.selection.bg_fill = ACCENT;
-                style.visuals.selection.stroke = egui::Stroke::new(1.0, Color32::WHITE);
-            });
+            crate::theme::install(&cc.egui_ctx, app.appearance);
             Ok(Box::new(app))
         }),
     )
     .map_err(|error| anyhow::anyhow!("Não foi possível iniciar a janela: {error}"))
 }
 
-/// The bundled egui fonts lack some arrows (e.g. "↳"). Windows ships Segoe UI
-/// Symbol; when present it is only appended as the last fallback.
-fn install_symbol_fallback(ctx: &egui::Context) {
-    let Some(windows) = std::env::var_os("WINDIR") else {
-        return;
-    };
-    let path = PathBuf::from(windows).join("Fonts").join("seguisym.ttf");
-    let Ok(bytes) = std::fs::read(&path) else {
-        return;
-    };
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "segoe-ui-symbol".into(),
-        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-    );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push("segoe-ui-symbol".into());
-    }
-    ctx.set_fonts(fonts);
-}
 
-const JOINED_FG: Color32 = Color32::from_rgb(88, 64, 138);
-const JOINED_BG: Color32 = Color32::from_rgb(237, 232, 248);
 /// The sender of an e-mail for the document list: the address first, then
 /// the name ("Funadesp <f@x.br>" → "f@x.br · Funadesp").
 fn sender_line(from: &str) -> String {
@@ -425,9 +395,6 @@ fn sender_line(from: &str) -> String {
     }
 }
 
-/// "Manual" pill: amber, unlike the purple of juntada and the task badges.
-const MANUAL_FG: Color32 = Color32::from_rgb(122, 78, 10);
-const MANUAL_BG: Color32 = Color32::from_rgb(252, 240, 214);
 
 fn pill(ui: &mut egui::Ui, text: impl Into<String>, fg: Color32, bg: Color32, size: f32) {
     egui::Frame::new()
@@ -489,6 +456,46 @@ fn group_joined<'a>(docs: &[&'a DocumentSummary]) -> Vec<(&'a DocumentSummary, u
         place(doc, 0, &children, &mut placed, &mut out);
     }
     out
+}
+
+/// The areas of the window, chosen in the rail on the left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Area {
+    Documents,
+    Tasks,
+    Saiop,
+    Templates,
+    Settings,
+}
+
+/// The window opens at this size (fixed while the pictures of the screens are taken).
+fn window_size() -> [f32; 2] {
+    #[cfg(feature = "shots")]
+    if crate::shots::active() {
+        return crate::shots::SIZE;
+    }
+    [1240.0, 820.0]
+}
+
+/// Where the choice of theme is kept: a plain word in the data folder (it says
+/// nothing about the library).
+fn appearance_path() -> Option<PathBuf> {
+    crate::paths::data_dir()
+        .ok()
+        .map(|dir| dir.join("aparencia.txt"))
+}
+
+fn load_appearance() -> crate::theme::Appearance {
+    appearance_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| crate::theme::Appearance::from_key(text.trim()))
+        .unwrap_or(crate::theme::Appearance::System)
+}
+
+fn save_appearance(appearance: crate::theme::Appearance) {
+    if let Some(path) = appearance_path() {
+        let _ = std::fs::write(path, appearance.key());
+    }
 }
 
 /// The four views of an open document. Everything technical lives in `More`.
@@ -742,6 +749,8 @@ enum Leave {
     Saiop,
     /// The "Modelos" screen.
     Templates,
+    /// The "Ajustes" screen.
+    Settings,
     /// The "Documento" screen with whatever document is selected.
     Documents,
     /// Open this document (sidebar, "Ir para o documento").
@@ -788,7 +797,6 @@ struct PonteApp {
     draft_tools: crate::draft_tools::DraftTools,
     /// The "Modelos" screen.
     templates: crate::templates_ui::TemplatesPanel,
-    templates_open: bool,
     /// The generation record being shown in "Material utilizado".
     material: Option<(i64, String)>,
     /// The "Importar do e-mail" window.
@@ -802,8 +810,13 @@ struct PonteApp {
     tasks: crate::tasks_ui::TaskPanel,
     saiop: crate::saiop::SaiopPanel,
     intranet: crate::intranet::IntranetPanel,
-    tasks_open: bool,
-    saiop_open: bool,
+    /// The area on screen (the rail on the left chooses it).
+    area: Area,
+    /// Open tasks that are late or due today, shown on the rail.
+    task_badge: usize,
+    appearance: crate::theme::Appearance,
+    #[cfg(feature = "shots")]
+    tour: Option<crate::shots::Tour>,
     /// Navigation waiting for a decision about the unsaved task.
     leave: Option<Leave>,
     /// Why "Salvar e continuar" failed, shown inside the question.
@@ -868,7 +881,6 @@ impl PonteApp {
         Self {
             draft_tools: Default::default(),
             templates: Default::default(),
-            templates_open: false,
             material: None,
             mail: Default::default(),
             attachments: Default::default(),
@@ -880,8 +892,11 @@ impl PonteApp {
             saiop: Default::default(),
             intranet: Default::default(),
             // The welcome screen (or the opened document) is the first thing seen.
-            tasks_open: false,
-            saiop_open: false,
+            area: Area::Documents,
+            task_badge: 0,
+            appearance: load_appearance(),
+            #[cfg(feature = "shots")]
+            tour: crate::shots::Tour::start(),
             leave: None,
             leave_error: None,
             consult: None,
@@ -1086,7 +1101,7 @@ impl PonteApp {
             ui.label("Primeira vez por aqui?");
             if ui
                 .button("Abrir o guia do usuário")
-                .on_hover_text("Guia curto, em dez seções, aberto no navegador. Também em Menu ▾ ▸ Guia do usuário.")
+                .on_hover_text("Guia curto, em dez seções, aberto no navegador. Também em Ajuda, na barra lateral.")
                 .clicked()
             {
                 self.open_guide();
@@ -1127,12 +1142,12 @@ impl PonteApp {
                 (false, false) => "nenhum navegador",
             };
             if ok {
-                ui.colored_label(SUCCESS, format!("✓ O Ponte está registrado para o {browsers}."));
+                ui.colored_label(crate::theme::success(), format!("✓ O Ponte está registrado para o {browsers}."));
                 ui.small("Se o botão “Importar para o assistente” não aparece no SIGADOC, a extensão ainda não foi carregada no navegador: siga os passos abaixo.");
             } else if status.chrome_registered || status.edge_registered {
-                ui.colored_label(WARNING, format!("⚠ Registrado para o {browsers}, mas o programa apontado não foi encontrado. Reinstale o Ponte."));
+                ui.colored_label(crate::theme::warning(), format!("⚠ Registrado para o {browsers}, mas o programa apontado não foi encontrado. Reinstale o Ponte."));
             } else {
-                ui.colored_label(ERROR, "✗ O navegador ainda não foi ligado ao Ponte. Execute o instalador neste computador, com a sua conta do Windows.");
+                ui.colored_label(crate::theme::error(), "✗ O navegador ainda não foi ligado ao Ponte. Execute o instalador neste computador, com a sua conta do Windows.");
             }
             match &status.extension_dir {
                 Some(dir) => {
@@ -1298,19 +1313,13 @@ impl PonteApp {
                 self.tab = tab;
             }
             PendingTarget::Tasks => {
-                self.tasks_open = true;
-                self.saiop_open = false;
-                self.templates_open = false;
+                self.area = Area::Tasks;
             }
             PendingTarget::Saiop => {
-                self.saiop_open = true;
-                self.tasks_open = false;
-                self.templates_open = false;
+                self.area = Area::Saiop;
             }
             PendingTarget::Templates => {
-                self.templates_open = true;
-                self.saiop_open = false;
-                self.tasks_open = false;
+                self.area = Area::Templates;
             }
             PendingTarget::Mail => self.mail.open_full(),
             PendingTarget::Suggestion => self.suggestion_open = true,
@@ -1324,7 +1333,7 @@ impl PonteApp {
     /// then the question "save, discard or stay?" is shown first and the
     /// move happens after the answer.
     fn navigate(&mut self, leave: Leave) {
-        let hides_visible_edit = self.tasks_open && self.tasks.dirty();
+        let hides_visible_edit = self.area == Area::Tasks && self.tasks.dirty();
         let replaces_edit = leave.replaces_task() && self.tasks.dirty();
         if hides_visible_edit || replaces_edit {
             self.leave_error = None;
@@ -1337,41 +1346,33 @@ impl PonteApp {
     fn perform_leave(&mut self, leave: Leave) {
         match leave {
             Leave::Saiop => {
-                self.saiop_open = true;
-                self.tasks_open = false;
-                self.templates_open = false;
+                self.area = Area::Saiop;
             }
             Leave::Templates => {
-                self.templates_open = true;
-                self.saiop_open = false;
-                self.tasks_open = false;
+                self.area = Area::Templates;
             }
+            Leave::Settings => self.area = Area::Settings,
             Leave::Documents => {
-                self.tasks_open = false;
-                self.saiop_open = false;
-                self.templates_open = false;
+                self.area = Area::Documents;
             }
             Leave::Select(id) => self.select(id),
             Leave::NewTask(document_id) => {
                 if self.tasks.start_new(document_id) {
-                    self.tasks_open = true;
-                    self.saiop_open = false;
+                    self.area = Area::Tasks;
                 } else {
                     self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");
                 }
             }
             Leave::OpenTask(task) => {
                 if self.tasks.open_task(&task, &self.store) {
-                    self.tasks_open = true;
-                    self.saiop_open = false;
+                    self.area = Area::Tasks;
                 } else {
                     self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");
                 }
             }
             Leave::EditTask(task) => {
                 if self.tasks.focus_task(&task) {
-                    self.tasks_open = true;
-                    self.saiop_open = false;
+                    self.area = Area::Tasks;
                 } else {
                     self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");
                 }
@@ -1385,8 +1386,7 @@ impl PonteApp {
                     .tasks
                     .prepare_suggestion(document_id, &suggestion, &priority)
                 {
-                    self.tasks_open = true;
-                    self.saiop_open = false;
+                    self.area = Area::Tasks;
                 } else {
                     self.error("Salve ou cancele a tarefa em edição antes de preparar outra.");
                 }
@@ -1418,7 +1418,7 @@ impl PonteApp {
             .default_width(440.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.heading(RichText::new("PONTE").color(ACCENT).strong());
+                ui.heading(RichText::new("PONTE").color(crate::theme::accent()).strong());
                 ui.label("Assistente documental para o SIGADOC");
                 ui.small(format!(
                     "Versão {} • extensão do navegador {}",
@@ -1476,7 +1476,7 @@ impl PonteApp {
                     .show(ui, |ui| {
                         ui.strong("Texto importado");
                         if detail.capture.text.is_empty() {
-                            ui.colored_label(WARNING, "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
+                            ui.colored_label(crate::theme::warning(), "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
                         } else {
                             let mut text = detail.capture.text.as_str();
                             egui::ScrollArea::horizontal()
@@ -1524,7 +1524,7 @@ impl PonteApp {
         let full = format!("{full}\n\nClique para abrir Rede e equipe.");
         if conflicts > 0 {
             return (
-                ERROR,
+                crate::theme::error(),
                 format!("⚠ {conflicts} conflito(s) de edição"),
                 format!("{full}\nDecida campo a campo."),
             );
@@ -1554,35 +1554,35 @@ impl PonteApp {
             ),
             crate::intranet::IntranetMode::Host => {
                 if self.intranet.host_running() {
-                    (SUCCESS, "computador principal ativo".into(), full)
+                    (crate::theme::success(), "computador principal ativo".into(), full)
                 } else {
-                    (WARNING, "computador principal parado".into(), full)
+                    (crate::theme::warning(), "computador principal parado".into(), full)
                 }
             }
             crate::intranet::IntranetMode::SharedFolder => {
                 if self.intranet.syncing() {
-                    (ACCENT, "sincronizando com a pasta…".into(), full)
+                    (crate::theme::accent(), "sincronizando com a pasta…".into(), full)
                 } else if self.intranet.offline {
-                    (WARNING, pending("pasta fora de alcance"), full)
+                    (crate::theme::warning(), pending("pasta fora de alcance"), full)
                 } else if outbox > 0 {
-                    (WARNING, format!("{outbox} a enviar"), full)
+                    (crate::theme::warning(), format!("{outbox} a enviar"), full)
                 } else if let Some((at, _)) = self.intranet.last_sync_finished {
-                    (SUCCESS, format!("em dia {}", since(at)), full)
+                    (crate::theme::success(), format!("em dia {}", since(at)), full)
                 } else {
-                    (ACCENT, "pasta ainda não sincronizada".into(), full)
+                    (crate::theme::accent(), "pasta ainda não sincronizada".into(), full)
                 }
             }
             crate::intranet::IntranetMode::Client => {
                 if self.intranet.offline {
-                    (WARNING, pending("sem conexão com o principal"), full)
+                    (crate::theme::warning(), pending("sem conexão com o principal"), full)
                 } else if let Some((at, _)) = self.intranet.last_sync_finished {
                     (
-                        SUCCESS,
+                        crate::theme::success(),
                         format!("conectado • atualizado {}", since(at)),
                         full,
                     )
                 } else {
-                    (ACCENT, "conectando ao principal…".into(), full)
+                    (crate::theme::accent(), "conectando ao principal…".into(), full)
                 }
             }
         }
@@ -1595,6 +1595,21 @@ impl PonteApp {
             Ok(documents) => self.documents = documents,
             Err(error) => self.error(format!("Falha ao atualizar a biblioteca: {error}")),
         }
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        self.task_badge = self
+            .store
+            .list_tasks()
+            .map(|tasks| {
+                tasks
+                    .iter()
+                    .filter(|t| {
+                        t.completed_at.is_none()
+                            && !t.due_date.is_empty()
+                            && t.due_date.as_str() <= today.as_str()
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
         if let Some(id) = self.selected_id {
             self.reload(id);
         }
@@ -1655,9 +1670,7 @@ impl PonteApp {
     }
 
     fn select(&mut self, id: i64) {
-        self.tasks_open = false;
-        self.saiop_open = false;
-        self.templates_open = false;
+        self.area = Area::Documents;
         self.selected_id = Some(id);
         self.detail = None;
         self.similar.clear();
@@ -1708,7 +1721,7 @@ impl PonteApp {
         }
         if was_signed_in && !shared.signed_in() {
             self.error(
-                "A sessão do ChatGPT foi encerrada. Entre de novo em Menu ▾ ▸ Configurar IA.",
+                "A sessão do ChatGPT foi encerrada. Entre de novo em Ajustes ▸ Inteligência artificial.",
             );
         }
     }
@@ -2499,166 +2512,319 @@ impl PonteApp {
         }
     }
 
-    fn header(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading(RichText::new("PONTE").color(ACCENT).strong());
-            ui.label("Assistente documental");
-            if ui
-                .selectable_label(self.saiop_open, "Atendimentos")
-                .clicked()
-            {
-                self.navigate(Leave::Saiop);
-            }
-            let templates_label = if self.templates.dirty() {
-                RichText::new("Modelos ●").color(WARNING)
-            } else {
-                RichText::new("Modelos")
-            };
-            if ui
-                .selectable_label(self.templates_open, templates_label)
-                .on_hover_text("Modelos de trabalho: estrutura, instruções, exemplos e referências para as minutas.")
-                .clicked()
-            {
-                self.navigate(Leave::Templates);
-            }
-            // The orange dot follows the unsaved task wherever the person is,
-            // like the "Anotações e minutas ●" tab does for notes.
-            let tasks_label = if self.tasks.dirty() {
-                RichText::new("Tarefas ●").color(WARNING)
-            } else {
-                RichText::new("Tarefas")
-            };
-            let tasks_response = ui.selectable_label(
-                self.tasks_open && !self.saiop_open && !self.templates_open,
-                tasks_label,
+    /// The rail on the left: one item per area, settings and help at the bottom.
+    fn rail(&mut self, ui: &mut egui::Ui) {
+        use crate::theme::icon;
+        use crate::widgets::rail_item;
+        let p = crate::theme::c();
+        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.vertical_centered(|ui| {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("PONTE")
+                    .font(crate::theme::font_strong(13.5))
+                    .extra_letter_spacing(1.6)
+                    .color(p.rail_on),
             );
-            let tasks_response = if self.tasks.dirty() {
-                tasks_response.on_hover_text("Há uma tarefa com alterações não salvas.")
-            } else {
-                tasks_response
-            };
-            if tasks_response.clicked() {
-                self.tasks_open = true;
-                self.saiop_open = false;
-                self.templates_open = false;
-            }
-            if ui
-                .selectable_label(
-                    !self.tasks_open && !self.saiop_open && !self.templates_open,
-                    "Ficha",
-                )
-                .clicked()
+            ui.add_space(10.0);
+            let notes_dirty = self.editors.values().any(Editor::dirty);
+            if rail_item(
+                ui,
+                icon::DOCUMENTS,
+                "Documentos",
+                self.area == Area::Documents,
+                0,
+                notes_dirty,
+            )
+            .on_hover_text("Documentos importados e registros, com a ficha de cada um. (Ctrl+1)")
+            .clicked()
             {
                 self.navigate(Leave::Documents);
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut backup = false;
-                let mut import_mail = false;
-                let mut export = false;
-                let mut guide = false;
-                ui.menu_button("Menu ▾", |ui| {
-                    ui.set_min_width(230.0);
-                    if ui.button("Rede e equipe…").clicked() {
-                        self.intranet.open = true;
-                        ui.close();
-                    }
-                    if ui
-                        .button("Importar e-mail (.eml)…")
-                        .on_hover_text("Um e-mail salvo como arquivo vira um registro do tipo E-mail recebido, com os anexos.")
-                        .clicked()
-                    {
-                        import_mail = true;
-                        ui.close();
-                    }
-                    if ui
-                        .button("Importar do e-mail (IMAP)…")
-                        .on_hover_text("Lista as mensagens de uma conta de e-mail (Gmail com senha de app, por exemplo) e importa as que você marcar. Só leitura: nada é marcado, movido ou apagado na conta.")
-                        .clicked()
-                    {
-                        self.mail.open_full();
-                        ui.close();
-                    }
-                    if self.intranet.folder_mode(&self.store) {
-                        let unsent = self.intranet.unsent_folder_changes(&self.store);
-                        let label = if unsent > 0 {
-                            format!("Sincronizar com a pasta agora ({unsent} a enviar)")
-                        } else {
-                            "Sincronizar com a pasta agora".to_owned()
-                        };
-                        if ui
-                            .add_enabled(!self.intranet.syncing(), egui::Button::new(label))
-                            .on_hover_text("Lê as pastas, aplica o que mudou e grava o arquivo de sincronização. A barra de baixo mostra cada etapa.")
-                            .clicked()
-                        {
-                            self.intranet.request_full_sync();
-                            self.refresh();
-                            ui.close();
-                        }
-                    }
-                    if ui.button("Configurar IA…").clicked() {
-                        self.open_ai_settings(ui.ctx());
-                        ui.close();
-                    }
-                    if ui.button("Lixeira…").clicked() {
-                        self.trash.open = true;
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui
-                        .add_enabled(self.worker.is_none(), egui::Button::new("Fazer backup agora"))
-                        .on_hover_text("Cópia protegida do acervo na pasta de backups deste computador.")
-                        .clicked()
-                    {
-                        backup = true;
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(self.worker.is_none(), egui::Button::new("Exportar dados para CSV…"))
-                        .on_hover_text("Grava documentos, tarefas e atendimentos em três arquivos .csv (sem textos, notas ou anexos), prontos para os painéis do CERES ou para o Excel.")
-                        .clicked()
-                    {
-                        export = true;
-                        ui.close();
-                    }
-                    if ui
-                        .button("Atualizar lista")
-                        .on_hover_text("A lista já se atualiza sozinha a cada poucos segundos.")
-                        .clicked()
-                    {
-                        self.refresh();
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui
-                        .button("Guia do usuário")
-                        .on_hover_text("Abre o guia no navegador: instalar, importar, tarefas, atendimentos, mais de um computador, IA e o que fazer quando algo dá errado. Funciona sem internet.")
-                        .clicked()
-                    {
-                        guide = true;
-                        ui.close();
-                    }
-                    if ui
-                        .button(format!("Sobre o Ponte {}…", env!("CARGO_PKG_VERSION")))
-                        .clicked()
-                    {
-                        self.about_open = true;
-                        ui.close();
-                    }
-                });
-                if backup {
-                    self.backup(ui.ctx());
+            let tasks = rail_item(
+                ui,
+                icon::TASKS,
+                "Tarefas",
+                self.area == Area::Tasks,
+                self.task_badge,
+                self.tasks.dirty(),
+            );
+            let tasks = if self.tasks.dirty() {
+                tasks.on_hover_text("Há uma tarefa com alterações não salvas. (Ctrl+2)")
+            } else if self.task_badge > 0 {
+                tasks.on_hover_text(format!(
+                    "{} tarefa(s) atrasada(s) ou para hoje. (Ctrl+2)",
+                    self.task_badge
+                ))
+            } else {
+                tasks.on_hover_text("Tarefas de todos os documentos. (Ctrl+2)")
+            };
+            if tasks.clicked() {
+                self.area = Area::Tasks;
+            }
+            if rail_item(
+                ui,
+                icon::ATTENDANCES,
+                "Atendimentos",
+                self.area == Area::Saiop,
+                0,
+                self.saiop.dirty(),
+            )
+            .on_hover_text("Controle de entradas e prazos do setor. (Ctrl+3)")
+            .clicked()
+            {
+                self.navigate(Leave::Saiop);
+            }
+            if rail_item(
+                ui,
+                icon::TEMPLATES,
+                "Modelos",
+                self.area == Area::Templates,
+                0,
+                self.templates.dirty(),
+            )
+            .on_hover_text("Modelos de trabalho: estrutura, instruções, exemplos e referências para as minutas. (Ctrl+4)")
+            .clicked()
+            {
+                self.navigate(Leave::Templates);
+            }
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(2.0);
+                if rail_item(ui, icon::HELP, "Ajuda", false, 0, false)
+                    .on_hover_text("Abre o guia do usuário no navegador. Funciona sem internet.")
+                    .clicked()
+                {
+                    self.open_guide();
                 }
-                if import_mail {
+                if rail_item(
+                    ui,
+                    icon::SETTINGS,
+                    "Ajustes",
+                    self.area == Area::Settings,
+                    0,
+                    false,
+                )
+                .on_hover_text("Equipe e sincronização, e-mail, IA, cópia de segurança, lixeira e aparência.")
+                .clicked()
+                {
+                    self.navigate(Leave::Settings);
+                }
+            });
+        });
+    }
+
+    /// Ctrl+1 to Ctrl+4 change the area, like the rail.
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        let pressed = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, key));
+        if pressed(Key::Num1) {
+            self.navigate(Leave::Documents);
+        } else if pressed(Key::Num2) {
+            self.area = Area::Tasks;
+        } else if pressed(Key::Num3) {
+            self.navigate(Leave::Saiop);
+        } else if pressed(Key::Num4) {
+            self.navigate(Leave::Templates);
+        }
+    }
+
+    /// One block of the Ajustes area: icon, name, what it is for, and its buttons.
+    fn settings_card(
+        ui: &mut egui::Ui,
+        icon: &str,
+        title: &str,
+        text: &str,
+        add: impl FnOnce(&mut egui::Ui),
+    ) {
+        let p = crate::theme::c();
+        crate::widgets::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icon).size(22.0).color(p.primary));
+                ui.vertical(|ui| {
+                    crate::widgets::section(ui, title);
+                    if !text.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(text).color(p.muted)).wrap());
+                    }
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(add);
+                });
+            });
+        });
+    }
+
+    /// The Ajustes area: what used to be scattered in the "Menu".
+    fn settings_area(&mut self, ui: &mut egui::Ui) {
+        use crate::theme::icon;
+        use crate::widgets::{primary, secondary};
+        let ctx = ui.ctx().clone();
+        crate::widgets::heading(ui, "Ajustes");
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .id_salt("settings-area")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_max_width(760.0);
+                ui.spacing_mut().item_spacing.y = 12.0;
+
+                let (_, short, _) = self.network_status();
+                let folder_mode = self.intranet.folder_mode(&self.store);
+                let unsent = if folder_mode {
+                    self.intranet.unsent_folder_changes(&self.store)
+                } else {
+                    0
+                };
+                let syncing = self.intranet.syncing();
+                let mut open_network = false;
+                let mut sync_now = false;
+                Self::settings_card(
+                    ui,
+                    icon::TEAM,
+                    "Equipe e sincronização",
+                    &format!("Como este computador compartilha o acervo com outros computadores e com o celular. Agora: {short}."),
+                    |ui| {
+                        open_network = ui.add(secondary("Abrir")).clicked();
+                        if folder_mode {
+                            let label = if unsent > 0 {
+                                format!("Sincronizar agora ({unsent} a enviar)")
+                            } else {
+                                "Sincronizar agora".to_owned()
+                            };
+                            sync_now = ui.add_enabled(!syncing, secondary(label)).clicked();
+                        }
+                    },
+                );
+                if open_network {
+                    self.intranet.open = true;
+                }
+                if sync_now {
+                    self.intranet.request_full_sync();
+                    self.refresh();
+                }
+
+                let mut open_mail = false;
+                let mut import_eml = false;
+                Self::settings_card(
+                    ui,
+                    icon::MAIL,
+                    "E-mail",
+                    "Contas de e-mail para importar mensagens (só leitura: nada é marcado, movido ou apagado na conta), e importação de um e-mail salvo em arquivo.",
+                    |ui| {
+                        open_mail = ui.add(secondary("Contas e importação")).clicked();
+                        import_eml = ui.add(secondary("Importar arquivo .eml…")).clicked();
+                    },
+                );
+                if open_mail {
+                    self.mail.open_full();
+                }
+                if import_eml {
                     self.import_eml_dialog();
                 }
+
+                let mut open_ai = false;
+                Self::settings_card(
+                    ui,
+                    icon::AI,
+                    "Inteligência artificial",
+                    "Opcional. Escolha onde a análise e as minutas são geradas: neste computador, num servidor do órgão ou num serviço externo.",
+                    |ui| {
+                        open_ai = ui.add(secondary("Configurar")).clicked();
+                    },
+                );
+                if open_ai {
+                    self.open_ai_settings(&ctx);
+                }
+
+                let idle = self.worker.is_none();
+                let has_backup = self.backup_path.is_some();
+                let mut backup = false;
+                let mut export = false;
+                let mut copy_backup = false;
+                Self::settings_card(
+                    ui,
+                    icon::DATABASE,
+                    "Cópia de segurança e exportação",
+                    "A cópia de segurança guarda o acervo protegido na pasta de backups deste computador. A exportação grava documentos, tarefas e atendimentos em arquivos .csv, sem textos, notas ou anexos.",
+                    |ui| {
+                        backup = ui.add_enabled(idle, secondary("Fazer cópia agora")).clicked();
+                        export = ui.add_enabled(idle, secondary("Exportar para CSV…")).clicked();
+                        if has_backup {
+                            copy_backup = ui
+                                .add(crate::widgets::quiet("Copiar o caminho da última cópia"))
+                                .clicked();
+                        }
+                    },
+                );
+                if backup {
+                    self.backup(&ctx);
+                }
                 if export {
-                    self.export_csv(ui.ctx());
+                    self.export_csv(&ctx);
+                }
+                if copy_backup {
+                    if let Some(path) = &self.backup_path {
+                        ctx.copy_text(path.display().to_string());
+                        self.message("Caminho copiado.");
+                    }
+                }
+
+                let mut open_trash = false;
+                Self::settings_card(
+                    ui,
+                    icon::TRASH,
+                    "Lixeira",
+                    "O que foi excluído fica aqui por um tempo e pode ser restaurado.",
+                    |ui| {
+                        open_trash = ui.add(secondary("Abrir a lixeira")).clicked();
+                    },
+                );
+                if open_trash {
+                    self.trash.open = true;
+                }
+
+                let mut chosen = self.appearance;
+                Self::settings_card(
+                    ui,
+                    icon::SUN,
+                    "Aparência",
+                    "Tema claro ou escuro.",
+                    |ui| {
+                        for option in [
+                            crate::theme::Appearance::System,
+                            crate::theme::Appearance::Light,
+                            crate::theme::Appearance::Dark,
+                        ] {
+                            if crate::widgets::chip(ui, chosen == option, option.label()).clicked() {
+                                chosen = option;
+                            }
+                        }
+                    },
+                );
+                if chosen != self.appearance {
+                    self.appearance = chosen;
+                    crate::theme::set_appearance(&ctx, chosen);
+                    save_appearance(chosen);
+                }
+
+                let mut about = false;
+                let mut guide = false;
+                Self::settings_card(
+                    ui,
+                    icon::INFO,
+                    "Sobre o Ponte",
+                    &format!("Versão {}.", env!("CARGO_PKG_VERSION")),
+                    |ui| {
+                        about = ui.add(secondary("Sobre…")).clicked();
+                        guide = ui.add(primary("Guia do usuário")).clicked();
+                    },
+                );
+                if about {
+                    self.about_open = true;
                 }
                 if guide {
                     self.open_guide();
                 }
+                ui.add_space(8.0);
             });
-        });
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
@@ -2720,7 +2886,7 @@ impl PonteApp {
             }
             if ui
                 .add(egui::Button::new("✉ E-mails").small())
-                .on_hover_text("Lista as mensagens da sua conta de e-mail na última pasta e filtro usados (por exemplo, as com estrela), para marcar e importar. A configuração fica em Menu ▾ ▸ Importar do e-mail (IMAP)…")
+                .on_hover_text("Lista as mensagens da sua conta de e-mail na última pasta e filtro usados (por exemplo, as com estrela), para marcar e importar. A configuração fica em Ajustes ▸ E-mail.")
                 .clicked()
             {
                 let busy = match &self.worker {
@@ -2732,7 +2898,7 @@ impl PonteApp {
             }
             if count_overdue > 0 && !self.filters_open
                 && ui
-                    .add(egui::Button::new(RichText::new(format!("⚠ {count_overdue} atrasado(s)")).color(ERROR).size(12.0)).small())
+                    .add(egui::Button::new(RichText::new(format!("⚠ {count_overdue} atrasado(s)")).color(crate::theme::error()).size(12.0)).small())
                     .on_hover_text("Mostrar só documentos com tarefa atrasada")
                     .clicked()
                 {
@@ -2765,17 +2931,17 @@ impl PonteApp {
                 ui.selectable_value(
                     &mut self.doc_task_filter,
                     DocTaskFilter::OpenOnTime,
-                    RichText::new(format!("● No prazo ({count_on_time})")).color(ON_TIME),
+                    RichText::new(format!("● No prazo ({count_on_time})")).color(crate::theme::on_time()),
                 );
                 ui.selectable_value(
                     &mut self.doc_task_filter,
                     DocTaskFilter::Overdue,
-                    RichText::new(format!("⚠ Atrasados ({count_overdue})")).color(ERROR),
+                    RichText::new(format!("⚠ Atrasados ({count_overdue})")).color(crate::theme::error()),
                 );
                 ui.selectable_value(
                     &mut self.doc_task_filter,
                     DocTaskFilter::Completed,
-                    RichText::new(format!("✓ Concluídos ({count_completed})")).color(SUCCESS),
+                    RichText::new(format!("✓ Concluídos ({count_completed})")).color(crate::theme::success()),
                 );
             });
             ui.horizontal_wrapped(|ui| {
@@ -2889,7 +3055,7 @@ impl PonteApp {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         if indent > 0.0 {
                             ui.add_space(indent - 6.0);
-                            ui.label(RichText::new("↳").size(15.0).color(JOINED_FG))
+                            ui.label(RichText::new("↳").size(15.0).color(crate::theme::c().violet))
                                 .on_hover_text(joined.clone().unwrap_or_default());
                         }
                         // The title wraps instead of being cut; the card grows with it.
@@ -2930,7 +3096,7 @@ impl PonteApp {
                             } else {
                                 "Manual"
                             };
-                            pill(ui, kind, MANUAL_FG, MANUAL_BG, 11.5);
+                            pill(ui, kind, crate::theme::c().warn, crate::theme::c().warn_soft, 11.5);
                         }
                         if document.email && !document.added_at.is_empty() {
                             ui.small(format!(
@@ -2939,14 +3105,14 @@ impl PonteApp {
                             ));
                         }
                         if let Some(text) = &joined {
-                            pill(ui, text, JOINED_FG, JOINED_BG, 11.5);
+                            pill(ui, text, crate::theme::c().violet, crate::theme::c().violet_soft, 11.5);
                         }
                         if document.joined_children_count > 0 {
                             pill(
                                 ui,
                                 format!("📎 {} juntado(s)", document.joined_children_count),
-                                JOINED_FG,
-                                JOINED_BG,
+                                crate::theme::c().violet,
+                                crate::theme::c().violet_soft,
                                 11.5,
                             );
                         }
@@ -3012,7 +3178,7 @@ impl PonteApp {
                 } else {
                     "Registro manual"
                 };
-                pill(ui, kind, MANUAL_FG, MANUAL_BG, 12.5);
+                pill(ui, kind, crate::theme::c().warn, crate::theme::c().warn_soft, 12.5);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
@@ -3044,7 +3210,7 @@ impl PonteApp {
                     }
                     _ => text,
                 };
-                pill(ui, text, JOINED_FG, JOINED_BG, 12.5);
+                pill(ui, text, crate::theme::c().violet, crate::theme::c().violet_soft, 12.5);
                 match detail.summary.joined_to_id {
                     Some(parent) => {
                         if ui
@@ -3069,8 +3235,8 @@ impl PonteApp {
                 pill(
                     ui,
                     format!("📎 {} documento(s) juntado(s)", self.joined_children.len()),
-                    JOINED_FG,
-                    JOINED_BG,
+                    crate::theme::c().violet,
+                    crate::theme::c().violet_soft,
                     12.5,
                 );
                 for child in &self.joined_children {
@@ -3107,7 +3273,7 @@ impl PonteApp {
                     display_date(&detail.capture.captured_at)
                 ));
                 if detail.summary.document_number == crate::model::MANUAL_PENDING {
-                    ui.colored_label(WARNING, "Número definitivo será dado pelo computador principal na próxima sincronização.");
+                    ui.colored_label(crate::theme::warning(), "Número definitivo será dado pelo computador principal na próxima sincronização.");
                 }
             });
         } else {
@@ -3126,7 +3292,7 @@ impl PonteApp {
             ui.selectable_value(&mut self.tab, Tab::Document, "Documento");
             let editor = &self.editors[&id];
             let notes_label = if editor.note_dirty() || editor.draft_dirty() {
-                RichText::new("Anotações e minutas ●").color(WARNING)
+                RichText::new("Anotações e minutas ●").color(crate::theme::warning())
             } else {
                 RichText::new("Anotações e minutas")
             };
@@ -3185,7 +3351,7 @@ impl PonteApp {
                 if manual {
                     ui.small("Registro sem texto. Use “Editar registro…” para acrescentar, ou anexe o arquivo original abaixo.");
                 } else {
-                    ui.colored_label(WARNING, "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
+                    ui.colored_label(crate::theme::warning(), "Esta importação não trouxe texto. Abra o conteúdo no SIGADOC e importe de novo.");
                 }
             } else {
                 let mut text = detail.capture.text.as_str();
@@ -3269,7 +3435,7 @@ impl PonteApp {
             .resizable(true)
             .show(ctx, |ui| {
                 let form = &mut self.manual_form;
-                ui.colored_label(WARNING, "Registro criado por você, fora do SIGADOC. Ele fica marcado como manual em todo o Ponte e é compartilhado com a equipe como os demais documentos.");
+                ui.colored_label(crate::theme::warning(), "Registro criado por você, fora do SIGADOC. Ele fica marcado como manual em todo o Ponte e é compartilhado com a equipe como os demais documentos.");
                 if !editing {
                     ui.small("Recebe um número próprio (MANUAL-ano/sequência) ao salvar. Anexe o arquivo original em Documento ▸ Anexos depois de salvar; aqui, resuma o que importa.");
                 }
@@ -3300,7 +3466,7 @@ impl PonteApp {
                         .desired_width(f32::INFINITY),
                 );
                 if !form.message.is_empty() {
-                    ui.colored_label(ERROR, format!("✗ {}", form.message));
+                    ui.colored_label(crate::theme::error(), format!("✗ {}", form.message));
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -3466,17 +3632,16 @@ impl PonteApp {
                     }
                     if let Some(delta) = att.due_delta_days(today) {
                         if delta > 0 {
-                            ui.colored_label(ERROR, format!("vencido há {delta} d"));
+                            ui.colored_label(crate::theme::error(), format!("vencido há {delta} d"));
                         } else if delta == 0 {
-                            ui.colored_label(WARNING, "vence hoje");
+                            ui.colored_label(crate::theme::warning(), "vence hoje");
                         } else {
                             ui.small(format!("prazo {}", crate::labels::date(&att.due_date)));
                         }
                     }
                     if ui.small_button("Abrir").clicked() {
                         if self.saiop.focus_attendance(&self.store, att.id) {
-                            self.saiop_open = true;
-                            self.tasks_open = false;
+                            self.area = Area::Saiop;
                         } else {
                             self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
                         }
@@ -3510,7 +3675,7 @@ impl PonteApp {
                 || self.work_context.document_dirty(detail.summary.id)
                 || self.editors[&detail.summary.id].note_dirty();
             if stale {
-                ui.colored_label(WARNING, format!("Análise da captura #{}: a captura, o contexto ou as notas mudaram. Salve as edições e analise novamente.", analysis.capture_id));
+                ui.colored_label(crate::theme::warning(), format!("Análise da captura #{}: a captura, o contexto ou as notas mudaram. Salve as edições e analise novamente.", analysis.capture_id));
             }
             ui.label(&analysis.summary);
             ui.horizontal_wrapped(|ui| {
@@ -3544,7 +3709,7 @@ impl PonteApp {
                             ui.set_width(ui.available_width());
                             ui.horizontal_wrapped(|ui| {
                                 ui.colored_label(
-                                    SUCCESS,
+                                    crate::theme::success(),
                                     format!(
                                         "✓ {} — tarefa criada: {}",
                                         suggestion.action, task.title
@@ -3640,7 +3805,7 @@ impl PonteApp {
             }
             if let Some(deadline) = &analysis.deadline_candidate {
                 ui.colored_label(
-                    WARNING,
+                    crate::theme::warning(),
                     format!("Prazo candidato: {deadline}. Confirme a data e a regra na fonte."),
                 );
             }
@@ -3714,7 +3879,7 @@ impl PonteApp {
                 }
             }
             Err(e) => {
-                ui.colored_label(WARNING, format!("Falha ao ler arquivos: {e}"));
+                ui.colored_label(crate::theme::warning(), format!("Falha ao ler arquivos: {e}"));
             }
         }
     }
@@ -3727,7 +3892,7 @@ impl PonteApp {
         ));
         if detail.capture.coverage.recognized.is_empty() {
             ui.colored_label(
-                WARNING,
+                crate::theme::warning(),
                 "Nenhuma parte da página foi marcada como reconhecida.",
             );
         } else {
@@ -3737,7 +3902,7 @@ impl PonteApp {
             }
         }
         if !detail.capture.coverage.pending.is_empty() {
-            ui.colored_label(WARNING, "Observações da importação:");
+            ui.colored_label(crate::theme::warning(), "Observações da importação:");
             for pending in &detail.capture.coverage.pending {
                 ui.label(format!("• {pending}"));
             }
@@ -3885,7 +4050,7 @@ impl PonteApp {
                     ui.small(format!("{} PDF(s) • {} caracteres de texto • {} referência(s)",files.len(),detail.capture.text.chars().count(),detail.capture.references.len()));
                     if !detail.capture.coverage.pending.is_empty(){
                         ui.horizontal(|ui|{
-                            ui.colored_label(WARNING,format!("{} observação(ões) da importação",detail.capture.coverage.pending.len()));
+                            ui.colored_label(crate::theme::warning(),format!("{} observação(ões) da importação",detail.capture.coverage.pending.len()));
                             if ui.small_button("ver").clicked(){self.tab=Tab::More;}
                         });
                     }
@@ -3908,8 +4073,7 @@ impl PonteApp {
                 }
                 if ui.button("Ver todas").clicked() {
                     self.tasks.focus_document(detail.summary.id);
-                    self.tasks_open = true;
-                    self.saiop_open = false;
+                    self.area = Area::Tasks;
                 }
             });
             match self.store.list_tasks() {
@@ -3958,7 +4122,7 @@ impl PonteApp {
                                 ui.add_space(indent);
                             }
                             if blocked {
-                                ui.label(RichText::new("⛓").color(WARNING))
+                                ui.label(RichText::new("⛓").color(crate::theme::warning()))
                                     .on_hover_text(format!("Aguardando: {names}"));
                             }
                             ui.label(&task.title);
@@ -3975,11 +4139,11 @@ impl PonteApp {
                                 ui.label(format!("Prazo local: {date}"));
                             }
                             if task.overdue() {
-                                ui.colored_label(ERROR, "Atrasada");
+                                ui.colored_label(crate::theme::error(), "Atrasada");
                             }
                             if blocked {
                                 ui.small(
-                                    RichText::new(format!("↳ depende de: {names}")).color(MUTED),
+                                    RichText::new(format!("↳ depende de: {names}")).color(crate::theme::muted()),
                                 );
                             }
                             if ui
@@ -4042,7 +4206,7 @@ impl PonteApp {
                     .on_hover_text("Volta ao texto salvo pela última vez.")
                     .clicked();
                 if editor.note_dirty() {
-                    ui.colored_label(WARNING, "● não salvas");
+                    ui.colored_label(crate::theme::warning(), "● não salvas");
                 }
             });
             ui.add(
@@ -4349,14 +4513,14 @@ impl PonteApp {
                     });
                 }
                 if editor.draft_dirty() {
-                    ui.colored_label(WARNING, "● não salva");
+                    ui.colored_label(crate::theme::warning(), "● não salva");
                 }
                 ui.small(&editor.origin);
             });
             if editor.capture_id != detail.summary.latest_capture_id
                 || self.store.sources_stale(&editor.materials)
             {
-                ui.colored_label(WARNING, "Este texto foi feito sobre uma importação anterior ou fontes que mudaram. Revise antes de aproveitar.");
+                ui.colored_label(crate::theme::warning(), "Este texto foi feito sobre uma importação anterior ou fontes que mudaram. Revise antes de aproveitar.");
             }
             ui.add(
                 egui::TextEdit::multiline(&mut editor.body)
@@ -4379,7 +4543,7 @@ impl PonteApp {
                         display_date(&draft.created_at)
                     ));
                     if draft.stale || draft.capture_id != detail.summary.latest_capture_id {
-                        ui.colored_label(WARNING, "importação anterior");
+                        ui.colored_label(crate::theme::warning(), "importação anterior");
                     }
                     if let Some(provenance) = &draft.provenance {
                         if let Some(uid) = &provenance.generation_uid {
@@ -4574,7 +4738,7 @@ impl PonteApp {
                 AiProvider::ChatGpt => {
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
-                        ui.colored_label(WARNING, "⚠ Nesta opção, os dados saem do seu computador e do órgão.");
+                        ui.colored_label(crate::theme::warning(), "⚠ Nesta opção, os dados saem do seu computador e do órgão.");
                         ui.label("A cada clique em “Analisar” ou “Gerar sugestão”, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados aos servidores da OpenAI, nos Estados Unidos, sob os termos e a política de privacidade da OpenAI. Nada é enviado ao importar, só quando você clica. Use apenas com documentos que podem sair do órgão; avalie sigilo e LGPD antes.");
                         ui.small("O Ponte não recebe acesso às suas conversas, à memória nem à cobrança do ChatGPT. O uso é descontado da cota da sua assinatura (Plus ou Pro); o limite por aplicativo pode ser ajustado em ChatGPT ▸ Configurações ▸ Uso. Quando a cota acaba, o Ponte avisa e não usa outro provedor por conta própria.");
                     });
@@ -4593,9 +4757,9 @@ impl PonteApp {
                         } else if signed_in {
                             ui.label(format!("Conectado: {account}"));
                             if sharing {
-                                ui.colored_label(SUCCESS, "✓ uso do plano liberado");
+                                ui.colored_label(crate::theme::success(), "✓ uso do plano liberado");
                             } else {
-                                ui.colored_label(WARNING, "⚠ sem permissão de uso do plano");
+                                ui.colored_label(crate::theme::warning(), "⚠ sem permissão de uso do plano");
                             }
                             if ui.button("Entrar de novo…").on_hover_text("Abre o navegador para renovar a autorização ou liberar o uso do plano.").clicked() {
                                 self.start_chatgpt_login(ctx);
@@ -4622,7 +4786,7 @@ impl PonteApp {
                         });
                     }
                     if let Some(error) = &self.chatgpt_login_error {
-                        ui.colored_label(ERROR, format!("✗ {error}"));
+                        ui.colored_label(crate::theme::error(), format!("✗ {error}"));
                     }
                     ui.small("Requer assinatura ChatGPT Plus ou Pro (conta gratuita entra, mas não libera o uso do plano). O login abre o navegador em auth.openai.com e volta para o Ponte por uma porta local deste computador.");
                 }
@@ -4640,14 +4804,14 @@ impl PonteApp {
                         ui.hyperlink_to(RichText::new("ollama.com/settings/keys").small(), "https://ollama.com/settings/keys");
                         ui.small("(conta gratuita por uso ou plano mensal).");
                     });
-                    ui.colored_label(WARNING, "Os textos enviados à IA saem deste computador para os servidores da Ollama (EUA, com possível roteamento pela Europa). A Ollama declara não registrar nem treinar com os dados.");
+                    ui.colored_label(crate::theme::warning(), "Os textos enviados à IA saem deste computador para os servidores da Ollama (EUA, com possível roteamento pela Europa). A Ollama declara não registrar nem treinar com os dados.");
                 }
                 AiProvider::Remote => {
                     let label = ui.label("Endereço do servidor (HTTPS)");
                     ui.add(egui::TextEdit::singleline(&mut self.ai.remote_url).desired_width(f32::INFINITY)).labelled_by(label.id);
                     let label = ui.label("Token (opcional)");
                     ui.add(egui::TextEdit::singleline(&mut self.ai.remote_token).password(true).desired_width(f32::INFINITY)).labelled_by(label.id);
-                    ui.colored_label(WARNING, "Os textos enviados à IA saem deste computador para esse servidor.");
+                    ui.colored_label(crate::theme::warning(), "Os textos enviados à IA saem deste computador para esse servidor.");
                 }
             }
             ui.add_space(6.0);
@@ -4686,7 +4850,7 @@ impl PonteApp {
                 }
             });
             if let Some(error) = &self.models_error {
-                ui.colored_label(WARNING, format!("⚠ {error}"));
+                ui.colored_label(crate::theme::warning(), format!("⚠ {error}"));
             } else if listed {
                 ui.small(format!("{} modelo(s) oferecido(s) por este servidor.", self.models.len()));
             } else if self.model_fetch.is_none() {
@@ -4866,7 +5030,7 @@ impl PonteApp {
                             ui.label("Resultado: texto aceito pelo programa e levado à revisão.");
                         }
                         crate::work_templates::Outcome::Refused { reason } => {
-                            ui.colored_label(WARNING, format!("Resultado: recusado — {reason}"));
+                            ui.colored_label(crate::theme::warning(), format!("Resultado: recusado — {reason}"));
                         }
                     }
                     if !record.request_guidance.trim().is_empty() {
@@ -4906,7 +5070,7 @@ impl PonteApp {
                         ui.add_space(6.0);
                         ui.strong("Avisos de conflito exibidos antes de gerar");
                         for conflict in &record.conflicts_shown {
-                            ui.colored_label(WARNING, conflict);
+                            ui.colored_label(crate::theme::warning(), conflict);
                         }
                     }
                     ui.add_space(6.0);
@@ -5016,7 +5180,7 @@ impl PonteApp {
                 Kind::Attachment => {}
             }
             self.message(if change.target.kind == Kind::Attachment {
-                "Anexo movido para a Lixeira. É possível restaurá-lo em Menu ▾ ▸ Lixeira."
+                "Anexo movido para a Lixeira. É possível restaurá-lo em Ajustes ▸ Lixeira."
             } else {
                 "Item movido para a lixeira local. É possível restaurá-lo pelo botão Lixeira."
             });
@@ -5068,7 +5232,7 @@ impl PonteApp {
                     ui.small("Salvar e continuar grava a tarefa e segue para onde você clicou. Descartar alterações volta a tarefa ao que estava salvo (uma tarefa nova é apagada). Voltar à tarefa deixa tudo como está.");
                     if let Some(error) = &self.leave_error {
                         ui.add_space(4.0);
-                        ui.colored_label(ERROR, error);
+                        ui.colored_label(crate::theme::error(), error);
                         ui.small("Corrija na ficha da tarefa (Voltar à tarefa) ou descarte as alterações.");
                     }
                     ui.add_space(6.0);
@@ -5081,8 +5245,7 @@ impl PonteApp {
             if stay {
                 self.leave = None;
                 self.leave_error = None;
-                self.tasks_open = true;
-                self.saiop_open = false;
+                self.area = Area::Tasks;
             }
             if save {
                 match self.tasks.save_draft(&mut self.store) {
@@ -5153,6 +5316,7 @@ impl eframe::App for PonteApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        crate::theme::sync(&ctx);
         self.intranet.attach_repaint(&ctx);
         self.poll_worker();
         self.poll_models();
@@ -5202,10 +5366,31 @@ impl eframe::App for PonteApp {
             && self.trash.pending.is_none()
             && !self.exit_confirm
             && self.leave.is_none();
-        egui::Panel::top("header").show(ui, |ui| {
-            ui.add_enabled_ui(enabled, |ui| self.header(ui));
-        });
-        egui::Panel::bottom("status").show(ui, |ui| {
+        if enabled {
+            self.shortcuts(&ctx);
+        }
+        let palette = crate::theme::c();
+        egui::Panel::left("rail")
+            .exact_size(88.0)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.rail)
+                    .inner_margin(egui::Margin::symmetric(8, 10)),
+            )
+            .show(ui, |ui| {
+                ui.add_enabled_ui(enabled, |ui| self.rail(ui));
+            });
+        egui::Panel::bottom("status")
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.surface)
+                    .stroke(egui::Stroke::new(1.0, palette.outline))
+                    .inner_margin(egui::Margin::symmetric(14, 5)),
+            )
+            .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             let mut cancel = false;
             if let Some(worker) = &self.worker {
                 ui.horizontal_wrapped(|ui| {
@@ -5262,13 +5447,16 @@ impl eframe::App for PonteApp {
             } else {
                 ui.horizontal(|ui| {
                 let (color, short, full) = self.network_status();
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot.center(), 4.0, color);
                 let response = ui
                     .add(
                         egui::Button::new(
-                            RichText::new(format!("● {short}")).color(color).size(12.0),
+                            RichText::new(short)
+                                .color(palette.muted)
+                                .size(crate::theme::SIZE_SMALL),
                         )
-                        .frame(false)
-                        .small(),
+                        .frame(false),
                     )
                     .on_hover_text(full);
                 if response.clicked() {
@@ -5278,12 +5466,19 @@ impl eframe::App for PonteApp {
                 if self.intranet.folder_mode(&self.store) {
                     let unsent = self.intranet.unsent_folder_changes(&self.store);
                     let label = if unsent > 0 {
-                        format!("⟳ Sincronizar ({unsent} a enviar)")
+                        format!("{} Sincronizar ({unsent} a enviar)", crate::theme::icon::SYNC)
                     } else {
-                        "⟳ Sincronizar".to_owned()
+                        format!("{} Sincronizar", crate::theme::icon::SYNC)
                     };
                     if ui
-                        .add(egui::Button::new(RichText::new(label).size(12.0)).small())
+                        .add(
+                            egui::Button::new(
+                                RichText::new(label)
+                                    .size(crate::theme::SIZE_SMALL)
+                                    .color(palette.primary),
+                            )
+                            .frame(false),
+                        )
                         .on_hover_text("Lê as pastas compartilhadas e grava o que mudou aqui, agora. Sem clicar, o Ponte faz isso ao abrir, a cada 5 minutos e, depois de alterações suas, em até cerca de 2 minutos.")
                         .clicked()
                     {
@@ -5304,31 +5499,42 @@ impl eframe::App for PonteApp {
                     }
                 });
             }
-            let mut dismiss = self
-                .notice
-                .as_ref()
-                .is_some_and(|n| !n.error && n.since.elapsed() > NOTICE_LIFETIME);
-            if let Some(notice) = &self.notice {
-                ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(if notice.error { ERROR } else { ACCENT }, &notice.text);
-                    dismiss |= ui.small_button("Fechar").clicked();
+        });
+        // Notices float over the corner: successes leave by themselves,
+        // errors stay until closed.
+        let mut dismiss = self
+            .notice
+            .as_ref()
+            .is_some_and(|n| !n.error && n.since.elapsed() > NOTICE_LIFETIME);
+        if let Some(notice) = &self.notice {
+            dismiss |= crate::widgets::toast(&ctx, &notice.text, notice.error, None)
+                != crate::widgets::ToastAction::None;
+        }
+        if dismiss {
+            self.notice = None;
+        }
+        if self.area == Area::Documents {
+            library_panel(ui.max_rect().width())
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette.surface)
+                        .inner_margin(egui::Margin::symmetric(14, 12)),
+                )
+                .show(ui, |ui| {
+                    ui.add_enabled_ui(enabled, |ui| self.sidebar(ui));
                 });
-            }
-            if dismiss {
-                self.notice = None;
-            }
-            if let Some(path) = &self.backup_path {
-                if ui.small_button("Copiar caminho do último backup").clicked() {
-                    ctx.copy_text(path.display().to_string());
-                }
-            }
-        });
-        library_panel(ui.max_rect().width()).show(ui, |ui| {
-            ui.add_enabled_ui(enabled, |ui| self.sidebar(ui));
-        });
-        egui::CentralPanel::default().show(ui, |ui| {
+        }
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.bg)
+                    .inner_margin(egui::Margin::symmetric(20, 14)),
+            )
+            .show(ui, |ui| {
             ui.add_enabled_ui(enabled, |ui| {
-                if self.templates_open {
+                if self.area == Area::Settings {
+                    self.settings_area(ui);
+                } else if self.area == Area::Templates {
                     let open_document = self.detail.as_ref().map(|d| {
                         (
                             d.summary.id,
@@ -5364,7 +5570,7 @@ impl eframe::App for PonteApp {
                         }
                         crate::templates_ui::TemplatesAction::None => {}
                     }
-                } else if self.saiop_open {
+                } else if self.area == Area::Saiop {
                     let context = self.selected_id.and_then(|id| {
                         self.documents
                             .iter()
@@ -5377,13 +5583,12 @@ impl eframe::App for PonteApp {
                     }
                     if let Some(task) = self.saiop.take_open_task() {
                         if self.tasks.focus_task(&task) {
-                            self.tasks_open = true;
-                            self.saiop_open = false;
+                            self.area = Area::Tasks;
                         } else {
                             self.error("Há uma tarefa com alterações não salvas no painel Tarefas. Salve ou descarte antes de abrir outra.");
                         }
                     }
-                } else if self.tasks_open {
+                } else if self.area == Area::Tasks {
                     if let Some(id) = self.tasks.show(ui, &mut self.store, self.selected_id) { self.navigate(Leave::Select(id)); }
                     if let Some(intent) = self.tasks.take_blocked() {
                         self.navigate(match intent {
@@ -5431,11 +5636,213 @@ impl eframe::App for PonteApp {
         if self.trash.take_purged() {
             self.refresh();
         }
+        #[cfg(feature = "shots")]
+        self.tour_frame(&ctx);
     }
 
     fn persist_egui_memory(&self) -> bool {
         // Avoid accidental persistence of any widget memory that could contain content.
         false
+    }
+}
+
+
+/// Development only: the screens pictured by `--shots`, in order. Each step
+/// sets everything it needs, so any of them can be taken alone.
+#[cfg(feature = "shots")]
+impl PonteApp {
+    const TOUR: &'static [&'static str] = &[
+        "documentos-inicio",
+        "ficha-resumo",
+        "ficha-documento",
+        "ficha-notas",
+        "ficha-mais",
+        "tarefas",
+        "tarefa-aberta",
+        "atendimentos",
+        "atendimento-aberto",
+        "modelos",
+        "ajustes",
+        "janela-rede",
+        "janela-ia",
+        "janela-email",
+        "janela-lixeira",
+        "janela-registro-manual",
+        "janela-sobre",
+    ];
+
+    /// The screens of the app itself, then the views each panel declares
+    /// (`SHOTS` in its own file), then everything again in the dark theme.
+    fn tour_names() -> Vec<String> {
+        let mut names: Vec<String> = Self::TOUR.iter().map(|name| (*name).to_owned()).collect();
+        let panels: [(&str, &[&str]); 5] = [
+            ("tarefas", crate::tasks_ui::SHOTS),
+            ("atendimentos", crate::saiop::SHOTS),
+            ("modelos", crate::templates_ui::SHOTS),
+            ("email", crate::mail_ui::SHOTS),
+            ("rede", crate::intranet::SHOTS),
+        ];
+        for (prefix, views) in panels {
+            names.extend(views.iter().map(|view| format!("{prefix}-{view}")));
+        }
+        let dark: Vec<String> = names.iter().map(|name| format!("escuro-{name}")).collect();
+        names.extend(dark);
+        names
+    }
+
+    fn tour_frame(&mut self, ctx: &egui::Context) {
+        let Some(mut tour) = self.tour.take() else {
+            return;
+        };
+        ctx.request_repaint();
+        if let crate::shots::Tick::Begin(index) = tour.tick(ctx) {
+            let names = Self::tour_names();
+            match names.get(index).map(String::as_str) {
+                None => {
+                    self.allow_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                Some(name) if crate::shots::Tour::wanted(name) => {
+                    self.tour_setup(name, ctx);
+                    tour.named(index, name);
+                }
+                Some(_) => tour.skip(index),
+            }
+        }
+        self.tour = Some(tour);
+    }
+
+    fn tour_document(&self) -> Option<i64> {
+        self.store
+            .list_documents("")
+            .ok()?
+            .into_iter()
+            .find(|d| d.document_number == "SESP-OFI-2026/00431")
+            .map(|d| d.id)
+    }
+
+    fn tour_setup(&mut self, name: &str, ctx: &egui::Context) {
+        // Nothing left over from the step before.
+        self.intranet.open = false;
+        self.settings_open = false;
+        self.mail.open = false;
+        self.trash.open = false;
+        self.manual_form.open = false;
+        self.about_open = false;
+        self.notice = None;
+        let dark = name.starts_with("escuro-");
+        crate::theme::set_appearance(
+            ctx,
+            if dark {
+                crate::theme::Appearance::Dark
+            } else {
+                crate::theme::Appearance::Light
+            },
+        );
+        let name = name.strip_prefix("escuro-").unwrap_or(name);
+        let document = self.tour_document();
+        match name {
+            "documentos-inicio" => {
+                self.area = Area::Documents;
+                self.selected_id = None;
+                self.detail = None;
+            }
+            "ficha-resumo" | "ficha-documento" | "ficha-notas" | "ficha-mais" => {
+                if let Some(id) = document {
+                    self.select(id);
+                }
+                self.tab = match name {
+                    "ficha-documento" => Tab::Document,
+                    "ficha-notas" => Tab::Notes,
+                    "ficha-mais" => Tab::More,
+                    _ => Tab::Overview,
+                };
+            }
+            "tarefas" => {
+                self.tasks = Default::default();
+                self.area = Area::Tasks;
+            }
+            "tarefa-aberta" => {
+                self.tasks = Default::default();
+                let task = self
+                    .store
+                    .list_tasks()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|t| t.overdue());
+                if let Some(task) = task {
+                    self.perform_leave(Leave::OpenTask(task));
+                }
+                self.area = Area::Tasks;
+            }
+            "atendimentos" => {
+                self.saiop = Default::default();
+                self.area = Area::Saiop;
+            }
+            "atendimento-aberto" => {
+                self.saiop = Default::default();
+                let first = self
+                    .store
+                    .list_saiop_attendances()
+                    .unwrap_or_default()
+                    .first()
+                    .map(|a| a.id);
+                if let Some(id) = first {
+                    self.saiop.focus_attendance(&self.store, id);
+                }
+                self.area = Area::Saiop;
+            }
+            "modelos" => self.area = Area::Templates,
+            "ajustes" => self.area = Area::Settings,
+            "janela-rede" => {
+                self.area = Area::Settings;
+                self.intranet.open = true;
+            }
+            "janela-ia" => {
+                self.area = Area::Settings;
+                self.open_ai_settings(ctx);
+            }
+            "janela-email" => {
+                self.area = Area::Settings;
+                self.mail.open_full();
+            }
+            "janela-lixeira" => {
+                self.area = Area::Settings;
+                self.trash.open = true;
+            }
+            "janela-registro-manual" => {
+                self.area = Area::Documents;
+                self.manual_form.open_new();
+            }
+            "janela-sobre" => {
+                self.area = Area::Settings;
+                self.about_open = true;
+            }
+            other => {
+                // Views declared by the panels themselves.
+                if let Some(view) = other.strip_prefix("tarefas-") {
+                    self.tasks = Default::default();
+                    self.area = Area::Tasks;
+                    self.tasks.shots_open(&mut self.store, view);
+                } else if let Some(view) = other.strip_prefix("atendimentos-") {
+                    self.saiop = Default::default();
+                    self.area = Area::Saiop;
+                    self.saiop.shots_open(&mut self.store, view);
+                } else if let Some(view) = other.strip_prefix("modelos-") {
+                    self.templates = Default::default();
+                    self.area = Area::Templates;
+                    self.templates.shots_open(&mut self.store, view);
+                } else if let Some(view) = other.strip_prefix("email-") {
+                    self.mail = Default::default();
+                    self.area = Area::Settings;
+                    self.mail.shots_open(&mut self.store, view);
+                } else if let Some(view) = other.strip_prefix("rede-") {
+                    self.area = Area::Settings;
+                    self.intranet.shots_open(&mut self.store, view);
+                }
+            }
+        }
     }
 }
 
@@ -5518,8 +5925,8 @@ fn allowed_sigadoc_url(raw_url: &str) -> bool {
 mod tests {
     use super::{
         allowed_sigadoc_url, library_panel, DocPriorityFilter, DocSort, DocTaskFilter,
-        DocTaskStatusSummary, ERROR, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION,
-        LIBRARY_MIN_WIDTH, ON_TIME, SUCCESS, WARNING,
+        DocTaskStatusSummary, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION,
+        LIBRARY_MIN_WIDTH,
     };
     use crate::tasks::Task;
 
@@ -5787,20 +6194,20 @@ mod tests {
         assert!(s1.matches(DocTaskFilter::OpenAny));
         assert!(!s1.matches(DocTaskFilter::OpenOnTime));
         assert!(!s1.matches(DocTaskFilter::Completed));
-        assert_eq!(s1.badge().1, ERROR);
+        assert_eq!(s1.badge().1, crate::theme::error());
         assert!(s1.badge().0.contains("atrasada"));
 
         let s2 = DocTaskStatusSummary::from_tasks(&tasks, 2, today);
         assert!(s2.matches(DocTaskFilter::OpenOnTime));
         assert!(s2.matches(DocTaskFilter::OpenAny));
         assert!(!s2.matches(DocTaskFilter::Overdue));
-        assert_eq!(s2.badge().1, ON_TIME);
-        assert_ne!(ON_TIME, SUCCESS, "open and done never share a colour");
+        assert_eq!(s2.badge().1, crate::theme::on_time());
+        assert_ne!(crate::theme::on_time(), crate::theme::success(), "open and done never share a colour");
         assert!(s2.badge().0.contains("no prazo"));
 
         let s3 = DocTaskStatusSummary::from_tasks(&tasks, 3, today);
         assert!(s3.matches(DocTaskFilter::OpenOnTime));
-        assert_eq!(s3.badge().1, WARNING);
+        assert_eq!(s3.badge().1, crate::theme::warning());
         assert_eq!(s3.badge().0, "⏰ 1 vence hoje");
 
         // One task due today and two later: only one is "due today".
@@ -5815,7 +6222,7 @@ mod tests {
         let mixed =
             DocTaskStatusSummary::from_tasks(&[later_a, later_b, due_now.clone(), done], 9, today);
         assert_eq!(mixed.badge().0, "⏰ 1 vence hoje (+2 no prazo) • ✓ 1");
-        assert_eq!(mixed.badge().1, WARNING);
+        assert_eq!(mixed.badge().1, crate::theme::warning());
         let both_today = DocTaskStatusSummary::from_tasks(&[due_now.clone(), due_now], 9, today);
         assert_eq!(both_today.badge().0, "⏰ 2 vencem hoje");
 
@@ -5825,7 +6232,7 @@ mod tests {
         let s4 = DocTaskStatusSummary::from_tasks(&tasks, 4, today);
         assert!(s4.matches(DocTaskFilter::Completed));
         assert!(!s4.matches(DocTaskFilter::OpenAny));
-        assert_eq!(s4.badge().1, SUCCESS);
+        assert_eq!(s4.badge().1, crate::theme::success());
         assert!(s4.badge().0.contains("concluída"));
 
         assert!(DocPriorityFilter::Urgent.matches("urgente"));

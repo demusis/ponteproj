@@ -11,19 +11,12 @@ use crate::{
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Utc};
 #[cfg(feature = "desktop")]
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-
-#[cfg(feature = "desktop")]
-const ACCENT: Color32 = Color32::from_rgb(24, 84, 97);
-#[cfg(feature = "desktop")]
-const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
-#[cfg(feature = "desktop")]
-const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
 
 pub const STATUS_OPTIONS: &[(&str, &str)] = &[
     ("a_distribuir", "A distribuir"),
@@ -2872,7 +2865,7 @@ impl SaiopPanel {
         let all_items = match store.list_saiop_attendances() {
             Ok(list) => list,
             Err(e) => {
-                ui.colored_label(ERROR, format!("Erro ao carregar Atendimentos: {e}"));
+                ui.colored_label(crate::theme::error(), format!("Erro ao carregar Atendimentos: {e}"));
                 return None;
             }
         };
@@ -2897,7 +2890,7 @@ impl SaiopPanel {
                 ));
             ui.label(format!("{open_count} em aberto"));
             if overdue_count > 0 {
-                ui.colored_label(ERROR, format!("• {overdue_count} com prazo vencido"));
+                ui.colored_label(crate::theme::error(), format!("• {overdue_count} com prazo vencido"));
             }
             if ui
                 .button("Importar planilha…")
@@ -2957,7 +2950,7 @@ impl SaiopPanel {
         if !failures.is_empty() {
             ui.group(|ui| {
                 ui.colored_label(
-                    WARNING,
+                    crate::theme::warning(),
                     format!(
                         "⚠ {} importação(ões) sem o atendimento automático:",
                         failures.len()
@@ -3025,7 +3018,7 @@ impl SaiopPanel {
 
         if !self.message.is_empty() {
             ui.horizontal_wrapped(|ui| {
-                ui.colored_label(if self.error { ERROR } else { ACCENT }, &self.message);
+                ui.colored_label(if self.error { crate::theme::error() } else { crate::theme::accent() }, &self.message);
                 if ui.small_button("Fechar").clicked() {
                     self.message.clear();
                 }
@@ -3094,11 +3087,11 @@ impl SaiopPanel {
                         ui.label(format!("{new_rows} nova(s)"));
                         if repeated_rows > 0 {
                             ui.separator();
-                            ui.colored_label(WARNING, format!("{repeated_rows} já registrada(s) no controle"));
+                            ui.colored_label(crate::theme::warning(), format!("{repeated_rows} já registrada(s) no controle"));
                         }
                         if prev.flagged_count > 0 {
                             ui.separator();
-                            ui.colored_label(WARNING, format!("{} com alerta para conferir", prev.flagged_count));
+                            ui.colored_label(crate::theme::warning(), format!("{} com alerta para conferir", prev.flagged_count));
                         }
                         if prev.linked_documents > 0 {
                             ui.separator();
@@ -3134,11 +3127,11 @@ impl SaiopPanel {
                                     if att.review_flags.is_empty() {
                                         ui.label("—");
                                     } else {
-                                        ui.colored_label(WARNING, format!("{} ⚠", att.review_flags.len()))
+                                        ui.colored_label(crate::theme::warning(), format!("{} ⚠", att.review_flags.len()))
                                             .on_hover_text(att.review_flags.join("\n"));
                                     }
                                     match existing {
-                                        Some(id) => { ui.colored_label(WARNING, format!("já registrada (#{id})")); }
+                                        Some(id) => { ui.colored_label(crate::theme::warning(), format!("já registrada (#{id})")); }
                                         None => { ui.label("nova"); }
                                     }
                                     ui.end_row();
@@ -3213,7 +3206,7 @@ impl SaiopPanel {
                             if pending.id == b.id {
                                 ui.group(|ui| {
                                     ui.set_width(ui.available_width());
-                                    ui.colored_label(WARNING, format!(
+                                    ui.colored_label(crate::theme::warning(), format!(
                                         "Desfazer a importação de {}? {} atendimento(s) serão removidos. {} serão mantidos porque foram editados ou têm tarefa.",
                                         pending.file_name, removed, kept
                                     ));
@@ -3524,11 +3517,11 @@ impl SaiopPanel {
                                 if let Some(delta) = att.due_delta_days(today) {
                                     if delta > 0 {
                                         ui.colored_label(
-                                            ERROR,
+                                            crate::theme::error(),
                                             format!("{due_text} (vencido há {delta} d)"),
                                         );
                                     } else if delta == 0 {
-                                        ui.colored_label(WARNING, format!("{due_text} (vence hoje)"));
+                                        ui.colored_label(crate::theme::warning(), format!("{due_text} (vence hoje)"));
                                     } else {
                                         ui.label(format!("{due_text} (em {} d)", -delta));
                                     }
@@ -3537,7 +3530,7 @@ impl SaiopPanel {
                                 }
                             } else if !att.due_date_raw.is_empty() {
                                 ui.colored_label(
-                                    WARNING,
+                                    crate::theme::warning(),
                                     format!("Conferir: {}", att.due_date_raw),
                                 );
                             } else {
@@ -3593,7 +3586,7 @@ impl SaiopPanel {
                     "Novo atendimento".into()
                 });
                 if is_dirty {
-                    ui.colored_label(WARNING, "● não salvo");
+                    ui.colored_label(crate::theme::warning(), "● não salvo");
                 }
             });
             // Actions stay at the top so they are visible without scrolling.
@@ -3629,7 +3622,7 @@ impl SaiopPanel {
                 ui.group(|ui| {
                     ui.set_width(ui.available_width());
                     ui.colored_label(
-                        WARNING,
+                        crate::theme::warning(),
                         format!(
                             "Excluir o atendimento {}? Não vai para a Lixeira: anexos do atendimento são apagados; tarefas e documento ligado permanecem.",
                             if ed.reference_raw.is_empty() { "sem referência" } else { &ed.reference_raw }
@@ -3692,7 +3685,7 @@ impl SaiopPanel {
                                 .count();
                             if same_ref_count > 1 {
                                 ui.colored_label(
-                                    ACCENT,
+                                    crate::theme::accent(),
                                     format!("{same_ref_count} passagens desta referência"),
                                 ).on_hover_text("A mesma referência entrou no gabinete mais de uma vez; cada passagem é um atendimento.");
                             }
@@ -3704,7 +3697,7 @@ impl SaiopPanel {
                             ui.set_width(ui.available_width());
                             ui.horizontal_wrapped(|ui| {
                                 ui.colored_label(
-                                    WARNING,
+                                    crate::theme::warning(),
                                     format!(
                                         "Alertas de conferência ({}):",
                                         ed.review_flags.len()
@@ -4544,4 +4537,15 @@ mod tests {
             .unwrap();
         assert!(store.auto_attendance_failures().unwrap().is_empty());
     }
+}
+
+/// Development only: the views of this screen pictured by `--shots`, by
+/// name. The tour calls `shots_open` with each one on a fresh panel.
+#[cfg(feature = "shots")]
+pub const SHOTS: &[&str] = &[];
+
+#[cfg(feature = "shots")]
+impl SaiopPanel {
+    /// Puts the panel in the state called `view` (see `SHOTS`).
+    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
 }

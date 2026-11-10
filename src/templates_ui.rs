@@ -10,15 +10,12 @@ use crate::{
         WorkTemplate, MAX_BLOCKS_PER_TEMPLATE,
     },
 };
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use std::{
     collections::BTreeSet,
     time::{Duration, Instant},
 };
 
-const ACCENT: Color32 = Color32::from_rgb(24, 84, 97);
-const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
-const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
 const KINDS: [&str; 3] = ["resposta", "encaminhamento", "complementacao"];
 
 /// What the panel asks the application to do.
@@ -704,7 +701,7 @@ impl TemplatesPanel {
                 }
                 if self.confirm == Some(Confirm::Template) {
                     ui.colored_label(
-                        WARNING,
+                        crate::theme::warning(),
                         "Excluir este modelo de vez, com exemplos e versões?",
                     );
                     ui.horizontal(|ui| {
@@ -809,7 +806,7 @@ impl TemplatesPanel {
     ) -> Option<TemplatesAction> {
         if !self.message.is_empty() {
             ui.horizontal_wrapped(|ui| {
-                ui.colored_label(if self.error { ERROR } else { ACCENT }, &self.message);
+                ui.colored_label(if self.error { crate::theme::error() } else { crate::theme::accent() }, &self.message);
                 if ui.small_button("Fechar").clicked() {
                     self.message.clear();
                 }
@@ -876,7 +873,7 @@ impl TemplatesPanel {
             ui.label(format!("Rascunho: versão {draft_number}"));
         }
         if self.template_dirty() {
-            ui.colored_label(WARNING, "● alterações não salvas");
+            ui.colored_label(crate::theme::warning(), "● alterações não salvas");
         }
         ui.horizontal_wrapped(|ui| {
             if ui.button("Salvar rascunho").clicked() {
@@ -919,7 +916,7 @@ impl TemplatesPanel {
         });
         if self.confirm_discard_template {
             ui.colored_label(
-                WARNING,
+                crate::theme::warning(),
                 "Descartar todas as alterações não salvas do modelo?",
             );
             ui.horizontal(|ui| {
@@ -1148,7 +1145,7 @@ impl TemplatesPanel {
             text_row(ui, "Nota desta versão", &mut v.change_note);
         }
         if dirty {
-            ui.colored_label(WARNING, "● alterações não salvas");
+            ui.colored_label(crate::theme::warning(), "● alterações não salvas");
         }
         let mut do_save = false;
         let mut do_publish = false;
@@ -1203,7 +1200,7 @@ impl TemplatesPanel {
         }
         if self.confirm_discard_block {
             ui.colored_label(
-                WARNING,
+                crate::theme::warning(),
                 "Descartar as alterações não salvas desta instrução?",
             );
             ui.horizontal(|ui| {
@@ -1216,7 +1213,7 @@ impl TemplatesPanel {
             });
         }
         if self.confirm == Some(Confirm::Block) {
-            ui.colored_label(WARNING, "Excluir esta instrução de vez?");
+            ui.colored_label(crate::theme::warning(), "Excluir esta instrução de vez?");
             ui.horizontal(|ui| {
                 if ui.button("Sim, excluir").clicked() {
                     let uid = self
@@ -1403,7 +1400,7 @@ impl TemplatesPanel {
         let examples = match store.examples_of(&uid) {
             Ok(list) => list,
             Err(e) => {
-                ui.colored_label(ERROR, format!("{e:#}"));
+                ui.colored_label(crate::theme::error(), format!("{e:#}"));
                 return;
             }
         };
@@ -1416,7 +1413,7 @@ impl TemplatesPanel {
                     pick = Some(e.clone());
                 }
                 let color = if e.status == ExampleStatus::Unverified {
-                    WARNING
+                    crate::theme::warning()
                 } else {
                     ui.visuals().weak_text_color()
                 };
@@ -1483,7 +1480,7 @@ impl TemplatesPanel {
                 .desired_width(f32::INFINITY),
         );
         if dirty {
-            ui.colored_label(WARNING, "● alterações não salvas");
+            ui.colored_label(crate::theme::warning(), "● alterações não salvas");
         }
         let (mut save, mut approve, mut reject, mut delete) = (false, false, false, false);
         let mut discard = false;
@@ -1511,7 +1508,7 @@ impl TemplatesPanel {
             }
         }
         if self.confirm_discard_example {
-            ui.colored_label(WARNING, "Descartar as alterações não salvas deste exemplo?");
+            ui.colored_label(crate::theme::warning(), "Descartar as alterações não salvas deste exemplo?");
             ui.horizontal(|ui| {
                 if ui.button("Sim, descartar").clicked() {
                     self.discard_example(store);
@@ -1525,7 +1522,7 @@ impl TemplatesPanel {
             self.confirm = Some(Confirm::Example);
         }
         if self.confirm == Some(Confirm::Example) {
-            ui.colored_label(WARNING, "Excluir este exemplo de vez?");
+            ui.colored_label(crate::theme::warning(), "Excluir este exemplo de vez?");
             ui.horizontal(|ui| {
                 if ui.button("Sim, excluir").clicked() {
                     let uid = self
@@ -1599,7 +1596,7 @@ impl TemplatesPanel {
         let metas = match store.list_attachments(crate::attachments::Owner::Example(example_id)) {
             Ok(m) => m,
             Err(e) => {
-                ui.colored_label(ERROR, format!("{e:#}"));
+                ui.colored_label(crate::theme::error(), format!("{e:#}"));
                 return;
             }
         };
@@ -1630,16 +1627,16 @@ impl TemplatesPanel {
                 ui.label(&meta.name);
                 match &record {
                     None => {
-                        ui.colored_label(WARNING, "Texto ainda não extraído");
+                        ui.colored_label(crate::theme::warning(), "Texto ainda não extraído");
                     }
                     Some(t) if !t.current_for(&meta.sha256) => {
-                        ui.colored_label(WARNING, "Texto desatualizado (extraia de novo)");
+                        ui.colored_label(crate::theme::warning(), "Texto desatualizado (extraia de novo)");
                     }
                     Some(t) => {
                         use crate::extraction::TextStatus;
                         let warn = matches!(t.status, TextStatus::Empty | TextStatus::Failed);
                         if warn {
-                            ui.colored_label(WARNING, t.status.label());
+                            ui.colored_label(crate::theme::warning(), t.status.label());
                         } else {
                             ui.label(t.status.label());
                         }
@@ -1789,7 +1786,7 @@ impl TemplatesPanel {
         match &self.test_result {
             None => {}
             Some(Err(msg)) => {
-                ui.colored_label(ERROR, msg);
+                ui.colored_label(crate::theme::error(), msg);
             }
             Some(Ok(p)) => {
                 ui.label(format!(
@@ -1803,7 +1800,7 @@ impl TemplatesPanel {
                 ));
                 ui.label(format!("Arquivos de exemplo: {}", p.files));
                 for c in &p.conflicts {
-                    ui.colored_label(WARNING, c);
+                    ui.colored_label(crate::theme::warning(), c);
                 }
                 let mut text = p.system.as_str();
                 ui.add(
@@ -1880,4 +1877,15 @@ fn fresh_template(store: &Store, template: WorkTemplate) -> WorkTemplate {
         .ok()
         .flatten()
         .unwrap_or(template)
+}
+
+/// Development only: the views of this screen pictured by `--shots`, by
+/// name. The tour calls `shots_open` with each one on a fresh panel.
+#[cfg(feature = "shots")]
+pub const SHOTS: &[&str] = &[];
+
+#[cfg(feature = "shots")]
+impl TemplatesPanel {
+    /// Puts the panel in the state called `view` (see `SHOTS`).
+    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
 }

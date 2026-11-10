@@ -56,3 +56,14 @@ pub mod labels;
 
 #[cfg(feature = "desktop")]
 pub mod windows_ui;
+
+#[cfg(feature = "desktop")]
+pub mod theme;
+#[cfg(feature = "desktop")]
+pub mod widgets;
+
+/// Sample library for the pictures of the screens (development only).
+#[cfg(any(test, feature = "shots"))]
+pub mod shots_data;
+#[cfg(feature = "shots")]
+pub mod shots;

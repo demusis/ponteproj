@@ -5812,13 +5812,13 @@ impl IntranetPanel {
                             }
                             if ui
                                 .button("Copiar código de conexão")
-                                .on_hover_text("Um texto único com endereço e chave. Os colegas colam no Ponte deles em Menu ▸ Rede e equipe.")
+                                .on_hover_text("Um texto único com endereço e chave. Os colegas colam no Ponte deles em Ajustes ▸ Equipe e sincronização.")
                                 .clicked()
                             {
                                 let addr = hints.first().cloned().unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
                                 let code = connection_code(&addr, &self.draft.cabinet_token);
                                 ui.ctx().copy_text(format!(
-                                    "Código de conexão do Ponte (gabinete):\n{code}\n\nNo seu Ponte: Menu ▸ Rede e equipe ▸ “Conectar ao computador principal” ▸ cole o código."
+                                    "Código de conexão do Ponte (gabinete):\n{code}\n\nNo seu Ponte: Ajustes ▸ Equipe e sincronização ▸ “Conectar ao computador principal” ▸ cole o código."
                                 ));
                                 self.message = if self.draft.cabinet_token.trim() != saved_token.trim() && self.server.is_some() {
                                     "Código copiado com a nova chave. Atenção: até você salvar, o computador principal ainda aceita só a chave anterior.".into()
@@ -7617,4 +7617,15 @@ mod tests {
         assert!(validate_bind_addr("8.8.8.8:7878").is_err());
         assert!(validate_bind_addr("0.0.0.0:7878").is_ok());
     }
+}
+
+/// Development only: the views of this screen pictured by `--shots`, by
+/// name. The tour calls `shots_open` with each one on a fresh panel.
+#[cfg(feature = "shots")]
+pub const SHOTS: &[&str] = &[];
+
+#[cfg(feature = "shots")]
+impl IntranetPanel {
+    /// Puts the panel in the state called `view` (see `SHOTS`).
+    pub fn shots_open(&mut self, _store: &mut crate::storage::Store, _view: &str) {}
 }

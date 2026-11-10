@@ -729,13 +729,11 @@ impl AttachmentsPanel {
 
     pub fn show(&mut self, ui: &mut eframe::egui::Ui, store: &mut Store, owner: Owner, busy: bool) {
         use eframe::egui::{self, Color32};
-        const WARNING: Color32 = Color32::from_rgb(153, 88, 16);
-        const ERROR: Color32 = Color32::from_rgb(168, 40, 45);
 
         let list = match store.list_attachments(owner) {
             Ok(list) => list,
             Err(error) => {
-                ui.colored_label(WARNING, format!("Não foi possível ler os anexos: {error}"));
+                ui.colored_label(crate::theme::warning(), format!("Não foi possível ler os anexos: {error}"));
                 return;
             }
         };
@@ -774,7 +772,7 @@ impl AttachmentsPanel {
         }
         if !self.message.is_empty() {
             let color = if self.message_is_error {
-                ERROR
+                crate::theme::error()
             } else {
                 Color32::from_rgb(30, 110, 60)
             };
@@ -900,7 +898,7 @@ impl AttachmentsPanel {
                 });
                 if self.confirm_delete == Some(meta.id) {
                     ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(WARNING, format!("Apagar “{}” de vez? Não há como restaurar.", meta.name));
+                        ui.colored_label(crate::theme::warning(), format!("Apagar “{}” de vez? Não há como restaurar.", meta.name));
                         if ui.add_enabled(!busy, egui::Button::new("Apagar de vez").small()).clicked() {
                             self.confirm_delete = None;
                             match store.delete_attachment(meta.id) {

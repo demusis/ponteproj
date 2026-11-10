@@ -38,6 +38,9 @@ default = ["desktop"]
 # The window, the PDF reader and every screen. Without it the library holds
 # only the core: storage, sealing, team sync, e-mail, models.
 desktop = ["dep:eframe", "dep:image"]
+# Development only: a sample library and a tour of the screens that saves a
+# picture of each one (`ponteproj --shots PASTA`). Never part of a release.
+shots = ["desktop"]
 
 [[bin]]
 name = "ponteproj"
