@@ -138,7 +138,9 @@ impl PonteApp {
                     .id_salt(("settings-section", section.label()))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_max_width(820.0);
+                        // The section follows the window; the room of the
+                        // scroll bar stays free.
+                        ui.set_max_width((ui.available_width() - 14.0).max(240.0));
                         self.settings_section_body(ui, &ctx, section);
                         ui.add_space(S3);
                     });

@@ -174,8 +174,6 @@ fn status_label_f(status: Status) -> &'static str {
 const OPS_WIDTH: f32 = 3.0 * 30.0 + 2.0 * theme::S1;
 /// Room taken by an "Obrigatória" checkbox next to a field.
 const CHECK_WIDTH: f32 = 112.0;
-/// The forms stay readable on wide windows.
-const FORM_WIDTH: f32 = 840.0;
 
 fn tone_of_status(status: Status) -> Tone {
     match status {
@@ -1129,9 +1127,9 @@ impl TemplatesPanel {
                         bottom: 0,
                     })
                     .show(ui, |ui| {
-                        // `set_max_width` sets, it does not clamp: never
-                        // widen past the room there is.
-                        ui.set_max_width(ui.available_width().min(FORM_WIDTH));
+                        // The forms follow the window; the room of the
+                        // scroll bar stays free.
+                        ui.set_max_width((ui.available_width() - 14.0).max(240.0));
                         ui.spacing_mut().item_spacing.y = theme::S3;
                         match self.tab {
                             Tab::Structure => self.tab_structure(ui),

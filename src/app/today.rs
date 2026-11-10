@@ -387,7 +387,7 @@ impl PonteApp {
                     return;
                 }
                 // Room for the scroll bar, so the cards keep their right edge.
-                ui.set_max_width((ui.available_width() - 14.0).min(1180.0));
+                ui.set_max_width(ui.available_width() - 14.0);
                 let wide = ui.available_width() >= 860.0;
                 let documents = &self.today.index;
                 let title_of = |id: i64| {
