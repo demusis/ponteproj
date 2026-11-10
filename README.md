@@ -489,7 +489,7 @@ No alto da página, um resumo diz como este computador está trabalhando, mostra
 | Modo (cartão) | Para quem | Como os computadores se falam |
 |---|---|---|
 | **Só neste computador** | uma pessoa, um computador (padrão) | não se falam |
-| **Computador principal do gabinete** | a máquina que centraliza a equipe | os colegas se conectam a ela pela rede interna |
+| **Computador principal** | a máquina que centraliza a equipe | os colegas se conectam a ela pela rede interna |
 | **Conectar ao computador principal** | os demais colegas | pela rede interna, com um código de conexão |
 | **Pasta compartilhada** | uma pessoa em casa e no trabalho, sem rede entre os dois | por um arquivo cifrado numa pasta do Google Drive, OneDrive ou pendrive |
 
@@ -504,7 +504,7 @@ Um computador do gabinete é o **principal**; os outros se conectam a ele. Nada 
 **No computador principal:**
 
 1. *Seu nome na equipe*: `BELTRANO`.
-2. Escolha o cartão **Computador principal do gabinete** e clique em **Salvar e ficar disponível agora**.
+2. Escolha o cartão **Computador principal** e clique em **Salvar e ficar disponível agora**.
 3. Clique em **Copiar código de conexão** e envie o texto aos colegas. É algo assim:
    ```
    Código de conexão do Ponte (gabinete):

@@ -64,8 +64,8 @@ impl IntranetMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Local => "Só neste computador",
-            Self::Host => "Este é o computador principal do gabinete",
-            Self::Client => "Conectar ao computador principal do gabinete",
+            Self::Host => "Este é o computador principal",
+            Self::Client => "Conectar ao computador principal",
             Self::SharedFolder => "Pasta compartilhada: eu, em mais de um computador",
         }
     }
@@ -2123,7 +2123,7 @@ impl Store {
         let cfg = self.load_intranet_config()?;
         ensure!(
             cfg.mode == IntranetMode::Client,
-            "Este computador não está conectado ao computador principal do gabinete."
+            "Este computador não está conectado ao computador principal."
         );
         cfg.validate()?;
 
@@ -4779,7 +4779,7 @@ impl HostServer {
                     }
                 }
             })
-            .context("Não foi possível iniciar o computador principal do gabinete.")?;
+            .context("Não foi possível iniciar o computador principal.")?;
 
         Ok(Self {
             addr,
@@ -5590,10 +5590,10 @@ impl IntranetPanel {
             IntranetMode::Local => "Só neste computador.".to_owned(),
             IntranetMode::Host => match &self.server {
                 Some(server) => format!(
-                    "Este é o computador principal do gabinete — disponível em {}.",
+                    "Este é o computador principal — disponível em {}.",
                     server.local_addr()
                 ),
-                None => "Este é o computador principal do gabinete — parado.".to_owned(),
+                None => "Este é o computador principal — parado.".to_owned(),
             },
             IntranetMode::Client => {
                 if self.offline {
@@ -6102,7 +6102,7 @@ impl IntranetPanel {
                 ),
                 (
                     IntranetMode::Host,
-                    "Computador principal do gabinete",
+                    "Computador principal",
                     "Os outros computadores se conectam a este.",
                 ),
                 (

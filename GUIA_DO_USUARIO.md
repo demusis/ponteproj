@@ -141,13 +141,13 @@ Um atendimento é uma **passagem** de um documento ou de uma demanda pelo gabine
 
 ## 8. Mais de um computador
 
-Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este computador está trabalhando, a situação, a última sincronização e, nos modos que sincronizam, **Sincronizar agora**. Abaixo, quatro cartões escolhem o modo: **Só neste computador**, **Computador principal do gabinete**, **Conectar ao computador principal** e **Pasta compartilhada**. Trocar de modo nunca apaga dados. Enquanto há mudanças sem salvar, aparece a etiqueta **Não salvo**.
+Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este computador está trabalhando, a situação, a última sincronização e, nos modos que sincronizam, **Sincronizar agora**. Abaixo, quatro cartões escolhem o modo: **Só neste computador**, **Computador principal**, **Conectar ao computador principal** e **Pasta compartilhada**. Trocar de modo nunca apaga dados. Enquanto há mudanças sem salvar, aparece a etiqueta **Não salvo**.
 
 **Você, em dois computadores (casa e trabalho).** Escolha **Pasta compartilhada**, clique em **Adicionar pasta…** e aponte para uma pasta do Google Drive, do OneDrive ou de um pendrive. Crie uma senha de pelo menos 8 caracteres e clique em **Salvar e sincronizar agora**. No outro computador, a mesma pasta e a mesma senha. O Ponte sincroniza ao abrir, a cada 5 minutos e quando você pedir. Guarde a senha: sem ela o arquivo da pasta não abre.
 
 **Equipe do gabinete, na rede interna.** Um computador é o principal e os outros se conectam a ele. Nada vai para a internet.
 
-1. **No principal:** escolha **Computador principal do gabinete**, clique em **Salvar e ficar disponível agora** e em **Copiar código de conexão**. Envie o código aos colegas.
+1. **No principal:** escolha **Computador principal**, clique em **Salvar e ficar disponível agora** e em **Copiar código de conexão**. Envie o código aos colegas.
 2. **Nos outros:** escolha **Conectar ao computador principal**, cole o código, clique em **Usar código** e em **Salvar e sincronizar acervo agora**. Se o computador já tinha documentos próprios, faça uma cópia de segurança antes: passa a valer o acervo do gabinete.
 
 - Sem conexão com o principal, tudo continua funcionando e é enviado quando a conexão volta.
