@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.29.0 (extensão 0.2.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.30.0 (extensão 0.2.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.29.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.30.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -138,7 +138,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | **Ctrl+1** a **Ctrl+5** | Ir para Hoje, Documentos, Tarefas, Atendimentos e Modelos |
 | **Ctrl+K** | Abrir a busca em todo o acervo (documentos, tarefas e atendimentos), de qualquer área |
 | **Ctrl+F** | Ir para a busca da área; a partir de outras áreas, para a busca de documentos |
-| **Ctrl+N** | Criar: registro manual (em Hoje e Documentos), nova tarefa do documento selecionado (em Tarefas), nova entrada (em Atendimentos) |
+| **Ctrl+N** | Criar: registro manual (em Hoje e Documentos), nova tarefa (em Tarefas: sem documento, ou do documento pelo qual a lista está filtrada), nova entrada (em Atendimentos) |
 | **Ctrl+S** | Salvar o que está em edição: tarefa, atendimento, notas do documento, modelo ou configuração de IA. Em Notas e minutas, salva a nota ou, estando a nota já salva, uma nova versão da minuta |
 | **Esc** | Fechar a janela ou o painel lateral aberto, se não houver nada sem salvar |
 
@@ -374,7 +374,7 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 - **Lista vazia:** a área diz por quê (por exemplo, nenhuma tarefa na visão escolhida ou na busca).
 - **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*.
 - **Mostrar concluídas** inclui as já concluídas na lista.
-- **Nova tarefa** cria uma tarefa do documento selecionado, quando há um (também com **Ctrl+N**).
+- **Tarefa sem documento.** Na área **Tarefas**, **Nova tarefa** (ou **Ctrl+N**) cria uma tarefa que não pertence a nenhum documento; na lista ela aparece como **Sem documento**. Com a lista filtrada por um documento (faixa "Mostrando só as tarefas de…"), a tarefa nova é dele. No painel da tarefa, **Vincular a um documento…** abre uma busca por número, assunto ou texto; depois, **Trocar de documento…** e **Desvincular do documento** mudam ou desfazem o vínculo. A tarefa é a mesma o tempo todo: anexos, lista de providências e histórico ficam com ela.
 - O painel da tarefa mostra o número e o assunto do documento a que ela pertence.
 
 ### 6.2 Os campos
@@ -458,7 +458,7 @@ Clicar numa linha da tabela abre a ficha num painel à direita, com os botões *
 
 Só a **referência ou o assunto** é obrigatório.
 
-**Ligar a um documento.** Informe o número de um documento já importado e clique em **Ligar a documento**. A referência passa a ser o número do documento e fica travada enquanto ligado; **Desligar do documento** libera. O Resumo do documento passa a mostrar o atendimento.
+**Ligar a um documento.** Em **Ligar a um documento do acervo**, digite parte do número, do assunto ou do texto e escolha o documento na lista (setas e Enter também servem). A referência passa a ser o número do documento e fica travada enquanto ligado; **Desligar do documento** libera. O Resumo do documento passa a mostrar o atendimento.
 
 **Tarefas deste atendimento.** Lista as tarefas criadas a partir dele, com situação, prazo e **Abrir**. O botão **Criar tarefa** cria, na área Tarefas, uma tarefa do documento ligado, com a prioridade, o prazo e o responsável do atendimento. Como toda tarefa pertence a um documento, o botão só fica ativo com um documento ligado. A tarefa e o registro dela na linha do tempo são gravados juntos: ou ficam os dois, ou nenhum.
 
@@ -970,7 +970,7 @@ node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tes
 
 Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
-Hoje são 189 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 57 na extensão.
+Hoje são 206 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 57 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 

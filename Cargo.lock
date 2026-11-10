@@ -2234,7 +2234,7 @@ checksum = "60f6ce597ecdcc9a098e7fddacb1065093a3d66446fa16c675e7e71d1b5c28e6"
 
 [[package]]
 name = "ponteproj"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
