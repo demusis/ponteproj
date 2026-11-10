@@ -300,7 +300,12 @@ fn empty_text(query: &str, narrowed: bool, no_tasks: bool, view: usize, show_don
         return format!("Nenhuma tarefa encontrada para “{}”.", query.trim());
     }
     if narrowed {
-        return "Este documento não tem tarefas nesta visão.".to_owned();
+        return if view == 0 && !show_done {
+            "Este documento não tem tarefas em aberto."
+        } else {
+            "Este documento não tem tarefas nesta visão."
+        }
+        .to_owned();
     }
     if no_tasks {
         return "Ainda não há tarefas. Cada documento importado ganha uma tarefa de triagem, e “Nova tarefa” cria uma tarefa sem documento."
@@ -316,7 +321,8 @@ fn empty_text(query: &str, narrowed: bool, no_tasks: bool, view: usize, show_don
         7 => "Nenhuma tarefa sem prazo.",
         8 => "Nenhuma tarefa pronta para fazer.",
         _ if show_done => "Nenhuma tarefa.",
-        _ => "Nenhuma tarefa em aberto. Marque “Mostrar concluídas” para ver as concluídas.",
+        // Nothing is narrowing the list: say so, or it looks filtered.
+        _ => "Não há nenhuma tarefa em aberto no acervo: a lista está completa, sem filtro.",
     }
     .to_owned()
 }
@@ -1332,10 +1338,29 @@ impl TaskPanel {
                                     if ui.add(widgets::quiet("Limpar a busca")).clicked() {
                                         self.query.clear();
                                     }
-                                } else if self.document_filter.is_some()
-                                    && ui.add(widgets::quiet("Ver todas")).clicked()
-                                {
-                                    self.document_filter = None;
+                                } else {
+                                    ui.horizontal(|ui| {
+                                        // Centred pair of ways out of an empty list.
+                                        let both = self.document_filter.is_some()
+                                            && !self.show_done
+                                            && !tasks.is_empty();
+                                        let width = if both { 250.0 } else { 150.0 };
+                                        ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+                                        if self.document_filter.is_some()
+                                            && ui.add(widgets::quiet("Ver todas")).clicked()
+                                        {
+                                            self.document_filter = None;
+                                        }
+                                        if !self.show_done
+                                            && !tasks.is_empty()
+                                            && ui
+                                                .add(widgets::quiet("Mostrar concluídas"))
+                                                .on_hover_text("Inclui na lista as tarefas já concluídas.")
+                                                .clicked()
+                                        {
+                                            self.show_done = true;
+                                        }
+                                    });
                                 }
                             });
                         }
