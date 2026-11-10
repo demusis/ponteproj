@@ -36,7 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Ajustes: the Drive file, the passphrase, mobile data, e-mail accounts, starting over. */
+/** Ajustes: the Drive file, the sync password, mobile data, e-mail accounts, starting over. */
 @Composable
 internal fun SettingsScreen(
     state: SettingsState,
@@ -61,8 +61,8 @@ internal fun SettingsScreen(
         ) {
             if (state.keyBroken) {
                 Notice(
-                    "A chave deste aparelho não pôde ser lida. Para voltar a usar o aplicativo, " +
-                        "recomece o acervo deste aparelho (“Recomeçar o acervo deste aparelho”, no fim desta tela)."
+                    "O acervo deste aparelho não pôde ser aberto. Para voltar a usar o aplicativo, " +
+                        "use a opção “Recomeçar o acervo deste aparelho”, no fim desta tela."
                 )
             }
 
@@ -91,8 +91,8 @@ internal fun SettingsScreen(
 
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         LabeledField(
-                            "Frase-senha", state.passphrase, onPassphrase, password = true,
-                            placeholder = if (state.remembered) "••••••••" else "Digite a frase-senha"
+                            "Senha de sincronização", state.passphrase, onPassphrase, password = true,
+                            placeholder = if (state.remembered) "••••••••" else "Digite a senha"
                         )
                         if (state.remembered) {
                             Text("Guardada neste aparelho. Digite só para trocar.", fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
@@ -101,7 +101,7 @@ internal fun SettingsScreen(
 
                     if (state.canRemember) {
                         SwitchRow(
-                            "Guardar a frase-senha neste aparelho",
+                            "Guardar a senha neste aparelho",
                             "Fica protegida e só abre com a sua digital ou o PIN do celular.",
                             state.remembered, onRemember
                         )
@@ -110,7 +110,7 @@ internal fun SettingsScreen(
                                 onClick = onForget, modifier = Modifier.heightIn(min = 48.dp),
                                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
                                 colors = ButtonDefaults.textButtonColors(contentColor = c.accent)
-                            ) { Text("Esquecer a frase-senha", fontSize = 15.sp) }
+                            ) { Text("Esquecer a senha guardada", fontSize = 15.sp) }
                         }
                     }
 
@@ -121,7 +121,7 @@ internal fun SettingsScreen(
                     )
 
                     if (state.pending) {
-                        Notice("Há mudanças feitas neste aparelho esperando para ir ao Drive.", Tone.WARNING)
+                        Notice("Há alterações deste aparelho aguardando envio ao Drive. Elas vão na próxima sincronização.", Tone.WARNING)
                     }
                     if (state.lastStatus.isNotEmpty()) {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -211,7 +211,7 @@ internal fun SettingsScreen(
             PonteCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        "Apaga a cópia do acervo guardada neste aparelho e a frase-senha guardada. " +
+                        "Apaga a cópia do acervo guardada neste aparelho e a senha de sincronização guardada. " +
                             "Nada é apagado no computador nem no Drive: na próxima sincronização, tudo volta para cá.",
                         style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, lineHeight = 20.sp, color = c.secondary
                     )

@@ -6,7 +6,6 @@ import android.graphics.Matrix
 import android.media.ExifInterface
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.IOException
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -18,12 +17,12 @@ internal object Images {
         val path = f.absolutePath
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(path, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IOException("Imagem inválida.")
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw PonteException("A foto não pôde ser lida. Tire outra foto.")
         val longSide = max(bounds.outWidth, bounds.outHeight)
         var sample = 1
         while (longSide / (sample * 2) >= maxSide) sample *= 2
         var bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
-            ?: throw IOException("Não foi possível ler a imagem.")
+            ?: throw PonteException("A foto não pôde ser lida. Tire outra foto.")
         val ls = max(bmp.width, bmp.height)
         if (ls > maxSide) {
             val k = maxSide.toFloat() / ls
@@ -70,6 +69,6 @@ internal object Images {
             }
             if (quality > 50) quality -= 15 else side = (side * 0.8).toInt()
         }
-        throw IOException("A foto é grande demais.")
+        throw PonteException("A foto é grande demais para ser guardada. Tire outra foto.")
     }
 }

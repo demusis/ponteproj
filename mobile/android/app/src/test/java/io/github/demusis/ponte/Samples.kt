@@ -165,6 +165,6 @@ internal object Samples {
     val settings = SettingsState(
         fileName = "ponte-sync.ponte", fileSize = 48_300_000, passphrase = "", canRemember = true, remembered = true,
         mobileData = false, accounts = accounts, keyBroken = false, pending = false, version = "0.3.0",
-        lastStatus = "Sincronizado: 2 documentos recebidos, 1 tarefa enviada (4,2 s, 48300000 bytes)", lastStatusError = false
+        lastStatus = "Sincronizado: 2 itens novos e 0 atualizados recebidos • 1 alteração deste aparelho enviada • gravado no Drive", lastStatusError = false
     )
 }

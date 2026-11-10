@@ -131,7 +131,7 @@ internal fun openExported(a: MainActivity, kind: String, id: Long, captureId: Lo
                 long = true
             )
         } catch (e: Throwable) {
-            Controller.say(e.message ?: e.toString(), long = true)
+            Controller.say("Não foi possível abrir o arquivo. Tente de novo.", long = true)
         }
-    }, { Controller.say(it, long = true) })
+    }, { Controller.say(it, long = true) }, fail = "Não foi possível abrir o arquivo. Tente de novo.")
 }

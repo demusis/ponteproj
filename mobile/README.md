@@ -2,7 +2,7 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (0.3.0)
+## O que faz (0.4.0)
 
 Três áreas numa barra no rodapé — **Tarefas**, **Documentos** e **E-mail** — e telas próprias para cada coisa que se abre (ficha, texto, nota, nova tarefa, registro por foto, ajustes). Tema claro e escuro, seguindo o aparelho.
 
@@ -10,7 +10,9 @@ Três áreas numa barra no rodapé — **Tarefas**, **Documentos** e **E-mail** 
 - **Documentos:** busca e filtros (todos, com tarefa, e-mails, registros); ficha com tarefas, nota, resumo da análise, PDFs e anexos (abertos no leitor do celular); o texto completo abre numa tela de leitura.
 - **Registro por foto:** o botão abre a câmera; depois, um formulário curto cria o registro manual com a foto anexada (redimensionada, abaixo do limite de anexos).
 - **E-mail:** a mesma importação por IMAP do computador (contas, pastas, filtro, mensagens marcadas), com o resultado mostrado na própria lista.
-- **Sincronização:** ao abrir e pelo botão, só no Wi-Fi por padrão; frase-senha guardada pelo Android Keystore e liberada pela digital ou PIN (Android 9 ou mais novo). Na primeira vez, um passo a passo pede o arquivo, a frase-senha e faz a primeira sincronização.
+- **Sincronização:** ao abrir e pelo botão, só no Wi-Fi por padrão; senha de sincronização guardada pelo Android Keystore e liberada pela digital ou PIN (Android 9 ou mais novo). Na primeira vez, um passo a passo pede o arquivo, a senha e faz a primeira sincronização. O arquivo do Drive é lido e gravado em fluxo (não é carregado inteiro na memória do aplicativo).
+- **Segurança (0.4.0):** o aplicativo pede a digital ou o bloqueio de tela do celular ao abrir e depois de um tempo fora (imediatamente, 1 ou 5 minutos); capturas de tela e a prévia na lista de aplicativos recentes ficam bloqueadas por padrão; os arquivos entregues a outros aplicativos (PDFs, anexos, fotos) são apagados ao bloquear, ao abrir e ao voltar do leitor. O bloqueio é uma porta na interface: o acervo já fica selado por uma chave do Android Keystore.
+- **Textos (0.4.0):** mesmas palavras do Ponte do computador; erros dizem o que aconteceu e o que fazer; mensagens do núcleo escritas para o computador são adaptadas para o aparelho (`PhoneWords`).
 
 A interface é feita com Jetpack Compose e Material 3. Cada tela é uma função do seu estado; `gradle recordPaparazziDebug` desenha todas elas no computador, com dados de exemplo, em `mobile/android/app/src/test/snapshots/images` (sem celular nem emulador).
 

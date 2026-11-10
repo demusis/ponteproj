@@ -190,7 +190,7 @@ private fun Dialogs() {
             title = { Text("Recomeçar o acervo deste aparelho") },
             text = {
                 Text(
-                    "Isso apaga o acervo local e a chave deste aparelho. Só se perdem as alterações que ainda " +
+                    "Isso apaga o acervo guardado neste aparelho. Só se perdem as alterações que ainda " +
                         "não foram enviadas; todo o resto volta do Drive na próxima sincronização. Continuar?",
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -219,11 +219,15 @@ private fun Dialogs() {
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(
-                            "A senha da conta " + d.account.label + " não está guardada neste aparelho. " +
+                            "A senha de app da conta " + d.account.label + " não está guardada neste aparelho. " +
                                 "Ela vale só enquanto o aplicativo estiver aberto.",
                             style = MaterialTheme.typography.bodyMedium
                         )
                         LabeledField("Senha de app", pw, { pw = it }, password = true)
+                        Text(
+                            "É a senha criada no site do seu e-mail para aplicativos, não a senha da conta.",
+                            style = MaterialTheme.typography.bodySmall, color = colors.muted
+                        )
                     }
                 },
                 confirmButton = {

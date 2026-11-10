@@ -274,7 +274,9 @@ internal data class MailState(
     /** The account has no stored password and none was typed in this session. */
     val needsPassword: Boolean = false
 ) {
-    fun folderLabel(): String = folders.firstOrNull { it.raw == folder }?.name ?: folder
+    /** What the person reads for [folder]; the server is always asked by the raw name. */
+    fun folderLabel(): String =
+        folders.firstOrNull { it.raw == folder }?.name ?: if (folder.equals("INBOX", ignoreCase = true)) "Caixa de entrada" else folder
 }
 
 internal data class SettingsState(
@@ -315,7 +317,7 @@ internal data class AccountFormState(
 
 /** First setup, in three steps. */
 internal data class SetupState(
-    /** 0 arquivo, 1 frase-senha, 2 primeira sincronização. */
+    /** 0 arquivo, 1 senha de sincronização, 2 primeira sincronização. */
     val step: Int = 0,
     val fileName: String = "",
     val passphrase: String = "",

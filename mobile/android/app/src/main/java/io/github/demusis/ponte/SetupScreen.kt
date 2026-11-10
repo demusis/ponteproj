@@ -45,7 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** First setup in three steps: the Drive file, the passphrase, the first sync. */
+/** First setup in three steps: the Drive file, the sync password, the first sync. */
 @Composable
 internal fun SetupScreen(
     state: SetupState,
@@ -163,7 +163,7 @@ private fun StepFile(state: SetupState, onPickFile: () -> Unit) {
         border = BorderStroke(1.dp, c.outline)
     ) {
         Text(
-            if (state.fileName.isEmpty()) "Escolher o arquivo" else "Trocar arquivo",
+            if (state.fileName.isEmpty()) "Escolher arquivo" else "Trocar arquivo",
             fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = c.accent
         )
     }
@@ -174,9 +174,9 @@ private fun StepPassphrase(state: SetupState, onPassphrase: (String) -> Unit, on
     val c = Ponte.colors
     Spacer(Modifier.height(8.dp))
     Mark(Icons.Outlined.Lock)
-    Heading("Frase-senha")
-    Body("Digite a mesma frase-senha que você usa no Ponte do computador. Ela abre o arquivo do acervo.")
-    LabeledField("Frase-senha", state.passphrase, onPassphrase, password = true)
+    Heading("Senha de sincronização")
+    Body("Digite a mesma senha que você criou no Ponte do computador. Sem ela, o arquivo de sincronização não abre.")
+    LabeledField("Senha de sincronização", state.passphrase, onPassphrase, password = true)
     if (state.canRemember) {
         PonteCard {
             Row(
@@ -200,10 +200,10 @@ private fun StepPassphrase(state: SetupState, onPassphrase: (String) -> Unit, on
     } else {
         Text(
             if (state.oldAndroid) {
-                "Neste Android a frase-senha não pode ficar guardada com a digital; será preciso digitá-la de novo " +
+                "Neste Android a senha não pode ficar guardada com a digital; será preciso digitá-la de novo " +
                     "quando o celular reiniciar ou o aplicativo for fechado."
             } else {
-                "Este celular não tem bloqueio de tela, então a frase-senha não pode ficar guardada; será preciso " +
+                "Este celular não tem bloqueio de tela, então a senha não pode ficar guardada; será preciso " +
                     "digitá-la de novo quando o celular reiniciar ou o aplicativo for fechado."
             },
             fontSize = 13.sp, lineHeight = 18.sp, color = c.muted

@@ -27,8 +27,13 @@ class TarefasDocumentosTest {
     ) { TasksScreen(TasksState(true, null, emptyList()), {}, {}) }
 
     @Test fun tarefasErro() = paparazzi.shotInShell(
-        "erro", 0, shell = Samples.shell.copy(statusLine = "Frase-senha incorreta.", statusKind = StatusKind.ERROR)
-    ) { TasksScreen(TasksState(false, "Não foi possível ler as tarefas.", Samples.tasks.take(3)), {}, {}) }
+        "erro", 0, shell = Samples.shell.copy(statusLine = "Senha de sincronização incorreta.", statusKind = StatusKind.ERROR)
+    ) {
+        TasksScreen(
+            TasksState(false, "Não foi possível ler as tarefas. Toque em Sincronizar agora e tente de novo.", Samples.tasks.take(3)),
+            {}, {}
+        )
+    }
 
     @Test fun documentos() = paparazzi.shotInShell("claro", 1) {
         DocumentsScreen(Samples.docs, "", {}, DocFilter.ALL, {}, {}, {})

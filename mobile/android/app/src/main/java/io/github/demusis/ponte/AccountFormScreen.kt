@@ -84,6 +84,10 @@ internal fun AccountFormScreen(
                 "Porta", port, { v -> port = v.filter { it.isDigit() }.take(5) }, enabled = enabled,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
+            Text(
+                "Servidor e porta: os dados de entrada de e-mail (IMAP) do seu provedor. No Gmail, imap.gmail.com e 993.",
+                style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, lineHeight = 19.sp, color = c.muted
+            )
             LabeledField(
                 "Usuário", user, { user = it }, enabled = enabled,
                 placeholder = "nome@exemplo.com",
@@ -91,11 +95,12 @@ internal fun AccountFormScreen(
             )
             LabeledField(
                 "Senha de app", password, { password = it }, enabled = enabled, password = true,
-                placeholder = if (acc?.hasPassword == true) "Senha de app (vazio mantém a guardada)" else "Senha de app",
+                placeholder = if (acc?.hasPassword == true) "Deixe vazio para manter a senha guardada" else "",
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             Text(
-                "Gmail: use uma senha de app (Conta Google ▸ Segurança ▸ Verificação em duas etapas ▸ Senhas de app).",
+                "Senha de app: a senha criada no site do seu e-mail para aplicativos, não a senha da conta. " +
+                    "No Gmail: Conta Google ▸ Segurança ▸ Verificação em duas etapas ▸ Senhas de app.",
                 style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, lineHeight = 19.sp, color = c.muted
             )
             Row(

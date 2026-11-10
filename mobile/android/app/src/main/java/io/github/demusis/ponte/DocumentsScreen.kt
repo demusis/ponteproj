@@ -114,7 +114,7 @@ internal fun DocumentsScreen(
             } else if (shown.isEmpty()) {
                 item(key = "nomatch") {
                     EmptyState(
-                        "Nada encontrado",
+                        "Nada encontrado.",
                         text = "Nenhum documento combina com a busca e o filtro escolhidos.",
                         icon = Icons.Outlined.SearchOff,
                         action = {
@@ -163,7 +163,7 @@ private fun DocCard(d: Doc, onClick: () -> Unit, modifier: Modifier = Modifier) 
             if (d.openTasks > 0 || d.attachments > 0) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (d.openTasks > 0) {
-                        val n = if (d.openTasks == 1) "1 tarefa" else "${d.openTasks} tarefas"
+                        val n = PhoneWords.plural(d.openTasks, "tarefa", "tarefas")
                         val label = if (d.taskDueLabel.isNotEmpty()) "$n · ${d.taskDueLabel}" else n
                         Pill(label, if (d.taskOverdue) Tone.ERROR else if (d.taskDueToday) Tone.WARNING else Tone.NEUTRAL, Modifier.widthIn(max = 260.dp))
                     }

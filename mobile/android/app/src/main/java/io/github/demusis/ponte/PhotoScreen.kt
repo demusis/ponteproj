@@ -109,7 +109,7 @@ private fun PhotoArea(state: PhotoState, enabled: Boolean, onRetake: () -> Unit)
                 ) {
                     Icon(Icons.Outlined.PhotoCamera, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.size(8.dp))
-                    Text("Tirar outra", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Tirar outra foto",fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
             state.hasPhoto -> CircularProgressIndicator(Modifier.size(28.dp), color = c.muted, strokeWidth = 3.dp)

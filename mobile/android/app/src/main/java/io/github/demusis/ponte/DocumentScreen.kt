@@ -60,7 +60,7 @@ internal fun DocumentScreen(
         onBack = onBack,
         actions = {
             IconButton(onClick = onSync, enabled = !syncing) {
-                Icon(Icons.Outlined.Sync, contentDescription = "Sincronizar", tint = if (syncing) c.muted else c.text)
+                Icon(Icons.Outlined.Sync, contentDescription = "Sincronizar agora", tint = if (syncing) c.muted else c.text)
             }
         }
     ) {
@@ -131,7 +131,7 @@ private fun FichaBody(
             Column(Modifier.padding(start = 16.dp, top = 14.dp, end = 8.dp, bottom = 8.dp)) {
                 SectionLabel("Nota", Modifier.offset(x = (-4).dp).padding(bottom = 6.dp))
                 if (doc.note.isBlank()) {
-                    Text("Sem nota", Modifier.padding(end = 8.dp), style = MaterialTheme.typography.bodyMedium, color = c.muted)
+                    Text("Nenhuma nota neste documento.", Modifier.padding(end = 8.dp), style = MaterialTheme.typography.bodyMedium, color = c.muted)
                 } else {
                     Text(doc.note.trim(), Modifier.padding(end = 8.dp), fontSize = 16.sp, lineHeight = 23.sp, color = c.text)
                 }
@@ -176,7 +176,7 @@ private fun FichaBody(
                     }
                     if (an.suggested.isNotEmpty()) {
                         HorizontalDivider(color = c.divider)
-                        Text("Ações sugeridas", style = MaterialTheme.typography.labelMedium, color = c.muted)
+                        Text("Providências sugeridas",style = MaterialTheme.typography.labelMedium, color = c.muted)
                         for (s in an.suggested) {
                             Row {
                                 Text("•", Modifier.width(16.dp), color = c.muted)
@@ -248,7 +248,7 @@ private fun fileIcon(f: FileItem): ImageVector {
 private fun FileRow(f: FileItem, onClick: () -> Unit) {
     val c = Ponte.colors
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(onClick = onClick)
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(onClickLabel = "Abrir arquivo", onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

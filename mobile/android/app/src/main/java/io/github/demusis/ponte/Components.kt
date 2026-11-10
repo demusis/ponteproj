@@ -73,6 +73,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -137,7 +139,9 @@ internal fun MainShell(
                     fontSize = 26.sp, lineHeight = 30.sp, fontWeight = FontWeight.SemiBold, color = c.text
                 )
                 Row(
-                    Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onStatus).padding(top = 4.dp, bottom = 4.dp, end = 8.dp),
+                    Modifier.clip(RoundedCornerShape(8.dp))
+                        .clickable(onClickLabel = "Ver detalhes da sincronização", onClick = onStatus)
+                        .padding(top = 4.dp, bottom = 4.dp, end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val dot = when (state.statusKind) {
@@ -163,7 +167,7 @@ internal fun MainShell(
                 )
             }
             IconButton(onClick = onSettings) {
-                Icon(Icons.Outlined.Tune, contentDescription = "Ajustes", tint = c.secondary)
+                Icon(Icons.Outlined.Tune, contentDescription = "Abrir Ajustes", tint = c.secondary)
             }
         }
         if (state.syncing) {
@@ -190,7 +194,11 @@ internal fun MainShell(
                     onClick = { onTab(i) },
                     icon = {
                         if (i == 0 && state.badge > 0) {
-                            BadgedBox(badge = {
+                            // One node for the icon and the number: the reader says what the number means.
+                            val meaning = PhoneWords.plural(
+                                state.badge, "tarefa atrasada ou para hoje", "tarefas atrasadas ou para hoje"
+                            )
+                            BadgedBox(modifier = Modifier.clearAndSetSemantics { contentDescription = meaning }, badge = {
                                 Badge(containerColor = c.error, contentColor = if (c.dark) c.errorContainer else Color.White) {
                                     Text(if (state.badge > 99) "99+" else state.badge.toString())
                                 }
@@ -600,7 +608,7 @@ internal fun DateField(
                     state.selectedDateMillis?.let {
                         onChange(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString())
                     }
-                }) { Text("OK") }
+                }) { Text("Confirmar") }
             },
             dismissButton = {
                 Row {

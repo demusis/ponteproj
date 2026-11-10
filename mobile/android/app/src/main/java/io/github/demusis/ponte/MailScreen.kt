@@ -83,17 +83,17 @@ internal fun MailScreen(
             Column(Modifier.padding(start = 16.dp, top = 4.dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Selector(
-                        description = "Conta", value = account.label,
+                        description = "Escolher a conta", value = account.label,
                         options = state.accounts.map { it.uid to it.label }, selected = account.uid,
                         onSelect = onAccount, enabled = !state.busy, modifier = Modifier.weight(1f)
                     )
                     Selector(
-                        description = "Pasta", value = state.folderLabel(),
+                        description = "Escolher a pasta", value = state.folderLabel(),
                         options = state.folders.map { it.raw to it.name }, selected = state.folder,
                         onSelect = onFolder, enabled = !state.busy, modifier = Modifier.weight(1.25f)
                     )
                     IconButton(onClick = onReload, enabled = !state.busy) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "Atualizar a lista", tint = if (state.busy) c.muted else c.accent)
+                        Icon(Icons.Outlined.Refresh, contentDescription = "Atualizar a lista de mensagens", tint = if (state.busy) c.muted else c.accent)
                     }
                 }
                 FilterChips(
@@ -115,8 +115,8 @@ internal fun MailScreen(
 
             when {
                 state.needsPassword -> EmptyState(
-                    title = "Falta a senha de app",
-                    text = "A senha de app desta conta não fica guardada neste aparelho. Digite-a para ver as mensagens.",
+                    title = "Falta a senha de app.",
+                    text = "A senha de app desta conta não está guardada neste aparelho. Digite-a para ver as mensagens.",
                     action = { PrimaryButton("Digitar a senha de app", onPassword, enabled = !state.busy) }
                 )
                 state.listed && state.messages.isEmpty() -> EmptyState(
@@ -130,7 +130,7 @@ internal fun MailScreen(
                 )
                 !state.listed && !state.busy && !state.infoError -> EmptyState(
                     title = "Mensagens ainda não listadas",
-                    text = "A lista não é buscada sozinha fora do Wi-Fi.",
+                    text = "Fora do Wi-Fi, a lista só é buscada quando você toca em Listar mensagens.",
                     action = { PrimaryButton("Listar mensagens", onReload) }
                 )
                 showList -> LazyColumn(

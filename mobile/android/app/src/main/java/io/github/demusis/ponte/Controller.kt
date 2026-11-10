@@ -98,6 +98,9 @@ internal sealed class AppDialog {
  */
 internal object Controller {
     private const val SERVER_MSG = "Conversando com o servidor de e-mail…"
+    private const val PHOTO_FAILED =
+        "Não foi possível guardar o registro. Confira o espaço livre no aparelho e tente de novo."
+    private const val START_FAILED ="Não foi possível iniciar a sincronização. Tente de novo."
     private const val K_LOCK = "lock_on"
     private const val K_LOCK_AFTER = "lock_after"
     private const val K_SECURE = "secure_screen"
@@ -268,7 +271,7 @@ internal object Controller {
             return
         }
         if (SyncRunner.passphrase.isEmpty() && !Secrets.isRemembered(app)) {
-            status("Informe a frase-senha em Ajustes para sincronizar.", false, notify = false)
+            status("Informe a senha de sincronização em Ajustes para sincronizar.", false, notify = false)
             return
         }
         requestSync(null, auto = true)
@@ -690,7 +693,7 @@ internal object Controller {
             return
         }
         if (!Secrets.isRemembered(app)) {
-            status("Informe a frase-senha em Ajustes para sincronizar.", false, notify)
+            status("Informe a senha de sincronização em Ajustes para sincronizar.", false, notify)
             onFail()
             return
         }
@@ -707,7 +710,7 @@ internal object Controller {
                 SyncRunner.passphrase = pass
                 onOk(pass)
             } else {
-                status(msg ?: "Frase-senha não liberada.", false, notify)
+                status(msg ?: "Senha de sincronização não liberada.", false, notify)
                 onFail()
             }
         }
@@ -717,12 +720,14 @@ internal object Controller {
     private fun saveNoteOnly(note: Pair<Long, String>) {
         SyncRunner.background({
             val o = JSONObject(SyncRunner.core.saveNote(note.first, note.second))
-            if (!o.optBoolean("ok")) throw CoreException(o.s("error", "Erro desconhecido."))
+            if (!o.optBoolean("ok")) {
+                throw CoreException(PhoneWords.adapt(o.s("error", "Não foi possível guardar a nota.")))
+            }
             SyncRunner.refreshDocs()
         }, {
             docs = SyncRunner.docs
             reloadDocument()
-        }, { status(it, true) })
+        }, { status(it, true) }, fail = "Não foi possível guardar a nota neste aparelho. Tente salvar de novo.")
     }
 
     /**
@@ -759,14 +764,14 @@ internal object Controller {
                     render()
                 } catch (e: Throwable) {
                     note?.let { saveNoteOnly(it) }
-                    status(e.message ?: e.toString(), true)
+                    status(PhoneWords.explain(e, START_FAILED), true)
                 }
             }, {
                 note?.let { saveNoteOnly(it) }
                 then?.invoke()
             })
         } catch (e: Throwable) {
-            status(e.message ?: e.toString(), true)
+            status(PhoneWords.explain(e, START_FAILED), true)
         }
     }
 
@@ -791,7 +796,8 @@ internal object Controller {
             val list = read.map { it.withPending() }
             tasks = TasksState(loading = false, error = null, tasks = list)
             shell = shell.copy(badge = list.count { t -> !t.done && (t.overdue || t.dueToday) })
-        }, { tasks = TasksState(loading = false, error = it, tasks = tasks.tasks) })
+        }, { tasks = TasksState(loading = false, error = it, tasks = tasks.tasks) },
+            fail = "Não foi possível ler as tarefas. Toque em Sincronizar agora e tente de novo.")
     }
 
     /** Completes or reopens a task, then syncs. */
@@ -817,7 +823,7 @@ internal object Controller {
             refreshTasks()
             reloadDocument()
             if (offerUndo) {
-                say("Tarefa concluída", "Desfazer") { setTaskDone(t.copy(done = true), false, offerUndo = false) }
+                say("Tarefa concluída.", "Desfazer") { setTaskDone(t.copy(done = true), false, offerUndo = false) }
             }
             requestSync(null, auto = true)
         }, {
@@ -825,7 +831,7 @@ internal object Controller {
             refreshTasks()
             reloadDocument()
             status(it, true)
-        })
+        }, fail = if (done) "Não foi possível concluir a tarefa. Tente de novo." else "Não foi possível reabrir a tarefa. Tente de novo.")
     }
 
     /** Opens a screen over the current one; a second tap on the same button does nothing. */
@@ -850,9 +856,9 @@ internal object Controller {
             docs = SyncRunner.docs
             refreshTasks()
             reloadDocument()
-            say("Tarefa criada")
+            say("Tarefa criada.")
             requestSync(null, auto = true)
-        }, { status(it, true) })
+        }, { status(it, true) }, fail = "Não foi possível criar a tarefa. Tente de novo.")
     }
 
     // ---------------------------------------------------------------- documents
@@ -875,7 +881,7 @@ internal object Controller {
             }
         }, {
             if (documentId == id) document = DocumentState(loading = false, error = it, doc = document.doc)
-        })
+        }, fail = "Não foi possível abrir o documento. Volte e tente de novo.")
     }
 
     private fun reloadDocument() {
@@ -898,7 +904,7 @@ internal object Controller {
         val id = (stack.lastOrNull() as? Route.Note)?.id ?: return
         pop()
         document = document.copy(doc = document.doc?.takeIf { it.id == id }?.copy(note = text) ?: document.doc)
-        say("Nota salva")
+        say("Nota salva.")
         saveNoteOnly(Pair(id, text))
         requestSync(null, auto = true)
     }
@@ -971,7 +977,7 @@ internal object Controller {
             leaveEmptyPhoto()
         } catch (e: Throwable) {
             newPath = null
-            say(e.message ?: e.toString(), long = true)
+            say("Não foi possível abrir a câmera. Tente de novo.", long = true)
             leaveEmptyPhoto()
         }
     }
@@ -1059,11 +1065,12 @@ internal object Controller {
                     tab = 1
                     shell = shell.copy(tab = 1)
                     openDocument(id)
-                    say("Registro salvo")
+                    say("Registro salvo.")
                     requestSync(null, auto = true)
-                }, { failPhoto(it, out) })
+                }, { failPhoto(it, out) }, fail = PHOTO_FAILED)
             } catch (e: Throwable) {
-                ui { failPhoto(e.message ?: e.toString(), out) }
+                val m = PhoneWords.explain(e, PHOTO_FAILED)
+                ui { failPhoto(m, out) }
             }
         }.start()
     }
@@ -1116,7 +1123,7 @@ internal object Controller {
         }, {
             mail = mail.copy(loading = false, info = it, infoError = true)
             then(mail.accounts)
-        })
+        }, fail = "Não foi possível ler as contas de e-mail. Tente de novo.")
     }
 
     /** The E-mail area came on screen: list what the last account was showing. */
@@ -1176,7 +1183,7 @@ internal object Controller {
             if (gen == mailGen && mail.account?.uid == acc.uid) {
                 mail = mail.copy(busy = false, info = m, infoError = true, needsPassword = !acc.hasPassword)
             }
-        })
+        }, fail = "Não foi possível listar as mensagens. Confira a conexão e a conta de e-mail e tente de novo.")
     }
 
     fun selectMailAccount(uid: String) {
@@ -1248,14 +1255,14 @@ internal object Controller {
                     done.add(uid)
                     if (r.optBoolean("already")) already++ else fresh++
                 } else {
-                    failed[uid] = r.s("error", "erro")
+                    failed[uid] = PhoneWords.adapt(r.s("error", "Não foi possível importar esta mensagem."))
                 }
             }
             val parts = ArrayList<String>()
             if (fresh > 0) parts.add(if (fresh == 1) "1 mensagem importada" else "$fresh mensagens importadas")
             if (already > 0) parts.add(if (already == 1) "1 já estava no acervo" else "$already já estavam no acervo")
             if (failed.isNotEmpty()) parts.add(if (failed.size == 1) "1 não pôde ser importada" else "${failed.size} não puderam ser importadas")
-            val summary = parts.joinToString(" · ")
+            val summary = if (parts.isEmpty()) "" else parts.joinToString(" · ") + "."
             if (gen == mailGen && mail.account?.uid == acc.uid) {
                 mail = mail.copy(
                     busy = false, info = summary, infoError = failed.isNotEmpty() && done.isEmpty(),
@@ -1278,7 +1285,7 @@ internal object Controller {
             } else {
                 say(m, long = true)
             }
-        })
+        }, fail = "Não foi possível importar as mensagens. Confira a conexão e tente de novo.")
     }
 
     // ---------------------------------------------------------------- account form
@@ -1324,8 +1331,9 @@ internal object Controller {
             } else {
                 loadAccounts()
             }
-            say("Conta salva")
-        }, { accountForm = accountForm.copy(busy = false, error = it) })
+            say("Conta salva.")
+        }, { accountForm = accountForm.copy(busy = false, error = it) },
+            fail = "Não foi possível salvar a conta. Confira os dados e tente de novo.")
     }
 
     fun askDeleteAccount() {
@@ -1341,8 +1349,9 @@ internal object Controller {
             accountForm = AccountFormState()
             stack.removeAll { it is Route.Account }
             loadAccounts { browseIfNeeded() }
-            say("Conta excluída")
-        }, { accountForm = accountForm.copy(busy = false, error = it) })
+            say("Conta excluída.")
+        }, { accountForm = accountForm.copy(busy = false, error = it) },
+            fail = "Não foi possível excluir a conta. Tente de novo.")
     }
 
     // ---------------------------------------------------------------- settings
@@ -1426,7 +1435,7 @@ internal object Controller {
             @Suppress("DEPRECATION")
             a.startActivityForResult(i, MainActivity.REQ_PICK)
         } catch (e: Throwable) {
-            say(e.message ?: e.toString(), long = true)
+            say("Não foi possível abrir a lista de arquivos. Tente de novo.", long = true)
         }
     }
 
@@ -1444,7 +1453,7 @@ internal object Controller {
             updateSettings()
             loadFileInfo()
         } catch (e: Throwable) {
-            say(e.message ?: e.toString(), long = true)
+            say("Não foi possível usar este arquivo. Escolha-o de novo.", long = true)
         }
     }
 
@@ -1463,7 +1472,7 @@ internal object Controller {
         val p = SyncRunner.passphrase
         val a = activity
         if (p.isEmpty() || a == null) {
-            say("Digite a frase-senha primeiro.")
+            say("Digite a senha de sincronização primeiro.")
             return
         }
         Secrets.remember(a, p) { ok, msg ->
@@ -1477,7 +1486,7 @@ internal object Controller {
         SyncRunner.passphrase = ""
         Secrets.forget(app)
         updateSettings()
-        say("Frase-senha esquecida.")
+        say("Senha de sincronização esquecida.")
     }
 
     fun setMobileData(on: Boolean) {
@@ -1491,7 +1500,14 @@ internal object Controller {
 
     fun reset() {
         dialog = null
-        if (!SyncRunner.startInit(app, true)) say("Aguarde: há uma operação em andamento.")
+        if (!SyncRunner.startInit(app, true)) {
+            say("Aguarde: há uma operação em andamento.")
+        } else {
+            // The dialog promises it: the stored passphrase goes too, the one
+            // kept behind the fingerprint and the one in memory.
+            Secrets.forget(app)
+            SyncRunner.passphrase = ""
+        }
         render()
     }
 
@@ -1506,7 +1522,7 @@ internal object Controller {
             1 -> {
                 val p = setup.passphrase
                 if (p.isEmpty()) {
-                    say("Digite a frase-senha.")
+                    say("Digite a senha de sincronização.")
                     return
                 }
                 SyncRunner.passphrase = p

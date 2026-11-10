@@ -10,6 +10,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import org.json.JSONObject
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.KeyStore
@@ -50,7 +51,7 @@ internal data class Doc(
 )
 
 /** Raised when the core answers {"ok":false}. */
-internal class CoreException(message: String) : Exception(message)
+internal class CoreException(message: String) : PonteException(message)
 
 /** Raised when the Keystore cannot decrypt the stored library key. */
 internal class KeyUnavailableException(cause: Throwable?) : Exception("key unavailable", cause)
@@ -62,6 +63,9 @@ internal class KeyUnavailableException(cause: Throwable?) : Exception("key unava
 internal object SyncRunner {
     private const val PENDING = "pendente.ponte"
     private const val ALIAS = "ponte_master"
+    private const val SYNC_FAILED = "Não foi possível sincronizar. Tente de novo; se continuar, avise quem cuida do Ponte."
+    private const val OPEN_FAILED =
+        "Não foi possível abrir o acervo deste aparelho. Feche e abra o Ponte de bolso; se continuar, avise quem cuida do Ponte."
 
     private val executor = Executors.newSingleThreadExecutor()
     private val network = Executors.newSingleThreadExecutor()
@@ -93,14 +97,14 @@ internal object SyncRunner {
     fun pendingFile(ctx: Context) = File(ctx.filesDir, PENDING)
 
     /** Runs task on the worker if nothing else is running; returns false when ignored. */
-    fun submit(task: () -> Unit): Boolean {
+    fun submit(fail: String = SYNC_FAILED, task: () -> Unit): Boolean {
         if (!running.compareAndSet(false, true)) return false
         changed()
         executor.execute {
             try {
                 task()
             } catch (e: Throwable) {
-                setStatus(e.message ?: e.toString(), true)
+                setStatus(PhoneWords.explain(e, fail, driveFile = true), true)
             } finally {
                 running.set(false)
                 changed()
@@ -110,26 +114,33 @@ internal object SyncRunner {
     }
 
     /** Runs work on the shared worker (queued behind any sync) and delivers on the UI thread. */
-    fun <T> background(work: () -> T, ok: (T) -> Unit, err: (String) -> Unit = {}) {
+    fun <T> background(
+        work: () -> T, ok: (T) -> Unit, err: (String) -> Unit = {}, fail: String = PhoneWords.GENERIC
+    ) {
         executor.execute {
             try {
                 val r = work()
                 main.post { try { ok(r) } catch (_: Throwable) { } }
             } catch (e: Throwable) {
-                val m = e.message ?: e.toString()
+                val m = PhoneWords.explain(e, fail)
                 main.post { try { err(m) } catch (_: Throwable) { } }
             }
         }
     }
 
-    /** Like [background] but on a separate worker, so slow network calls never block the core. */
-    fun <T> backgroundNetwork(work: () -> T, ok: (T) -> Unit, err: (String) -> Unit = {}) {
+    /**
+     * Like [background] but on a separate worker, so slow network calls never block the core.
+     * [err] gets a sentence for the person, never the raw exception text.
+     */
+    fun <T> backgroundNetwork(
+        work: () -> T, ok: (T) -> Unit, err: (String) -> Unit = {}, fail: String = PhoneWords.GENERIC
+    ) {
         network.execute {
             try {
                 val r = work()
                 main.post { try { ok(r) } catch (_: Throwable) { } }
             } catch (e: Throwable) {
-                val m = e.message ?: e.toString()
+                val m = PhoneWords.explain(e, fail)
                 main.post { try { err(m) } catch (_: Throwable) { } }
             }
         }
@@ -139,8 +150,8 @@ internal object SyncRunner {
 
     fun startInit(ctx: Context, reset: Boolean): Boolean {
         val app = ctx.applicationContext
-        setStatus("Preparando...", false)
-        return submit {
+        setStatus("Preparando…", false)
+        return submit(OPEN_FAILED) {
             try {
                 if (reset) wipeLocalState(app)
                 val key = loadOrCreateLibraryKey(app)
@@ -152,7 +163,7 @@ internal object SyncRunner {
                 if (e == null) setStatus("Pronto.", false) else setStatus(e, true)
             } catch (e: KeyUnavailableException) {
                 keyBroken = true
-                setStatus("Não foi possível abrir a chave deste aparelho.", true)
+                setStatus("Não foi possível abrir o acervo deste aparelho.", true)
             }
         }
     }
@@ -176,7 +187,7 @@ internal object SyncRunner {
             null
         } catch (e: Throwable) {
             docs = emptyList()
-            e.message ?: e.toString()
+            PhoneWords.explain(e, "Não foi possível ler os documentos deste aparelho. Feche e abra o Ponte de bolso.")
         }
     }
 
@@ -184,7 +195,7 @@ internal object SyncRunner {
         val arr = check(core.listDocuments()).getJSONArray("documents")
         return (0 until arr.length()).map {
             val d = arr.getJSONObject(it)
-            val err = if (d.has("note_error")) d.optString("note_error", "erro desconhecido") else null
+            val err = if (d.has("note_error")) PhoneWords.adapt(d.optString("note_error", "Não foi possível ler a nota.")) else null
             Doc(
                 d.getLong("id"), d.optString("number"), d.optString("title"), d.optString("note"), err,
                 type = d.optString("type"), date = d.optString("date"), origin = d.optString("origin"),
@@ -198,7 +209,10 @@ internal object SyncRunner {
 
     fun check(json: String): JSONObject {
         val o = JSONObject(json)
-        if (!o.optBoolean("ok")) throw CoreException(o.optString("error", "Erro desconhecido."))
+        if (!o.optBoolean("ok")) {
+            // The one place where the core's texts reach the screen: worded for the phone here.
+            throw CoreException(PhoneWords.adapt(o.optString("error", "Não foi possível concluir a operação.")))
+        }
         return o
     }
 
@@ -206,26 +220,25 @@ internal object SyncRunner {
 
     fun startSync(ctx: Context, uri: Uri, pass: String, note: Pair<Long, String>?): Boolean {
         val app = ctx.applicationContext
-        setStatus("Sincronizando...", false)
+        setStatus("Sincronizando…", false)
         return submit { runSync(app, uri, pass, note) }
     }
 
     /** Streams the Drive file into [to] (when given) while hashing it; the limit is enforced as it reads. */
     private fun readUri(ctx: Context, uri: Uri, to: File?, limit: Long = SyncIo.MAX_BYTES): SyncIo.Digest =
-        ctx.contentResolver.openInputStream(uri)!!.use { input ->
+        (ctx.contentResolver.openInputStream(uri) ?: throw FileNotFoundException()).use { input ->
             if (to == null) SyncIo.copyHash(input, null, limit)
             else to.outputStream().use { out -> SyncIo.copyHash(input, out, limit) }
         }
 
     private fun writeUri(ctx: Context, uri: Uri, from: File) {
-        ctx.contentResolver.openOutputStream(uri, "wt")!!.use { s ->
+        (ctx.contentResolver.openOutputStream(uri, "wt") ?: throw FileNotFoundException()).use { s ->
             from.inputStream().use { SyncIo.copyHash(it, s, Long.MAX_VALUE) }
             s.flush()
         }
     }
 
     private fun runSync(ctx: Context, uri: Uri, pass: String, note: Pair<Long, String>?) {
-        val t0 = System.nanoTime()
         // Private working copy of the Drive file (already encrypted with the passphrase):
         // never in the cache folder, never in backups, removed on every path.
         val dir = ctx.noBackupFilesDir
@@ -233,7 +246,7 @@ internal object SyncRunner {
         val work = File(dir, SyncIo.WORK_PREFIX + System.currentTimeMillis() + SyncIo.WORK_SUFFIX)
         val pending = pendingFile(ctx)
         SyncIo.withCleanup(listOf(work)) {
-            if (!ready) throw CoreException("O acervo ainda não está pronto.")
+            if (!ready) throw CoreException("O acervo ainda não está pronto. Espere um instante e tente de novo.")
             if (note != null) check(core.saveNote(note.first, note.second))
 
             // a. copy the Drive file to the working file and remember its hash
@@ -243,9 +256,8 @@ internal object SyncRunner {
             val r = check(core.sync(work.absolutePath, if (pending.exists()) pending.absolutePath else "", pass))
             val summary = r.optString("summary")
             val conflicts = r.optInt("conflicts", 0)
-            var message = "Sincronizado: $summary"
+            var message = "Sincronizado: " + PhoneWords.adapt(summary)
             var isError = false
-            var size = original.length
 
             if (r.optBoolean("written")) {
                 // c. the core has already taken what this phone had to send: the
@@ -254,13 +266,13 @@ internal object SyncRunner {
                 SyncIo.keep(work, pending)
                 // the core says how long the file it wrote is: anything else is not what it meant
                 if (r.has("bytes") && r.optLong("bytes", -1) != work.length()) {
-                    throw CoreException("O arquivo de sincronização gerado está incompleto ou danificado.")
+                    throw CoreException("O arquivo de sincronização não ficou completo. Tente sincronizar de novo.")
                 }
                 val want = SyncIo.hashFile(work)
                 if (!SyncIo.unchanged(original, readUri(ctx, uri, null))) {
                     isError = true
                     message = "O arquivo mudou no Drive durante a sincronização. " +
-                        "Sua alteração ficou guardada neste aparelho e vai na próxima sincronização."
+                        "As alterações ficaram guardadas neste aparelho e vão na próxima sincronização."
                 } else {
                     // d. write, then verify by reading back; one retry
                     var ok = false
@@ -271,11 +283,10 @@ internal object SyncRunner {
                     }
                     if (ok) {
                         pending.delete()
-                        size = want.length
                     } else {
                         isError = true
-                        message = "A gravação no Drive não pôde ser conferida; a cópia ficou " +
-                            "guardada neste aparelho e vai na próxima sincronização."
+                        message = "Não foi possível conferir a gravação no Drive. " +
+                            "As alterações ficaram guardadas neste aparelho e vão na próxima sincronização."
                     }
                 }
             } else if (pending.exists()) {
@@ -288,8 +299,8 @@ internal object SyncRunner {
             // e. conflicts
             if (conflicts > 0) {
                 isError = true
-                message += "\n$conflicts conflito(s): a alteração do computador e a deste " +
-                    "aparelho divergiram; confira no computador."
+                // The summary already counts them ("2 conflitos de edição para resolver no computador").
+                message += "\nA alteração feita no computador e a feita neste aparelho divergiram; confira no computador."
             }
 
             val listErr = refreshDocs()
@@ -297,8 +308,7 @@ internal object SyncRunner {
                 isError = true
                 message += "\n$listErr"
             }
-            val secs = (System.nanoTime() - t0) / 1_000_000_000.0
-            setStatus(message + String.format(" (%.1f s, %d bytes)", secs, size), isError)
+            setStatus(message, isError)
         }
     }
 
@@ -352,7 +362,7 @@ internal object SyncRunner {
             .putString("key_ct", Base64.encodeToString(ct, Base64.NO_WRAP))
             .putString("key_iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
             .commit() // synchronous: the key must be on disk before the library is created
-        if (!saved) throw CoreException("Não foi possível guardar a chave deste aparelho.")
+        if (!saved) throw CoreException("Não foi possível preparar o acervo deste aparelho. Libere espaço no aparelho e tente de novo.")
         return key
     }
 }
@@ -442,7 +452,7 @@ internal object SyncIo {
             if (!part.renameTo(to)) {
                 // Some file systems do not rename over an existing file.
                 to.delete()
-                if (!part.renameTo(to)) throw java.io.IOException("Não foi possível guardar a cópia pendente.")
+                if (!part.renameTo(to)) throw PonteException("Não foi possível guardar as alterações neste aparelho. Libere espaço e tente de novo.")
             }
         } finally {
             part.delete()

@@ -91,7 +91,7 @@ internal object Secrets {
         val cb = object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
                 val c = result?.cryptoObject?.cipher
-                if (c == null) onErr("Não foi possível liberar a chave.") else onOk(c)
+                if (c == null) onErr("Não foi possível liberar a senha guardada.") else onOk(c)
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
@@ -113,7 +113,7 @@ internal object Secrets {
             val key = keyStore().getKey(ALIAS, null) as SecretKey
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, key)
-            prompt(activity, cipher, "Guardar a frase-senha", { c ->
+            prompt(activity, cipher, "Guardar a senha de sincronização", { c ->
                 busy = false
                 try {
                     val ct = c.doFinal(pass.toByteArray(Charsets.UTF_8))
@@ -121,13 +121,13 @@ internal object Secrets {
                         .putString(CT, Base64.encodeToString(ct, Base64.NO_WRAP))
                         .putString(IV, Base64.encodeToString(c.iv, Base64.NO_WRAP))
                         .commit()
-                    if (ok) done(true, "Frase-senha guardada.") else {
+                    if (ok) done(true, "Senha de sincronização guardada.") else {
                         forget(activity)
-                        done(false, "Não foi possível guardar.")
+                        done(false, "Não foi possível guardar a senha neste aparelho. Tente de novo.")
                     }
                 } catch (e: Throwable) {
                     forget(activity)
-                    done(false, e.message ?: e.toString())
+                    done(false, "Não foi possível guardar a senha neste aparelho. Tente de novo.")
                 }
             }, { msg ->
                 busy = false
@@ -137,20 +137,20 @@ internal object Secrets {
         } catch (e: Throwable) {
             busy = false
             forget(activity)
-            done(false, "Não foi possível proteger com digital ou PIN. Confira se o aparelho tem bloqueio de tela. (" +
-                (e.message ?: e.toString()) + ")")
+            done(false, "Não foi possível proteger a senha com a digital ou o PIN. Confira se o aparelho tem bloqueio de tela.")
         }
     }
 
     /** Decrypts the stored passphrase. result(pass, null) or result(null, message). */
     fun unlock(
-        activity: Activity, title: String = "Liberar a frase-senha", result: (String?, String?) -> Unit
+        activity: Activity, title: String = "Liberar a senha de sincronização", result: (String?, String?) -> Unit
     ) {
-        if (!isRemembered(activity)) { result(null, "Nenhuma frase-senha guardada."); return }
+        if (!isRemembered(activity)) { result(null, "Nenhuma senha de sincronização guardada."); return }
         if (busy) { result(null, "Aguarde a verificação em andamento."); return }
         busy = true
         lastCancelled = false
-        val invalid = "A chave guardada não pôde ser usada (a digital ou o PIN pode ter mudado). Digite a frase-senha de novo."
+        val invalid = "A senha guardada não pôde ser liberada (a digital ou o PIN pode ter mudado). Digite a senha de sincronização de novo."
+        val failed = "Não foi possível liberar a senha guardada. Digite a senha de sincronização de novo."
         try {
             val p = prefs(activity)
             val ct = Base64.decode(p.getString(CT, "") ?: "", Base64.NO_WRAP)
@@ -170,7 +170,7 @@ internal object Secrets {
                     forget(activity)
                     result(null, invalid)
                 } catch (e: Throwable) {
-                    result(null, e.message ?: e.toString())
+                    result(null, failed)
                 }
             }, { msg ->
                 busy = false
@@ -186,7 +186,7 @@ internal object Secrets {
             result(null, invalid)
         } catch (e: Throwable) {
             busy = false
-            result(null, e.message ?: e.toString())
+            result(null, failed)
         }
     }
 }

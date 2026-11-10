@@ -36,7 +36,7 @@ class FotoSetupTest {
     private fun setup(state: SetupState, name: String, dark: Boolean = false) =
         paparazzi.shot(name, dark) { SetupScreen(state, {}, {}, {}, {}, {}, {}, {}, {}) }
 
-    private val synced = "Sincronizado: 42 documentos recebidos (6,1 s, 48300000 bytes)"
+    private val synced = "Sincronizado: 42 itens novos e 0 atualizados recebidos • gravado no Drive"
 
     @Test fun setupArquivo() = setup(SetupState(step = 0), "1_arquivo")
 
@@ -67,7 +67,9 @@ class FotoSetupTest {
     @Test fun setupErro() = setup(
         SetupState(
             step = 2, fileName = "ponte-sync.ponte",
-            status = "Frase-senha incorreta ou arquivo de outra equipe.", statusError = true
+            status = "Senha de sincronização incorreta, ou o arquivo está danificado ou ainda sendo gravado pelo Drive. " +
+                "Confira a senha e espere o Drive terminar de sincronizar.",
+            statusError = true
         ),
         "3_erro"
     )
