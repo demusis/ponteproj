@@ -5208,6 +5208,8 @@ pub struct IntranetPanel {
     pending_resolution: Option<(i64, ConflictResolution)>,
     repaint: Option<egui::Context>,
     connection_code_input: String,
+    /// Result of "Testar conexão": the address tested, success, text.
+    connection_test: Option<(String, bool, String)>,
 }
 
 #[cfg(feature = "desktop")]
@@ -5315,29 +5317,26 @@ impl IntranetPanel {
             .map(|c| c.synced_revision)
             .unwrap_or(0);
         let first_time = saved_revision == 0;
+        let dirty = self.has_unsaved_draft(store);
 
         widgets::card(ui, |ui| {
-            widgets::section(ui, "Eu, em mais de um computador");
-            ui.add_space(theme::S1);
-            ui.label("Os computadores trocam o acervo por um arquivo protegido pela sua senha, guardado nas pastas que você escolher: Google Drive, OneDrive, pendrive, pasta da rede. Pode ser mais de uma pasta; o Ponte usa a cópia mais recente e grava em todas as que alcançar.");
-            widgets::small_muted(ui, "Espere a nuvem terminar de sincronizar antes de abrir o Ponte no outro computador. Sem a senha o arquivo não abre em lugar nenhum, nem para os autores do Ponte.");
-        });
-        ui.add_space(theme::S3);
-
-        widgets::card(ui, |ui| {
-            widgets::section(ui, "Pastas");
+            ui.horizontal(|ui| {
+                widgets::section(ui, "Pastas");
+                crate::help_ui::help(ui, "Os computadores trocam o acervo por um arquivo protegido pela sua senha, guardado nas pastas que você escolher: Google Drive, OneDrive, pendrive, pasta da rede. Pode ser mais de uma pasta; o Ponte usa a cópia mais recente e grava em todas as que alcançar.");
+            });
             widgets::small_muted(ui, "O arquivo ponte-sync.ponte fica dentro de cada pasta.");
             ui.add_space(theme::S2);
             let mut remove: Option<usize> = None;
             for (index, path) in self.draft.folder_files.clone().iter().enumerate() {
-                let (line, pill_text, tone) =
+                let generic_hint = "Confira se a pasta está disponível neste computador.";
+                let (line, pill_text, tone, what_to_do) =
                     match crate::sharedfolder::read_header(std::path::Path::new(path)) {
                         Ok(Some(header)) => {
                             let line = crate::sharedfolder::describe(&header);
                             if header.revision < saved_revision {
-                                (line, "Atrás deste computador", Tone::Warn)
+                                (line, "Atrás deste computador", Tone::Warn, None)
                             } else {
-                                (line, "Em dia", Tone::Ok)
+                                (line, "Em dia", Tone::Ok, None)
                             }
                         }
                         Ok(None) => {
@@ -5349,16 +5348,28 @@ impl IntranetPanel {
                                     "Pasta acessível; arquivo ainda não criado.".to_owned(),
                                     "Arquivo a criar",
                                     Tone::Info,
+                                    None,
                                 )
                             } else {
+                                let hint = if path.to_lowercase().contains("google drive") {
+                                    "Abra o Google Drive e espere a pasta aparecer."
+                                } else {
+                                    generic_hint
+                                };
                                 (
                                     "Pasta fora de alcance agora.".to_owned(),
                                     "Fora de alcance",
                                     Tone::Danger,
+                                    Some(hint),
                                 )
                             }
                         }
-                        Err(error) => (error.to_string(), "Com problema", Tone::Danger),
+                        Err(error) => (
+                            error.to_string(),
+                            "Com problema",
+                            Tone::Danger,
+                            Some(generic_hint),
+                        ),
                     };
                 if index > 0 {
                     ui.separator();
@@ -5374,6 +5385,9 @@ impl IntranetPanel {
                             .wrap(),
                         );
                         widgets::small_muted(ui, line);
+                        if let Some(hint) = what_to_do {
+                            widgets::small_muted(ui, hint);
+                        }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(widgets::quiet("Remover")).clicked() {
@@ -5499,6 +5513,9 @@ impl IntranetPanel {
             if ui.add(widgets::secondary("Salvar configuração")).clicked() {
                 self.save_configuration(store, db_path, refresh_needed);
             }
+            if dirty {
+                widgets::pill(ui, "Não salvo", Tone::Warn);
+            }
             if self.sync_in_flight {
                 ui.spinner();
                 widgets::small_muted(
@@ -5514,7 +5531,174 @@ impl IntranetPanel {
         if !self.last_summary.is_empty() {
             widgets::small_muted(ui, format!("Última sincronização: {}.", self.last_summary));
         }
-        widgets::small_muted(ui, "O que você importa ou edita fica salvo neste computador e vai para as pastas ao sincronizar: ao abrir o Ponte, a cada 5 minutos, e em “Sincronizar agora”. Ao fechar, o Ponte avisa se algo ainda não foi enviado.");
+        ui.add_space(theme::S2);
+        egui::CollapsingHeader::new("Como funciona")
+            .id_salt("folder-how")
+            .show(ui, |ui| {
+                widgets::small_muted(ui, "Espere a nuvem terminar de sincronizar antes de abrir o Ponte no outro computador. Sem a senha o arquivo não abre em lugar nenhum, nem para os autores do Ponte.");
+                widgets::small_muted(ui, "O que você importa ou edita fica salvo neste computador e vai para as pastas ao sincronizar: ao abrir o Ponte, a cada 5 minutos, e em “Sincronizar agora”. Ao fechar, o Ponte avisa se algo ainda não foi enviado.");
+            });
+    }
+
+    /// True while the form differs from the saved configuration (the
+    /// bookkeeping the synchronization writes is left out).
+    fn has_unsaved_draft(&self, store: &Store) -> bool {
+        let Ok(saved) = store.load_intranet_config() else {
+            return false;
+        };
+        let d = &self.draft;
+        if d.mode != saved.mode || d.member_name.trim() != saved.member_name.trim() {
+            return true;
+        }
+        // Only what the chosen mode uses counts (a never-saved configuration
+        // draws a new random key at each load).
+        match d.mode {
+            IntranetMode::Local => false,
+            IntranetMode::Host => {
+                d.bind_addr != saved.bind_addr
+                    || d.cabinet_token != saved.cabinet_token
+                    || d.auto_start_host != saved.auto_start_host
+            }
+            IntranetMode::Client => {
+                d.host_url != saved.host_url || d.cabinet_token != saved.cabinet_token
+            }
+            IntranetMode::SharedFolder => {
+                d.folder_files != saved.folder_files
+                    || d.remember_folder_key != saved.remember_folder_key
+                    || (d.remember_folder_key && d.folder_key != saved.folder_key)
+            }
+        }
+    }
+
+    /// The card at the top: how this computer works now, from the SAVED
+    /// configuration, its health, the last exchange and the one action.
+    fn state_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &mut Store,
+        db_path: &std::path::Path,
+        refresh_needed: &mut bool,
+    ) {
+        use crate::theme;
+        use crate::widgets::{self, Tone};
+        let Ok(saved) = store.load_intranet_config() else {
+            return;
+        };
+        let conflicts = store.list_sync_conflicts().map(|v| v.len()).unwrap_or(0);
+        let outbox = store.list_offline_outbox().map(|v| v.len()).unwrap_or(0);
+        let sentence = match saved.mode {
+            IntranetMode::Local => "Só neste computador.".to_owned(),
+            IntranetMode::Host => match &self.server {
+                Some(server) => format!(
+                    "Este é o computador principal do gabinete — disponível em {}.",
+                    server.local_addr()
+                ),
+                None => "Este é o computador principal do gabinete — parado.".to_owned(),
+            },
+            IntranetMode::Client => {
+                if self.offline {
+                    "Sem conexão com o computador principal.".to_owned()
+                } else if self.last_sync_finished.is_some() {
+                    format!("Conectado ao computador principal em {}.", saved.host_url)
+                } else {
+                    format!("Usando o computador principal em {}.", saved.host_url)
+                }
+            }
+            IntranetMode::SharedFolder => format!(
+                "Pasta compartilhada: {}.",
+                plural(saved.folder_paths().len(), "pasta", "pastas")
+            ),
+        };
+        let (health, tone) = if conflicts > 0 {
+            (
+                plural(conflicts, "edição em conflito", "edições em conflito"),
+                Tone::Danger,
+            )
+        } else if saved.mode == IntranetMode::Local {
+            ("Só neste computador".to_owned(), Tone::Neutral)
+        } else if outbox > 0 {
+            (
+                plural(outbox, "alteração a enviar", "alterações a enviar"),
+                Tone::Warn,
+            )
+        } else if self.sync_in_flight {
+            ("Sincronizando…".to_owned(), Tone::Info)
+        } else if saved.mode == IntranetMode::Host {
+            if self.server.is_some() {
+                ("Disponível".to_owned(), Tone::Ok)
+            } else {
+                ("Parado".to_owned(), Tone::Warn)
+            }
+        } else if self.offline {
+            let text = if saved.mode == IntranetMode::SharedFolder {
+                "Pasta fora de alcance"
+            } else {
+                "Sem conexão"
+            };
+            (text.to_owned(), Tone::Warn)
+        } else {
+            ("Em dia".to_owned(), Tone::Ok)
+        };
+        let last = if saved.mode.queues_changes() && !saved.last_sync_at.trim().is_empty() {
+            let when = crate::labels::datetime(&saved.last_sync_at);
+            Some(match crate::labels::elapsed(&saved.last_sync_at) {
+                Some(ago) => format!("Última sincronização: {when} ({ago})."),
+                None => format!("Última sincronização: {when}."),
+            })
+        } else {
+            None
+        };
+        widgets::card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&sentence).font(theme::font_strong(theme::SIZE_BODY)),
+                    )
+                    .wrap(),
+                );
+                widgets::pill(ui, health, tone);
+            });
+            if let Some(last) = &last {
+                widgets::small_muted(ui, last);
+            }
+            let can_sync = match saved.mode {
+                IntranetMode::SharedFolder => {
+                    !self.sync_in_flight && !saved.folder_files.is_empty()
+                }
+                IntranetMode::Client => !self.sync_in_flight,
+                _ => false,
+            };
+            if saved.mode.queues_changes() {
+                ui.add_space(theme::S2);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            can_sync,
+                            widgets::secondary(format!("{} Sincronizar agora", theme::icon::SYNC)),
+                        )
+                        .on_hover_text("Sincroniza agora com o que está salvo na configuração.")
+                        .clicked()
+                    {
+                        self.error = false;
+                        self.message = "Sincronizando…".into();
+                        self.request_full_sync();
+                        *refresh_needed = self.refresh_client(store, db_path);
+                    }
+                    if self.sync_in_flight {
+                        ui.spinner();
+                        widgets::small_muted(
+                            ui,
+                            if self.sync_step.is_empty() {
+                                "sincronizando…"
+                            } else {
+                                self.sync_step.as_str()
+                            },
+                        );
+                    }
+                });
+            }
+        });
+        ui.add_space(theme::S3);
     }
 
     /// The "Salvar configuração" action, shared by every mode.
@@ -5886,6 +6070,9 @@ impl IntranetPanel {
         }
         let mut refresh_needed = false;
 
+        self.state_card(ui, store, db_path, &mut refresh_needed);
+        let dirty = self.has_unsaved_draft(store);
+
         ui.horizontal_wrapped(|ui| {
             widgets::small_muted(ui, "A equipe trabalha no mesmo acervo usando um dos computadores do gabinete como principal, na rede interna.");
             crate::help_ui::help(ui, "Nada vai para a nuvem. Cada computador guarda a sua cópia protegida do acervo e conversa com o principal pela rede interna, com um código de acesso do gabinete.");
@@ -5907,28 +6094,51 @@ impl IntranetPanel {
         widgets::card(ui, |ui| {
             widgets::section(ui, "Como este computador trabalha");
             ui.add_space(theme::S2);
-            for (mode, line) in [
+            let modes = [
                 (
                     IntranetMode::Local,
-                    "O Ponte opera apenas no acervo deste computador.",
+                    "Só neste computador",
+                    "O Ponte usa só o acervo deste computador.",
                 ),
                 (
                     IntranetMode::Host,
-                    "Os outros computadores do gabinete se conectam a este pela rede interna.",
+                    "Computador principal do gabinete",
+                    "Os outros computadores se conectam a este.",
                 ),
                 (
                     IntranetMode::Client,
-                    "Este computador usa o acervo do computador principal e guarda uma cópia própria.",
+                    "Conectar ao computador principal",
+                    "Usa o acervo do computador principal.",
                 ),
                 (
                     IntranetMode::SharedFolder,
-                    "Você trabalha em mais de um computador e eles trocam o acervo por pastas (Drive, OneDrive, pendrive).",
+                    "Pasta compartilhada",
+                    "Meus computadores trocam o acervo por pastas.",
                 ),
-            ] {
-                if option_card(ui, self.draft.mode == mode, mode.label(), line) {
-                    self.draft.mode = mode;
+            ];
+            let current = self.draft.mode;
+            let mut chosen = None;
+            if ui.available_width() >= 680.0 {
+                for pair in modes.chunks(2) {
+                    ui.columns(2, |columns| {
+                        for (column, (mode, title, line)) in columns.iter_mut().zip(pair) {
+                            if option_card(column, current == *mode, title, line) {
+                                chosen = Some(*mode);
+                            }
+                        }
+                    });
+                    ui.add_space(theme::S1);
                 }
-                ui.add_space(theme::S1);
+            } else {
+                for (mode, title, line) in modes {
+                    if option_card(ui, current == mode, title, line) {
+                        chosen = Some(mode);
+                    }
+                    ui.add_space(theme::S1);
+                }
+            }
+            if let Some(mode) = chosen {
+                self.draft.mode = mode;
             }
         });
         ui.add_space(theme::S3);
@@ -5955,9 +6165,14 @@ impl IntranetPanel {
                     }
                 });
                 ui.add_space(theme::S3);
-                if ui.add(widgets::primary("Salvar configuração")).clicked() {
-                    self.save_configuration(store, db_path, &mut refresh_needed);
-                }
+                ui.horizontal(|ui| {
+                    if ui.add(widgets::primary("Salvar configuração")).clicked() {
+                        self.save_configuration(store, db_path, &mut refresh_needed);
+                    }
+                    if dirty {
+                        widgets::pill(ui, "Não salvo", Tone::Warn);
+                    }
+                });
             }
             IntranetMode::Host => {
                 let port = self
@@ -6030,6 +6245,12 @@ impl IntranetPanel {
                             };
                             self.error = false;
                         }
+                        if ui.add(widgets::secondary("Salvar configuração")).clicked() {
+                            self.save_configuration(store, db_path, &mut refresh_needed);
+                        }
+                        if dirty {
+                            widgets::pill(ui, "Não salvo", Tone::Warn);
+                        }
                     });
                     if hints.len() > 1 {
                         ui.add_space(theme::S1);
@@ -6041,11 +6262,14 @@ impl IntranetPanel {
                             ),
                         );
                     }
-                    widgets::small_muted(ui, format!(
-                        "Se os colegas não conseguirem conectar, peça à TI para liberar a porta {port} (TCP) no Firewall do Windows deste computador."
-                    ))
+                    ui.add_space(theme::S2);
+                    soft_note(
+                        ui,
+                        Tone::Info,
+                        icon::INFO,
+                        &format!("Se os outros computadores não conseguirem conectar, peça ao suporte para liberar a porta {port} do Firewall do Windows neste computador, só para a rede interna."),
+                    )
                     .on_hover_text("Comando para quem administra o computador:\nnetsh advfirewall firewall add rule name=\"Ponte\" dir=in action=allow protocol=TCP localport=PORTA profile=private,domain".replace("PORTA", &port.to_string()));
-                    widgets::small_muted(ui, "Se este computador for desligado, qualquer outro já conectado pode assumir como principal.").on_hover_text("Cada computador conectado mantém uma cópia completa e protegida do acervo.");
                     ui.add_space(theme::S2);
                     egui::CollapsingHeader::new("Mais opções")
                         .id_salt("host-advanced")
@@ -6078,15 +6302,20 @@ impl IntranetPanel {
                                 );
                             }
                         });
+                    egui::CollapsingHeader::new("Como funciona")
+                        .id_salt("host-how")
+                        .show(ui, |ui| {
+                            widgets::small_muted(ui, "Os outros computadores do gabinete se conectam a este pela rede interna, com o código de conexão.");
+                            widgets::small_muted(ui, "Se este computador for desligado, qualquer outro já conectado pode assumir como principal. Cada computador conectado mantém uma cópia completa e protegida do acervo.");
+                        });
                 });
-                ui.add_space(theme::S3);
-                if ui.add(widgets::secondary("Salvar configuração")).clicked() {
-                    self.save_configuration(store, db_path, &mut refresh_needed);
-                }
             }
             IntranetMode::Client => {
                 widgets::card(ui, |ui| {
-                    widgets::section(ui, "Conectar ao computador principal");
+                    ui.horizontal(|ui| {
+                        widgets::section(ui, "Conectar ao computador principal");
+                        crate::help_ui::help(ui, "O que você importa ou edita aqui vai para o computador principal. Se ele estiver desligado, fica salvo neste computador e é enviado quando a conexão voltar.");
+                    });
                     ui.add_space(theme::S2);
                     widgets::field_label(ui, "Código de conexão");
                     ui.horizontal(|ui| {
@@ -6145,8 +6374,6 @@ impl IntranetPanel {
                                 ui.checkbox(&mut self.show_token, "Mostrar");
                             });
                         });
-                    ui.add_space(theme::S2);
-                    widgets::small_muted(ui, "O que você importa ou edita aqui vai para o computador principal. Se ele estiver desligado, fica salvo neste computador e é enviado quando a conexão voltar.");
                 });
                 ui.add_space(theme::S3);
                 ui.horizontal_wrapped(|ui| {
@@ -6171,30 +6398,53 @@ impl IntranetPanel {
                         }
                     }
                     if ui.add(widgets::secondary("Testar conexão")).clicked() {
+                        let url = self.draft.host_url.clone();
                         match ping_host(&self.draft) {
                             Ok((_, host_member, docs, tasks)) => {
-                                self.message = format!(
-                                    "Conexão confirmada com o computador principal de {host_member}: {} e {}.",
-                                    plural(docs, "documento", "documentos"),
-                                    plural(tasks, "tarefa", "tarefas")
-                                );
-                                self.error = false;
+                                self.connection_test = Some((
+                                    url,
+                                    true,
+                                    format!(
+                                        "Conexão feita com o computador principal (de {host_member}: {} e {}).",
+                                        plural(docs, "documento", "documentos"),
+                                        plural(tasks, "tarefa", "tarefas")
+                                    ),
+                                ));
                                 self.offline = false;
                             }
                             Err(e) => {
-                                self.message = format!("Não foi possível conectar: {e}");
-                                self.error = true;
+                                self.connection_test = Some((
+                                    url,
+                                    false,
+                                    format!(
+                                        "Não foi possível conectar: {e}. Confira se o computador principal está ligado com o Ponte aberto, se o endereço e a chave estão certos e se os dois computadores estão na mesma rede."
+                                    ),
+                                ));
                             }
                         }
                     }
                     if ui.add(widgets::secondary("Salvar configuração")).clicked() {
                         self.save_configuration(store, db_path, &mut refresh_needed);
                     }
+                    if dirty {
+                        widgets::pill(ui, "Não salvo", Tone::Warn);
+                    }
                     if self.sync_in_flight {
                         ui.spinner();
                         widgets::small_muted(ui, "sincronizando…");
                     }
                 });
+                if let Some((url, ok, text)) = &self.connection_test {
+                    if *url == self.draft.host_url {
+                        ui.add_space(theme::S2);
+                        let (tone, glyph) = if *ok {
+                            (Tone::Ok, icon::CHECK)
+                        } else {
+                            (Tone::Danger, icon::ERROR)
+                        };
+                        soft_note(ui, tone, glyph, text);
+                    }
+                }
             }
         }
 
@@ -6472,7 +6722,12 @@ impl IntranetPanel {
 
 /// A short note in a soft-coloured frame: icon and text.
 #[cfg(feature = "desktop")]
-fn soft_note(ui: &mut egui::Ui, tone: crate::widgets::Tone, icon: &str, text: &str) {
+fn soft_note(
+    ui: &mut egui::Ui,
+    tone: crate::widgets::Tone,
+    icon: &str,
+    text: &str,
+) -> egui::Response {
     let (fg, bg) = tone.colors();
     egui::Frame::new()
         .fill(bg)
@@ -6484,7 +6739,8 @@ fn soft_note(ui: &mut egui::Ui, tone: crate::widgets::Tone, icon: &str, text: &s
                 ui.label(egui::RichText::new(icon).size(18.0).color(fg));
                 ui.add(egui::Label::new(egui::RichText::new(text).color(fg)).wrap());
             });
-        });
+        })
+        .response
 }
 
 /// One way of working: a card with a radio, the chosen one tinted and
@@ -6505,6 +6761,7 @@ fn option_card(ui: &mut egui::Ui, selected: bool, title: &str, line: &str) -> bo
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            ui.set_min_height(38.0);
             ui.horizontal(|ui| {
                 let (dot, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
                 let center = egui::pos2(dot.center().x, dot.top() + 10.0);
@@ -7980,7 +8237,14 @@ mod tests {
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
-pub const SHOTS: &[&str] = &["pasta", "principal", "conectar", "local"];
+pub const SHOTS: &[&str] = &[
+    "pasta",
+    "principal",
+    "conectar",
+    "conectar-teste",
+    "conectar-falha",
+    "local",
+];
 
 #[cfg(feature = "shots")]
 impl IntranetPanel {
@@ -7999,7 +8263,24 @@ impl IntranetPanel {
                 IntranetMode::SharedFolder
             }
             "principal" => IntranetMode::Host,
-            "conectar" => IntranetMode::Client,
+            "conectar" | "conectar-teste" | "conectar-falha" => {
+                // A made-up result: nothing is contacted.
+                let url = self.draft.host_url.clone();
+                self.connection_test = match view {
+                    "conectar-teste" => Some((
+                        url,
+                        true,
+                        "Conexão feita com o computador principal (de Servidor A: 7 documentos e 10 tarefas).".to_owned(),
+                    )),
+                    "conectar-falha" => Some((
+                        url,
+                        false,
+                        "Não foi possível conectar: sem resposta. Confira se o computador principal está ligado com o Ponte aberto, se o endereço e a chave estão certos e se os dois computadores estão na mesma rede.".to_owned(),
+                    )),
+                    _ => None,
+                };
+                IntranetMode::Client
+            }
             _ => IntranetMode::Local,
         };
     }

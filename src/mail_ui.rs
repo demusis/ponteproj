@@ -111,6 +111,13 @@ pub struct MailPanel {
     notice: Option<(String, bool)>,
     /// New messages arrived: compute `imported` on the next frame.
     pending_check: bool,
+    /// The panel was drawn inside Ajustes this frame (see `ui_embedded`).
+    embedded_frame: bool,
+    /// It was drawn inside Ajustes on the previous frame.
+    was_embedded: bool,
+    /// The request the embedded panel made; `show` hands it to the app in
+    /// the same frame, so one place runs every request.
+    outgoing: Option<MailAction>,
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -451,25 +458,51 @@ impl MailPanel {
         }
     }
 
+    /// True when the floating window is the one drawing the panel (not the
+    /// Ajustes section).
+    pub fn is_window_open(&self) -> bool {
+        self.open && !self.embedded_frame && !self.was_embedded
+    }
+
+    /// Draws the full panel inside Ajustes (always in full mode). The
+    /// request it makes is not returned here: `show`, which the app calls
+    /// every frame, hands it over, so requests are handled in one place.
+    pub fn ui_embedded(&mut self, ui: &mut egui::Ui, store: &mut Store, busy: MailBusy) {
+        if self.quick {
+            self.quick = false;
+            self.pending = None;
+        }
+        self.open = true;
+        self.embedded_frame = true;
+        let action = self.ui(ui, store, busy);
+        if !matches!(action, MailAction::None) {
+            self.outgoing = Some(action);
+        }
+    }
+
     pub fn show(&mut self, ctx: &egui::Context, store: &mut Store, busy: MailBusy) -> MailAction {
+        if self.embedded_frame {
+            // Drawn in Ajustes this frame: no window, only the request.
+            self.embedded_frame = false;
+            self.was_embedded = true;
+            return self.outgoing.take().unwrap_or(MailAction::None);
+        }
+        if self.was_embedded {
+            // The section was left. An account being edited keeps the
+            // panel open as a window (and its guard); otherwise it closes.
+            self.was_embedded = false;
+            self.outgoing = None;
+            if !self.dirty() {
+                self.open = false;
+                self.pending = None;
+                return MailAction::None;
+            }
+        }
         if !self.open {
             return MailAction::None;
         }
-        if !self.accounts_loaded {
-            self.reload_accounts(store);
-        }
-        if self.pending_check {
-            self.pending_check = false;
-            self.refresh_imported(store);
-        }
         let mut open = true;
         let mut action = MailAction::None;
-        // A listing asked for while something else ran goes now.
-        if busy == MailBusy::Free {
-            if let Some((account, folder, filter)) = self.pending.take() {
-                action = self.list_action(account, folder, filter);
-            }
-        }
         let title = if self.quick {
             "E-mails"
         } else {
@@ -515,10 +548,22 @@ impl MailPanel {
             self.pending_check = false;
             self.refresh_imported(store);
         }
-        if self.quick {
+        // A listing asked for while something else ran goes now.
+        let mut dispatched = MailAction::None;
+        if busy == MailBusy::Free {
+            if let Some((account, folder, filter)) = self.pending.take() {
+                dispatched = self.list_action(account, folder, filter);
+            }
+        }
+        let shown = if self.quick {
             self.quick_contents(ui, busy)
         } else {
             self.contents(ui, store, busy)
+        };
+        if matches!(shown, MailAction::None) {
+            dispatched
+        } else {
+            shown
         }
     }
 

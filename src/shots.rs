@@ -31,6 +31,8 @@ pub fn prepare(out: PathBuf, filter: String) -> Result<()> {
     }
     std::fs::create_dir_all(&data)?;
     std::env::set_var("PONTEPROJ_DATA_DIR", &data);
+    // The pictures never show who is logged in on this machine.
+    std::env::set_var("USERNAME", "Servidor A");
     let mut store = crate::storage::Store::open(&crate::paths::db_path()?)?;
     crate::shots_data::seed(&mut store)?;
     drop(store);

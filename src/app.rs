@@ -2656,11 +2656,7 @@ impl PonteApp {
                     self.saiop.key_save(&mut self.store);
                 }
                 Area::Documents => {
-                    if let Some(id) = self.selected_id {
-                        if self.editors.get(&id).is_some_and(Editor::note_dirty) {
-                            self.save_note(id);
-                        }
-                    }
+                    self.key_save_ficha();
                 }
                 Area::Settings => {
                     if self.settings_section == SettingsSection::Ai

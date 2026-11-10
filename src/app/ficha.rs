@@ -158,10 +158,23 @@ impl PonteApp {
                 _ => {}
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(self.worker.is_none(), widgets::danger("Excluir…"))
-                    .clicked()
-                {
+                let mut delete = false;
+                let can_delete = self.worker.is_none();
+                egui::containers::menu::MenuButton::from_button(widgets::secondary(icon::MORE))
+                    .ui(ui, |ui| {
+                        ui.set_min_width(150.0);
+                        let item = egui::Button::new(
+                            RichText::new("Excluir…")
+                                .color(if can_delete { p.danger } else { p.muted }),
+                        );
+                        if ui.add_enabled(can_delete, item).clicked() {
+                            delete = true;
+                            ui.close();
+                        }
+                    })
+                    .0
+                    .on_hover_text("Mais ações");
+                if delete {
                     self.request_trash(crate::trash::Target {
                         kind: crate::trash::Kind::Document,
                         id,
@@ -317,8 +330,28 @@ impl PonteApp {
                     Tab::Overview => self.overview(ui, detail),
                     Tab::Document => self.document_tab(ui, detail),
                     Tab::Notes => {
-                        self.notes(ui, detail);
-                        self.drafts(ui, detail);
+                        if ui.available_width() >= 1000.0 {
+                            // Two columns: notes on the left, the draft beside them.
+                            let gap = S4;
+                            let total = ui.available_width();
+                            let left = ((total - gap) * 0.36).floor();
+                            let right = total - gap - left;
+                            ui.horizontal_top(|ui| {
+                                ui.spacing_mut().item_spacing.x = gap;
+                                ui.vertical(|ui| {
+                                    ui.set_width(left);
+                                    self.notes(ui, detail, false);
+                                });
+                                ui.vertical(|ui| {
+                                    ui.set_width(right);
+                                    ui.spacing_mut().item_spacing.y = S4;
+                                    self.drafts(ui, detail);
+                                });
+                            });
+                        } else {
+                            self.notes(ui, detail, true);
+                            self.drafts(ui, detail);
+                        }
                     }
                     Tab::More => self.more_tab(ui, detail),
                 }
@@ -876,6 +909,8 @@ impl PonteApp {
         };
         let hover = self.ai_disclosure_text(false);
         let mut analyze = false;
+        let mut analyze_band = false;
+        let header_hover = hover.clone();
         titled_card(
             ui,
             "Análise",
@@ -885,7 +920,11 @@ impl PonteApp {
                 } else {
                     widgets::primary(label)
                 };
-                if ui.add_enabled(!busy, button).on_hover_text(hover).clicked() {
+                if ui
+                    .add_enabled(!busy, button)
+                    .on_hover_text(header_hover)
+                    .clicked()
+                {
                     analyze = true;
                 }
             },
@@ -902,7 +941,30 @@ impl PonteApp {
                     || self.work_context.document_dirty(detail.summary.id)
                     || self.editors[&detail.summary.id].note_dirty();
                 if stale {
-                    notice_line(ui, Tone::Warn, format!("Análise da importação nº {}: o documento, o contexto ou as notas mudaram. Salve as edições e analise novamente.", analysis.capture_id));
+                    let (fg, bg) = Tone::Warn.colors();
+                    egui::Frame::new()
+                        .fill(bg)
+                        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new("Esta análise é anterior às últimas alterações do documento, do contexto ou das notas.")
+                                            .color(fg),
+                                    )
+                                    .wrap(),
+                                );
+                                if ui
+                                    .add_enabled(!busy, widgets::secondary("Analisar de novo"))
+                                    .on_hover_text(&hover)
+                                    .clicked()
+                                {
+                                    analyze_band = true;
+                                }
+                            });
+                        });
                 }
                 ui.add(egui::Label::new(&analysis.summary).wrap());
                 if let Some(deadline) = &analysis.deadline_candidate {
@@ -1094,14 +1156,13 @@ impl PonteApp {
                 self.ai_destination(ui);
             },
         );
-        if analyze {
+        if analyze || analyze_band {
             self.analyze(detail, ui.ctx());
         }
     }
 
-    /// Everything imported from the SIGADOC page, in reading order.
-    /// Everything imported from the SIGADOC page, in reading order.
-    fn document_tab(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
+    /// The text of the document (imported page or typed record), as a section.
+    fn document_text_section(ui: &mut egui::Ui, detail: &DocumentDetail) {
         let id = detail.summary.id;
         let manual = detail.summary.manual;
         let text_title = if manual {
@@ -1142,13 +1203,27 @@ impl PonteApp {
                 });
             }
         });
+    }
+
+    /// Everything imported from the SIGADOC page, in reading order. The PDF
+    /// files come first (open) when there are any: they are the essential part.
+    fn document_tab(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
+        let id = detail.summary.id;
+        let manual = detail.summary.manual;
         let has_files = self
             .store
             .list_files(detail.summary.latest_capture_id)
             .map(|f| !f.is_empty())
             .unwrap_or(false);
-        if !manual {
-            Self::section(ui, id, "Arquivos (PDF)", has_files, |ui| {
+        let files_first = !manual && has_files;
+        if files_first {
+            Self::section(ui, id, "Arquivos (PDF)", true, |ui| {
+                self.files_list(ui, detail)
+            });
+        }
+        Self::document_text_section(ui, detail);
+        if !manual && !files_first {
+            Self::section(ui, id, "Arquivos (PDF)", false, |ui| {
                 self.files_list(ui, detail)
             });
         }
@@ -1437,46 +1512,124 @@ impl PonteApp {
         }
     }
 
-    pub(super) fn notes(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
+    /// Saves from the keyboard (Ctrl+S) on the Notas e minutas tab: the note
+    /// when it has unsaved changes, otherwise a new version of the draft when
+    /// "Salvar nova versão" is enabled. True when it saved or tried to.
+    #[allow(dead_code)] // wired by the shortcut handler in app.rs
+    pub(super) fn key_save_ficha(&mut self) -> bool {
+        if self.tab != Tab::Notes {
+            return false;
+        }
+        let Some(id) = self.selected_id else {
+            return false;
+        };
+        let Some(editor) = self.editors.get(&id) else {
+            return false;
+        };
+        if editor.note_dirty() {
+            self.save_note(id);
+            true
+        } else if editor.draft_dirty() && !editor.body.trim().is_empty() {
+            self.save_draft(id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The notes card. `compact` (narrow tab) shows the first lines of the
+    /// note with "Editar nota"; it stays open while the note has unsaved
+    /// changes or the person chose to edit it.
+    pub(super) fn notes(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail, compact: bool) {
         let id = detail.summary.id;
         let mut save = false;
         let mut discard = false;
         let dirty = self.editors[&id].note_dirty();
+        let open_id = ui.make_persistent_id(("note-open", id));
+        let chosen = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        let collapsed = compact && !dirty && !chosen;
+        let mut set_open: Option<bool> = None;
         titled_card(
             ui,
             "Notas",
             |ui| {
-                if ui
-                    .add_enabled(
-                        dirty,
-                        widgets::primary(format!("{} Salvar notas", icon::SAVE)),
-                    )
-                    .clicked()
-                {
-                    save = true;
-                }
-                if ui
-                    .add_enabled(dirty, widgets::quiet("Desfazer alterações"))
-                    .on_hover_text("Volta ao texto salvo pela última vez.")
-                    .clicked()
-                {
-                    discard = true;
-                }
+                info(ui, "Suas anotações e correções sobre este documento. Ficam só no acervo protegido deste computador (ou do gabinete, se estiver em equipe).");
                 if dirty {
                     pill(ui, "não salvas", Tone::Warn);
                 }
-                info(ui, "Suas anotações e correções sobre este documento. Ficam só no acervo protegido deste computador (ou do gabinete, se estiver em equipe).");
             },
             |ui| {
+                if collapsed {
+                    let note = self.editors[&id].note.trim().to_owned();
+                    if note.is_empty() {
+                        widgets::muted(ui, "Nenhuma nota ainda.");
+                    } else {
+                        let lines: Vec<&str> = note.lines().collect();
+                        let mut preview =
+                            lines.iter().take(3).copied().collect::<Vec<_>>().join("\n");
+                        if lines.len() > 3 {
+                            preview.push('…');
+                        }
+                        ui.add(
+                            egui::Label::new(RichText::new(preview).color(theme::c().muted)).wrap(),
+                        );
+                    }
+                    if ui.add(widgets::secondary("Editar nota")).clicked() {
+                        set_open = Some(true);
+                        let focus_id = ui.make_persistent_id(("note-focus", id));
+                        ui.data_mut(|d| d.insert_temp(focus_id, true));
+                    }
+                    return;
+                }
                 let editor = self.editors.get_mut(&id).expect("editor exists");
-                ui.add(
-                    egui::TextEdit::multiline(&mut editor.note)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(10)
-                        .hint_text("Registre observações, pontos a verificar e correções…"),
-                );
+                let note_edit_id = ui.make_persistent_id(("note-edit", id));
+                // The box grows with its content, up to a sensible height.
+                let response = egui::ScrollArea::vertical()
+                    .id_salt(("note-scroll", id))
+                    .max_height(360.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut editor.note)
+                                .id(note_edit_id)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(4)
+                                .hint_text("Registre observações, pontos a verificar e correções…"),
+                        )
+                    })
+                    .inner;
+                let focus_id = ui.make_persistent_id(("note-focus", id));
+                if ui.data(|d| d.get_temp::<bool>(focus_id)).unwrap_or(false) {
+                    // Opened with "Editar nota": put the cursor in the box once.
+                    response.request_focus();
+                    ui.data_mut(|d| d.remove_temp::<bool>(focus_id));
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add_enabled(
+                            dirty,
+                            widgets::primary(format!("{} Salvar notas", icon::SAVE)),
+                        )
+                        .clicked()
+                    {
+                        save = true;
+                    }
+                    if ui
+                        .add_enabled(dirty, widgets::quiet("Desfazer alterações"))
+                        .on_hover_text("Volta ao texto salvo pela última vez.")
+                        .clicked()
+                    {
+                        discard = true;
+                    }
+                    if compact && !dirty && ui.add(widgets::quiet("Recolher")).clicked() {
+                        set_open = Some(false);
+                    }
+                });
             },
         );
+        if let Some(value) = set_open {
+            ui.data_mut(|d| d.insert_temp(open_id, value));
+        }
         if save {
             self.save_note(id);
         }

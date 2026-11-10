@@ -159,27 +159,35 @@ impl PonteApp {
                 }
             }
             SettingsSection::Mail => {
-                let mut open_mail = false;
-                let mut import_eml = false;
-                Self::settings_card(
-                    ui,
-                    "O Ponte se conecta à sua conta de e-mail (IMAP), lista as mensagens de uma pasta e importa as que você marcar, com os anexos, como registros do tipo E-mail recebido. Para cadastrar uma conta, informe o servidor de e-mail, o usuário e a senha; no Gmail, use uma senha de app. As contas ficam guardadas no acervo deste computador. O Ponte só lê a caixa de e-mail: nada é marcado como lido, movido ou apagado na conta.",
-                    |ui| {
-                        open_mail = ui
-                            .add(primary(format!("{} Contas e importação", icon::MAIL)))
-                            .clicked();
-                        import_eml = ui
-                            .add(secondary("Importar e-mail de um arquivo (.eml)…"))
-                            .on_hover_text("Um e-mail salvo como arquivo vira um registro do tipo E-mail recebido, com os anexos.")
-                            .clicked();
-                    },
-                );
-                if open_mail {
-                    self.mail.open_full();
-                }
-                if import_eml {
+                // The panel says what is running: its own exchange with the
+                // mailbox, or something else to wait for. Its requests go
+                // out through `mail_window` (see `MailPanel::ui_embedded`).
+                let busy = match &self.worker {
+                    None => crate::mail_ui::MailBusy::Free,
+                    Some(worker) if worker.kind == super::WorkKind::Mail => {
+                        crate::mail_ui::MailBusy::Mail
+                    }
+                    Some(_) => crate::mail_ui::MailBusy::Other,
+                };
+                widgets::card(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("Liste as mensagens de uma pasta da sua conta e importe as que marcar, com os anexos, como registros do tipo E-mail recebido. O Ponte só lê a caixa: nada é marcado como lido, movido ou apagado. No Gmail, use uma senha de app.")
+                                .color(theme::c().muted),
+                        )
+                        .wrap(),
+                    );
+                });
+                ui.add_space(S2);
+                if ui
+                    .add(secondary("Importar um e-mail salvo em arquivo (.eml)…"))
+                    .on_hover_text("Um e-mail salvo como arquivo vira um registro do tipo E-mail recebido, com os anexos.")
+                    .clicked()
+                {
                     self.import_eml_dialog();
                 }
+                ui.add_space(S3);
+                self.mail.ui_embedded(ui, &mut self.store, busy);
             }
             SettingsSection::Import => {
                 widgets::card(ui, |ui| {
@@ -194,21 +202,58 @@ impl PonteApp {
                 let mut backup = false;
                 let mut export = false;
                 let mut copy_backup = false;
-                widgets::section(ui, "Cópia de segurança");
-                Self::settings_card(
-                    ui,
-                    "Guarda uma cópia protegida do acervo na pasta “backups” deste computador. Ela só abre na mesma conta do Windows.",
-                    |ui| {
-                        backup = ui
-                            .add_enabled(idle, primary("Fazer cópia agora"))
-                            .clicked();
+                let folder = crate::paths::data_dir().ok().map(|dir| dir.join("backups"));
+                let last_copy = self
+                    .backup_path
+                    .as_ref()
+                    .and_then(|path| std::fs::metadata(path).ok())
+                    .and_then(|meta| meta.modified().ok())
+                    .map(|time| {
+                        chrono::DateTime::<chrono::Local>::from(time)
+                            .format("%d/%m/%Y às %H:%M")
+                            .to_string()
+                    });
+                let mut open_folder = false;
+                widgets::card(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("Guarda uma cópia protegida do acervo na pasta de cópias deste computador. Ela só abre na mesma conta do Windows.")
+                                .color(theme::c().muted),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(S1);
+                    ui.horizontal_wrapped(|ui| {
+                        backup = ui.add_enabled(idle, primary("Fazer cópia agora")).clicked();
                         if has_backup {
                             copy_backup = ui
                                 .add(widgets::quiet("Copiar o caminho da última cópia"))
                                 .clicked();
                         }
-                    },
-                );
+                    });
+                    if let Some(folder) = &folder {
+                        ui.add_space(S2);
+                        widgets::field_label(ui, "Onde ficam as cópias");
+                        ui.horizontal_wrapped(|ui| {
+                            widgets::small_muted(ui, folder.display().to_string());
+                            open_folder = ui
+                                .add(widgets::quiet(format!("{} Abrir pasta", icon::FOLDER)))
+                                .clicked();
+                        });
+                    }
+                    if let Some(date) = &last_copy {
+                        widgets::small_muted(ui, format!("Última cópia: {date}."));
+                    }
+                });
+                if open_folder {
+                    // The folder only exists after the first copy.
+                    match &folder {
+                        Some(folder) if folder.is_dir() => {
+                            crate::windows_ui::reveal_in_explorer(folder)
+                        }
+                        _ => self.message("Ainda não há cópias: a pasta é criada na primeira."),
+                    }
+                }
                 ui.add_space(S3);
                 widgets::section(ui, "Exportação");
                 Self::settings_card(
@@ -322,26 +367,64 @@ impl PonteApp {
         let mut provider_changed = false;
         widgets::card(ui, |ui| {
             widgets::section(ui, "Onde a IA funciona");
-            ui.horizontal_wrapped(|ui| {
-                let before = self.ai.provider;
-                ui.radio_value(&mut self.ai.provider, AiProvider::Local, "Ollama neste computador")
-                    .on_hover_text("Modelo instalado neste computador. Nada sai deste computador.");
-                ui.radio_value(&mut self.ai.provider, AiProvider::Cloud, "Ollama Cloud")
-                    .on_hover_text("Modelos grandes nos servidores da Ollama (ollama.com), com a chave da sua conta.");
-                ui.radio_value(&mut self.ai.provider, AiProvider::Remote, "Outro servidor")
-                    .on_hover_text("Servidor do órgão que funciona como o Ollama. O endereço deve começar com https.");
-                ui.radio_value(&mut self.ai.provider, AiProvider::ChatGpt, "ChatGPT (assinatura)")
-                    .on_hover_text("Usa a cota da sua assinatura ChatGPT Plus ou Pro, entrando com a sua conta. Os textos vão para os servidores da OpenAI.");
-                provider_changed = before != self.ai.provider;
-            });
-            ui.add_space(4.0);
+            let before = self.ai.provider;
+            let options = [
+                (
+                    AiProvider::Local,
+                    "Ollama neste computador",
+                    "Modelo instalado neste computador.",
+                    "Nada sai deste computador",
+                    Tone::Ok,
+                    "Modelo instalado neste computador. Nada sai deste computador.",
+                ),
+                (
+                    AiProvider::Cloud,
+                    "Ollama Cloud",
+                    "Modelos grandes nos servidores da Ollama, com a chave da sua conta.",
+                    "Envia os textos à Ollama",
+                    Tone::Warn,
+                    "Modelos grandes nos servidores da Ollama (ollama.com), com a chave da sua conta.",
+                ),
+                (
+                    AiProvider::Remote,
+                    "Outro servidor",
+                    "Servidor do órgão que funciona como o Ollama. O endereço começa com https.",
+                    "Envia os textos ao servidor informado",
+                    Tone::Warn,
+                    "Servidor do órgão que funciona como o Ollama. O endereço deve começar com https.",
+                ),
+                (
+                    AiProvider::ChatGpt,
+                    "ChatGPT (assinatura)",
+                    "Usa a cota da sua assinatura ChatGPT Plus ou Pro, entrando com a sua conta.",
+                    "Envia os textos à OpenAI",
+                    Tone::Warn,
+                    "Usa a cota da sua assinatura ChatGPT Plus ou Pro, entrando com a sua conta. Os textos vão para os servidores da OpenAI.",
+                ),
+            ];
+            for (value, title, line, tag, tone, tip) in options {
+                if option_card(ui, self.ai.provider == value, title, line, tag, tone, tip) {
+                    self.ai.provider = value;
+                }
+                ui.add_space(S1);
+            }
+            provider_changed = before != self.ai.provider;
+            ui.add_space(S2);
+            // Nothing answered at the address of the local Ollama (the state
+            // the last model listing left behind).
+            let no_answer = self.ai.provider == AiProvider::Local
+                && self.models_error.as_deref().is_some_and(|error| {
+                    error.starts_with("Não foi possível conectar ao servidor de IA")
+                        || error.starts_with("O servidor de IA demorou demais")
+                        || error.starts_with("Não houve resposta")
+                });
             match self.ai.provider {
                 AiProvider::ChatGpt => {
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
-                        ui.colored_label(crate::theme::warning(), "⚠ Nesta opção, os dados saem do seu computador e do órgão.");
+                        ui.label(RichText::new(format!("{} Nesta opção, os dados saem do seu computador e do órgão.", icon::WARNING)).color(theme::c().warn));
                         ui.label("A cada clique em “Analisar” ou “Gerar com IA”, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados aos servidores da OpenAI, nos Estados Unidos, sob os termos e a política de privacidade da OpenAI. Nada é enviado ao importar, só quando você clica. Use apenas com documentos que podem sair do órgão; avalie sigilo e LGPD antes.");
-                        ui.small("O Ponte não recebe acesso às suas conversas, à memória nem à cobrança do ChatGPT. O uso é descontado da cota da sua assinatura (Plus ou Pro); o limite por aplicativo pode ser ajustado em ChatGPT ▸ Configurações ▸ Uso. Quando a cota acaba, o Ponte avisa e não usa outro provedor por conta própria.");
+                        widgets::small_muted(ui, "O Ponte não recebe acesso às suas conversas, à memória nem à cobrança do ChatGPT. O uso é descontado da cota da sua assinatura (Plus ou Pro); o limite por aplicativo pode ser ajustado em ChatGPT ▸ Configurações ▸ Uso. Quando a cota acaba, o Ponte avisa e não usa outro provedor por conta própria.");
                     });
                     ui.add_space(4.0);
                     let signed_in = self.ai.chatgpt.signed_in();
@@ -358,9 +441,9 @@ impl PonteApp {
                         } else if signed_in {
                             ui.label(format!("Conectado: {account}"));
                             if sharing {
-                                ui.colored_label(crate::theme::success(), "✓ uso do plano liberado");
+                                pill(ui, "Uso do plano liberado", Tone::Ok);
                             } else {
-                                ui.colored_label(crate::theme::warning(), "⚠ sem permissão de uso do plano");
+                                pill(ui, "Sem permissão de uso do plano", Tone::Warn);
                             }
                             if ui.button("Entrar de novo…").on_hover_text("Abre o navegador para renovar a autorização ou liberar o uso do plano.").clicked() {
                                 self.start_chatgpt_login(ctx);
@@ -373,36 +456,51 @@ impl PonteApp {
                                 self.start_chatgpt_login(ctx);
                             }
                             if !account.is_empty() {
-                                ui.small(format!("última conta: {account}"));
+                                widgets::small_muted(ui, format!("Última conta: {account}"));
                             }
                         }
                     });
                     if let Some(login) = &self.chatgpt_login {
                         let url = login.authorize_url.clone();
                         ui.horizontal_wrapped(|ui| {
-                            ui.small("Se o navegador não abriu, copie o endereço e cole nele:");
-                            if ui.small_button("Copiar endereço").clicked() {
+                            widgets::small_muted(
+                                ui,
+                                "Se o navegador não abriu, copie o endereço e cole nele:",
+                            );
+                            if ui.add(widgets::quiet("Copiar endereço")).clicked() {
                                 ctx.copy_text(url);
                             }
                         });
                     }
                     if let Some(error) = &self.chatgpt_login_error {
-                        ui.colored_label(crate::theme::error(), format!("✗ {error}"));
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(icon::ERROR).color(theme::c().danger));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(error.as_str()).color(theme::c().danger),
+                                )
+                                .wrap(),
+                            );
+                        });
                     }
-                    ui.small("Requer assinatura ChatGPT Plus ou Pro (conta gratuita entra, mas não libera o uso do plano). O login é feito no navegador, em auth.openai.com, e retorna ao Ponte neste computador.");
+                    widgets::small_muted(ui, "Requer assinatura ChatGPT Plus ou Pro (conta gratuita entra, mas não libera o uso do plano). O login é feito no navegador, em auth.openai.com, e retorna ao Ponte neste computador.");
                 }
                 AiProvider::Local => {
-                    let label = ui.label("Endereço do Ollama");
+                    let label = widgets::field_label(ui, "Endereço do Ollama");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.ai.local_url)
                             .desired_width(f32::INFINITY),
                     )
                     .labelled_by(label.id);
-                    ui.small("Padrão: http://127.0.0.1:11434. Instale o Ollama em ollama.com/download e baixe um modelo (ex.: ollama pull qwen3:4b-instruct).");
+                    if no_answer {
+                        widgets::small_muted(ui, "Padrão: http://127.0.0.1:11434.");
+                    } else {
+                        widgets::small_muted(ui, "Padrão: http://127.0.0.1:11434. Instale o Ollama em ollama.com/download e baixe um modelo (ex.: ollama pull qwen3:4b-instruct).");
+                    }
                 }
                 AiProvider::Cloud => {
-                    ui.label(format!("Endereço: {} (fixo)", ai::CLOUD_URL));
-                    let label = ui.label("Chave da sua conta");
+                    widgets::small_muted(ui, format!("Endereço: {} (fixo)", ai::CLOUD_URL));
+                    let label = widgets::field_label(ui, "Chave da sua conta");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.ai.cloud_key)
                             .password(true)
@@ -411,23 +509,23 @@ impl PonteApp {
                     )
                     .labelled_by(label.id);
                     ui.horizontal_wrapped(|ui| {
-                        ui.small("Crie a chave em");
+                        widgets::small_muted(ui, "Crie a chave em");
                         ui.hyperlink_to(
-                            RichText::new("ollama.com/settings/keys").small(),
+                            RichText::new("ollama.com/settings/keys").size(theme::SIZE_SMALL),
                             "https://ollama.com/settings/keys",
                         );
-                        ui.small("(conta gratuita por uso ou plano mensal).");
+                        widgets::small_muted(ui, "(conta gratuita por uso ou plano mensal).");
                     });
-                    ui.colored_label(crate::theme::warning(), "Os textos enviados à IA saem deste computador para os servidores da Ollama (EUA, com possível roteamento pela Europa). A Ollama declara não registrar nem treinar com os dados.");
+                    ui.colored_label(theme::c().warn, "Os textos enviados à IA saem deste computador para os servidores da Ollama (EUA, com possível roteamento pela Europa). A Ollama declara não registrar nem treinar com os dados.");
                 }
                 AiProvider::Remote => {
-                    let label = ui.label("Endereço do servidor (HTTPS)");
+                    let label = widgets::field_label(ui, "Endereço do servidor (HTTPS)");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.ai.remote_url)
                             .desired_width(f32::INFINITY),
                     )
                     .labelled_by(label.id);
-                    let label = ui.label("Chave do servidor (opcional)");
+                    let label = widgets::field_label(ui, "Chave do servidor (opcional)");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.ai.remote_token)
                             .password(true)
@@ -435,14 +533,15 @@ impl PonteApp {
                     )
                     .labelled_by(label.id);
                     ui.colored_label(
-                        crate::theme::warning(),
+                        theme::c().warn,
                         "Os textos enviados à IA saem deste computador para esse servidor.",
                     );
                 }
             }
-            ui.add_space(6.0);
-            ui.strong("Modelo de IA");
+            ui.add_space(S2);
+            widgets::field_label(ui, "Modelo de IA");
             let listed = self.models_match_current() && !self.models.is_empty();
+            let fetching = self.model_fetch.is_some();
             ui.horizontal_wrapped(|ui| {
                 if listed {
                     let models = self.models.clone();
@@ -475,39 +574,91 @@ impl PonteApp {
                             .desired_width(320.0),
                     );
                 }
-                let fetching = self.model_fetch.is_some();
-                let button = egui::Button::new(if listed {
-                    "↻ Atualizar lista"
-                } else {
-                    "Listar modelos do servidor"
-                });
-                if ui
-                    .add_enabled(!fetching, button)
-                    .on_hover_text(
-                        "Consulta o servidor configurado e lista os modelos que ele oferece.",
-                    )
-                    .clicked()
-                {
-                    refresh = true;
+                // With the guidance block showing, its own button retries.
+                if !no_answer {
+                    let button = widgets::secondary(if listed {
+                        format!("{} Atualizar lista", icon::SYNC)
+                    } else {
+                        "Listar modelos do servidor".to_owned()
+                    });
+                    if ui
+                        .add_enabled(!fetching, button)
+                        .on_hover_text(
+                            "Consulta o servidor configurado e lista os modelos que ele oferece.",
+                        )
+                        .clicked()
+                    {
+                        refresh = true;
+                    }
                 }
                 if fetching {
                     ui.spinner();
-                    ui.small("consultando…");
+                    widgets::small_muted(ui, "consultando…");
                 }
             });
-            if let Some(error) = &self.models_error {
-                ui.colored_label(crate::theme::warning(), format!("⚠ {error}"));
+            if no_answer {
+                let (fg, bg) = Tone::Warn.colors();
+                egui::Frame::new()
+                    .fill(bg)
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            RichText::new(format!(
+                                "O Ollama não respondeu em {}.",
+                                self.ai.base_url().trim()
+                            ))
+                            .font(theme::font_strong(theme::SIZE_BODY))
+                            .color(fg),
+                        );
+                        ui.add_space(S1);
+                        for step in [
+                            "1. Instale o Ollama: ollama.com/download.",
+                            "2. Abra o Ollama.",
+                            "3. Baixe um modelo. No terminal, execute: ollama pull qwen3:4b-instruct",
+                        ] {
+                            ui.add(egui::Label::new(RichText::new(step).color(fg)).wrap());
+                        }
+                        ui.add_space(S2);
+                        if ui
+                            .add_enabled(!fetching, widgets::secondary("Tentar de novo"))
+                            .on_hover_text(
+                                "Consulta o servidor configurado e lista os modelos que ele oferece.",
+                            )
+                            .clicked()
+                        {
+                            refresh = true;
+                        }
+                    });
+            } else if let Some(error) = &self.models_error {
+                let (fg, bg) = Tone::Warn.colors();
+                egui::Frame::new()
+                    .fill(bg)
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(icon::WARNING).size(18.0).color(fg));
+                            ui.add(egui::Label::new(RichText::new(error).color(fg)).wrap());
+                        });
+                    });
             } else if listed {
-                ui.small(if self.models.len() == 1 {
-                    "1 modelo oferecido por este servidor.".to_owned()
-                } else {
-                    format!(
-                        "{} modelos oferecidos por este servidor.",
-                        self.models.len()
-                    )
-                });
+                widgets::small_muted(
+                    ui,
+                    if self.models.len() == 1 {
+                        "1 modelo oferecido por este servidor.".to_owned()
+                    } else {
+                        format!(
+                            "{} modelos oferecidos por este servidor.",
+                            self.models.len()
+                        )
+                    },
+                );
             } else if self.model_fetch.is_none() {
-                ui.small(
+                widgets::small_muted(
+                    ui,
                     "Clique em “Listar modelos do servidor” para escolher entre os disponíveis.",
                 );
             }
@@ -646,4 +797,73 @@ impl PonteApp {
                 });
         }
     }
+}
+
+/// One place the AI can run: a card with a radio (the chosen one tinted and
+/// outlined), a title, one muted line and a pill saying whether the texts
+/// leave this computer. Returns true when it was clicked.
+fn option_card(
+    ui: &mut egui::Ui,
+    selected: bool,
+    title: &str,
+    line: &str,
+    tag: &str,
+    tone: Tone,
+    tip: &str,
+) -> bool {
+    let p = theme::c();
+    let (fill, stroke) = if selected {
+        (p.primary_soft, egui::Stroke::new(1.5, p.primary))
+    } else {
+        (p.surface, egui::Stroke::new(1.0, p.outline))
+    };
+    let response = egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                let center = egui::pos2(dot.center().x, dot.top() + 10.0);
+                let ring = if selected { p.primary } else { p.muted };
+                ui.painter()
+                    .circle_stroke(center, 8.0, egui::Stroke::new(1.5, ring));
+                if selected {
+                    ui.painter().circle_filled(center, 4.5, p.primary);
+                }
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(title).font(theme::font_strong(theme::SIZE_BODY)),
+                            )
+                            .selectable(false),
+                        );
+                        widgets::pill(ui, tag, tone);
+                    });
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(line).size(theme::SIZE_SMALL).color(p.muted),
+                        )
+                        .selectable(false),
+                    );
+                });
+            });
+        })
+        .response;
+    // Reachable with Tab; Space or Enter chooses it, and the focus shows.
+    let choice = ui
+        .interact(
+            response.rect,
+            ui.auto_id_with(("ai-provider", title)),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tip);
+    if choice.has_focus() {
+        widgets::outline(ui, choice.rect.expand(2.0), p.primary);
+    }
+    choice.clicked()
 }

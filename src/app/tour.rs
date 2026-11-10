@@ -23,6 +23,9 @@ impl PonteApp {
         "atendimento-aberto",
         "modelos",
         "ajustes",
+        "ajustes-copia",
+        "ajustes-aparencia",
+        "ajustes-importacao",
         "janela-rede",
         "janela-ia",
         "janela-email",
@@ -195,7 +198,22 @@ impl PonteApp {
                 self.area = Area::Saiop;
             }
             "modelos" => self.area = Area::Templates,
-            "ajustes" => self.area = Area::Settings,
+            "ajustes" => {
+                self.area = Area::Settings;
+                self.settings_section = super::SettingsSection::Team;
+            }
+            "ajustes-copia" => {
+                self.area = Area::Settings;
+                self.settings_section = super::SettingsSection::Backup;
+            }
+            "ajustes-aparencia" => {
+                self.area = Area::Settings;
+                self.settings_section = super::SettingsSection::Appearance;
+            }
+            "ajustes-importacao" => {
+                self.area = Area::Settings;
+                self.settings_section = super::SettingsSection::Import;
+            }
             "janela-rede" => {
                 self.area = Area::Settings;
                 self.intranet.open = true;
@@ -206,7 +224,7 @@ impl PonteApp {
             }
             "janela-email" => {
                 self.area = Area::Settings;
-                self.mail.open_full();
+                self.settings_section = super::SettingsSection::Mail;
             }
             "janela-lixeira" => {
                 self.area = Area::Settings;
@@ -237,6 +255,7 @@ impl PonteApp {
                 } else if let Some(view) = other.strip_prefix("email-") {
                     self.mail = Default::default();
                     self.area = Area::Settings;
+                    self.settings_section = super::SettingsSection::Mail;
                     self.mail.shots_open(&mut self.store, view);
                 } else if let Some(view) = other.strip_prefix("rede-") {
                     self.area = Area::Settings;

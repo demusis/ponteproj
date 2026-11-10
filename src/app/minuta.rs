@@ -77,6 +77,14 @@ impl PonteApp {
             .filter(|w| w.kind == WorkKind::Draft)
             .map(|w| format!("Gerando… {}", w.short_step()));
         let disclosure = self.ai_disclosure_text(true);
+        // Where the AI runs, the same line as under the analysis.
+        let ai_note = {
+            let (provider, destination) = self.ai_destination_text();
+            match self.ai.provider {
+                super::AiProvider::Local => format!("{provider}, sem envio externo"),
+                _ => format!("envia dados ao {provider}: {destination}"),
+            }
+        };
         let suggestion_pending = self.suggestion.is_some();
         titled_card(
             ui,
@@ -87,6 +95,7 @@ impl PonteApp {
             |ui| {
                 {
                     let editor = self.editors.get_mut(&id).expect("editor exists");
+                    widgets::overline(ui, "1. Partir de", None);
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = S3;
                         widgets::field_label(ui, "Tipo");
@@ -142,13 +151,6 @@ impl PonteApp {
                         template = ui
                             .add(widgets::secondary("Começar por um modelo"))
                             .on_hover_text("Preenche o editor com a estrutura do modelo escolhido (ou um texto-base) sem usar IA.")
-                            .clicked();
-                        save_as_template = ui
-                            .add_enabled(
-                                !editor.body.trim().is_empty(),
-                                widgets::quiet("Guardar como modelo"),
-                            )
-                            .on_hover_text("Leva este texto para a área Modelos como rascunho de um novo modelo de trabalho.")
                             .clicked();
                     });
                     if let Some(ranked) = &suggested {
@@ -208,6 +210,9 @@ impl PonteApp {
                             });
                         }
                     }
+                    ui.add_space(S2);
+                    ui.separator();
+                    widgets::overline(ui, "2. Pedir à IA (opcional)", None);
                     widgets::field_label(ui, "Pedido desta minuta (opcional)");
                     ui.add(
                         egui::TextEdit::multiline(&mut editor.instructions)
@@ -269,7 +274,11 @@ impl PonteApp {
                             generate = Some(Intent::Revise);
                         }
                     });
+                    widgets::small_muted(ui, ai_note.as_str()).on_hover_text(&disclosure);
                 }
+                ui.add_space(S2);
+                ui.separator();
+                widgets::overline(ui, "3. Texto", None);
                 {
                     let editor = self.editors.get_mut(&id).expect("editor exists");
                     if editor.capture_id != detail.summary.latest_capture_id
@@ -328,6 +337,13 @@ impl PonteApp {
                                 }
                             });
                         }
+                        save_as_template = ui
+                            .add_enabled(
+                                !editor.body.trim().is_empty(),
+                                widgets::quiet("Guardar como modelo"),
+                            )
+                            .on_hover_text("Leva este texto para a área Modelos como rascunho de um novo modelo de trabalho.")
+                            .clicked();
                         if editor.draft_dirty() {
                             pill(ui, "não salva", Tone::Warn);
                         }

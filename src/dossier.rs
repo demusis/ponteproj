@@ -754,7 +754,7 @@ impl DossierPanel {
                 ui.label(&link.payload.reason);
                 ui.small(format!(
                     "Confirmado localmente em {}",
-                    link.payload.created_at
+                    crate::labels::datetime(&link.payload.created_at)
                 ));
                 if ui
                     .button(if link.active {
@@ -790,29 +790,33 @@ impl DossierPanel {
         match store.capture_versions(document) {
             Ok(versions) => {
                 for (index, version) in versions.iter().enumerate() {
-                    ui.horizontal_wrapped(|ui| {
+                    ui.horizontal(|ui| {
                         if documents
                             .iter()
                             .find(|doc| doc.id == document)
                             .is_some_and(|doc| doc.latest_capture_id == version.id)
                         {
-                            ui.strong("Importação em uso");
+                            crate::widgets::pill(ui, "Importação em uso", crate::widgets::Tone::Ok);
                         }
-                        if ui
-                            .add(crate::widgets::quiet(format!(
-                                "Excluir importação nº {}…",
-                                version.id
-                            )))
-                            .clicked()
-                        {
-                            self.trash_requested = Some(crate::trash::Target {
-                                kind: crate::trash::Kind::Capture,
-                                id: version.id,
-                            });
-                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete = egui::Button::new(
+                                egui::RichText::new(format!(
+                                    "Excluir importação nº {}…",
+                                    version.id
+                                ))
+                                .color(crate::theme::c().danger),
+                            )
+                            .frame(false);
+                            if ui.add(delete).clicked() {
+                                self.trash_requested = Some(crate::trash::Target {
+                                    kind: crate::trash::Kind::Capture,
+                                    id: version.id,
+                                });
+                            }
+                        });
                     });
-                    ui.collapsing(format!("Importação nº {} • salva em {}",version.id,version.saved_at),|ui|{
-                ui.label(format!("Obtida em {}",version.capture.captured_at));ui.label(format!("Fonte: {}",version.capture.source_url));
+                    ui.collapsing(format!("Importação nº {} • salva em {}",version.id,crate::labels::datetime(&version.saved_at)),|ui|{
+                ui.label(format!("Obtida em {}",crate::labels::datetime(&version.capture.captured_at)));ui.label(format!("Fonte: {}",version.capture.source_url));
                 if let Some(previous)=versions.get(index+1){
                     if previous.capture.title!=version.capture.title{ui.label(format!("Título: {} → {}",previous.capture.title,version.capture.title));}
                     for (key,old,new) in changed_metadata(&previous.capture,&version.capture){ui.collapsing(format!("Campo alterado: {key}"),|ui|{ui.label(format!("Antes: {}",old.as_deref().unwrap_or("ausente")));ui.label(format!("Depois: {}",new.as_deref().unwrap_or("ausente")));});}

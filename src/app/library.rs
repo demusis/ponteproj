@@ -622,11 +622,16 @@ impl PonteApp {
         }
     }
 
-    /// First screen: how to import, and whether the browser bridge is ready.
-    /// First screen: how to import, and whether the browser bridge is ready.
+    /// First screen: a checklist of first steps (shown in full while the
+    /// library is empty, only while a required step is pending afterwards)
+    /// and the other ways to bring a document in.
     pub(super) fn welcome(&mut self, ui: &mut egui::Ui) {
         let status = self.install_status();
-        let p = theme::c();
+        let inputs = FirstSteps {
+            bridge_ok: status.browser_bridge_ok(),
+            has_sigadoc_document: self.documents.iter().any(|d| !d.manual),
+        };
+        let library_empty = self.documents.is_empty();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -636,125 +641,394 @@ impl PonteApp {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = S1;
                     widgets::heading(ui, "Seu espaço de trabalho documental");
-                    widgets::muted(ui, "Escolha um documento na lista à esquerda, ou importe um novo pelo navegador.");
+                    widgets::muted(
+                        ui,
+                        if library_empty {
+                            "Siga os primeiros passos abaixo para importar o seu primeiro documento."
+                        } else {
+                            "Escolha um documento na lista à esquerda."
+                        },
+                    );
                 });
-                widgets::card(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = S3;
-                    widgets::section(ui, "Para importar um documento");
-                    let steps = [
-                        "Abra o documento no SIGADOC, no Chrome ou no Edge.",
-                        "Clique em “Importar para o assistente”, no canto da página.",
-                        "O documento aparece aqui com o texto, os PDFs e o histórico.",
-                    ];
-                    for (index, step) in steps.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(26.0, 26.0),
-                                egui::Sense::hover(),
-                            );
-                            ui.painter().circle_filled(rect.center(), 13.0, p.primary_soft);
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                (index + 1).to_string(),
-                                theme::font_strong(theme::SIZE_BODY),
-                                p.primary,
-                            );
-                            ui.add(egui::Label::new(*step).wrap());
-                        });
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        widgets::muted(ui, "Primeira vez por aqui?");
-                        if ui
-                            .add(widgets::secondary(format!("{} Abrir o guia do usuário", icon::BOOK)))
-                            .on_hover_text("Guia curto, em dez seções, aberto no navegador. Também em Ajuda, na barra lateral.")
-                            .clicked()
-                        {
-                            self.open_guide();
-                        }
-                    });
-                });
-                widgets::card(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = S2;
-                    widgets::section(ui, "Algo que não está no SIGADOC?");
-                    ui.add(egui::Label::new("Uma ligação, um memorando ou um papel podem virar um registro manual, marcado como tal e com tarefas, notas e anexos como qualquer documento.").wrap());
-                    ui.add(egui::Label::new("E-mails entram prontos, com os anexos: direto da sua conta de e-mail (o Ponte lista as mensagens e importa as que você marcar, sem alterar nada na conta) ou de um arquivo .eml salvo.").wrap());
-                    ui.horizontal_wrapped(|ui| {
-                        if ui
-                            .add(widgets::primary(format!("{} Criar registro manual…", icon::PLUS)))
-                            .clicked()
-                        {
-                            self.manual_form.open_new();
-                        }
-                        if ui
-                            .add(widgets::secondary(format!("{} Importar da conta de e-mail…", icon::MAIL)))
-                            .on_hover_text("Lista as mensagens da sua conta de e-mail (Gmail com senha de app, por exemplo) para marcar e importar. Só leitura: nada é marcado, movido ou apagado na conta. Na primeira vez, o Ponte pede os dados da conta; depois, eles ficam em Ajustes ▸ E-mail.")
-                            .clicked()
-                        {
-                            let busy = match &self.worker {
-                                None => crate::mail_ui::MailBusy::Free,
-                                Some(worker) if worker.kind == WorkKind::Mail => {
-                                    crate::mail_ui::MailBusy::Mail
-                                }
-                                Some(_) => crate::mail_ui::MailBusy::Other,
-                            };
-                            self.mail.open_quick(&self.store, busy);
-                        }
-                        if ui
-                            .add(widgets::secondary("Importar e-mail de um arquivo (.eml)…"))
-                            .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro do tipo E-mail recebido (número EMAIL-ano/sequência), com os anexos. Nada é lido da sua conta de e-mail.")
-                            .clicked()
-                        {
-                            self.import_eml_dialog();
-                        }
-                    });
-                });
-                widgets::card(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = S2;
-                    widgets::section(ui, "Ligação com o navegador");
-                    let ok = status.browser_bridge_ok();
-                    let browsers = match (status.chrome_registered, status.edge_registered) {
-                        (true, true) => "Chrome e Edge",
-                        (true, false) => "Chrome",
-                        (false, true) => "Edge",
-                        (false, false) => "nenhum navegador",
-                    };
-                    if ok {
-                        ui.horizontal_wrapped(|ui| {
-                            pill(ui, "Pronto", Tone::Ok);
-                            ui.label(format!("O Ponte está registrado para o {browsers}."));
-                        });
-                        widgets::small_muted(ui, "Se o botão “Importar para o assistente” não aparece no SIGADOC, a extensão ainda não foi carregada no navegador: siga os passos abaixo.");
-                    } else if status.chrome_registered || status.edge_registered {
-                        notice_line(ui, Tone::Warn, format!("Registrado para o {browsers}, mas o programa apontado não foi encontrado. Reinstale o Ponte."));
-                    } else {
-                        notice_line(ui, Tone::Danger, "O navegador ainda não foi ligado ao Ponte. Execute o instalador neste computador, com a sua conta do Windows.");
-                    }
-                    match &status.extension_dir {
-                        Some(dir) => {
-                            widgets::field_label(ui, "Extensão do navegador");
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(dir.display().to_string()).color(p.muted),
-                                )
-                                .wrap(),
-                            );
-                            ui.horizontal_wrapped(|ui| {
-                                if ui.add(widgets::secondary(format!("{} Copiar caminho", icon::COPY))).on_hover_text("Cole este caminho em “Carregar sem compactação”, na página de extensões do navegador.").clicked() {
-                                    ui.ctx().copy_text(dir.display().to_string());
-                                    self.message("Caminho copiado. No navegador, abra a página de extensões, ative o Modo do desenvolvedor, clique em “Carregar sem compactação” e cole o caminho.");
-                                }
-                                if ui.add(widgets::secondary(format!("{} Abrir pasta", icon::FOLDER))).clicked() {
-                                    crate::windows_ui::reveal_in_explorer(dir);
-                                }
-                            });
-                        }
-                        None => {
-                            widgets::small_muted(ui, "A pasta da extensão do navegador não foi encontrada ao lado do programa.");
-                        }
-                    }
-                });
+                if library_empty || inputs.required_pending() {
+                    self.first_steps_card(ui, &inputs, &status);
+                }
+                self.other_sources_card(ui);
                 widgets::small_muted(ui, "A IA é opcional e só funciona quando você clica. Assinaturas e tramitação continuam no SIGADOC.");
             });
+    }
+
+    /// The card "Primeiros passos": one row per step, the pending ones open.
+    fn first_steps_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        inputs: &FirstSteps,
+        status: &crate::windows_ui::InstallStatus,
+    ) {
+        let p = theme::c();
+        widgets::card(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = S3;
+            ui.horizontal(|ui| {
+                widgets::section(ui, "Primeiros passos");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(widgets::secondary(format!("{} Abrir o guia do usuário", icon::BOOK)))
+                        .on_hover_text("Guia curto, em dez seções, aberto no navegador. Também em Ajuda, na barra lateral.")
+                        .clicked()
+                    {
+                        self.open_guide();
+                    }
+                });
+            });
+            for step in FirstStep::ALL {
+                let done = inputs.is_done(step);
+                let expanded = inputs.is_expanded(step);
+                let (title, detail) = match step {
+                    FirstStep::Bridge => (
+                        "Ponte ligado ao navegador",
+                        if done {
+                            format!("Registrado para o {}.", browsers_label(status))
+                        } else {
+                            String::new()
+                        },
+                    ),
+                    FirstStep::Extension => (
+                        "Extensão instalada no Chrome ou no Edge",
+                        if done {
+                            "Confirmada: já chegou um documento por ela.".to_owned()
+                        } else {
+                            String::new()
+                        },
+                    ),
+                    FirstStep::FirstDocument => (
+                        "Primeiro documento importado",
+                        if done {
+                            "Já há documentos do SIGADOC no acervo.".to_owned()
+                        } else {
+                            String::new()
+                        },
+                    ),
+                };
+                step_row(ui, done, title, &detail);
+                if !expanded {
+                    continue;
+                }
+                help_indent(ui, |ui| match step {
+                    FirstStep::Bridge => {
+                        if status.chrome_registered || status.edge_registered {
+                            notice_line(ui, Tone::Warn, format!("Registrado para o {}, mas o programa apontado não foi encontrado. Reinstale o Ponte.", browsers_label(status)));
+                        } else {
+                            notice_line(ui, Tone::Danger, "O navegador ainda não foi ligado ao Ponte. Execute o instalador neste computador, com a sua conta do Windows.");
+                        }
+                    }
+                    FirstStep::Extension => self.extension_help(ui, status),
+                    FirstStep::FirstDocument => {
+                        let steps = [
+                            "Abra o documento no SIGADOC, no Chrome ou no Edge.",
+                            "Clique em “Importar para o assistente”, no canto da página.",
+                            "O documento aparece aqui com o texto, os PDFs e o histórico.",
+                        ];
+                        for (index, text) in steps.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(26.0, 26.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter()
+                                    .circle_filled(rect.center(), 13.0, p.primary_soft);
+                                ui.painter().text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    (index + 1).to_string(),
+                                    theme::font_strong(theme::SIZE_BODY),
+                                    p.primary,
+                                );
+                                ui.add(egui::Label::new(*text).wrap());
+                            });
+                        }
+                    }
+                });
+            }
+            ui.separator();
+            // Optional items: never counted as pending.
+            optional_row(ui, "Inteligência artificial (opcional)");
+            ui.horizontal(|ui| {
+                help_indent(ui, |ui| {
+                    widgets::small_muted(
+                        ui,
+                        "Para resumir e sugerir providências. Só age quando você clica.",
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(widgets::quiet("Configurar")).clicked() {
+                        self.settings_open = true;
+                    }
+                });
+            });
+            optional_row(ui, "Mais de um computador ou celular (opcional)");
+            ui.horizontal(|ui| {
+                help_indent(ui, |ui| {
+                    widgets::small_muted(
+                        ui,
+                        "Para levar o acervo ao celular ou dividir o trabalho do gabinete.",
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(widgets::quiet("Configurar")).clicked() {
+                        self.intranet.open = true;
+                    }
+                });
+            });
+        });
+    }
+
+    /// Help of the extension step: what to look for, the store link and the
+    /// folder to load by hand.
+    fn extension_help(&mut self, ui: &mut egui::Ui, status: &crate::windows_ui::InstallStatus) {
+        let p = theme::c();
+        ui.add(
+            egui::Label::new(
+                "No SIGADOC, o botão “Importar para o assistente” aparece no canto da página.",
+            )
+            .wrap(),
+        );
+        widgets::small_muted(ui, "O Ponte só sabe que a extensão funciona depois que o primeiro documento chega por ela.");
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add(widgets::primary(format!("{} Abrir a loja de extensões", icon::LINK)))
+                .on_hover_text("Abre a página da extensão na Chrome Web Store. No Edge, a loja pede para permitir extensões de outras lojas.")
+                .clicked()
+            {
+                if let Err(error) = crate::windows_ui::open_url(&store_url()) {
+                    self.error(format!("Não foi possível abrir a loja: {error:#}"));
+                }
+            }
+        });
+        egui::CollapsingHeader::new("Instalar pela pasta (alternativa)")
+            .id_salt("welcome-extension-folder")
+            .show(ui, |ui| match &status.extension_dir {
+                Some(dir) => {
+                    widgets::small_muted(ui, "Na página de extensões do navegador, ative o Modo do desenvolvedor, clique em “Carregar sem compactação” e escolha esta pasta.");
+                    ui.add(
+                        egui::Label::new(RichText::new(dir.display().to_string()).color(p.muted))
+                            .wrap(),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add(widgets::secondary(format!("{} Copiar caminho", icon::COPY))).on_hover_text("Cole este caminho em “Carregar sem compactação”, na página de extensões do navegador.").clicked() {
+                            ui.ctx().copy_text(dir.display().to_string());
+                            self.message("Caminho copiado. No navegador, abra a página de extensões, ative o Modo do desenvolvedor, clique em “Carregar sem compactação” e cole o caminho.");
+                        }
+                        if ui.add(widgets::secondary(format!("{} Abrir pasta", icon::FOLDER))).clicked() {
+                            crate::windows_ui::reveal_in_explorer(dir);
+                        }
+                    });
+                }
+                None => {
+                    widgets::small_muted(ui, "A pasta da extensão do navegador não foi encontrada ao lado do programa.");
+                }
+            });
+    }
+
+    /// The card "Algo que não está no SIGADOC?": manual records and e-mail.
+    fn other_sources_card(&mut self, ui: &mut egui::Ui) {
+        widgets::card(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = S2;
+            widgets::section(ui, "Algo que não está no SIGADOC?");
+            ui.add(egui::Label::new("Uma ligação, um memorando ou um papel podem virar um registro manual, marcado como tal e com tarefas, notas e anexos como qualquer documento.").wrap());
+            ui.add(egui::Label::new("E-mails entram prontos, com os anexos: direto da sua conta de e-mail (o Ponte lista as mensagens e importa as que você marcar, sem alterar nada na conta) ou de um arquivo .eml salvo.").wrap());
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(widgets::primary(format!("{} Criar registro manual…", icon::PLUS)))
+                    .clicked()
+                {
+                    self.manual_form.open_new();
+                }
+                if ui
+                    .add(widgets::secondary(format!("{} Importar da conta de e-mail…", icon::MAIL)))
+                    .on_hover_text("Lista as mensagens da sua conta de e-mail (Gmail com senha de app, por exemplo) para marcar e importar. Só leitura: nada é marcado, movido ou apagado na conta. Na primeira vez, o Ponte pede os dados da conta; depois, eles ficam em Ajustes ▸ E-mail.")
+                    .clicked()
+                {
+                    let busy = match &self.worker {
+                        None => crate::mail_ui::MailBusy::Free,
+                        Some(worker) if worker.kind == WorkKind::Mail => {
+                            crate::mail_ui::MailBusy::Mail
+                        }
+                        Some(_) => crate::mail_ui::MailBusy::Other,
+                    };
+                    self.mail.open_quick(&self.store, busy);
+                }
+                if ui
+                    .add(widgets::secondary("Importar e-mail de um arquivo (.eml)…"))
+                    .on_hover_text("Lê um e-mail salvo como arquivo .eml (no Gmail: Mostrar original ▸ Baixar original; no Outlook: Salvar como). Vira um registro do tipo E-mail recebido (número EMAIL-ano/sequência), com os anexos. Nada é lido da sua conta de e-mail.")
+                    .clicked()
+                {
+                    self.import_eml_dialog();
+                }
+            });
+        });
+    }
+}
+
+/// The required steps of the checklist, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FirstStep {
+    Bridge,
+    Extension,
+    FirstDocument,
+}
+
+impl FirstStep {
+    const ALL: [FirstStep; 3] = [
+        FirstStep::Bridge,
+        FirstStep::Extension,
+        FirstStep::FirstDocument,
+    ];
+}
+
+/// Plain inputs of the checklist. The app records nothing about the extension
+/// contacting it, so a document from the SIGADOC is the only proof that the
+/// extension works (and that the first import happened).
+#[derive(Clone, Copy, Debug)]
+struct FirstSteps {
+    bridge_ok: bool,
+    has_sigadoc_document: bool,
+}
+
+impl FirstSteps {
+    fn is_done(&self, step: FirstStep) -> bool {
+        match step {
+            FirstStep::Bridge => self.bridge_ok,
+            FirstStep::Extension | FirstStep::FirstDocument => self.has_sigadoc_document,
+        }
+    }
+
+    /// Only a pending step shows its help.
+    fn is_expanded(&self, step: FirstStep) -> bool {
+        !self.is_done(step)
+    }
+
+    fn required_pending(&self) -> bool {
+        FirstStep::ALL.iter().any(|s| !self.is_done(*s))
+    }
+}
+
+/// Address of the extension on the Chrome Web Store, from the identifier the
+/// installer already authorises.
+fn store_url() -> String {
+    format!(
+        "https://chromewebstore.google.com/detail/{}",
+        crate::native::STORE_EXTENSION_ID.trim()
+    )
+}
+
+fn browsers_label(status: &crate::windows_ui::InstallStatus) -> &'static str {
+    match (status.chrome_registered, status.edge_registered) {
+        (true, true) => "Chrome e Edge",
+        (true, false) => "Chrome",
+        (false, true) => "Edge",
+        (false, false) => "nenhum navegador",
+    }
+}
+
+/// One line of the checklist: state icon, title, and a muted detail.
+fn step_row(ui: &mut egui::Ui, done: bool, title: &str, detail: &str) {
+    let p = theme::c();
+    ui.horizontal_wrapped(|ui| {
+        let (glyph, color) = if done {
+            (icon::CHECK, Tone::Ok.colors().0)
+        } else {
+            (icon::CIRCLE, p.muted)
+        };
+        ui.label(
+            RichText::new(glyph)
+                .color(color)
+                .size(theme::SIZE_BODY + 2.0),
+        );
+        ui.label(RichText::new(title).font(theme::font_strong(theme::SIZE_BODY)));
+        if !detail.is_empty() {
+            widgets::small_muted(ui, detail);
+        }
+    });
+}
+
+fn optional_row(ui: &mut egui::Ui, title: &str) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(icon::CIRCLE)
+                .color(theme::c().muted)
+                .size(theme::SIZE_BODY + 2.0),
+        );
+        ui.label(RichText::new(title).font(theme::font_strong(theme::SIZE_BODY)));
+    });
+}
+
+/// Indents the help of a row under its title.
+fn help_indent<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) {
+    ui.horizontal(|ui| {
+        ui.add_space(S4 + S2);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = S2;
+            add(ui)
+        });
+    });
+}
+
+#[cfg(test)]
+mod welcome_tests {
+    use super::*;
+
+    #[test]
+    fn nothing_done_expands_every_required_step() {
+        let s = FirstSteps {
+            bridge_ok: false,
+            has_sigadoc_document: false,
+        };
+        assert!(s.required_pending());
+        for step in FirstStep::ALL {
+            assert!(!s.is_done(step));
+            assert!(s.is_expanded(step));
+        }
+    }
+
+    #[test]
+    fn bridge_ready_without_documents_keeps_extension_and_import_open() {
+        let s = FirstSteps {
+            bridge_ok: true,
+            has_sigadoc_document: false,
+        };
+        assert!(s.is_done(FirstStep::Bridge) && !s.is_expanded(FirstStep::Bridge));
+        assert!(s.is_expanded(FirstStep::Extension));
+        assert!(s.is_expanded(FirstStep::FirstDocument));
+        assert!(s.required_pending());
+    }
+
+    #[test]
+    fn a_sigadoc_document_proves_extension_and_first_import() {
+        let s = FirstSteps {
+            bridge_ok: true,
+            has_sigadoc_document: true,
+        };
+        assert!(FirstStep::ALL
+            .iter()
+            .all(|x| s.is_done(*x) && !s.is_expanded(*x)));
+        assert!(!s.required_pending());
+    }
+
+    #[test]
+    fn broken_bridge_stays_pending_even_with_documents() {
+        let s = FirstSteps {
+            bridge_ok: false,
+            has_sigadoc_document: true,
+        };
+        assert!(s.is_expanded(FirstStep::Bridge));
+        assert!(!s.is_expanded(FirstStep::Extension));
+        assert!(s.required_pending());
+    }
+
+    #[test]
+    fn store_url_uses_the_trimmed_identifier() {
+        let url = store_url();
+        assert!(url.starts_with("https://chromewebstore.google.com/detail/"));
+        assert!(!url.contains(char::is_whitespace));
     }
 }
