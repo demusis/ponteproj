@@ -4,6 +4,7 @@ use crate::theme::{self, c, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
 use crate::{storage::Store, tasks::Task};
 use eframe::egui::{self, RichText};
+use std::collections::BTreeSet;
 
 /// Views over the task list. The first four are the everyday ones; the rest
 /// live under "Mais".
@@ -339,6 +340,9 @@ struct ListEnv<'a> {
     /// Task open in the form, and whether its edit is unsaved.
     editing: Option<i64>,
     editing_dirty: bool,
+    /// Selection mode: rows show a checkbox and a tap toggles them.
+    selecting: bool,
+    selected: &'a BTreeSet<i64>,
 }
 
 /// What the person asked for in the list during this frame.
@@ -347,6 +351,52 @@ struct RowOut {
     select: Option<Task>,
     complete: Option<i64>,
     reopen: Option<i64>,
+    /// A row to add to or take out of the selection.
+    toggle: Option<i64>,
+}
+
+/// The square on the left of a row in selection mode, in place of the round
+/// conclude control. Returns true when clicked.
+fn select_control(ui: &mut egui::Ui, selected: bool) -> bool {
+    let p = c();
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(CONTROL, CONTROL), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let square = rect.shrink(2.0);
+        let radius = egui::CornerRadius::same(5);
+        if selected {
+            painter.rect_filled(square, radius, p.primary);
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::CHECK,
+                theme::font(14.0),
+                p.on_primary,
+            );
+        } else {
+            let stroke = if response.hovered() {
+                p.primary
+            } else {
+                p.muted
+            };
+            painter.rect(
+                square,
+                radius,
+                p.surface,
+                egui::Stroke::new(1.5, stroke),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if selected {
+            "Tirar da seleção"
+        } else {
+            "Selecionar esta tarefa"
+        })
+        .clicked()
 }
 
 /// The round control on the left of a row: concludes a pending task, reopens
@@ -426,6 +476,7 @@ fn task_row(
 ) {
     let p = c();
     let editing_this = env.editing == Some(task.id);
+    let is_selected = env.selecting && env.selected.contains(&task.id);
     let pending = task.status != "concluida";
     let document = task
         .document_id
@@ -468,7 +519,11 @@ fn task_row(
                 if indent > 0.0 {
                     ui.add_space(indent);
                 }
-                if pending {
+                if env.selecting {
+                    if select_control(ui, is_selected) {
+                        out.toggle = Some(task.id);
+                    }
+                } else if pending {
                     let enabled = !(editing_this && env.editing_dirty) && !blocked;
                     let disabled_hint = if blocked {
                         format!("Conclua antes: {}", titles(&blockers))
@@ -592,7 +647,11 @@ fn task_row(
                                 widgets::small_muted(ui, "depende de");
                                 for dependency in &direct {
                                     if let Some(clicked) = dependency_chip(ui, dependency) {
-                                        out.select = Some(clicked);
+                                        if env.selecting {
+                                            out.toggle = Some(task.id);
+                                        } else {
+                                            out.select = Some(clicked);
+                                        }
                                     }
                                 }
                             });
@@ -604,7 +663,11 @@ fn task_row(
                                     .on_hover_text("Tarefas que só podem ser concluídas depois desta.");
                                 for next in &releases {
                                     if let Some(clicked) = dependency_chip(ui, next) {
-                                        out.select = Some(clicked);
+                                        if env.selecting {
+                                            out.toggle = Some(task.id);
+                                        } else {
+                                            out.select = Some(clicked);
+                                        }
                                     }
                                 }
                             });
@@ -646,7 +709,7 @@ fn task_row(
         se: if last { r } else { 0 },
     };
     let hovered = row.as_ref().is_some_and(|r| r.hovered());
-    let fill = if editing_this {
+    let fill = if editing_this || is_selected {
         Some(p.primary_soft)
     } else if hovered {
         Some(p.sunken)
@@ -689,8 +752,573 @@ fn task_row(
     let in_place = cached.is_some_and(|old| (old.min - rect.min).length() < 1.0);
     if let Some(row) = row {
         if in_place && row.clicked() {
-            out.select = Some(task.clone());
+            if env.selecting {
+                out.toggle = Some(task.id);
+            } else {
+                out.select = Some(task.clone());
+            }
         }
+    }
+}
+
+/// Actions on several tasks at once: what is changed, which tasks are
+/// skipped and why, how it is undone and how the result reads. Every task
+/// goes through the same store calls as a single change (fresh read, version
+/// check, dependency rules); nothing here is a shortcut around them.
+mod batch {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Choices of the priority list, as the task form has them.
+    pub const PRIORITIES: [&str; 4] = ["baixa", "normal", "alta", "urgente"];
+    /// How long "Desfazer" stays on the result line.
+    pub const UNDO_SECONDS: u64 = 30;
+
+    /// What is asked of every selected task.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Change {
+        Conclude,
+        /// New deadline in ISO form; empty means "Sem prazo".
+        Due(String),
+        /// New assignee; empty means "sem responsável".
+        Assignee(String),
+        Priority(String),
+        Trash,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Kind {
+        Conclude,
+        Due,
+        Assignee,
+        Priority,
+        Trash,
+        Undo,
+    }
+
+    impl Change {
+        pub fn kind(&self) -> Kind {
+            match self {
+                Self::Conclude => Kind::Conclude,
+                Self::Due(_) => Kind::Due,
+                Self::Assignee(_) => Kind::Assignee,
+                Self::Priority(_) => Kind::Priority,
+                Self::Trash => Kind::Trash,
+            }
+        }
+    }
+
+    /// Why a task was left as it was.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Reason {
+        AlreadyDone,
+        Blocked,
+        Missing,
+        Changed,
+        Same,
+        Refused(String),
+    }
+
+    /// The fields an action touched, which is all an undo puts back.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Touched {
+        Status,
+        Due,
+        Assignee,
+        Priority,
+        /// A task changed as a side effect (the cascade of a conclusion):
+        /// the whole previous state is put back.
+        Whole,
+        /// Moved to the Lixeira: undone by restoring it.
+        Untrash,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct UndoItem {
+        pub id: i64,
+        pub before: Task,
+        pub touched: Touched,
+        /// Version of the task right after the batch saved it.
+        pub version: i64,
+    }
+
+    pub struct Skip {
+        pub id: i64,
+        pub title: String,
+        pub reason: Reason,
+    }
+
+    #[derive(Default)]
+    pub struct Outcome {
+        pub done: usize,
+        pub skipped: Vec<Skip>,
+        pub undo: Vec<UndoItem>,
+        pub notes: Vec<String>,
+    }
+
+    /// Version and title of each selected task when the person was asked to
+    /// confirm: a task that is not at this version when applying is left alone.
+    pub type Snapshot = BTreeMap<i64, (i64, String)>;
+
+    /// Reads the version and title of every selected task now.
+    pub fn snapshot(store: &Store, selected: &BTreeSet<i64>, tasks: &[Task]) -> Snapshot {
+        selected
+            .iter()
+            .map(|&id| {
+                let title = tasks
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map(|t| t.title.clone())
+                    .unwrap_or_default();
+                (id, (version_of(store, id), title))
+            })
+            .collect()
+    }
+
+    /// Keeps only the selected ids that are still listed; true when some
+    /// were dropped.
+    pub fn retain_visible(selected: &mut BTreeSet<i64>, visible: &[i64]) -> bool {
+        let before = selected.len();
+        selected.retain(|id| visible.contains(id));
+        selected.len() != before
+    }
+
+    /// Whether a task may take the change. `blocked`: a task it depends on is
+    /// still open.
+    pub fn eligibility(change: &Change, task: &Task, blocked: bool) -> Result<(), Reason> {
+        match change {
+            Change::Conclude if task.status == "concluida" => Err(Reason::AlreadyDone),
+            Change::Conclude if blocked => Err(Reason::Blocked),
+            Change::Due(due) if task.due_date == *due => Err(Reason::Same),
+            Change::Assignee(name) if task.assignee.trim() == name.trim() => Err(Reason::Same),
+            Change::Priority(priority) if task.priority == *priority => Err(Reason::Same),
+            _ => Ok(()),
+        }
+    }
+
+    /// Applies the change to the fields it touches.
+    fn change_task(change: &Change, task: &mut Task) {
+        match change {
+            Change::Conclude => {
+                task.status = "concluida".into();
+                task.completed_at = None;
+            }
+            Change::Due(due) => {
+                task.due_date = due.clone();
+                // The origin quoted for the old date does not support the new one.
+                task.due_source.clear();
+            }
+            Change::Assignee(name) => task.assignee = name.trim().to_owned(),
+            Change::Priority(priority) => task.priority = priority.clone(),
+            Change::Trash => {}
+        }
+    }
+
+    fn touched(change: &Change) -> Touched {
+        match change {
+            Change::Conclude => Touched::Status,
+            Change::Due(_) => Touched::Due,
+            Change::Assignee(_) => Touched::Assignee,
+            Change::Priority(_) => Touched::Priority,
+            Change::Trash => Touched::Untrash,
+        }
+    }
+
+    /// Puts back what an action touched, leaving the rest of the task as it is now.
+    fn restore_fields(touched: Touched, from: &Task, to: &mut Task) {
+        match touched {
+            Touched::Status => {
+                to.status = from.status.clone();
+                to.completed_at = from.completed_at.clone();
+            }
+            Touched::Due => {
+                to.due_date = from.due_date.clone();
+                to.due_source = from.due_source.clone();
+            }
+            Touched::Assignee => to.assignee = from.assignee.clone(),
+            Touched::Priority => to.priority = from.priority.clone(),
+            Touched::Whole => *to = from.clone(),
+            Touched::Untrash => {}
+        }
+    }
+
+    /// Sorts a store refusal into a reason the result can explain.
+    fn classify(error: &str) -> Reason {
+        if error.contains("Conflito de edição") {
+            Reason::Changed
+        } else if error.contains("Conclua as tarefas anteriores") {
+            Reason::Blocked
+        } else {
+            Reason::Refused(error.trim().to_owned())
+        }
+    }
+
+    fn version_of(store: &Store, id: i64) -> i64 {
+        store.item_version("task", id).map_or(-1, |v| v.version)
+    }
+
+    /// One task: read fresh, checked, saved with the version just read.
+    fn apply_one(store: &mut Store, id: i64, change: &Change) -> Result<UndoItem, Reason> {
+        let version = store
+            .item_version("task", id)
+            .map_err(|e| Reason::Refused(e.to_string()))?
+            .version;
+        let tasks = store
+            .list_tasks()
+            .map_err(|e| Reason::Refused(e.to_string()))?;
+        let task = tasks
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
+            .ok_or(Reason::Missing)?;
+        let blocked = crate::tasks::Dependencies::new(&tasks).is_blocked(id);
+        eligibility(change, &task, blocked)?;
+        if *change == Change::Trash {
+            let target = crate::trash::Target {
+                kind: crate::trash::Kind::Task,
+                id,
+            };
+            let plan = store
+                .trash_plan(target.clone())
+                .map_err(|e| Reason::Refused(e.to_string()))?;
+            if let Some(blocker) = plan.blocker {
+                return Err(Reason::Refused(blocker));
+            }
+            store
+                .trash_item(target)
+                .map_err(|e| Reason::Refused(e.to_string()))?;
+            return Ok(UndoItem {
+                id,
+                before: task,
+                touched: Touched::Untrash,
+                version: 0,
+            });
+        }
+        let mut changed = task.clone();
+        change_task(change, &mut changed);
+        store
+            .save_task_checked(&changed, Some(version))
+            .map_err(|e| classify(&e.to_string()))?;
+        Ok(UndoItem {
+            id,
+            before: task,
+            touched: touched(change),
+            version: version_of(store, id),
+        })
+    }
+
+    /// Applies `change` to the tasks of `snapshot`. A task whose version is no
+    /// longer the one confirmed is skipped; one refused for a reason that a
+    /// later task of the batch may lift (a dependency to conclude, a
+    /// dependent to delete first) is tried again while the batch progresses.
+    pub fn apply_batch(store: &mut Store, snapshot: &Snapshot, change: &Change) -> Outcome {
+        let mut out = Outcome::default();
+        let title_of = |id: i64| {
+            snapshot
+                .get(&id)
+                .map(|(_, title)| title.clone())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "tarefa sem título".to_owned())
+        };
+        let before_all: BTreeMap<i64, Task> = store
+            .list_tasks()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| (t.id, t))
+            .collect();
+        // Nothing is touched that changed since the person confirmed.
+        let mut pending = Vec::new();
+        for (&id, (version, _)) in snapshot {
+            if !before_all.contains_key(&id) {
+                out.skipped.push(Skip {
+                    id,
+                    title: title_of(id),
+                    reason: Reason::Missing,
+                });
+            } else if version_of(store, id) != *version {
+                out.skipped.push(Skip {
+                    id,
+                    title: title_of(id),
+                    reason: Reason::Changed,
+                });
+            } else {
+                pending.push(id);
+            }
+        }
+        loop {
+            let mut progress = false;
+            let mut retry = Vec::new();
+            for id in std::mem::take(&mut pending) {
+                match apply_one(store, id, change) {
+                    Ok(item) => {
+                        progress = true;
+                        out.done += 1;
+                        out.undo.push(item);
+                    }
+                    Err(reason) => {
+                        let again = matches!(
+                            (&reason, change),
+                            (Reason::Blocked, Change::Conclude)
+                                | (Reason::Refused(_), Change::Trash)
+                        );
+                        if again {
+                            retry.push((id, reason));
+                        } else {
+                            out.skipped.push(Skip {
+                                id,
+                                title: title_of(id),
+                                reason,
+                            });
+                        }
+                    }
+                }
+            }
+            if retry.is_empty() || !progress {
+                for (id, reason) in retry {
+                    out.skipped.push(Skip {
+                        id,
+                        title: title_of(id),
+                        reason,
+                    });
+                }
+                break;
+            }
+            pending = retry.into_iter().map(|(id, _)| id).collect();
+        }
+        // Concluding a main document can conclude other tasks by itself: they
+        // are part of what the undo puts back.
+        if *change == Change::Conclude {
+            for task in store.list_tasks().unwrap_or_default() {
+                if snapshot.contains_key(&task.id) {
+                    continue;
+                }
+                if let Some(before) = before_all.get(&task.id) {
+                    if before.status != task.status {
+                        out.undo.push(UndoItem {
+                            id: task.id,
+                            before: before.clone(),
+                            touched: Touched::Whole,
+                            version: version_of(store, task.id),
+                        });
+                    }
+                }
+            }
+        }
+        out.notes = store.take_cascade_notes();
+        out
+    }
+
+    /// Puts back what the batch changed, task by task. One changed again
+    /// since (its version is not the one the batch left) is skipped.
+    pub fn undo_batch(store: &mut Store, items: &[UndoItem]) -> Outcome {
+        let mut out = Outcome::default();
+        for item in items.iter().rev() {
+            let skip = |reason| Skip {
+                id: item.id,
+                title: item.before.title.clone(),
+                reason,
+            };
+            if item.touched == Touched::Untrash {
+                let target = crate::trash::Target {
+                    kind: crate::trash::Kind::Task,
+                    id: item.id,
+                };
+                match store.restore_item(target) {
+                    Ok(_) => out.done += 1,
+                    Err(e) => out.skipped.push(skip(Reason::Refused(e.to_string()))),
+                }
+                continue;
+            }
+            let version = version_of(store, item.id);
+            if version != item.version {
+                out.skipped.push(skip(Reason::Changed));
+                continue;
+            }
+            let Some(mut task) = store
+                .list_tasks()
+                .unwrap_or_default()
+                .into_iter()
+                .find(|t| t.id == item.id)
+            else {
+                out.skipped.push(skip(Reason::Missing));
+                continue;
+            };
+            restore_fields(item.touched, &item.before, &mut task);
+            match store.save_task_checked(&task, Some(version)) {
+                Ok(_) => out.done += 1,
+                Err(e) => out.skipped.push(skip(classify(&e.to_string()))),
+            }
+        }
+        out.notes = store.take_cascade_notes();
+        out
+    }
+
+    fn plural(n: usize, one: &str, many: &str) -> String {
+        crate::labels::count(n, one, many)
+    }
+
+    /// "«A», «B» e «C»" for up to three titles, then "«A», «B», «C» e mais N".
+    fn title_list(titles: &[&str]) -> String {
+        let quoted: Vec<String> = titles.iter().map(|t| format!("«{t}»")).collect();
+        match quoted.len() {
+            0 => String::new(),
+            1 => quoted[0].clone(),
+            2 | 3 => format!(
+                "{} e {}",
+                quoted[..quoted.len() - 1].join(", "),
+                quoted[quoted.len() - 1]
+            ),
+            n => format!("{} e mais {}", quoted[..3].join(", "), n - 3),
+        }
+    }
+
+    fn fail_phrase(kind: Kind, k: usize) -> &'static str {
+        match (kind, k == 1) {
+            (Kind::Conclude, true) => "não pôde ser concluída",
+            (Kind::Conclude, false) => "não puderam ser concluídas",
+            (Kind::Trash, true) => "não pôde ser excluída",
+            (Kind::Trash, false) => "não puderam ser excluídas",
+            (Kind::Undo, true) => "não pôde ser desfeita",
+            (Kind::Undo, false) => "não puderam ser desfeitas",
+            (_, true) => "não foi alterada",
+            (_, false) => "não foram alteradas",
+        }
+    }
+
+    fn reason_text(reason: &Reason, kind: Kind, k: usize) -> String {
+        let one = k == 1;
+        let text = match reason {
+            Reason::AlreadyDone => {
+                if one {
+                    "já está concluída"
+                } else {
+                    "já estão concluídas"
+                }
+            }
+            Reason::Blocked => {
+                if one {
+                    "depende de uma tarefa em aberto"
+                } else {
+                    "dependem de tarefas em aberto"
+                }
+            }
+            Reason::Missing => {
+                if one {
+                    "está na Lixeira ou não existe mais"
+                } else {
+                    "estão na Lixeira ou não existem mais"
+                }
+            }
+            Reason::Changed if kind == Kind::Undo => {
+                if one {
+                    "foi alterada depois da ação em lote"
+                } else {
+                    "foram alteradas depois da ação em lote"
+                }
+            }
+            Reason::Changed => {
+                if one {
+                    "foi alterada por outra pessoa depois da seleção"
+                } else {
+                    "foram alteradas por outra pessoa depois da seleção"
+                }
+            }
+            Reason::Same => match (kind, one) {
+                (Kind::Due, true) => "já tem esse prazo",
+                (Kind::Due, false) => "já têm esse prazo",
+                (Kind::Assignee, true) => "já tem esse responsável",
+                (Kind::Assignee, false) => "já têm esse responsável",
+                (_, true) => "já tem essa prioridade",
+                (_, false) => "já têm essa prioridade",
+            },
+            Reason::Refused(message) => {
+                return format!("— {}", message.trim().trim_end_matches('.'));
+            }
+        };
+        text.to_owned()
+    }
+
+    /// The sentence that says what was done to `n` tasks.
+    pub fn done_sentence(change: &Change, n: usize) -> String {
+        match change {
+            Change::Conclude => plural(n, "tarefa concluída", "tarefas concluídas"),
+            Change::Due(due) if due.is_empty() => {
+                plural(n, "tarefa ficou sem prazo", "tarefas ficaram sem prazo")
+            }
+            Change::Due(due) => format!(
+                "{} {}",
+                plural(
+                    n,
+                    "tarefa com o prazo mudado para",
+                    "tarefas com o prazo mudado para"
+                ),
+                crate::labels::date(due)
+            ),
+            Change::Assignee(name) if name.trim().is_empty() => plural(
+                n,
+                "tarefa ficou sem responsável",
+                "tarefas ficaram sem responsável",
+            ),
+            Change::Assignee(name) => format!(
+                "{} {}",
+                plural(n, "tarefa atribuída a", "tarefas atribuídas a"),
+                name.trim()
+            ),
+            Change::Priority(priority) => format!(
+                "{} {}",
+                plural(n, "tarefa com prioridade", "tarefas com prioridade"),
+                crate::labels::priority(priority)
+            ),
+            Change::Trash => plural(n, "tarefa excluída", "tarefas excluídas"),
+        }
+    }
+
+    /// The text of the result line: what was done, then one line per reason
+    /// for the tasks left as they were, and the notes of the store. `change`
+    /// is `None` for an undo; `undone_trash` says it restored deleted tasks.
+    pub fn message(change: Option<&Change>, undone_trash: bool, out: &Outcome) -> String {
+        let kind = change.map_or(Kind::Undo, Change::kind);
+        let mut head = match (change, out.done) {
+            (Some(_), 0) => "Nada foi alterado.".to_owned(),
+            (None, 0) => "Nada foi desfeito.".to_owned(),
+            (Some(change), n) => format!("{}.", done_sentence(change, n)),
+            (None, n) if undone_trash => format!(
+                "{} da Lixeira.",
+                plural(n, "tarefa restaurada", "tarefas restauradas")
+            ),
+            (None, n) => format!("Alteração desfeita em {}.", plural(n, "tarefa", "tarefas")),
+        };
+        if out.done > 0 && matches!(change, Some(Change::Trash)) {
+            head.push_str(if out.done == 1 {
+                " Ela está na Lixeira (Ajustes ▸ Lixeira)."
+            } else {
+                " Estão na Lixeira (Ajustes ▸ Lixeira)."
+            });
+        }
+        let mut lines = vec![head];
+        let mut groups: Vec<(&Reason, Vec<&str>)> = Vec::new();
+        for skip in &out.skipped {
+            match groups
+                .iter_mut()
+                .find(|(reason, _)| **reason == skip.reason)
+            {
+                Some((_, titles)) => titles.push(&skip.title),
+                None => groups.push((&skip.reason, vec![&skip.title])),
+            }
+        }
+        for (reason, titles) in groups {
+            lines.push(format!(
+                "{} {}: {} {}.",
+                titles.len(),
+                fail_phrase(kind, titles.len()),
+                title_list(&titles),
+                reason_text(reason, kind, titles.len())
+            ));
+        }
+        for note in &out.notes {
+            lines.push(format!("• {note}"));
+        }
+        lines.join("\n")
     }
 }
 
@@ -706,6 +1334,40 @@ pub enum Intent {
     Open(Task),
     /// Start a blank task for this document, or without document (`None`).
     New(Option<i64>),
+}
+
+/// Which action of the bar is waiting for its confirmation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AskKind {
+    Conclude,
+    Due,
+    Assignee,
+    Priority,
+    Trash,
+}
+
+/// A confirmation open in the action bar.
+struct Ask {
+    kind: AskKind,
+    snapshot: batch::Snapshot,
+}
+
+/// What the person chose in the action bar during this frame.
+enum BarAction {
+    /// Open the confirmation of an action.
+    Ask(AskKind),
+    /// Confirmed: apply this change to the tasks of the open confirmation.
+    Apply(batch::Change),
+    Cancel,
+    Undo,
+    CloseResult,
+}
+
+/// What puts the last batch back, for a short while.
+struct BatchUndo {
+    at: std::time::Instant,
+    items: Vec<batch::UndoItem>,
+    trash: bool,
 }
 
 #[derive(Default)]
@@ -746,6 +1408,24 @@ pub struct TaskPanel {
     doc_picker: crate::doc_picker::DocumentPicker,
     /// "Desvincular do documento" waits for its confirmation.
     confirm_unlink: bool,
+    /// Selection mode ("Selecionar"): tasks chosen by id for an action on
+    /// several at once.
+    selecting: bool,
+    selected: BTreeSet<i64>,
+    /// The confirmation open in the action bar, with the versions the tasks
+    /// had when it opened.
+    batch_ask: Option<Ask>,
+    /// What the person typed or chose in the confirmation.
+    batch_due: String,
+    batch_due_clear: bool,
+    batch_assignee: String,
+    batch_assignee_clear: bool,
+    batch_priority: String,
+    /// Result line of the last batch, and what undoes it until it expires.
+    batch_result: Option<(String, Tone)>,
+    batch_undo: Option<BatchUndo>,
+    /// A batch or its undo changed tasks (the app may refresh other areas).
+    batch_changed: bool,
     /// Development only: keeps "Mais detalhes" open for the picture.
     #[cfg(feature = "shots")]
     shots_details: bool,
@@ -798,6 +1478,8 @@ impl TaskPanel {
                     .and_then(|tasks| tasks.into_iter().find(|t| t.id == id));
                 self.original = self.draft.clone();
                 self.base_version = store.item_version("task", id).ok().map(|v| v.version);
+                // Another change: the last batch can no longer be undone.
+                self.batch_undo = None;
                 let mut text = "Tarefa salva.".to_owned();
                 for note in store.take_cascade_notes() {
                     text.push_str(" • ");
@@ -884,6 +1566,7 @@ impl TaskPanel {
         if self.dirty() {
             return false;
         }
+        self.end_selection();
         self.keep_filter_for(document_id);
         self.draft = Some(Task::blank(document_id));
         self.original = None;
@@ -899,6 +1582,7 @@ impl TaskPanel {
                 .as_ref()
                 .is_some_and(|draft| draft.id == task.id && draft.document_id == task.document_id);
         }
+        self.end_selection();
         self.keep_filter_for(task.document_id);
         self.draft = Some(task.clone());
         self.original = Some(task.clone());
@@ -910,6 +1594,14 @@ impl TaskPanel {
     /// did something or when the panel is open but cannot be closed now.
     pub fn key_escape(&mut self) -> bool {
         if self.draft.is_none() {
+            // Selection mode: Esc first closes the confirmation, then leaves.
+            if self.batch_ask.take().is_some() {
+                return true;
+            }
+            if self.selecting {
+                self.end_selection();
+                return true;
+            }
             return false;
         }
         if !self.dirty() && !self.attachments.dirty() {
@@ -966,6 +1658,7 @@ impl TaskPanel {
         if self.dirty() {
             return false;
         }
+        self.end_selection();
         self.original = Some(task.clone());
         self.draft = Some(task.clone());
         self.base_version = store.item_version("task", task.id).ok().map(|v| v.version);
@@ -1006,6 +1699,7 @@ impl TaskPanel {
             "Sugestão da IA para revisão.\nMotivo: {}\nBase informada: {}",
             suggestion.reason, suggestion.evidence
         );
+        self.end_selection();
         self.draft = Some(task);
         self.original = None;
         self.focus_title = true;
@@ -1028,6 +1722,433 @@ impl TaskPanel {
     fn notice(&mut self, text: impl Into<String>, error: bool) {
         self.message = text.into();
         self.message_is_error = error;
+    }
+
+    /// True when the panel may enter selection mode: nothing unsaved is
+    /// open and no request is waiting for the app's question about it.
+    fn can_select(&self) -> bool {
+        !self.dirty() && !self.attachments.dirty() && self.blocked.is_none()
+    }
+
+    /// "Selecionar": closes a task form nobody has changed and turns the
+    /// selection mode on. Refused (false) while something would be lost.
+    fn start_selection(&mut self) -> bool {
+        if !self.can_select() {
+            return false;
+        }
+        if self.draft.is_some() {
+            self.close_form();
+        }
+        self.selecting = true;
+        self.selected.clear();
+        self.reset_batch_inputs();
+        true
+    }
+
+    /// Leaves selection mode: the selection and any open confirmation go.
+    /// The result line of the last batch stays.
+    fn end_selection(&mut self) {
+        self.selecting = false;
+        self.selected.clear();
+        self.reset_batch_inputs();
+    }
+
+    /// Closes the confirmation of the action bar and forgets what was typed.
+    fn reset_batch_inputs(&mut self) {
+        self.batch_ask = None;
+        self.batch_due.clear();
+        self.batch_due_clear = false;
+        self.batch_assignee.clear();
+        self.batch_assignee_clear = false;
+        self.batch_priority.clear();
+    }
+
+    /// Adds or takes out one task; a change of the selection closes the
+    /// confirmation, which counted the previous one.
+    fn toggle_selected(&mut self, id: i64) {
+        if !self.selected.remove(&id) {
+            self.selected.insert(id);
+        }
+        self.reset_batch_inputs();
+    }
+
+    fn select_all(&mut self, visible: &[i64]) {
+        self.selected = visible.iter().copied().collect();
+        self.reset_batch_inputs();
+    }
+
+    /// True once after a batch or its undo changed tasks, so the app can
+    /// refresh what it shows elsewhere (counts on the rail, the ficha).
+    pub fn take_batch_changed(&mut self) -> bool {
+        std::mem::take(&mut self.batch_changed)
+    }
+
+    /// Applies the confirmed change to the tasks of the snapshot. Afterwards
+    /// the selection keeps only the tasks that were left as they were.
+    fn run_batch(&mut self, store: &mut Store, snapshot: &batch::Snapshot, change: batch::Change) {
+        self.reset_batch_inputs();
+        if self.dirty() {
+            self.batch_result = Some((
+                "Salve ou cancele as alterações da tarefa aberta antes de continuar.".to_owned(),
+                Tone::Danger,
+            ));
+            return;
+        }
+        let outcome = batch::apply_batch(store, snapshot, &change);
+        self.selected = outcome.skipped.iter().map(|s| s.id).collect();
+        let tone = if outcome.done == 0 {
+            Tone::Danger
+        } else if outcome.skipped.is_empty() {
+            Tone::Ok
+        } else {
+            Tone::Warn
+        };
+        self.batch_result = Some((batch::message(Some(&change), false, &outcome), tone));
+        for item in &outcome.undo {
+            if item.touched == batch::Touched::Untrash {
+                self.forget_task(item.id);
+            }
+        }
+        self.batch_changed |= outcome.done > 0;
+        self.batch_undo = (!outcome.undo.is_empty()).then(|| BatchUndo {
+            at: std::time::Instant::now(),
+            items: outcome.undo,
+            trash: change == batch::Change::Trash,
+        });
+    }
+
+    /// "Desfazer" on the result line: puts back what the last batch changed.
+    fn run_undo(&mut self, store: &mut Store) {
+        let Some(undo) = self.batch_undo.take() else {
+            return;
+        };
+        if undo.at.elapsed().as_secs() >= batch::UNDO_SECONDS || self.dirty() {
+            return;
+        }
+        let outcome = batch::undo_batch(store, &undo.items);
+        let tone = if outcome.done == 0 {
+            Tone::Danger
+        } else if outcome.skipped.is_empty() {
+            Tone::Ok
+        } else {
+            Tone::Warn
+        };
+        self.batch_result = Some((batch::message(None, undo.trash, &outcome), tone));
+        self.batch_changed |= outcome.done > 0;
+    }
+
+    /// The strip under the filters in selection mode: how many are chosen
+    /// and the ways to change that.
+    fn selection_band(&mut self, ui: &mut egui::Ui, visible: &[i64]) {
+        let count = self.selected.len();
+        egui::Frame::new()
+            .fill(c().sunken)
+            .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+            .inner_margin(egui::Margin::symmetric(S3 as i8, S2 as i8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = S3;
+                    ui.label(
+                        RichText::new(if count == 0 {
+                            "Nenhuma selecionada".to_owned()
+                        } else {
+                            crate::labels::count(count, "selecionada", "selecionadas")
+                        })
+                        .font(theme::font_strong(theme::SIZE_BODY)),
+                    );
+                    if ui
+                        .add_enabled(
+                            !visible.is_empty() && count < visible.len(),
+                            widgets::quiet("Selecionar todas as visíveis"),
+                        )
+                        .on_hover_text("Seleciona as tarefas que estão na lista agora (Ctrl+A).")
+                        .clicked()
+                    {
+                        self.select_all(visible);
+                    }
+                    if ui
+                        .add_enabled(count > 0, widgets::quiet("Limpar seleção"))
+                        .clicked()
+                    {
+                        self.selected.clear();
+                        self.reset_batch_inputs();
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(widgets::secondary("Sair da seleção"))
+                            .on_hover_text("Volta à lista de sempre (Esc).")
+                            .clicked()
+                        {
+                            self.end_selection();
+                        }
+                    });
+                });
+            });
+    }
+
+    /// The bar at the bottom: the result line of the last batch and, while
+    /// something is selected, the actions or the confirmation of one.
+    fn show_batch_bar(&mut self, ui: &mut egui::Ui, actor: &str) -> Option<BarAction> {
+        let mut action = None;
+        let count_text = |n: usize| crate::labels::count(n, "tarefa", "tarefas");
+        egui::Panel::bottom("task-batch")
+            .resizable(false)
+            .frame(egui::Frame::new())
+            .show(ui, |ui| {
+                ui.add_space(S2);
+                ui.spacing_mut().item_spacing.y = S2;
+                if let Some((text, tone)) = self.batch_result.clone() {
+                    let (fg, bg) = tone.colors();
+                    egui::Frame::new()
+                        .fill(bg)
+                        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                        .inner_margin(egui::Margin::symmetric(S3 as i8, S2 as i8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let can_undo = self.batch_undo.is_some();
+                                let reserved = 40.0 + if can_undo { 100.0 } else { 0.0 };
+                                let width = (ui.available_width() - reserved).max(100.0);
+                                ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
+                                    ui.set_width(width);
+                                    ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                                });
+                                if can_undo
+                                    && ui
+                                        .add(widgets::secondary(format!("{} Desfazer", icon::UNDO)))
+                                        .on_hover_text("Põe as tarefas como estavam antes. Vale por 30 segundos, enquanto nada mais mudar.")
+                                        .clicked()
+                                {
+                                    action = Some(BarAction::Undo);
+                                }
+                                if widgets::icon_button(ui, icon::CLOSE, "Fechar").clicked() {
+                                    action = Some(BarAction::CloseResult);
+                                }
+                            });
+                        });
+                }
+                if !(self.selecting && !self.selected.is_empty()) {
+                    return;
+                }
+                widgets::card_frame()
+                    .inner_margin(egui::Margin::symmetric(S3 as i8, S2 as i8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing = egui::vec2(S2, S2);
+                        let Some(kind) = self.batch_ask.as_ref().map(|a| a.kind) else {
+                            ui.horizontal_wrapped(|ui| {
+                                if ui
+                                    .add(widgets::primary(format!("{} Concluir", icon::CHECK)))
+                                    .on_hover_text("Conclui as tarefas selecionadas. Nada é enviado ao SIGADOC.")
+                                    .clicked()
+                                {
+                                    action = Some(BarAction::Ask(AskKind::Conclude));
+                                }
+                                for (label, kind, hint) in [
+                                    ("Prazo…", AskKind::Due, "Muda o prazo de todas as selecionadas."),
+                                    ("Responsável…", AskKind::Assignee, "Muda o responsável de todas as selecionadas."),
+                                    ("Prioridade…", AskKind::Priority, "Muda a prioridade de todas as selecionadas."),
+                                ] {
+                                    if ui
+                                        .add(widgets::secondary(label))
+                                        .on_hover_text(hint)
+                                        .clicked()
+                                    {
+                                        action = Some(BarAction::Ask(kind));
+                                    }
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .add(widgets::danger(format!("{} Excluir…", icon::TRASH)))
+                                            .on_hover_text("Manda as tarefas selecionadas para a Lixeira, de onde podem ser restauradas.")
+                                            .clicked()
+                                        {
+                                            action = Some(BarAction::Ask(AskKind::Trash));
+                                        }
+                                    },
+                                );
+                            });
+                            return;
+                        };
+                        let n = self.batch_ask.as_ref().map_or(0, |a| a.snapshot.len());
+                        let tasks_text = count_text(n);
+                        // The sentence of the confirmation, the change it
+                        // stands for (None while the choice is incomplete) and
+                        // the name of its button.
+                        let (sentence, change, button): (String, Option<batch::Change>, &str) =
+                            match kind {
+                                AskKind::Conclude => (
+                                    format!("Concluir {tasks_text}?"),
+                                    Some(batch::Change::Conclude),
+                                    "Concluir",
+                                ),
+                                AskKind::Trash => (
+                                    format!(
+                                        "Excluir {tasks_text}? {} para a Lixeira.",
+                                        if n == 1 { "Ela vai" } else { "Elas vão" }
+                                    ),
+                                    Some(batch::Change::Trash),
+                                    "Excluir",
+                                ),
+                                AskKind::Due => {
+                                    ui.horizontal_wrapped(|ui| {
+                                        let before = self.batch_due.clone();
+                                        crate::labels::date_field(ui, "batch-due", &mut self.batch_due);
+                                        if self.batch_due != before {
+                                            self.batch_due_clear = false;
+                                        }
+                                        if widgets::chip(ui, self.batch_due_clear, "Sem prazo").clicked() {
+                                            self.batch_due_clear = !self.batch_due_clear;
+                                            if self.batch_due_clear {
+                                                self.batch_due.clear();
+                                            }
+                                        }
+                                    });
+                                    let typed = crate::labels::parse_typed_date(&self.batch_due);
+                                    match (self.batch_due_clear, typed) {
+                                        (true, _) => (
+                                            format!("Tirar o prazo de {tasks_text}?"),
+                                            Some(batch::Change::Due(String::new())),
+                                            "Tirar prazo",
+                                        ),
+                                        (false, Some(iso)) => (
+                                            format!(
+                                                "Mudar o prazo de {tasks_text} para {}?",
+                                                crate::labels::date(&iso)
+                                            ),
+                                            Some(batch::Change::Due(iso)),
+                                            "Mudar prazo",
+                                        ),
+                                        (false, None) => (
+                                            format!("Escolha o novo prazo de {tasks_text}."),
+                                            None,
+                                            "Mudar prazo",
+                                        ),
+                                    }
+                                }
+                                AskKind::Assignee => {
+                                    ui.horizontal_wrapped(|ui| {
+                                        let before = self.batch_assignee.clone();
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut self.batch_assignee)
+                                                .hint_text("Nome do responsável")
+                                                .desired_width(220.0),
+                                        );
+                                        if self.batch_assignee != before {
+                                            self.batch_assignee_clear = false;
+                                        }
+                                        if ui
+                                            .add(widgets::secondary("Eu"))
+                                            .on_hover_text(format!("Atribuir a {actor}"))
+                                            .clicked()
+                                        {
+                                            self.batch_assignee = actor.to_owned();
+                                            self.batch_assignee_clear = false;
+                                        }
+                                        if widgets::chip(ui, self.batch_assignee_clear, "Sem responsável").clicked() {
+                                            self.batch_assignee_clear = !self.batch_assignee_clear;
+                                            if self.batch_assignee_clear {
+                                                self.batch_assignee.clear();
+                                            }
+                                        }
+                                    });
+                                    let name = self.batch_assignee.trim().to_owned();
+                                    let valid = name.len() <= 256 && !name.chars().any(char::is_control);
+                                    if self.batch_assignee_clear {
+                                        (
+                                            format!("Deixar {tasks_text} sem responsável?"),
+                                            Some(batch::Change::Assignee(String::new())),
+                                            "Tirar responsável",
+                                        )
+                                    } else if name.is_empty() {
+                                        (
+                                            format!("Digite o responsável de {tasks_text}."),
+                                            None,
+                                            "Atribuir",
+                                        )
+                                    } else if !valid {
+                                        (
+                                            "O nome do responsável é longo demais ou tem caracteres inválidos.".to_owned(),
+                                            None,
+                                            "Atribuir",
+                                        )
+                                    } else {
+                                        (
+                                            format!("Atribuir {tasks_text} a {name}?"),
+                                            Some(batch::Change::Assignee(name)),
+                                            "Atribuir",
+                                        )
+                                    }
+                                }
+                                AskKind::Priority => {
+                                    ui.horizontal_wrapped(|ui| {
+                                        for choice in batch::PRIORITIES {
+                                            if widgets::chip(
+                                                ui,
+                                                self.batch_priority == choice,
+                                                crate::labels::priority(choice),
+                                            )
+                                            .clicked()
+                                            {
+                                                self.batch_priority = choice.to_owned();
+                                            }
+                                        }
+                                    });
+                                    if self.batch_priority.is_empty() {
+                                        (
+                                            format!("Escolha a nova prioridade de {tasks_text}."),
+                                            None,
+                                            "Mudar prioridade",
+                                        )
+                                    } else {
+                                        (
+                                            format!(
+                                                "Mudar a prioridade de {tasks_text} para {}?",
+                                                crate::labels::priority(&self.batch_priority)
+                                            ),
+                                            Some(batch::Change::Priority(self.batch_priority.clone())),
+                                            "Mudar prioridade",
+                                        )
+                                    }
+                                }
+                            };
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(sentence).font(theme::font_strong(theme::SIZE_BODY)),
+                            );
+                            let ready = change.is_some();
+                            let confirm = if kind == AskKind::Trash {
+                                widgets::danger(button)
+                            } else if kind == AskKind::Conclude {
+                                widgets::primary(button)
+                            } else {
+                                widgets::secondary(button)
+                            };
+                            if ui
+                                .add_enabled(ready, confirm)
+                                .on_disabled_hover_text("Complete a escolha para continuar.")
+                                .clicked()
+                            {
+                                if let Some(change) = change {
+                                    action = Some(BarAction::Apply(change));
+                                }
+                            }
+                            if ui.add(widgets::quiet("Cancelar")).clicked() {
+                                action = Some(BarAction::Cancel);
+                            }
+                        });
+                        if kind == AskKind::Conclude {
+                            widgets::small_muted(
+                                ui,
+                                "As que já estão concluídas ou esperam outra tarefa em aberto ficam como estão, e o resultado diz quais.",
+                            );
+                        }
+                    });
+            });
+        action
     }
 
     pub fn show(
@@ -1053,6 +2174,17 @@ impl TaskPanel {
                 });
             return None;
         }
+        // "Desfazer" of the last batch is offered for a short while only.
+        if let Some(undo) = &self.batch_undo {
+            let left = std::time::Duration::from_secs(batch::UNDO_SECONDS)
+                .saturating_sub(undo.at.elapsed());
+            if left.is_zero() {
+                self.batch_undo = None;
+            } else {
+                ui.ctx().request_repaint_after(left);
+            }
+        }
+        let actor = store.active_actor();
         let data = std::mem::take(&mut self.data);
         let tasks = &data.tasks;
         let documents = &data.documents;
@@ -1097,6 +2229,29 @@ impl TaskPanel {
         // Another sort is applied on top of that, keeping it for ties.
         let visible = sort_tasks(deps.order(&visible), self.sort, &index);
 
+        // Only what can be seen can stay selected, so no action ever reaches
+        // a task the person cannot see.
+        let visible_ids: Vec<i64> = visible.iter().map(|t| t.id).collect();
+        if self.selecting {
+            if batch::retain_visible(&mut self.selected, &visible_ids) {
+                self.batch_ask = None;
+            }
+            // Ctrl+A, unless a text box has the keyboard.
+            if !ui.ctx().egui_wants_keyboard_input()
+                && ui.input_mut(|i| {
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(
+                        egui::Modifiers::COMMAND,
+                        egui::Key::A,
+                    ))
+                })
+            {
+                self.select_all(&visible_ids);
+            }
+        } else if !self.selected.is_empty() {
+            self.selected.clear();
+        }
+        let mut bar_action: Option<BarAction> = None;
+
         let mut out = RowOut::default();
 
         // The task form is the side panel on the right; the rest is the area.
@@ -1139,6 +2294,15 @@ impl TaskPanel {
                             widgets::search(ui, &mut self.query, "Buscar tarefa ou documento", 280.0);
                         if std::mem::take(&mut self.focus_search) {
                             search.request_focus();
+                        }
+                        if !self.selecting
+                            && ui
+                                .add_enabled(self.can_select(), widgets::quiet("Selecionar"))
+                                .on_hover_text("Escolhe várias tarefas para concluir, mudar o prazo, o responsável ou a prioridade, ou excluir de uma vez.")
+                                .on_disabled_hover_text("Salve ou cancele as alterações da tarefa aberta antes de selecionar.")
+                                .clicked()
+                        {
+                            self.start_selection();
                         }
                     });
                 });
@@ -1202,6 +2366,9 @@ impl TaskPanel {
                             .on_hover_text("Ordem das tarefas dentro de cada grupo.");
                     });
                 });
+                if self.selecting {
+                    self.selection_band(ui, &visible_ids);
+                }
                 // Band that says the list is narrowed to one document.
                 if let Some(id) = self.document_filter {
                     let title = index.get(&id).map(|d| d.title.as_str()).unwrap_or("");
@@ -1264,8 +2431,14 @@ impl TaskPanel {
                         });
                 }
 
+                // The action bar and the result of the last batch sit at the
+                // bottom, under the list.
+                if (self.selecting && !self.selected.is_empty()) || self.batch_result.is_some() {
+                    bar_action = self.show_batch_bar(ui, &actor);
+                }
+
                 // The list: tasks grouped by deadline, one card per group.
-                let focus = self.draft.as_ref().map(|t| t.id).filter(|id| *id > 0);
+                let focus =self.draft.as_ref().map(|t| t.id).filter(|id| *id > 0);
                 let focus_before: Vec<i64> = focus
                     .map(|id| deps.direct(id).iter().map(|t| t.id).collect())
                     .unwrap_or_default();
@@ -1288,6 +2461,8 @@ impl TaskPanel {
                     today: &today_text,
                     editing: self.draft.as_ref().map(|t| t.id),
                     editing_dirty: self.dirty(),
+                    selecting: self.selecting,
+                    selected: &self.selected,
                 };
                 let mut groups: [Vec<&Task>; 5] = Default::default();
                 for task in &visible {
@@ -1422,6 +2597,30 @@ impl TaskPanel {
         }
         if let Some(id) = out.reopen {
             let _ = self.apply_status_change(store, id, false);
+        }
+        if let Some(id) = out.toggle {
+            self.toggle_selected(id);
+        }
+        if let Some(action) = bar_action {
+            match action {
+                BarAction::Ask(kind) => {
+                    self.reset_batch_inputs();
+                    let snapshot = batch::snapshot(store, &self.selected, tasks);
+                    self.batch_ask = Some(Ask { kind, snapshot });
+                }
+                BarAction::Cancel => self.reset_batch_inputs(),
+                BarAction::Apply(change) => {
+                    if let Some(ask) = self.batch_ask.take() {
+                        self.run_batch(store, &ask.snapshot, change);
+                    }
+                }
+                BarAction::Undo => self.run_undo(store),
+                BarAction::CloseResult => {
+                    self.batch_result = None;
+                    self.batch_undo = None;
+                }
+            }
+            ui.ctx().request_repaint();
         }
         self.data = data;
         open
@@ -2110,6 +3309,7 @@ impl TaskPanel {
                     self.original = task;
                 }
                 self.base_version = store.item_version("task", id).ok().map(|v| v.version);
+                self.batch_undo = None;
                 self.notice(
                     match name {
                         Some(number) => format!("Tarefa vinculada a {number}."),
@@ -2146,6 +3346,7 @@ impl TaskPanel {
         };
         match result {
             Ok(updated) => {
+                self.batch_undo = None;
                 if complete {
                     self.concluded = before;
                 }
@@ -2430,6 +3631,11 @@ pub const SHOTS: &[&str] = &[
     "vazia-busca",
     "vazia-lembrete",
     "vazia-documento",
+    "selecao",
+    "selecao-concluir",
+    "selecao-prazo",
+    "selecao-excluir",
+    "selecao-resultado",
 ];
 
 #[cfg(feature = "shots")]
@@ -2488,6 +3694,52 @@ impl TaskPanel {
             }
             "nova-avulsa" => {
                 self.start_new(None);
+            }
+            "selecao" | "selecao-concluir" | "selecao-prazo" | "selecao-excluir"
+            | "selecao-resultado" => {
+                self.selecting = true;
+                let deps = crate::tasks::Dependencies::new(&tasks);
+                let open: Vec<&Task> = tasks.iter().filter(|t| t.status != "concluida").collect();
+                if view == "selecao-resultado" {
+                    // Four concluded, one left because it waits for another
+                    // task (what the result line says; nothing is changed).
+                    let blocked = open.iter().find(|t| deps.is_blocked(t.id));
+                    let title = blocked.map(|t| t.title.clone()).unwrap_or_default();
+                    self.selected = blocked.iter().map(|t| t.id).collect();
+                    let outcome = batch::Outcome {
+                        done: 4,
+                        skipped: vec![batch::Skip {
+                            id: 0,
+                            title,
+                            reason: batch::Reason::Blocked,
+                        }],
+                        ..Default::default()
+                    };
+                    self.batch_result = Some((
+                        batch::message(Some(&batch::Change::Conclude), false, &outcome),
+                        Tone::Warn,
+                    ));
+                    self.batch_undo = Some(BatchUndo {
+                        at: std::time::Instant::now(),
+                        items: Vec::new(),
+                        trash: false,
+                    });
+                } else {
+                    self.selected = open.iter().take(3).map(|t| t.id).collect();
+                    let kind = match view {
+                        "selecao-concluir" => Some(AskKind::Conclude),
+                        "selecao-prazo" => Some(AskKind::Due),
+                        "selecao-excluir" => Some(AskKind::Trash),
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        if kind == AskKind::Due {
+                            self.batch_due = "2026-11-14".into();
+                        }
+                        let snapshot = batch::snapshot(store, &self.selected, &tasks);
+                        self.batch_ask = Some(Ask { kind, snapshot });
+                    }
+                }
             }
             "concluidas" => {
                 self.show_done = true;
@@ -2630,5 +3882,371 @@ mod standalone_tests {
         panel.draft.as_mut().unwrap().notes = "sem salvar".into();
         panel.apply_relink(&mut store, id, Some(document), Some("SEFAZ".into()));
         assert_eq!(panel.draft.as_ref().unwrap().document_id, None);
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::batch::*;
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("batch.sqlite3")).unwrap();
+        (dir, store)
+    }
+
+    /// A task without document, saved; `after` are the tasks it waits for.
+    fn add(store: &mut Store, title: &str, after: &[i64]) -> i64 {
+        let mut task = Task::standalone();
+        task.title = title.into();
+        task.dependencies = after.to_vec();
+        store.save_task(&task).unwrap()
+    }
+
+    fn get(store: &Store, id: i64) -> Task {
+        store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap()
+    }
+
+    fn pick(store: &Store, ids: &[i64]) -> Snapshot {
+        snapshot(
+            store,
+            &ids.iter().copied().collect(),
+            &store.list_tasks().unwrap(),
+        )
+    }
+
+    fn touch(store: &mut Store, id: i64) {
+        // Another edit lands: the version moves on.
+        let mut task = get(store, id);
+        task.notes = "outra edição".into();
+        let version = store.item_version("task", id).unwrap().version;
+        store.save_task_checked(&task, Some(version)).unwrap();
+    }
+
+    #[test]
+    fn the_selection_keeps_only_what_is_still_listed() {
+        let mut selected: BTreeSet<i64> = [1, 2, 3].into_iter().collect();
+        assert!(!retain_visible(&mut selected, &[1, 2, 3, 4]));
+        assert!(retain_visible(&mut selected, &[2, 3, 9]));
+        assert_eq!(selected, [2, 3].into_iter().collect());
+        assert!(retain_visible(&mut selected, &[]));
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn eligibility_is_decided_per_action() {
+        let mut task = Task::standalone();
+        task.title = "A".into();
+        task.due_date = "2026-11-14".into();
+        task.assignee = "Servidor A".into();
+        assert_eq!(eligibility(&Change::Conclude, &task, false), Ok(()));
+        assert_eq!(
+            eligibility(&Change::Conclude, &task, true),
+            Err(Reason::Blocked)
+        );
+        assert_eq!(
+            eligibility(&Change::Due("2026-11-14".into()), &task, false),
+            Err(Reason::Same)
+        );
+        assert_eq!(
+            eligibility(&Change::Due(String::new()), &task, false),
+            Ok(())
+        );
+        assert_eq!(
+            eligibility(&Change::Assignee(" Servidor A ".into()), &task, false),
+            Err(Reason::Same)
+        );
+        assert_eq!(
+            eligibility(&Change::Priority("normal".into()), &task, false),
+            Err(Reason::Same)
+        );
+        // A blocked task can still be re-dated, and anything can be deleted.
+        assert_eq!(
+            eligibility(&Change::Due("2026-12-01".into()), &task, true),
+            Ok(())
+        );
+        assert_eq!(eligibility(&Change::Trash, &task, true), Ok(()));
+        task.status = "concluida".into();
+        assert_eq!(
+            eligibility(&Change::Conclude, &task, false),
+            Err(Reason::AlreadyDone)
+        );
+        assert_eq!(
+            eligibility(&Change::Priority("alta".into()), &task, false),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn the_result_line_names_what_was_done_and_what_was_not() {
+        let skip = |id, title: &str, reason| Skip {
+            id,
+            title: title.into(),
+            reason,
+        };
+        let out = Outcome {
+            done: 4,
+            skipped: vec![skip(1, "Responder o ofício", Reason::Blocked)],
+            ..Default::default()
+        };
+        assert_eq!(
+            message(Some(&Change::Conclude), false, &out),
+            "4 tarefas concluídas.\n1 não pôde ser concluída: «Responder o ofício» depende de uma tarefa em aberto."
+        );
+        let out = Outcome {
+            done: 1,
+            skipped: vec![
+                skip(1, "A", Reason::AlreadyDone),
+                skip(2, "B", Reason::AlreadyDone),
+                skip(3, "C", Reason::AlreadyDone),
+                skip(4, "D", Reason::AlreadyDone),
+                skip(5, "E", Reason::Blocked),
+                skip(6, "F", Reason::Changed),
+            ],
+            notes: vec!["Nota do sistema.".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            message(Some(&Change::Conclude), false, &out),
+            "1 tarefa concluída.\n\
+             4 não puderam ser concluídas: «A», «B», «C» e mais 1 já estão concluídas.\n\
+             1 não pôde ser concluída: «E» depende de uma tarefa em aberto.\n\
+             1 não pôde ser concluída: «F» foi alterada por outra pessoa depois da seleção.\n\
+             • Nota do sistema."
+        );
+        let out = Outcome {
+            done: 2,
+            skipped: vec![skip(1, "A", Reason::Same), skip(2, "B", Reason::Same)],
+            ..Default::default()
+        };
+        assert_eq!(
+            message(Some(&Change::Due("2026-11-14".into())), false, &out),
+            "2 tarefas com o prazo mudado para 14/11/2026.\n2 não foram alteradas: «A» e «B» já têm esse prazo."
+        );
+        let out = Outcome {
+            done: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            message(Some(&Change::Trash), false, &out),
+            "1 tarefa excluída. Ela está na Lixeira (Ajustes ▸ Lixeira)."
+        );
+        assert_eq!(
+            message(Some(&Change::Assignee(String::new())), false, &out),
+            "1 tarefa ficou sem responsável."
+        );
+        assert_eq!(message(None, true, &out), "1 tarefa restaurada da Lixeira.");
+        assert_eq!(
+            message(Some(&Change::Conclude), false, &Outcome::default()),
+            "Nada foi alterado."
+        );
+    }
+
+    #[test]
+    fn concluding_skips_what_a_dependency_refuses_and_keeps_going() {
+        let (_dir, mut store) = store();
+        let free = add(&mut store, "Livre", &[]);
+        let done = add(&mut store, "Já feita", &[]);
+        store.complete_task(done).unwrap();
+        let first = add(&mut store, "Primeira", &[]);
+        let second = add(&mut store, "Segunda", &[first]);
+        let waiting_for = add(&mut store, "Espera fora", &[]);
+        let blocked = add(&mut store, "Depende de fora", &[waiting_for]);
+        let snap = pick(&store, &[free, done, second, first, blocked]);
+        let out = apply_batch(&mut store, &snap, &Change::Conclude);
+        // `second` may come before `first`: it is concluded on a later pass.
+        assert_eq!(out.done, 3);
+        let reasons: Vec<(i64, &Reason)> = out.skipped.iter().map(|s| (s.id, &s.reason)).collect();
+        assert!(reasons.contains(&(done, &Reason::AlreadyDone)));
+        assert!(reasons.contains(&(blocked, &Reason::Blocked)));
+        assert_eq!(out.skipped.len(), 2);
+        for id in [free, first, second] {
+            assert_eq!(get(&store, id).status, "concluida");
+        }
+        assert_eq!(get(&store, blocked).status, "pendente");
+        assert_eq!(get(&store, waiting_for).status, "pendente");
+    }
+
+    #[test]
+    fn a_task_changed_after_the_confirmation_is_refused_not_overwritten() {
+        let (_dir, mut store) = store();
+        let a = add(&mut store, "A", &[]);
+        let b = add(&mut store, "B", &[]);
+        let c = add(&mut store, "C", &[]);
+        let snap = pick(&store, &[a, b, c]);
+        touch(&mut store, b);
+        let out = apply_batch(&mut store, &snap, &Change::Due("2026-11-14".into()));
+        assert_eq!(out.done, 2);
+        assert_eq!(out.skipped.len(), 1);
+        assert_eq!(
+            (out.skipped[0].id, &out.skipped[0].reason),
+            (b, &Reason::Changed)
+        );
+        assert_eq!(get(&store, a).due_date, "2026-11-14");
+        assert_eq!(get(&store, c).due_date, "2026-11-14");
+        assert_eq!(get(&store, b).due_date, "");
+        assert_eq!(get(&store, b).notes, "outra edição");
+    }
+
+    #[test]
+    fn priority_and_assignee_apply_to_standalone_tasks_too() {
+        let (_dir, mut store) = store();
+        store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let loose = add(&mut store, "Avulsa", &[]);
+        let linked = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.document_id.is_some())
+            .unwrap()
+            .id;
+        let snap = pick(&store, &[loose, linked]);
+        let out = apply_batch(&mut store, &snap, &Change::Priority("urgente".into()));
+        assert_eq!((out.done, out.skipped.len()), (2, 0));
+        let snap = pick(&store, &[loose, linked]);
+        let out = apply_batch(&mut store, &snap, &Change::Priority("urgente".into()));
+        assert_eq!((out.done, out.skipped.len()), (0, 2), "nothing to change");
+        let snap = pick(&store, &[loose, linked]);
+        let out = apply_batch(&mut store, &snap, &Change::Assignee("  Servidor B ".into()));
+        assert_eq!(out.done, 2);
+        for id in [loose, linked] {
+            let task = get(&store, id);
+            assert_eq!(task.priority, "urgente");
+            assert_eq!(task.assignee, "Servidor B");
+        }
+        assert_eq!(get(&store, loose).document_id, None);
+    }
+
+    #[test]
+    fn undo_puts_back_only_what_was_touched_and_skips_what_changed_since() {
+        let (_dir, mut store) = store();
+        let a = add(&mut store, "A", &[]);
+        let b = add(&mut store, "B", &[]);
+        let mut task = get(&store, a);
+        task.due_date = "2026-11-20".into();
+        task.due_source = "Ofício 12".into();
+        task.assignee = "Servidor A".into();
+        let version = store.item_version("task", a).unwrap().version;
+        store.save_task_checked(&task, Some(version)).unwrap();
+        let (before_a, before_b) = (get(&store, a), get(&store, b));
+
+        // Due date: the date and its origin go and come back; nothing else.
+        let snap = pick(&store, &[a, b]);
+        let out = apply_batch(&mut store, &snap, &Change::Due("2026-11-14".into()));
+        assert_eq!(out.done, 2);
+        assert_eq!(get(&store, a).due_source, "");
+        let undone = undo_batch(&mut store, &out.undo);
+        assert_eq!((undone.done, undone.skipped.len()), (2, 0));
+        assert_eq!(get(&store, a), before_a);
+        assert_eq!(get(&store, b), before_b);
+
+        // Conclusion: status and completed_at go back to what they were.
+        let snap = pick(&store, &[a, b]);
+        let out = apply_batch(&mut store, &snap, &Change::Conclude);
+        assert_eq!(out.done, 2);
+        assert!(get(&store, a).completed_at.is_some());
+        let undone = undo_batch(&mut store, &out.undo);
+        assert_eq!(undone.done, 2);
+        assert_eq!(get(&store, a), before_a);
+
+        // One task edited after the batch is left alone, the other returns.
+        let snap = pick(&store, &[a, b]);
+        let out = apply_batch(&mut store, &snap, &Change::Priority("alta".into()));
+        touch(&mut store, a);
+        let undone = undo_batch(&mut store, &out.undo);
+        assert_eq!(undone.done, 1);
+        assert_eq!(undone.skipped.len(), 1);
+        assert_eq!(undone.skipped[0].reason, Reason::Changed);
+        assert_eq!(get(&store, a).priority, "alta", "edited since: kept");
+        assert_eq!(get(&store, b).priority, "normal");
+        assert!(message(None, false, &undone).contains("alterada depois da ação em lote"));
+    }
+
+    #[test]
+    fn deleting_sends_to_the_trash_dependents_first_and_can_be_undone() {
+        let (_dir, mut store) = store();
+        let first = add(&mut store, "Primeira", &[]);
+        let second = add(&mut store, "Segunda", &[first]);
+        let kept = add(&mut store, "Fica", &[]);
+        let needed = add(&mut store, "Precisada", &[]);
+        let _needs = add(&mut store, "Precisa", &[needed]);
+        // `first` comes before the task that waits for it: a later pass.
+        let snap = pick(&store, &[first, second, needed]);
+        let out = apply_batch(&mut store, &snap, &Change::Trash);
+        assert_eq!(out.done, 2);
+        assert_eq!(out.skipped.len(), 1);
+        assert_eq!(out.skipped[0].id, needed);
+        assert!(matches!(out.skipped[0].reason, Reason::Refused(_)));
+        let listed: Vec<i64> = store.list_tasks().unwrap().iter().map(|t| t.id).collect();
+        assert!(!listed.contains(&first) && !listed.contains(&second));
+        assert!(listed.contains(&kept) && listed.contains(&needed));
+        let undone = undo_batch(&mut store, &out.undo);
+        assert_eq!((undone.done, undone.skipped.len()), (2, 0));
+        let listed: Vec<i64> = store.list_tasks().unwrap().iter().map(|t| t.id).collect();
+        assert!(listed.contains(&first) && listed.contains(&second));
+    }
+
+    #[test]
+    fn a_task_gone_before_applying_is_reported() {
+        let (_dir, mut store) = store();
+        let a = add(&mut store, "A", &[]);
+        let b = add(&mut store, "B", &[]);
+        let snap = pick(&store, &[a, b]);
+        store
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Task,
+                id: b,
+            })
+            .unwrap();
+        let out = apply_batch(&mut store, &snap, &Change::Conclude);
+        assert_eq!(out.done, 1);
+        assert_eq!(
+            (out.skipped[0].id, &out.skipped[0].reason),
+            (b, &Reason::Missing)
+        );
+    }
+
+    #[test]
+    fn selection_mode_follows_the_form_guards() {
+        let mut panel = TaskPanel::default();
+        let mut open = Task::new(1);
+        open.id = 10;
+        assert!(panel.focus_task(&open));
+        // A clean form is closed by entering the mode.
+        assert!(panel.start_selection());
+        assert!(panel.draft.is_none() && panel.selecting);
+        panel.selected.insert(10);
+        // Esc leaves the mode and forgets the selection.
+        assert!(panel.key_escape());
+        assert!(!panel.selecting && panel.selected.is_empty());
+        assert!(!panel.key_escape(), "nothing left for Esc");
+        // Unsaved edits, or a request waiting for the app, refuse it.
+        assert!(panel.focus_task(&open));
+        panel.draft.as_mut().unwrap().notes = "sem salvar".into();
+        assert!(!panel.start_selection());
+        panel.discard_draft();
+        panel.close_form();
+        panel.blocked = Some(Intent::New(None));
+        assert!(!panel.start_selection());
+        panel.blocked = None;
+        // Opening or creating a task leaves the mode.
+        assert!(panel.start_selection());
+        assert!(panel.start_new(None));
+        assert!(!panel.selecting);
+        panel.close_form();
+        assert!(panel.start_selection());
+        panel.selected.insert(1);
+        panel.toggle_selected(2);
+        assert_eq!(panel.selected.len(), 2);
+        assert!(panel.focus_task(&open));
+        assert!(!panel.selecting && panel.selected.is_empty());
     }
 }

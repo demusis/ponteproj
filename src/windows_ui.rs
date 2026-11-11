@@ -243,3 +243,266 @@ fn locate_extension_dir() -> Option<PathBuf> {
 pub fn reveal_in_explorer(path: &Path) {
     let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
 }
+
+// ---------------------------------------------------------------------------
+// Notification-area icon with a balloon (shown by Windows 10/11 as a toast).
+//
+// A small hidden window owns the icon. It must be created on the thread that
+// runs the interface message loop (the window thread), which is where the
+// application calls these functions; winit's loop dispatches its messages.
+// Nothing here touches the library, the registry or the disk.
+// ---------------------------------------------------------------------------
+
+mod tray {
+    use super::wide;
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+    use std::sync::Mutex;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::Shell::{
+        Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_NOSOUND,
+        NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, LoadIconW, RegisterClassW,
+        RegisterWindowMessageW, UnregisterClassW, HICON, IDI_APPLICATION, WINDOW_EX_STYLE,
+        WINDOW_STYLE, WM_LBUTTONUP, WM_USER, WNDCLASSW,
+    };
+
+    const CLASS_NAME: &str = "PonteProjLembretes";
+    const TRAY_ID: u32 = 1;
+    const CALLBACK_MESSAGE: u32 = WM_USER + 1;
+
+    /// The hidden window (0 = none), whether the icon is in the notification
+    /// area, whether the person clicked, and the id of the "TaskbarCreated"
+    /// broadcast (Explorer restarted: the icon has to be added again).
+    static WINDOW: AtomicIsize = AtomicIsize::new(0);
+    static ICON_ADDED: AtomicBool = AtomicBool::new(false);
+    static CLICKED: AtomicBool = AtomicBool::new(false);
+    static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+    /// Wakes the interface after a click, so a minimised window notices it.
+    #[allow(clippy::type_complexity)]
+    static WAKE: Mutex<Option<Box<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+
+    pub fn set_wake(wake: impl Fn() + Send + Sync + 'static) {
+        if let Ok(mut slot) = WAKE.lock() {
+            *slot = Some(Box::new(wake));
+        }
+    }
+
+    pub fn take_click() -> bool {
+        CLICKED.swap(false, Ordering::SeqCst)
+    }
+
+    fn hwnd_of(value: isize) -> HWND {
+        HWND(value as *mut c_void)
+    }
+
+    fn copy_text(target: &mut [u16], text: &str) {
+        // Keep room for the final NUL; the buffers start zeroed.
+        let limit = target.len() - 1;
+        for (slot, unit) in target.iter_mut().zip(text.encode_utf16().take(limit)) {
+            *slot = unit;
+        }
+    }
+
+    fn base_data(hwnd: HWND) -> NOTIFYICONDATAW {
+        NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: hwnd,
+            uID: TRAY_ID,
+            ..Default::default()
+        }
+    }
+
+    fn module() -> Option<HINSTANCE> {
+        // SAFETY: asks for the handle of the running executable; no ownership.
+        unsafe { GetModuleHandleW(PCWSTR::null()) }
+            .ok()
+            .map(|handle| HINSTANCE(handle.0))
+    }
+
+    /// The icon of the executable (resource 1), or the generic application
+    /// icon. Shared icons: they are never destroyed.
+    fn app_icon() -> HICON {
+        // SAFETY: loading a shared icon from this module or from the system;
+        // MAKEINTRESOURCE(1) is the identifier the resource script gives it.
+        unsafe {
+            LoadIconW(module(), PCWSTR(std::ptr::without_provenance::<u16>(1)))
+                .or_else(|_| LoadIconW(None, IDI_APPLICATION))
+                .unwrap_or_default()
+        }
+    }
+
+    fn add_icon(hwnd: HWND) -> bool {
+        let mut data = base_data(hwnd);
+        data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        data.uCallbackMessage = CALLBACK_MESSAGE;
+        data.hIcon = app_icon();
+        copy_text(&mut data.szTip, "Ponte");
+        // SAFETY: `data` is fully initialised and outlives the call.
+        let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
+        ICON_ADDED.store(added, Ordering::SeqCst);
+        added
+    }
+
+    fn delete_icon(hwnd: HWND) {
+        if ICON_ADDED.swap(false, Ordering::SeqCst) {
+            let data = base_data(hwnd);
+            // SAFETY: removes the icon this window added; failure is harmless.
+            let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &data) };
+        }
+    }
+
+    unsafe extern "system" fn window_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if message == CALLBACK_MESSAGE {
+            // Version-0 notifications: `lparam` is the event.
+            let event = (lparam.0 as u32) & 0xFFFF;
+            if wparam.0 as u32 == TRAY_ID
+                && (event == NIN_BALLOONUSERCLICK || event == WM_LBUTTONUP)
+            {
+                CLICKED.store(true, Ordering::SeqCst);
+                delete_icon(hwnd);
+                if let Ok(slot) = WAKE.lock() {
+                    if let Some(wake) = slot.as_ref() {
+                        wake();
+                    }
+                }
+            }
+            return LRESULT(0);
+        }
+        let created = TASKBAR_CREATED.load(Ordering::SeqCst);
+        if created != 0 && message == created && ICON_ADDED.load(Ordering::SeqCst) {
+            // Explorer restarted: its notification area is empty again.
+            add_icon(hwnd);
+            return LRESULT(0);
+        }
+        // SAFETY: default handling of a message this window does not use.
+        unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+    }
+
+    /// The hidden window, created on first use. A top-level window that is
+    /// never shown (message-only windows do not get the TaskbarCreated
+    /// broadcast).
+    fn window() -> Option<HWND> {
+        let existing = WINDOW.load(Ordering::SeqCst);
+        if existing != 0 {
+            return Some(hwnd_of(existing));
+        }
+        let class = wide(CLASS_NAME);
+        let module = module();
+        // SAFETY: the class name outlives the calls; the window procedure is a
+        // plain function; the window is destroyed in `shutdown`.
+        unsafe {
+            let description = WNDCLASSW {
+                lpfnWndProc: Some(window_proc),
+                hInstance: module.unwrap_or_default(),
+                lpszClassName: PCWSTR(class.as_ptr()),
+                ..Default::default()
+            };
+            // Registering twice fails harmlessly (the class already exists).
+            RegisterClassW(&description);
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(class.as_ptr()),
+                PCWSTR(class.as_ptr()),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                0,
+                0,
+                None,
+                None,
+                module,
+                None,
+            )
+            .ok()?;
+            let broadcast = wide("TaskbarCreated");
+            TASKBAR_CREATED.store(
+                RegisterWindowMessageW(PCWSTR(broadcast.as_ptr())),
+                Ordering::SeqCst,
+            );
+            WINDOW.store(hwnd.0 as isize, Ordering::SeqCst);
+            Some(hwnd)
+        }
+    }
+
+    pub fn notify(title: &str, text: &str) -> bool {
+        let Some(hwnd) = window() else {
+            return false;
+        };
+        if !ICON_ADDED.load(Ordering::SeqCst) && !add_icon(hwnd) {
+            return false;
+        }
+        // An empty balloon first: Windows ignores a balloon identical to the
+        // one that is still on screen.
+        let mut clear = base_data(hwnd);
+        clear.uFlags = NIF_INFO;
+        // SAFETY: `clear` is initialised and outlives the call.
+        let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &clear) };
+        let mut data = base_data(hwnd);
+        data.uFlags = NIF_INFO;
+        data.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+        copy_text(&mut data.szInfoTitle, title);
+        copy_text(&mut data.szInfo, text);
+        // SAFETY: `data` is initialised and outlives the call.
+        let shown = unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }.as_bool();
+        if !shown {
+            // The shell lost the icon (it restarted): add it once more and retry.
+            ICON_ADDED.store(false, Ordering::SeqCst);
+            if add_icon(hwnd) {
+                // SAFETY: as above.
+                return unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }.as_bool();
+            }
+        }
+        shown
+    }
+
+    pub fn shutdown() {
+        let existing = WINDOW.swap(0, Ordering::SeqCst);
+        if existing == 0 {
+            return;
+        }
+        let hwnd = hwnd_of(existing);
+        delete_icon(hwnd);
+        let class = wide(CLASS_NAME);
+        // SAFETY: destroys the window created by `window` (on the same thread)
+        // and unregisters its class; failures leave nothing to clean up.
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+            let _ = UnregisterClassW(PCWSTR(class.as_ptr()), module());
+        }
+    }
+}
+
+/// Shows a balloon (a toast on Windows 10/11) from a notification-area icon
+/// that is added if needed. Call from the window thread. Returns `false`
+/// when Windows refused the icon or the window could not be created; whether
+/// Windows then displays it depends on the person's notification settings.
+pub fn show_notification(title: &str, text: &str) -> bool {
+    tray::notify(title, text)
+}
+
+/// `true` once after the person clicked the notification or its icon.
+pub fn take_notification_click() -> bool {
+    tray::take_click()
+}
+
+/// Function called (from the window thread) when the notification is clicked,
+/// to wake the interface, e.g. `|| ctx.request_repaint()`.
+pub fn on_notification_click(wake: impl Fn() + Send + Sync + 'static) {
+    tray::set_wake(wake);
+}
+
+/// Removes the notification-area icon and the hidden window. Safe to call
+/// more than once, or when nothing was ever shown.
+pub fn shutdown_notifications() {
+    tray::shutdown();
+}

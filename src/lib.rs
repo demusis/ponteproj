@@ -60,6 +60,9 @@ pub mod labels;
 pub mod windows_ui;
 
 #[cfg(feature = "desktop")]
+pub mod reminders;
+
+#[cfg(feature = "desktop")]
 pub mod theme;
 #[cfg(feature = "desktop")]
 pub mod widgets;

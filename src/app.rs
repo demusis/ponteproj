@@ -586,6 +586,7 @@ enum SettingsSection {
     Team,
     Mail,
     Import,
+    Reminders,
     Ai,
     Backup,
     Trash,
@@ -594,10 +595,11 @@ enum SettingsSection {
 }
 
 impl SettingsSection {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Team,
         Self::Mail,
         Self::Import,
+        Self::Reminders,
         Self::Ai,
         Self::Backup,
         Self::Trash,
@@ -610,6 +612,7 @@ impl SettingsSection {
             Self::Team => "Equipe e sincronização",
             Self::Mail => "E-mail",
             Self::Import => "Importação do SIGADOC",
+            Self::Reminders => "Lembretes",
             Self::Ai => "Inteligência artificial",
             Self::Backup => "Cópia de segurança e exportação",
             Self::Trash => "Lixeira",
@@ -625,6 +628,7 @@ impl SettingsSection {
             }
             Self::Mail => "Contas de e-mail para importar mensagens como registros.",
             Self::Import => "O que o Ponte faz quando um documento é importado pelo navegador.",
+            Self::Reminders => "Um aviso do Windows, uma vez por dia, com o que vence.",
             Self::Ai => "Opcional. Onde a análise e as minutas são geradas.",
             Self::Backup => "Guardar uma cópia do acervo e levar os dados para planilhas.",
             Self::Trash => "O que foi excluído fica aqui por um tempo e pode ser restaurado.",
@@ -638,6 +642,7 @@ impl SettingsSection {
             Self::Team => icon::TEAM,
             Self::Mail => icon::MAIL,
             Self::Import => icon::DOWNLOAD,
+            Self::Reminders => icon::BELL,
             Self::Ai => icon::AI,
             Self::Backup => icon::DATABASE,
             Self::Trash => icon::TRASH,
@@ -1012,6 +1017,8 @@ struct PonteApp {
     area: Area,
     /// What the "Hoje" area shows, read on each refresh.
     today: today::TodayData,
+    /// The once-a-day Windows notice of what is due.
+    reminders: crate::reminders::Reminders,
     /// The way back offered on the ficha, and the one waiting for the next
     /// document to be opened.
     return_to: Option<ReturnTo>,
@@ -1109,6 +1116,7 @@ impl PonteApp {
             intranet: Default::default(),
             // The welcome screen (or the opened document) is the first thing seen.
             area: Area::Today,
+            reminders: crate::reminders::Reminders::load(),
             today: Default::default(),
             return_to: None,
             return_after_select: None,
@@ -2989,6 +2997,7 @@ impl PonteApp {
 impl eframe::App for PonteApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         crate::attachments::clear_temp_dir();
+        self.reminders.shutdown();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2996,6 +3005,17 @@ impl eframe::App for PonteApp {
         crate::theme::sync(&ctx);
         self.intranet.attach_repaint(&ctx);
         self.poll_worker();
+        self.reminders.update(&ctx, &self.store);
+        if self.reminders.take_open_today() {
+            // The person clicked the Windows notice: show what is due.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            // Through the guard: unsaved work is never hidden.
+            self.navigate(Leave::Today);
+        }
+        if let Some(text) = self.reminders.take_notice() {
+            self.message(text);
+        }
         self.poll_models();
         self.poll_chatgpt_login(&ctx);
         self.answer_other_starts(&ctx);
@@ -3286,6 +3306,10 @@ impl eframe::App for PonteApp {
                     if let Some(id) = self.tasks.show(ui, &mut self.store, self.selected_id) {
                         self.return_after_select = self.tasks.open_task_id().map(ReturnTo::Task);
                         self.navigate(Leave::Select(id));
+                    }
+                    // A batch (or its undo) changed tasks: the counters follow at once.
+                    if self.tasks.take_batch_changed() {
+                        self.refresh();
                     }
                     if let Some(task) = self.tasks.take_concluded() {
                         self.message_with_action(

@@ -21,6 +21,60 @@ impl PonteApp {
         });
     }
 
+    /// The reminder of deadlines (a Windows notice once a day): on/off, the
+    /// time, and a test notice.
+    fn reminders_card(&mut self, ui: &mut egui::Ui) {
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Lembretes de prazos");
+            let mut on = self.reminders.enabled();
+            if ui
+                .checkbox(&mut on, "Lembrar dos prazos uma vez por dia")
+                .changed()
+            {
+                self.reminders.set_enabled(on);
+            }
+            ui.add_enabled_ui(on, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Horário");
+                    let (mut hour, mut minute) = self.reminders.time();
+                    egui::ComboBox::from_id_salt("reminder-hour")
+                        .width(56.0)
+                        .selected_text(format!("{hour:02}"))
+                        .show_ui(ui, |ui| {
+                            for h in 0..24u32 {
+                                ui.selectable_value(&mut hour, h, format!("{h:02}"));
+                            }
+                        });
+                    ui.label(":");
+                    egui::ComboBox::from_id_salt("reminder-minute")
+                        .width(56.0)
+                        .selected_text(format!("{minute:02}"))
+                        .show_ui(ui, |ui| {
+                            for m in (0..60u32).step_by(5) {
+                                ui.selectable_value(&mut minute, m, format!("{m:02}"));
+                            }
+                        });
+                    self.reminders.set_time(hour, minute);
+                });
+            });
+            widgets::small_muted(
+                ui,
+                "O Ponte mostra um aviso do Windows com a quantidade de tarefas e atendimentos que vencem. Só enquanto o Ponte está aberto ou minimizado.",
+            );
+            ui.add_space(S1);
+            if ui
+                .add(widgets::quiet("Mostrar um aviso de teste"))
+                .clicked()
+            {
+                self.reminders.test_notification();
+            }
+            widgets::small_muted(
+                ui,
+                "Se nada aparecer, veja Configurações do Windows ▸ Sistema ▸ Notificações.",
+            );
+        });
+    }
+
     /// One line of the list of sections, on the left of Ajustes.
     fn settings_nav_item(ui: &mut egui::Ui, glyph: &str, label: &str, selected: bool) -> bool {
         let p = theme::c();
@@ -197,6 +251,7 @@ impl PonteApp {
                     crate::saiop::SaiopPanel::auto_attendance_setting(ui, &mut self.store);
                 });
             }
+            SettingsSection::Reminders => self.reminders_card(ui),
             SettingsSection::Ai => self.ai_settings(ui),
             SettingsSection::Backup => {
                 let idle = self.worker.is_none();

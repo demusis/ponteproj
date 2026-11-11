@@ -29,6 +29,7 @@ impl PonteApp {
         "ajustes-copia",
         "ajustes-aparencia",
         "ajustes-importacao",
+        "ajustes-lembretes",
         "ajustes-sobre",
         "ajustes-sobre-versao-nova",
         "janela-rede",
@@ -243,6 +244,10 @@ impl PonteApp {
             "ajustes-importacao" => {
                 self.area = Area::Settings;
                 self.settings_section = super::SettingsSection::Import;
+            }
+            "ajustes-lembretes" => {
+                self.area = Area::Settings;
+                self.settings_section = super::SettingsSection::Reminders;
             }
             "janela-rede" => {
                 self.area = Area::Settings;
