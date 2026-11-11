@@ -742,7 +742,7 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_choices<'local>(
             .iter()
             .map(|p| json!({"key": p, "label": ponteproj::tasks::priority_label(p)}))
             .collect::<Vec<_>>();
-        Ok(json!({"actions": actions, "manual_kinds": kinds, "priorities": priorities}))
+        Ok(json!({"actions": actions, "manual_kinds": kinds, "priorities": priorities, "limits": limits_json()}))
     })
 }
 
@@ -757,52 +757,162 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createPhotoRecord<
     image_path: JString<'local>,
 ) -> jstring {
     answer(&mut env, |env| {
-        let input = json_arg(env, &fields_json)?;
-        let image = PathBuf::from(text(env, &image_path)?);
-        let bytes = std::fs::read(&image).context("A foto não pôde ser lida.")?;
-        // Checked before the record exists, so a photo that cannot be
-        // attached never leaves a record without it.
-        anyhow::ensure!(!bytes.is_empty(), "A foto está vazia.");
-        anyhow::ensure!(
-            bytes.len() <= ponteproj::attachments::MAX_ATTACHMENT_BYTES,
-            "A foto passa do limite de anexos ({} MB).",
-            ponteproj::attachments::MAX_ATTACHMENT_BYTES / (1024 * 1024)
-        );
+        let mut input = json_arg(env, &fields_json)?;
+        let image = text(env, &image_path)?;
         with_store(|store| {
-            let str_of = |key: &str| input[key].as_str().unwrap_or("").trim().to_owned();
-            let title = str_of("title");
-            let mut text = str_of("text");
-            if text.is_empty() {
-                text = format!("Registro feito no celular a partir de uma foto: {title}.");
-            }
-            let fields = ponteproj::manual::ManualFields {
-                kind: if str_of("kind").is_empty() { "papel".into() } else { str_of("kind") },
-                title,
-                origin: str_of("origin"),
-                document_date: str_of("date"),
-                text,
-            };
-            let receipt = store.create_manual_document(&fields)?;
-            let name = format!(
-                "foto-{}.jpg",
-                chrono::Local::now().format("%Y-%m-%d-%H%M%S")
-            );
-            if let Err(error) = store.add_attachment(
-                ponteproj::attachments::Owner::Document(receipt.document_id),
-                &name,
-                "Foto tirada no celular",
-                &bytes,
-            ) {
-                // No record without its photo: the new one goes to the
-                // trash (recoverable there) and the person can try again.
-                let _ = store.trash_item(ponteproj::trash::Target {
-                    kind: ponteproj::trash::Kind::Document,
-                    id: receipt.document_id,
-                });
-                return Err(error.context("A foto não pôde ser anexada; o registro não foi criado."));
-            }
-            Ok(json!({ "document_id": receipt.document_id }))
+            create_photo_record(store, &mut input, &image)
         })
+    })
+}
+
+/// What the Kotlin side needs to know about the core's limits, so the screens
+/// and the streaming caps never carry a copy of the numbers that could drift.
+fn limits_json() -> Value {
+    use ponteproj::attachments as a;
+    json!({
+        "max_attachment_bytes": a::MAX_ATTACHMENT_BYTES,
+        "max_per_owner": a::MAX_PER_OWNER,
+        "max_name_chars": a::MAX_NAME_CHARS,
+        "max_description_chars": a::MAX_DESCRIPTION_CHARS,
+        "max_text_bytes": ponteproj::model::MAX_CAPTURE_TEXT_BYTES,
+        "max_title_bytes": MAX_TITLE_BYTES,
+    })
+}
+
+/// The core refuses titles over this many bytes (`ManualFields::validate`).
+const MAX_TITLE_BYTES: usize = 1000;
+
+/// Reads a working file to attach it, never more than the core's limit plus
+/// one byte: a file past the limit is refused with the core's own message
+/// before it is held in memory.
+fn read_attachment_file(path: &str, name: &str) -> Result<Vec<u8>> {
+    use ponteproj::attachments::{size_message, MAX_ATTACHMENT_BYTES};
+    use std::io::Read;
+    let file = std::fs::File::open(path).context("O arquivo não pôde ser lido.")?;
+    if let Ok(meta) = file.metadata() {
+        anyhow::ensure!(meta.len() <= MAX_ATTACHMENT_BYTES as u64, "{}", size_message(name, meta.len()));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_ATTACHMENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .context("O arquivo não pôde ser lido.")?;
+    anyhow::ensure!(bytes.len() <= MAX_ATTACHMENT_BYTES, "{}", size_message(name, bytes.len()));
+    Ok(bytes)
+}
+
+/// Attaches the file at `path` to a document with the very function the
+/// desktop uses (`Store::add_attachment`): same limits, type checks (by name
+/// and by content), duplicate and per-document checks, same texts.
+fn attach_file(store: &mut Store, document_id: i64, path: &str, name: &str, description: &str) -> Result<Value> {
+    let bytes = read_attachment_file(path, name)?;
+    let id = store.add_attachment(
+        ponteproj::attachments::Owner::Document(document_id),
+        name,
+        description,
+        &bytes,
+    )?;
+    Ok(json!({"attachment_id": id, "name": name.trim(), "size": bytes.len()}))
+}
+
+/// A manual record from a photo: the old entry point, now a case of [`create_record`].
+fn create_photo_record(store: &mut Store, input: &mut Value, image_path: &str) -> Result<Value> {
+    let title = input["title"].as_str().unwrap_or("").trim().to_owned();
+    let has_text = !input["text"].as_str().unwrap_or("").trim().is_empty();
+    if let Some(map) = input.as_object_mut() {
+        map.insert(
+            "file_name".into(),
+            json!(format!("foto-{}.jpg", chrono::Local::now().format("%Y-%m-%d-%H%M%S"))),
+        );
+        map.insert("file_description".into(), json!("Foto tirada no celular"));
+        if !has_text {
+            map.insert("text".into(), json!(format!("Registro feito no celular a partir de uma foto: {title}.")));
+        }
+    }
+    create_record(store, input, image_path)
+}
+
+/// A manual record from what the person chose or received:
+/// `{"kind","title","origin","date","text","file_name","file_description"}` and
+/// optionally a file (`file_path` empty: none). The file becomes the record's
+/// attachment, the text its text; at least one of the two is needed. The file
+/// is read and checked BEFORE the record exists, so a file the core refuses
+/// leaves nothing behind; if the attachment still fails afterwards, the new
+/// record goes to the trash (recoverable there), so there is never a record
+/// without the file the person meant to keep.
+fn create_record(store: &mut Store, input: &Value, file_path: &str) -> Result<Value> {
+    use ponteproj::attachments::{validate_description, validate_file, Owner};
+    let str_of = |key: &str| input[key].as_str().unwrap_or("").trim().to_owned();
+    let title = str_of("title");
+    let mut text = str_of("text");
+    let file = if file_path.is_empty() {
+        None
+    } else {
+        let name = str_of("file_name");
+        let description = str_of("file_description");
+        let bytes = read_attachment_file(file_path, &name)?;
+        validate_file(&name, &bytes)?;
+        validate_description(&description)?;
+        Some((name, description, bytes))
+    };
+    anyhow::ensure!(
+        file.is_some() || !text.is_empty(),
+        "Não há nada para guardar: escreva um texto ou escolha um arquivo."
+    );
+    if text.is_empty() {
+        text = format!("Registro feito no celular a partir de um arquivo recebido: {title}.");
+    }
+    let fields = ponteproj::manual::ManualFields {
+        kind: if str_of("kind").is_empty() { "papel".into() } else { str_of("kind") },
+        title,
+        origin: str_of("origin"),
+        document_date: str_of("date"),
+        text,
+    };
+    let receipt = store.create_manual_document(&fields)?;
+    if let Some((name, description, bytes)) = file {
+        if let Err(error) = store.add_attachment(Owner::Document(receipt.document_id), &name, &description, &bytes) {
+            let _ = store.trash_item(ponteproj::trash::Target {
+                kind: ponteproj::trash::Kind::Document,
+                id: receipt.document_id,
+            });
+            return Err(error.context("O arquivo não pôde ser anexado; o registro não foi criado."));
+        }
+    }
+    Ok(json!({ "document_id": receipt.document_id }))
+}
+
+/// A manual record from a file and/or a text (see [`create_record`]); `file_path`
+/// is "" for a record made of text only.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createRecord<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    fields_json: JString<'local>,
+    file_path: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = json_arg(env, &fields_json)?;
+        let file = text(env, &file_path)?;
+        with_store(|store| create_record(store, &input, &file))
+    })
+}
+
+/// Attaches a file (a private working copy at `path`, named `name`) to a document.
+/// Answer: `{attachment_id, name, size}`.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_attachFile<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    document_id: jlong,
+    path: JString<'local>,
+    name: JString<'local>,
+    description: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let path = text(env, &path)?;
+        let name = text(env, &name)?;
+        let description = text(env, &description)?;
+        with_store(|store| attach_file(store, document_id, &path, &name, &description))
     })
 }
 
@@ -2157,5 +2267,175 @@ mod tests {
         assert!(search_all(&store, "um", "2026-11-10").is_ok());
         // Longer than the core accepts: cut, not an error.
         assert!(search_all(&store, &"x".repeat(20_000), "2026-11-10").is_ok());
+    }
+
+    // ---- attaching a file, and records made from a file and/or a text
+
+    fn work_file(dir: &Path, name: &str, bytes: &[u8]) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path.display().to_string()
+    }
+
+    fn attachments_of(store: &Store, document: i64) -> Vec<String> {
+        store
+            .list_attachments(ponteproj::attachments::Owner::Document(document))
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect()
+    }
+
+    #[test]
+    fn attach_file_stores_it_with_the_description_and_accepts_the_exact_limit() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, document) = library(&dir.0);
+        let pdf = work_file(&dir.0, "w1.bin", b"%PDF-1.4 conteudo");
+        let ok = attach_file(&mut store, document, &pdf, "  oficio.pdf ", "Via assinada").unwrap();
+        assert_eq!(ok["name"], "oficio.pdf");
+        assert_eq!(ok["size"], 17);
+        let listed = store.list_attachments(ponteproj::attachments::Owner::Document(document)).unwrap();
+        assert_eq!((listed[0].name.as_str(), listed[0].description.as_str()), ("oficio.pdf", "Via assinada"));
+        // Exactly the limit goes in; one byte more does not.
+        let max = ponteproj::attachments::MAX_ATTACHMENT_BYTES;
+        let exact = work_file(&dir.0, "w2.bin", &vec![b'a'; max]);
+        assert!(attach_file(&mut store, document, &exact, "limite.txt", "").is_ok());
+        let over = work_file(&dir.0, "w3.bin", &vec![b'b'; max + 1]);
+        let error = attach_file(&mut store, document, &over, "grande.txt", "").unwrap_err().to_string();
+        assert!(error.contains("grande.txt") && error.contains("o limite é 8"), "{error}");
+        assert_eq!(attachments_of(&store, document), ["oficio.pdf", "limite.txt"]);
+    }
+
+    #[test]
+    fn attach_file_refuses_types_by_name_and_by_content_and_empty_files() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, document) = library(&dir.0);
+        let program = work_file(&dir.0, "w1.bin", b"MZ\x90\x00 programa");
+        let by_name = attach_file(&mut store, document, &program, "instalador.exe", "").unwrap_err().to_string();
+        assert!(by_name.contains("Arquivos .exe não são aceitos"), "{by_name}");
+        let zip = work_file(&dir.0, "w2.bin", b"PK\x03\x04 zip");
+        let archive = attach_file(&mut store, document, &zip, "pasta.zip", "").unwrap_err().to_string();
+        assert!(archive.contains("arquivos compactados"), "{archive}");
+        // A program renamed to .pdf: the content gives it away.
+        let disguised = attach_file(&mut store, document, &program, "falso.pdf", "").unwrap_err().to_string();
+        assert!(disguised.contains("programa do Windows"), "{disguised}");
+        let text_as_pdf = work_file(&dir.0, "w3.bin", b"isto nao e um pdf");
+        let wrong = attach_file(&mut store, document, &text_as_pdf, "outro.pdf", "").unwrap_err().to_string();
+        assert!(wrong.contains("não corresponde"), "{wrong}");
+        let none = work_file(&dir.0, "w4.bin", b"");
+        let empty = attach_file(&mut store, document, &none, "vazio.txt", "").unwrap_err().to_string();
+        assert!(empty.contains("está vazio"), "{empty}");
+        let no_ext = attach_file(&mut store, document, &text_as_pdf, "semextensao", "").unwrap_err().to_string();
+        assert!(no_ext.contains("não tem extensão"), "{no_ext}");
+        let missing = attach_file(&mut store, document, "/nao/existe", "a.txt", "").unwrap_err().to_string();
+        assert!(missing.contains("não pôde ser lido"), "{missing}");
+        assert!(attachments_of(&store, document).is_empty());
+    }
+
+    #[test]
+    fn attach_file_stops_at_twenty_and_refuses_unknown_and_trashed_documents() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, document) = library(&dir.0);
+        for n in 0..20 {
+            let path = work_file(&dir.0, "w.bin", format!("conteudo {n}").as_bytes());
+            attach_file(&mut store, document, &path, &format!("a{n}.txt"), "").unwrap();
+        }
+        let path = work_file(&dir.0, "w.bin", b"mais um");
+        let error = attach_file(&mut store, document, &path, "a20.txt", "").unwrap_err().to_string();
+        assert!(error.contains("já tem 20 anexos"), "{error}");
+        assert_eq!(attachments_of(&store, document).len(), 20);
+
+        assert!(attach_file(&mut store, 99_999, &path, "x.txt", "").is_err());
+        let other = manual(&mut store, "Outro documento", "texto");
+        store
+            .trash_item(ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id: other })
+            .unwrap();
+        assert!(attach_file(&mut store, other, &path, "x.txt", "").is_err());
+        assert!(attachments_of(&store, other).is_empty());
+    }
+
+    fn fields(title: &str, text: &str) -> Value {
+        json!({"kind": "outro", "title": title, "origin": "Servidor A", "date": "2026-11-06",
+               "text": text, "file_name": "recibo.txt", "file_description": "Recebido de outro aplicativo"})
+    }
+
+    #[test]
+    fn create_record_from_text_only_from_a_file_only_and_from_both() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let before = store.list_documents("").unwrap().len();
+
+        let only_text = create_record(&mut store, &fields("Aviso por texto", "linha 1\nlinha 2"), "").unwrap();
+        let id = only_text["document_id"].as_i64().unwrap();
+        assert!(attachments_of(&store, id).is_empty());
+        assert_eq!(store.load_document(id).unwrap().capture.text, "linha 1\nlinha 2");
+
+        let file = work_file(&dir.0, "w.bin", b"conteudo do recibo");
+        let only_file = create_record(&mut store, &fields("Recibo por arquivo", ""), &file).unwrap();
+        let id = only_file["document_id"].as_i64().unwrap();
+        assert_eq!(attachments_of(&store, id), ["recibo.txt"]);
+        assert!(store.load_document(id).unwrap().capture.text.contains("Recibo por arquivo"));
+
+        let file = work_file(&dir.0, "w.bin", b"outro conteudo");
+        let both = create_record(&mut store, &fields("Recibo com legenda", "Legenda escrita"), &file).unwrap();
+        let id = both["document_id"].as_i64().unwrap();
+        assert_eq!(attachments_of(&store, id), ["recibo.txt"]);
+        assert_eq!(store.load_document(id).unwrap().capture.text, "Legenda escrita");
+        assert_eq!(store.list_documents("").unwrap().len(), before + 3);
+
+        let nothing = create_record(&mut store, &fields("Sem nada", ""), "").unwrap_err().to_string();
+        assert!(nothing.starts_with("Não há nada para guardar"), "{nothing}");
+    }
+
+    #[test]
+    fn a_refused_file_leaves_no_record_behind() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let before = store.list_documents("").unwrap().len();
+        let program = work_file(&dir.0, "w.bin", b"MZ programa");
+        let mut bad_name = fields("Programa", "texto");
+        bad_name["file_name"] = json!("setup.exe");
+        assert!(create_record(&mut store, &bad_name, &program).is_err());
+        let over = work_file(&dir.0, "w2.bin", &vec![b'a'; ponteproj::attachments::MAX_ATTACHMENT_BYTES + 1]);
+        assert!(create_record(&mut store, &fields("Grande", ""), &over).is_err());
+        let empty = work_file(&dir.0, "w3.bin", b"");
+        assert!(create_record(&mut store, &fields("Vazio", ""), &empty).is_err());
+        let mut long_description = fields("Descrição longa", "");
+        long_description["file_description"] = json!("x".repeat(501));
+        let file = work_file(&dir.0, "w4.bin", b"ok");
+        assert!(create_record(&mut store, &long_description, &file).is_err());
+        // An invalid title is refused by the core, also with nothing left over.
+        assert!(create_record(&mut store, &fields("ab", ""), &file).is_err());
+        assert_eq!(store.list_documents("").unwrap().len(), before);
+    }
+
+    #[test]
+    fn the_photo_record_keeps_working_through_the_general_function() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let jpeg = work_file(&dir.0, "w.bin", &[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]);
+        let mut input = json!({"kind": "papel", "title": "Recibo de entrega", "origin": "", "date": "", "text": ""});
+        let made = create_photo_record(&mut store, &mut input, &jpeg).unwrap();
+        let id = made["document_id"].as_i64().unwrap();
+        let names = attachments_of(&store, id);
+        assert!(names[0].starts_with("foto-") && names[0].ends_with(".jpg"), "{names:?}");
+        assert!(store.load_document(id).unwrap().capture.text.contains("a partir de uma foto"));
+    }
+
+    #[test]
+    fn the_limits_sent_to_the_app_are_the_cores() {
+        let limits = limits_json();
+        assert_eq!(limits["max_attachment_bytes"], 8 * 1024 * 1024);
+        assert_eq!(limits["max_per_owner"], 20);
+        assert_eq!(limits["max_name_chars"], 180);
+        assert_eq!(limits["max_description_chars"], 500);
+        assert_eq!(limits["max_text_bytes"], 500 * 1024);
+        assert_eq!(limits["max_title_bytes"], 1000);
     }
 }

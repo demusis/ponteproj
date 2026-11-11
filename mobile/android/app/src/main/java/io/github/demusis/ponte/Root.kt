@@ -48,6 +48,9 @@ internal fun AppRoot() {
         known = keys
     }
 
+    // What waited behind the lock (a refusal of a share) is said once the app is open.
+    LaunchedEffect(c.locked) { if (!c.locked) Intake.flushNotice() }
+
     // On the lock screen Back does not unlock.
     SafeBackHandler(enabled = c.canGoBack() && !c.locked) { c.back() }
     // Locked: Back sends the app to the background (not finish), so nothing in progress is lost.
@@ -134,7 +137,10 @@ private fun RouteScreen(route: Route) {
             state = c.document, syncing = c.shell.syncing,
             onBack = c::back, onSync = { c.requestSync(null) },
             onToggleTask = c::toggleTask, onNewTask = c::openNewTask, onEditNote = c::openNote,
-            onOpenFile = c::openFile, onReadText = c::openText, onOpenTask = { c.openTask(it.id) }
+            onOpenFile = c::openFile, onReadText = c::openText, onOpenTask = { c.openTask(it.id) },
+            attachBusy = Intake.attachBusy,
+            onAttachPhoto = { d -> doc?.let { Intake.attachPhoto(it.id, d) } },
+            onAttachFile = { d -> doc?.let { Intake.attachPick(it.id, d) } }
         )
         is Route.EditTask -> TaskScreen(
             routeId = route.id, state = c.taskEdit, actions = c.actions, priorities = c.priorities,
@@ -166,6 +172,24 @@ private fun RouteScreen(route: Route) {
             actions = if (route.id > 0) c.actions else c.actions.filter { it.key != "triar" },
             onBack = c::back, onCreate = c::createTask, withoutDocument = route.id <= 0,
             assignees = c.assignees, myName = c.personName
+        )
+        Route.Share -> {
+            val sh = Intake.share
+            // Reaching here means the app is unlocked and the screen is in front.
+            LaunchedEffect(Unit) { Intake.markSeen() }
+            ShareScreen(
+                state = sh, onBack = Intake::back, onCancel = Intake::cancel,
+                onRecord = Intake::chooseRecord, onAttach = Intake::chooseAttach,
+                onTitle = Intake::setTitle, onKind = Intake::setKind, onDate = Intake::setDate,
+                onOrigin = Intake::setOrigin, onNotes = Intake::setNotes,
+                onSaveRecord = Intake::saveRecord,
+                onChangeTarget = Intake::chooseAttach, onDescription = Intake::setDescription,
+                onSaveAttach = Intake::saveAttach
+            )
+        }
+        Route.SharePick -> DocumentPickerScreen(
+            docs = c.docs, currentId = 0L, busy = false,
+            onBack = c::back, onPick = Intake::pickTarget, title = "Anexar a um documento"
         )
         Route.Photo -> PhotoScreen(
             state = c.photo,

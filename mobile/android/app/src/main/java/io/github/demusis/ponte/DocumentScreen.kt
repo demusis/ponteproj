@@ -24,13 +24,20 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,7 +59,13 @@ internal fun DocumentScreen(
     onEditNote: () -> Unit,
     onOpenFile: (FileItem) -> Unit,
     onReadText: () -> Unit,
-    onOpenTask: (TaskItem) -> Unit = {}
+    onOpenTask: (TaskItem) -> Unit = {},
+    /** A file or a photo is being read or attached: the button waits. */
+    attachBusy: Boolean = false,
+    /** Take a picture to attach; the argument is the description typed (may be empty). */
+    onAttachPhoto: (String) -> Unit = {},
+    /** Pick a file to attach; the argument is the description typed (may be empty). */
+    onAttachFile: (String) -> Unit = {}
 ) {
     val c = Ponte.colors
     val doc = state.doc
@@ -72,7 +85,10 @@ internal fun DocumentScreen(
             when {
                 state.loading -> LoadingBox()
                 state.error != null -> Notice(state.error, modifier = Modifier.padding(16.dp))
-                doc != null -> FichaBody(doc, onToggleTask, onNewTask, onEditNote, onOpenFile, onReadText, onOpenTask)
+                doc != null -> FichaBody(
+                    doc, onToggleTask, onNewTask, onEditNote, onOpenFile, onReadText, onOpenTask,
+                    attachBusy, onAttachPhoto, onAttachFile
+                )
             }
         }
     }
@@ -86,9 +102,29 @@ private fun FichaBody(
     onEditNote: () -> Unit,
     onOpenFile: (FileItem) -> Unit,
     onReadText: () -> Unit,
-    onOpenTask: (TaskItem) -> Unit
+    onOpenTask: (TaskItem) -> Unit,
+    attachBusy: Boolean,
+    onAttachPhoto: (String) -> Unit,
+    onAttachFile: (String) -> Unit
 ) {
     val c = Ponte.colors
+    var chooser by rememberSaveable { mutableStateOf(false) }
+    var description by rememberSaveable { mutableStateOf("") }
+    if (chooser) {
+        AlertDialog(
+            onDismissRequest = { chooser = false },
+            title = { Text("Anexar ao documento") },
+            text = {
+                AttachChooser(
+                    description, { description = it },
+                    onPhoto = { chooser = false; onAttachPhoto(description); description = "" },
+                    onFile = { chooser = false; onAttachFile(description); description = "" }
+                )
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { chooser = false }) { Text("Cancelar") } }
+        )
+    }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 32.dp),
@@ -193,12 +229,28 @@ private fun FichaBody(
             }
         }
 
-        // Files
-        if (doc.files.isNotEmpty()) {
-            PonteCard {
-                Column(Modifier.padding(top = 14.dp, bottom = 6.dp)) {
-                    SectionLabel("Arquivos e anexos", Modifier.padding(start = 12.dp, bottom = 4.dp))
-                    for (f in doc.files) FileRow(f) { onOpenFile(f) }
+        // Files: always shown, because it is where a file is attached
+        PonteCard {
+            Column(Modifier.padding(top = 14.dp, bottom = 6.dp)) {
+                SectionLabel("Arquivos e anexos", Modifier.padding(start = 12.dp, bottom = 4.dp))
+                if (doc.files.isEmpty()) {
+                    Text(
+                        "Nenhum arquivo neste documento.", Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
+                        style = MaterialTheme.typography.bodyMedium, color = c.muted
+                    )
+                }
+                for (f in doc.files) FileRow(f) { onOpenFile(f) }
+                if (attachBusy) {
+                    Row(
+                        Modifier.padding(start = 16.dp, top = 6.dp, bottom = 6.dp).heightIn(min = 48.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(Modifier.size(20.dp), color = c.muted, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text("Anexando o arquivo…", style = MaterialTheme.typography.bodyMedium, color = c.muted)
+                    }
+                } else {
+                    CardButton("Anexar…", Icons.Outlined.AttachFile, { chooser = true }, Modifier.padding(start = 8.dp))
                 }
             }
         }
@@ -217,6 +269,26 @@ private fun FichaBody(
                 }
             }
         }
+    }
+}
+
+/**
+ * What the "Anexar…" choice asks: how big a file may be, an optional description, and the two ways
+ * to bring a file ([onPhoto], [onFile]). Alone so it can be drawn without a dialog window.
+ */
+@Composable
+internal fun AttachChooser(
+    description: String, onDescription: (String) -> Unit, onPhoto: () -> Unit, onFile: () -> Unit
+) {
+    val c = Ponte.colors
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(AttachLimits.upFront(), style = MaterialTheme.typography.bodyMedium, color = c.secondary)
+        LabeledField(
+            "Descrição (opcional)", description, { onDescription(ShareRules.capChars(it, AttachLimits.maxDescriptionChars)) },
+            placeholder = "Do que se trata este arquivo"
+        )
+        PrimaryButton("Tirar foto", onPhoto)
+        SecondaryButton("Escolher arquivo", onFile)
     }
 }
 

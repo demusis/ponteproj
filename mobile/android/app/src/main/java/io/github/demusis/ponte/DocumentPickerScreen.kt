@@ -42,13 +42,15 @@ internal fun DocumentPickerScreen(
     currentId: Long,
     busy: Boolean,
     onBack: () -> Unit,
-    onPick: (Doc) -> Unit
+    onPick: (Doc) -> Unit,
+    /** Overrides the heading (the share uses its own). */
+    title: String? = null
 ) {
     val c = Ponte.colors
     var query by rememberSaveable { mutableStateOf("") }
     val shown = remember(docs, query, currentId) { docs.filter { it.id != currentId && matchesQuery(it, query) } }
     DetailScaffold(
-        title = if (currentId > 0) "Trocar de documento" else "Vincular a um documento",
+        title = title ?: if (currentId > 0) "Trocar de documento" else "Vincular a um documento",
         onBack = onBack
     ) {
         Column(Modifier.fillMaxSize()) {

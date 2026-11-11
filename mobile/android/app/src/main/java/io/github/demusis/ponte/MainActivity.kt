@@ -21,6 +21,15 @@ class MainActivity : ComponentActivity() {
         Controller.attach(this, savedInstanceState)
         applySecure(Controller.secureScreen())
         setContent { PonteTheme { AppRoot() } }
+        // Only a fresh start looks at the intent: a recreated Activity (rotation, process restored
+        // from the saved state) must not take a share again. The share itself is taken once from
+        // memory (see Intake.offer), so even a repeated marker finds nothing.
+        if (savedInstanceState == null) handleReceived(intent)
+    }
+
+    /** The marker the share receiver sends: the content itself waits in [Intake], not in the intent. */
+    private fun handleReceived(i: Intent?) {
+        if (i?.action == Intake.ACTION_RECEIVED) Intake.receive()
     }
 
     override fun onStart() {
@@ -44,6 +53,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         Controller.onActivityStop(isChangingConfigurations)
+        Intake.onHostStop(isChangingConfigurations)
         super.onStop()
     }
 
@@ -73,6 +83,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.action == NoticeScheduler.ACTION_TODAY) Controller.showToday()
+        handleReceived(intent)
     }
 
     /** The system asks for the permission to show notifications (Android 13 or newer). */
@@ -99,6 +110,8 @@ class MainActivity : ComponentActivity() {
             REQ_PICK -> if (resultCode == RESULT_OK) data?.data?.let { Controller.onFilePicked(it) }
             REQ_PHOTO -> Controller.onCamera(resultCode == RESULT_OK)
             REQ_UNLOCK -> AppLock.onResult(resultCode == RESULT_OK)
+            REQ_ATTACH_PHOTO -> Intake.onAttachPhotoResult(resultCode == RESULT_OK)
+            REQ_ATTACH_FILE -> Intake.onAttachPicked(if (resultCode == RESULT_OK) data?.data else null)
         }
     }
 
@@ -107,6 +120,8 @@ class MainActivity : ComponentActivity() {
         const val REQ_PHOTO = 2
         const val REQ_UNLOCK = 3
         const val REQ_NOTICE = 4
+        const val REQ_ATTACH_PHOTO = 5
+        const val REQ_ATTACH_FILE = 6
 
         /** The Activity on screen, for what needs one (pickers, fingerprint prompt). */
         @Volatile

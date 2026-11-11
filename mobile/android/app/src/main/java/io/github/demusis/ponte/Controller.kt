@@ -66,6 +66,15 @@ internal sealed class Route {
     object Search : Route() { override val key get() = "search" }
 
     object Photo : Route() { override val key get() = "photo" }
+
+    /**
+     * "Guardar no Ponte": what another app shared. Never restored after the process dies (its
+     * content lives in memory only; [parse] answers null), and the document picker of it likewise.
+     */
+    object Share : Route() { override val key get() = "share" }
+
+    /** The list of documents to attach a shared file to. */
+    object SharePick : Route() { override val key get() = "sharepick" }
     object Settings : Route() { override val key get() = "settings" }
 
     /** The account form; an empty uid is a new account. */
@@ -207,6 +216,7 @@ internal object Controller {
     /** Called by every new Activity, before it shows anything. */
     fun attach(a: MainActivity, saved: Bundle?) {
         app = a.applicationContext
+        Intake.init(app)
         personName = Assignees.cleanName(prefs.getString(K_NAME, "") ?: "")
         // The deadline notice's alarm is set again whenever the app opens (cheap, and it heals a lost one).
         NoticeScheduler.arm(app)
@@ -222,6 +232,8 @@ internal object Controller {
             if (locked) lockEpoch++
             val b = saved?.getBundle("photo")
             cleanHandedFiles(setOfNotNull(b?.getString("photo"), b?.getString("new")))
+            // A share or an attachment being prepared dies with the process: its files go too.
+            Intake.cleanAll(app)
         }
         if (!SyncRunner.ready && !SyncRunner.keyBroken && !SyncRunner.running.get()) {
             SyncRunner.startInit(a, false)
@@ -235,6 +247,7 @@ internal object Controller {
             // The person left with Back and came again while the process was still alive.
             if (!photo.saving) {
                 closePhoto()
+                Intake.reset()
                 stack.clear()
                 tab = 0
             }
@@ -307,6 +320,8 @@ internal object Controller {
                 }
                 Route.Settings, Route.Setup -> loadFileInfo()
                 Route.Photo -> restorePhoto(s.getBundle("photo"))
+                // Never in the saved stack (see Route.Share), but the match must be complete.
+                Route.Share, Route.SharePick -> stack.remove(r)
             }
         }
         if (documentId >= 0) loadDocument()
@@ -354,6 +369,13 @@ internal object Controller {
             if (k.isNotEmpty()) {
                 manualKinds = k
                 photo = photo.copy(kinds = k)
+            }
+            ch.optJSONObject("limits")?.let { l ->
+                AttachLimits.maxBytes = l.optLong("max_attachment_bytes", AttachLimits.maxBytes)
+                AttachLimits.maxNameChars = l.optInt("max_name_chars", AttachLimits.maxNameChars)
+                AttachLimits.maxDescriptionChars = l.optInt("max_description_chars", AttachLimits.maxDescriptionChars)
+                AttachLimits.maxTextBytes = l.optInt("max_text_bytes", AttachLimits.maxTextBytes)
+                AttachLimits.maxTitleBytes = l.optInt("max_title_bytes", AttachLimits.maxTitleBytes)
             }
             val p = ch.optJSONArray("priorities").objs().map { Choice(it.s("key"), it.s("label")) }
             if (p.isNotEmpty()) priorities = p
@@ -594,7 +616,7 @@ internal object Controller {
      * are not in progress. Photos of the "Registro por foto" being filled stay (or the whole
      * folder while it is being saved) until the record is created or the form is closed.
      */
-    private fun cleanHandedFiles(keep: Set<String> = setOfNotNull(photoPath, newPath)) {
+    private fun cleanHandedFiles(keep: Set<String> = setOfNotNull(photoPath, newPath) + Intake.keepPaths()) {
         try {
             File(app.cacheDir, PonteFiles.DIR_SHARED).listFiles()?.forEach { if (it.isFile) it.delete() }
             File(app.cacheDir, PonteFiles.DIR_PHOTOS).listFiles()?.forEach {
@@ -735,7 +757,7 @@ internal object Controller {
     fun showToday() {
         // A photo being made, a task or a note being typed stay as they are: the person is in the
         // middle of something. (While locked nothing is shown anyway; this only moves the state.)
-        val busy = stack.any { it is Route.Photo || it is Route.EditTask || it is Route.Note || it is Route.NewTask || it is Route.Setup }
+        val busy = stack.any { it is Route.Photo || it is Route.EditTask || it is Route.Note || it is Route.NewTask || it is Route.Setup || it is Route.Share }
         if (busy) return
         stack.clear()
         tab = 0
@@ -753,6 +775,7 @@ internal object Controller {
         when (val top = stack.lastOrNull()) {
             null -> if (tab != 0) selectTab(0)
             Route.Photo -> closePhoto()
+            Route.Share -> Intake.back()
             Route.Setup -> setupBack()
             is Route.Account -> if (!accountForm.busy) pop()
             is Route.EditTask, is Route.Pick -> if (!taskEdit.busy) pop()
@@ -1290,6 +1313,15 @@ internal object Controller {
     private fun reloadDocument() {
         if (stack.any { it is Route.Document }) loadDocument()
     }
+
+    /** Reads the ficha again (after something was attached to it). */
+    fun refreshDocument() = reloadDocument()
+
+    /** True once the Drive file has been chosen: only then can something be received from another app. */
+    fun isSetUp() = fileUri != null
+
+    /** The app's own unlock prompt (or the passphrase one) is on screen: leaving the Activity is part of it. */
+    fun unlockInProgress() = unlockBusy || Secrets.busy
 
     fun openText() {
         if (documentId >= 0) push(Route.Text(documentId))

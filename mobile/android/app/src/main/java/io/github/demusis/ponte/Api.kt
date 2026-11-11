@@ -72,6 +72,12 @@ internal object Api {
 
     fun createPhoto(fields: String, imagePath: String) = c(core.createPhotoRecord(fields, imagePath))
 
+    /** Answers the new document's id. [filePath] is "" for a record of text only. */
+    fun createRecord(fields: String, filePath: String): Long = c(core.createRecord(fields, filePath)).optLong("document_id")
+
+    fun attachFile(documentId: Long, path: String, name: String, description: String) =
+        c(core.attachFile(documentId, path, name, description))
+
     fun mailAccounts(): List<JSONObject> = c(core.listMailAccounts()).optJSONArray("accounts").objs()
     fun saveMailAccount(json: String): String = c(core.saveMailAccount(json)).s("uid")
     fun deleteMailAccount(uid: String) { c(core.deleteMailAccount(uid)) }

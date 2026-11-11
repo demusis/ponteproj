@@ -71,6 +71,19 @@ class PonteCore {
     external fun search(query: String): String
     external fun choices(): String
     external fun createPhotoRecord(fieldsJson: String, imagePath: String): String
+
+    /**
+     * A manual record from a file and/or a text: {kind, title, origin, date, text, file_name,
+     * file_description}; filePath "" means no file (then the text is needed). The file is checked
+     * before the record exists. Answer: {document_id}.
+     */
+    external fun createRecord(fieldsJson: String, filePath: String): String
+
+    /**
+     * Attaches the private working file at [path] to a document, with the desktop's own limits and
+     * checks. Answer: {attachment_id, name, size}.
+     */
+    external fun attachFile(documentId: Long, path: String, name: String, description: String): String
     external fun listMailAccounts(): String
     external fun saveMailAccount(json: String): String
     external fun deleteMailAccount(uid: String): String
