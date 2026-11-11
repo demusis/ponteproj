@@ -71,6 +71,8 @@ Source: "{#Root}\extension\files.js"; DestDir: "{localappdata}\Programs\PontePro
 Source: "{#Root}\extension\history.js"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
 Source: "{#Root}\extension\content.js"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
 Source: "{#Root}\extension\background.js"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
+Source: "{#Root}\extension\whatsapp-core.js"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
+Source: "{#Root}\extension\whatsapp.js"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
 Source: "{#Root}\extension\popup.html"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
 Source: "{#Root}\extension\popup.js"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
 Source: "{#Root}\extension\popup.css"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion

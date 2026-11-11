@@ -5,7 +5,7 @@ O **Ponte** é um programa para Windows que guarda, no seu computador, os docume
 Ele tem duas partes, que funcionam juntas:
 
 - o **aplicativo**, que abre pelo menu Iniciar e guarda tudo;
-- a **extensão do navegador** (Chrome ou Edge), que coloca o botão **Importar para o assistente** nas páginas do SIGADOC.
+- a **extensão do navegador** (Chrome ou Edge), que coloca o botão **Importar para o assistente** nas páginas do SIGADOC e, se você ligar, um painel para guardar conversas no WhatsApp Web ([5.8](#58-conversas-do-whatsapp)).
 
 **O que o Ponte não faz:** ele nunca envia nada ao SIGADOC. Assinar, tramitar e despachar continuam sendo feitos lá. O Ponte só lê, no seu navegador, as páginas às quais você já tem acesso.
 
@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.31.0 (extensão 0.3.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.32.0 (extensão 0.4.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.31.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.32.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -93,7 +93,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | **Acervo** | O arquivo do Ponte no seu computador, com tudo o que você importou e escreveu. É cifrado pela sua conta do Windows. |
 | **Documento** | Um processo, ofício, memorando ou outro expediente do SIGADOC que você importou. No SIGADOC, processo e expediente são igualmente "documentos", e é assim que o Ponte os trata. Cada um tem um número oficial, como `ORG-OFI-2026/00042`. |
 | **Versão importada** | Uma fotografia do documento no momento da importação. Importar de novo depois de um despacho cria uma nova versão; as anteriores ficam guardadas. |
-| **Registro manual** | Um documento que você mesmo cria, para o que não está no SIGADOC: uma ligação, um e-mail, um ofício em papel. Recebe um número próprio, como `MANUAL-2026/0007`. |
+| **Registro manual** | Um documento que você mesmo cria, para o que não está no SIGADOC: uma ligação, um e-mail, um ofício em papel, uma conversa do WhatsApp. Recebe um número próprio, como `MANUAL-2026/0007`. |
 | **Ficha** | A tela de um documento, com quatro abas: Resumo, Documento, Notas e minutas, Mais. |
 | **Tarefa** | Uma providência a tomar sobre um documento, com responsável e prazo. Toda tarefa pertence a um documento. |
 | **Atendimento** | Uma **passagem** de um documento ou de uma demanda pelo gabinete: quando entrou, com quem está, em que situação, quando saiu. É o que muitos gabinetes controlam em planilha. O mesmo documento pode ter várias passagens, e um atendimento pode existir sem documento. |
@@ -263,7 +263,7 @@ A lista fica na área **Documentos**, à esquerda da ficha.
 | Origem | *Todos*, *SIGADOC*, *Manuais* (aparece quando há registros manuais) |
 | **Ordem** | *Mais recentes primeiro* (padrão), *Prazo mais próximo primeiro*, *Prioridade (urgente primeiro)*, *Número do documento*, *Assunto (A–Z)* |
 
-- **Novo** abre um menu: **Registro manual…** cria um documento que não está no SIGADOC ([5.5](#55-registros-manuais)); **Importar e-mail de um arquivo (.eml)…** e **Importar da conta de e-mail…** trazem e-mails.
+- **Novo** abre um menu: **Registro manual…** cria um documento que não está no SIGADOC ([5.5](#55-registros-manuais)); na janela dele, **Colar conversa do WhatsApp** cria o registro de uma conversa ([5.8](#58-conversas-do-whatsapp)); **Importar e-mail de um arquivo (.eml)…** e **Importar da conta de e-mail…** trazem e-mails.
 
 ### 5.2 Como ler um cartão
 
@@ -341,6 +341,8 @@ Em equipe, o número é dado pelo computador principal. Se ele estiver fora de a
 
 **Direto da conta de e-mail (IMAP).** **Novo ▸ Importar da conta de e-mail…** abre uma janela com a lista de mensagens da última conta, pasta e filtro usados, para marcar e importar; **Trocar pasta ou conta…** leva à configuração completa. Na lista de documentos, um e-mail aparece pelo endereço e nome do remetente, com a data em que foi importado. **Ajustes ▸ E-mail** traz essa configuração dentro da página, sem janela à parte: as suas contas, a pasta e o filtro e a lista de mensagens. Cadastre uma (nome, servidor, usuário e **senha de app**; para o Gmail pessoal, ative a verificação em duas etapas e crie a senha em Conta Google ▸ Segurança ▸ Senhas de app: a senha normal não funciona). A senha fica selada só neste computador, e só se você marcar "Lembrar"; sem marcar, é pedida a cada sessão. Conecte, escolha a pasta (a Caixa de entrada, **Com estrela** ou um marcador do Gmail, que aparece como pasta) e o filtro (Todas, Com estrela, Não lidas), liste as cem mais recentes, marque as que quer e clique em **Importar**. Cada mensagem vira o mesmo registro manual do `.eml`, com anexos; as já importadas aparecem indicadas e não se repetem. O Ponte só lê: nada é marcado como lido, movido ou apagado. A conexão é cifrada (TLS) e vai direto ao servidor de e-mail; nada passa por terceiros. Pode haver várias contas.
 
+Uma conversa do WhatsApp também vira registro manual: veja [5.8](#58-conversas-do-whatsapp).
+
 ### 5.6 Anexos
 
 Arquivos do seu computador podem ser juntados a um **documento** (Documento ▸ Anexos), a uma **tarefa** (na ficha dela) ou a um **atendimento** (na ficha dele). Tarefa e atendimento precisam estar salvos antes. Clique em **Anexar arquivo…** e escolha o arquivo. Ele passa a fazer parte do acervo, cifrado, e aparece para a equipe. Também dá para **arrastar** arquivos do Explorador de Arquivos do Windows e soltá-los sobre a janela do Ponte, vários de uma vez, desde que haja um único bloco **Anexos** na tela (veja abaixo).
@@ -369,6 +371,42 @@ Para levar a ficha de um documento para uma reunião, um processo em papel ou um
 Se a nota na tela ainda não foi salva, a página sai com o texto que está na tela, e o aviso do Ponte diz que ela não foi salva no Ponte.
 
 **Atenção:** a página salva é uma **cópia fora do acervo protegido**: quem abrir o arquivo lê o conteúdo, sem a proteção da sua conta do Windows. Guarde-a, ou apague-a, com o mesmo cuidado que teria com o próprio documento, e não a deixe em pasta que outras pessoas leem sem necessidade.
+
+### 5.8 Conversas do WhatsApp
+
+Uma conversa do WhatsApp pode ficar guardada no Ponte, junto dos documentos, com tarefas e notas. O registro é do tipo **Conversa do WhatsApp** e leva a etiqueta **WhatsApp** na lista. São conversas com outras pessoas: guarde só o que o trabalho exige.
+
+**Primeira forma: copiar e colar (não precisa da extensão).**
+
+1. No WhatsApp (no navegador, no aplicativo do computador ou no celular), selecione as mensagens e copie. Se copiou no celular, leve o texto ao computador, por exemplo enviando-o a você mesmo.
+2. No Ponte, **Novo ▸ Registro manual…** e, na janela, **Colar conversa do WhatsApp**.
+3. Cole (Ctrl+V) em **Mensagens copiadas**. O Ponte mostra a prévia: quantas mensagens leu, o período, os participantes e a primeira e a última mensagem. Se não encontrar mensagens, diz isso e nada é criado.
+4. Se quiser, ajuste **Conversa com** (nome da pessoa ou do grupo) e o **Título** (sugerido como "Conversa com <nome> — data da última mensagem"; pelo menos 3 caracteres).
+5. **Criar registro**.
+
+**Segunda forma: pela extensão (0.4.0), no WhatsApp Web.** O recurso vem desligado. Para ligar, uma única vez: clique no ícone da extensão ▸ **Usar no WhatsApp Web**, aceite a pergunta do Chrome (acesso a web.whatsapp.com) e recarregue a página do WhatsApp Web. A página ganha um botão pequeno escrito **Ponte**, no canto inferior esquerdo, que abre o painel **Guardar no Ponte**. Então:
+
+1. Arraste o mouse sobre as mensagens e clique em **Trecho selecionado**; ou clique em **Mensagens visíveis na tela**.
+2. Confira a prévia (quantidade de mensagens, período, fotos, primeira e última mensagem) e ajuste **Título** e **Conversa com**. **Nota ou prioridade** permite juntar uma nota ([5.4](#54-importar-de-novo-o-mesmo-documento)).
+3. Se quiser, junte arquivos baixados do WhatsApp (PDF, Word…): solte-os sobre o painel ou use **Escolher arquivo…**. As fotos das mensagens escolhidas vão sozinhas.
+4. **Enviar ao Ponte**. O painel diz *Guardado no Ponte.* e oferece **Abrir no Ponte** e **Guardar outra conversa**.
+
+Se a página não for reconhecida (*O Ponte não reconheceu esta página do WhatsApp Web*), use **Colar mensagens copiadas**, no painel. Para desligar, ícone da extensão ▸ **Desligar**, que retira a permissão.
+
+**O que o registro guarda.** Número `MANUAL-ano/sequência` e uma tarefa de triagem, como todo registro manual. O texto tem uma linha por mensagem, `[dd/mm/aaaa hh:mm] Nome: mensagem`; as linhas seguintes da mesma mensagem ficam recuadas em quatro espaços, para que uma linha dentro de uma mensagem nunca passe por mensagem de outra pessoa (mensagens do sistema do WhatsApp saem como `[dd/mm/aaaa hh:mm] — texto`). Na ficha, **Dados do documento** traz **Conversa com**, **Período**, **Mensagens** e **Origem** (*Extensão do navegador* ou *Colado no Ponte*). Fotos e arquivos ficam em **Anexos**. Acompanha a equipe ou a pasta compartilhada como qualquer registro manual.
+
+**Limites e cuidados:**
+
+| Regra | Valor |
+|---|---|
+| Mensagens e texto | até 500 mensagens e 500 KB de texto por registro |
+| Arquivos | até 8 MB cada, 10 por envio pelo painel, 16 MB juntos; o registro aceita até 20 anexos ([5.6](#56-anexos)) |
+| Sem legenda | fotos e arquivos sem legenda entram sem o nome do autor; se a data não puder ser conhecida com certeza, entram como `[sem data]`, e o painel avisa |
+| Arquivos da página | PDF, Word etc. não são lidos da página: baixe-os no WhatsApp e solte-os no painel, ou junte-os depois em **Anexos**. As fotos das mensagens escolhidas são lidas |
+| Repetição | a mesma seleção enviada duas vezes pelo painel, ou o mesmo texto colado duas vezes, com o mesmo **Conversa com**, não duplica (os arquivos de uma conversa que já existia não são juntados de novo). Uma conversa guardada pelo painel e depois colada da cópia do WhatsApp pode ficar duas vezes, porque os dois textos não são idênticos |
+| Lixeira | se a mesma conversa foi guardada antes e está na Lixeira, o Ponte avisa; restaure-a em **Ajustes ▸ Lixeira** |
+
+**O que a extensão não faz.** Lê só as mensagens escolhidas, só quando você clica (nada em segundo plano, ao abrir a página ou ao rolar). Não lê outras conversas nem contatos, não envia, altera nem apaga nada no WhatsApp e fica desligada até você ligar. O que você escolheu só sai da página em **Enviar ao Ponte** e vai somente ao Ponte deste computador ([10.6](#106-o-que-sai-do-computador)).
 
 ---
 
@@ -830,6 +868,7 @@ Por padrão, nada. O que pode sair, e só por escolha sua:
 | O acervo, cifrado com a sua senha | Na pasta compartilhada, ao sincronizar ([8.2](#82-uma-pessoa-dois-computadores-pasta-compartilhada)) | A pasta que você indicou |
 | A página da ficha ([5.7](#57-imprimir-ou-salvar-a-ficha)) | Ao escolher **Imprimir ou salvar a ficha…** | O arquivo `.html` na pasta que você escolheu, **fora do acervo protegido** |
 | A nota escrita no painel da extensão ([5.4](#54-importar-de-novo-o-mesmo-documento)) | Ao clicar em **Importar para o assistente** | Só ao Ponte deste computador, pela ligação entre o navegador e o programa. Depois é uma nota comum do documento: segue para a equipe ou a pasta compartilhada se você usa uma delas |
+| As mensagens e os arquivos escolhidos no WhatsApp Web ([5.8](#58-conversas-do-whatsapp)) | Ao clicar em **Enviar ao Ponte**, no painel da extensão (recurso opcional, desligado de fábrica) | Só ao Ponte deste computador, pela ligação entre o navegador e o programa; a extensão não envia nada à internet. Depois é um registro comum: segue para a equipe ou a pasta compartilhada se você usa uma delas |
 | Os avisos de prazos do Windows ([6.6](#66-lembretes-de-prazos)) | Uma vez por dia | Para ninguém: são só contagens, mostradas neste computador. Nenhum título ou número de documento entra no aviso |
 | A lista de importações recentes ([5.4](#54-importar-de-novo-o-mesmo-documento)) | Durante a sessão do navegador | Para ninguém: fica na memória do navegador e some ao fechá-lo |
 | Uma consulta à página de versões no GitHub | Só quando você clica em **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** | `github.com/demusis/ponteproj`, sem nenhum dado do acervo |
@@ -858,6 +897,10 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | Tela inicial diz *✗ O navegador ainda não foi ligado ao Ponte* | O registro não existe para esta conta do Windows. Rode o instalador. |
 | O link **Adicionar nota ou prioridade** não aparece no painel | O Ponte instalado é anterior à 0.31 ou a extensão é anterior à 0.3.0. Atualize o Ponte (e a extensão, se veio da pasta) e reinicie o navegador. |
 | *"A importação foi feita, mas a nota não foi salva…"* | O documento foi importado; só a nota falhou. Escreva-a na ficha, em **Notas e minutas**. A prioridade, se também falhou, se escolhe na ficha. |
+| O botão **Ponte** não aparece no WhatsApp Web | O recurso não foi ligado (ícone da extensão ▸ **Usar no WhatsApp Web**) ou a página não foi recarregada depois de ligar. Recarregue a página (F5). Exige a extensão 0.4.0. |
+| *"O Ponte não reconheceu esta página do WhatsApp Web"* | O WhatsApp pode ter mudado a página. Use **Colar mensagens copiadas**, no painel, ou **Novo ▸ Registro manual… ▸ Colar conversa do WhatsApp**, no Ponte. |
+| *"Atualize o Ponte para guardar conversas do WhatsApp"* | O Ponte instalado é anterior à 0.32. Instale a versão mais recente e reinicie o navegador. |
+| *"Esta conversa já foi guardada antes e está na Lixeira…"* | Restaure-a em Ajustes ▸ Lixeira. |
 | Dois botões "Importar" na página | Há duas extensões, a da pasta e a da loja. Remova a da pasta em `chrome://extensions`. |
 
 ### 11.2 IA
@@ -952,10 +995,12 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/help_ui.rs` | O ⓘ de ajuda: explica ao passar o mouse e, ao clicar, deixa a explicação aberta ao lado |
 | `src/storage.rs`, `src/protection.rs` | SQLite + DPAPI; `Store` é a única porta de entrada aos dados |
 | `src/model.rs` | `Capture` (o que a extensão envia) e sua validação |
-| `src/native.rs`, `src/main.rs` | Host nativo: quadros com tamanho, ações `ping`, `import_capture` e `import_bundle`, IDs de extensão aceitos. Os `extras` (nota e prioridade) são conferidos antes de importar e aplicados depois (`apply_extras`: a nota entra ao fim, com a data, e a falha em gravar nunca desfaz a importação); `ping` informa a ação `import_extras` |
+| `src/native.rs`, `src/main.rs` | Host nativo: quadros com tamanho, ações `ping`, `import_capture` e `import_bundle`, IDs de extensão aceitos. Os `extras` (nota e prioridade) são conferidos antes de importar e aplicados depois (`apply_extras`: a nota entra ao fim, com a data, e a falha em gravar nunca desfaz a importação); `ping` informa as ações `import_extras` e `import_record`. `import_record` recebe uma conversa do WhatsApp Web com até 10 arquivos: confere tudo (título, texto, mensagens contadas pelo próprio texto, tamanhos) antes de gravar e responde `imported` ou `already` |
 | `src/files.rs`, `src/pdf_reader.rs` | PDFs importados; leitor e OCR do Windows |
 | `src/dossier.rs` | Vínculos entre documentos, versões importadas, detecção de juntada |
 | `src/manual.rs` | Registros manuais |
+| `src/whatsapp.rs` | Conversas do WhatsApp: leitor do texto copiado (à mão, sem retrocesso), texto do registro (continuação recuada em 4 espaços), metadados `wa_*`, identificador pelo conteúdo (`request_id`) e `Store::import_whatsapp` (colar). Os vetores de teste, `src/whatsapp_vetores.json`, são os mesmos de `tests/extension/whatsapp-vetores.json`, lidos também pelo leitor em JavaScript |
+| `src/record_import.rs` | Registro com anexos, tudo ou nada: valida antes de gravar, mesma conversa (mesmo identificador) responde "já existe", anexo que falha leva o registro à Lixeira; usado por `import_record` |
 | `src/attachments.rs` | Anexos de documentos, tarefas e atendimentos, inclusive os arquivos arrastados do Explorador |
 | `src/tasks.rs`, `src/tasks_ui.rs` | Tarefas, dependências, painel. Em `tasks_ui.rs`, o `mod batch` faz as ações em lote (seleção, pergunta, tarefas puladas e motivo, desfazer por 30 s) pelas mesmas chamadas do `Store` de uma alteração avulsa |
 | `src/reminders.rs` | Lembrete diário de prazos: contagens, decisão por data (não por tempo decorrido) e arquivo `lembretes.txt`; o aviso do Windows fica em `src/windows_ui.rs` |
@@ -983,7 +1028,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/windows_ui.rs`, `src/paths.rs` | Seletores de arquivo, verificação do registro do host, pastas de dados |
 | `src/icon.rs`, `build.rs`, `assets/` | Ícone da janela e do executável |
 | `src/lib.rs`, `src/main.rs` | A biblioteca com todos os módulos; `main.rs` decide se abre a janela, atende o navegador ou executa uma opção de linha de comando |
-| `extension/` | Extensão MV3: `capture-core.js` (leitura da página e validação), `content.js` (painel), `history.js` (tramitação), `files.js` e `background.js` (PDFs e host nativo), `popup.*` (inclui a lista de importações recentes, guardada na memória de sessão do navegador) |
+| `extension/` | Extensão MV3: `capture-core.js` (leitura da página e validação), `content.js` (painel), `history.js` (tramitação), `files.js` e `background.js` (PDFs e host nativo), `popup.*` (inclui a lista de importações recentes, guardada na memória de sessão do navegador, e o botão **Usar no WhatsApp Web**). Recurso opcional do WhatsApp Web: `whatsapp-core.js` (leitor do texto copiado, regras do registro e dos anexos, leitor da página; funções puras) e `whatsapp.js` (o painel, registrado pelo `background.js` só depois que a pessoa liga o recurso e a permissão é concedida; só lê dentro dos cliques) |
 | `installer/Ponte.iss` | Instalador Inno Setup |
 | `scripts/` | `build.ps1`, `build-installer.ps1`, `build-webstore-package.ps1`, `install-app.ps1`, `install-native-host.ps1` |
 | `tests/` | Fluxo nativo (`native_flow.rs`), extensão (`node --test`, Playwright) e fixtures fictícias |
@@ -999,7 +1044,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 - **Modelos de trabalho** usam as tabelas `work_templates`, `work_template_versions`, `instruction_blocks`, `instruction_block_versions`, `template_examples` e `draft_generations`. Os itens são endereçados por `uid` (UUID), não pelo número da linha, o que dispensa tradução de números na sincronização; só o registro de geração, que aponta para documento e captura, passa por `idmap`. A camada confiável do prompt só recebe texto de modelo, instruções e pedido; documentos e exemplos vão como dados.
 - **`SCHEMA_VERSION` 12 (11 na 0.20.0):** o acervo muda de formato. Quem está em equipe atualiza todos os computadores juntos, o principal primeiro.
 - **Limites:** 500 KiB de texto e 1 MiB por pacote de captura, até 10 PDFs, 8 MiB por PDF e 16 MiB de PDFs por importação, 8 MiB por anexo, 100 MiB por planilha `.xlsx` (256 MiB descompactada).
-- **A extensão só atua em `https://www.sigadoc.mt.gov.br`** e remove segredos de URL.
+- **A extensão só atua em `https://www.sigadoc.mt.gov.br`** e remove segredos de URL. A única exceção é o recurso opcional do WhatsApp Web (`https://web.whatsapp.com`), que fica desligado até a pessoa ligá-lo e só então pede a permissão ao navegador.
 - **Leituras caras ficam em memória até o acervo mudar.** Cada linha é decifrada pela DPAPI, e a interface redesenha várias vezes por segundo. `Store::cached` guarda o resultado de listas como tarefas, documentos e atendimentos e o descarta a cada gravação, desta conexão ou de outra. Uma leitura nova que seja cara e sem efeitos colaterais deve passar por ele.
 
 **Convenções para quem for alterar o código:**
@@ -1039,7 +1084,7 @@ node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tes
 
 Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
-Hoje são 239 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 81 na extensão.
+Hoje são 264 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 123 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 

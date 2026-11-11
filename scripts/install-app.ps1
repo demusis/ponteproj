@@ -40,6 +40,8 @@ $extensionRuntimeFiles = @(
     'history.js',
     'content.js',
     'background.js',
+    'whatsapp-core.js',
+    'whatsapp.js',
     'popup.html',
     'popup.js',
     'popup.css',

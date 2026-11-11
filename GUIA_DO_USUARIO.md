@@ -76,11 +76,50 @@ No alto da ficha, o botão **⋯** (Mais ações) tem **Imprimir ou salvar a fic
 
 **Documentos juntados** aparecem abaixo do principal, com a marca ↳. O cabeçalho da ficha tem **Abrir documento principal**.
 
-**Algo que não está no SIGADOC** (ligação, e-mail, memorando, papel): clique em **Novo ▸ Registro manual…**, preencha tipo, título, origem, data e texto, e salve. O registro ganha um número `MANUAL-ano/número` e a etiqueta **Manual**, e funciona como qualquer documento. **Editar registro…** salva uma nova versão. Um e-mail salvo como arquivo `.eml` (Gmail: Mostrar original ▸ Baixar original) entra pronto por **Novo ▸ Importar e-mail de um arquivo (.eml)…**, com os anexos; e-mails importados ganham número próprio `EMAIL-ano/número` e a etiqueta **E-mail**. Para buscar direto na conta, use **Novo ▸ Importar da conta de e-mail…**, que abre a lista da última pasta e filtro usados; na primeira vez, ou para trocar, use **Ajustes ▸ E-mail** (a página já traz as contas, a pasta e a lista de mensagens): cadastre a conta com uma senha de app (no Gmail, com a verificação em duas etapas ativa), escolha a pasta ou o marcador (por exemplo, **Com estrela**), liste e marque as mensagens a importar. O Ponte só lê a conta; nada é marcado ou apagado.
+**Algo que não está no SIGADOC** (ligação, e-mail, memorando, papel): clique em **Novo ▸ Registro manual…**, preencha tipo, título, origem, data e texto, e salve. O registro ganha um número `MANUAL-ano/número` e a etiqueta **Manual**, e funciona como qualquer documento. **Editar registro…** salva uma nova versão. Um e-mail salvo como arquivo `.eml` (Gmail: Mostrar original ▸ Baixar original) entra pronto por **Novo ▸ Importar e-mail de um arquivo (.eml)…**, com os anexos; e-mails importados ganham número próprio `EMAIL-ano/número` e a etiqueta **E-mail**. Para buscar direto na conta, use **Novo ▸ Importar da conta de e-mail…**, que abre a lista da última pasta e filtro usados; na primeira vez, ou para trocar, use **Ajustes ▸ E-mail** (a página já traz as contas, a pasta e a lista de mensagens): cadastre a conta com uma senha de app (no Gmail, com a verificação em duas etapas ativa), escolha a pasta ou o marcador (por exemplo, **Com estrela**), liste e marque as mensagens a importar. O Ponte só lê a conta; nada é marcado ou apagado. Uma conversa do WhatsApp também vira registro: veja **Conversas do WhatsApp**, mais abaixo.
 
 **Imprimir ou salvar a ficha.** Em **⋯ ▸ Imprimir ou salvar a ficha…**, escolha onde guardar o arquivo. O Ponte cria uma página (arquivo .html) com a ficha e a abre no navegador; de lá, **Ctrl+P ▸ Salvar como PDF** grava um PDF, ou imprima direto. A página traz os dados do documento, a análise (com o aviso de que foi feita com apoio de IA), as tarefas, os atendimentos, a nota, o texto, a lista de arquivos e o histórico de tramitação. Não traz os arquivos em si (PDFs e anexos continuam no Ponte) nem a minuta. **Atenção:** a página salva é uma cópia fora do acervo protegido. Guarde-a, ou apague-a, com o mesmo cuidado que teria com o próprio documento.
 
 **Anexos.** Em Documento ▸ Anexos, na ficha de uma tarefa ou de um atendimento, **Anexar arquivo…** junta um arquivo do seu computador: até 20 por item, de até 8 MB cada. Aceita PDF, Word, Excel, PowerPoint, OpenDocument, texto, imagens e e-mails; recusa programas, scripts e arquivos compactados, e diz o motivo. **Arrastar:** também dá para arrastar arquivos do Explorador de Arquivos do Windows e soltá-los sobre a janela do Ponte, vários de uma vez, quando há um bloco **Anexos** na tela. Valem os mesmos limites; pastas são recusadas. Se dois blocos **Anexos** aparecem juntos, o Ponte não sabe qual escolher: use **Anexar arquivo…** do bloco desejado. **Ler no Ponte** abre PDFs, **Abrir** usa o programa padrão do Windows e **Salvar como…** grava uma cópia.
+
+### Conversas do WhatsApp
+
+Uma conversa do WhatsApp pode ficar guardada no Ponte, junto dos documentos, com tarefas e notas. O registro é do tipo **Conversa do WhatsApp** e leva a etiqueta **WhatsApp** na lista. São conversas com outras pessoas: guarde só o que o trabalho exige.
+
+**Primeira forma: copiar e colar (não precisa da extensão).**
+
+1. No WhatsApp (no navegador, no aplicativo do computador ou no celular), selecione as mensagens e copie. Se copiou no celular, leve o texto ao computador, por exemplo enviando-o a você mesmo.
+2. No Ponte, clique em **Novo ▸ Registro manual…** e, na janela, em **Colar conversa do WhatsApp**.
+3. Cole o texto (Ctrl+V) em **Mensagens copiadas**. O Ponte mostra quantas mensagens leu, o período, os participantes e a primeira e a última mensagem. Se não encontrar mensagens, diz isso e nada é criado.
+4. Se quiser, ajuste **Conversa com** (o nome da pessoa ou do grupo) e o **Título**. O Ponte sugere "Conversa com <nome> — data da última mensagem"; o título precisa ter pelo menos 3 caracteres.
+5. Clique em **Criar registro**.
+
+**Segunda forma: pela extensão, no WhatsApp Web (extensão 0.4.0).** Ela vem desligada. Para ligar, uma única vez:
+
+1. Clique no ícone da extensão, na barra do navegador, e em **Usar no WhatsApp Web**. O navegador pergunta se permite o acesso a web.whatsapp.com: aceite.
+2. Recarregue a página do WhatsApp Web (F5).
+
+Depois disso, a página do WhatsApp Web ganha um botão pequeno escrito **Ponte**, no canto inferior esquerdo, que abre o painel, uma caixa com o título **Guardar no Ponte**. Para guardar uma conversa:
+
+1. Abra a conversa. Arraste o mouse sobre as mensagens que quer guardar e, no painel, clique em **Trecho selecionado**. Ou clique em **Mensagens visíveis na tela**, para guardar o que está aparecendo.
+2. Confira a prévia: quantas mensagens, o período, as fotos e a primeira e a última mensagem. Ajuste o **Título** e **Conversa com**, se quiser. Em **Nota ou prioridade** dá para juntar uma nota (veja a seção 3).
+3. Se tiver arquivos da conversa (PDF, Word…), baixe-os no WhatsApp e solte-os sobre o painel, ou use **Escolher arquivo…**. As fotos das mensagens escolhidas vão sozinhas; os outros arquivos, não.
+4. Clique em **Enviar ao Ponte**. O painel diz *Guardado no Ponte.* e oferece **Abrir no Ponte** e **Guardar outra conversa**.
+
+Se o painel não reconhecer a página (*O Ponte não reconheceu esta página do WhatsApp Web*), abra **Colar mensagens copiadas**, no próprio painel, e cole ali o que copiou no WhatsApp. Para desligar, clique no ícone da extensão e em **Desligar**; o navegador retira o acesso.
+
+**O que o registro guarda.** Ele recebe número `MANUAL-ano/número`, como os registros manuais, e uma tarefa de triagem, como todo registro. O texto tem uma linha por mensagem, no formato `[dd/mm/aaaa hh:mm] Nome: mensagem`. As linhas seguintes da mesma mensagem ficam recuadas, para que uma linha dentro de uma mensagem nunca passe por mensagem de outra pessoa. Mensagens do próprio WhatsApp (como "fulano entrou no grupo") aparecem sem nome. Na ficha, **Dados do documento** traz **Conversa com**, **Período**, **Mensagens** e **Origem** (*Extensão do navegador* ou *Colado no Ponte*). Fotos e arquivos ficam em **Anexos**. O registro acompanha a equipe ou a pasta compartilhada como qualquer outro (seção 8). **Editar registro…** funciona como nos demais, e o período e a contagem são lidos de novo do texto.
+
+**Limites e cuidados.**
+
+- Até 500 mensagens e 500 KB de texto por registro. Se passar, guarde a conversa em partes.
+- Arquivos: até 8 MB cada, 10 por vez pelo painel, 16 MB juntos; um registro aceita até 20 anexos no total. Outros arquivos podem ser juntados depois, em **Anexos**.
+- Fotos e arquivos sem legenda entram sem o nome de quem os enviou. Quando o Ponte não tem como saber a data com certeza, eles entram como `[sem data]`, e o painel avisa.
+- O Ponte não lê arquivos (PDF, Word…) da página do WhatsApp Web: baixe-os e solte-os no painel, ou junte-os depois em **Anexos**.
+- Guardar de novo a mesma seleção pelo painel não duplica, e colar de novo o mesmo texto também não: o Ponte diz que a conversa já estava lá. Vale para o mesmo texto e o mesmo **Conversa com**; se mudar o nome, o Ponte a trata como outra conversa. Já uma conversa guardada pelo painel e depois colada a partir da cópia do WhatsApp pode ficar duas vezes, porque os dois textos não são idênticos. Os arquivos de uma conversa que já existia não são juntados de novo; use **Anexos**.
+- Se a mesma conversa já foi guardada e está na **Lixeira**, o Ponte avisa. Restaure-a em **Ajustes ▸ Lixeira**.
+
+**O que a extensão não faz.** Ela só lê as mensagens que você escolheu, e só no momento em que você clica. Não lê outras conversas nem contatos, não envia, não altera e não apaga nada no WhatsApp, e fica desligada até você ligar. Nada sai do computador: o que você manda vai só ao Ponte deste computador e, de lá, só segue para a equipe ou a pasta compartilhada se você configurou uma delas.
 
 ## 5. Tarefas e prazos
 
@@ -189,6 +228,9 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 | O colega não conecta ao computador principal | O principal precisa estar com o Ponte aberto, na mesma rede, com a porta 7878 liberada. |
 | "Não foi possível proteger/abrir os dados deste perfil Windows" | O acervo é de outra conta do Windows. Entre com a conta que fez a instalação. |
 | Excluí algo sem querer | Ajustes ▸ Lixeira ▸ **Restaurar**. |
+| O botão **Ponte** não aparece no WhatsApp Web | O recurso não foi ligado (ícone da extensão ▸ **Usar no WhatsApp Web**) ou a página não foi recarregada depois de ligar. Recarregue a página (F5). Exige a extensão 0.4.0. |
+| "O Ponte não reconheceu esta página do WhatsApp Web" | O WhatsApp pode ter mudado a página. Abra **Colar mensagens copiadas** no painel e cole o que copiou no WhatsApp, ou use **Novo ▸ Registro manual… ▸ Colar conversa do WhatsApp** no Ponte. |
+| "Atualize o Ponte para guardar conversas do WhatsApp" | O Ponte instalado é anterior à 0.32. Instale a versão mais recente e reinicie o navegador. |
 
 A lista completa de mensagens e soluções está na seção "Solução de problemas" de <https://github.com/demusis/ponteproj>. A versão instalada aparece em **Ajustes ▸ Sobre o Ponte**.
 

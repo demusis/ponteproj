@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 /// Public repository with the installer, the source and the release notes.
 const PROJECT_URL: &str = "https://github.com/demusis/ponteproj";
 /// Version of the browser extension shipped with this build (extension/manifest.json).
-const EXTENSION_VERSION: &str = "0.1.11";
+const EXTENSION_VERSION: &str = "0.4.0";
 
 /// "1 documento" / "3 documentos".
 fn plural(n: usize, one: &str, many: &str) -> String {
