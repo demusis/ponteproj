@@ -488,6 +488,6 @@
       return this.inFlight;
     }
   }
-  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, importOutcome, identity, errorResult, filesNotDownloaded, checkOutcome, statusView, UNRECOGNIZED_TEXT, OLD_PONTE_HINT, nativeError, ImportSession, bytes, exactKeys, validateExtras, buildExtras, extrasNotice, limitNote, MAX_NOTE_CHARS, EXTRAS_PRIORITIES };
+  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, importOutcome, identity, errorResult, filesNotDownloaded, checkOutcome, statusView, UNRECOGNIZED_TEXT, OLD_PONTE_HINT, nativeError, ImportSession, bytes, exactKeys, validateExtras, buildExtras, extrasNotice, limitNote, MAX_NOTE_CHARS, EXTRAS_PRIORITIES, wellFormed };
 });
 

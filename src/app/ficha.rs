@@ -132,6 +132,35 @@ fn summary_rows(detail: &DocumentDetail) -> Vec<(&'static str, String)> {
             rows.push(("Remetente", from.clone()));
         }
     }
+    if detail.summary.whatsapp {
+        let chat = metadata.get("wa_chat").filter(|c| !c.trim().is_empty());
+        rows.push((
+            "Conversa com",
+            chat.cloned().unwrap_or_else(|| "não informada".to_owned()),
+        ));
+        let when = |key: &str| {
+            metadata
+                .get(key)
+                .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M").ok())
+                .map(|d| d.format("%d/%m/%Y %H:%M").to_string())
+        };
+        match (when("wa_first"), when("wa_last")) {
+            (Some(a), Some(b)) if a != b => rows.push(("Período", format!("{a} a {b}"))),
+            (Some(a), _) | (None, Some(a)) => rows.push(("Período", a)),
+            _ => {}
+        }
+        if let Some(count) = metadata
+            .get("wa_messages")
+            .and_then(|n| n.parse::<usize>().ok())
+        {
+            rows.push(("Mensagens", count.to_string()));
+        }
+        match metadata.get("imported_from").map(String::as_str) {
+            Some("whatsapp-web") => rows.push(("Origem", "Extensão do navegador".to_owned())),
+            Some("whatsapp-colado") => rows.push(("Origem", "Colado no Ponte".to_owned())),
+            _ => {}
+        }
+    }
     if let Some(value) = metadata.get("document_model") {
         rows.push(("Modelo do SIGADOC", value.clone()));
     }
@@ -218,6 +247,8 @@ impl PonteApp {
             if detail.summary.manual {
                 let kind = if detail.summary.email {
                     "E-mail importado"
+                } else if detail.summary.whatsapp {
+                    "Conversa do WhatsApp"
                 } else {
                     "Registro manual"
                 };
@@ -1205,7 +1236,9 @@ impl PonteApp {
         };
         Self::section(ui, id, text_title, true, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if manual {
+                if detail.summary.whatsapp {
+                    widgets::small_muted(ui, "Mensagens da conversa, como foram guardadas. Para alterá-las, use “Editar registro” no topo.");
+                } else if manual {
                     widgets::small_muted(ui, "Texto digitado por quem criou o registro. Para alterá-lo, use “Editar registro” no topo.");
                 } else {
                     widgets::small_muted(ui, "Texto da página e dos PDFs lidos.");
@@ -1588,6 +1621,8 @@ impl PonteApp {
         let origin_line = if detail.summary.manual {
             let kind = if detail.summary.email {
                 "E-mail importado"
+            } else if detail.summary.whatsapp {
+                "Conversa do WhatsApp"
             } else {
                 "Registro manual"
             };

@@ -57,6 +57,7 @@ fn seed_all(store: &mut Store) -> Result<()> {
     let mut ids = documents(store).context("documentos de exemplo")?;
     note(store, &ids).context("nota de exemplo")?;
     ids.mail = mail(store).context("e-mail de exemplo")?;
+    whatsapp(store).context("conversa do WhatsApp de exemplo")?;
     tasks(store, &ids).context("tarefas de exemplo")?;
     attendances(store, &ids).context("atendimentos de exemplo")?;
     analysis(store, &ids).context("análise de exemplo")?;
@@ -261,6 +262,27 @@ fn mail(store: &mut Store) -> Result<Option<i64>> {
     );
     let imported = store.import_eml_bytes(eml.as_bytes())?;
     Ok(Some(imported.receipt.document_id))
+}
+
+/// A short conversation as copied from WhatsApp, brought in the way the
+/// window does (the paste is read and the record created from it).
+fn whatsapp(store: &mut Store) -> Result<()> {
+    let date = (Local::now() - Duration::days(1))
+        .format("%d/%m/%Y")
+        .to_string();
+    let copied = [
+        format!("[09:12, {date}] Servidor B: Bom dia. A sala de reuniões do 2º andar está livre na quinta?"),
+        format!("[09:15, {date}] Servidor A: Bom dia. Está, das 14h às 17h."),
+        format!("[09:16, {date}] Servidor B: Ótimo. Pode reservar para a reunião da Unidade A?"),
+        format!("[09:20, {date}] Servidor A: Reservei. Anotei também o número do documento: ORG-OFI-2026/00431."),
+        "Se mudar o horário, me avise.".to_owned(),
+        format!("[09:21, {date}] Servidor B: Combinado, obrigado."),
+    ]
+    .join("\n");
+    let conversation = crate::whatsapp::parse(&copied)?;
+    let title = crate::whatsapp::suggested_title("Servidor B", &conversation);
+    store.import_whatsapp("Servidor B", &title, &conversation, "whatsapp-colado")?;
+    Ok(())
 }
 
 /// The triage task every import creates, to be turned into a real task.
@@ -726,6 +748,8 @@ mod tests {
             .any(|d| d.document_number == "ORG-OFI-2026/00431"));
         assert!(documents.iter().any(|d| d.joined_to_number.is_some()));
         assert!(documents.iter().any(|d| d.email));
+        let chat = documents.iter().find(|d| d.whatsapp).unwrap();
+        assert!(chat.manual && !chat.email && chat.whatsapp_chat == "Servidor B");
         let tasks = store.list_tasks().unwrap();
         assert!(tasks.len() >= 8, "tasks: {}", tasks.len());
         assert!(tasks.iter().any(|t| t.overdue()));

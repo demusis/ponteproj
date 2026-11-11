@@ -14,6 +14,13 @@
   <p id="old" class="small" hidden>Atualize o Ponte para a versão mais recente para ver na página se o documento já foi importado.</p>
   <p id="extras-old" class="small" hidden>Atualize o Ponte para enviar nota e prioridade ao importar.</p>
   <button id="check" type="button">Verificar de novo</button>
+  <section id="whatsapp-section" aria-labelledby="wa-title">
+    <h2 id="wa-title">WhatsApp Web</h2>
+    <p class="small">Guarda no Ponte mensagens e arquivos de uma conversa, quando você pedir. Só funciona depois de ligado aqui.</p>
+    <p id="wa-state" class="small" role="status" aria-live="polite"></p>
+    <button id="wa-on" type="button">Usar no WhatsApp Web</button>
+    <button id="wa-off" type="button" class="link" hidden>Desligar</button>
+  </section>
   <section id="recent-section" aria-labelledby="recent-title">
     <h2 id="recent-title">Importações recentes</h2>
     <p id="recent-empty" class="small">Nenhuma importação nesta sessão do navegador.</p>
@@ -30,7 +37,7 @@
     </ol>
   </details>
   <p id="shortcut" class="small">Atalho: Alt+Shift+I — pode ser trocado em chrome://extensions/shortcuts</p>
-  <p class="small">A extensão só lê a ficha do documento aberto e nunca a sua senha. Nada vai para a internet: tudo fica no Ponte deste computador.</p>
+  <p class="small">A extensão só lê a ficha do documento aberto e nunca a sua senha. Se você ligar o WhatsApp Web, ela também lê as mensagens que você escolher, só quando você clicar. Nada vai para a internet: tudo fica no Ponte deste computador.</p>
   <script src="popup.js"></script>
 </body>
 </html>

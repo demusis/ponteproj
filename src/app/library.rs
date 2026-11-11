@@ -89,7 +89,13 @@ fn document_row(ui: &mut egui::Ui, row: &DocRow) -> egui::Response {
         if document.manual {
             pill(
                 ui,
-                if document.email { "E-mail" } else { "Manual" },
+                if document.email {
+                    "E-mail"
+                } else if document.whatsapp {
+                    "WhatsApp"
+                } else {
+                    "Manual"
+                },
                 Tone::Neutral,
             );
         }

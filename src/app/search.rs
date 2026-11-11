@@ -227,6 +227,8 @@ impl GlobalSearch {
                             title: d.title,
                             kind: if d.email {
                                 Some("E-mail")
+                            } else if d.whatsapp {
+                                Some("WhatsApp")
                             } else if d.manual {
                                 Some("Manual")
                             } else {

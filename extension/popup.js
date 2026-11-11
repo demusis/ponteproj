@@ -25,6 +25,55 @@ try {
 } catch { /* the text above stays */ }
 let ponteActions = null;
 let recentItems = [];
+const waSection = document.getElementById("whatsapp-section");
+const waState = document.getElementById("wa-state");
+const waOn = document.getElementById("wa-on");
+const waOff = document.getElementById("wa-off");
+const WA_ORIGINS = ["https://web.whatsapp.com/*"];
+let waGranted = false;
+let waReload = false;
+let waError = "";
+// WhatsApp Web is optional: it is on only while the person has granted its permission.
+function renderWhatsApp() {
+  const old = Array.isArray(ponteActions) && !ponteActions.includes("import_record");
+  const lines = [];
+  if (waGranted) lines.push("Ligado.");
+  if (old) lines.push("Atualize o Ponte para guardar conversas do WhatsApp.");
+  if (waGranted && waReload) lines.push("Recarregue a página do WhatsApp Web.");
+  if (waError) lines.push(waError);
+  waState.textContent = lines.join(" ");
+  waOn.hidden = waGranted;
+  waOn.disabled = old;
+  waOff.hidden = !waGranted;
+}
+function loadWhatsApp() {
+  if (!chrome.permissions) { waSection.hidden = true; return; }
+  try {
+    chrome.permissions.contains({ origins: WA_ORIGINS }, granted => { waGranted = !chrome.runtime.lastError && granted === true; renderWhatsApp(); });
+  } catch { waSection.hidden = true; }
+}
+waOn.addEventListener("click", () => {
+  waError = ""; waReload = false;
+  // The permission is asked here, straight from the click.
+  chrome.permissions.request({ origins: WA_ORIGINS }, granted => {
+    if (chrome.runtime.lastError || granted !== true) { waGranted = false; waError = "O acesso ao WhatsApp Web não foi concedido."; renderWhatsApp(); return; }
+    chrome.runtime.sendMessage({ action: "ponte.whatsapp_on" }, response => {
+      if (chrome.runtime.lastError || response?.ok !== true) {
+        chrome.permissions.remove({ origins: WA_ORIGINS }, () => { void chrome.runtime.lastError; });
+        waGranted = false; waError = typeof response?.error?.message === "string" && response.error.message ? response.error.message : "Não foi possível ligar agora. Tente de novo.";
+      } else { waGranted = true; waReload = true; }
+      renderWhatsApp();
+    });
+  });
+});
+waOff.addEventListener("click", () => {
+  waError = ""; waReload = false;
+  chrome.runtime.sendMessage({ action: "ponte.whatsapp_off" }, response => {
+    if (chrome.runtime.lastError || response?.ok !== true) waError = "Não foi possível desligar agora. Tente de novo.";
+    loadWhatsApp();
+    if (waError) renderWhatsApp();
+  });
+});
 function show(ok, text, extra, old, noExtras) {
   oldNote.hidden = !old;
   extrasOld.hidden = !noExtras;
@@ -44,6 +93,7 @@ function verify() {
     else if (response?.ok === true && response.protocol_version === 1) show(true, `✓ Ligado ao Ponte${response.app_version ? " " + response.app_version : ""}.`, "Abra um documento no SIGADOC e clique em “Importar para o assistente”.", !(Array.isArray(response.actions) && response.actions.includes("lookup")), Array.isArray(response.actions) && response.actions.includes("lookup") && !response.actions.includes("import_extras"));
     else show(false, "✗ Não foi possível ligar ao Ponte.", response?.error?.message || "Tente de novo em alguns segundos.");
     renderRecent();
+    renderWhatsApp();
   });
 }
 const OUTCOME_TEXT = { imported: "Importado", already: "Já estava no Ponte", failed: "Não concluída" };
@@ -106,3 +156,4 @@ recentClear.addEventListener("click", () => {
 check.addEventListener("click", verify);
 verify();
 loadRecent();
+loadWhatsApp();

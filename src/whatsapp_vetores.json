@@ -1,0 +1,992 @@
+{
+ "version": 1,
+ "cases": [
+  {
+   "name": "tempo-primeiro-basico",
+   "input": "[14:02, 10/11/2026] Servidor A: Bom dia\n[14:03, 10/11/2026] Servidor B: Bom dia! A sala 3 est\u00e1 livre?",
+   "chat": "Servidor B",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Bom dia"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "Bom dia! A sala 3 est\u00e1 livre?"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: Bom dia\n[10/11/2026 14:03] Servidor B: Bom dia! A sala 3 est\u00e1 livre?",
+    "origin": "Servidor B",
+    "title": "Conversa com Servidor B \u2014 10/11/2026",
+    "request_id": "00db4f65-e243-8af5-a4c3-053485f06d8b"
+   }
+  },
+  {
+   "name": "data-primeiro-com-virgula",
+   "input": "[10/11/2026, 14:02] Servidor A: Oi\n[10/11/2026, 14:05] Servidor B: Ol\u00e1",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     },
+     {
+      "when": "2026-11-10T14:05",
+      "author": "Servidor B",
+      "text": "Ol\u00e1"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:05",
+    "record_text": "[10/11/2026 14:02] Servidor A: Oi\n[10/11/2026 14:05] Servidor B: Ol\u00e1",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "7587419c-59f2-8b0e-a762-94339813f525"
+   }
+  },
+  {
+   "name": "data-primeiro-sem-virgula",
+   "input": "[10/11/2026 14:02] Servidor A: Oi",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:02",
+    "record_text": "[10/11/2026 14:02] Servidor A: Oi",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "b0f42ae6-7c58-8ee5-b18e-be66545048d5"
+   }
+  },
+  {
+   "name": "segundos-nos-dois-formatos",
+   "input": "[14:02:33, 10/11/2026] Servidor A: Oi\n[10/11/2026 14:02:59] Servidor B: Ol\u00e1",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     },
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor B",
+      "text": "Ol\u00e1"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:02",
+    "record_text": "[10/11/2026 14:02] Servidor A: Oi\n[10/11/2026 14:02] Servidor B: Ol\u00e1",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "edd19956-3b4b-82fc-b08f-ed5ba90ab016"
+   }
+  },
+  {
+   "name": "ano-com-dois-digitos",
+   "input": "[14:02, 10/11/26] Servidor A: Oi",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:02",
+    "record_text": "[10/11/2026 14:02] Servidor A: Oi",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "b0f42ae6-7c58-8ee5-b18e-be66545048d5"
+   }
+  },
+  {
+   "name": "separador-ponto",
+   "input": "[10.11.2026 14:02] Servidor A: Oi\n[14:03, 10.11.26] Servidor B: Ok",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "Ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: Oi\n[10/11/2026 14:03] Servidor B: Ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "44cad01a-2bf3-8ba5-b9f1-6892b32cea9b"
+   }
+  },
+  {
+   "name": "separador-hifen",
+   "input": "[10-11-2026, 14:02] Servidor A: Oi\n[14:03, 10-11-2026] Servidor B: Ok",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "Ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: Oi\n[10/11/2026 14:03] Servidor B: Ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "44cad01a-2bf3-8ba5-b9f1-6892b32cea9b"
+   }
+  },
+  {
+   "name": "am-pm-ingles",
+   "input": "[2:02 PM, 10/11/2026] Servidor A: Tarde\n[12:05 AM, 11/11/2026] Servidor B: Madrugada\n[12:30 PM, 11/11/2026] Servidor A: Meio-dia\n[11/11/2026, 11:59:59 PM] Servidor B: Noite",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Tarde"
+     },
+     {
+      "when": "2026-11-11T00:05",
+      "author": "Servidor B",
+      "text": "Madrugada"
+     },
+     {
+      "when": "2026-11-11T12:30",
+      "author": "Servidor A",
+      "text": "Meio-dia"
+     },
+     {
+      "when": "2026-11-11T23:59",
+      "author": "Servidor B",
+      "text": "Noite"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-11T23:59",
+    "record_text": "[10/11/2026 14:02] Servidor A: Tarde\n[11/11/2026 00:05] Servidor B: Madrugada\n[11/11/2026 12:30] Servidor A: Meio-dia\n[11/11/2026 23:59] Servidor B: Noite",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 11/11/2026",
+    "request_id": "6930d7cc-cd84-89e0-b44a-51e386e0f995"
+   }
+  },
+  {
+   "name": "am-pm-portugues",
+   "input": "[10/11/2026, 9:15 a. m.] Servidor B: Manh\u00e3\n[10/11/2026, 2:02 p. m.] Servidor A: Tarde\n[3:00 p.m., 10/11/2026] Servidor A: Tr\u00eas",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T09:15",
+      "author": "Servidor B",
+      "text": "Manh\u00e3"
+     },
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Tarde"
+     },
+     {
+      "when": "2026-11-10T15:00",
+      "author": "Servidor A",
+      "text": "Tr\u00eas"
+     }
+    ],
+    "participants": [
+     "Servidor B",
+     "Servidor A"
+    ],
+    "first": "2026-11-10T09:15",
+    "last": "2026-11-10T15:00",
+    "record_text": "[10/11/2026 09:15] Servidor B: Manh\u00e3\n[10/11/2026 14:02] Servidor A: Tarde\n[10/11/2026 15:00] Servidor A: Tr\u00eas",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "5cbff1fe-26f8-8bff-a43d-438c86d9e470"
+   }
+  },
+  {
+   "name": "am-pm-minusculo-e-espaco-fino",
+   "input": "[2:02\u202fpm, 10/11/2026] Servidor A: x\n[10/11/2026, 2:03\u00a0am] Servidor B: y",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "x"
+     },
+     {
+      "when": "2026-11-10T02:03",
+      "author": "Servidor B",
+      "text": "y"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T02:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: x\n[10/11/2026 02:03] Servidor B: y",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "d974a0dc-4546-83c6-ad3c-4e1b2117a362"
+   }
+  },
+  {
+   "name": "marcas-de-direcao",
+   "input": "\u200e[14:02, 10/11/2026] \u202aServidor A\u202c: \u200eimagem omitida\n\u200f[14:03, 10/11/2026] Servidor B: \u2066ok\u2069",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "imagem omitida"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: imagem omitida\n[10/11/2026 14:03] Servidor B: ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "aca85770-c2f2-836a-88fc-f76976dfd096"
+   }
+  },
+  {
+   "name": "bom-no-inicio",
+   "input": "\ufeff[14:02, 10/11/2026] Servidor A: Oi",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:02",
+    "record_text": "[10/11/2026 14:02] Servidor A: Oi",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "b0f42ae6-7c58-8ee5-b18e-be66545048d5"
+   }
+  },
+  {
+   "name": "crlf",
+   "input": "[14:02, 10/11/2026] Servidor A: Linha 1\r\nlinha 2\r\n[14:03, 10/11/2026] Servidor B: ok\r\n",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Linha 1\nlinha 2"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: Linha 1\nlinha 2\n[10/11/2026 14:03] Servidor B: ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "365d3e39-b80c-884b-9fac-09745497bc12"
+   }
+  },
+  {
+   "name": "varias-linhas-com-linha-em-branco",
+   "input": "[14:02, 10/11/2026] Servidor A: Pauta:\n1. Sala\n\n2. Of\u00edcio ORG-OFI-2026/00431\n[14:10, 10/11/2026] Servidor B: Anotado",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Pauta:\n1. Sala\n\n2. Of\u00edcio ORG-OFI-2026/00431"
+     },
+     {
+      "when": "2026-11-10T14:10",
+      "author": "Servidor B",
+      "text": "Anotado"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:10",
+    "record_text": "[10/11/2026 14:02] Servidor A: Pauta:\n1. Sala\n\n2. Of\u00edcio ORG-OFI-2026/00431\n[10/11/2026 14:10] Servidor B: Anotado",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "0853cfc3-1f50-82b4-a853-0dc44d5ee13d"
+   }
+  },
+  {
+   "name": "dois-pontos-no-autor-e-no-texto",
+   "input": "[14:02, 10/11/2026] Unidade A:Setor 2: Preciso do of\u00edcio\n[14:03, 10/11/2026] Servidor B: Qual? Fala: ORG-OFI-2026/00431",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Unidade A:Setor 2",
+      "text": "Preciso do of\u00edcio"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "Qual? Fala: ORG-OFI-2026/00431"
+     }
+    ],
+    "participants": [
+     "Unidade A:Setor 2",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Unidade A:Setor 2: Preciso do of\u00edcio\n[10/11/2026 14:03] Servidor B: Qual? Fala: ORG-OFI-2026/00431",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "b784cbfe-a9d2-8f8d-9910-3c9851a26682"
+   }
+  },
+  {
+   "name": "linhas-de-sistema",
+   "input": "[14:00, 10/11/2026] Servidor A criou o grupo \"Unidade A\"\n[14:01, 10/11/2026] Servidor A adicionou Servidor B\n[14:02, 10/11/2026] Servidor B: Ol\u00e1",
+   "chat": "Unidade A",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:00",
+      "author": null,
+      "text": "Servidor A criou o grupo \"Unidade A\""
+     },
+     {
+      "when": "2026-11-10T14:01",
+      "author": null,
+      "text": "Servidor A adicionou Servidor B"
+     },
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor B",
+      "text": "Ol\u00e1"
+     }
+    ],
+    "participants": [
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:00",
+    "last": "2026-11-10T14:02",
+    "record_text": "[10/11/2026 14:00] \u2014 Servidor A criou o grupo \"Unidade A\"\n[10/11/2026 14:01] \u2014 Servidor A adicionou Servidor B\n[10/11/2026 14:02] Servidor B: Ol\u00e1",
+    "origin": "Unidade A",
+    "title": "Conversa com Unidade A \u2014 10/11/2026",
+    "request_id": "e03efd26-ca2c-89be-910b-b13dc31ea5a9"
+   }
+  },
+  {
+   "name": "texto-antes-da-primeira-mensagem",
+   "input": "Conversa exportada\n\n[14:02, 10/11/2026] Servidor A: Oi",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": null,
+      "author": null,
+      "text": "Conversa exportada"
+     },
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:02",
+    "record_text": "[sem data] \u2014 Conversa exportada\n[10/11/2026 14:02] Servidor A: Oi",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "faab4eee-89ac-853b-bf83-e896738c6ab2"
+   }
+  },
+  {
+   "name": "emoji",
+   "input": "[14:02, 10/11/2026] Servidor A: Combinado \ud83d\udc4d\ud83c\udffd \u2764\ufe0f\n[14:03, 10/11/2026] Servidor B: \ud83d\ude00",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Combinado \ud83d\udc4d\ud83c\udffd \u2764\ufe0f"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "\ud83d\ude00"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: Combinado \ud83d\udc4d\ud83c\udffd \u2764\ufe0f\n[10/11/2026 14:03] Servidor B: \ud83d\ude00",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "2935b028-c849-82ae-9c9b-ade0211ba8aa"
+   }
+  },
+  {
+   "name": "sem-nenhuma-mensagem",
+   "input": "isto n\u00e3o \u00e9 uma conversa\ns\u00f3 texto",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "entrada-vazia",
+   "input": "",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "so-espacos",
+   "input": "  \n\t\r\n",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "colchete-parecido-dentro-de-mensagem",
+   "input": "[14:02, 10/11/2026] Servidor A: Veja\n[ver anexo] depois\n[31/02/2026 10:00] Servidor B: imposs\u00edvel\n[14:03, 10/11/2026] Servidor B: ok",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Veja\n[ver anexo] depois\n[31/02/2026 10:00] Servidor B: imposs\u00edvel"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: Veja\n[ver anexo] depois\n[31/02/2026 10:00] Servidor B: imposs\u00edvel\n[10/11/2026 14:03] Servidor B: ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "44a71f0a-3008-88b2-a285-f6d21bf2e22e"
+   }
+  },
+  {
+   "name": "dia-treze-confirma-dd-mm",
+   "input": "[09:00, 13/02/2026] Servidor A: Dia 13\n[09:01, 14/02/2026] Servidor B: Dia 14",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-02-13T09:00",
+      "author": "Servidor A",
+      "text": "Dia 13"
+     },
+     {
+      "when": "2026-02-14T09:01",
+      "author": "Servidor B",
+      "text": "Dia 14"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-02-13T09:00",
+    "last": "2026-02-14T09:01",
+    "record_text": "[13/02/2026 09:00] Servidor A: Dia 13\n[14/02/2026 09:01] Servidor B: Dia 14",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 14/02/2026",
+    "request_id": "a138e8b5-e33c-88e3-afe7-c5d5ddc57fc2"
+   }
+  },
+  {
+   "name": "mes-treze-nao-e-mensagem",
+   "input": "[09:00, 02/13/2026] Servidor A: M\u00eas 13?",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "mes-treze-vira-continuacao",
+   "input": "[09:00, 12/02/2026] Servidor A: In\u00edcio\n[09:01, 02/13/2026] Servidor B: continua\u00e7\u00e3o",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-02-12T09:00",
+      "author": "Servidor A",
+      "text": "In\u00edcio\n[09:01, 02/13/2026] Servidor B: continua\u00e7\u00e3o"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-02-12T09:00",
+    "last": "2026-02-12T09:00",
+    "record_text": "[12/02/2026 09:00] Servidor A: In\u00edcio\n[09:01, 02/13/2026] Servidor B: continua\u00e7\u00e3o",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 12/02/2026",
+    "request_id": "183bab4a-4bc5-8a38-915e-9a3275ffd516"
+   }
+  },
+  {
+   "name": "ambiguo-sempre-dd-mm",
+   "input": "[09:00, 03/04/2026] Servidor A: x",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-04-03T09:00",
+      "author": "Servidor A",
+      "text": "x"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-04-03T09:00",
+    "last": "2026-04-03T09:00",
+    "record_text": "[03/04/2026 09:00] Servidor A: x",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 03/04/2026",
+    "request_id": "1e936d06-fd1b-8e09-9f3f-ff7cd9c0e2b6"
+   }
+  },
+  {
+   "name": "telefone-como-autor",
+   "input": "[14:02, 10/11/2026] +55 00 00000-0000: Oi\n[14:03, 10/11/2026] Servidor B: Oi",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "+55 00 00000-0000",
+      "text": "Oi"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "Oi"
+     }
+    ],
+    "participants": [
+     "+55 00 00000-0000",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] +55 00 00000-0000: Oi\n[10/11/2026 14:03] Servidor B: Oi",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "4ef6e71c-4b42-8f25-9737-bdefc026c31a"
+   }
+  },
+  {
+   "name": "colchete-sem-fechar",
+   "input": "[14:02, 10/11/2026 Servidor A: x\n[14:03, 10/11/2026] Servidor B: ok",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": null,
+      "author": null,
+      "text": "[14:02, 10/11/2026 Servidor A: x"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "ok"
+     }
+    ],
+    "participants": [
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:03",
+    "last": "2026-11-10T14:03",
+    "record_text": "[sem data] \u2014 [14:02, 10/11/2026 Servidor A: x\n[10/11/2026 14:03] Servidor B: ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "033f1aa9-c127-8de8-8869-a57f06d959cd"
+   }
+  },
+  {
+   "name": "horas-invalidas",
+   "input": "[24:00, 10/11/2026] Servidor A: x\n[14:60, 10/11/2026] Servidor B: y\n[13:00 PM, 10/11/2026] Servidor B: z\n[0:30 AM, 10/11/2026] Servidor B: w",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "anos-invalidos",
+   "input": "[14:02, 10/11/202] Servidor A: x\n[14:02, 10/11/20266] Servidor A: y\n[14:02, 10/11/0026] Servidor A: z",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "espacos-no-fim-e-recuo",
+   "input": "[14:02, 10/11/2026] Servidor A: Item   \n   recuado  \n\n\n[14:03, 10/11/2026] Servidor B: ok  ",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Item\n   recuado"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: Item\n   recuado\n[10/11/2026 14:03] Servidor B: ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "90bdfd4b-fb88-847d-b66b-a57f24f8f089"
+   }
+  },
+  {
+   "name": "texto-vazio-com-e-sem-espaco",
+   "input": "[14:02, 10/11/2026] Servidor A: \n[14:03, 10/11/2026] Servidor B:\n[14:04, 10/11/2026] Servidor A: fim",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": ""
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": ""
+     },
+     {
+      "when": "2026-11-10T14:04",
+      "author": "Servidor A",
+      "text": "fim"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:04",
+    "record_text": "[10/11/2026 14:02] Servidor A:\n[10/11/2026 14:03] Servidor B:\n[10/11/2026 14:04] Servidor A: fim",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "d3ffca06-616b-8776-8e2a-0014afac2134"
+   }
+  },
+  {
+   "name": "dia-e-mes-com-um-digito",
+   "input": "[9:05, 1/2/2026] Servidor A: x",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-02-01T09:05",
+      "author": "Servidor A",
+      "text": "x"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-02-01T09:05",
+    "last": "2026-02-01T09:05",
+    "record_text": "[01/02/2026 09:05] Servidor A: x",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 01/02/2026",
+    "request_id": "a345ea10-c6be-869b-856a-f3f90f03b2b5"
+   }
+  },
+  {
+   "name": "cr-isolado-controles-e-tabulacao",
+   "input": "[14:02, 10/11/2026] Servidor A: a\rb\u0000c\u0007d\u000be\tf\n[14:03, 10/11/2026] Servidor B: ok",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "a\nbcde\tf"
+     },
+     {
+      "when": "2026-11-10T14:03",
+      "author": "Servidor B",
+      "text": "ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:03",
+    "record_text": "[10/11/2026 14:02] Servidor A: a\nbcde\tf\n[10/11/2026 14:03] Servidor B: ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "97f1ea20-a426-8a90-aeb3-e48876d4e7fa"
+   }
+  },
+  {
+   "name": "fora-de-ordem-vale-a-posicao",
+   "input": "[15:00, 10/11/2026] Servidor A: depois\n[09:00, 10/11/2026] Servidor B: antes",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T15:00",
+      "author": "Servidor A",
+      "text": "depois"
+     },
+     {
+      "when": "2026-11-10T09:00",
+      "author": "Servidor B",
+      "text": "antes"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T15:00",
+    "last": "2026-11-10T09:00",
+    "record_text": "[10/11/2026 15:00] Servidor A: depois\n[10/11/2026 09:00] Servidor B: antes",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "0e195799-2abc-8fb8-b488-29c9b37d4109"
+   }
+  },
+  {
+   "name": "varios-dias-e-conversa-com-nome",
+   "input": "[22:10, 08/11/2026] Servidor A: Ontem\n[08:00, 09/11/2026] Servidor B: Hoje\n[17:45, 10/11/2026] Servidor A: Fim",
+   "chat": "Unidade A",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-08T22:10",
+      "author": "Servidor A",
+      "text": "Ontem"
+     },
+     {
+      "when": "2026-11-09T08:00",
+      "author": "Servidor B",
+      "text": "Hoje"
+     },
+     {
+      "when": "2026-11-10T17:45",
+      "author": "Servidor A",
+      "text": "Fim"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-08T22:10",
+    "last": "2026-11-10T17:45",
+    "record_text": "[08/11/2026 22:10] Servidor A: Ontem\n[09/11/2026 08:00] Servidor B: Hoje\n[10/11/2026 17:45] Servidor A: Fim",
+    "origin": "Unidade A",
+    "title": "Conversa com Unidade A \u2014 10/11/2026",
+    "request_id": "bb4124f2-53c5-811b-940f-273ae04466b0"
+   }
+  },
+  {
+   "name": "sem-autor-com-dois-pontos-no-inicio",
+   "input": "[14:02, 10/11/2026] : texto solto",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": null,
+      "text": ": texto solto"
+     }
+    ],
+    "participants": [],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:02",
+    "record_text": "[10/11/2026 14:02] \u2014 : texto solto",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "353576a6-4018-846b-aaf9-ae20bd30f738"
+   }
+  },
+  {
+   "name": "nome-da-conversa-com-marcas-e-espacos",
+   "input": "[14:02, 10/11/2026] Servidor A: Oi",
+   "chat": "  Unidade A\u200e\n",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:02",
+    "record_text": "[10/11/2026 14:02] Servidor A: Oi",
+    "origin": "Unidade A",
+    "title": "Conversa com Unidade A \u2014 10/11/2026",
+    "request_id": "9c4875b9-bf2f-80a3-815f-b24e152441ea"
+   }
+  },
+  {
+   "name": "nome-da-conversa-muito-longo",
+   "input": "[14:02, 10/11/2026] Servidor A: Oi",
+   "chat": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor A",
+      "text": "Oi"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:02",
+    "record_text": "[10/11/2026 14:02] Servidor A: Oi",
+    "origin": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "title": "Conversa com AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \u2014 10/11/2026",
+    "request_id": "5b24f23a-1a21-886d-b71b-210e4b29c5be"
+   }
+  },
+  {
+   "name": "acentos-e-acento-combinante",
+   "input": "[14:02, 10/11/2026] Servidor \u00c1: a\u00e7\u00e3o e a\u0301",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T14:02",
+      "author": "Servidor \u00c1",
+      "text": "a\u00e7\u00e3o e a\u0301"
+     }
+    ],
+    "participants": [
+     "Servidor \u00c1"
+    ],
+    "first": "2026-11-10T14:02",
+    "last": "2026-11-10T14:02",
+    "record_text": "[10/11/2026 14:02] Servidor \u00c1: a\u00e7\u00e3o e a\u0301",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "4afa037e-9315-8a82-98da-65a5261229ff"
+   }
+  }
+ ]
+}

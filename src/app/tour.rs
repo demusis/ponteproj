@@ -19,6 +19,7 @@ impl PonteApp {
         "ficha-mais",
         "ficha-manual",
         "ficha-email",
+        "ficha-whatsapp",
         "ficha-juntada",
         "tarefas",
         "tarefa-aberta",
@@ -37,6 +38,7 @@ impl PonteApp {
         "janela-email",
         "janela-lixeira",
         "janela-registro-manual",
+        "janela-colar-whatsapp",
         "janela-sobre",
         "janela-consulta",
     ];
@@ -155,15 +157,16 @@ impl PonteApp {
                 self.detail = None;
                 self.filters_open = true;
             }
-            "ficha-manual" | "ficha-email" | "ficha-juntada" => {
+            "ficha-manual" | "ficha-email" | "ficha-whatsapp" | "ficha-juntada" => {
                 let found = self
                     .store
                     .list_documents("")
                     .unwrap_or_default()
                     .into_iter()
                     .find(|d| match name {
-                        "ficha-manual" => d.manual && !d.email,
+                        "ficha-manual" => d.manual && !d.email && !d.whatsapp,
                         "ficha-email" => d.email,
+                        "ficha-whatsapp" => d.whatsapp,
                         _ => d.joined_children_count > 0,
                     })
                     .map(|d| d.id);
@@ -171,7 +174,7 @@ impl PonteApp {
                     self.area = Area::Documents;
                     self.select(id);
                 }
-                self.tab = if name == "ficha-juntada" {
+                self.tab = if name == "ficha-juntada" || name == "ficha-whatsapp" {
                     Tab::Overview
                 } else {
                     Tab::Document
@@ -268,6 +271,19 @@ impl PonteApp {
             "janela-registro-manual" => {
                 self.area = Area::Documents;
                 self.manual_form.open_new();
+            }
+            "janela-colar-whatsapp" => {
+                self.area = Area::Documents;
+                self.manual_form.open_new();
+                let mut step = super::PasteStep::new();
+                step.chat = "Servidor B".into();
+                step.text = "[09:12, 10/11/2026] Servidor B: Bom dia. A sala de reuniões do 2º andar está livre na quinta?
+[09:15, 10/11/2026] Servidor A: Bom dia. Está, das 14h às 17h.
+[09:20, 10/11/2026] Servidor A: Reservei. O documento é o ORG-OFI-2026/00431.
+Se mudar o horário, me avise.
+[09:21, 10/11/2026] Servidor B: Combinado, obrigado.".into();
+                step.reread();
+                self.manual_form.paste = Some(step);
             }
             "janela-sobre" => {
                 self.area = Area::Settings;

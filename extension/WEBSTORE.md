@@ -11,7 +11,7 @@ O Edge instala extensões da Chrome Web Store sem passo extra (basta permitir "e
 
 ## 1. Publicar uma nova versão da extensão
 
-1. Aumente `"version"` em `extension\manifest.json` e em `extension\package.json` (a loja exige número maior que o publicado; hoje: 0.3.0).
+1. Aumente `"version"` em `extension\manifest.json` e em `extension\package.json` (a loja exige número maior que o publicado; hoje: 0.3.0; a próxima é a 0.4.0).
 2. Gere o pacote: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-webstore-package.ps1` → `dist\ponte-extensao-webstore-X.Y.Z.zip` (sem o campo `key`, como a loja exige).
 3. No painel, abra o item **Ponte • Assistente SIGADOC** → aba **Pacote** (*Package*) → **Enviar novo pacote** (*Upload new package*) → escolha o `.zip`.
 4. Se mudou algum texto da ficha, ajuste nas abas **Ficha da loja** (*Store listing*), **Práticas de privacidade** e **Distribuição**. O **Resumo** vem do campo `description` do manifesto e não é editável no painel: para mudá-lo, mude o manifesto e envie um pacote novo.
@@ -75,7 +75,9 @@ Enviar o documento aberto no SIGADOC ao aplicativo Ponte instalado no computador
 **Justificativa das permissões:**
 - `nativeMessaging` — é o único meio de entregar o documento ao aplicativo Ponte, que roda no computador do usuário. A extensão não tem outro destino de dados.
 - `storage` — usado só como memória da sessão (`chrome.storage.session`), para repetir uma importação sem baixar os arquivos de novo quando o navegador interrompe a extensão e para mostrar no ícone da extensão a lista das últimas importações (número, assunto, hora e resultado). Nada é gravado em disco; a cópia some quando a importação termina, e a lista some quando o navegador fecha ou por "Limpar a lista".
-- Permissão de host `https://www.sigadoc.mt.gov.br/*` — a extensão precisa ler a página do documento aberto no SIGADOC (texto, lista de PDFs e histórico) para montar a importação. Nenhuma outra página é acessada.
+- Permissão de host `https://www.sigadoc.mt.gov.br/*` — a extensão precisa ler a página do documento aberto no SIGADOC (texto, lista de PDFs e histórico) para montar a importação. Nenhuma outra página é acessada, a não ser o WhatsApp Web, se o usuário ligar o recurso (abaixo).
+- `scripting` (0.4.0) — registrar o script do painel no WhatsApp Web só depois que o usuário liga o recurso (`chrome.scripting.registerContentScripts`). Sem o recurso ligado, nenhum script é registrado nem executado em nenhuma outra página.
+- Permissão de host **opcional** `https://web.whatsapp.com/*` (0.4.0) — pedida apenas quando o usuário clica em "Usar no WhatsApp Web" no ícone da extensão; quem atualiza a extensão não recebe esse acesso. Serve para mostrar o painel "Guardar no Ponte" e, só quando o usuário clica, ler as mensagens que ele escolheu na conversa aberta (com hora e autor), as fotos dessas mensagens e os arquivos que ele soltar no painel, para enviá-los ao Ponte no mesmo computador. Não lê contatos nem outras conversas, não envia nem altera nada no WhatsApp e não faz acesso à internet. O usuário pode desligar a qualquer momento ("Desligar"), o que retira a permissão.
 - Não há código remoto: todo o código está no pacote.
 
 **Uso de dados (formulário "Práticas de privacidade"):**
@@ -92,6 +94,15 @@ Enviar o documento aberto no SIGADOC ao aplicativo Ponte instalado no computador
 - 0.1.11: descrição nova e mensagens de erro específicas para cada falha de ligação com o Ponte.
 - 0.2.0 (publicada; `dist\ponte-extensao-webstore-0.2.0.zip`): o painel mostra, antes do clique, se o documento já está no Ponte e permite abri-lo (exige o Ponte 0.29 ou mais novo; com um Ponte antigo a importação funciona como antes); atalho Alt+Shift+I; PDFs baixados até 3 por vez; nova permissão `storage` (memória da sessão, justificativa acima); textos revisados. Atualizar também a ficha da loja (descrição acima) e a política de privacidade pública (`PRIVACIDADE.md`).
 - Próximo envio: 0.3.0 (`dist\ponte-extensao-webstore-0.3.0.zip`): nota e prioridade opcionais ao importar (exige o Ponte 0.31 ou mais novo; com um Ponte mais antigo o painel não oferece os campos e a importação funciona como antes) e lista das últimas 8 importações da sessão no ícone da extensão (memória da sessão, apagada ao fechar o navegador ou por "Limpar a lista"). Sem permissão nova: `storage` e `nativeMessaging` bastam. Atualizar a política de privacidade pública (`PRIVACIDADE.md`, 11 de novembro de 2026) e a descrição da ficha (parágrafo "O que a extensão faz").
+
+- Próximo envio depois da 0.3.0: **0.4.0** (`dist\ponte-extensao-webstore-0.4.0.zip`): recurso **opcional** para o WhatsApp Web — "Guardar no Ponte" mensagens escolhidas da conversa aberta (trecho selecionado ou mensagens visíveis), as fotos delas e arquivos soltos no painel, ou um texto colado, como registro "Conversa do WhatsApp" (exige o Ponte 0.32 ou mais novo; com um Ponte mais antigo o ícone avisa para atualizar). Desligado até o usuário ligá-lo no ícone da extensão; nova permissão `scripting` e permissão de host opcional `https://web.whatsapp.com/*` (justificativas na seção 2). Ao atualizar, o Chrome pode avisar que a extensão ganhou uma permissão (`scripting`); não pede acesso ao WhatsApp. Atualizar antes do envio: a política de privacidade pública (`PRIVACIDADE.md`, seção "Recurso opcional: WhatsApp Web"), o campo "Descrição" (parágrafo abaixo), a justificativa das permissões e o formulário de práticas de privacidade (acrescentar *Comunicações pessoais* ao conteúdo coletado, só quando o usuário liga o recurso; mesmos destinos: somente o Ponte no computador do usuário).
+
+**Parágrafo novo da descrição (0.4.0), depois de "O que a extensão faz":**
+```
+WHATSAPP WEB (OPCIONAL)
+
+Se você quiser, pode ligar o recurso do WhatsApp Web no ícone da extensão. Ele fica desligado até você ligar. Depois, no WhatsApp Web, aparece um pequeno painel "Ponte": você seleciona mensagens de uma conversa (ou usa as que estão na tela), clica em "Guardar no Ponte", confere o que será guardado e envia. As mensagens, as fotos delas e os arquivos que você soltar no painel vão apenas para o Ponte do seu computador, como um registro "Conversa do WhatsApp". A extensão só lê o que você escolher, quando você clicar; não lê contatos nem outras conversas, e não envia nem altera nada no WhatsApp. São conversas com outras pessoas: use com responsabilidade.
+```
 
 ## Alternativa: política do órgão (sem loja)
 

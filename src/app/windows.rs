@@ -1,7 +1,7 @@
 //! Secondary windows and dialogs: about, consult, manual record, e-mail and confirmations.
 use super::{
-    display_date, facts, notice_line, plural, Area, Consult, ManualForm, PendingTarget, PonteApp,
-    Tab, WorkKind, WorkResult, EXTENSION_VERSION, PROJECT_URL,
+    display_date, facts, notice_line, plural, Area, Consult, ManualForm, PasteStep, PendingTarget,
+    PonteApp, Tab, WorkKind, WorkResult, EXTENSION_VERSION, PROJECT_URL,
 };
 use crate::model::DocumentDetail;
 use crate::theme::{self, S1, S2, S3};
@@ -28,7 +28,14 @@ pub(super) fn manual_facts(ui: &mut egui::Ui, detail: &DocumentDetail) {
         &[
             ("Número no Ponte", detail.summary.document_number.clone()),
             ("Tipo", value("document_type")),
-            ("Origem", value("origin")),
+            (
+                if detail.summary.whatsapp {
+                    "Conversa com"
+                } else {
+                    "Origem"
+                },
+                value("origin"),
+            ),
             (
                 "Data do documento",
                 metadata
@@ -42,7 +49,122 @@ pub(super) fn manual_facts(ui: &mut egui::Ui, detail: &DocumentDetail) {
     );
 }
 
+/// The step "Colar conversa do WhatsApp" of the window "Novo registro":
+/// where the copied messages are pasted, what was read from them and the
+/// title. The pasted text is only ever drawn as text. Returns what was
+/// clicked: (create, back, cancel).
+fn paste_step(ui: &mut egui::Ui, step: &mut PasteStep, message: &str) -> (bool, bool, bool) {
+    widgets::small_muted(
+        ui,
+        "Na conversa do WhatsApp, selecione as mensagens, copie (Ctrl+C) e cole aqui (Ctrl+V).",
+    );
+    widgets::field_label(ui, "Conversa com");
+    let chat_changed = ui
+        .add(
+            egui::TextEdit::singleline(&mut step.chat)
+                .hint_text("nome da pessoa ou do grupo (opcional)")
+                .char_limit(crate::whatsapp::MAX_CHAT_CHARS)
+                .desired_width(f32::INFINITY),
+        )
+        .changed();
+    widgets::field_label(ui, "Mensagens copiadas");
+    let text_changed = ui
+        .add(
+            egui::TextEdit::multiline(&mut step.text)
+                .hint_text("Cole aqui as mensagens copiadas do WhatsApp")
+                .desired_rows(10)
+                .desired_width(f32::INFINITY),
+        )
+        .changed();
+    if text_changed || chat_changed || (step.parsed.is_none() && !step.text.trim().is_empty()) {
+        step.reread();
+    }
+    match &step.parsed {
+        None => {}
+        Some(Err(error)) => notice_line(ui, Tone::Danger, error.clone()),
+        Some(Ok(conversation)) => {
+            notice_line(ui, Tone::Info, crate::whatsapp::summary_line(conversation));
+            if let (Some(first), Some(last)) =
+                (conversation.messages.first(), conversation.messages.last())
+            {
+                widgets::small_muted(
+                    ui,
+                    format!("Primeira: {}", crate::whatsapp::message_line(first, 120)),
+                );
+                if conversation.messages.len() > 1 {
+                    widgets::small_muted(
+                        ui,
+                        format!("Última: {}", crate::whatsapp::message_line(last, 120)),
+                    );
+                }
+            }
+            widgets::field_label(ui, "Título");
+            if ui
+                .add(egui::TextEdit::singleline(&mut step.title).desired_width(f32::INFINITY))
+                .changed()
+            {
+                step.title_edited = true;
+            }
+        }
+    }
+    if !message.is_empty() {
+        notice_line(ui, Tone::Danger, message.to_owned());
+    }
+    ui.add_space(S1);
+    let can_create = matches!(step.parsed, Some(Ok(_))) && step.title.trim().chars().count() >= 3;
+    let (mut create, mut back, mut cancel) = (false, false, false);
+    ui.horizontal(|ui| {
+        create = ui
+            .add_enabled(can_create, widgets::primary("Criar registro"))
+            .on_disabled_hover_text(
+                "Cole as mensagens e informe um título com pelo menos 3 caracteres.",
+            )
+            .clicked();
+        back = ui.add(widgets::secondary("Voltar")).clicked();
+        cancel = ui.add(widgets::secondary("Cancelar")).clicked();
+    });
+    (create, back, cancel)
+}
+
 impl PonteApp {
+    /// Creates the record of the pasted conversation. The same conversation
+    /// pasted again creates nothing: the existing record is opened.
+    fn create_from_paste(&mut self) {
+        let Some(step) = self.manual_form.paste.as_ref() else {
+            return;
+        };
+        let Some(Ok(conversation)) = step.parsed.clone() else {
+            return;
+        };
+        let (chat, title) = (step.chat.clone(), step.title.clone());
+        match self
+            .store
+            .import_whatsapp(&chat, &title, &conversation, "whatsapp-colado")
+        {
+            Ok(receipt) => {
+                let already = receipt.effective_outcome() != crate::model::ImportOutcome::Imported;
+                self.manual_form = ManualForm::default();
+                self.refresh();
+                self.select(receipt.document_id);
+                self.tab = Tab::Document;
+                if already {
+                    self.message("Esta conversa já estava no Ponte.");
+                } else {
+                    let number = self
+                        .documents
+                        .iter()
+                        .find(|d| d.id == receipt.document_id)
+                        .map(|d| d.document_number.clone())
+                        .unwrap_or_default();
+                    self.message(format!(
+                        "Conversa do WhatsApp guardada como registro {number}."
+                    ));
+                }
+            }
+            Err(error) => self.manual_form.message = error.to_string(),
+        }
+    }
+
     /// Authors, version, licence and where to find the project.
     /// Authors, version, licence and where to find the project.
     pub(super) fn about_window(&mut self, ctx: &egui::Context) {
@@ -197,6 +319,9 @@ impl PonteApp {
         let mut open = true;
         let mut save = false;
         let mut cancel = false;
+        let mut to_paste = false;
+        let mut back = false;
+        let mut create_paste = false;
         let editing = self.manual_form.id.is_some();
         let title = if editing {
             format!("Editar registro manual {}", self.manual_form.number)
@@ -210,6 +335,10 @@ impl PonteApp {
             .show(ctx, |ui| {
                 let form = &mut self.manual_form;
                 ui.spacing_mut().item_spacing.y = S2;
+                if let Some(step) = form.paste.as_mut().filter(|s| s.visible) {
+                    (create_paste, back, cancel) = paste_step(ui, step, &form.message);
+                    return;
+                }
                 notice_line(ui, Tone::Warn, "Registro criado por você, fora do SIGADOC. Ele fica marcado como manual em todo o Ponte e é compartilhado com a equipe como os demais documentos.");
                 if !editing {
                     widgets::small_muted(ui, "Recebe um número próprio (MANUAL-ano/sequência) ao salvar. Anexe o arquivo original em Documento ▸ Anexos depois de salvar; aqui, resuma o que importa.");
@@ -245,12 +374,41 @@ impl PonteApp {
                 ui.horizontal(|ui| {
                     let can_save = !editing || form.dirty();
                     save = ui.add_enabled(can_save, widgets::primary(if editing { "Salvar nova versão" } else { "Criar registro" })).clicked();
+                    if !editing
+                        && ui
+                            .add_enabled(
+                                form.fields == form.original,
+                                widgets::secondary("Colar conversa do WhatsApp"),
+                            )
+                            .on_hover_text("Cria o registro a partir de mensagens copiadas do WhatsApp.")
+                            .on_disabled_hover_text("Salve ou cancele o registro que está sendo preenchido antes de colar uma conversa.")
+                            .clicked()
+                    {
+                        to_paste = true;
+                    }
                     cancel = ui.add(widgets::secondary("Cancelar")).clicked();
                     if editing && !form.dirty() {
                         widgets::small_muted(ui, "sem alterações");
                     }
                 });
             });
+        if to_paste {
+            self.manual_form.message.clear();
+            self.manual_form
+                .paste
+                .get_or_insert_with(PasteStep::new)
+                .visible = true;
+        }
+        if back {
+            // The text pasted so far is kept until the window is cancelled.
+            self.manual_form.message.clear();
+            if let Some(step) = self.manual_form.paste.as_mut() {
+                step.visible = false;
+            }
+        }
+        if create_paste {
+            self.create_from_paste();
+        }
         if save {
             let fields = self.manual_form.fields.clone();
             let result = match self.manual_form.id {
@@ -290,9 +448,14 @@ impl PonteApp {
         } else if !open {
             if self.manual_form.dirty() {
                 // The X never discards silently.
-                self.manual_form.message =
+                self.manual_form.message = if self.manual_form.paste.as_ref().is_some_and(|s| {
+                    s.visible && !s.text.trim().is_empty() && self.manual_form.fields == self.manual_form.original
+                }) {
+                    "Há mensagens coladas ainda não guardadas: clique em Criar registro ou em Cancelar para descartar."
+                } else {
                     "Há alterações não salvas: clique em Salvar ou em Cancelar para descartar."
-                        .into();
+                }
+                .into();
             } else {
                 self.manual_form = ManualForm::default();
             }

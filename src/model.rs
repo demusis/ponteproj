@@ -175,6 +175,13 @@ pub struct DocumentSummary {
     /// For an e-mail: the sender as the message had it ("Nome <endereço>").
     #[serde(default)]
     pub email_from: String,
+    /// A conversation copied from WhatsApp (a manual record of kind
+    /// whatsapp, whatever its number).
+    #[serde(default)]
+    pub whatsapp: bool,
+    /// For a WhatsApp conversation: who it is with, as WhatsApp showed it.
+    #[serde(default)]
+    pub whatsapp_chat: String,
     /// When the document entered the library (its first version, RFC 3339).
     #[serde(default)]
     pub added_at: String,

@@ -8,6 +8,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 
 pub const MAX_FRAME: usize = 24 * 1024 * 1024;
@@ -32,7 +33,36 @@ struct Request {
     /// `import_capture` / `import_bundle`: a note and a priority the person
     /// typed in the extension before importing.
     extras: Option<Extras>,
+    /// `import_record`: the conversation to keep.
+    record: Option<RecordInput>,
+    /// `import_record`: files that go with it.
+    attachments: Option<Vec<AttachmentInput>>,
 }
+
+/// `import_record`: what the extension read from the page. Untrusted.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordInput {
+    kind: String,
+    title: String,
+    origin: String,
+    document_date: String,
+    text: String,
+    meta: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentInput {
+    name: String,
+    data_base64: String,
+}
+
+const MAX_RECORD_TITLE_CHARS: usize = 500;
+const MAX_RECORD_ORIGIN_CHARS: usize = 200;
+const MAX_RECORD_MESSAGES: usize = 500;
+const MAX_RECORD_ATTACHMENTS: usize = 10;
+const RECORD_META_KEYS: [&str; 4] = ["wa_chat", "wa_first", "wa_last", "wa_messages"];
 
 /// What the person added to an import. Both fields are optional.
 ///
@@ -202,7 +232,252 @@ fn apply_extras(
 
 /// What this Ponte answers besides importing; the extension reads it from
 /// the `ping` to know whether the Ponte is recent enough.
-pub const ACTIONS: [&str; 3] = ["lookup", "open_document", "import_extras"];
+pub const ACTIONS: [&str; 4] = ["lookup", "open_document", "import_extras", "import_record"];
+
+/// A refusal of `import_record`: the error code and a fixed sentence.
+type Refusal = (&'static str, String);
+
+fn invalid_record(message: &str) -> Refusal {
+    ("invalid_record", message.to_owned())
+}
+
+/// Whether the line starts a message: `[dd/mm/aaaa hh:mm]`, the shape of
+/// every message of the record.
+fn has_message_start(line: &str) -> bool {
+    const SHAPE: &[u8; 18] = b"[dd/dd/dddd dd:dd]";
+    let bytes = line.as_bytes();
+    bytes.len() >= SHAPE.len()
+        && SHAPE.iter().zip(bytes).all(|(shape, byte)| match shape {
+            b'd' => byte.is_ascii_digit(),
+            other => other == byte,
+        })
+}
+
+fn no_control(text: &str, allow_text_breaks: bool) -> bool {
+    !text
+        .chars()
+        .any(|c| c.is_control() && !(allow_text_breaks && (c == '\n' || c == '\t')))
+}
+
+/// An `AAAA-MM-DD` date, written exactly so.
+fn plain_date(text: &str) -> bool {
+    text.len() == 10 && chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok()
+}
+
+/// The record of the request, fully checked and normalised; nothing is
+/// stored here. The volume is bounded by the byte limit of the text (500 KiB,
+/// the core's). The message count is counted from the text itself (lines in
+/// the shape `[dd/mm/aaaa hh:mm]`) and never taken from `wa_messages`, which
+/// only has to be a plausible number.
+fn check_record(
+    input: RecordInput,
+) -> std::result::Result<crate::record_import::NewRecord, Refusal> {
+    if input.kind != "whatsapp" {
+        return Err(invalid_record(
+            "O Ponte só recebe conversas do WhatsApp por este caminho.",
+        ));
+    }
+    let title = input.title.trim().to_owned();
+    if !(3..=MAX_RECORD_TITLE_CHARS).contains(&title.chars().count()) || !no_control(&title, false)
+    {
+        return Err(invalid_record(
+            "O título da conversa deve ter de 3 a 500 caracteres, sem caracteres especiais.",
+        ));
+    }
+    let origin = input.origin.trim().to_owned();
+    if origin.chars().count() > MAX_RECORD_ORIGIN_CHARS || !no_control(&origin, false) {
+        return Err(invalid_record(
+            "O nome da conversa passa de 200 caracteres ou tem caracteres inválidos.",
+        ));
+    }
+    let document_date = input.document_date.trim().to_owned();
+    if !document_date.is_empty() && !plain_date(&document_date) {
+        return Err(invalid_record("A data da conversa é inválida."));
+    }
+    let text = input.text.replace("\r\n", "\n");
+    if text.trim().is_empty() {
+        return Err(invalid_record("A conversa está vazia."));
+    }
+    if text.len() > crate::model::MAX_CAPTURE_TEXT_BYTES {
+        return Err(invalid_record(
+            "A conversa passa de 500 KB. Selecione menos mensagens e guarde de novo.",
+        ));
+    }
+    if !no_control(&text, true) {
+        return Err(invalid_record(
+            "A conversa tem caracteres que o Ponte não aceita.",
+        ));
+    }
+    if text.lines().filter(|line| has_message_start(line)).count() > MAX_RECORD_MESSAGES {
+        return Err(invalid_record(
+            "A conversa tem mais de 500 mensagens. Guarde em partes menores.",
+        ));
+    }
+    let mut metadata = BTreeMap::new();
+    for (key, value) in input.meta.unwrap_or_default() {
+        if key == "imported_from" {
+            return Err(invalid_record(
+                "As informações da conversa não podem indicar a origem da importação.",
+            ));
+        }
+        let value = value.trim();
+        let ok = RECORD_META_KEYS.contains(&key.as_str())
+            && value.chars().count() <= crate::record_import::MAX_META_VALUE_CHARS
+            && no_control(value, false)
+            && match key.as_str() {
+                "wa_first" | "wa_last" => {
+                    value.is_empty()
+                        || (value.len() == 16
+                            && chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M")
+                                .is_ok())
+                }
+                "wa_messages" => {
+                    !value.is_empty()
+                        && value.len() <= 3
+                        && value.bytes().all(|b| b.is_ascii_digit())
+                        && value
+                            .parse::<usize>()
+                            .is_ok_and(|n| n <= MAX_RECORD_MESSAGES)
+                }
+                _ => true,
+            };
+        if !ok {
+            return Err(invalid_record("As informações da conversa são inválidas."));
+        }
+        if !value.is_empty() {
+            metadata.insert(key, value.to_owned());
+        }
+    }
+    metadata
+        .entry("wa_chat".to_owned())
+        .or_insert_with(|| origin.clone());
+    metadata.retain(|_, value| !value.is_empty());
+    metadata.insert("imported_from".to_owned(), "whatsapp-web".to_owned());
+    let request_id = crate::record_import::whatsapp_request_id(&origin, &text);
+    Ok(crate::record_import::NewRecord {
+        fields: crate::manual::ManualFields {
+            kind: "whatsapp".to_owned(),
+            title,
+            origin,
+            document_date,
+            text,
+        },
+        metadata,
+        request_id,
+    })
+}
+
+/// The files of the request, decoded strictly and checked (count, size each
+/// and together, name, type by content); nothing is stored here.
+fn check_attachments(
+    inputs: Vec<AttachmentInput>,
+) -> std::result::Result<Vec<crate::record_import::NewAttachment>, Refusal> {
+    use base64::Engine;
+    let refuse = |message: &str| ("invalid_attachment", message.to_owned());
+    if inputs.len() > MAX_RECORD_ATTACHMENTS {
+        return Err(refuse(
+            "A conversa tem anexos demais; o máximo é 10 por vez.",
+        ));
+    }
+    let max_encoded = crate::attachments::MAX_ATTACHMENT_BYTES.div_ceil(3) * 4;
+    let mut files = Vec::with_capacity(inputs.len());
+    let mut total = 0usize;
+    for input in inputs {
+        if input.data_base64.len() > max_encoded {
+            return Err(refuse("Um dos anexos passa de 8 MB."));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(input.data_base64.as_bytes())
+            .map_err(|_| {
+                refuse("Um dos anexos chegou com dados inválidos. Tente guardar de novo.")
+            })?;
+        if bytes.len() > crate::attachments::MAX_ATTACHMENT_BYTES {
+            return Err(refuse("Um dos anexos passa de 8 MB."));
+        }
+        total += bytes.len();
+        if total > crate::record_import::MAX_TOTAL_ATTACHMENT_BYTES {
+            return Err(refuse("Os anexos juntos passam de 16 MB."));
+        }
+        files.push(crate::record_import::NewAttachment {
+            name: input.name,
+            bytes,
+            description: String::new(),
+        });
+    }
+    crate::record_import::validate_attachments(&files).map_err(|err| refusal_of(&err))?;
+    Ok(files)
+}
+
+/// The code and sentence for an error of `record_import`; anything that is
+/// not one of its own sentences becomes a fixed one.
+fn refusal_of(err: &anyhow::Error) -> Refusal {
+    use crate::record_import::RecordError;
+    match err.downcast_ref::<RecordError>() {
+        Some(RecordError::Invalid(message)) => ("invalid_record", message.clone()),
+        Some(RecordError::Attachment(message)) => ("invalid_attachment", message.clone()),
+        Some(RecordError::Failed(message)) => ("import_failed", message.clone()),
+        None => (
+            "import_failed",
+            "A importação não foi concluída. Tente de novo.".to_owned(),
+        ),
+    }
+}
+
+/// `import_record`: validates everything, stores the record with its
+/// attachments (all or nothing), then applies the extras. `already` opens
+/// the existing record too: the person asked to save it and wants to see it.
+fn import_record(request: Request, store: &mut Store) -> (Value, Option<i64>) {
+    use crate::record_import::Created;
+    let refuse = |(code, message): Refusal| (error(code, &message), None);
+    if request.capture.is_some() || request.files.is_some() || request.document_id.is_some() {
+        return refuse(invalid_record("Pedido de importação inválido."));
+    }
+    let Some(record) = request.record else {
+        return refuse(invalid_record(
+            "A mensagem não contém a conversa a ser guardada.",
+        ));
+    };
+    let extras = match request.extras.as_ref().map(check_extras).transpose() {
+        Ok(extras) => extras,
+        Err(message) => return (error("invalid_extras", &message), None),
+    };
+    let record = match check_record(record) {
+        Ok(record) => record,
+        Err(refusal) => return refuse(refusal),
+    };
+    let files = match check_attachments(request.attachments.unwrap_or_default()) {
+        Ok(files) => files,
+        Err(refusal) => return refuse(refusal),
+    };
+    let created = match store.create_record_with_attachments(&record, &files) {
+        Ok(created) => created,
+        Err(err) => return refuse(refusal_of(&err)),
+    };
+    let (document_id, outcome, attachments_added) = match created {
+        Created::New {
+            document_id,
+            attachments_added,
+        } => (document_id, "imported", attachments_added),
+        Created::Already { document_id } => (document_id, "already", 0),
+    };
+    let number = store
+        .load_document(document_id)
+        .map(|detail| detail.summary.document_number)
+        .unwrap_or_default();
+    let mut response = json!({"protocol_version":1,"ok":true,"outcome":outcome,"document_id":document_id,"document_number":number,"attachments_added":attachments_added,"extras_applied":false});
+    response["message"] = json!(if outcome == "already" {
+        "Esta conversa já estava no Ponte. Nada foi gravado de novo."
+    } else {
+        "Conversa guardada no acervo local."
+    });
+    if let Some(extras) = extras.filter(|e| e.note.is_some() || e.priority.is_some()) {
+        match apply_extras(store, document_id, &extras, outcome == "already") {
+            Ok(()) => response["extras_applied"] = json!(true),
+            Err(message) => response["extras_message"] = json!(message),
+        }
+    }
+    (response, Some(document_id))
+}
 
 /// Whether the browser launched us for one of the Ponte's own extensions:
 /// the one loaded from the installed folder or the one from the store. The
@@ -358,6 +633,7 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
                 ),
             }
         }
+        "import_record" => import_record(request, store),
         "import_capture" | "import_bundle" => {
             // Malformed extras refuse the whole request before anything is stored.
             let extras = match request.extras.as_ref().map(check_extras).transpose() {
@@ -522,7 +798,7 @@ mod tests {
         let (ping, _) = ask(&mut store, json!({"protocol_version":1,"action":"ping"}));
         assert_eq!(
             ping["actions"],
-            json!(["lookup", "open_document", "import_extras"])
+            json!(["lookup", "open_document", "import_extras", "import_record"])
         );
 
         let capture = crate::model::sample_capture();
@@ -753,5 +1029,330 @@ mod tests {
             import_request(json!({"note":format!("a\n\tb{}", "x".repeat(1996))})),
         );
         assert_eq!(reply["extras_applied"], true, "{reply}");
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+    fn tiny_png() -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&[0, 0, 0, 13, b'I', b'H', b'D', b'R', 1, 2, 3, 4]);
+        bytes
+    }
+    fn tiny_pdf() -> Vec<u8> {
+        b"%PDF-1.4\n% teste\n%%EOF\n".to_vec()
+    }
+    const WA_TEXT: &str =
+        "[04/11/2026 10:00] Servidor A: bom dia\ncontinua\n[04/11/2026 10:01] Servidor B: oi";
+    fn record_value() -> Value {
+        json!({"kind":"whatsapp","title":"Conversa com Servidor A — 04/11/2026","origin":"Servidor A",
+               "document_date":"2026-11-04","text":WA_TEXT,
+               "meta":{"wa_chat":"Servidor A","wa_first":"2026-11-04T10:00","wa_last":"2026-11-04T10:01","wa_messages":"2"}})
+    }
+    fn record_request(record: Value) -> Value {
+        json!({"protocol_version":1,"action":"import_record","record":record})
+    }
+
+    #[test]
+    fn import_record_stores_a_conversation_with_its_files_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let (reply, open) = ask(&mut store, record_request(record_value()));
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["outcome"], "imported");
+        assert_eq!(reply["attachments_added"], 0);
+        assert_eq!(reply["extras_applied"], false);
+        let id = reply["document_id"].as_i64().unwrap();
+        assert_eq!(open, Some(id));
+        let year = chrono::Local::now().format("%Y").to_string();
+        assert_eq!(reply["document_number"], format!("MANUAL-{year}/0001"));
+        let detail = store.load_document(id).unwrap();
+        assert_eq!(detail.capture.metadata["manual_kind"], "whatsapp");
+        assert_eq!(detail.capture.metadata["imported_from"], "whatsapp-web");
+        assert_eq!(detail.capture.metadata["wa_last"], "2026-11-04T10:01");
+        assert_eq!(detail.capture.text, WA_TEXT);
+
+        // Another conversation, with two files and extras.
+        let mut request = record_request(json!({
+            "kind":"whatsapp","title":"Grupo da Equipe B","origin":"","document_date":"",
+            "text":"[05/11/2026 09:00] Servidor B: segue"}));
+        request["attachments"] = json!([
+            {"name":"foto 1.png","data_base64":b64(&tiny_png())},
+            {"name":"nota.pdf","data_base64":b64(&tiny_pdf())}
+        ]);
+        request["extras"] = json!({"note":"Responder hoje","priority":"alta"});
+        let (reply, open) = ask(&mut store, request.clone());
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["outcome"], "imported");
+        assert_eq!(reply["attachments_added"], 2);
+        assert_eq!(reply["extras_applied"], true);
+        let second = reply["document_id"].as_i64().unwrap();
+        assert_eq!(open, Some(second));
+        assert_eq!(
+            store
+                .list_attachments(crate::attachments::Owner::Document(second))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            store.load_document(second).unwrap().summary.priority,
+            "alta"
+        );
+
+        // The same again: already there, nothing added, the window opens on it.
+        let (reply, open) = ask(&mut store, request);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["outcome"], "already");
+        assert_eq!(reply["document_id"], second);
+        assert_eq!(reply["attachments_added"], 0);
+        assert_eq!(open, Some(second));
+        assert_eq!(
+            store
+                .list_attachments(crate::attachments::Owner::Document(second))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(store.list_documents("").unwrap().len(), 2);
+        // serve() tells the extension the window was opened.
+        let mut input = Vec::new();
+        let frame = serde_json::to_vec(&record_request(record_value())).unwrap();
+        input.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        input.extend_from_slice(&frame);
+        let mut output = Vec::new();
+        serve(&mut input.as_slice(), &mut output, &mut store, |_| true).unwrap();
+        let reply: Value =
+            serde_json::from_slice(&read_frame(&mut output.as_slice()).unwrap().unwrap()).unwrap();
+        assert_eq!(reply["outcome"], "already");
+        assert_eq!(reply["ui_opened"], true);
+    }
+
+    #[test]
+    fn import_record_refusals_store_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let with = |key: &str, value: Value| {
+            let mut record = record_value();
+            record[key] = value;
+            record_request(record)
+        };
+        let with_meta = |key: &str, value: Value| {
+            let mut record = record_value();
+            record["meta"][key] = value;
+            record_request(record)
+        };
+        let with_files = |files: Value| {
+            let mut request = record_request(record_value());
+            request["attachments"] = files;
+            request
+        };
+        let file = |name: &str, bytes: &[u8]| json!({"name":name,"data_base64":b64(bytes)});
+        let mut missing = json!({"protocol_version":1,"action":"import_record"});
+        missing["extras"] = json!({});
+        let mut unknown_top = record_request(record_value());
+        unknown_top["extra_field"] = json!(1);
+        let mut unknown_record = record_request(record_value());
+        unknown_record["record"]["surprise"] = json!(1);
+        let mut unknown_file = record_request(record_value());
+        unknown_file["attachments"] =
+            json!([{"name":"a.png","data_base64":b64(&tiny_png()),"x":1}]);
+        let mut with_capture = record_request(record_value());
+        with_capture["capture"] = serde_json::to_value(crate::model::sample_capture()).unwrap();
+        let mut bad_extras = record_request(record_value());
+        bad_extras["extras"] = json!({"priority":"critica"});
+        let mut program = b"MZ\x90\x00".to_vec();
+        program.resize(100, 0);
+        let eleven: Vec<Value> = (0..11)
+            .map(|i| file(&format!("f{i}.pdf"), format!("%PDF-1.4 {i}").as_bytes()))
+            .collect();
+        let mut big = tiny_pdf();
+        big.resize(8 * 1024 * 1024 + 1, 0);
+        let many_messages = (0..501)
+            .map(|i| format!("[04/11/2026 10:00] Servidor A: mensagem {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let cases: Vec<(Value, &str)> = vec![
+            (with("kind", json!("memorando")), "invalid_record"),
+            (missing, "invalid_record"),
+            (unknown_top, "invalid_request"),
+            (unknown_record, "invalid_request"),
+            (unknown_file, "invalid_request"),
+            (with_capture, "invalid_record"),
+            (with("title", json!("ab")), "invalid_record"),
+            (with("title", json!("t".repeat(501))), "invalid_record"),
+            (with("origin", json!("o".repeat(201))), "invalid_record"),
+            (with("document_date", json!("04/11/2026")), "invalid_record"),
+            (with("document_date", json!("2026-1-4")), "invalid_record"),
+            (with("text", json!("")), "invalid_record"),
+            (
+                with("text", json!("[04/11/2026 10:00] A: x\u{0}y")),
+                "invalid_record",
+            ),
+            (
+                with("text", json!("[04/11/2026 10:00] A: x\ry")),
+                "invalid_record",
+            ),
+            (
+                with(
+                    "text",
+                    json!("x".repeat(crate::model::MAX_CAPTURE_TEXT_BYTES + 1)),
+                ),
+                "invalid_record",
+            ),
+            (with("text", json!(many_messages)), "invalid_record"),
+            (
+                with_meta("imported_from", json!("whatsapp-colado")),
+                "invalid_record",
+            ),
+            (with_meta("outra", json!("x")), "invalid_record"),
+            (
+                with_meta("wa_first", json!("2026-11-04 10:00")),
+                "invalid_record",
+            ),
+            (
+                with_meta("wa_last", json!("2026-13-04T10:00")),
+                "invalid_record",
+            ),
+            (with_meta("wa_messages", json!("501")), "invalid_record"),
+            (with_meta("wa_messages", json!("dez")), "invalid_record"),
+            (
+                with_meta("wa_chat", json!("c".repeat(201))),
+                "invalid_record",
+            ),
+            (with_meta("wa_chat", json!("a\nb")), "invalid_record"),
+            (
+                with_files(json!([{"name":"a.png","data_base64":"@@@"}])),
+                "invalid_attachment",
+            ),
+            (
+                with_files(json!([{"name":"a.png","data_base64":"iVBOR"}])),
+                "invalid_attachment",
+            ),
+            (with_files(json!(eleven)), "invalid_attachment"),
+            (
+                with_files(json!([file("a.pdf", &big)])),
+                "invalid_attachment",
+            ),
+            (
+                with_files(json!([file("a.pdf", &[])])),
+                "invalid_attachment",
+            ),
+            (
+                with_files(json!([file("fatura.pdf", &program)])),
+                "invalid_attachment",
+            ),
+            (
+                with_files(json!([file("a.zip", b"PK\x03\x04zz")])),
+                "invalid_attachment",
+            ),
+            (
+                with_files(json!([file("a.png", &tiny_png()), file("b.exe", b"MZ..")])),
+                "invalid_attachment",
+            ),
+            (bad_extras, "invalid_extras"),
+        ];
+        for (request, code) in cases {
+            let (reply, open) = ask(&mut store, request.clone());
+            assert_eq!(reply["ok"], false, "{request}");
+            assert_eq!(reply["error"]["code"], code, "{reply}");
+            assert!(open.is_none());
+            assert!(!reply["error"]["message"].as_str().unwrap().is_empty());
+            assert!(
+                store.list_documents("").unwrap().is_empty(),
+                "left a record: {reply}"
+            );
+            assert!(store.trash_entries().unwrap().is_empty(), "{reply}");
+        }
+        // The wrong kind is answered with the fixed sentence.
+        let (reply, _) = ask(&mut store, with("kind", json!("email")));
+        assert_eq!(
+            reply["error"]["message"],
+            "O Ponte só recebe conversas do WhatsApp por este caminho."
+        );
+        // The limits are inclusive: 10 files, 500 messages, 500 characters.
+        let ten: Vec<Value> = (0..10)
+            .map(|i| file(&format!("f{i}.pdf"), format!("%PDF-1.4 {i}").as_bytes()))
+            .collect();
+        let mut request = with("title", json!("t".repeat(500)));
+        request["attachments"] = json!(ten);
+        request["record"]["text"] = json!((0..500)
+            .map(|i| format!("[04/11/2026 10:00] Servidor A: mensagem {i}"))
+            .collect::<Vec<_>>()
+            .join("\n"));
+        request["record"]["meta"]["wa_messages"] = json!("500");
+        let (reply, _) = ask(&mut store, request);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["attachments_added"], 10);
+    }
+
+    #[test]
+    fn a_failure_while_storing_files_answers_import_failed_without_store_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_attachments BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT,'falha em C:\\acervo'); END;",
+            )
+            .unwrap();
+        let mut request = record_request(record_value());
+        request["attachments"] = json!([{"name":"a.png","data_base64":b64(&tiny_png())}]);
+        let (reply, open) = ask(&mut store, request);
+        assert_eq!(reply["error"]["code"], "import_failed");
+        assert!(!reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("acervo"));
+        assert!(open.is_none());
+        assert!(store.list_documents("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn extras_are_not_applied_to_a_refused_record_and_import_record_is_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let (ping, _) = ask(&mut store, json!({"protocol_version":1,"action":"ping"}));
+        assert!(ping["actions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("import_record")));
+        let mut request = record_request(record_value());
+        request["record"]["kind"] = json!("outro");
+        request["extras"] = json!({"note":"não deve ficar"});
+        let (reply, _) = ask(&mut store, request);
+        assert_eq!(reply["ok"], false);
+        assert!(store.list_documents("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_frame_near_the_limit_is_handled_without_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        // Three files of 5.5 MiB: each one is fine, together they pass 16 MiB;
+        // the frame is about 22 MiB, under MAX_FRAME.
+        let mut pdf = tiny_pdf();
+        pdf.resize(5632 * 1024, 7);
+        let mut request = record_request(record_value());
+        request["attachments"] = json!([
+            {"name":"a.pdf","data_base64":b64(&pdf)},
+            {"name":"b.pdf","data_base64":b64(&[&b"%PDF-1.4 b"[..], &pdf[10..]].concat())},
+            {"name":"c.pdf","data_base64":b64(&[&b"%PDF-1.4 c"[..], &pdf[10..]].concat())}
+        ]);
+        let frame = serde_json::to_vec(&request).unwrap();
+        assert!(frame.len() > 20 * 1024 * 1024 && frame.len() <= MAX_FRAME);
+        let mut input = (frame.len() as u32).to_le_bytes().to_vec();
+        input.extend_from_slice(&frame);
+        let mut output = Vec::new();
+        serve(&mut input.as_slice(), &mut output, &mut store, |_| true).unwrap();
+        let reply: Value =
+            serde_json::from_slice(&read_frame(&mut output.as_slice()).unwrap().unwrap()).unwrap();
+        assert_eq!(reply["error"]["code"], "invalid_attachment", "{reply}");
+        assert!(store.list_documents("").unwrap().is_empty());
+        // Over MAX_FRAME the frame is refused before it is read.
+        let too_big = (MAX_FRAME as u32 + 1).to_le_bytes();
+        assert!(read_frame(&mut too_big.as_slice()).is_err());
     }
 }

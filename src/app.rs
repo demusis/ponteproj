@@ -132,6 +132,63 @@ struct ManualForm {
     fields: crate::manual::ManualFields,
     original: crate::manual::ManualFields,
     message: String,
+    /// The step "Colar conversa do WhatsApp", when it is showing.
+    paste: Option<PasteStep>,
+}
+
+/// What the person pastes and what is read from it.
+struct PasteStep {
+    /// Showing in the window (hidden when the person went back to the form;
+    /// what was pasted is kept).
+    visible: bool,
+    text: String,
+    chat: String,
+    title: String,
+    /// The title was typed by the person: it is no longer replaced by the
+    /// suggestion.
+    title_edited: bool,
+    /// Reading of `text`; recomputed when the text changes.
+    parsed: Option<Result<crate::whatsapp::Conversation, String>>,
+}
+
+impl PasteStep {
+    fn new() -> Self {
+        Self {
+            visible: true,
+            text: String::new(),
+            chat: String::new(),
+            title: String::new(),
+            title_edited: false,
+            parsed: None,
+        }
+    }
+
+    /// Reads the pasted text again and, unless the person wrote the title,
+    /// suggests one.
+    fn reread(&mut self) {
+        // Never lay out or read more than a record can hold.
+        let limit = 2 * crate::model::MAX_CAPTURE_TEXT_BYTES + 1;
+        if self.text.len() > limit {
+            let mut cut = limit;
+            while !self.text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            self.text.truncate(cut);
+        }
+        self.parsed = if self.text.trim().is_empty() {
+            None
+        } else {
+            Some(crate::whatsapp::parse(&self.text).map_err(|e| e.to_string()))
+        };
+        if !self.title_edited {
+            self.title = match &self.parsed {
+                Some(Ok(conversation)) => {
+                    crate::whatsapp::suggested_title(&self.chat, conversation)
+                }
+                _ => String::new(),
+            };
+        }
+    }
 }
 
 impl ManualForm {
@@ -161,11 +218,17 @@ impl ManualForm {
             original: fields.clone(),
             fields,
             message: String::new(),
+            paste: None,
         };
     }
 
     fn dirty(&self) -> bool {
-        self.open && self.fields != self.original
+        self.open
+            && (self.fields != self.original
+                || self
+                    .paste
+                    .as_ref()
+                    .is_some_and(|p| !p.text.trim().is_empty()))
     }
 }
 
@@ -3453,6 +3516,8 @@ mod tests {
             manual: false,
             email: false,
             email_from: String::new(),
+            whatsapp: false,
+            whatsapp_chat: String::new(),
             added_at: String::new(),
             is_joined: parent.is_some(),
             joined_to_number: parent.map(|(_, n)| n.to_owned()),

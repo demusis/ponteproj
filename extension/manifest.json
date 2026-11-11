@@ -1,15 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Ponte • Assistente SIGADOC",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Leva o documento aberto no SIGADOC para o Ponte, o assistente documental do seu computador: notas, minutas, prazos e equipe.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA02EAV5PbolmSmh5Nyf1n9Il82AEPt3myMH3GwA9Gst5fBL7k4OzDdy1qLx8EKGPadVzBirWEcwJWiqBmP1sRW4Sb2zKXqUbCfrD6KHhwpcFgSgOEt7iukgzCWvPiUd9dxELmqEy7YiuSY/CiXq3yg2aXcCSJLXmTIW9Q3/9uXd8Wpo4ba74HAvft4AT6N43JOrDeY+nF9WyhtMwyjtFdMl8e1UdSnEabqgnfil6wmfSjkkix4IWdwIubH5KNxrzg4wopFyOUXWs6xZw8mJzL/5DJHzr5GCy/XvclhlFAgOlK3Q7TCNykW0J4/ohP0awGa0oyZYF+ANlBdxsW4XASBwIDAQAB",
   "permissions": [
     "nativeMessaging",
-    "storage"
+    "storage",
+    "scripting"
   ],
   "host_permissions": [
     "https://www.sigadoc.mt.gov.br/*"
+  ],
+  "optional_host_permissions": [
+    "https://web.whatsapp.com/*"
   ],
   "background": {
     "service_worker": "background.js"

@@ -1,6 +1,14 @@
 "use strict";
-importScripts("capture-core.js", "files.js");
+importScripts("capture-core.js", "files.js", "whatsapp-core.js");
 const Core = globalThis.PonteCapture;
+const WA = globalThis.PonteWhatsApp;
+// WhatsApp Web is an optional site: its panel is registered only after the person turns it on
+// in the popup (optional host permission), and its messages are accepted only from that tab.
+const WA_PATTERN = "https://web.whatsapp.com/*";
+const WA_SCRIPT_ID = "ponte-whatsapp";
+const WA_SCRIPT_FILES = ["capture-core.js", "whatsapp-core.js", "whatsapp.js"];
+// The Ponte's frame is 24 MiB; 16 MiB of files become about 21.4 MiB of base64.
+const NATIVE_FRAME_MAX = 24 * 1024 * 1024 - 64 * 1024;
 // Keep the exact downloaded bytes for retries. Fast path: two bounded bundles in
 // this worker's memory. Chrome stops idle workers, so the same two are also kept
 // in chrome.storage.session (memory only, cleared when the browser closes; the
@@ -21,6 +29,14 @@ let actionsSeen = null;
 
 function authorizedTab(sender) {
   return sender.id === chrome.runtime.id && Number.isInteger(sender.tab?.id) && sender.frameId === 0 && Core.allowedOrigin(sender.url) && Core.allowedOrigin(sender.tab.url);
+}
+// The WhatsApp Web tab: our own content script, top frame, exact origin, and the optional permission still granted.
+async function whatsappGranted() {
+  try { return (await chrome.permissions.contains({ origins: [WA_PATTERN] })) === true; } catch { return false; }
+}
+async function authorizedWhatsAppTab(sender) {
+  if (!WA || !(sender.id === chrome.runtime.id && Number.isInteger(sender.tab?.id) && sender.frameId === 0 && WA.allowedOrigin(sender.url) && WA.allowedOrigin(sender.tab.url))) return false;
+  return whatsappGranted();
 }
 function authorizedPopup(sender) {
   return sender.id === chrome.runtime.id && !sender.tab && sender.url === chrome.runtime.getURL("popup.html");
@@ -56,6 +72,15 @@ const PARSERS = {
     if (refusal) return refusal;
     if (response?.protocol_version !== 1 || response?.ok !== true || !validId(response.document_id)) return schemaError();
     return { protocol_version: 1, ok: true, document_id: response.document_id, ui_opened: response.ui_opened === true };
+  },
+  import_record(response) {
+    const refusal = hostRefusal(response);
+    if (refusal) return refusal;
+    if (response?.protocol_version !== 1 || response?.ok !== true || !["imported", "already"].includes(response.outcome) || !validId(response.document_id)) return schemaError();
+    const result = { protocol_version: 1, ok: true, outcome: response.outcome, document_id: response.document_id, document_number: validNumber(response.document_number) ? response.document_number : "", attachments_added: Number.isSafeInteger(response.attachments_added) && response.attachments_added >= 0 && response.attachments_added <= 10 ? response.attachments_added : 0, ui_opened: response.ui_opened === true };
+    if (typeof response.extras_applied === "boolean") result.extras_applied = response.extras_applied;
+    if (typeof response.extras_message === "string") result.extras_message = response.extras_message;
+    return result;
   }
 };
 function nativeCall(request, timeoutMs = 45000) {
@@ -125,16 +150,19 @@ function cleanExtras(extras) {
   return clean;
 }
 // { send } extras go along; { skipped } this Ponte does not take them; { error } the Ponte did not answer.
+// What the Ponte can do: the answer kept for a minute, or a new ping.
+async function hostActions() {
+  if (actionsSeen && Date.now() - actionsSeen.at < ACTIONS_TTL_MS) return { actions: actionsSeen.actions };
+  const ping = await nativeCall({ protocol_version: 1, action: "ping" }, 15000);
+  if (ping?.ok !== true) return { error: ping };
+  rememberActions(ping);
+  return { actions: ping.actions };
+}
 async function extrasPlan(extras) {
   if (!extras) return { send: null, skipped: false };
-  let actions;
-  if (actionsSeen && Date.now() - actionsSeen.at < ACTIONS_TTL_MS) actions = actionsSeen.actions;
-  else {
-    const ping = await nativeCall({ protocol_version: 1, action: "ping" }, 15000);
-    if (ping?.ok !== true) return { error: ping };
-    rememberActions(ping);
-    actions = ping.actions;
-  }
+  const known = await hostActions();
+  if (known.error) return { error: known.error };
+  const actions = known.actions;
   return actions.includes("import_extras") ? { send: extras, skipped: false } : { send: null, skipped: true };
 }
 // Only checked fields of the Ponte's answer about the extras reach the page.
@@ -185,6 +213,41 @@ async function importCapture(message) {
   if (result?.ok === true) await forgetBundle(key);
   return result;
 }
+// A conversation of WhatsApp Web: everything was validated; the native message is built from scratch.
+async function importRecord(message) {
+  const extras = Object.hasOwn(message, "extras") ? cleanExtras(message.extras) : null;
+  const known = await hostActions();
+  if (known.error) return known.error;
+  if (!known.actions.includes("import_record")) return Core.errorResult("PONTE_OLD", "Atualize o Ponte para guardar conversas do WhatsApp.");
+  const plan = extras ? (known.actions.includes("import_extras") ? { send: extras, skipped: false } : { send: null, skipped: true }) : { send: null, skipped: false };
+  const record = message.record;
+  const request = { protocol_version: 1, action: "import_record", record: { kind: "whatsapp", title: record.title, origin: record.origin, document_date: record.document_date, text: record.text, meta: { wa_chat: record.meta.wa_chat, wa_first: record.meta.wa_first, wa_last: record.meta.wa_last, wa_messages: record.meta.wa_messages } } };
+  if (message.attachments.length) request.attachments = message.attachments.map(item => ({ name: item.name, data_base64: item.data_base64 }));
+  if (plan.send) request.extras = plan.send;
+  return finishExtras(await nativeCall(request, 90000), plan);
+}
+// The panel on WhatsApp Web exists only while the permission is granted and the scripts are registered.
+async function whatsappRegistered() {
+  try { return ((await chrome.scripting.getRegisteredContentScripts({ ids: [WA_SCRIPT_ID] })) || []).length > 0; } catch { return false; }
+}
+async function whatsappUnregister() {
+  try { if (await whatsappRegistered()) await chrome.scripting.unregisterContentScripts({ ids: [WA_SCRIPT_ID] }); } catch { /* nothing registered */ }
+}
+async function whatsappRegister() {
+  await whatsappUnregister();
+  await chrome.scripting.registerContentScripts([{ id: WA_SCRIPT_ID, js: WA_SCRIPT_FILES, matches: [WA_PATTERN], runAt: "document_idle", allFrames: false, world: "ISOLATED", persistAcrossSessions: true }]);
+}
+// Registered scripts normally persist; this only repairs them, and only while the permission is still granted.
+async function syncWhatsApp(refresh) {
+  try {
+    if (!chrome.scripting || !chrome.permissions) return;
+    if (!(await whatsappGranted())) { await whatsappUnregister(); return; }
+    if (refresh || !(await whatsappRegistered())) await whatsappRegister();
+  } catch { /* the popup shows the state and can turn it on again */ }
+}
+chrome.runtime.onStartup?.addListener(() => { syncWhatsApp(false); });
+chrome.runtime.onInstalled?.addListener(() => { syncWhatsApp(true); });
+chrome.permissions?.onRemoved?.addListener(() => { syncWhatsApp(false); });
 async function storedRecent() {
   try {
     const value = (await chrome.storage.session.get(RECENT_KEY))?.[RECENT_KEY];
@@ -199,7 +262,16 @@ async function storedRecent() {
 function recordRecent(capture, result) {
   const ok = result?.ok === true;
   const outcome = !ok ? "failed" : ["unchanged", "legacy_duplicate"].includes(Core.importOutcome(result)) ? "already" : "imported";
-  const record = { number: capture.document_number.slice(0, 200), title: shortText(capture.title, 120), time: new Date().toISOString(), outcome };
+  return pushRecent(capture.document_number, capture.title, result, outcome);
+}
+// A saved conversation: its record number (or "WhatsApp" when nothing was saved), title, time, outcome.
+function recordRecentRecord(record, result) {
+  const ok = result?.ok === true;
+  return pushRecent(ok && result.document_number ? result.document_number : "WhatsApp", record.title, result, !ok ? "failed" : result.outcome === "already" ? "already" : "imported");
+}
+function pushRecent(number, title, result, outcome) {
+  const ok = result?.ok === true;
+  const record = { number: number.slice(0, 200), title: shortText(title, 120), time: new Date().toISOString(), outcome };
   if (ok && validId(result.document_id)) record.document_id = result.document_id;
   return inTurn(async () => {
     try { await chrome.storage.session.set({ [RECENT_KEY]: [record, ...(await storedRecent())].slice(0, RECENT_MAX) }); }
@@ -212,7 +284,7 @@ function clearRecent() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message?.action === "ponte.ping") {
-      if (!Core.exactKeys(message, ["action"]) || !(authorizedTab(sender) || authorizedPopup(sender))) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
+      if (!Core.exactKeys(message, ["action"]) || !(authorizedTab(sender) || authorizedPopup(sender) || await authorizedWhatsAppTab(sender))) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
       const answer = await nativeCall({ protocol_version: 1, action: "ping" });
       rememberActions(answer);
       return answer;
@@ -223,13 +295,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.action === "ponte.recent_clear") { await clearRecent(); return { protocol_version: 1, ok: true }; }
       return { protocol_version: 1, ok: true, items: await storedRecent() };
     }
+    // Turning the WhatsApp Web feature on or off belongs to the popup alone.
+    if (message?.action === "ponte.whatsapp_on" || message?.action === "ponte.whatsapp_off") {
+      if (!Core.exactKeys(message, ["action"]) || !authorizedPopup(sender)) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
+      try {
+        if (message.action === "ponte.whatsapp_on") {
+          if (!(await whatsappGranted())) return Core.errorResult("PERMISSION_DENIED", "A permissão para o WhatsApp Web não foi concedida.");
+          await whatsappRegister();
+        } else {
+          await whatsappUnregister();
+          await chrome.permissions.remove({ origins: [WA_PATTERN] });
+        }
+        return { protocol_version: 1, ok: true };
+      } catch { return Core.errorResult("WHATSAPP_SETUP", "Não foi possível mudar o WhatsApp Web agora. Tente de novo."); }
+    }
+    if (message?.action === "ponte.import_record") {
+      if (!(await authorizedWhatsAppTab(sender))) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
+      if (!Core.exactKeys(message, Object.hasOwn(message, "extras") ? ["action", "record", "attachments", "extras"] : ["action", "record", "attachments"])) return Core.errorResult("ACTION_DENIED", "Ação não permitida pela extensão.");
+      try {
+        WA.validateRecord(message.record);
+        WA.validateAttachments(message.attachments);
+        if (Object.hasOwn(message, "extras")) Core.validateExtras(message.extras);
+        const size = message.attachments.reduce((sum, item) => sum + item.data_base64.length, 0) + Core.bytes(JSON.stringify([message.record, message.extras || null])) + 1024;
+        if (size > NATIVE_FRAME_MAX) throw new WA.WhatsAppError("PAYLOAD_TOO_LARGE", "A conversa com os arquivos é grande demais para guardar de uma vez. Tire alguns arquivos.");
+      } catch (error) { return Core.errorResult(error.code || "RECORD_INVALID", error.message); }
+      let result;
+      try { result = await importRecord(message); }
+      catch (error) { await recordRecentRecord(message.record, null); throw error; }
+      await recordRecentRecord(message.record, result);
+      return result;
+    }
     if (message?.action === "ponte.lookup") {
       if (!Core.exactKeys(message, ["action", "document_number"]) || !authorizedTab(sender)) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
       if (!validNumber(message.document_number)) return Core.errorResult("INVALID_REQUEST", "Número de documento inválido.");
       return nativeCall({ protocol_version: 1, action: "lookup", document_number: message.document_number }, 15000);
     }
     if (message?.action === "ponte.open") {
-      if (!Core.exactKeys(message, ["action", "document_id"]) || !(authorizedTab(sender) || authorizedPopup(sender))) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
+      if (!Core.exactKeys(message, ["action", "document_id"]) || !(authorizedTab(sender) || authorizedPopup(sender) || await authorizedWhatsAppTab(sender))) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
       if (!validId(message.document_id)) return Core.errorResult("INVALID_REQUEST", "Documento inválido.");
       return nativeCall({ protocol_version: 1, action: "open_document", document_id: message.document_id }, 15000);
     }

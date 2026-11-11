@@ -189,7 +189,7 @@ impl Store {
         // Where the record came from stays with every version: an e-mail's
         // identity and digest let a later import of it be recognized.
         for (key, value) in &detail.capture.metadata {
-            if key.starts_with("mail_") || key == "imported_from" {
+            if key.starts_with("mail_") || key.starts_with("wa_") || key == "imported_from" {
                 capture
                     .metadata
                     .entry(key.clone())

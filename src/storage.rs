@@ -666,6 +666,9 @@ impl Store {
                 .get("mail_from")
                 .cloned()
                 .unwrap_or_default(),
+            whatsapp: capture.is_manual()
+                && capture.metadata.get("manual_kind").map(String::as_str) == Some("whatsapp"),
+            whatsapp_chat: capture.metadata.get("wa_chat").cloned().unwrap_or_default(),
             added_at: self
                 .conn
                 .query_row(

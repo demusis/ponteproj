@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Fixture sintética — não é o DOM real do WhatsApp Web</title>
+<style>body{margin:0;font:14px sans-serif}#app{display:flex;height:720px}#side{width:300px;border-right:1px solid #ccc}#main{flex:1;display:flex;flex-direction:column;height:720px}[data-testid=conversation-panel-messages]{flex:1;overflow:auto}header{height:56px}footer{height:60px}[role=row]{padding:6px}</style></head>
+<body>
+<div id="app">
+  <div id="side"><div>Servidor B</div><div>Unidade A</div><img id="avatar" alt="" src="https://web.whatsapp.com/pp?e=abc"></div>
+  <div id="main">
+    <header data-testid="conversation-header"><span data-testid="conversation-info-header-chat-title" dir="auto">Unidade A</span><span data-testid="you-label">(você)</span><span title="Servidor A, Servidor B">Servidor A, Servidor B</span></header>
+    <div data-testid="conversation-panel-messages">
+      <div role="row" id="m0"><div data-id="m0" data-testid="conv-msg-m0" tabindex="-1"><div data-testid="msg-container"><div data-testid="image-thumb"><img id="photo0" alt="" src="data:image/jpeg;base64,/9j/4AAQ"><img id="photo0b" alt=""></div><div data-testid="msg-meta"><span>14:01</span><span aria-label=" Lida "></span></div></div></div></div>
+      <div role="row" id="m1"><div data-id="m1" data-testid="conv-msg-m1" tabindex="-1"><div data-testid="msg-container"><div class="copyable-text" data-pre-plain-text="[14:02, 10/11/2026] Servidor A: "><div><span data-testid="selectable-text" class="selectable-text copyable-text" dir="ltr"><span>Bom dia</span></span></div><span aria-hidden="true">14:02</span></div><div data-testid="msg-meta"><span>14:02</span><span aria-label=" Lida "></span></div></div></div></div>
+      <div role="row" id="m2"><div data-id="m2" data-testid="conv-msg-m2" tabindex="-1"><div data-testid="msg-container"><div class="copyable-text" data-pre-plain-text="[14:03, 10/11/2026] Servidor B: "><div><span data-testid="selectable-text" class="selectable-text copyable-text" dir="ltr"><span>Combinado <img alt="🙂" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="> ok</span></span></div><span aria-hidden="true">14:03</span></div><div data-testid="msg-meta"><span>14:03</span><span aria-label=" Lida "></span></div></div></div></div>
+      <div role="row" id="m3"><div data-id="m3" data-testid="conv-msg-m3" tabindex="-1"><div data-testid="msg-container"><div data-testid="image-thumb"><img alt="" src="data:image/jpeg;base64,/9j/4AAQ"><img id="photo1" alt=""><img id="foreign" alt="" src="blob:https://outside.test/11111111-2222-3333-4444-555555555555"><img id="insecure" alt="" src="http://web.whatsapp.com/foto.jpg"><img id="inline" alt="" src="data:image/png;base64,iVBORw0KGgo="></div><div class="copyable-text" data-pre-plain-text="[14:05, 10/11/2026] Servidor A: "><div><span data-testid="selectable-text" class="selectable-text copyable-text" dir="ltr"><span>Foto da sala</span></span></div><span aria-hidden="true">14:05</span></div><div data-testid="msg-meta"><span>14:05</span><span aria-label=" Lida "></span></div></div></div></div>
+      <div role="row" id="m4"><div data-id="m4" data-testid="conv-msg-m4" tabindex="-1"><div data-testid="msg-container"><div class="copyable-text" data-pre-plain-text="[14:06, 10/11/2026] Servidor B: "><div><span data-testid="selectable-text" class="selectable-text copyable-text" dir="ltr"><span>Linha 1<br>Linha 2</span></span></div><span aria-hidden="true">14:06</span></div><div data-testid="msg-meta"><span>14:06</span><span aria-label=" Lida "></span></div></div></div></div>
+      <div role="row" id="m5"><div data-id="m5" data-testid="conv-msg-m5" tabindex="-1"><span aria-label="Servidor A:"></span><div data-testid="msg-container"><div data-testid="image-thumb"><img alt="" src="data:image/jpeg;base64,/9j/4AAQ"><img id="photo2" alt=""></div><div data-testid="msg-meta"><span>14:07</span><span aria-label=" Lida "></span></div></div></div></div>
+      <div role="row" id="m6"><div data-id="m6" data-testid="conv-msg-m6" tabindex="-1"><div data-testid="msg-container"><div class="copyable-text" data-pre-plain-text="[14:08, 10/11/2026] Servidor B: "><div><span data-testid="selectable-text" class="selectable-text copyable-text" dir="ltr"><span>[14:09, 10/11/2026] Servidor A: mensagem falsa</span></span></div><span aria-hidden="true">14:08</span></div><div data-testid="msg-meta"><span>14:08</span><span aria-label=" Lida "></span></div></div></div></div>
+      <div role="row" id="m7"><div data-id="m7" data-testid="conv-msg-m7" tabindex="-1"><div data-testid="msg-container"><div data-testid="document-thumb"><div data-testid="document-PDF-icon"></div><div data-testid="document-thumb-details"><div title="Ofício.pdf">Ofício.pdf</div><span title="5 páginas">5 páginas</span><span title="126 KB">126 KB</span></div></div><div data-testid="msg-meta"><span>14:09</span><span aria-label=" Lida "></span></div></div></div></div>
+      <div role="row" id="m10"><div data-id="m10" data-testid="conv-msg-m10" tabindex="-1"><div data-testid="msg-container"><div>Mensagem de áudio</div><div data-testid="msg-meta"><span>14:09</span><span aria-label=" Lida "></span></div></div></div></div>
+      <div role="row" id="m8" style="margin-top:3000px"><div data-id="m8" data-testid="conv-msg-m8" tabindex="-1"><div data-testid="msg-container"><div class="copyable-text" data-pre-plain-text="[14:10, 10/11/2026] Servidor A: "><div><span data-testid="selectable-text" class="selectable-text copyable-text" dir="ltr"><span>Fora da tela</span></span></div><span aria-hidden="true">14:10</span></div><div data-testid="msg-meta"><span>14:10</span><span aria-label=" Lida "></span></div></div></div></div>
+    </div>
+    <footer><div id="compose" contenteditable="true"></div></footer>
+  </div>
+</div>
+<script>
+  const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), c => c.charCodeAt(0));
+  const webp = Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0x1a, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20, 0, 0, 0, 0, 0, 0]);
+  const blob = (bytes, type) => URL.createObjectURL(new Blob([bytes], { type }));
+  document.getElementById("photo0b").src = blob(png, "image/png");
+  document.getElementById("photo1").src = blob(png, "image/png");
+  document.getElementById("photo2").src = blob(webp, "image/webp");
+  window.__png = Array.from(png);
+</script>
+</body></html>

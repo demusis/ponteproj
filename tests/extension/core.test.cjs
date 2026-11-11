@@ -18,7 +18,7 @@ test("manifest uses fixed public key/ID, restricted isolated MV3, no external me
   const digest = crypto.createHash("sha256").update(Buffer.from(manifest.key, "base64")).digest().subarray(0, 16).toString("hex");
   assert.equal(digest.replace(/[0-9a-f]/g, char => String.fromCharCode(97 + parseInt(char, 16))), "ecllnakmppjinmednoikimbpnbgbimhg");
   assert.equal(manifest.manifest_version, 3);
-  assert.deepEqual([...manifest.permissions].sort(), ["nativeMessaging", "storage"]);
+  assert.deepEqual([...manifest.permissions].sort(), ["nativeMessaging", "scripting", "storage"]);
   assert.deepEqual(manifest.host_permissions, [Core.ORIGIN + "/*"]);
   assert.equal(manifest.content_scripts[0].world, "ISOLATED");
   assert.equal(manifest.content_scripts[0].all_frames, false);
@@ -145,7 +145,7 @@ function workerFixture(filesApi, options = {}) {
       sendMessage: (id, message, opts, callback) => { tabMessages.push({ id, message, opts }); if (callback) callback(); }
     }
   };
-  const context = { chrome, importScripts: () => {}, PonteCapture: Core, PonteFiles: filesApi, setTimeout, clearTimeout, JSON, Promise };
+  const context = { chrome, importScripts: () => {}, PonteCapture: Core, PonteFiles: filesApi, PonteWhatsApp: require("../../extension/whatsapp-core.js"), setTimeout, clearTimeout, JSON, Promise };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../../extension/background.js"), "utf8"), context);
   const sender = { id: chrome.runtime.id, frameId: 0, url: Core.ORIGIN + "/doc", tab: { id: 7, url: Core.ORIGIN + "/doc" } };
   const invoke = (message, who = sender) => new Promise(resolve => listener(message, who, resolve));
@@ -198,21 +198,24 @@ test("history metadata cannot nominate a different document or destination",()=>
 
 const plainOf = value => JSON.parse(JSON.stringify(value));
 const NUMBER = "ORG-OFI-2026/00431";
-test("manifest 0.3.0: only nativeMessaging and storage, same key and hosts, one shortcut command", () => {
+test("manifest 0.4.0: nativeMessaging, storage and scripting, same key and hosts, WhatsApp Web only as an optional host, one shortcut command", () => {
   const read = name => JSON.parse(fs.readFileSync(path.join(__dirname, "../../extension/" + name), "utf8"));
   const manifest = read("manifest.json");
-  assert.equal(manifest.version, "0.3.0");
-  assert.equal(read("package.json").version, "0.3.0");
+  assert.equal(manifest.version, "0.4.0");
+  assert.equal(read("package.json").version, "0.4.0");
   assert.equal(manifest.key, fs.readFileSync(path.join(__dirname, "../../extension-key.txt"), "utf8").trim());
-  assert.deepEqual([...manifest.permissions].sort(), ["nativeMessaging", "storage"]);
+  assert.deepEqual([...manifest.permissions].sort(), ["nativeMessaging", "scripting", "storage"]);
   assert.deepEqual(manifest.host_permissions, [Core.ORIGIN + "/*"]);
+  assert.deepEqual(manifest.optional_host_permissions, ["https://web.whatsapp.com/*"]);
+  assert.equal(manifest.content_scripts.length, 1);
+  assert.deepEqual(manifest.content_scripts[0].js, ["capture-core.js", "history.js", "content.js"]);
   assert.deepEqual(manifest.content_scripts[0].matches, [Core.ORIGIN + "/*"]);
   assert.equal(manifest.commands.importar.suggested_key.default, "Alt+Shift+I");
   assert.equal(manifest.commands.importar.description, "Importar o documento aberto para o Ponte");
   assert.deepEqual(Object.keys(manifest.commands), ["importar"]);
 });
 test("source never touches persistent storage, eval, innerHTML or logging", () => {
-  for (const name of ["background.js", "content.js", "files.js", "history.js", "popup.js", "capture-core.js"]) {
+  for (const name of ["background.js", "content.js", "files.js", "history.js", "popup.js", "capture-core.js", "whatsapp-core.js", "whatsapp.js"]) {
     const source = fs.readFileSync(path.join(__dirname, "../../extension/" + name), "utf8");
     assert.ok(!/storage\.(local|sync)|\beval\(|new Function|innerHTML|console\./.test(source), name);
   }
