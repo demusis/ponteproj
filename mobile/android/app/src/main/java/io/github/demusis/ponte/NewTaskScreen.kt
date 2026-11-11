@@ -19,25 +19,32 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-/** Form of a new task. [onCreate] gets the title, the action key and the due date (ISO or empty). */
+/**
+ * Form of a new task. [onCreate] gets the title, the action key, the due date (ISO or empty) and the
+ * responsible person, which starts as the person's own name ([myName]) when it is set and can be
+ * changed or cleared before saving.
+ */
 @Composable
 internal fun NewTaskScreen(
     document: String,
     actions: List<Choice>,
     onBack: () -> Unit,
-    onCreate: (String, String, String) -> Unit,
-    withoutDocument: Boolean = false
+    onCreate: (String, String, String, String) -> Unit,
+    withoutDocument: Boolean = false,
+    assignees: List<String> = emptyList(),
+    myName: String = ""
 ) {
     var title by rememberSaveable { mutableStateOf("") }
     var action by rememberSaveable { mutableStateOf(actions.firstOrNull()?.key ?: "") }
     var due by rememberSaveable { mutableStateOf("") }
+    var assignee by rememberSaveable { mutableStateOf(myName) }
     var tried by rememberSaveable { mutableStateOf(false) }
 
     DetailScaffold(
         title = "Nova tarefa", onBack = onBack, close = true,
         footer = {
             PrimaryButton("Criar tarefa", onClick = {
-                if (title.isBlank()) tried = true else onCreate(title.trim(), action, due)
+                if (title.isBlank()) tried = true else onCreate(title.trim(), action, due, assignee.trim())
             })
         }
     ) {
@@ -66,6 +73,7 @@ internal fun NewTaskScreen(
             )
             if (actions.isNotEmpty()) ChoiceField("Ação", actions, action, { action = it })
             DateField("Prazo (opcional)", due, { due = it }, emptyText = "Sem prazo")
+            AssigneeField(assignee, { assignee = it }, assignees, myName)
         }
     }
 }

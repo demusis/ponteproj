@@ -27,7 +27,12 @@ import androidx.compose.ui.unit.sp
  * next days (the same rows as Tarefas), then the atendimentos whose deadline has come.
  */
 @Composable
-internal fun TodayScreen(state: TodayState, onToggle: (TaskItem) -> Unit, onOpen: (TaskItem) -> Unit) {
+internal fun TodayScreen(
+    state: TodayState,
+    onToggle: (TaskItem) -> Unit,
+    onOpen: (TaskItem) -> Unit,
+    onOpenAttendance: (AttendanceItem) -> Unit = {}
+) {
     val c = Ponte.colors
     if (state.loading && state.isEmpty) {
         LoadingBox("Carregando…", Modifier.fillMaxSize())
@@ -64,7 +69,7 @@ internal fun TodayScreen(state: TodayState, onToggle: (TaskItem) -> Unit, onOpen
             item(key = "h-att") {
                 SectionLabel("Atendimentos com prazo · ${state.attendances.size}", Modifier.padding(top = 8.dp))
             }
-            items(state.attendances, key = { "a-${it.id}" }) { AttendanceCard(it) }
+            items(state.attendances, key = { "a-${it.id}" }) { a -> AttendanceCard(a, onClick = { onOpenAttendance(a) }) }
         }
     }
 }
@@ -84,28 +89,3 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     items(list, key = { "t-${it.id}" }) { t -> TaskCard(t, onToggle, onOpen) }
 }
 
-/** An atendimento: reference (or subject), its situation and the deadline. Read-only. */
-@Composable
-private fun AttendanceCard(a: AttendanceItem) {
-    val c = Ponte.colors
-    PonteCard {
-        Row(Modifier.padding(start = 16.dp, top = 12.dp, end = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    a.reference, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = c.text,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis
-                )
-                if (a.subject.isNotEmpty() && a.subject != a.reference) {
-                    Text(a.subject, style = MaterialTheme.typography.bodySmall, color = c.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-                if (a.statusLabel.isNotEmpty()) {
-                    Text(a.statusLabel, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1)
-                }
-            }
-            if (a.dueChip.isNotEmpty()) {
-                Spacer(Modifier.width(8.dp))
-                Pill(a.dueChip, if (a.late) Tone.ERROR else Tone.WARNING)
-            }
-        }
-    }
-}

@@ -51,9 +51,9 @@ class FichaTest {
 
     @Test fun notaVazia() = paparazzi.shot("vazia_escuro", dark = true) { NoteEditorScreen(Samples.detail.number, "", {}, {}) }
 
-    @Test fun novaTarefa() = paparazzi.shot("claro") { NewTaskScreen(Samples.detail.number, Samples.actions, {}, { _, _, _ -> }) }
+    @Test fun novaTarefa() = paparazzi.shot("claro") { NewTaskScreen(Samples.detail.number, Samples.actions, {}, { _, _, _, _ -> }) }
 
     @Test fun novaTarefaEscuro() = paparazzi.shot("escuro", dark = true) {
-        NewTaskScreen(Samples.detail.number, Samples.actions, {}, { _, _, _ -> })
+        NewTaskScreen(Samples.detail.number, Samples.actions, {}, { _, _, _, _ -> })
     }
 }

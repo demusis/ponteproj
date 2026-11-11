@@ -56,7 +56,8 @@ internal fun SetupScreen(
     onBack: () -> Unit,
     onSync: () -> Unit,
     onFinish: () -> Unit,
-    onSkip: () -> Unit
+    onSkip: () -> Unit,
+    onName: (String) -> Unit = {}
 ) {
     val c = Ponte.colors
     Column(Modifier.fillMaxSize().background(c.ground).statusBarsPadding().imePadding()) {
@@ -82,7 +83,7 @@ internal fun SetupScreen(
             when (state.step) {
                 0 -> StepFile(state, onPickFile)
                 1 -> StepPassphrase(state, onPassphrase, onRemember)
-                else -> StepSync(state)
+                else -> StepSync(state, onName)
             }
             Spacer(Modifier.height(8.dp))
         }
@@ -212,7 +213,7 @@ private fun StepPassphrase(state: SetupState, onPassphrase: (String) -> Unit, on
 }
 
 @Composable
-private fun StepSync(state: SetupState) {
+private fun StepSync(state: SetupState, onName: (String) -> Unit) {
     val c = Ponte.colors
     when {
         state.syncing -> Column(
@@ -236,6 +237,16 @@ private fun StepSync(state: SetupState) {
             Heading("Tudo pronto")
             if (state.status.isNotEmpty()) {
                 Text(state.status, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted, textAlign = TextAlign.Center)
+            }
+            // Optional, and saved as it is typed: "Começar" does not depend on it.
+            Column(Modifier.fillMaxWidth().padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                LabeledField(
+                    "Seu nome nas tarefas (opcional)", state.personName, onName,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Words
+                    )
+                )
+                Text(NAME_HINT, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
             }
         }
         else -> {

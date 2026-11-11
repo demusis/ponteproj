@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -36,6 +38,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/** Under "Seu nome nas tarefas", in Ajustes and in the first setup. */
+internal const val NAME_HINT =
+    "Usado pelo botão Eu e como responsável das tarefas que você cria aqui. Fica só neste aparelho."
+
+/** Said when the phone does not let the app show notifications. */
+internal const val NOTICE_BLOCKED =
+    "O Ponte de bolso não pode mostrar notificações. Para receber o aviso, permita as notificações " +
+        "do aplicativo nas configurações do telefone."
+
 /** Ajustes: the Drive file, the sync password, mobile data, e-mail accounts, starting over. */
 @Composable
 internal fun SettingsScreen(
@@ -51,7 +62,11 @@ internal fun SettingsScreen(
     onSecureScreen: (Boolean) -> Unit,
     onAddAccount: () -> Unit,
     onEditAccount: (MailAccount) -> Unit,
-    onReset: () -> Unit
+    onReset: () -> Unit,
+    onName: (String) -> Unit = {},
+    onNotice: (Boolean) -> Unit = {},
+    onNoticeTime: (String) -> Unit = {},
+    onNoticeSettings: () -> Unit = {}
 ) {
     val c = Ponte.colors
     DetailScaffold(title = "Ajustes", onBack = onBack) {
@@ -131,6 +146,42 @@ internal fun SettingsScreen(
                                 color = if (state.lastStatusError) c.error else c.text
                             )
                         }
+                    }
+                }
+            }
+
+            SectionLabel("Seu nome", Modifier.padding(top = 8.dp))
+            PonteCard {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    LabeledField(
+                        "Seu nome nas tarefas", state.personName, onName,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words)
+                    )
+                    Text(NAME_HINT, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                }
+            }
+
+            SectionLabel("Aviso de prazos", Modifier.padding(top = 8.dp))
+            PonteCard {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    SwitchRow(
+                        "Avisar dos prazos todos os dias",
+                        "Mostra só quantas tarefas e atendimentos vencem, sem os títulos. Não avisa quando nada vence.",
+                        state.noticeOn && !state.noticeBlocked, onNotice
+                    )
+                    if (state.noticeOn && !state.noticeBlocked) {
+                        ChoiceField(
+                            "Horário do aviso", DeadlineNotice.CHOICES.map { Choice(it.key, it.key) },
+                            state.noticeTime, onNoticeTime
+                        )
+                    }
+                    if (state.noticeBlocked) {
+                        Notice(NOTICE_BLOCKED, Tone.WARNING)
+                        TextButton(
+                            onClick = onNoticeSettings, modifier = Modifier.heightIn(min = 48.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                            colors = ButtonDefaults.textButtonColors(contentColor = c.accent)
+                        ) { Text("Abrir as configurações do telefone", fontSize = 15.sp) }
                     }
                 }
             }

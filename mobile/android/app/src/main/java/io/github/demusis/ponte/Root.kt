@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -66,15 +67,32 @@ internal fun AppRoot() {
                 onTab = c::selectTab,
                 onSync = { c.requestSync(null) },
                 onSettings = c::openSettings,
-                onStatus = c::showStatus
+                onStatus = c::showStatus,
+                onSearch = c::openSearch
             ) {
                 holder.SaveableStateProvider("tab:" + c.tab) {
                     when (c.tab) {
-                        0 -> TodayScreen(c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) })
-                        1 -> TasksScreen(
-                            c.tasks, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
-                            onNew = c::openNewTaskWithoutDocument
+                        0 -> TodayScreen(
+                            c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
+                            onOpenAttendance = { c.openAttendance(it.id) }
                         )
+                        // Tarefas | Atendimentos: the atendimentos have no tab of their own (four is the limit).
+                        1 -> Column(Modifier.fillMaxSize()) {
+                            SegmentedTabs(listOf("Tarefas", "Atendimentos"), c.tasksSegment, c::selectSegment)
+                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                                if (c.tasksSegment == 0) {
+                                    TasksScreen(
+                                        c.tasks, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
+                                        onNew = c::openNewTaskWithoutDocument
+                                    )
+                                } else {
+                                    AttendancesScreen(
+                                        c.attendances, query = c.attQuery, onQuery = { c.attQuery = it },
+                                        onOpen = { c.openAttendance(it.id) }
+                                    )
+                                }
+                            }
+                        }
                         2 -> DocumentsScreen(
                             docs = c.docs,
                             query = c.docQuery, onQuery = { c.docQuery = it },
@@ -96,7 +114,7 @@ internal fun AppRoot() {
         }
 
         // Above the bottom bar (or the footer of a detail); on Documentos, above the photo button too.
-        val lift = if (top == null && (c.tab == 1 || c.tab == 2)) 152.dp else 84.dp
+        val lift = if (top == null && ((c.tab == 1 && c.tasksSegment == 0) || c.tab == 2)) 152.dp else 84.dp
         SnackbarHost(
             c.snackbar,
             Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding().padding(bottom = lift)
@@ -122,7 +140,15 @@ private fun RouteScreen(route: Route) {
             routeId = route.id, state = c.taskEdit, actions = c.actions, priorities = c.priorities,
             onBack = c::back, onSave = c::saveTask, onFinish = c::finishTask,
             onOpenDocument = { c.openTaskDocument() }, onLink = c::openPicker, onUnlink = c::unlinkTask,
-            onReload = c::reloadTask
+            onReload = c::reloadTask, assignees = c.assignees, myName = c.personName
+        )
+        is Route.Attendance -> AttendanceScreen(
+            routeId = route.id, state = c.attendance, onBack = c::back,
+            onOpenDocument = c::openDocument, onOpenTask = c::openTask, onOpenFile = c::openFile
+        )
+        Route.Search -> SearchScreen(
+            state = c.search, onQuery = c::setSearchQuery, onBack = c::back,
+            onOpenDocument = c::openDocument, onOpenTask = c::openTask, onOpenAttendance = c::openAttendance
         )
         is Route.Pick -> DocumentPickerScreen(
             docs = c.docs, currentId = c.taskEdit.task?.documentId ?: 0L, busy = c.taskEdit.busy,
@@ -138,7 +164,8 @@ private fun RouteScreen(route: Route) {
             document = if (route.id > 0) docName else "",
             // A task without document has nothing to triage.
             actions = if (route.id > 0) c.actions else c.actions.filter { it.key != "triar" },
-            onBack = c::back, onCreate = c::createTask, withoutDocument = route.id <= 0
+            onBack = c::back, onCreate = c::createTask, withoutDocument = route.id <= 0,
+            assignees = c.assignees, myName = c.personName
         )
         Route.Photo -> PhotoScreen(
             state = c.photo,
@@ -152,7 +179,9 @@ private fun RouteScreen(route: Route) {
             onMobile = c::setMobileData,
             onLock = c::setLockEnabled, onLockDelay = c::setLockDelay, onSecureScreen = c::setSecureScreen,
             onAddAccount = { c.openAccount(null) }, onEditAccount = { c.openAccount(it) },
-            onReset = c::askReset
+            onReset = c::askReset,
+            onName = c::changePersonName, onNotice = c::setNoticeEnabled, onNoticeTime = c::setNoticeTime,
+            onNoticeSettings = c::openNoticeSettings
         )
         is Route.Account -> AccountFormScreen(
             state = c.accountForm, onBack = c::back, onSave = c::saveAccount, onDelete = c::askDeleteAccount
@@ -161,7 +190,7 @@ private fun RouteScreen(route: Route) {
             state = c.setup, onPickFile = c::pickFile,
             onPassphrase = c::setSetupPassphrase, onRemember = c::setSetupRemember,
             onNext = c::setupNext, onBack = c::back, onSync = c::setupSync,
-            onFinish = c::finishSetup, onSkip = c::finishSetup
+            onFinish = c::finishSetup, onSkip = c::finishSetup, onName = c::changePersonName
         )
     }
 }

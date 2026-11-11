@@ -69,7 +69,7 @@ internal fun JSONObject.toTask(): TaskItem {
     )
 }
 
-/** An atendimento with a deadline (late or due today), read-only on the phone. */
+/** An atendimento in a list (Hoje, Atendimentos, the search), read-only on the phone. */
 internal data class AttendanceItem(
     val id: Long,
     /** Reference, or the subject when there is none. */
@@ -78,14 +78,109 @@ internal data class AttendanceItem(
     val statusLabel: String,
     val dueDate: String,
     val dueChip: String,
-    val late: Boolean
+    val late: Boolean,
+    /** Responsible person; may be empty. */
+    val assignee: String = "",
+    /** Only the Atendimentos list carries it (for its search). */
+    val observation: String = "",
+    /** Not encerrado nor cancelado. */
+    val open: Boolean = true,
+    val dueToday: Boolean = false
 )
 
 internal fun JSONObject.toAttendance() = AttendanceItem(
     id = optLong("id"), reference = s("reference"), subject = s("subject"),
     statusLabel = s("status_label"), dueDate = s("due_date"),
-    dueChip = s("due_date").let { if (it.isEmpty()) "" else dueChipText(it) }, late = optBoolean("late")
+    dueChip = s("due_date").let { if (it.isEmpty()) "" else dueChipText(it) }, late = optBoolean("late"),
+    assignee = s("assignee"), observation = s("observation"), open = optBoolean("open", true),
+    // Hoje lists only atendimentos due today or before, and does not say which are today's.
+    dueToday = if (has("due_today")) optBoolean("due_today") else s("due_date") == LocalDate.now().toString()
 )
+
+/** A fact of an atendimento's ficha: the desktop's label and its text. */
+internal data class AttendanceField(val label: String, val value: String)
+
+internal data class AttendanceTask(val id: Long, val title: String, val done: Boolean, val dueLabel: String)
+
+/** One line of the atendimento's timeline, newest first. */
+internal data class AttendanceEvent(val whenText: String, val actor: String, val kind: String, val detail: String)
+
+/** Everything the atendimento's ficha shows (nothing on it can be changed on the phone). */
+internal data class AttendanceDetail(
+    val id: Long,
+    val reference: String,
+    val subject: String,
+    val statusLabel: String,
+    val open: Boolean,
+    /** dd/mm/aaaa, or empty. */
+    val dueLabel: String,
+    val late: Boolean,
+    val dueToday: Boolean,
+    val fields: List<AttendanceField>,
+    /** "Agendado", "Documento sensível". */
+    val flags: List<String>,
+    val reviewFlags: List<String>,
+    /** 0: no document linked. */
+    val documentId: Long,
+    val documentNumber: String,
+    val documentTitle: String,
+    val tasks: List<AttendanceTask>,
+    val events: List<AttendanceEvent>,
+    val attachments: List<FileItem>
+) {
+    /** "ORG-… — assunto", or whichever of the two exists. */
+    val documentLine: String
+        get() = listOf(documentNumber, documentTitle).filter { it.isNotBlank() }.joinToString(" — ")
+}
+
+internal fun JSONObject.toAttendanceDetail() = AttendanceDetail(
+    id = optLong("id"), reference = s("reference"), subject = s("subject"), statusLabel = s("status_label"),
+    open = optBoolean("open", true), dueLabel = s("due_label"), late = optBoolean("late"),
+    dueToday = optBoolean("due_today"),
+    fields = optJSONArray("fields").objs().map { AttendanceField(it.s("label"), it.s("value")) },
+    flags = optJSONArray("flags").strings(), reviewFlags = optJSONArray("review_flags").strings(),
+    documentId = optLong("document_id"), documentNumber = s("document_number"), documentTitle = s("document_title"),
+    tasks = optJSONArray("tasks").objs().map { AttendanceTask(it.optLong("id"), it.s("title"), it.optBoolean("done"), it.s("due_label")) },
+    events = optJSONArray("events").objs().map { AttendanceEvent(it.s("when"), it.s("actor"), it.s("kind"), it.s("detail")) },
+    attachments = optJSONArray("attachments").objs().map {
+        FileItem("attachment", it.optLong("id"), 0L, it.s("name").ifEmpty { "Anexo" }, it.optLong("size"), it.s("description"))
+    }
+)
+
+internal fun org.json.JSONArray?.strings(): List<String> {
+    if (this == null) return emptyList()
+    return (0 until length()).map { optString(it) }.filter { it.isNotBlank() }
+}
+
+/** A document found by the search. */
+internal data class SearchDoc(val id: Long, val number: String, val title: String, /** "Manual", "E-mail" or empty. */ val kind: String)
+
+/** At most eight rows of a group and how many more there are. */
+internal data class SearchGroup<T>(val rows: List<T>, val more: Int) {
+    companion object {
+        fun <T> none() = SearchGroup<T>(emptyList(), 0)
+    }
+}
+
+internal data class SearchResult(
+    val documents: SearchGroup<SearchDoc>,
+    val tasks: SearchGroup<TaskItem>,
+    val attendances: SearchGroup<AttendanceItem>
+) {
+    val total: Int get() = documents.rows.size + tasks.rows.size + attendances.rows.size
+}
+
+internal fun JSONObject.toSearchResult(): SearchResult {
+    fun <T> group(key: String, row: (JSONObject) -> T): SearchGroup<T> {
+        val g = optJSONObject(key) ?: return SearchGroup.none()
+        return SearchGroup(g.optJSONArray("rows").objs().map(row), g.optInt("more"))
+    }
+    return SearchResult(
+        documents = group("documents") { SearchDoc(it.optLong("id"), it.s("number"), it.s("title"), it.s("kind")) },
+        tasks = group("tasks") { it.toTask() },
+        attendances = group("attendances") { it.toAttendance() }
+    )
+}
 
 /**
  * "1 tarefa atrasada · 2 para hoje · 1 atendimento com prazo vencido ou para hoje", or
@@ -330,13 +425,43 @@ internal data class ShellState(
     val statusLine: String = "",
     val statusKind: StatusKind = StatusKind.NEUTRAL,
     /** False while the device key is broken. */
-    val syncEnabled: Boolean = true
+    val syncEnabled: Boolean = true,
+    /** The Tarefas area shows its Atendimentos list (the title says so). */
+    val attendances: Boolean = false
 )
 
 internal data class TasksState(
     val loading: Boolean = true,
     val error: String? = null,
     val tasks: List<TaskItem> = emptyList()
+)
+
+/** The Atendimentos list of the Tarefas area, ordered by the core (open first, closed last). */
+internal data class AttendancesState(
+    val loading: Boolean = true,
+    val error: String? = null,
+    val rows: List<AttendanceItem> = emptyList()
+)
+
+/** The atendimento screen: the atendimento as stored. [id] is the one the screen was opened for. */
+internal data class AttendanceViewState(
+    val id: Long = 0,
+    val loading: Boolean = true,
+    val error: String? = null,
+    val detail: AttendanceDetail? = null
+)
+
+/**
+ * The search screen. The text lives in memory only (never in the saved state, never logged) and is
+ * dropped when the screen closes or the app locks.
+ */
+internal data class SearchState(
+    val query: String = "",
+    /** A search for [query] is waiting or running. */
+    val loading: Boolean = false,
+    val error: String? = null,
+    /** The answer for [query]; null while there is none (short text, or not answered yet). */
+    val result: SearchResult? = null
 )
 
 /** What the Hoje area lists, already ordered by the core. */
@@ -448,7 +573,15 @@ internal data class SettingsState(
     /** [LockDelay.key] of the chosen time. */
     val lockDelay: String = LockDelay.DEFAULT.key,
     /** Screenshots and the preview in the recent apps are blocked. */
-    val secureScreen: Boolean = true
+    val secureScreen: Boolean = true,
+    /** What the person typed as "Seu nome nas tarefas" (saved trimmed). */
+    val personName: String = "",
+    /** The daily notice of deadlines is on. */
+    val noticeOn: Boolean = false,
+    /** [DeadlineNotice.Time.key] of the chosen time. */
+    val noticeTime: String = DeadlineNotice.DEFAULT.key,
+    /** The notice is on or was asked for, but the phone does not let the app show notifications. */
+    val noticeBlocked: Boolean = false
 )
 
 internal data class AccountFormState(
@@ -473,5 +606,7 @@ internal data class SetupState(
     val status: String = "",
     val statusError: Boolean = false,
     /** The first sync worked. */
-    val done: Boolean = false
+    val done: Boolean = false,
+    /** "Seu nome nas tarefas", asked after the first sync (optional; saved as it is typed). */
+    val personName: String = ""
 )

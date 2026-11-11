@@ -36,6 +36,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Mail
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Today
 import androidx.compose.material.icons.outlined.Tune
@@ -125,10 +126,13 @@ internal fun MainShell(
     onSync: () -> Unit,
     onSettings: () -> Unit,
     onStatus: () -> Unit,
+    onSearch: (() -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
     val c = Ponte.colors
     val titles = listOf("Hoje", "Tarefas", "Documentos", "E-mail")
+    // The Tarefas area shows its Atendimentos list under another title.
+    val heading = if (state.tab == 1 && state.attendances) "Atendimentos" else titles.getOrElse(state.tab) { "" }
     Column(Modifier.fillMaxSize().background(c.ground)) {
         Row(
             Modifier.statusBarsPadding().fillMaxWidth().padding(start = 20.dp, top = 12.dp, end = 8.dp, bottom = 6.dp),
@@ -136,7 +140,7 @@ internal fun MainShell(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    titles.getOrElse(state.tab) { "" },
+                    heading,
                     fontSize = 26.sp, lineHeight = 30.sp, fontWeight = FontWeight.SemiBold, color = c.text
                 )
                 Row(
@@ -159,6 +163,12 @@ internal fun MainShell(
                         color = if (state.statusKind == StatusKind.ERROR) c.error else c.muted,
                         maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
+                }
+            }
+            // Hoje, Tarefas and Documentos: one search over the whole library.
+            if (onSearch != null && state.tab in 0..2) {
+                IconButton(onClick = onSearch) {
+                    Icon(Icons.Outlined.Search, contentDescription = "Buscar em tudo", tint = c.secondary)
                 }
             }
             IconButton(onClick = onSync, enabled = state.syncEnabled && !state.syncing) {

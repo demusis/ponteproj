@@ -506,6 +506,8 @@ fn create_task(store: &mut Store, input: &Value) -> Result<Value> {
         task.action = action.to_owned();
     }
     task.due_date = valid_due(input["due_date"].as_str().unwrap_or(""))?;
+    // The responsible person, when the phone knows the person's name.
+    task.assignee = input["assignee"].as_str().unwrap_or("").trim().chars().take(80).collect();
     let id = store.save_task(&task)?;
     Ok(json!({ "id": id }))
 }
@@ -703,16 +705,9 @@ fn today_lists(store: &Store, today: &str) -> Result<Value> {
     let attendances = attendances
         .iter()
         .map(|a| {
-            let reference = if !a.reference_raw.is_empty() {
-                a.reference_raw.as_str()
-            } else if !a.subject.is_empty() {
-                a.subject.as_str()
-            } else {
-                "Sem referência"
-            };
             json!({
                 "id": a.id,
-                "reference": reference,
+                "reference": attendance_reference(a),
                 "subject": a.subject,
                 "status_label": ponteproj::saiop::status_label(&a.status),
                 "due_date": a.due_date,
@@ -808,6 +803,360 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createPhotoRecord<
             }
             Ok(json!({ "document_id": receipt.document_id }))
         })
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The responsible people, the atendimentos (read-only) and the search over the
+// whole library. Pure functions over the store, tested on the host.
+
+/// Lowercase without accents, for comparing text (`fold` of the desktop
+/// search, `src/app/search.rs`, which is desktop-only code: re-expressed here).
+fn fold(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            c => c,
+        })
+        .collect()
+}
+
+/// How many names `assignees` sends. The app filters them as the person types
+/// and shows at most eight of what is left, so the pool is larger than that.
+const ASSIGNEE_POOL: usize = 40;
+
+/// The names used as responsible person of the tasks and of the atendimentos,
+/// most used first. Names that differ only in capitals, accents or spaces are one
+/// person and count together; the spelling shown is the most frequent one (on a tie,
+/// the first in alphabetical order). Equal counts come in alphabetical order of the
+/// folded name. At most `limit` names.
+fn assignee_names(
+    tasks: &[ponteproj::tasks::Task],
+    attendances: &[ponteproj::saiop::SaiopAttendance],
+    limit: usize,
+) -> Vec<String> {
+    let mut seen = std::collections::HashMap::<String, (usize, std::collections::HashMap<String, usize>)>::new();
+    let names = tasks
+        .iter()
+        .map(|t| t.assignee.as_str())
+        .chain(attendances.iter().map(|a| a.assignee.as_str()));
+    for raw in names {
+        let spelled = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if spelled.is_empty() {
+            continue;
+        }
+        let entry = seen.entry(fold(&spelled)).or_default();
+        entry.0 += 1;
+        *entry.1.entry(spelled).or_default() += 1;
+    }
+    let mut ranked: Vec<(usize, String, String)> = seen
+        .into_iter()
+        .map(|(key, (total, spellings))| {
+            let best = spellings
+                .into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+                .map(|(spelling, _)| spelling)
+                .unwrap_or_default();
+            (total, key, best)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    ranked.into_iter().take(limit).map(|(_, _, name)| name).collect()
+}
+
+/// `{names:[...]}`: the suggestions for the Responsável field.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_assignees<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            let names = assignee_names(&store.list_tasks()?, &store.list_saiop_attendances()?, ASSIGNEE_POOL);
+            Ok(json!({ "names": names }))
+        })
+    })
+}
+
+/// What an atendimento is called in a list: its reference, else its subject.
+fn attendance_reference(a: &ponteproj::saiop::SaiopAttendance) -> &str {
+    if !a.reference_raw.is_empty() {
+        a.reference_raw.as_str()
+    } else if !a.subject.is_empty() {
+        a.subject.as_str()
+    } else {
+        "Sem referência"
+    }
+}
+
+/// Every atendimento for the list: the open ones first (late, then due today, then by
+/// deadline, then without one; equal deadlines keep the library's order, newest first),
+/// the closed ones after (most recently closed first).
+fn attendance_rows(store: &Store, today: &str) -> Result<Value> {
+    let (mut open, mut closed): (Vec<_>, Vec<_>) = store
+        .list_saiop_attendances()?
+        .into_iter()
+        .partition(|a| a.is_open());
+    let by_deadline = |a: &ponteproj::saiop::SaiopAttendance| (a.due_date.trim().is_empty(), a.due_date.trim().to_owned());
+    open.sort_by_key(by_deadline);
+    closed.sort_by(|a, b| b.closed_at.cmp(&a.closed_at));
+    let open_count = open.len();
+    let rows = open
+        .iter()
+        .chain(closed.iter())
+        .map(|a| {
+            let is_open = a.is_open();
+            let due = a.due_date.trim();
+            json!({
+                "id": a.id,
+                "reference": attendance_reference(a),
+                "subject": a.subject,
+                "status": a.status,
+                "status_label": ponteproj::saiop::status_label(&a.status),
+                "open": is_open,
+                "due_date": due,
+                "due_label": ponteproj::labels::date(due),
+                "late": is_open && !due.is_empty() && due < today,
+                "due_today": is_open && due == today,
+                "assignee": a.assignee,
+                "observation": a.observation,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "attendances": rows, "open": open_count }))
+}
+
+/// All the atendimentos, ordered for the list (see [`attendance_rows`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listAttendances<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            attendance_rows(store, &today)
+        })
+    })
+}
+
+/// A label and its text, for the ficha.
+fn field(label: &str, value: &str) -> Option<Value> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| json!({"label": label, "value": value}))
+}
+
+/// A yes/no/not-informed answer is shown only when somebody informed it.
+fn tri_state_field(label: &str, value: &str) -> Option<Value> {
+    (value != "nao_informado").then(|| field(label, ponteproj::saiop::tri_state_label(value))).flatten()
+}
+
+/// The ficha of an atendimento, read-only, with the labels the desktop ficha uses
+/// (`src/saiop.rs`, `ficha_form`): what is stored and not empty, in the desktop's order.
+fn get_attendance(store: &Store, id: i64, today: &str) -> Result<Value> {
+    use ponteproj::attachments::Owner;
+    use ponteproj::saiop as s;
+    let a = store
+        .list_saiop_attendances()?
+        .into_iter()
+        .find(|a| a.id == id)
+        .context("Atendimento não encontrado. Ele pode ter sido excluído em outro aparelho.")?;
+    let is_open = a.is_open();
+    let due = a.due_date.trim();
+    let documents = store.list_documents("")?;
+    let linked = a.document_id.and_then(|d| documents.iter().find(|x| x.id == d));
+    let tasks = store.list_tasks()?;
+    let linked_tasks = a
+        .task_ids
+        .iter()
+        .filter_map(|t| tasks.iter().find(|x| x.id == *t))
+        .map(|t| {
+            json!({
+                "id": t.id,
+                "title": t.title,
+                "done": t.completed_at.is_some() || t.status == "concluida",
+                "due_label": ponteproj::labels::date(&t.due_date),
+            })
+        })
+        .collect::<Vec<_>>();
+    let attachments = store
+        .list_attachments(Owner::Attendance(id))?
+        .into_iter()
+        .map(|m| json!({"id": m.id, "name": m.name, "kind": m.kind, "size": m.size, "description": m.description}))
+        .collect::<Vec<_>>();
+    // Newest first, as the desktop timeline shows them.
+    let events = a
+        .events
+        .iter()
+        .rev()
+        .map(|e| {
+            json!({
+                "when": ponteproj::labels::datetime(&e.when),
+                "actor": e.actor,
+                "kind": ponteproj::labels::saiop_event_kind(&e.kind),
+                "detail": e.detail,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut flags = Vec::new();
+    if a.scheduled {
+        flags.push("Agendado");
+    }
+    if a.sensitive {
+        flags.push("Documento sensível");
+    }
+    let fields = [
+        field("Situação", s::status_label(&a.status)),
+        field("Prioridade", s::priority_label(&a.priority)),
+        field("Motivo da prioridade", &a.priority_reason),
+        field("Prazo", &ponteproj::labels::date(due)),
+        field("Tipo de prazo", s::due_kind_label(&a.due_kind)).filter(|_| !due.is_empty()),
+        field("Responsável", &a.assignee),
+        field("Entrada", &ponteproj::labels::date(&a.entry_date)),
+        field("Recebido de", &a.received_from),
+        field("Observações", &a.observation),
+        tri_state_field("Retorno para UAS?", &a.uas_return),
+        tri_state_field("Assinado?", &a.signed_status),
+        field("Apensado / juntado", &a.attachment_relation),
+        field("Entrega prevista", &a.planned_doc_type),
+        field("Resultado da etapa", s::outcome_label(&a.outcome)).filter(|_| !a.outcome.is_empty()),
+        field("Data de saída", &ponteproj::labels::date(&a.exit_date)),
+        field("Enviado para", &a.sent_to),
+        field("Verificação na planilha", &a.verification_raw),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    Ok(json!({
+        "id": a.id,
+        "reference": attendance_reference(&a),
+        "subject": a.subject,
+        "status_label": s::status_label(&a.status),
+        "open": is_open,
+        "due_label": ponteproj::labels::date(due),
+        "late": is_open && !due.is_empty() && due < today,
+        "due_today": is_open && due == today,
+        "fields": fields,
+        "flags": flags,
+        "review_flags": a.review_flags,
+        "document_id": linked.map(|d| d.id).unwrap_or(0),
+        "document_number": linked.map(|d| d.document_number.clone()).unwrap_or_default(),
+        "document_title": linked.map(|d| d.title.clone()).unwrap_or_default(),
+        "tasks": linked_tasks,
+        "events": events,
+        "attachments": attachments,
+    }))
+}
+
+/// One atendimento, to read (nothing here writes).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_getAttendance<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    attendance_id: jlong,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            get_attendance(store, attendance_id, &today)
+        })
+    })
+}
+
+/// Rows per group of the search; the rest is counted in `more`.
+const SEARCH_GROUP: usize = 8;
+/// Fewer characters than this do not search (as on the computer).
+const SEARCH_MIN_CHARS: usize = 2;
+/// A longer text is cut: nobody looks for more than this.
+const SEARCH_MAX_CHARS: usize = 200;
+
+/// Every word of the (already folded) `needle` appears in some of the fields.
+fn fields_match(needle: &str, fields: &[&str]) -> bool {
+    let haystack = fold(&fields.join("\n"));
+    needle.split_whitespace().all(|word| haystack.contains(word))
+}
+
+/// At most `SEARCH_GROUP` rows and how many were left out.
+fn group(rows: Vec<Value>) -> Value {
+    let more = rows.len().saturating_sub(SEARCH_GROUP);
+    json!({ "rows": rows.into_iter().take(SEARCH_GROUP).collect::<Vec<_>>(), "more": more })
+}
+
+/// The search over the whole library, with the rules of the desktop's (`src/app/search.rs`,
+/// desktop-only, so re-expressed here): documents by the core's own search (number,
+/// subject, text, notes, PDFs); tasks by title, notes and responsible and atendimentos by
+/// reference, subject, observation and responsible, both without caring for capitals or
+/// accents and with every word present; open tasks before concluded ones. The text is
+/// used for this search only: it is not logged and nothing keeps it.
+fn search_all(store: &Store, query: &str, today: &str) -> Result<Value> {
+    let text: String = query.trim().chars().take(SEARCH_MAX_CHARS).collect();
+    anyhow::ensure!(
+        text.chars().count() >= SEARCH_MIN_CHARS,
+        "Digite ao menos 2 letras para buscar."
+    );
+    let needle = fold(&text);
+    let documents = store
+        .list_documents(&text)?
+        .into_iter()
+        .map(|d| {
+            json!({
+                "id": d.id,
+                "number": d.document_number,
+                "title": d.title,
+                "kind": if d.email { "E-mail" } else if d.manual { "Manual" } else { "" },
+            })
+        })
+        .collect::<Vec<_>>();
+    let numbers = document_numbers(store)?;
+    let (done, open): (Vec<_>, Vec<_>) = store
+        .list_tasks()?
+        .into_iter()
+        .filter(|t| fields_match(&needle, &[&t.title, &t.notes, &t.assignee]))
+        .partition(|t| t.completed_at.is_some() || t.status == "concluida");
+    let tasks = open
+        .iter()
+        .chain(done.iter())
+        .map(|t| task_json_on(t, &numbers, today))
+        .collect::<Vec<_>>();
+    let attendances = store
+        .list_saiop_attendances()?
+        .into_iter()
+        .filter(|a| fields_match(&needle, &[&a.reference_raw, &a.subject, &a.observation, &a.assignee]))
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "reference": attendance_reference(&a),
+                "subject": a.subject,
+                "status_label": ponteproj::saiop::status_label(&a.status),
+                "open": a.is_open(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "documents": group(documents),
+        "tasks": group(tasks),
+        "attendances": group(attendances),
+    }))
+}
+
+/// The search over documents, tasks and atendimentos (see [`search_all`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_search<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    query: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let query = text(env, &query)?;
+        let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        with_store(|store| search_all(store, &query, &today))
     })
 }
 
@@ -1350,6 +1699,10 @@ mod tests {
         let task = find_task(&store, linked["id"].as_i64().unwrap()).unwrap();
         assert_eq!(task.document_id, Some(doc));
         assert_eq!(task.due_date, "2026-11-12");
+        // The responsible person is kept (trimmed), or left empty.
+        let named = create_task(&mut store, &json!({"title": "com nome", "assignee": "  Servidor A "})).unwrap();
+        assert_eq!(find_task(&store, named["id"].as_i64().unwrap()).unwrap().assignee, "Servidor A");
+        assert_eq!(task.assignee, "");
         assert!(create_task(&mut store, &json!({"title": ""})).is_err());
         assert!(create_task(&mut store, &json!({"title": "x", "due_date": "31/12"})).is_err());
     }
@@ -1503,5 +1856,306 @@ mod tests {
         assert!(sync_paths(&mut phone, &w, "", KEY).is_err());
         assert_eq!(std::fs::read(&work).unwrap().len(), before.len() - 7);
         assert!(leftovers(&dir.0).is_empty());
+    }
+
+    // -- responsible people, atendimentos, search ----------------------------
+
+    fn add_attendance(
+        store: &mut Store,
+        reference: &str,
+        subject: &str,
+        status: &str,
+        due: &str,
+        assignee: &str,
+    ) -> i64 {
+        let mut a = ponteproj::saiop::SaiopAttendance::new_manual();
+        a.reference_raw = reference.into();
+        a.subject = subject.into();
+        a.status = status.into();
+        a.due_date = due.into();
+        a.assignee = assignee.into();
+        store.save_saiop_attendance(&a, None).unwrap()
+    }
+
+    fn task_of(store: &mut Store, title: &str, notes: &str, assignee: &str) -> i64 {
+        let mut task = ponteproj::tasks::Task::blank(None);
+        task.title = title.into();
+        task.notes = notes.into();
+        task.assignee = assignee.into();
+        store.save_task(&task).unwrap()
+    }
+
+    fn names_of(store: &Store, limit: usize) -> Vec<String> {
+        assignee_names(&store.list_tasks().unwrap(), &store.list_saiop_attendances().unwrap(), limit)
+    }
+
+    #[test]
+    fn assignees_count_fold_and_order_by_use() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        // "José" four times in tasks and atendimentos (two spellings), "Ana" three
+        // times, "Carla" once, a blank one and an empty one that count for nothing.
+        task_of(&mut store, "a", "", "José Silva");
+        task_of(&mut store, "b", "", "jose silva");
+        task_of(&mut store, "b2", "", "José Silva");
+        add_attendance(&mut store, "ORG-1", "x", "em_analise", "", "  José   Silva ");
+        task_of(&mut store, "c", "", "Ana");
+        task_of(&mut store, "c2", "", "Ana");
+        add_attendance(&mut store, "ORG-2", "y", "encerrado", "", "ANA");
+        task_of(&mut store, "d", "", "Carla");
+        task_of(&mut store, "e", "", "   ");
+        task_of(&mut store, "f", "", "");
+        let names = names_of(&store, 10);
+        // Most used first; the spelling kept is the most frequent one ("José Silva" twice).
+        // (Importing the document made a triage task for this phone's own name.)
+        assert_eq!(names, ["José Silva", "Ana", "Carla", "Celular de teste"]);
+    }
+
+    #[test]
+    fn assignees_tie_goes_alphabetically_and_is_cut() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        for name in ["Zélia", "Beto", "Álvaro", "Dora"] {
+            task_of(&mut store, "t", "", name);
+        }
+        // One name with the same weight in two spellings: the alphabetical one wins.
+        task_of(&mut store, "t", "", "Ênio");
+        task_of(&mut store, "t", "", "Enio");
+        task_of(&mut store, "t", "", "Enio");
+        task_of(&mut store, "t", "", "Ênio");
+        let names = names_of(&store, 3);
+        assert_eq!(names, ["Enio", "Álvaro", "Beto"], "equal counts: folded alphabetical order");
+        assert_eq!(names_of(&store, 0).len(), 0);
+        // The five above and the phone's own name (from the triage task of the import).
+        assert_eq!(names_of(&store, 99).len(), 6);
+    }
+
+    #[test]
+    fn assignees_of_a_library_without_people_are_none() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        let store = open(&dir.0, "vazio.sqlite3", "Celular de teste");
+        assert!(names_of(&store, 8).is_empty());
+        assert!(assignee_names(&[], &[], 8).is_empty());
+    }
+
+    #[test]
+    fn attendance_list_orders_open_ones_by_urgency_and_closes_the_rest() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        add_attendance(&mut store, "SEM-PRAZO", "s", "em_analise", "", "");
+        add_attendance(&mut store, "FUTURO-20", "s", "em_analise", "2026-11-20", "");
+        add_attendance(&mut store, "HOJE", "s", "aguardando_resposta", "2026-11-10", "");
+        add_attendance(&mut store, "ATRASADO-05", "s", "em_analise", "2026-11-05", "");
+        add_attendance(&mut store, "FUTURO-12", "s", "a_distribuir", "2026-11-12", "");
+        add_attendance(&mut store, "ATRASADO-01", "s", "em_analise", "2026-11-01", "");
+        add_attendance(&mut store, "ENCERRADO", "s", "encerrado", "2026-11-01", "");
+        add_attendance(&mut store, "CANCELADO", "s", "cancelado", "", "");
+        let list = attendance_rows(&store, "2026-11-10").unwrap();
+        let rows = list["attendances"].as_array().unwrap();
+        let refs: Vec<&str> = rows.iter().map(|r| r["reference"].as_str().unwrap()).collect();
+        assert_eq!(
+            &refs[..6],
+            ["ATRASADO-01", "ATRASADO-05", "HOJE", "FUTURO-12", "FUTURO-20", "SEM-PRAZO"]
+        );
+        assert!(refs[6..].contains(&"ENCERRADO") && refs[6..].contains(&"CANCELADO"));
+        // The six above and the one the import of the document made (no deadline).
+        assert_eq!(list["open"], json!(7));
+        assert_eq!(rows[0]["late"], json!(true));
+        assert_eq!(rows[2]["due_today"], json!(true));
+        assert_eq!(rows[3]["late"], json!(false));
+        assert_eq!(rows[0]["due_label"], json!("01/11/2026"));
+        assert_eq!(rows[0]["status_label"], json!("Em análise"));
+        // A closed one is never late or due today, even with a past deadline.
+        let closed = rows.iter().find(|r| r["reference"] == json!("ENCERRADO")).unwrap();
+        assert_eq!((closed["open"].clone(), closed["late"].clone()), (json!(false), json!(false)));
+    }
+
+    #[test]
+    fn attendance_ficha_shows_what_is_stored_with_the_desktop_labels() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let number = store.list_documents("").unwrap()[0].document_number.clone();
+        let mut a = ponteproj::saiop::SaiopAttendance::new_manual();
+        a.reference_raw = "ORG-OFI-2026/00431".into();
+        a.subject = "Pedido de apoio".into();
+        a.status = "aguardando_resposta".into();
+        a.priority = "alta".into();
+        a.priority_reason = "Prazo curto".into();
+        a.due_date = "2026-11-09".into();
+        a.due_kind = "meta_interna".into();
+        a.assignee = "Servidor A".into();
+        a.received_from = "Servidor B".into();
+        a.observation = "Cobrar o retorno.".into();
+        a.uas_return = "sim".into();
+        a.sensitive = true;
+        a.events = vec![
+            ponteproj::saiop::SaiopEvent {
+                when: "2026-11-01T12:00:00Z".into(),
+                actor: "Servidor A".into(),
+                kind: "entrada".into(),
+                detail: "Chegou".into(),
+            },
+            ponteproj::saiop::SaiopEvent {
+                when: "2026-11-02T12:00:00Z".into(),
+                actor: "Servidor A".into(),
+                kind: "anotacao".into(),
+                detail: "Ligou".into(),
+            },
+        ];
+        let id = store.save_saiop_attendance(&a, None).unwrap();
+        // Linking to a document, a task and an attachment.
+        let mut saved = store.list_saiop_attendances().unwrap().into_iter().find(|x| x.id == id).unwrap();
+        saved.document_id = Some(doc);
+        store.save_saiop_attendance(&saved, None).unwrap();
+        store
+            .add_attachment(ponteproj::attachments::Owner::Attendance(id), "oficio.txt", "Cópia", b"texto do anexo")
+            .unwrap();
+
+        let ficha = get_attendance(&store, id, "2026-11-10").unwrap();
+        assert_eq!(ficha["reference"], json!("ORG-OFI-2026/00431"));
+        assert_eq!(ficha["status_label"], json!("Aguardando resposta"));
+        assert_eq!(ficha["late"], json!(true));
+        let fields: Vec<(String, String)> = ficha["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| (f["label"].as_str().unwrap().to_owned(), f["value"].as_str().unwrap().to_owned()))
+            .collect();
+        let get = |label: &str| fields.iter().find(|(l, _)| l == label).map(|(_, v)| v.as_str());
+        assert_eq!(get("Prioridade"), Some("Alta"));
+        assert_eq!(get("Motivo da prioridade"), Some("Prazo curto"));
+        assert_eq!(get("Prazo"), Some("09/11/2026"));
+        assert_eq!(get("Tipo de prazo"), Some("Meta interna"));
+        assert_eq!(get("Responsável"), Some("Servidor A"));
+        assert_eq!(get("Recebido de"), Some("Servidor B"));
+        assert_eq!(get("Observações"), Some("Cobrar o retorno."));
+        assert_eq!(get("Retorno para UAS?"), Some("Sim"));
+        // Not informed or empty: not listed.
+        assert_eq!(get("Assinado?"), None);
+        assert_eq!(get("Enviado para"), None);
+        assert_eq!(get("Resultado da etapa"), None);
+        assert_eq!(ficha["flags"], json!(["Documento sensível"]));
+        assert_eq!(ficha["document_id"], json!(doc));
+        assert_eq!(ficha["document_number"], json!(number));
+        // Newest event first, with the desktop's wording for its kind.
+        // (The core adds events of its own when saving; ours are among them.)
+        let events = ficha["events"].as_array().unwrap();
+        let at = |detail: &str| events.iter().position(|e| e["detail"] == json!(detail)).unwrap();
+        assert!(at("Ligou") < at("Chegou"), "the note of the 2nd is above the entry of the 1st");
+        assert_eq!(events[at("Ligou")]["kind"], json!("Anotação"));
+        assert_eq!(events[at("Chegou")]["kind"], json!("Entrada"));
+        assert_eq!(ficha["attachments"][0]["name"], json!("oficio.txt"));
+        // The attachment opens through the same export the documents use.
+        let (meta, bytes) = store.attachment_bytes(ficha["attachments"][0]["id"].as_i64().unwrap()).unwrap();
+        assert_eq!((meta.name.as_str(), bytes.as_slice()), ("oficio.txt", &b"texto do anexo"[..]));
+
+        let error = get_attendance(&store, 99_999, "2026-11-10").unwrap_err().to_string();
+        assert!(error.starts_with("Atendimento não encontrado"), "{error}");
+    }
+
+    fn manual(store: &mut Store, title: &str, text: &str) -> i64 {
+        let fields = ponteproj::manual::ManualFields {
+            kind: "papel".into(),
+            title: title.into(),
+            origin: String::new(),
+            document_date: String::new(),
+            text: text.into(),
+        };
+        store.create_manual_document(&fields).unwrap().document_id
+    }
+
+    fn rows_of(group: &Value, key: &str) -> Vec<String> {
+        group["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r[key].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn search_finds_documents_tasks_and_atendimentos_without_caring_for_accents_or_capitals() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        manual(&mut store, "Relatório de gestão", "texto do relatório");
+        task_of(&mut store, "Revisar GESTÃO de pessoal", "", "");
+        task_of(&mut store, "Outra coisa", "Falar sobre a gestão do contrato", "");
+        task_of(&mut store, "Ligar", "", "Gestão Central");
+        task_of(&mut store, "Sem relação", "nada", "Fulano");
+        add_attendance(&mut store, "ORG-OFI-2026/00431", "Apoio de gestão", "em_analise", "", "");
+        add_attendance(&mut store, "ORG-OFI-2026/00500", "Outro", "encerrado", "", "Gestão");
+        add_attendance(&mut store, "ORG-OFI-2026/00501", "Sem relação", "em_analise", "", "");
+
+        let found = search_all(&store, "gestao", "2026-11-10").unwrap();
+        assert_eq!(rows_of(&found["documents"], "title"), ["Relatório de gestão"]);
+        let tasks = rows_of(&found["tasks"], "title");
+        assert_eq!(tasks.len(), 3, "title, notes and responsible: {tasks:?}");
+        assert!(!tasks.contains(&"Sem relação".to_owned()));
+        assert_eq!(found["tasks"]["more"], json!(0));
+        // Atendimentos by subject and by responsible; the closed one too.
+        assert_eq!(found["attendances"]["rows"].as_array().unwrap().len(), 2);
+        assert_eq!(found["documents"]["rows"][0]["kind"], json!("Manual"));
+
+        // Capitals and accents in the query do not matter either.
+        let loud = search_all(&store, "  GESTÃO  ", "2026-11-10").unwrap();
+        assert_eq!(loud, found);
+        // Every word must be present.
+        let two = search_all(&store, "gestao contrato", "2026-11-10").unwrap();
+        assert_eq!(rows_of(&two["tasks"], "title"), ["Outra coisa"]);
+        assert!(two["attendances"]["rows"].as_array().unwrap().is_empty());
+        // A reference is found by a part of it.
+        let by_ref = search_all(&store, "00431", "2026-11-10").unwrap();
+        assert_eq!(rows_of(&by_ref["attendances"], "reference"), ["ORG-OFI-2026/00431"]);
+        // Nothing found: three empty groups.
+        let none = search_all(&store, "zzzzqq", "2026-11-10").unwrap();
+        for key in ["documents", "tasks", "attendances"] {
+            assert_eq!(none[key], json!({"rows": [], "more": 0}));
+        }
+    }
+
+    #[test]
+    fn search_cuts_each_group_at_eight_and_counts_the_rest_and_puts_open_tasks_first() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let done = task_of(&mut store, "tarefa concluída 0", "", "");
+        store.complete_task(done).unwrap();
+        for i in 1..=10 {
+            task_of(&mut store, &format!("tarefa aberta {i}"), "", "");
+            add_attendance(&mut store, &format!("ORG-{i:03}"), "cota", "em_analise", "", "");
+            manual(&mut store, &format!("cota {i}"), "texto");
+        }
+        let found = search_all(&store, "tarefa", "2026-11-10").unwrap();
+        let tasks = rows_of(&found["tasks"], "title");
+        assert_eq!(tasks.len(), 8);
+        assert_eq!(found["tasks"]["more"], json!(3), "11 found, 8 shown");
+        assert!(!tasks.contains(&"tarefa concluída 0".to_owned()), "concluded ones come last");
+        let found = search_all(&store, "cota", "2026-11-10").unwrap();
+        assert_eq!(found["attendances"]["rows"].as_array().unwrap().len(), 8);
+        assert_eq!(found["attendances"]["more"], json!(2));
+        assert_eq!(found["documents"]["rows"].as_array().unwrap().len(), 8);
+        assert_eq!(found["documents"]["more"], json!(2));
+    }
+
+    #[test]
+    fn search_refuses_a_short_query_and_cuts_a_huge_one() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        task_of(&mut store, "um", "", "");
+        for q in ["", " ", "a", "  a  "] {
+            let error = search_all(&store, q, "2026-11-10").unwrap_err().to_string();
+            assert_eq!(error, "Digite ao menos 2 letras para buscar.", "{q:?}");
+        }
+        assert!(search_all(&store, "um", "2026-11-10").is_ok());
+        // Longer than the core accepts: cut, not an error.
+        assert!(search_all(&store, &"x".repeat(20_000), "2026-11-10").is_ok());
     }
 }

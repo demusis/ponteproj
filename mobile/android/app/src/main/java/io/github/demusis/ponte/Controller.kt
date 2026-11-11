@@ -59,6 +59,12 @@ internal sealed class Route {
     /** The list to pick the document of task [taskId] from. */
     data class Pick(val taskId: Long) : Route() { override val key get() = "pick:$taskId" }
 
+    /** The ficha of an atendimento (read-only). */
+    data class Attendance(val id: Long) : Route() { override val key get() = "att:$id" }
+
+    /** The search over documents, tasks and atendimentos. */
+    object Search : Route() { override val key get() = "search" }
+
     object Photo : Route() { override val key get() = "photo" }
     object Settings : Route() { override val key get() = "settings" }
 
@@ -77,6 +83,8 @@ internal sealed class Route {
                 "task" -> arg.toLongOrNull()?.let { NewTask(it) }
                 "edit" -> arg.toLongOrNull()?.let { EditTask(it) }
                 "pick" -> arg.toLongOrNull()?.let { Pick(it) }
+                "att" -> arg.toLongOrNull()?.let { Attendance(it) }
+                "search" -> Search
                 "photo" -> Photo
                 "settings" -> Settings
                 "account" -> Account(arg)
@@ -115,6 +123,7 @@ internal object Controller {
     private const val K_LOCK = "lock_on"
     private const val K_LOCK_AFTER = "lock_after"
     private const val K_SECURE = "secure_screen"
+    private const val K_NAME = "person_name"
 
     private lateinit var app: Context
     private val prefs get() = app.getSharedPreferences("ponte", Context.MODE_PRIVATE)
@@ -142,6 +151,27 @@ internal object Controller {
     var docQuery by mutableStateOf("")
     var docFilter by mutableStateOf(DocFilter.ALL)
     var tasks by mutableStateOf(TasksState())
+        private set
+
+    /** 0 Tarefas, 1 Atendimentos: what the Tarefas area shows. */
+    var tasksSegment by mutableStateOf(0)
+        private set
+    var attendances by mutableStateOf(AttendancesState())
+        private set
+
+    /** What is typed in the search box of the Atendimentos list (memory only). */
+    var attQuery by mutableStateOf("")
+    var attendance by mutableStateOf(AttendanceViewState())
+        private set
+    var search by mutableStateOf(SearchState())
+        private set
+
+    /** The names used as responsible person, most used first (the suggestions under the field). */
+    var assignees by mutableStateOf<List<String>>(emptyList())
+        private set
+
+    /** "Seu nome nas tarefas", as saved (trimmed); empty when the person did not say. */
+    var personName by mutableStateOf("")
         private set
     var today by mutableStateOf(TodayState())
         private set
@@ -177,6 +207,9 @@ internal object Controller {
     /** Called by every new Activity, before it shows anything. */
     fun attach(a: MainActivity, saved: Bundle?) {
         app = a.applicationContext
+        personName = Assignees.cleanName(prefs.getString(K_NAME, "") ?: "")
+        // The deadline notice's alarm is set again whenever the app opens (cheap, and it heals a lost one).
+        NoticeScheduler.arm(app)
         fileUri = prefs.getString("uri", null)?.let { Uri.parse(it) }
         lastSync = prefs.getLong("last_sync", 0L)
         val fresh = saved == null
@@ -217,6 +250,7 @@ internal object Controller {
         out.putStringArrayList("stack", ArrayList(stack.map { it.key }))
         out.putString("query", docQuery)
         out.putString("filter", docFilter.name)
+        out.putInt("segment", tasksSegment)
         if (Route.Photo in stack) {
             out.putBundle("photo", Bundle().apply {
                 putString("photo", photoPath)
@@ -233,6 +267,7 @@ internal object Controller {
     /** After the process died: navigation and the photo form come back. */
     private fun restore(s: Bundle) {
         tab = s.getInt("tab", 0).coerceIn(0, 3)
+        tasksSegment = s.getInt("segment", 0).coerceIn(0, 1)
         docQuery = s.getString("query") ?: ""
         docFilter = try { DocFilter.valueOf(s.getString("filter") ?: "") } catch (_: Throwable) { DocFilter.ALL }
         stack.clear()
@@ -256,6 +291,14 @@ internal object Controller {
                 is Route.NewTask -> if (r.id > 0) documentId = r.id
                 is Route.EditTask -> loadTask(r.id)
                 is Route.Pick -> {}
+                // One atendimento screen at most (see openAttendance): the top-most one comes back.
+                is Route.Attendance -> if (r == stack.lastOrNull { it is Route.Attendance }) {
+                    attGen++
+                    attendance = AttendanceViewState(id = r.id)
+                    loadAttendance(r.id)
+                } else stack.remove(r)
+                // The text of a search is never saved: it comes back empty.
+                Route.Search -> {}
                 is Route.Account -> loadAccounts { list ->
                     val found = list.firstOrNull { it.uid == r.uid }
                     // An account that no longer exists must not come back as a new one.
@@ -318,7 +361,8 @@ internal object Controller {
     }
 
     private fun newSetup() = SetupState(
-        canRemember = Secrets.supported() && deviceSecure(), oldAndroid = !Secrets.supported()
+        canRemember = Secrets.supported() && deviceSecure(), oldAndroid = !Secrets.supported(),
+        personName = personName
     )
 
     // ---------------------------------------------------------------- app lock
@@ -449,6 +493,8 @@ internal object Controller {
         locked = true
         lockEpoch++
         autoPrompted = false
+        // What was searched and found is not kept behind the lock, and a search still running is dropped.
+        clearSearch()
         snackbar.currentSnackbarData?.dismiss()
         if (clean) cleanHandedFiles()
     }
@@ -585,7 +631,8 @@ internal object Controller {
                 syncing = busy,
                 statusLine = line,
                 statusKind = kind,
-                syncEnabled = !SyncRunner.keyBroken
+                syncEnabled = !SyncRunner.keyBroken,
+                attendances = tasksSegment == 1
             )
             if (stack.lastOrNull() == Route.Setup && setup.step == 2) {
                 setup = setup.copy(
@@ -627,6 +674,7 @@ internal object Controller {
         refreshTasks()
         reloadDocument()
         refreshOpenTask()
+        refreshOpenAttendance()
         if (SyncRunner.statusError && stack.lastOrNull() != Route.Setup) {
             say(text.lineSequence().firstOrNull() ?: text, long = true)
         }
@@ -676,6 +724,25 @@ internal object Controller {
         }
     }
 
+    /** Tarefas | Atendimentos, at the top of the Tarefas area. */
+    fun selectSegment(i: Int) {
+        tasksSegment = i.coerceIn(0, 1)
+        shell = shell.copy(attendances = tasksSegment == 1)
+        refreshAttendances()
+    }
+
+    /** The notice was tapped with the app open: back to Hoje, unless something is half done. */
+    fun showToday() {
+        // A photo being made, a task or a note being typed stay as they are: the person is in the
+        // middle of something. (While locked nothing is shown anyway; this only moves the state.)
+        val busy = stack.any { it is Route.Photo || it is Route.EditTask || it is Route.Note || it is Route.NewTask || it is Route.Setup }
+        if (busy) return
+        stack.clear()
+        tab = 0
+        shell = shell.copy(tab = 0)
+        refreshTasks()
+    }
+
     /** False when Back should leave the app. */
     fun canGoBack(): Boolean {
         val top = stack.lastOrNull() ?: return tab != 0
@@ -689,6 +756,7 @@ internal object Controller {
             Route.Setup -> setupBack()
             is Route.Account -> if (!accountForm.busy) pop()
             is Route.EditTask, is Route.Pick -> if (!taskEdit.busy) pop()
+            Route.Search -> closeSearch()
             else -> {
                 pop()
                 if (top is Route.Document) documentId = -1L
@@ -830,6 +898,113 @@ internal object Controller {
         }, { tasks = TasksState(loading = false, error = it, tasks = tasks.tasks) },
             fail = "Não foi possível ler as tarefas. Toque em Sincronizar agora e tente de novo.")
         refreshToday()
+        refreshAttendances()
+        refreshAssignees()
+    }
+
+    /** The suggestions of the Responsável field. A failure only means no suggestions. */
+    private fun refreshAssignees() {
+        SyncRunner.background({ Api.assignees() }, { assignees = it })
+    }
+
+    // ---------------------------------------------------------------- atendimentos (read-only)
+
+    /** Grows whenever the atendimento screen is opened: an answer asked for an earlier one is dropped. */
+    private var attGen = 0
+
+    /** Reads the Atendimentos list (it is also what the search of this list filters). */
+    private fun refreshAttendances() {
+        SyncRunner.background({ Api.attendances() }, { rows ->
+            attendances = AttendancesState(loading = false, error = null, rows = rows)
+        }, { attendances = attendances.copy(loading = false, error = it) },
+            fail = "Não foi possível ler os atendimentos. Toque em Sincronizar agora e tente de novo.")
+    }
+
+    /**
+     * Opens the ficha of an atendimento. There is one at most on the stack (opening another replaces
+     * it), so Back never shows a ficha that belongs to another atendimento.
+     */
+    fun openAttendance(id: Long) {
+        if (id <= 0) return
+        val r = Route.Attendance(id)
+        if (stack.lastOrNull() == r) return
+        stack.removeAll { it is Route.Attendance }
+        attGen++
+        attendance = AttendanceViewState(id = id)
+        stack.add(r)
+        loadAttendance(id)
+    }
+
+    private fun attendanceOnScreen(id: Long, gen: Int) =
+        gen == attGen && attendance.id == id && stack.any { it is Route.Attendance && it.id == id }
+
+    private fun loadAttendance(id: Long) {
+        val gen = attGen
+        SyncRunner.background({ Api.attendance(id) }, { d ->
+            if (attendanceOnScreen(id, gen)) attendance = AttendanceViewState(id = id, loading = false, detail = d)
+        }, {
+            if (attendanceOnScreen(id, gen)) {
+                attendance = AttendanceViewState(id = id, loading = false, error = it, detail = attendance.detail)
+            }
+        }, fail = "Não foi possível abrir o atendimento. Volte e tente de novo.")
+    }
+
+    /** A sync ended while the ficha is open: it may have brought a newer version. */
+    private fun refreshOpenAttendance() {
+        val id = (stack.lastOrNull() as? Route.Attendance)?.id ?: return
+        if (attendance.id == id) loadAttendance(id)
+    }
+
+    // ---------------------------------------------------------------- search
+
+    private var searchGen = 0
+    private val searchRunner = Runnable { runSearch() }
+
+    fun openSearch() {
+        if (Route.Search in stack) return
+        search = SearchState()
+        stack.add(Route.Search)
+    }
+
+    /** Typing in the search box: a search starts 300 ms after the last keystroke, at two characters or more. */
+    fun setSearchQuery(q: String) {
+        val text = q.take(200)
+        main.removeCallbacks(searchRunner)
+        searchGen++
+        if (!SearchRules.usable(text)) {
+            search = SearchState(query = text)
+            return
+        }
+        search = search.copy(query = text, loading = true, error = null)
+        main.postDelayed(searchRunner, SearchRules.DEBOUNCE_MS)
+    }
+
+    private fun runSearch() {
+        if (locked || Route.Search !in stack) return
+        val text = search.query.trim()
+        if (!SearchRules.usable(text)) return
+        val gen = ++searchGen
+        SyncRunner.background({ Api.search(text) }, { found ->
+            if (SearchRules.accept(gen, searchGen, locked, Route.Search in stack)) {
+                search = search.copy(loading = false, error = null, result = found)
+            }
+        }, { message ->
+            if (SearchRules.accept(gen, searchGen, locked, Route.Search in stack)) {
+                search = search.copy(loading = false, error = message, result = null)
+            }
+        }, fail = "Não foi possível buscar. Tente de novo.")
+    }
+
+    /** Forgets the text, the answer and any search on its way. */
+    private fun clearSearch() {
+        main.removeCallbacks(searchRunner)
+        searchGen++
+        search = SearchState()
+    }
+
+    private fun closeSearch() {
+        clearSearch()
+        stack.remove(Route.Search)
     }
 
     /** Reads what Hoje lists; what the person just concluded stays out even before it is saved. */
@@ -1073,12 +1248,12 @@ internal object Controller {
         }, fail = "Não foi possível trocar o documento da tarefa. Tente de novo.")
     }
 
-    fun createTask(title: String, action: String, due: String) {
+    fun createTask(title: String, action: String, due: String, assignee: String = "") {
         val id = (stack.lastOrNull() as? Route.NewTask)?.id ?: return
         if (title.isBlank()) return
         pop()
         SyncRunner.background({
-            Api.createTask(id, title.trim(), action, due)
+            Api.createTask(id, title.trim(), action, due, assignee.trim())
             SyncRunner.refreshDocs()
         }, {
             docs = SyncRunner.docs
@@ -1587,6 +1762,8 @@ internal object Controller {
     fun openSettings() {
         if (Route.Settings in stack) return
         stack.add(Route.Settings)
+        nameField = null
+        noticeDenied = false
         updateSettings()
         loadFileInfo()
         if (!mailLoaded) loadAccounts()
@@ -1615,8 +1792,94 @@ internal object Controller {
             lockAvailable = deviceSecure(),
             lockOn = LockPolicy.active(lockSetting(), deviceSecure()),
             lockDelay = lockDelay().key,
-            secureScreen = secureScreen()
+            secureScreen = secureScreen(),
+            personName = nameField ?: personName,
+            noticeOn = NoticeScheduler.isOn(app),
+            noticeTime = NoticeScheduler.time(app).key,
+            noticeBlocked = noticeDenied || (NoticeScheduler.isOn(app) && !NoticeScheduler.allowed(app))
         )
+    }
+
+    // ---- the person's name and the daily notice
+
+    /** The text as typed in the name field (blanks included, so a space between words can be typed). */
+    private var nameField: String? = null
+
+    /** The permission was refused: Ajustes says how to allow it, until the next try. */
+    private var noticeDenied = false
+
+    /** Saves "Seu nome nas tarefas" as it is typed: trimmed, at most 80 characters. Not a secret. */
+    fun changePersonName(v: String) {
+        nameField = v.take(Assignees.NAME_MAX)
+        personName = Assignees.cleanName(v)
+        prefs.edit().putString(K_NAME, personName).apply()
+        if (Route.Setup in stack) setup = setup.copy(personName = nameField ?: "")
+        updateSettings()
+    }
+
+    /**
+     * The switch of the daily notice. Turning it on asks for the permission to show notifications
+     * (Android 13 or newer); when it is refused the switch goes back off and Ajustes says how to allow it.
+     */
+    fun setNoticeEnabled(on: Boolean) {
+        noticeDenied = false
+        if (!on) {
+            NoticeScheduler.setOn(app, false)
+            NoticeScheduler.arm(app)
+            updateSettings()
+            return
+        }
+        if (NoticeScheduler.allowed(app)) {
+            noticeOn()
+            return
+        }
+        val a = activity
+        if (android.os.Build.VERSION.SDK_INT >= 33 && a != null &&
+            app.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            a.askNoticePermission()
+        } else {
+            // The phone itself blocks this app's notifications: only its settings can allow them.
+            onNoticePermission(false)
+        }
+    }
+
+    private fun noticeOn() {
+        NoticeScheduler.setOn(app, true)
+        NoticeScheduler.arm(app)
+        updateSettings()
+    }
+
+    /** The answer of the system's permission question. */
+    fun onNoticePermission(granted: Boolean) {
+        if (granted && NoticeScheduler.allowed(app)) {
+            noticeDenied = false
+            noticeOn()
+        } else {
+            NoticeScheduler.setOn(app, false)
+            NoticeScheduler.arm(app)
+            noticeDenied = true
+            updateSettings()
+        }
+    }
+
+    fun setNoticeTime(key: String) {
+        NoticeScheduler.setTime(app, DeadlineNotice.Time.fromKey(key))
+        NoticeScheduler.arm(app)
+        updateSettings()
+    }
+
+    /** The phone's own notification settings of this app, where the permission can be given. */
+    fun openNoticeSettings() {
+        val a = activity ?: return
+        try {
+            a.startActivity(
+                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, app.packageName)
+            )
+        } catch (_: Throwable) {
+            say("Não foi possível abrir as configurações do telefone. Abra-as e procure o Ponte de bolso.", long = true)
+        }
     }
 
     /** Name and size of the Drive file. The provider may hit the network: off the UI thread. */

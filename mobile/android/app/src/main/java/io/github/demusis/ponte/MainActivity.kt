@@ -68,6 +68,29 @@ class MainActivity : ComponentActivity() {
         Controller.save(outState)
     }
 
+    /** The deadline notice was tapped while the app was already open: it goes to Hoje. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == NoticeScheduler.ACTION_TODAY) Controller.showToday()
+    }
+
+    /** The system asks for the permission to show notifications (Android 13 or newer). */
+    fun askNoticePermission() {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQ_NOTICE)
+        }
+    }
+
+    @Deprecated("The classic permission callback, as for the results above.")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        @Suppress("DEPRECATION")
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_NOTICE) {
+            Controller.onNoticePermission(grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED)
+        }
+    }
+
     @Deprecated("The classic result callback: no extra library needed.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
@@ -83,6 +106,7 @@ class MainActivity : ComponentActivity() {
         const val REQ_PICK = 1
         const val REQ_PHOTO = 2
         const val REQ_UNLOCK = 3
+        const val REQ_NOTICE = 4
 
         /** The Activity on screen, for what needs one (pickers, fingerprint prompt). */
         @Volatile

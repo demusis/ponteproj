@@ -316,6 +316,16 @@ internal object SyncRunner {
 
     private fun prefsOf(ctx: Context) = ctx.getSharedPreferences("ponte", Context.MODE_PRIVATE)
 
+    /**
+     * The library key of an existing library, or null when this phone never made one. For what
+     * only reads (the daily notice): it never creates a key, so it never starts a library.
+     */
+    fun libraryKeyIfPresent(ctx: Context): ByteArray? {
+        val prefs = prefsOf(ctx)
+        if (prefs.getString("key_ct", null) == null || prefs.getString("key_iv", null) == null) return null
+        return loadOrCreateLibraryKey(ctx)
+    }
+
     /** Returns the 32-byte library key, creating it on first run (wrapped by a Keystore AES key). */
     private fun loadOrCreateLibraryKey(ctx: Context): ByteArray {
         val prefs = prefsOf(ctx)

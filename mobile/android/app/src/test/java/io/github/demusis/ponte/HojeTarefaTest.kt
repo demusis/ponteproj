@@ -85,7 +85,7 @@ class HojeTarefaTest {
     }
 
     @Test fun novaTarefaSemDocumento() = paparazzi.shot("claro") {
-        NewTaskScreen("", Samples.actions.filter { it.key != "triar" }, {}, { _, _, _ -> }, withoutDocument = true)
+        NewTaskScreen("", Samples.actions.filter { it.key != "triar" }, {}, { _, _, _, _ -> }, withoutDocument = true)
     }
 
     @Test fun tarefasComBotao() = paparazzi.shotInShell("com_botao", 1) { TasksScreen(TasksState(false, null, Samples.tasks), {}, {}) }

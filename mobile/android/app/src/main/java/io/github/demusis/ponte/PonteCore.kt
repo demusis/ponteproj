@@ -46,6 +46,29 @@ class PonteCore {
 
     /** Links, moves (documentId > 0) or unlinks (0) a task; version as in saveTask. */
     external fun relinkTask(taskId: Long, documentId: Long, version: Long): String
+    /** Names used as responsible person, most used first: {names: [String]}. */
+    external fun assignees(): String
+
+    /**
+     * Every atendimento, ordered for the list (open ones by urgency, closed ones last):
+     * {open: N, attendances: [{id, reference, subject, status, status_label, open, due_date,
+     * due_label, late, due_today, assignee, observation}]}. Read-only.
+     */
+    external fun listAttendances(): String
+
+    /**
+     * One atendimento to read: {id, reference, subject, status_label, open, due_label, late,
+     * due_today, fields: [{label, value}], flags: [String], review_flags: [String], document_id,
+     * document_number, document_title, tasks: [{id, title, done, due_label}], events: [{when,
+     * actor, kind, detail}], attachments: [{id, name, kind, size, description}]}.
+     */
+    external fun getAttendance(attendanceId: Long): String
+
+    /**
+     * The search over the whole library (two characters or more): {documents, tasks,
+     * attendances}, each {rows: [...], more: N} already cut at eight.
+     */
+    external fun search(query: String): String
     external fun choices(): String
     external fun createPhotoRecord(fieldsJson: String, imagePath: String): String
     external fun listMailAccounts(): String

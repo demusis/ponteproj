@@ -30,11 +30,23 @@ internal object Api {
         c(if (done) core.completeTask(taskId) else core.reopenTask(taskId))
     }
 
-    fun createTask(documentId: Long, title: String, action: String, due: String): Long {
+    fun createTask(documentId: Long, title: String, action: String, due: String, assignee: String = ""): Long {
         val o = JSONObject().put("document_id", documentId).put("title", title)
-            .put("action", action).put("due_date", due)
+            .put("action", action).put("due_date", due).put("assignee", assignee)
         return c(core.createTask(o.toString())).optLong("id")
     }
+
+    fun assignees(): List<String> {
+        val names = c(core.assignees()).optJSONArray("names") ?: return emptyList()
+        return (0 until names.length()).map { names.optString(it) }.filter { it.isNotBlank() }
+    }
+
+    fun attendances(): List<AttendanceItem> = c(core.listAttendances()).optJSONArray("attendances").objs().map { it.toAttendance() }
+
+    fun attendance(id: Long): AttendanceDetail = c(core.getAttendance(id)).toAttendanceDetail()
+
+    /** The query is passed on and forgotten: nothing here keeps or logs it. */
+    fun search(query: String): SearchResult = c(core.search(query)).toSearchResult()
 
     fun today(): JSONObject = c(core.today())
 

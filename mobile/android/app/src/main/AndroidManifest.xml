@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- The daily deadline notice (off until the person turns it on; no exact alarms). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- The camera permission is NOT declared: the photo is taken by the camera app. -->
 
     <queries>
@@ -35,6 +38,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Rung by the app's own alarm only. -->
+        <receiver
+            android:name=".NoticeReceiver"
+            android:exported="false" />
+        <!-- Not exported: Android still delivers these system broadcasts to it, and no other app can send them. -->
+        <receiver
+            android:name=".NoticeBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
         <provider
             android:name=".PonteFiles"
             android:authorities="io.github.demusis.ponte.files"

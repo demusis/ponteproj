@@ -247,7 +247,7 @@ private fun fileIcon(f: FileItem): ImageVector {
 }
 
 @Composable
-private fun FileRow(f: FileItem, onClick: () -> Unit) {
+internal fun FileRow(f: FileItem, onClick: () -> Unit) {
     val c = Ponte.colors
     Row(
         Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(onClickLabel = "Abrir arquivo", onClick = onClick)

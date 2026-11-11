@@ -62,7 +62,9 @@ internal fun TaskScreen(
     onOpenDocument: (Long) -> Unit,
     onLink: () -> Unit,
     onUnlink: () -> Unit,
-    onReload: () -> Unit
+    onReload: () -> Unit,
+    assignees: List<String> = emptyList(),
+    myName: String = ""
 ) {
     // Only the task this screen was opened for: never the form of one with the data of another.
     val task = TaskRules.shown(routeId, state)
@@ -73,7 +75,7 @@ internal fun TaskScreen(
         }
         return
     }
-    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload)
+    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName)
 }
 
 private val DraftSaver = Saver<TaskDraft, List<Any>>(save = { it.toList() }, restore = { TaskDraft.fromList(it) })
@@ -90,7 +92,9 @@ private fun TaskLoaded(
     onOpenDocument: (Long) -> Unit,
     onLink: () -> Unit,
     onUnlink: () -> Unit,
-    onReload: () -> Unit
+    onReload: () -> Unit,
+    assignees: List<String>,
+    myName: String
 ) {
     val c = Ponte.colors
     // The draft remembers the version it started from; a newer stored task resets it (nothing
@@ -155,10 +159,8 @@ private fun TaskLoaded(
             if (shownActions.isNotEmpty()) ChoiceField("Ação", shownActions, form.action, { v -> edit { it.copy(action = v) } })
             ChoiceField("Prioridade", priorities.ifEmpty { DefaultPriorities }, form.priority, { v -> edit { it.copy(priority = v) } })
             DateField("Prazo", form.dueDate, { v -> edit { it.copy(dueDate = v) } }, emptyText = "Sem prazo")
-            LabeledField(
-                "Responsável", form.assignee, { v -> edit { it.copy(assignee = v) } },
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words)
-            )
+            // "Eu" and the suggestions only fill the typed form: the draft rules above stay as they are.
+            AssigneeField(form.assignee, { v -> edit { it.copy(assignee = v) } }, assignees, myName)
             LabeledField(
                 "Observações", form.notes, { v -> edit { it.copy(notes = v) } },
                 singleLine = false, minLines = 4,
