@@ -393,7 +393,11 @@ impl Reminders {
             due_attendances: 1,
             reminders: 0,
         };
-        self.deliver(&Fire::new(sample), true);
+        // It must not read as a real count of what is due.
+        let mut fire = Fire::new(sample);
+        fire.title = "Aviso de teste do Ponte".to_owned();
+        fire.text = format!("É assim que o lembrete aparece. Exemplo: {}", fire.text);
+        self.deliver(&fire, true);
     }
 
     /// `true` once after the person clicked the notification or its icon: the

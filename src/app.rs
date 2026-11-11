@@ -3010,8 +3010,16 @@ impl eframe::App for PonteApp {
             // The person clicked the Windows notice: show what is due.
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            // Through the guard: unsaved work is never hidden.
-            self.navigate(Leave::Today);
+            // Through the guard: unsaved work is never hidden. With a question
+            // already open (exit, Lixeira, leaving an edit) the window just
+            // comes to the front: the question keeps its answer.
+            let asking = self.replacement.is_some()
+                || self.trash.pending.is_some()
+                || self.exit_confirm
+                || self.leave.is_some();
+            if !asking {
+                self.navigate(Leave::Today);
+            }
         }
         if let Some(text) = self.reminders.take_notice() {
             self.message(text);
@@ -3303,6 +3311,9 @@ impl eframe::App for PonteApp {
                         }
                     }
                 } else if self.area == Area::Tasks {
+                    // A batch delete waits for a running job, as a single one does.
+                    self.tasks
+                        .set_busy(self.worker.is_some() || self.pdf_reader.busy());
                     if let Some(id) = self.tasks.show(ui, &mut self.store, self.selected_id) {
                         self.return_after_select = self.tasks.open_task_id().map(ReturnTo::Task);
                         self.navigate(Leave::Select(id));

@@ -255,30 +255,56 @@ impl TextSize {
     }
 }
 
-/// The smallest window, in egui points (the same at every text size, so the
-/// same amount of content fits at the minimum).
+/// The smallest window in egui points: the same at every text size, so the
+/// same amount of content fits at the minimum.
 const MIN_WINDOW_POINTS: [f32; 2] = [900.0, 620.0];
+/// The minimum never asks for more than this share of the monitor.
+const MAX_SHARE_OF_MONITOR: f32 = 0.92;
 
-/// Minimum size for the viewport builder at start-up. The builder's size is
-/// in logical units that eframe multiplies by the zoom factor of the moment
-/// (still 1.0 when the window is created), so the zoom is applied here to
-/// reach `MIN_WINDOW_POINTS` once the setting takes effect.
-pub fn min_window_size(size: TextSize) -> [f32; 2] {
-    [
-        MIN_WINDOW_POINTS[0] * size.factor(),
-        MIN_WINDOW_POINTS[1] * size.factor(),
-    ]
+/// Minimum size for the viewport builder at start-up: the unscaled 900x620
+/// (conservative; the monitor is not known yet). `set_text_size`, which runs
+/// right after with a context, applies the scaled and clamped value.
+pub fn min_window_size(_size: TextSize) -> [f32; 2] {
+    MIN_WINDOW_POINTS
+}
+
+/// The minimum in points for text-size `factor`. `monitor` is the monitor in
+/// logical units at zoom 1 (points times the zoom they were measured under),
+/// `None` while unknown. At zoom `factor` the content needs
+/// `MIN_WINDOW_POINTS * factor` logical units, but never more than 92% of the
+/// monitor; with the monitor unknown it never asks for more than the
+/// unscaled 900x620. The result is in points (logical / `factor`), which is
+/// what `ViewportCommand::MinInnerSize` takes.
+pub fn min_window_points(factor: f32, monitor: Option<[f32; 2]>) -> [f32; 2] {
+    let mut out = [0.0; 2];
+    for axis in 0..2 {
+        let wanted = MIN_WINDOW_POINTS[axis] * factor;
+        let logical = match monitor {
+            Some(m) => wanted.min(m[axis] * MAX_SHARE_OF_MONITOR),
+            None => wanted.min(MIN_WINDOW_POINTS[axis]),
+        };
+        out[axis] = logical / factor;
+    }
+    out
 }
 
 /// Texts, icons and spacing grow together, like the zoom of a browser. The
 /// window's minimum follows: `ViewportCommand::MinInnerSize` is in points and
-/// egui-winit multiplies it by the current pixels per point (zoom included),
-/// so the same points at every size keep the same content fitting.
+/// egui-winit multiplies it by the pixels per point at that moment (zoom
+/// included). `monitor_size` of the viewport is in points under the zoom in
+/// force until now, so it is converted to logical units before clamping.
 pub fn set_text_size(ctx: &egui::Context, size: TextSize) {
+    let monitor = ctx
+        .input(|i| i.viewport().monitor_size)
+        .filter(|m| m.x > 0.0 && m.y > 0.0)
+        .map(|m| {
+            let zoom = ctx.zoom_factor();
+            [m.x * zoom, m.y * zoom]
+        });
     ctx.set_zoom_factor(size.factor());
+    let points = min_window_points(size.factor(), monitor);
     ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
-        MIN_WINDOW_POINTS[0],
-        MIN_WINDOW_POINTS[1],
+        points[0], points[1],
     )));
 }
 
@@ -287,13 +313,40 @@ mod size_tests {
     use super::*;
 
     #[test]
-    fn the_start_up_minimum_grows_with_the_text_size() {
-        assert_eq!(min_window_size(TextSize::Normal), [900.0, 620.0]);
+    fn the_minimum_is_the_same_points_at_every_size_on_a_big_monitor() {
         for size in TextSize::ALL {
-            let min = min_window_size(size);
-            // Divided by the zoom, the same points at every size.
-            assert!((min[0] / size.factor() - 900.0).abs() < 0.01);
-            assert!((min[1] / size.factor() - 620.0).abs() < 0.01);
+            assert_eq!(min_window_size(size), [900.0, 620.0]);
+        }
+        for size in TextSize::ALL {
+            let points = min_window_points(size.factor(), Some([2560.0, 1440.0]));
+            assert!((points[0] - 900.0).abs() < 0.01);
+            assert!((points[1] - 620.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn the_minimum_never_passes_92_percent_of_the_monitor() {
+        // 1366x768 at "Maior": 1125x775 would not fit.
+        let monitor = [1366.0, 768.0];
+        let f = TextSize::Larger.factor();
+        let points = min_window_points(f, Some(monitor));
+        assert!((points[0] * f - 1125.0).abs() < 0.01);
+        assert!((points[1] * f - 768.0 * 0.92).abs() < 0.01);
+        // Normal text fits as before.
+        assert_eq!(min_window_points(1.0, Some(monitor)), [900.0, 620.0]);
+        // 1100x680: both sides are capped.
+        let small = min_window_points(f, Some([1100.0, 680.0]));
+        assert!((small[0] * f - 1100.0 * 0.92).abs() < 0.01);
+        assert!((small[1] * f - 680.0 * 0.92).abs() < 0.01);
+    }
+
+    #[test]
+    fn an_unknown_monitor_never_gives_more_than_the_unscaled_minimum() {
+        for size in TextSize::ALL {
+            let f = size.factor();
+            let points = min_window_points(f, None);
+            assert!((points[0] * f - 900.0).abs() < 0.01);
+            assert!((points[1] * f - 620.0).abs() < 0.01);
         }
     }
 }

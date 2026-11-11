@@ -68,7 +68,7 @@ fn check_extras(extras: &Extras) -> std::result::Result<CheckedExtras, String> {
     if let Some(note) = &note {
         if note.chars().count() > MAX_EXTRAS_NOTE_CHARS {
             return Err(format!(
-                "A observação passa de {MAX_EXTRAS_NOTE_CHARS} caracteres. Encurte o texto e importe de novo."
+                "A nota passa de {MAX_EXTRAS_NOTE_CHARS} caracteres. Encurte o texto e importe de novo."
             ));
         }
         if note
@@ -76,8 +76,7 @@ fn check_extras(extras: &Extras) -> std::result::Result<CheckedExtras, String> {
             .any(|c| c.is_control() && c != '\n' && c != '\t')
         {
             return Err(
-                "A observação tem caracteres que o Ponte não aceita. Digite o texto de novo."
-                    .to_owned(),
+                "A nota tem caracteres que o Ponte não aceita. Digite o texto de novo.".to_owned(),
             );
         }
     }
@@ -97,11 +96,55 @@ fn check_extras(extras: &Extras) -> std::result::Result<CheckedExtras, String> {
     Ok(CheckedExtras { note, priority })
 }
 
+/// Whether `current` already ends with this note as a dated entry
+/// ("dd/mm/aaaa — note"), whatever the date: a retried request that crosses
+/// midnight must not append it twice.
+fn ends_with_entry(current: &str, note: &str) -> bool {
+    let Some(before) = current.trim_end().strip_suffix(note) else {
+        return false;
+    };
+    let Some(before) = before.strip_suffix(" — ") else {
+        return false;
+    };
+    let date: Vec<char> = before.chars().rev().take(10).collect();
+    date.len() == 10
+        && date.iter().rev().enumerate().all(|(i, c)| match i {
+            2 | 5 => *c == '/',
+            _ => c.is_ascii_digit(),
+        })
+}
+
+/// The note text to save: `current` plus a new paragraph "date — note", or
+/// `None` when `skip_repeat` and that entry is already the last one.
+fn appended_note(current: &str, note: &str, date: &str, skip_repeat: bool) -> Option<String> {
+    if skip_repeat && ends_with_entry(current, note) {
+        return None;
+    }
+    let entry = format!("{date} — {note}");
+    Some(if current.trim().is_empty() {
+        entry
+    } else {
+        format!("{}\n\n{entry}", current.trim_end())
+    })
+}
+
+/// Fixed sentence for a failure to apply; the store's own message is never
+/// passed on (a conflict names the team member who edited).
+fn apply_failure(subject: &str, err: &anyhow::Error) -> String {
+    let conflict = err.to_string().contains("Conflito de edição");
+    if conflict {
+        format!("{subject} porque o documento foi alterado ao mesmo tempo")
+    } else {
+        subject.to_owned()
+    }
+}
+
 /// Applies checked extras to a document. Returns what could not be applied,
-/// as one Portuguese sentence. The note is appended as a new paragraph
+/// as one fixed Portuguese sentence. The note is appended as a new paragraph
 /// prefixed by the date, never replacing the existing text; `skip_repeat`
 /// avoids appending the same entry twice (a retried, already confirmed
-/// request).
+/// request). In both cases the version is read BEFORE the content, so a
+/// write by someone else in between is a conflict, not an overwrite.
 fn apply_extras(
     store: &mut Store,
     document_id: i64,
@@ -109,51 +152,50 @@ fn apply_extras(
     skip_repeat: bool,
 ) -> std::result::Result<(), String> {
     let mut problems = Vec::new();
+    let mut guidance = Vec::new();
     if let Some(note) = &extras.note {
-        let entry = format!("{} — {note}", chrono::Local::now().format("%d/%m/%Y"));
+        let date = chrono::Local::now().format("%d/%m/%Y").to_string();
         let result = (|| -> Result<()> {
             let version = store
                 .item_version("note", document_id)
                 .ok()
                 .map(|v| v.version);
             let current = store.load_document(document_id)?.note;
-            if skip_repeat && current.contains(&entry) {
-                return Ok(());
+            match appended_note(&current, note, &date, skip_repeat) {
+                Some(joined) => store.save_note_checked(document_id, &joined, version),
+                None => Ok(()),
             }
-            let joined = if current.trim().is_empty() {
-                entry.clone()
-            } else {
-                format!("{}\n\n{entry}", current.trim_end())
-            };
-            store.save_note_checked(document_id, &joined, version)
         })();
         if let Err(err) = result {
-            problems.push(format!("a observação não foi salva ({err})"));
+            problems.push(apply_failure("a nota não foi salva", &err));
+            guidance.push("Escreva a nota na ficha do documento.");
         }
     }
     if let Some(priority) = extras.priority {
         let result = (|| -> Result<()> {
-            let mut context = store.load_work_context(document_id)?;
-            if context.priority == priority {
-                return Ok(());
-            }
             let version = store
                 .item_version("work_context", document_id)
                 .ok()
                 .map(|v| v.version);
+            let mut context = store.load_work_context(document_id)?;
+            if context.priority == priority {
+                return Ok(());
+            }
             context.priority = priority.to_owned();
             store.save_work_context_checked(document_id, &context, version)
         })();
         if let Err(err) = result {
-            problems.push(format!("a prioridade não foi alterada ({err})"));
+            problems.push(apply_failure("a prioridade não foi alterada", &err));
+            guidance.push("Escolha a prioridade na ficha do documento.");
         }
     }
     if problems.is_empty() {
         Ok(())
     } else {
         Err(format!(
-            "A importação foi feita, mas {}. Ajuste na ficha do documento.",
-            problems.join(" e ")
+            "A importação foi feita, mas {}. {}",
+            problems.join(" e "),
+            guidance.join(" ")
         ))
     }
 }
@@ -644,6 +686,48 @@ mod tests {
         assert_eq!(reply["extras_applied"], false);
         assert!(reply.get("extras_message").is_none());
         assert_eq!(store.load_document(id).unwrap().note, note);
+    }
+
+    #[test]
+    fn a_retry_across_midnight_does_not_append_the_note_twice() {
+        let first = appended_note("", "Falar com o setor", "09/11/2026", false).unwrap();
+        assert_eq!(first, "09/11/2026 — Falar com o setor");
+        // Confirmed retry the next day: the same text is already the last entry.
+        assert_eq!(
+            appended_note(&first, "Falar com o setor", "10/11/2026", true),
+            None
+        );
+        // Another text, or an unchanged (typed again) import, is appended.
+        assert_eq!(
+            appended_note(&first, "Outro texto", "10/11/2026", true).unwrap(),
+            "09/11/2026 — Falar com o setor\n\n10/11/2026 — Outro texto"
+        );
+        assert!(appended_note(&first, "Falar com o setor", "10/11/2026", false).is_some());
+        // The same words without a date prefix are not an entry.
+        assert!(
+            appended_note("Falar com o setor", "Falar com o setor", "10/11/2026", true).is_some()
+        );
+        // Multi-paragraph notes are recognised too.
+        let long = appended_note("Antes", "um\n\ndois", "09/11/2026", false).unwrap();
+        assert_eq!(appended_note(&long, "um\n\ndois", "10/11/2026", true), None);
+    }
+
+    #[test]
+    fn failures_use_fixed_sentences_without_the_store_message() {
+        let conflict = anyhow::anyhow!(
+            "Conflito de edição simultânea: este registro já foi atualizado por Servidor B (versão #3)."
+        );
+        let text = apply_failure("a nota não foi salva", &conflict);
+        assert_eq!(
+            text,
+            "a nota não foi salva porque o documento foi alterado ao mesmo tempo"
+        );
+        assert!(!text.contains("Servidor B"));
+        let other = anyhow::anyhow!("disco cheio em C:\\acervo");
+        assert_eq!(
+            apply_failure("a prioridade não foi alterada", &other),
+            "a prioridade não foi alterada"
+        );
     }
 
     #[test]

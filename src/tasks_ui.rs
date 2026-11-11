@@ -957,22 +957,19 @@ mod batch {
         store.item_version("task", id).map_or(-1, |v| v.version)
     }
 
-    /// One task: read fresh, checked, saved with the version just read.
-    fn apply_one(store: &mut Store, id: i64, change: &Change) -> Result<UndoItem, Reason> {
-        let version = store
-            .item_version("task", id)
-            .map_err(|e| Reason::Refused(e.to_string()))?
-            .version;
-        let tasks = store
-            .list_tasks()
-            .map_err(|e| Reason::Refused(e.to_string()))?;
-        let task = tasks
-            .iter()
-            .find(|t| t.id == id)
-            .cloned()
-            .ok_or(Reason::Missing)?;
-        let blocked = crate::tasks::Dependencies::new(&tasks).is_blocked(id);
-        eligibility(change, &task, blocked)?;
+    /// One task of the batch: `task` is as read at the start of the pass and
+    /// `expected` the version the person confirmed. The version is compared
+    /// right before the write (the save itself checks it again), so a write
+    /// that landed since, from anywhere, is a refusal and never adopted.
+    pub fn apply_one(
+        store: &mut Store,
+        task: &Task,
+        expected: i64,
+        blocked: bool,
+        change: &Change,
+    ) -> Result<UndoItem, Reason> {
+        eligibility(change, task, blocked)?;
+        let id = task.id;
         if *change == Change::Trash {
             let target = crate::trash::Target {
                 kind: crate::trash::Kind::Task,
@@ -984,12 +981,16 @@ mod batch {
             if let Some(blocker) = plan.blocker {
                 return Err(Reason::Refused(blocker));
             }
+            // `trash_item` takes no version: compare it here, just before.
+            if version_of(store, id) != expected {
+                return Err(Reason::Changed);
+            }
             store
                 .trash_item(target)
                 .map_err(|e| Reason::Refused(e.to_string()))?;
             return Ok(UndoItem {
                 id,
-                before: task,
+                before: task.clone(),
                 touched: Touched::Untrash,
                 version: 0,
             });
@@ -997,20 +998,23 @@ mod batch {
         let mut changed = task.clone();
         change_task(change, &mut changed);
         store
-            .save_task_checked(&changed, Some(version))
+            .save_task_checked(&changed, Some(expected))
             .map_err(|e| classify(&e.to_string()))?;
         Ok(UndoItem {
             id,
-            before: task,
+            before: task.clone(),
             touched: touched(change),
             version: version_of(store, id),
         })
     }
 
     /// Applies `change` to the tasks of `snapshot`. A task whose version is no
-    /// longer the one confirmed is skipped; one refused for a reason that a
-    /// later task of the batch may lift (a dependency to conclude, a
-    /// dependent to delete first) is tried again while the batch progresses.
+    /// longer the one confirmed is skipped, in every pass; one refused for a
+    /// reason that a later task of the batch may lift (a dependency to
+    /// conclude, a dependent to delete first) is tried again while the batch
+    /// progresses. The task list is read once per pass and kept up to date
+    /// with the batch's own writes; it is read again only when concluding a
+    /// task may have concluded selected tasks of other documents by cascade.
     pub fn apply_batch(store: &mut Store, snapshot: &Snapshot, change: &Change) -> Outcome {
         let mut out = Outcome::default();
         let title_of = |id: i64| {
@@ -1026,7 +1030,7 @@ mod batch {
             .into_iter()
             .map(|t| (t.id, t))
             .collect();
-        // Nothing is touched that changed since the person confirmed.
+        let mut list: Vec<Task> = before_all.values().cloned().collect();
         let mut pending = Vec::new();
         for (&id, (version, _)) in snapshot {
             if !before_all.contains_key(&id) {
@@ -1045,15 +1049,82 @@ mod batch {
                 pending.push(id);
             }
         }
+        // Selected tasks concluded by the cascade of this very batch.
+        let mut cascaded: BTreeSet<i64> = BTreeSet::new();
+        let mut first_pass = true;
         loop {
+            if !first_pass {
+                list = store.list_tasks().unwrap_or_default();
+            }
+            first_pass = false;
             let mut progress = false;
             let mut retry = Vec::new();
             for id in std::mem::take(&mut pending) {
-                match apply_one(store, id, change) {
+                if cascaded.contains(&id) {
+                    continue;
+                }
+                let result = match list.iter().find(|t| t.id == id) {
+                    None => Err(Reason::Missing),
+                    Some(task) => {
+                        let blocked = crate::tasks::Dependencies::new(&list).is_blocked(id);
+                        apply_one(store, task, snapshot[&id].0, blocked, change)
+                    }
+                };
+                match result {
                     Ok(item) => {
                         progress = true;
                         out.done += 1;
+                        let document = item.before.document_id;
                         out.undo.push(item);
+                        // Keep the list as the store now is.
+                        if *change == Change::Trash {
+                            list.retain(|t| t.id != id);
+                        } else if let Some(task) = list.iter_mut().find(|t| t.id == id) {
+                            change_task(change, task);
+                        }
+                        // The last open task of a document concluded: the
+                        // pieces joined to it may have been concluded too.
+                        let unsettled = |other: &i64| {
+                            !out.undo.iter().any(|u| u.id == *other)
+                                && !out.skipped.iter().any(|s| s.id == *other)
+                        };
+                        if *change == Change::Conclude
+                            && document.is_some()
+                            && !list
+                                .iter()
+                                .any(|t| t.document_id == document && t.status != "concluida")
+                            && snapshot.keys().filter(|o| unsettled(o)).any(|o| {
+                                list.iter()
+                                    .find(|t| t.id == *o)
+                                    .is_some_and(|t| t.document_id != document)
+                            })
+                        {
+                            let fresh = store.list_tasks().unwrap_or_default();
+                            let found: Vec<i64> = snapshot
+                                .keys()
+                                .copied()
+                                .filter(|o| unsettled(o))
+                                .filter(|o| {
+                                    let now = fresh.iter().find(|t| t.id == *o);
+                                    let was = list.iter().find(|t| t.id == *o);
+                                    matches!((now, was), (Some(n), Some(w))
+                                        if n.status == "concluida" && w.status != "concluida")
+                                })
+                                .collect();
+                            for other in found {
+                                if let Some(before) = before_all.get(&other) {
+                                    out.done += 1;
+                                    out.undo.push(UndoItem {
+                                        id: other,
+                                        before: before.clone(),
+                                        touched: Touched::Whole,
+                                        version: version_of(store, other),
+                                    });
+                                    cascaded.insert(other);
+                                }
+                            }
+                            list = fresh;
+                        }
                     }
                     Err(reason) => {
                         let again = matches!(
@@ -1073,6 +1144,7 @@ mod batch {
                     }
                 }
             }
+            retry.retain(|(id, _)| !cascaded.contains(id));
             if retry.is_empty() || !progress {
                 for (id, reason) in retry {
                     out.skipped.push(Skip {
@@ -1085,11 +1157,11 @@ mod batch {
             }
             pending = retry.into_iter().map(|(id, _)| id).collect();
         }
-        // Concluding a main document can conclude other tasks by itself: they
-        // are part of what the undo puts back.
+        // Other tasks concluded as a side effect (cascade) are part of what
+        // the undo puts back: compared once, after the last write.
         if *change == Change::Conclude {
             for task in store.list_tasks().unwrap_or_default() {
-                if snapshot.contains_key(&task.id) {
+                if out.undo.iter().any(|u| u.id == task.id) {
                     continue;
                 }
                 if let Some(before) = before_all.get(&task.id) {
@@ -1109,9 +1181,12 @@ mod batch {
     }
 
     /// Puts back what the batch changed, task by task. One changed again
-    /// since (its version is not the one the batch left) is skipped.
+    /// since (its version is not the one the batch left) is skipped; the
+    /// version is compared right before each write. The task list is read
+    /// once.
     pub fn undo_batch(store: &mut Store, items: &[UndoItem]) -> Outcome {
         let mut out = Outcome::default();
+        let list = store.list_tasks().unwrap_or_default();
         for item in items.iter().rev() {
             let skip = |reason| Skip {
                 id: item.id,
@@ -1129,22 +1204,16 @@ mod batch {
                 }
                 continue;
             }
-            let version = version_of(store, item.id);
-            if version != item.version {
+            if version_of(store, item.id) != item.version {
                 out.skipped.push(skip(Reason::Changed));
                 continue;
             }
-            let Some(mut task) = store
-                .list_tasks()
-                .unwrap_or_default()
-                .into_iter()
-                .find(|t| t.id == item.id)
-            else {
+            let Some(mut task) = list.iter().find(|t| t.id == item.id).cloned() else {
                 out.skipped.push(skip(Reason::Missing));
                 continue;
             };
             restore_fields(item.touched, &item.before, &mut task);
-            match store.save_task_checked(&task, Some(version)) {
+            match store.save_task_checked(&task, Some(item.version)) {
                 Ok(_) => out.done += 1,
                 Err(e) => out.skipped.push(skip(classify(&e.to_string()))),
             }
@@ -1218,9 +1287,9 @@ mod batch {
             }
             Reason::Changed => {
                 if one {
-                    "foi alterada por outra pessoa depois da seleção"
+                    "foi alterada depois da seleção"
                 } else {
-                    "foram alteradas por outra pessoa depois da seleção"
+                    "foram alteradas depois da seleção"
                 }
             }
             Reason::Same => match (kind, one) {
@@ -1426,6 +1495,8 @@ pub struct TaskPanel {
     batch_undo: Option<BatchUndo>,
     /// A batch or its undo changed tasks (the app may refresh other areas).
     batch_changed: bool,
+    /// A background job runs (set by the app): deleting waits.
+    busy: bool,
     /// Development only: keeps "Mais detalhes" open for the picture.
     #[cfg(feature = "shots")]
     shots_details: bool,
@@ -1783,9 +1854,23 @@ impl TaskPanel {
         std::mem::take(&mut self.batch_changed)
     }
 
+    /// The app says each frame whether a background job runs; deleting
+    /// waits for it, as the single delete does.
+    pub fn set_busy(&mut self, busy: bool) {
+        self.busy = busy;
+    }
+
     /// Applies the confirmed change to the tasks of the snapshot. Afterwards
     /// the selection keeps only the tasks that were left as they were.
     fn run_batch(&mut self, store: &mut Store, snapshot: &batch::Snapshot, change: batch::Change) {
+        if self.busy && change == batch::Change::Trash {
+            // The confirmation stays open until the job is over.
+            self.batch_ask = Some(Ask {
+                kind: AskKind::Trash,
+                snapshot: snapshot.clone(),
+            });
+            return;
+        }
         self.reset_batch_inputs();
         if self.dirty() {
             self.batch_result = Some((
@@ -1819,12 +1904,21 @@ impl TaskPanel {
 
     /// "Desfazer" on the result line: puts back what the last batch changed.
     fn run_undo(&mut self, store: &mut Store) {
+        let Some(undo) = self.batch_undo.as_ref() else {
+            return;
+        };
+        if undo.at.elapsed().as_secs() >= batch::UNDO_SECONDS {
+            self.batch_undo = None;
+            return;
+        }
+        if self.dirty() || self.attachments.dirty() {
+            // The undo stays (its time keeps running): nothing is lost silently.
+            self.notice("Salve ou cancele a tarefa aberta antes de desfazer.", true);
+            return;
+        }
         let Some(undo) = self.batch_undo.take() else {
             return;
         };
-        if undo.at.elapsed().as_secs() >= batch::UNDO_SECONDS || self.dirty() {
-            return;
-        }
         let outcome = batch::undo_batch(store, &undo.items);
         let tone = if outcome.done == 0 {
             Tone::Danger
@@ -1917,7 +2011,7 @@ impl TaskPanel {
                                 if can_undo
                                     && ui
                                         .add(widgets::secondary(format!("{} Desfazer", icon::UNDO)))
-                                        .on_hover_text("Põe as tarefas como estavam antes. Vale por 30 segundos, enquanto nada mais mudar.")
+                                        .on_hover_text("Volta estas tarefas ao que eram, se não tiverem sido alteradas depois. Vale por 30 segundos.")
                                         .clicked()
                                 {
                                     action = Some(BarAction::Undo);
@@ -1962,8 +2056,9 @@ impl TaskPanel {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if ui
-                                            .add(widgets::danger(format!("{} Excluir…", icon::TRASH)))
+                                            .add_enabled(!self.busy, widgets::danger(format!("{} Excluir…", icon::TRASH)))
                                             .on_hover_text("Manda as tarefas selecionadas para a Lixeira, de onde podem ser restauradas.")
+                                            .on_disabled_hover_text("Aguarde a operação em andamento.")
                                             .clicked()
                                         {
                                             action = Some(BarAction::Ask(AskKind::Trash));
@@ -2127,9 +2222,14 @@ impl TaskPanel {
                             } else {
                                 widgets::secondary(button)
                             };
+                            let waits = self.busy && kind == AskKind::Trash;
                             if ui
-                                .add_enabled(ready, confirm)
-                                .on_disabled_hover_text("Complete a escolha para continuar.")
+                                .add_enabled(ready && !waits, confirm)
+                                .on_disabled_hover_text(if waits {
+                                    "Aguarde a operação em andamento."
+                                } else {
+                                    "Complete a escolha para continuar."
+                                })
                                 .clicked()
                             {
                                 if let Some(change) = change {
@@ -4017,7 +4117,7 @@ mod batch_tests {
             "1 tarefa concluída.\n\
              4 não puderam ser concluídas: «A», «B», «C» e mais 1 já estão concluídas.\n\
              1 não pôde ser concluída: «E» depende de uma tarefa em aberto.\n\
-             1 não pôde ser concluída: «F» foi alterada por outra pessoa depois da seleção.\n\
+             1 não pôde ser concluída: «F» foi alterada depois da seleção.\n\
              • Nota do sistema."
         );
         let out = Outcome {
@@ -4248,5 +4348,178 @@ mod batch_tests {
         assert_eq!(panel.selected.len(), 2);
         assert!(panel.focus_task(&open));
         assert!(!panel.selecting && panel.selected.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod batch_review_tests {
+    use super::batch::*;
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("batch2.sqlite3")).unwrap();
+        (dir, store)
+    }
+
+    fn add(store: &mut Store, title: &str) -> i64 {
+        let mut task = Task::standalone();
+        task.title = title.into();
+        store.save_task(&task).unwrap()
+    }
+
+    fn get(store: &Store, id: i64) -> Task {
+        store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap()
+    }
+
+    fn pick(store: &Store, ids: &[i64]) -> Snapshot {
+        snapshot(
+            store,
+            &ids.iter().copied().collect(),
+            &store.list_tasks().unwrap(),
+        )
+    }
+
+    fn touch(store: &mut Store, id: i64) {
+        let mut task = get(store, id);
+        task.notes = "outra edição".into();
+        let version = store.item_version("task", id).unwrap().version;
+        store.save_task_checked(&task, Some(version)).unwrap();
+    }
+
+    fn capture(number: &str, text: &str) -> crate::model::Capture {
+        let mut c = crate::model::sample_capture();
+        c.document_number = number.into();
+        c.source_url = format!(
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc/exibir?sigla={}-A",
+            number.replace('/', "%2F")
+        );
+        c.title = format!("Documento {number}");
+        c.text = text.into();
+        c
+    }
+
+    #[test]
+    fn a_selected_task_concluded_by_the_cascade_of_the_batch_is_done_and_undone() {
+        let (_dir, mut store) = store();
+        let parent = store
+            .import_capture(&capture("ORG-DIC-2026/97546", "Processo principal."))
+            .unwrap();
+        let child = store
+            .import_capture(&capture(
+                "ORG-DES-2026/39019",
+                "| Juntada | Juntado ao documento: ORG-DIC-2026/97546-A |",
+            ))
+            .unwrap();
+        let of = |store: &Store, document: i64| {
+            store
+                .list_tasks()
+                .unwrap()
+                .into_iter()
+                .find(|t| t.document_id == Some(document))
+                .unwrap()
+                .id
+        };
+        let (p, c) = (
+            of(&store, parent.document_id),
+            of(&store, child.document_id),
+        );
+        let before_child = get(&store, c);
+        // The parent first: concluding it concludes the child by itself.
+        let snap = pick(&store, &[p, c]);
+        let out = apply_batch(&mut store, &snap, &Change::Conclude);
+        assert_eq!(
+            out.done,
+            2,
+            "{:?}",
+            out.skipped.iter().map(|s| &s.reason).collect::<Vec<_>>()
+        );
+        assert!(out.skipped.is_empty());
+        assert_eq!(get(&store, p).status, "concluida");
+        assert_eq!(get(&store, c).status, "concluida");
+        assert_eq!(out.undo.iter().filter(|u| u.id == c).count(), 1);
+        // The undo reopens both, the child as it was before.
+        let undone = undo_batch(&mut store, &out.undo);
+        assert_eq!((undone.done, undone.skipped.len()), (2, 0));
+        assert_eq!(get(&store, p).status, "pendente");
+        assert_eq!(get(&store, c), before_child);
+    }
+
+    #[test]
+    fn a_write_after_the_version_was_confirmed_is_never_adopted() {
+        let (_dir, mut store) = store();
+        let a = add(&mut store, "A");
+        let b = add(&mut store, "B");
+        let expected_a = store.item_version("task", a).unwrap().version;
+        let expected_b = store.item_version("task", b).unwrap().version;
+        let (task_a, task_b) = (get(&store, a), get(&store, b));
+        touch(&mut store, a);
+        touch(&mut store, b);
+        // A task read before a late write (as a retry pass would hold it).
+        for change in [
+            Change::Conclude,
+            Change::Priority("alta".into()),
+            Change::Trash,
+        ] {
+            let result = apply_one(&mut store, &task_a, expected_a, false, &change);
+            assert_eq!(result.err(), Some(Reason::Changed), "{change:?}");
+        }
+        assert_eq!(get(&store, a).status, "pendente");
+        assert_eq!(get(&store, a).priority, "normal");
+        assert_eq!(
+            get(&store, a).notes,
+            "outra edição",
+            "the late edit is kept"
+        );
+        // Deleting too: still listed, nothing in the Lixeira.
+        assert!(store.list_tasks().unwrap().iter().any(|t| t.id == a));
+        // With the version that was confirmed and still current it goes.
+        let current = store.item_version("task", b).unwrap().version;
+        assert_ne!(current, expected_b);
+        let fresh_b = get(&store, b);
+        assert!(apply_one(&mut store, &fresh_b, current, false, &Change::Trash).is_ok());
+        let _ = task_b;
+    }
+
+    #[test]
+    fn undo_waits_for_a_clean_form_and_deleting_waits_for_the_job() {
+        let (_dir, mut store) = store();
+        let a = add(&mut store, "A");
+        let b = add(&mut store, "B");
+        let mut panel = TaskPanel::default();
+        let snap = pick(&store, &[a, b]);
+        panel.run_batch(&mut store, &snap, Change::Priority("alta".into()));
+        assert!(panel.batch_undo.is_some());
+        // An open form with unsaved edits: the undo stays and says why.
+        let open = get(&store, a);
+        assert!(panel.focus_task(&open));
+        panel.draft.as_mut().unwrap().notes = "sem salvar".into();
+        panel.run_undo(&mut store);
+        assert!(panel.batch_undo.is_some(), "kept");
+        assert_eq!(
+            panel.message,
+            "Salve ou cancele a tarefa aberta antes de desfazer."
+        );
+        assert_eq!(get(&store, b).priority, "alta");
+        panel.discard_draft();
+        panel.close_form();
+        panel.run_undo(&mut store);
+        assert!(panel.batch_undo.is_none());
+        assert_eq!(get(&store, b).priority, "normal");
+        // Deleting while a job runs: nothing is deleted, the question stays.
+        panel.set_busy(true);
+        let snap = pick(&store, &[a, b]);
+        panel.run_batch(&mut store, &snap, Change::Trash);
+        assert_eq!(store.list_tasks().unwrap().len(), 2);
+        assert!(panel.batch_ask.is_some());
+        panel.set_busy(false);
+        let ask = panel.batch_ask.take().unwrap();
+        panel.run_batch(&mut store, &ask.snapshot, Change::Trash);
+        assert_eq!(store.list_tasks().unwrap().len(), 0);
     }
 }
