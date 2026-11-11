@@ -39,6 +39,7 @@ impl PonteApp {
         "janela-lixeira",
         "ajustes-lixeira",
         "ajustes-lixeira-busca",
+        "ajustes-lixeira-apagar",
         "janela-registro-manual",
         "janela-colar-whatsapp",
         "janela-sobre",
@@ -102,6 +103,7 @@ impl PonteApp {
         self.settings_open = false;
         self.mail.open = false;
         self.trash.open = false;
+        self.trash.shots_open("");
         self.manual_form.open = false;
         self.about_open = false;
         self.consult = None;
@@ -266,7 +268,10 @@ impl PonteApp {
                 self.area = Area::Settings;
                 self.settings_section = super::SettingsSection::Mail;
             }
-            "janela-lixeira" | "ajustes-lixeira" | "ajustes-lixeira-busca" => {
+            "janela-lixeira"
+            | "ajustes-lixeira"
+            | "ajustes-lixeira-busca"
+            | "ajustes-lixeira-apagar" => {
                 if let Err(error) = crate::shots_data::conflicts_scenario(&mut self.store) {
                     eprintln!("amostra da lixeira: {error:#}");
                 }
@@ -275,6 +280,7 @@ impl PonteApp {
                 self.trash.shots_open(match name {
                     "ajustes-lixeira" => "aviso",
                     "ajustes-lixeira-busca" => "busca",
+                    "ajustes-lixeira-apagar" => "apagar",
                     _ => "",
                 });
             }

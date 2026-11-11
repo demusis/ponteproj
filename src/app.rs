@@ -3077,7 +3077,7 @@ impl eframe::App for PonteApp {
             // already open (exit, Lixeira, leaving an edit) the window just
             // comes to the front: the question keeps its answer.
             let asking = self.replacement.is_some()
-                || self.trash.pending.is_some()
+                || self.trash.asking()
                 || self.exit_confirm
                 || self.leave.is_some();
             if !asking {
@@ -3132,7 +3132,7 @@ impl eframe::App for PonteApp {
             self.exit_confirm = true;
         }
         let enabled = self.replacement.is_none()
-            && self.trash.pending.is_none()
+            && !self.trash.asking()
             && !self.exit_confirm
             && self.leave.is_none();
         if enabled {

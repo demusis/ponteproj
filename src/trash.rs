@@ -640,6 +640,40 @@ impl Store {
         }
         Ok(purged)
     }
+    /// Empties the trash: every item goes for good, documents first so that
+    /// their children go with them. An item that cannot be removed stays and
+    /// its reason is returned; the others still go.
+    pub fn purge_all_trash(&mut self) -> Result<(usize, Vec<String>)> {
+        let targets: Vec<Target> = {
+            let mut statement = self.conn.prepare(
+                "SELECT kind,item_id FROM trash
+                 ORDER BY CASE kind WHEN 'document' THEN 0 WHEN 'task' THEN 1 ELSE 2 END, deleted_at, item_id",
+            )?;
+            let rows =
+                statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            rows.map(|row| {
+                let (kind, id) = row?;
+                Ok(Target {
+                    kind: Kind::parse(&kind)?,
+                    id,
+                })
+            })
+            .collect::<Result<_>>()?
+        };
+        let mut purged = 0;
+        let mut failures = Vec::new();
+        for target in targets {
+            // A child may already be gone with its document or its task.
+            if !contains(&self.conn, target.kind, target.id)? {
+                continue;
+            }
+            match self.purge_trash_item(target) {
+                Ok(_) => purged += 1,
+                Err(error) => failures.push(error.to_string()),
+            }
+        }
+        Ok((purged, failures))
+    }
     /// Deletes one trashed item for good: a document with everything it
     /// holds, a capture with its files, a task with its attachments, or one
     /// attachment. On a client computer the request goes to the main one.
@@ -959,6 +993,17 @@ pub struct Panel {
     purged: bool,
     /// What the person typed in the search box of the list.
     query: String,
+    /// A permanent deletion waiting for the person's confirmation.
+    ask: Option<Ask>,
+}
+
+/// What "apagar de vez" was asked for.
+#[cfg(feature = "desktop")]
+#[derive(Clone)]
+enum Ask {
+    One { target: Target, name: String },
+    Expired { days: u32, count: usize },
+    All { count: usize },
 }
 
 /// Choices for "apagar de vez após": days, 0 = never.
@@ -995,13 +1040,19 @@ impl Panel {
         self.pending = None;
         self.message.clear();
         self.query.clear();
+        self.ask = None;
         match view {
             "aviso" => {
                 self.message = "Itens excluídos há mais de 7 dias serão apagados de vez ao abrir o Ponte e uma vez por dia.".into();
             }
             "busca" => self.query = "escala".into(),
+            "apagar" => self.ask = Some(Ask::All { count: 4 }),
             _ => {}
         }
+    }
+    /// A question of the Lixeira is open (move to the trash or delete for good).
+    pub fn asking(&self) -> bool {
+        self.pending.is_some() || self.ask.is_some()
     }
     pub fn take_purged(&mut self) -> bool {
         std::mem::take(&mut self.purged)
@@ -1047,22 +1098,28 @@ impl Panel {
                 if on_client {
                     widgets::small_muted(ui, "Definido no computador principal.");
                 } else if days > 0 {
+                    // The Ponte does this by itself when it opens and once a day;
+                    // the button only spares the wait, so it shows when there is
+                    // something past the time.
                     let expired = store.expired_trash(days).map(|v| v.len()).unwrap_or(0);
-                    if ui
-                        .add_enabled(
-                            !busy && expired > 0,
-                            widgets::secondary(format!("Apagar agora os vencidos ({expired})")),
-                        )
-                        .on_hover_text("Apaga de vez, agora, os itens que já passaram do prazo. Não há como restaurar depois.")
-                        .clicked()
-                    {
-                        match store.purge_expired_trash(days) {
-                            Ok(count) => {
-                                self.purged = count > 0;
-                                self.message = if count == 1 { "1 item apagado de vez.".to_owned() } else { format!("{count} itens apagados de vez.") };
-                            }
-                            Err(error) => self.message = error.to_string(),
+                    if expired > 0 {
+                        let text = if expired == 1 {
+                            "Apagar já o item que passou do prazo…".to_owned()
+                        } else {
+                            format!("Apagar já os {expired} itens que passaram do prazo…")
+                        };
+                        if ui
+                            .add_enabled(!busy, widgets::secondary(text))
+                            .on_hover_text("O Ponte faz essa limpeza sozinho ao abrir e uma vez por dia. Use este botão para não esperar.")
+                            .clicked()
+                        {
+                            self.ask = Some(Ask::Expired {
+                                days,
+                                count: expired,
+                            });
                         }
+                    } else {
+                        widgets::small_muted(ui, "Nenhum item passou desse prazo até agora.");
                     }
                 }
             });
@@ -1122,7 +1179,7 @@ impl Panel {
     ) -> Option<Change> {
         use crate::{theme, widgets};
         use eframe::egui;
-        let confirming = self.pending.is_some();
+        let confirming = self.asking();
         let mut change = None;
         self.retention_row(ui, store, busy || confirming);
         if !self.message.is_empty() {
@@ -1160,6 +1217,20 @@ impl Panel {
                     "Buscar por número, título ou nome do arquivo",
                     380.0,
                 );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(
+                            !busy && !confirming,
+                            widgets::danger(format!("{} Esvaziar a lixeira…", theme::icon::TRASH)),
+                        )
+                        .on_hover_text(
+                            "Apaga de vez tudo o que está na lixeira. O Ponte pergunta antes.",
+                        )
+                        .clicked()
+                    {
+                        self.ask = Some(Ask::All { count: total });
+                    }
+                });
             });
         }
         let shown = arrange(entries, &self.query);
@@ -1228,7 +1299,7 @@ impl Panel {
                                 ui.add_space(theme::S4);
                             }
                             ui.vertical(|ui| {
-                                ui.set_width((ui.available_width() - 130.0).max(200.0));
+                                ui.set_width((ui.available_width() - 290.0).max(200.0));
                                 ui.horizontal_wrapped(|ui| {
                                     widgets::pill(
                                         ui,
@@ -1284,6 +1355,19 @@ impl Panel {
                                             }
                                             Err(error) => self.message = error.to_string(),
                                         }
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !busy && !confirming,
+                                            widgets::danger("Apagar de vez…"),
+                                        )
+                                        .on_hover_text("Apaga este item para sempre. O Ponte pergunta antes.")
+                                        .clicked()
+                                    {
+                                        self.ask = Some(Ask::One {
+                                            target: entry.target.clone(),
+                                            name: entry.name.clone(),
+                                        });
                                     }
                                 },
                             );
@@ -1391,6 +1475,62 @@ impl Panel {
                 }
             }
         }
+        if let Some(ask) = self.ask.clone() {
+            let mut confirm = false;
+            let mut cancel = false;
+            egui::Window::new("Apagar de vez?")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(590.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    let (title, body) = purge_question(&ask);
+                    widgets::section(ui, &title);
+                    ui.add_space(theme::S1);
+                    ui.label(body);
+                    ui.add_space(theme::S1);
+                    widgets::small_muted(ui, "Não há como desfazer nem restaurar depois. Com a equipe ou o celular, o que for apagado some também dos outros aparelhos na sincronização seguinte. Cópias de segurança já feitas não são afetadas e nada muda no SIGADOC.");
+                    ui.add_space(theme::S3);
+                    ui.horizontal(|ui| {
+                        cancel = ui.add(widgets::secondary("Cancelar")).clicked();
+                        let p = theme::c();
+                        let delete = egui::Button::new(
+                            egui::RichText::new(format!("{} Apagar de vez", theme::icon::TRASH))
+                                .font(theme::font_strong(theme::SIZE_BODY))
+                                .color(p.on_primary),
+                        )
+                        .fill(p.danger)
+                        .stroke(egui::Stroke::NONE);
+                        confirm = ui.add_enabled(!busy, delete).clicked();
+                    });
+                });
+            if cancel {
+                self.ask = None;
+            }
+            if confirm {
+                self.ask = None;
+                let done = match ask {
+                    Ask::One { target, .. } => {
+                        store.purge_trash_item(target).map(|_| (1, Vec::new()))
+                    }
+                    Ask::Expired { days, .. } => store
+                        .purge_expired_trash(days)
+                        .map(|count| (count, Vec::new())),
+                    Ask::All { .. } => store.purge_all_trash(),
+                };
+                match done {
+                    Ok((count, failures)) => {
+                        self.purged = count > 0;
+                        self.message = purge_result(count, &failures);
+                    }
+                    Err(error) => {
+                        // Part of the work may have been done before the failure.
+                        self.purged = true;
+                        self.message = format!("Não foi possível apagar: {error}");
+                    }
+                }
+            }
+        }
         if self.open {
             let mut open = self.open;
             egui::Window::new("Lixeira local")
@@ -1404,6 +1544,60 @@ impl Panel {
             self.open = open;
         }
         change
+    }
+}
+
+/// The title and the explanation of the question before deleting for good.
+#[cfg(feature = "desktop")]
+fn purge_question(ask: &Ask) -> (String, String) {
+    match ask {
+        Ask::One { target, name } => (
+            name.clone(),
+            match target.kind {
+                Kind::Document => "Este documento será apagado de vez, com as versões importadas, PDFs, notas, minutas, tarefas e anexos dele.",
+                Kind::Task => "Esta tarefa será apagada de vez, com os anexos dela.",
+                Kind::Capture => "Esta versão importada será apagada de vez, com os arquivos dela.",
+                Kind::Attachment => "Este anexo será apagado de vez.",
+            }
+            .to_owned(),
+        ),
+        Ask::Expired { days, count } => (
+            if *count == 1 {
+                "1 item que passou do prazo".to_owned()
+            } else {
+                format!("{count} itens que passaram do prazo")
+            },
+            format!(
+                "Será apagado de vez o que foi excluído há mais de {}. Um documento leva junto versões, PDFs, notas, minutas, tarefas e anexos.",
+                retention_label(*days)
+            ),
+        ),
+        Ask::All { count } => (
+            "Esvaziar a lixeira".to_owned(),
+            if *count == 1 {
+                "O único item da lixeira será apagado de vez. Um documento leva junto versões, PDFs, notas, minutas, tarefas e anexos.".to_owned()
+            } else {
+                format!("Os {count} itens da lixeira serão apagados de vez. Um documento leva junto versões, PDFs, notas, minutas, tarefas e anexos.")
+            },
+        ),
+    }
+}
+
+/// What to tell the person after deleting for good.
+#[cfg(feature = "desktop")]
+fn purge_result(count: usize, failures: &[String]) -> String {
+    let done = match count {
+        0 => "Nada foi apagado.".to_owned(),
+        1 => "1 item apagado de vez.".to_owned(),
+        many => format!("{many} itens apagados de vez."),
+    };
+    match failures {
+        [] => done,
+        [only] => format!("{done} 1 item continua na lixeira: {only}"),
+        [first, ..] => format!(
+            "{done} {} itens continuam na lixeira. O primeiro motivo: {first}",
+            failures.len()
+        ),
     }
 }
 
@@ -1563,6 +1757,69 @@ mod tests {
         );
         assert!(store.restore_item(target(Kind::Task, new_task)).is_ok());
         assert_eq!(store.purge_expired_trash(30).unwrap(), 0);
+    }
+    #[test]
+    fn emptying_the_trash_removes_everything_and_leaves_the_rest_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("esvaziar.sqlite3")).unwrap();
+        // Document A goes to the trash with an attachment; one of its tasks was
+        // trashed before it.
+        let a = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        store
+            .add_attachment(
+                crate::attachments::Owner::Document(a.document_id),
+                "a.txt",
+                "",
+                b"conteudo",
+            )
+            .unwrap();
+        let mut child = Task::new(a.document_id);
+        child.title = "Filha".into();
+        let child = store.save_task(&child).unwrap();
+        store.trash_item(target(Kind::Task, child)).unwrap();
+        store
+            .trash_item(target(Kind::Document, a.document_id))
+            .unwrap();
+        // Document B stays, with one task in the trash and one in use.
+        let mut other = crate::model::sample_capture();
+        other.document_number = "ORG-PRO-2026/00077".into();
+        other.source_url =
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=ORG-PRO-2026%2F00077"
+                .into();
+        other.request_id = uuid::Uuid::new_v4().to_string();
+        let b = store.import_capture(&other).unwrap();
+        let mut gone = Task::new(b.document_id);
+        gone.title = "Vai embora".into();
+        let gone = store.save_task(&gone).unwrap();
+        let mut kept = Task::new(b.document_id);
+        kept.title = "Fica".into();
+        let kept = store.save_task(&kept).unwrap();
+        store.trash_item(target(Kind::Task, gone)).unwrap();
+        assert_eq!(store.trash_entries().unwrap().len(), 3);
+
+        // One item alone first: only it goes.
+        store.purge_trash_item(target(Kind::Task, gone)).unwrap();
+        assert_eq!(store.trash_entries().unwrap().len(), 2);
+        assert!(store.purge_trash_item(target(Kind::Task, gone)).is_err());
+
+        let (purged, failures) = store.purge_all_trash().unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(purged, 1, "the task went with its document");
+        assert!(store.trash_entries().unwrap().is_empty());
+        assert!(store.load_document(a.document_id).is_err());
+        assert!(store.load_document(b.document_id).is_ok());
+        let titles: Vec<String> = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .map(|task| task.title)
+            .collect();
+        assert!(titles.contains(&"Fica".to_owned()));
+        assert!(!titles.contains(&"Vai embora".to_owned()));
+        let _ = kept;
+        assert_eq!(store.purge_all_trash().unwrap().0, 0);
     }
     #[test]
     fn capture_trash_selects_fallback_and_protects_saved_derivatives() {
