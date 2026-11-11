@@ -157,12 +157,13 @@ async function instrumentContent(page, native = {}) {
     const attach = Element.prototype.attachShadow;
     Element.prototype.attachShadow = function (options) { const result = attach.call(this, options); window.__testShadow = result; return result; };
     window.__requests = [];
+    window.__imports = [];
     window.__callbacks = [];
     // Answers of the fake Ponte to the status check; a test may replace them (or "hang").
     window.__calls = [];
     window.__native = { ping: { protocol_version: 1, ok: true, app_version: "0.29.0", actions: ["lookup", "open_document"] }, lookup: { protocol_version: 1, ok: true, found: false }, open: { protocol_version: 1, ok: true, document_id: 1, ui_opened: true }, ...config };
     window.chrome = { runtime: { id: "test-extension", lastError: null, onMessage: { addListener: listener => { window.__onMessage = listener; } }, sendMessage: (message, callback) => {
-      if (message.action === "ponte.import_capture") { window.__requests.push(message.capture); window.__callbacks.push(callback); return; }
+      if (message.action === "ponte.import_capture") { window.__requests.push(message.capture); window.__imports.push(message); window.__callbacks.push(callback); return; }
       window.__calls.push(message);
       const reply = { "ponte.ping": window.__native.ping, "ponte.lookup": window.__native.lookup, "ponte.open": window.__native.open }[message.action];
       if (reply !== "hang") setTimeout(() => callback(reply), 0);
@@ -435,5 +436,237 @@ test("a document page whose content area is not found says so; list pages and co
   const state = await panelState(page);
   assert.deepEqual([state.layout, state.disabled], [false, true]);
   assert.match(await page.evaluate(() => window.__testShadow.querySelector(".identity").textContent), /Abra um documento/);
+  await page.close();
+});
+
+// ---- 0.3.0: note and priority at import ----
+const EXTRAS_PING = { protocol_version: 1, ok: true, app_version: "0.31.0", actions: ["lookup", "open_document", "import_extras"] };
+const extrasState = page => page.evaluate(() => {
+  const root = window.__testShadow, row = root.querySelector(".extras-row"), box = root.querySelector(".extras-box"), area = root.querySelector("textarea"), count = root.querySelector(".extras-count");
+  const visible = el => { const style = getComputedStyle(el); return !el.hidden && style.display !== "none" && style.visibility !== "hidden"; };
+  return { link: visible(row), linkText: row.querySelector("button").textContent, box: visible(box), note: area.value, priority: root.querySelector("select").value, locked: area.disabled && root.querySelector("select").disabled, count: visible(count) ? count.textContent : "", status: root.querySelector('[role="status"]').textContent };
+});
+const openExtras = page => page.evaluate(() => window.__testShadow.querySelector(".extras-row button").click());
+const typeExtras = (page, note, priority) => page.evaluate(([note, priority]) => {
+  const root = window.__testShadow, area = root.querySelector("textarea");
+  area.value = note; area.dispatchEvent(new Event("input"));
+  root.querySelector("select").value = priority;
+}, [note, priority]);
+const clickImport = page => page.evaluate(() => window.__testShadow.querySelector("button").click());
+const answerImport = (page, extra = {}) => page.evaluate(extra => window.__callbacks.shift()({ protocol_version: 1, ok: true, request_id: window.__requests.at(-1).request_id, document_id: 5, capture_id: 1, duplicate: false, outcome: "imported", message: "Salvo", ui_opened: true, ...extra }), extra);
+test("note and priority: the link exists only for a Ponte that takes them, and the controls are what was specified", options, async () => {
+  let page = await pageFor();
+  await instrumentContent(page);
+  await page.waitForTimeout(900);
+  let state = await extrasState(page);
+  assert.deepEqual([state.link, state.box], [false, false]);
+  await page.close();
+  page = await pageFor();
+  await instrumentContent(page, { ping: EXTRAS_PING });
+  await page.waitForTimeout(900);
+  state = await extrasState(page);
+  assert.deepEqual([state.link, state.linkText, state.box], [true, "Adicionar nota ou prioridade", false]);
+  await openExtras(page);
+  state = await extrasState(page);
+  assert.deepEqual([state.box, state.priority, state.count], [true, "", ""]);
+  const spec = await page.evaluate(() => {
+    const root = window.__testShadow, area = root.querySelector("textarea");
+    return { rows: area.rows, max: area.maxLength, placeholder: area.placeholder, labels: [...root.querySelectorAll(".extras-box label")].map(label => label.firstChild.textContent), options: [...root.querySelectorAll("option")].map(option => [option.value, option.textContent]) };
+  });
+  assert.deepEqual(spec, { rows: 3, max: 2000, placeholder: "Ex.: responder até sexta; falar com o setor de protocolo", labels: ["Nota para o Ponte", "Prioridade"], options: [["", "Não mudar"], ["baixa", "Baixa"], ["normal", "Normal"], ["alta", "Alta"], ["urgente", "Urgente"]] });
+  // The counter only appears above 1800 characters.
+  await typeExtras(page, "a".repeat(1800), "");
+  assert.equal((await extrasState(page)).count, "");
+  await typeExtras(page, "a".repeat(1801), "");
+  assert.equal((await extrasState(page)).count, "1801 de 2000");
+  await page.close();
+});
+test("note and priority: the size of the panel before any click does not depend on the Ponte's answer", options, async () => {
+  const heights = [];
+  const answers = [undefined, { ping: EXTRAS_PING }, { ping: EXTRAS_PING, lookup: FOUND }, { ping: { protocol_version: 1, ok: true, app_version: "0.28.0" } }, { ping: { protocol_version: 1, ok: false, error: { code: "HOST_MISSING", message: "O Ponte não foi encontrado neste computador." } } }];
+  for (const answer of answers) {
+    const page = await pageFor();
+    await instrumentContent(page, answer);
+    await page.waitForTimeout(900);
+    heights.push(await page.evaluate(() => { const rect = window.__testShadow.querySelector("section").getBoundingClientRect(); return [Math.round(rect.width), Math.round(rect.height)]; }));
+    await page.close();
+  }
+  assert.ok(heights.every(size => size[0] === heights[0][0] && size[1] === heights[0][1]), JSON.stringify(heights));
+});
+test("note and priority go with the import, are cleared after it and say what was done", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: EXTRAS_PING });
+  await page.waitForTimeout(900);
+  await openExtras(page);
+  await typeExtras(page, "  Responder até sexta  ", "alta");
+  await clickImport(page);
+  const messages = await page.evaluate(() => window.__imports);
+  assert.equal(messages.length, 1);
+  assert.deepEqual(Object.keys(messages[0]), ["action", "capture", "extras"]);
+  assert.deepEqual(messages[0].extras, { note: "Responder até sexta", priority: "alta" });
+  assert.equal((await extrasState(page)).locked, true);
+  await answerImport(page, { extras_applied: true });
+  await page.waitForTimeout(100);
+  const state = await extrasState(page);
+  assert.equal(state.status, "Importado. O Ponte abriu o documento. Nota e prioridade enviadas.");
+  assert.deepEqual([state.note, state.priority, state.box, state.locked], ["", "", false, false]);
+  // Nothing typed: the message carries no extras at all.
+  await clickImport(page);
+  assert.deepEqual(Object.keys(await page.evaluate(() => window.__imports.at(-1))), ["action", "capture"]);
+  await page.close();
+});
+test("note only and priority only say so; a message of the Ponte replaces the sentence when nothing was applied", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: EXTRAS_PING });
+  await page.waitForTimeout(900);
+  await openExtras(page);
+  await typeExtras(page, "Só a nota", "");
+  await clickImport(page);
+  assert.deepEqual(await page.evaluate(() => window.__imports.at(-1).extras), { note: "Só a nota" });
+  await answerImport(page, { extras_applied: true });
+  await page.waitForTimeout(50);
+  assert.equal((await extrasState(page)).status, "Importado. O Ponte abriu o documento. Nota enviada.");
+  await openExtras(page);
+  await typeExtras(page, "", "urgente");
+  await clickImport(page);
+  assert.deepEqual(await page.evaluate(() => window.__imports.at(-1).extras), { priority: "urgente" });
+  await answerImport(page, { extras_applied: true });
+  await page.waitForTimeout(50);
+  assert.equal((await extrasState(page)).status, "Importado. O Ponte abriu o documento. Prioridade enviada.");
+  await openExtras(page);
+  await typeExtras(page, "Outra", "baixa");
+  await clickImport(page);
+  await answerImport(page, { extras_applied: false, extras_message: "A nota não foi aplicada: o documento está na lixeira." });
+  await page.waitForTimeout(50);
+  assert.equal((await extrasState(page)).status, "Importado. O Ponte abriu o documento. A nota não foi aplicada: o documento está na lixeira.");
+  await openExtras(page);
+  await typeExtras(page, "Mais uma", "");
+  await clickImport(page);
+  await answerImport(page, { extras_skipped: true });
+  await page.waitForTimeout(50);
+  assert.equal((await extrasState(page)).status, "Importado. O Ponte abriu o documento. O Ponte instalado não recebe nota nem prioridade; a importação foi feita sem elas. Atualize o Ponte.");
+  await page.close();
+});
+test("note and priority survive an import error and the retry sends exactly the same ones", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: EXTRAS_PING });
+  await page.waitForTimeout(900);
+  await openExtras(page);
+  await typeExtras(page, "Falar com o protocolo", "normal");
+  await clickImport(page);
+  await page.evaluate(() => window.__callbacks.shift()({ protocol_version: 1, ok: false, error: { code: "HOST_CONNECTION", message: "Confirmação perdida" } }));
+  await page.waitForTimeout(50);
+  let state = await extrasState(page);
+  assert.deepEqual([state.note, state.priority, state.box, state.locked], ["Falar com o protocolo", "normal", true, true]);
+  assert.equal(await page.evaluate(() => window.__testShadow.querySelector("button").textContent), "Repetir importação");
+  await clickImport(page);
+  const [first, second] = await page.evaluate(() => window.__imports);
+  assert.deepEqual(second.extras, first.extras);
+  assert.deepEqual(second.extras, { note: "Falar com o protocolo", priority: "normal" });
+  assert.equal(second.capture.request_id, first.capture.request_id);
+  await answerImport(page, { extras_applied: true });
+  await page.waitForTimeout(50);
+  state = await extrasState(page);
+  assert.equal(state.status, "Importado. O Ponte abriu o documento. Nota e prioridade enviadas.");
+  assert.deepEqual([state.note, state.priority], ["", ""]);
+  await page.close();
+});
+test("note and priority belong to the document on screen: another document number clears them", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: EXTRAS_PING });
+  await page.waitForTimeout(900);
+  await openExtras(page);
+  await typeExtras(page, "Nota do primeiro", "alta");
+  // Same document, page changes elsewhere: kept.
+  await page.evaluate(() => { document.querySelector(".document-text p").textContent = "Outro texto"; });
+  await page.waitForTimeout(400);
+  assert.deepEqual((await extrasState(page)).note, "Nota do primeiro");
+  await page.evaluate(() => { document.getElementById("official-number").textContent = "ORG-PRO-2026/01235"; history.pushState({}, "", "/doc?sigla=ORG-PRO-2026%2F01235"); });
+  await page.waitForTimeout(500);
+  const state = await extrasState(page);
+  assert.deepEqual([state.note, state.priority, state.box], ["", "", false]);
+  await page.close();
+});
+test("note and priority of a failed import are not sent with another document", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: EXTRAS_PING });
+  await page.waitForTimeout(900);
+  await openExtras(page);
+  await typeExtras(page, "Nota privada", "alta");
+  await clickImport(page);
+  await page.evaluate(() => window.__callbacks.shift()({ protocol_version: 1, ok: false, error: { code: "HOST_CONNECTION", message: "Confirmação perdida" } }));
+  await page.evaluate(() => { document.getElementById("official-number").textContent = "ORG-PRO-2026/01235"; history.pushState({}, "", "/doc?sigla=ORG-PRO-2026%2F01235"); });
+  await page.waitForTimeout(500);
+  assert.deepEqual([(await extrasState(page)).note, (await extrasState(page)).locked], ["", false]);
+  await clickImport(page);
+  const [, second] = await page.evaluate(() => window.__imports);
+  assert.equal(second.capture.document_number, "ORG-PRO-2026/01235");
+  assert.equal("extras" in second, false);
+  await page.close();
+});
+test("the keyboard shortcut imports with whatever is in the controls", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: EXTRAS_PING });
+  await page.waitForTimeout(900);
+  await openExtras(page);
+  await typeExtras(page, "Pelo atalho", "baixa");
+  await page.evaluate(() => window.__onMessage({ action: "ponte.shortcut_import" }, { id: "test-extension" }));
+  assert.deepEqual(await page.evaluate(() => window.__imports.map(message => message.extras)), [{ note: "Pelo atalho", priority: "baixa" }]);
+  await page.close();
+});
+
+// ---- 0.3.0: recent imports in the popup ----
+const popupHtml = fs.readFileSync(path.join(__dirname, "../../extension/popup.html"), "utf8").replace(/<script src="popup.js"><\/script>/, "");
+async function popupPage(items, ping) {
+  const page = await browser.newPage();
+  await page.route("**/*", route => route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: popupHtml }));
+  await page.goto("https://www.sigadoc.mt.gov.br/popup.html");
+  await page.evaluate(([items, ping]) => {
+    window.__sent = [];
+    window.__items = items;
+    window.chrome = { runtime: { id: "test-extension", lastError: null, sendMessage: (message, callback) => {
+      window.__sent.push(message);
+      const reply = { "ponte.ping": ping, "ponte.recent": { protocol_version: 1, ok: true, items: window.__items }, "ponte.recent_clear": { protocol_version: 1, ok: true }, "ponte.open": { protocol_version: 1, ok: true, document_id: message.document_id, ui_opened: false } }[message.action];
+      setTimeout(() => callback(reply), 0);
+    } } };
+  }, [items, ping]);
+  await page.addScriptTag({ path: path.join(__dirname, "../../extension/popup.js") });
+  await page.waitForTimeout(150);
+  return page;
+}
+test("popup: recent imports with number, subject, time and result; open link only where it can work; clear", options, async () => {
+  const long = "Assunto muito longo ".repeat(10).trim();
+  const items = [
+    { number: "ORG-PRO-2026/00003", title: "Terceiro <b>assunto</b>", time: "2026-11-11T17:32:00.000Z", outcome: "imported", document_id: 7 },
+    { number: "ORG-PRO-2026/00002", title: long, time: "2026-11-11T17:20:00.000Z", outcome: "already", document_id: 6 },
+    { number: "ORG-PRO-2026/00001", title: "Primeiro", time: "2026-11-11T17:10:00.000Z", outcome: "failed" }
+  ];
+  const page = await popupPage(items, EXTRAS_PING);
+  const rows = await page.evaluate(() => [...document.querySelectorAll("#recent li")].map(li => ({ text: li.innerText.replace(/\s+/g, " ").trim(), open: li.querySelectorAll("button").length, html: li.innerHTML.includes("<b>") })));
+  assert.equal(rows.length, 3);
+  assert.ok(rows[0].text.startsWith("ORG-PRO-2026/00003") && rows[0].text.includes("Terceiro <b>assunto</b>") && rows[0].text.includes("Importado") && /\d\d:\d\d/.test(rows[0].text), rows[0].text);
+  assert.ok(!rows[0].html);
+  assert.ok(rows[1].text.includes("Já estava no Ponte") && rows[1].text.includes("…") && !rows[1].text.includes(long));
+  assert.ok(rows[2].text.includes("Não concluída"));
+  assert.deepEqual(rows.map(row => row.open), [1, 1, 0]);
+  assert.equal(await page.evaluate(() => document.getElementById("recent-empty").hidden), true);
+  assert.equal(await page.evaluate(() => document.getElementById("extras-old").hidden), true);
+  await page.evaluate(() => document.querySelector("#recent li button").click());
+  await page.waitForTimeout(100);
+  assert.deepEqual(await page.evaluate(() => window.__sent.at(-1)), { action: "ponte.open", document_id: 7 });
+  assert.equal(await page.evaluate(() => document.getElementById("recent-note").textContent), "Abra o Ponte para ver o documento.");
+  await page.evaluate(() => document.getElementById("recent-clear").click());
+  await page.waitForTimeout(100);
+  assert.deepEqual(await page.evaluate(() => window.__sent.at(-1)), { action: "ponte.recent_clear" });
+  assert.equal(await page.evaluate(() => document.querySelectorAll("#recent li").length), 0);
+  assert.equal(await page.evaluate(() => document.getElementById("recent-empty").textContent), "Nenhuma importação nesta sessão do navegador.");
+  assert.equal(await page.evaluate(() => document.getElementById("recent-clear").hidden), true);
+  await page.close();
+});
+test("popup: an older Ponte gets the hint about note and priority and no open link", options, async () => {
+  const items = [{ number: "ORG-PRO-2026/00003", title: "Assunto", time: "2026-11-11T17:32:00.000Z", outcome: "imported", document_id: 7 }];
+  const page = await popupPage(items, { protocol_version: 1, ok: true, app_version: "0.30.0", actions: ["lookup"] });
+  assert.equal(await page.evaluate(() => { const el = document.getElementById("extras-old"); return !el.hidden && el.textContent; }), "Atualize o Ponte para enviar nota e prioridade ao importar.");
+  assert.equal(await page.evaluate(() => document.querySelectorAll("#recent li button").length), 0);
   await page.close();
 });

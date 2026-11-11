@@ -8,7 +8,7 @@
   host.setAttribute("data-ponteproj-ui", "true");
   const shadow = host.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
-  style.textContent = ":host{all:initial;position:fixed;right:18px;bottom:18px;z-index:2147483646;font:14px/1.45 system-ui,sans-serif;color:#172b45}section{width:min(340px,calc(100vw - 40px));padding:14px;border:1px solid #a9b8cb;border-radius:12px;background:#fff;box-shadow:0 6px 24px #10264033}section.idle{width:min(260px,calc(100vw - 40px));padding:10px 12px;opacity:.9}button{width:100%;border:0;border-radius:7px;background:#1257a6;color:#fff;padding:11px 12px;font:600 14px system-ui;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #d99500;outline-offset:3px}button:disabled{background:#667588;cursor:default}p{margin:9px 0 0;overflow-wrap:anywhere;font-size:12px}.identity{font-weight:600}.idle .identity{margin-top:0;font-weight:500;color:#4c5d72}.idle button,.idle p.status,.idle details{display:none}p.error{color:#9b2c2c}p.success{color:#1d6b3a}p.warning{color:#8a5a00;font-weight:600}a{color:#1257a6}details{margin-top:7px;font-size:11px}summary{cursor:pointer}ul{padding-left:18px}li{margin-top:4px}[hidden]{display:none!important}p.note{color:#52657a}button.link{display:inline;width:auto;padding:0;background:none;color:#1257a6;font:inherit;font-weight:600;text-decoration:underline}button.link:disabled{background:none;color:#667588}.idle p.ponte,.idle p.layout,.idle p.open-row,.idle p.open-note,.idle .known{display:none}.known{height:64px;overflow:hidden}";
+  style.textContent = ":host{all:initial;position:fixed;right:18px;bottom:18px;z-index:2147483646;font:14px/1.45 system-ui,sans-serif;color:#172b45}section{width:min(340px,calc(100vw - 40px));padding:14px;border:1px solid #a9b8cb;border-radius:12px;background:#fff;box-shadow:0 6px 24px #10264033}section.idle{width:min(260px,calc(100vw - 40px));padding:10px 12px;opacity:.9}button{width:100%;border:0;border-radius:7px;background:#1257a6;color:#fff;padding:11px 12px;font:600 14px system-ui;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #d99500;outline-offset:3px}button:disabled{background:#667588;cursor:default}p{margin:9px 0 0;overflow-wrap:anywhere;font-size:12px}.identity{font-weight:600}.idle .identity{margin-top:0;font-weight:500;color:#4c5d72}.idle button,.idle p.status,.idle details{display:none}p.error{color:#9b2c2c}p.success{color:#1d6b3a}p.warning{color:#8a5a00;font-weight:600}a{color:#1257a6}details{margin-top:7px;font-size:11px}summary{cursor:pointer}ul{padding-left:18px}li{margin-top:4px}[hidden]{display:none!important}p.note{color:#52657a}button.link{display:inline;width:auto;padding:0;background:none;color:#1257a6;font:inherit;font-weight:600;text-decoration:underline}button.link:disabled{background:none;color:#667588}.idle p.ponte,.idle p.layout,.idle p.open-row,.idle p.open-note,.idle .known{display:none}.known{height:64px;overflow:hidden}.extras-row{height:24px;margin-top:6px;overflow:hidden;font-size:12px}.extras-row.off{visibility:hidden}.extras-box{margin-top:2px;font-size:12px}.extras-box label{display:block;margin-top:8px;font-weight:600}textarea,select{display:block;width:100%;box-sizing:border-box;margin-top:3px;padding:6px 8px;border:1px solid #a9b8cb;border-radius:6px;background:#fff;color:#172b45;font:12px/1.4 system-ui,sans-serif}textarea{resize:vertical}textarea:focus-visible,select:focus-visible{outline:3px solid #d99500;outline-offset:1px}textarea:disabled,select:disabled{background:#eef1f5;color:#52657a}.extras-count{margin:3px 0 0;text-align:right;color:#8a5a00}.idle .extras-row,.idle .extras-box{display:none}";
   const panel = document.createElement("section");
   panel.setAttribute("aria-label", "Importação para o Ponte");
   const button = document.createElement("button");
@@ -57,7 +57,42 @@
   const known = document.createElement("div");
   known.className = "known";
   known.append(ponteLine, openRow);
-  panel.append(button, identity, layoutLine, known, status, openNote, details);
+  // Note and priority for the document on screen. The link keeps its room
+  // (hidden, not removed) when the Ponte cannot take them, so the panel's size
+  // does not depend on the Ponte's answer; the controls only appear when the person opens them.
+  const extrasRow = document.createElement("div");
+  extrasRow.className = "extras-row off";
+  const extrasLink = document.createElement("button");
+  extrasLink.type = "button";
+  extrasLink.className = "link";
+  extrasLink.textContent = "Adicionar nota ou prioridade";
+  extrasLink.setAttribute("aria-expanded", "false");
+  extrasRow.append(extrasLink);
+  const extrasBox = document.createElement("div");
+  extrasBox.className = "extras-box";
+  extrasBox.hidden = true;
+  const noteLabel = document.createElement("label");
+  noteLabel.textContent = "Nota para o Ponte";
+  const noteArea = document.createElement("textarea");
+  noteArea.rows = 3;
+  noteArea.maxLength = Core.MAX_NOTE_CHARS;
+  noteArea.placeholder = "Ex.: responder até sexta; falar com o setor de protocolo";
+  noteLabel.append(noteArea);
+  const noteCount = document.createElement("p");
+  noteCount.className = "extras-count";
+  noteCount.hidden = true;
+  const priorityLabel = document.createElement("label");
+  priorityLabel.textContent = "Prioridade";
+  const prioritySelect = document.createElement("select");
+  for (const [value, text] of [["", "Não mudar"], ["baixa", "Baixa"], ["normal", "Normal"], ["alta", "Alta"], ["urgente", "Urgente"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    prioritySelect.append(option);
+  }
+  priorityLabel.append(prioritySelect);
+  extrasBox.append(noteLabel, noteCount, priorityLabel);
+  panel.append(button, extrasRow, extrasBox, identity, layoutLine, known, status, openNote, details);
   shadow.append(style, panel);
   let enriching = false;
   let snapshot = null;
@@ -74,6 +109,12 @@
   let checkTimer = null;
   let openBusy = false;
   let openMessage = "";
+  // Extras: the controls belong to the document with `extrasNumber`; `sendExtras` is
+  // what the running attempt carries and `retryExtras` what a retry must carry again.
+  let extrasOpen = false;
+  let extrasNumber = null;
+  let sendExtras = null;
+  let retryExtras = null;
   const CHECK_DELAY_MS = 400, CHECK_TIMEOUT_MS = 5000;
   const send = message => new Promise(resolve => {
     try { chrome.runtime.sendMessage(message, response => { if (chrome.runtime.lastError) resolve(null); else resolve(response); }); }
@@ -81,7 +122,7 @@
   });
   const session = new Core.ImportSession(capture => new Promise(resolve => {
     try {
-      chrome.runtime.sendMessage({ action: "ponte.import_capture", capture }, response => {
+      chrome.runtime.sendMessage(sendExtras ? { action: "ponte.import_capture", capture, extras: { ...sendExtras } } : { action: "ponte.import_capture", capture }, response => {
         if (chrome.runtime.lastError) resolve(Core.nativeError(""));
         else resolve(response);
       });
@@ -101,6 +142,19 @@
     button.disabled = !snapshot || enriching || session.state === "sending";
     button.textContent = session.state === "sending" ? "Aguardando o Ponte…" : session.state === "error" && same ? "Repetir importação" : view.importLabel;
     layoutLine.hidden = !(snapshot && snapshot.layout_unrecognized);
+    // Note and priority: offered only when the last answer of the Ponte says it takes them.
+    const canExtras = Boolean(ponteActions?.includes("import_extras"));
+    const locked = session.state === "sending" || enriching || (session.state === "error" && same);
+    extrasRow.classList.toggle("off", !canExtras);
+    extrasLink.disabled = !canExtras;
+    extrasLink.textContent = extrasOpen ? "Ocultar nota e prioridade" : "Adicionar nota ou prioridade";
+    extrasLink.setAttribute("aria-expanded", String(extrasOpen));
+    extrasBox.hidden = !(canExtras && extrasOpen);
+    noteArea.disabled = locked;
+    prioritySelect.disabled = locked;
+    const noteChars = Array.from(noteArea.value).length;
+    noteCount.hidden = noteChars <= 1800;
+    noteCount.textContent = `${noteChars} de ${Core.MAX_NOTE_CHARS}`;
     // After an import the receipt says it all; the "already in Ponte" line would repeat it.
     const missing = Boolean(snapshot && ponteState && ponteState.number === snapshot.document_number && ponteState.outcome.kind === "missing" && !importedNow);
     const showLine = Boolean(snapshot && (view.text || missing) && !(view.open && importedNow));
@@ -135,6 +189,8 @@
           if (notes.length) message += ` ${Core.filesNotDownloaded(notes.length)}: ${notes.join("; ")}`;
           tone = "success";
         }
+        const extrasText = Core.extrasNotice(notice.result, notice.extras);
+        if (extrasText) message += ` ${extrasText}`;
       } else { message = prefix + notice.result.error.message; tone = "error"; }
     }
     status.textContent = message;
@@ -149,8 +205,20 @@
     catch (error) { snapshot = null; pageError = error.message || "Ficha documental não reconhecida."; }
     if (!snapshot) { checkedNumber = null; ponteState = null; openMessage = ""; clearTimeout(checkTimer); checkTimer = null; }
     else queueCheck(false);
+    // The note and priority belong to the document they were written for.
+    if (snapshot) {
+      if (extrasNumber !== null && extrasNumber !== snapshot.document_number) clearExtras();
+      extrasNumber = snapshot.document_number;
+    }
     render();
   }
+  function clearExtras() {
+    noteArea.value = "";
+    prioritySelect.value = "";
+    extrasOpen = false;
+  }
+  extrasLink.addEventListener("click", () => { extrasOpen = !extrasOpen; render(); if (extrasOpen) noteArea.focus(); });
+  noteArea.addEventListener("input", render);
   function openTarget(view) {
     if (!snapshot || !ponteActions?.includes("open_document")) return 0;
     const sent = session.capture ? Core.identity(session.capture) : null;
@@ -213,19 +281,29 @@
     // Re-read immediately: the DOM may have changed since the observer ran.
     refresh();
     if (!snapshot || enriching || session.state === "sending") return;
-    let capture;
-    try { capture = session.state === "error" && session.capture && Core.identity(snapshot) === Core.identity(session.capture) ? session.capture : Core.buildCapture(snapshot); }
+    let capture, extras;
+    const retrying = session.state === "error" && session.capture && Core.identity(snapshot) === Core.identity(session.capture);
+    try {
+      capture = retrying ? session.capture : Core.buildCapture(snapshot);
+      // A retry carries exactly the note and priority of the first attempt.
+      extras = retrying ? retryExtras : Core.buildExtras(noteArea.value, prioritySelect.value);
+    }
     catch (error) { notice = null; pageError = error.message; status.textContent = pageError; return; }
     if (!capture.metadata.movement_history && !(session.state === "error" && capture === session.capture) && globalThis.PonteHistory) {
       enriching = true; render(); status.textContent = "Lendo o histórico de tramitação…";
       try {await globalThis.PonteHistory.enrich(capture); Core.validateCapture(capture);} catch (error) {enriching=false;pageError=error.message;render();return;}
       enriching = false;
     }
+    sendExtras = retryExtras = extras;
     const promise = session.run(capture);
     notice = null;
     openMessage = "";
     render();
-    notice = await promise;
+    notice = { ...(await promise), extras };
+    // Delivered: the note and priority were passed on; the controls start empty again.
+    if (notice.result.ok && notice.capture.document_number === extrasNumber) clearExtras();
+    if (notice.result.ok) retryExtras = null;
+    sendExtras = null;
     refresh();
     queueCheck(true);
   });

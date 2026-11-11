@@ -9,6 +9,15 @@ const bundles = new Map();
 const SESSION_KEY = "ponte.bundles";
 const SESSION_BUDGET = 8 * 1024 * 1024; // the session area allows about 10 MB in total
 const COMMAND = "importar";
+// The last imports of this browser session, for the popup. Small records only:
+// number, subject, time, result, document code. Never text, never the note.
+// chrome.storage.session stays closed to content scripts: its access level is never widened.
+const RECENT_KEY = "ponte.recent";
+const RECENT_MAX = 8;
+const RECENT_OUTCOMES = ["imported", "already", "failed"];
+// What the Ponte can do, asked just before an import that carries a note or priority.
+const ACTIONS_TTL_MS = 60000;
+let actionsSeen = null;
 
 function authorizedTab(sender) {
   return sender.id === chrome.runtime.id && Number.isInteger(sender.tab?.id) && sender.frameId === 0 && Core.allowedOrigin(sender.url) && Core.allowedOrigin(sender.tab.url);
@@ -105,12 +114,54 @@ async function findBundle(key) {
   bundles.set(key, entry);
   return entry;
 }
+function rememberActions(result) {
+  if (result?.ok === true && Array.isArray(result.actions)) actionsSeen = { at: Date.now(), actions: result.actions };
+}
+// Note and priority are rebuilt key by key from the validated message.
+function cleanExtras(extras) {
+  const clean = {};
+  if (Object.hasOwn(extras, "note")) clean.note = extras.note;
+  if (Object.hasOwn(extras, "priority")) clean.priority = extras.priority;
+  return clean;
+}
+// { send } extras go along; { skipped } this Ponte does not take them; { error } the Ponte did not answer.
+async function extrasPlan(extras) {
+  if (!extras) return { send: null, skipped: false };
+  let actions;
+  if (actionsSeen && Date.now() - actionsSeen.at < ACTIONS_TTL_MS) actions = actionsSeen.actions;
+  else {
+    const ping = await nativeCall({ protocol_version: 1, action: "ping" }, 15000);
+    if (ping?.ok !== true) return { error: ping };
+    rememberActions(ping);
+    actions = ping.actions;
+  }
+  return actions.includes("import_extras") ? { send: extras, skipped: false } : { send: null, skipped: true };
+}
+// Only checked fields of the Ponte's answer about the extras reach the page.
+function finishExtras(result, plan) {
+  if (result?.ok !== true) return result;
+  const message = typeof result.extras_message === "string" ? result.extras_message.trim().slice(0, 500) : "";
+  const applied = result.extras_applied === true;
+  delete result.extras_applied; delete result.extras_message; delete result.extras_skipped;
+  if (plan.skipped) result.extras_skipped = true;
+  else if (plan.send) { result.extras_applied = applied; if (message) result.extras_message = message; }
+  return result;
+}
+// The retry key covers the page and the extras: both must be the same as in the first attempt.
+function requestSnapshot(message, extras) {
+  return JSON.stringify(message.capture) + (extras ? "\n" + JSON.stringify(extras) : "");
+}
 async function importCapture(message) {
+  const extras = Object.hasOwn(message, "extras") ? cleanExtras(message.extras) : null;
   if (!message.capture.references.some(r => ["original", "attachment"].includes(r.kind))) {
-    return nativeCall({ protocol_version: 1, action: "import_capture", capture: message.capture });
+    const plan = await extrasPlan(extras);
+    if (plan.error) return plan.error;
+    const request = { protocol_version: 1, action: "import_capture", capture: message.capture };
+    if (plan.send) request.extras = plan.send;
+    return finishExtras(await nativeCall(request), plan);
   }
   const key = message.capture.request_id;
-  const snapshot = JSON.stringify(message.capture);
+  const snapshot = requestSnapshot(message, extras);
   let entry = await findBundle(key);
   if (entry && entry.snapshot !== snapshot) return Core.errorResult("REQUEST_CHANGED", "A página mudou desde a última tentativa. Atualize a página e importe de novo.");
   if (!entry) {
@@ -122,7 +173,9 @@ async function importCapture(message) {
   try { packet = await entry.packet; }
   catch (error) { bundles.delete(key); throw error; }
   if (!entry.stored) { entry.stored = true; await storeBundle(key, snapshot, packet); }
-  const result = await nativeCall(packet);
+  const plan = await extrasPlan(extras);
+  if (plan.error) return plan.error;
+  const result = finishExtras(await nativeCall(plan.send ? { ...packet, extras: plan.send } : packet), plan);
   // Tell the page which PDFs could not be downloaded; the app also lists them.
   if (result?.ok === true && packet.capture?.coverage?.pending) {
     const before = new Set(message.capture.coverage.pending);
@@ -132,11 +185,43 @@ async function importCapture(message) {
   if (result?.ok === true) await forgetBundle(key);
   return result;
 }
+async function storedRecent() {
+  try {
+    const value = (await chrome.storage.session.get(RECENT_KEY))?.[RECENT_KEY];
+    if (!Array.isArray(value)) return [];
+    return value.filter(item => item && typeof item.number === "string" && typeof item.title === "string" && typeof item.time === "string" && RECENT_OUTCOMES.includes(item.outcome)).slice(0, RECENT_MAX).map(item => {
+      const clean = { number: item.number.slice(0, 200), title: item.title.slice(0, 120), time: item.time.slice(0, 40), outcome: item.outcome };
+      if (validId(item.document_id)) clean.document_id = item.document_id;
+      return clean;
+    });
+  } catch { return []; }
+}
+function recordRecent(capture, result) {
+  const ok = result?.ok === true;
+  const outcome = !ok ? "failed" : ["unchanged", "legacy_duplicate"].includes(Core.importOutcome(result)) ? "already" : "imported";
+  const record = { number: capture.document_number.slice(0, 200), title: shortText(capture.title, 120), time: new Date().toISOString(), outcome };
+  if (ok && validId(result.document_id)) record.document_id = result.document_id;
+  return inTurn(async () => {
+    try { await chrome.storage.session.set({ [RECENT_KEY]: [record, ...(await storedRecent())].slice(0, RECENT_MAX) }); }
+    catch { /* the list is only a convenience */ }
+  });
+}
+function clearRecent() {
+  return inTurn(async () => { try { await chrome.storage.session.set({ [RECENT_KEY]: [] }); } catch { /* nothing to do */ } });
+}
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message?.action === "ponte.ping") {
       if (!Core.exactKeys(message, ["action"]) || !(authorizedTab(sender) || authorizedPopup(sender))) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
-      return nativeCall({ protocol_version: 1, action: "ping" });
+      const answer = await nativeCall({ protocol_version: 1, action: "ping" });
+      rememberActions(answer);
+      return answer;
+    }
+    // The list of recent imports belongs to the popup alone.
+    if (message?.action === "ponte.recent" || message?.action === "ponte.recent_clear") {
+      if (!Core.exactKeys(message, ["action"]) || !authorizedPopup(sender)) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
+      if (message.action === "ponte.recent_clear") { await clearRecent(); return { protocol_version: 1, ok: true }; }
+      return { protocol_version: 1, ok: true, items: await storedRecent() };
     }
     if (message?.action === "ponte.lookup") {
       if (!Core.exactKeys(message, ["action", "document_number"]) || !authorizedTab(sender)) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
@@ -144,15 +229,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return nativeCall({ protocol_version: 1, action: "lookup", document_number: message.document_number }, 15000);
     }
     if (message?.action === "ponte.open") {
-      if (!Core.exactKeys(message, ["action", "document_id"]) || !authorizedTab(sender)) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
+      if (!Core.exactKeys(message, ["action", "document_id"]) || !(authorizedTab(sender) || authorizedPopup(sender))) return Core.errorResult("SENDER_DENIED", "Origem da solicitação não autorizada.");
       if (!validId(message.document_id)) return Core.errorResult("INVALID_REQUEST", "Documento inválido.");
       return nativeCall({ protocol_version: 1, action: "open_document", document_id: message.document_id }, 15000);
     }
     if (!authorizedTab(sender)) return Core.errorResult("SENDER_DENIED", "A importação exige a aba principal do SIGADOC na origem autorizada.");
-    if (!Core.exactKeys(message, ["action", "capture"]) || message.action !== "ponte.import_capture") return Core.errorResult("ACTION_DENIED", "Ação não permitida pela extensão.");
-    try { Core.validateCapture(message.capture); }
-    catch (error) { return Core.errorResult(error.code || "CAPTURE_SCHEMA", error.message); }
-    return importCapture(message);
+    if (!Core.exactKeys(message, Object.hasOwn(message || {}, "extras") ? ["action", "capture", "extras"] : ["action", "capture"]) || message.action !== "ponte.import_capture") return Core.errorResult("ACTION_DENIED", "Ação não permitida pela extensão.");
+    try {
+      Core.validateCapture(message.capture);
+      if (Object.hasOwn(message, "extras")) {
+        Core.validateExtras(message.extras);
+        if (Core.bytes(JSON.stringify({ protocol_version: 1, action: "import_capture", capture: message.capture, extras: message.extras })) > Core.MAX_PAYLOAD_BYTES) throw new Error("payload");
+      }
+    }
+    catch (error) { return error.message === "payload" ? Core.errorResult("PAYLOAD_TOO_LARGE", "O documento com a nota é grande demais para importar de uma vez. Nada foi importado.") : Core.errorResult(error.code || "CAPTURE_SCHEMA", error.message); }
+    let result;
+    try { result = await importCapture(message); }
+    catch (error) { await recordRecent(message.capture, null); throw error; }
+    await recordRecent(message.capture, result);
+    return result;
   })().then(sendResponse, () => sendResponse(Core.errorResult("EXTENSION_ERROR", "A extensão não conseguiu processar o pedido. Atualize a página e tente de novo.")));
   return true;
 });

@@ -198,11 +198,12 @@ test("history metadata cannot nominate a different document or destination",()=>
 
 const plainOf = value => JSON.parse(JSON.stringify(value));
 const NUMBER = "ORG-OFI-2026/00431";
-test("manifest 0.2.0: only nativeMessaging and storage, same key and hosts, one shortcut command", () => {
+test("manifest 0.3.0: only nativeMessaging and storage, same key and hosts, one shortcut command", () => {
   const read = name => JSON.parse(fs.readFileSync(path.join(__dirname, "../../extension/" + name), "utf8"));
   const manifest = read("manifest.json");
-  assert.equal(manifest.version, "0.2.0");
-  assert.equal(read("package.json").version, "0.2.0");
+  assert.equal(manifest.version, "0.3.0");
+  assert.equal(read("package.json").version, "0.3.0");
+  assert.equal(manifest.key, fs.readFileSync(path.join(__dirname, "../../extension-key.txt"), "utf8").trim());
   assert.deepEqual([...manifest.permissions].sort(), ["nativeMessaging", "storage"]);
   assert.deepEqual(manifest.host_permissions, [Core.ORIGIN + "/*"]);
   assert.deepEqual(manifest.content_scripts[0].matches, [Core.ORIGIN + "/*"]);
@@ -216,14 +217,13 @@ test("source never touches persistent storage, eval, innerHTML or logging", () =
     assert.ok(!/storage\.(local|sync)|\beval\(|new Function|innerHTML|console\./.test(source), name);
   }
 });
-test("lookup and open are accepted only from the content script of the SIGADOC top frame", async () => {
+test("lookup is accepted only from the content script of the SIGADOC top frame; open also from the popup", async () => {
   const worker = workerFixture();
   const lookup = { action: "ponte.lookup", document_number: NUMBER };
   const popup = { id: worker.chrome.runtime.id, url: worker.chrome.runtime.getURL("popup.html") };
-  for (const who of [popup, { ...worker.sender, url: "https://attacker.test/" }, { ...worker.sender, frameId: 1 }, { ...worker.sender, tab: { id: 7, url: "https://attacker.test/" } }, { ...worker.sender, id: "other-extension" }]) {
-    assert.equal((await worker.invoke(lookup, who)).error.code, "SENDER_DENIED");
-    assert.equal((await worker.invoke({ action: "ponte.open", document_id: 5 }, who)).error.code, "SENDER_DENIED");
-  }
+  const strangers = [{ ...worker.sender, url: "https://attacker.test/" }, { ...worker.sender, frameId: 1 }, { ...worker.sender, tab: { id: 7, url: "https://attacker.test/" } }, { ...worker.sender, id: "other-extension" }, { id: worker.chrome.runtime.id, url: worker.chrome.runtime.getURL("other.html") }, { id: worker.chrome.runtime.id, url: worker.chrome.runtime.getURL("popup.html"), tab: { id: 3, url: "https://example.org/" } }];
+  for (const who of [popup, ...strangers]) assert.equal((await worker.invoke(lookup, who)).error.code, "SENDER_DENIED");
+  for (const who of strangers) assert.equal((await worker.invoke({ action: "ponte.open", document_id: 5 }, who)).error.code, "SENDER_DENIED");
   // Extra fields are refused, not forwarded.
   assert.equal((await worker.invoke({ ...lookup, native_action: "open_app" })).error.code, "SENDER_DENIED");
   assert.equal((await worker.invoke({ action: "ponte.open", document_id: 5, extra: 1 })).error.code, "SENDER_DENIED");
@@ -376,4 +376,219 @@ test("the keyboard command reaches only an active SIGADOC tab", async () => {
     other.command("importar");
     assert.equal(other.tabMessages.length, 0, JSON.stringify(tabs));
   }
+});
+
+// ---- 0.3.0: note and priority at import, recent imports ----
+const WITH_EXTRAS = ["lookup", "open_document", "import_extras"];
+const pingReply = actions => ({ protocol_version: 1, ok: true, app_version: "0.31.0", actions });
+const popupOf = worker => ({ id: worker.chrome.runtime.id, url: worker.chrome.runtime.getURL("popup.html") });
+const importReply = request => ({ ...receipt(request.capture.request_id), document_id: 41 });
+function extrasNative(actions, extra = {}) {
+  return request => request.action === "ping" ? pingReply(actions) : { ...importReply(request), ...extra };
+}
+const importMessage = (extras, id = UUID) => ({ action: "ponte.import_capture", capture: capture({ request_id: id }), ...(extras ? { extras } : {}) });
+test("extras: exact shape, trimmed note up to 2000 characters, no control characters, four priorities", () => {
+  assert.equal(Core.buildExtras("", ""), null);
+  assert.equal(Core.buildExtras("   \n ", ""), null);
+  assert.deepEqual(plainOf(Core.buildExtras("  responder até sexta \r\n  e ligar\t", "")), { note: "responder até sexta \n  e ligar" });
+  assert.deepEqual(plainOf(Core.buildExtras("", "alta")), { priority: "alta" });
+  assert.deepEqual(plainOf(Core.buildExtras("x\u0000y\u0007z", "urgente")), { note: "xyz", priority: "urgente" });
+  for (const priority of ["baixa", "normal", "alta", "urgente"]) assert.deepEqual(plainOf(Core.validateExtras({ priority })), { priority });
+  assert.doesNotThrow(() => Core.validateExtras({ note: "a".repeat(2000) }));
+  assert.doesNotThrow(() => Core.validateExtras({ note: "😀".repeat(2000) }));
+  for (const bad of [{}, null, [], "x", { note: "" }, { note: " a" }, { note: "a " }, { note: "a".repeat(2001) }, { note: "😀".repeat(2001) }, { note: 5 }, { note: "a\u0000b" }, { note: "a\rb" }, { note: "a\u007fb" }, { note: "a\u0085b" }, { priority: "Alta" }, { priority: "" }, { priority: "critica" }, { priority: 1 }, { note: "a", extra: 1 }, { note: "a", priority: "alta", more: true }, { note: undefined, priority: "alta" }]) {
+    assert.throws(() => Core.validateExtras(bad), error => error.code === "EXTRAS_INVALID", JSON.stringify(bad));
+  }
+  assert.equal(Core.buildExtras("a".repeat(2000), "").note.length, 2000);
+});
+test("extras notice: the sentence after an import for each case", () => {
+  const ok = extra => ({ protocol_version: 1, ok: true, ...extra });
+  assert.equal(Core.extrasNotice(ok({ extras_applied: true }), { note: "a", priority: "alta" }), "Nota e prioridade enviadas.");
+  assert.equal(Core.extrasNotice(ok({ extras_applied: true }), { note: "a" }), "Nota enviada.");
+  assert.equal(Core.extrasNotice(ok({ extras_applied: true }), { priority: "alta" }), "Prioridade enviada.");
+  assert.equal(Core.extrasNotice(ok({ extras_applied: false, extras_message: "A nota não coube no documento." }), { note: "a" }), "A nota não coube no documento.");
+  assert.equal(Core.extrasNotice(ok({ extras_applied: false }), { note: "a", priority: "alta" }), "A nota e a prioridade não foram aplicadas.");
+  assert.equal(Core.extrasNotice(ok({ extras_skipped: true }), { note: "a" }), "O Ponte instalado não recebe nota nem prioridade; a importação foi feita sem elas. Atualize o Ponte.");
+  assert.equal(Core.extrasNotice(ok({}), null), "");
+  assert.equal(Core.extrasNotice({ protocol_version: 1, ok: false, error: {} }, { note: "a" }), "");
+});
+test("an import with extras asks the Ponte first, builds the message from scratch and sends extras only to a Ponte that takes them", async () => {
+  const worker = workerFixture(undefined, { native: extrasNative(WITH_EXTRAS, { extras_applied: true, secret: "x" }) });
+  const result = await worker.invoke(importMessage({ priority: "alta", note: "Responder até sexta" }));
+  assert.equal(result.ok, true);
+  assert.equal(result.extras_applied, true);
+  assert.equal(result.extras_skipped, undefined);
+  assert.deepEqual(plainOf(worker.calls.map(call => call.request.action)), ["ping", "import_capture"]);
+  assert.deepEqual(plainOf(worker.calls[1].request), { protocol_version: 1, action: "import_capture", capture: capture(), extras: { note: "Responder até sexta", priority: "alta" } });
+  assert.deepEqual(Object.keys(worker.calls[1].request.extras), ["note", "priority"]);
+  // The answer about the Ponte is kept for a minute: the next import does not ask again.
+  await worker.invoke(importMessage({ priority: "baixa" }, crypto.randomUUID()));
+  assert.deepEqual(plainOf(worker.calls.map(call => call.request.action)), ["ping", "import_capture", "import_capture"]);
+  assert.deepEqual(plainOf(worker.calls[2].request.extras), { priority: "baixa" });
+  // Without extras nothing is asked and no field is added.
+  const plain = workerFixture(undefined, { native: extrasNative(WITH_EXTRAS) });
+  assert.equal((await plain.invoke(importMessage(null))).extras_applied, undefined);
+  assert.deepEqual(plainOf(plain.calls.map(call => call.request)), [{ protocol_version: 1, action: "import_capture", capture: capture() }]);
+});
+test("an older Ponte never receives extras: the import is made without them and the result says so", async () => {
+  for (const actions of [["lookup", "open_document"], []]) {
+    const worker = workerFixture(undefined, { native: extrasNative(actions) });
+    const result = await worker.invoke(importMessage({ note: "Nota", priority: "urgente" }));
+    assert.equal(result.ok, true);
+    assert.equal(result.extras_skipped, true);
+    assert.equal(result.extras_applied, undefined);
+    assert.ok(worker.calls.every(call => !("extras" in call.request)));
+    assert.equal(worker.calls.at(-1).request.action, "import_capture");
+    assert.equal(Core.extrasNotice(result, { note: "Nota" }), "O Ponte instalado não recebe nota nem prioridade; a importação foi feita sem elas. Atualize o Ponte.");
+  }
+  // The Ponte answers `extras_*` only for what was sent: invented fields do not reach the page.
+  const odd = workerFixture(undefined, { native: extrasNative(["lookup"], { extras_applied: true, extras_message: "x" }) });
+  const answer = await odd.invoke(importMessage({ note: "n" }));
+  assert.equal(answer.extras_applied, undefined);
+  assert.equal(answer.extras_message, undefined);
+  // A Ponte that cannot be reached for the question gets nothing, and the person is told why.
+  const gone = workerFixture(undefined, { native: () => ({ nativeError: "Specified native messaging host not found." }) });
+  assert.equal((await gone.invoke(importMessage({ note: "n" }))).error.code, "HOST_MISSING");
+  assert.equal(gone.calls.length, 1);
+  assert.equal(gone.calls[0].request.action, "ping");
+});
+test("a refusal or message of the Ponte about extras is passed on cleaned", async () => {
+  const worker = workerFixture(undefined, { native: extrasNative(WITH_EXTRAS, { extras_applied: false, extras_message: "  A prioridade não foi aplicada.  " }) });
+  const result = await worker.invoke(importMessage({ priority: "alta" }));
+  assert.equal(result.extras_applied, false);
+  assert.equal(result.extras_message, "A prioridade não foi aplicada.");
+  const refusing = workerFixture(undefined, { native: request => request.action === "ping" ? pingReply(WITH_EXTRAS) : { protocol_version: 1, ok: false, error: { code: "invalid_request", message: "A nota é longa demais." } } });
+  assert.deepEqual(plainOf((await refusing.invoke(importMessage({ note: "n" }))).error), { code: "invalid_request", message: "A nota é longa demais." });
+});
+test("extras from the page are validated like every other input, before any native call", async () => {
+  const worker = workerFixture(undefined, { native: extrasNative(WITH_EXTRAS) });
+  const bad = [{}, { note: "" }, { note: " a " }, { note: "a".repeat(2001) }, { priority: "ALTA" }, { priority: "x" }, { note: "a", other: 1 }, { note: 1 }, null, "alta", ["alta"]];
+  for (const extras of bad) assert.equal((await worker.invoke({ action: "ponte.import_capture", capture: capture(), extras })).error.code, "EXTRAS_INVALID", JSON.stringify(extras));
+  assert.equal((await worker.invoke({ action: "ponte.import_capture", capture: capture(), extras: { note: "a" }, more: 1 })).error.code, "ACTION_DENIED");
+  assert.equal((await worker.invoke({ action: "ponte.import_capture", extras: { note: "a" } })).error.code, "ACTION_DENIED");
+  assert.equal((await worker.invoke({ action: "ponte.import_capture", capture: capture(), extras: undefined })).error.code, "EXTRAS_INVALID");
+  assert.equal((await worker.invoke(importMessage({ note: "a" }), popupOf(worker))).error.code, "SENDER_DENIED");
+  assert.equal((await worker.invoke(importMessage({ note: "a" }), { ...worker.sender, url: "https://attacker.test/" })).error.code, "SENDER_DENIED");
+  assert.equal(worker.calls.length, 0);
+});
+function extrasBundle(id = UUID) {
+  const message = bundleMessage(id);
+  return { ...message, extras: { note: "Falar com o protocolo", priority: "alta" } };
+}
+test("the retry sends exactly the same extras, refuses changed ones and keeps them only in session memory until delivered", async () => {
+  const store = {};
+  const state = countingFiles();
+  let failures = 1;
+  const worker = workerFixture(state.api, { store, native: request => request.action === "ping" ? pingReply(WITH_EXTRAS) : failures-- > 0 ? { nativeError: "Native host has exited." } : { ...importReply(request), extras_applied: true } });
+  assert.equal((await worker.invoke(extrasBundle())).ok, false);
+  assert.equal(store["ponte.bundles"].length, 1);
+  assert.ok(store["ponte.bundles"][0].snapshot.includes("Falar com o protocolo"));
+  // The page changed, or the extras did: refused, nothing sent.
+  const sentBefore = worker.calls.length;
+  const otherNote = extrasBundle(); otherNote.extras = { note: "Outra nota", priority: "alta" };
+  const otherPriority = extrasBundle(); otherPriority.extras = { note: "Falar com o protocolo", priority: "baixa" };
+  const noExtras = bundleMessage();
+  const noNote = extrasBundle(); noNote.extras = { priority: "alta" };
+  for (const message of [otherNote, otherPriority, noExtras, noNote]) assert.equal((await worker.invoke(message)).error.code, "REQUEST_CHANGED");
+  const pageChanged = extrasBundle(); pageChanged.capture.text = "Alterado";
+  assert.equal((await worker.invoke(pageChanged)).error.code, "REQUEST_CHANGED");
+  assert.equal(worker.calls.length, sentBefore);
+  // The same request in a restarted worker: same files, same extras, delivered once.
+  const second = countingFiles();
+  const restarted = workerFixture(second.api, { store, native: extrasNative(WITH_EXTRAS, { extras_applied: true }) });
+  const result = await restarted.invoke(extrasBundle());
+  assert.equal(result.ok, true);
+  assert.equal(result.extras_applied, true);
+  assert.equal(second.downloads, 0);
+  const sent = restarted.calls.at(-1).request;
+  assert.equal(sent.action, "import_bundle");
+  assert.deepEqual(plainOf(sent.extras), { note: "Falar com o protocolo", priority: "alta" });
+  assert.equal(sent.files[0].data_base64, "JVBERi0=");
+  // Delivered: no copy of the note is kept.
+  assert.deepEqual(store["ponte.bundles"], []);
+  assert.ok(!JSON.stringify(store).includes("Falar com o protocolo"));
+});
+test("a bundle import sends extras to a Ponte that takes them and leaves them out for one that does not", async () => {
+  const state = countingFiles();
+  const yes = workerFixture(state.api, { native: extrasNative(WITH_EXTRAS, { extras_applied: true }) });
+  await yes.invoke(extrasBundle());
+  assert.deepEqual(plainOf(yes.calls.map(call => call.request.action)), ["ping", "import_bundle"]);
+  assert.deepEqual(Object.keys(yes.calls[1].request), ["protocol_version", "action", "capture", "files", "extras"]);
+  const no = workerFixture(countingFiles().api, { native: extrasNative(["lookup"]) });
+  const result = await no.invoke(extrasBundle());
+  assert.equal(result.extras_skipped, true);
+  assert.ok(!("extras" in no.calls.at(-1).request));
+  assert.equal(no.calls.at(-1).request.action, "import_bundle");
+});
+test("recent imports: newest first, at most 8, small fields only, cleared on request", async () => {
+  const store = {};
+  const worker = workerFixture(undefined, { store, native: extrasNative(WITH_EXTRAS, { extras_applied: true }) });
+  const popup = popupOf(worker);
+  assert.deepEqual(plainOf(await worker.invoke({ action: "ponte.recent" }, popup)), { protocol_version: 1, ok: true, items: [] });
+  for (let i = 1; i <= 10; i++) {
+    const number = `ORG-PRO-2026/${String(i).padStart(5, "0")}`;
+    const message = { action: "ponte.import_capture", capture: capture({ request_id: crypto.randomUUID(), document_number: number, source_url: Core.ORIGIN + "/sigaex/app/expediente/doc/exibir?sigla=" + encodeURIComponent(number), title: i === 10 ? "T".repeat(300) : `Assunto ${i}`, text: "TEXTO SECRETO DO DOCUMENTO" }), extras: { note: "NOTA PRIVADA " + i } };
+    assert.equal((await worker.invoke(message)).ok, true);
+  }
+  const answer = plainOf(await worker.invoke({ action: "ponte.recent" }, popup));
+  assert.equal(answer.items.length, 8);
+  assert.deepEqual(answer.items.map(item => item.number), [10, 9, 8, 7, 6, 5, 4, 3].map(i => `ORG-PRO-2026/${String(i).padStart(5, "0")}`));
+  assert.deepEqual(Object.keys(answer.items[1]).sort(), ["document_id", "number", "outcome", "time", "title"]);
+  assert.deepEqual([answer.items[1].title, answer.items[1].outcome, answer.items[1].document_id], ["Assunto 9", "imported", 41]);
+  assert.ok(!Number.isNaN(Date.parse(answer.items[1].time)));
+  assert.equal(answer.items[0].title.length, 120);
+  const stored = JSON.stringify(store["ponte.recent"]);
+  assert.ok(!stored.includes("TEXTO SECRETO") && !stored.includes("NOTA PRIVADA"));
+  assert.equal(store["ponte.recent"].length, 8);
+  assert.deepEqual(plainOf(await worker.invoke({ action: "ponte.recent_clear" }, popup)), { protocol_version: 1, ok: true });
+  assert.deepEqual(plainOf((await worker.invoke({ action: "ponte.recent" }, popup)).items), []);
+});
+test("recent imports record each result: imported, already in the Ponte, not completed", async () => {
+  let reply;
+  const worker = workerFixture(undefined, { native: request => ({ ...reply, ...(reply.ok && reply.request_id ? { request_id: request.capture.request_id } : {}) }) });
+  const popup = popupOf(worker);
+  const run = async answer => { reply = answer;return worker.invoke({ action: "ponte.import_capture", capture: capture({ request_id: crypto.randomUUID() }) }); };
+  await run({ ...receipt(), outcome: "imported" });
+  await run({ ...receipt(), duplicate: true, outcome: "unchanged", message: "Nada mudou." });
+  await run({ ...receipt(), duplicate: true });
+  await run({ protocol_version: 1, ok: false, error: { code: "HOST_X", message: "Falhou." } });
+  const items = plainOf((await worker.invoke({ action: "ponte.recent" }, popup)).items);
+  assert.deepEqual(items.map(item => item.outcome), ["failed", "already", "already", "imported"]);
+  assert.equal(items[0].document_id, undefined);
+  assert.equal(items[1].document_id, 1);
+  // A failure before the Ponte answers is a "not completed" row too.
+  const lost = workerFixture({ prepare: async () => { throw new Error("falha"); } });
+  assert.equal((await lost.invoke(bundleMessage())).error.code, "EXTENSION_ERROR");
+  assert.equal(plainOf((await lost.invoke({ action: "ponte.recent" }, popupOf(lost))).items)[0].outcome, "failed");
+  // An import refused before it started leaves no row.
+  const refused = workerFixture();
+  await refused.invoke({ action: "ponte.import_capture", capture: capture({ source_url: Core.ORIGIN + "/?access_token=x" }) });
+  assert.deepEqual(plainOf((await refused.invoke({ action: "ponte.recent" }, popupOf(refused))).items), []);
+});
+test("the list of recent imports belongs to the popup; open is for the popup and the SIGADOC tab", async () => {
+  const worker = workerFixture(undefined, { store: { "ponte.recent": [{ number: "ORG-PRO-2026/00001", title: "Assunto", time: new Date().toISOString(), outcome: "imported", document_id: 3 }] } });
+  const popup = popupOf(worker);
+  for (const action of ["ponte.recent", "ponte.recent_clear"]) {
+    for (const who of [worker.sender, { ...worker.sender, url: "https://attacker.test/" }, { ...worker.sender, frameId: 1 }, { ...worker.sender, id: "other-extension" }, { id: worker.chrome.runtime.id, url: worker.chrome.runtime.getURL("other.html") }, { ...popup, tab: { id: 2, url: Core.ORIGIN + "/" } }, { id: "other-extension", url: popup.url }]) {
+      assert.equal((await worker.invoke({ action }, who)).error.code, "SENDER_DENIED", action);
+    }
+    assert.equal((await worker.invoke({ action, extra: 1 }, popup)).error.code, "SENDER_DENIED");
+  }
+  assert.equal((await worker.invoke({ action: "ponte.recent" }, popup)).items.length, 1);
+  // Open: popup and content script accepted with the same input checks; nobody else.
+  for (const who of [popup, worker.sender]) {
+    assert.deepEqual(plainOf(await worker.invoke({ action: "ponte.open", document_id: 3 }, who)), { protocol_version: 1, ok: true, document_id: 3, ui_opened: true });
+    for (const document_id of [0, -1, "3", 1.5, null]) assert.equal((await worker.invoke({ action: "ponte.open", document_id }, who)).error.code, "INVALID_REQUEST");
+    assert.equal((await worker.invoke({ action: "ponte.open", document_id: 3, extra: 1 }, who)).error.code, "SENDER_DENIED");
+  }
+  // The popup still cannot look documents up or import.
+  assert.equal((await worker.invoke({ action: "ponte.lookup", document_number: NUMBER }, popup)).error.code, "SENDER_DENIED");
+  assert.equal((await worker.invoke(importMessage(null), popup)).error.code, "SENDER_DENIED");
+});
+test("the recent list is never opened to content scripts and the popup shows it as plain text", () => {
+  const read = name => fs.readFileSync(path.join(__dirname, "../../extension/" + name), "utf8");
+  for (const name of ["background.js", "content.js", "popup.js", "capture-core.js"]) assert.ok(!/setAccessLevel/.test(read(name)), name);
+  assert.ok(!/ponte\.recent|storage\.session/.test(read("content.js") + read("capture-core.js")));
+  assert.ok(/Importações recentes/.test(read("popup.html")) && /Nenhuma importação nesta sessão do navegador\./.test(read("popup.html")) && /Limpar a lista/.test(read("popup.html")));
+  assert.ok(/Atualize o Ponte para enviar nota e prioridade ao importar\./.test(read("popup.html")));
 });

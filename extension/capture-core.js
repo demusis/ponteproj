@@ -378,6 +378,41 @@
     if (OUTCOMES.includes(result.outcome)) return result.outcome;
     return result.duplicate ? "legacy_duplicate" : "imported";
   }
+  // Note and priority the person may add to an import. The Ponte (0.31 or later)
+  // refuses anything outside this shape, so the same rules are applied before sending.
+  const EXTRAS_PRIORITIES = ["baixa", "normal", "alta", "urgente"];
+  const MAX_NOTE_CHARS = 2000;
+  const NOTE_CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+  function noteLength(note) { return Array.from(note).length; }
+  function validateExtras(extras) {
+    const keys = plain(extras) ? Object.keys(extras) : [];
+    if (!keys.length || keys.some(key => !["note", "priority"].includes(key))) fail("EXTRAS_INVALID", "A nota ou a prioridade não pôde ser enviada. Confira o que foi escrito e tente de novo.");
+    if (Object.hasOwn(extras, "note")) {
+      const note = extras.note;
+      if (typeof note !== "string" || !note || note !== note.trim() || noteLength(note) > MAX_NOTE_CHARS || NOTE_CONTROL_RE.test(note)) fail("EXTRAS_INVALID", "A nota não pôde ser enviada: use até 2000 caracteres, sem caracteres de controle.");
+    }
+    if (Object.hasOwn(extras, "priority") && !EXTRAS_PRIORITIES.includes(extras.priority)) fail("EXTRAS_INVALID", "A prioridade escolhida não é válida.");
+    return extras;
+  }
+  // What the controls of the panel hold -> the extras to send, or null when both are empty.
+  function buildExtras(noteText, priority) {
+    const extras = {};
+    const note = String(noteText || "").replace(/\r\n?/g, "\n").replace(new RegExp(NOTE_CONTROL_RE.source, "g"), "").trim();
+    if (note) extras.note = note;
+    if (priority) extras.priority = priority;
+    return Object.keys(extras).length ? validateExtras(extras) : null;
+  }
+  // The sentence about the extras after a delivered import; "" when none were involved.
+  // `sent` is what the panel sent; the background marks `extras_skipped` when an older Ponte got none.
+  function extrasNotice(result, sent) {
+    if (!plain(result) || result.ok !== true) return "";
+    if (result.extras_skipped === true) return "O Ponte instalado não recebe nota nem prioridade; a importação foi feita sem elas. Atualize o Ponte.";
+    if (!plain(sent)) return "";
+    const both = Object.hasOwn(sent, "note") && Object.hasOwn(sent, "priority");
+    if (result.extras_applied === true) return both ? "Nota e prioridade enviadas." : Object.hasOwn(sent, "note") ? "Nota enviada." : "Prioridade enviada.";
+    if (typeof result.extras_message === "string" && result.extras_message.trim()) return result.extras_message.trim().slice(0, 500);
+    return both ? "A nota e a prioridade não foram aplicadas." : Object.hasOwn(sent, "note") ? "A nota não foi aplicada." : "A prioridade não foi aplicada.";
+  }
   // Chrome and Edge report the failure in English; each known case gets its
   // own advice, and an unknown one carries the browser's words along.
   const LATEST = "github.com/demusis/ponteproj/releases";
@@ -448,6 +483,6 @@
       return this.inFlight;
     }
   }
-  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, importOutcome, identity, errorResult, filesNotDownloaded, checkOutcome, statusView, UNRECOGNIZED_TEXT, OLD_PONTE_HINT, nativeError, ImportSession, bytes, exactKeys };
+  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, importOutcome, identity, errorResult, filesNotDownloaded, checkOutcome, statusView, UNRECOGNIZED_TEXT, OLD_PONTE_HINT, nativeError, ImportSession, bytes, exactKeys, validateExtras, buildExtras, extrasNotice, MAX_NOTE_CHARS, EXTRAS_PRIORITIES };
 });
 

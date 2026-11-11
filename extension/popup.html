@@ -12,7 +12,15 @@
   <p id="status" class="status" role="status" aria-live="polite">Verificando a ligação com o Ponte…</p>
   <p id="hint"></p>
   <p id="old" class="small" hidden>Atualize o Ponte para a versão mais recente para ver na página se o documento já foi importado.</p>
+  <p id="extras-old" class="small" hidden>Atualize o Ponte para enviar nota e prioridade ao importar.</p>
   <button id="check" type="button">Verificar de novo</button>
+  <section id="recent-section" aria-labelledby="recent-title">
+    <h2 id="recent-title">Importações recentes</h2>
+    <p id="recent-empty" class="small">Nenhuma importação nesta sessão do navegador.</p>
+    <ul id="recent" class="recent"></ul>
+    <p id="recent-note" class="small" role="status" aria-live="polite" hidden></p>
+    <button id="recent-clear" type="button" class="link" hidden>Limpar a lista</button>
+  </section>
   <details id="help">
     <summary>Se não estiver ligado</summary>
     <ol>
