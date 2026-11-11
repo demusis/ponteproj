@@ -81,7 +81,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.time.Instant
@@ -199,6 +202,7 @@ internal fun MainShell(
                 unselectedIconColor = c.secondary,
                 unselectedTextColor = c.secondary
             )
+            val labelSize = navLabelSize(titles)
             titles.forEachIndexed { i, title ->
                 NavigationBarItem(
                     selected = state.tab == i,
@@ -219,12 +223,47 @@ internal fun MainShell(
                         }
                     },
                     label = {
-                        Text(title, fontSize = 12.sp, fontWeight = if (state.tab == i) FontWeight.Bold else FontWeight.Medium)
+                        // Always one line: a name broken in two ("Documen-tos") makes the bar ragged.
+                        Text(
+                            title, fontSize = labelSize, letterSpacing = 0.sp,
+                            fontWeight = if (state.tab == i) FontWeight.Bold else FontWeight.Medium,
+                            maxLines = 1, softWrap = false, overflow = TextOverflow.Clip
+                        )
                     },
                     colors = itemColors
                 )
             }
         }
+    }
+}
+
+/**
+ * The size of the names under the icons of the bottom bar: the usual 12, but never so
+ * large that the longest name stops fitting its share of the bar on one line. It is worked
+ * out in dp, so a large font setting on the phone (or a narrow screen) shrinks the names
+ * instead of breaking them; every name gets the same size.
+ */
+@Composable
+private fun navLabelSize(titles: List<String>): TextUnit {
+    val density = LocalDensity.current
+    val screen = LocalConfiguration.current.screenWidthDp
+    val wanted = 12f * density.fontScale
+    return with(density) { NavLabel.sizeDp(screen, titles, wanted).dp.toSp() }
+}
+
+/** The arithmetic of [navLabelSize], apart so it can be tested. */
+internal object NavLabel {
+    /** Room an item keeps free at its sides, and how wide a bold letter is for its size. */
+    private const val SIDE_DP = 6f
+    private const val LETTER = 0.6f
+    private const val SMALLEST_DP = 9f
+
+    fun sizeDp(screenWidthDp: Int, titles: List<String>, wantedDp: Float): Float {
+        val longest = titles.maxOfOrNull { it.length } ?: return wantedDp
+        if (longest == 0 || titles.isEmpty()) return wantedDp
+        val room = screenWidthDp.toFloat() / titles.size - 2 * SIDE_DP
+        val fits = room / (longest * LETTER)
+        return wantedDp.coerceAtMost(fits).coerceAtLeast(SMALLEST_DP)
     }
 }
 
