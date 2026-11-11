@@ -1,6 +1,6 @@
 # Ponte — Assistente documental SIGADOC
 
-O **Ponte** é um programa para Windows que guarda, no seu computador, os documentos que você importa do SIGADOC, com texto, PDFs e histórico de tramitação. Com eles guardados, você anota, prepara minutas, acompanha prazos, controla as demandas do gabinete e, se quiser, trabalha em equipe.
+O **Ponte** é um programa para Windows que guarda, no seu computador, os documentos que você importa do SIGADOC, com texto, PDFs e histórico de tramitação. Com eles guardados, você anota, prepara minutas, acompanha prazos (com um aviso diário do Windows, se você quiser), controla as demandas do gabinete e, se quiser, trabalha em equipe.
 
 Ele tem duas partes, que funcionam juntas:
 
@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.30.0 (extensão 0.2.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.31.0 (extensão 0.3.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.30.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.31.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -140,20 +140,22 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | **Ctrl+F** | Ir para a busca da área; a partir de outras áreas, para a busca de documentos |
 | **Ctrl+N** | Criar: registro manual (em Hoje e Documentos), nova tarefa (em Tarefas: sem documento, ou do documento pelo qual a lista está filtrada), nova entrada (em Atendimentos) |
 | **Ctrl+S** | Salvar o que está em edição: tarefa, atendimento, notas do documento, modelo ou configuração de IA. Em Notas e minutas, salva a nota ou, estando a nota já salva, uma nova versão da minuta |
-| **Esc** | Fechar a janela ou o painel lateral aberto, se não houver nada sem salvar |
+| **Ctrl+A** | Em Tarefas, no modo de seleção (**Selecionar**, [6.5](#65-ações-em-lote)): selecionar todas as tarefas da lista |
+| **Esc** | Fechar a janela ou o painel lateral aberto, se não houver nada sem salvar. Em Tarefas, no modo de seleção: fechar a pergunta aberta e, depois, sair da seleção |
 
 Na área **Modelos**, **Ctrl+F** (buscar modelo), **Ctrl+N** (**Novo modelo**), **Ctrl+S** (**Salvar rascunho**) e **Esc** também funcionam.
 
 - **Barra inferior:** um ponto colorido diz como está a rede (por exemplo `● só neste computador` ou `● em dia há 3 min`). Passe o mouse para a frase completa; clicar nela abre Ajustes ▸ Equipe e sincronização. No modo pasta compartilhada, o botão **Sincronizar** ao lado sincroniza com a pasta na hora. A lista de documentos se atualiza sozinha.
 - **Avisos:** mensagens como *Nota salva* e os erros aparecem numa caixa no canto inferior direito. Os de sucesso somem sozinhos; os de erro ficam até você fechar. O progresso das operações demoradas, como a IA e a sincronização, aparece na barra inferior.
-- **Tema e tamanho do texto:** em Ajustes ▸ Aparência. O tema é claro ou escuro; o **Tamanho do texto** (*Normal*, *Grande* ou *Maior*) aumenta letras, ícones e botões de todo o Ponte.
-- **Ajustes** reúne o que não é trabalho do dia a dia, em oito seções:
+- **Tema e tamanho do texto:** em Ajustes ▸ Aparência. O tema é claro ou escuro; o **Tamanho do texto** (*Normal*, *Grande* ou *Maior*) aumenta letras, ícones e botões de todo o Ponte. O menor tamanho a que a janela pode ser reduzida acompanha o tamanho do texto, sem nunca passar do tamanho da tela.
+- **Ajustes** reúne o que não é trabalho do dia a dia, em nove seções:
 
 | Seção | Para quê |
 |---|---|
 | **Equipe e sincronização** | Trabalhar em equipe ou em mais de um computador; conflitos de edição e alterações a enviar ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) |
 | **E-mail** | Contas, pasta e filtro, lista de mensagens e importação, tudo na própria página, e o botão **Importar um e-mail salvo em arquivo (.eml)…** ([5.5](#55-registros-manuais)) |
 | **Importação do SIGADOC** | Criar atendimento ao importar do SIGADOC ([7.1](#71-de-onde-vêm-os-atendimentos)) |
+| **Lembretes** | Aviso diário de prazos do Windows: ligar ou desligar, **Horário** e **Mostrar um aviso de teste** ([6.6](#66-lembretes-de-prazos)) |
 | **Inteligência artificial** | Escolher onde a IA roda ([seção 9](#9-ia-opcional)). Salva com **Salvar** ou ao sair da seção |
 | **Cópia de segurança e exportação** | **Fazer cópia agora**, onde as cópias ficam (**Abrir pasta**) e **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) |
 | **Lixeira** | Restaurar itens excluídos e definir o prazo de limpeza |
@@ -289,7 +291,7 @@ Outras marcas do cartão: **Manual** (registro manual), `📎 N juntado(s)` (o d
 |---|---|
 | **Resumo** | Cartões **Análise** (botão **Analisar**, depois **Analisar de novo**; quando a análise é anterior às últimas alterações do documento, do contexto ou das notas, uma faixa avisa e também oferece **Analisar de novo**; as providências sugeridas têm **Criar tarefa**), **Dados do documento** (**Ler o PDF**, **Completar contexto**), **Tarefas** (**Nova tarefa**, **Ver todas**), **Atendimento** e **Nota**; documentos parecidos. |
 | **Documento** | **Arquivos (PDF)** com **Ler no Ponte** e exportação (primeiro, quando o documento tem arquivos); **Texto importado**; **Anexos** (arquivos seus); dados do SIGADOC; histórico de tramitação. |
-| **Notas e minutas** | **Notas** e **Minuta**. Com a janela larga, as notas ficam à esquerda e a minuta à direita; com a janela estreita, a nota mostra as primeiras linhas, com **Editar nota** (e **Recolher**). A minuta tem três passos. **1. Partir de:** **Tipo**, **Modelo de trabalho** e **Começar por um modelo**. **2. Pedir à IA (opcional):** **Pedido desta minuta** e os botões **Gerar com IA**, **Completar** e **Revisar**. **3. Texto:** o editor, **Salvar nova versão**, **Copiar**, **Exportar (RTF)**, **Comparar com versão ▾** e **Guardar como modelo**. Abaixo ficam as versões salvas, cada uma com **Material utilizado** quando foi gerada com IA. |
+| **Notas e minutas** | **Notas** e **Minuta**. Com a janela larga, as notas ficam à esquerda e a minuta à direita; com a janela estreita, a nota mostra as primeiras linhas, com **Editar nota** (e **Recolher**). O **Editar nota** do card Nota, no Resumo, abre esta aba com a nota aberta e o cursor nela, pronta para digitar. A minuta tem três passos. **1. Partir de:** **Tipo**, **Modelo de trabalho** e **Começar por um modelo**. **2. Pedir à IA (opcional):** **Pedido desta minuta** e os botões **Gerar com IA**, **Completar** e **Revisar**. **3. Texto:** o editor, **Salvar nova versão**, **Copiar**, **Exportar (RTF)**, **Comparar com versão ▾** e **Guardar como modelo**. Abaixo ficam as versões salvas, cada uma com **Material utilizado** quando foi gerada com IA. |
 | **Mais** | Vínculos entre documentos (automáticos ou feitos por você); versões importadas, com comparação; o que foi importado e os links encontrados na página; dados técnicos, com as datas escritas como dd/mm/aaaa hh:mm. |
 
 O alto da ficha mostra o número, as etiquetas de situação, a situação de juntada (com **Abrir documento principal**), **Abrir no SIGADOC** e o botão **⋯** (**Mais ações**), à direita, que traz **Imprimir ou salvar a ficha…** ([5.7](#57-imprimir-ou-salvar-a-ficha)) e **Excluir…** (o documento vai para a Lixeira).
@@ -307,6 +309,15 @@ Importar de novo nunca duplica. O Ponte compara o conteúdo da página (texto, P
 O painel avisa antes do clique: **Já está no Ponte — importado em…** (com **Abrir no Ponte** e o botão **Importar de novo**) ou **Ainda não está no Ponte**. Se o Ponte não responde, o aviso aparece ali mesmo, com **Tentar de novo**. O atalho **Alt+Shift+I** faz o mesmo que o botão (pode ser trocado em chrome://extensions/shortcuts). Com o Ponte já aberto, a importação traz a janela existente para a frente, no documento; não abre outra.
 
 Se a confirmação de uma importação se perder no caminho, o botão vira **Repetir importação**. Repetir não duplica: o Ponte responde *Importação confirmada*.
+
+**Nota e prioridade na hora de importar.** No painel, **Adicionar nota ou prioridade** abre dois campos (o link passa a dizer **Ocultar nota e prioridade**): **Nota para o Ponte**, com até 2000 caracteres, e **Prioridade** (*Não mudar*, *Baixa*, *Normal*, *Alta*, *Urgente*). Ao clicar em **Importar para o assistente**, o Ponte importa o documento e, em seguida:
+
+- **acrescenta a nota** ao fim da nota do documento, num parágrafo novo com a data (`10/11/2026 — responder até sexta`); o que já estava escrito nunca é substituído, e repetir a mesma importação não acrescenta a mesma linha duas vezes;
+- **muda a prioridade** do documento, se você escolheu uma.
+
+O painel confirma com *Nota e prioridade enviadas.* (ou *Nota enviada.* / *Prioridade enviada.*), e os campos voltam vazios. Exige o **Ponte 0.31** e a **extensão 0.3.0**: com um Ponte mais antigo, o link não aparece e o ícone da extensão avisa que é preciso atualizar o Ponte; se o Ponte for antigo demais para receber a nota, a importação é feita sem ela e o painel diz *O Ponte instalado não recebe nota nem prioridade; a importação foi feita sem elas. Atualize o Ponte.* Se a nota ou a prioridade for recusada (mais de 2000 caracteres, por exemplo), nada é importado e o painel diz o motivo. Se for a gravação que falhar, a importação vale e o painel diz o que faltou, por exemplo *A importação foi feita, mas a nota não foi salva. Escreva a nota na ficha do documento.* (ou, quando o documento foi alterado ao mesmo tempo por outra pessoa da equipe, acrescenta *porque o documento foi alterado ao mesmo tempo*). A nota vai só ao Ponte do mesmo computador; daí em diante, é uma nota comum e acompanha a equipe ou a pasta compartilhada, se você usa uma delas.
+
+**Importações recentes.** Ao clicar no ícone da extensão, a janelinha lista **Importações recentes**: as últimas importações desta sessão do navegador, até 8, com número, assunto, hora e resultado (*Importado*, *Já estava no Ponte* ou *Não concluída*). **Abrir no Ponte** abre o documento na ficha (com o Ponte fechado, a janelinha pede para abri-lo). **Limpar a lista** esvazia a lista. Ela fica só na memória de sessão do navegador: some ao fechar o navegador, não é enviada a lugar nenhum e guarda apenas número, assunto, hora e resultado, nunca o texto do documento nem a nota.
 
 **Limites de uma importação:** 500 KB de texto, até 10 PDFs, 8 MB por PDF e 16 MB de PDFs no total. O que passar disso é avisado; o texto da página é importado mesmo assim.
 
@@ -412,6 +423,56 @@ Uma tarefa pode depender de outras ("só posso responder depois de receber o par
 | barra âmbar ou azul à esquerda de um cartão | com uma tarefa aberta na ficha: âmbar marca as anteriores dela, azul as que dependem dela |
 
 Enquanto houver tarefa anterior em aberto, concluir fica desabilitado, com a dica *"Conclua antes: A, B"*. O Ponte não deixa formar ciclos: as opções que criariam um aparecem desabilitadas e explicadas.
+
+### 6.5 Ações em lote
+
+Para concluir, mudar o prazo, o responsável ou a prioridade, ou excluir várias tarefas de uma vez, use o modo de seleção da área **Tarefas**.
+
+1. Clique em **Selecionar**, ao lado da busca. O botão fica desabilitado enquanto a tarefa aberta no painel tem alterações sem salvar; uma tarefa aberta e sem alterações é fechada.
+2. Em cada linha, o círculo de concluir vira um quadrado: clique nele para marcar ou desmarcar a tarefa. Uma faixa sob os filtros diz quantas estão selecionadas e traz **Selecionar todas as visíveis** (ou **Ctrl+A**, quando nenhuma caixa de texto está em uso), **Limpar seleção** e **Sair da seleção** (ou **Esc**). Só as tarefas que aparecem na lista podem ficar selecionadas: se a busca ou a visão as esconde, elas saem da seleção.
+3. Com ao menos uma marcada, uma barra aparece embaixo, com **Concluir**, **Prazo…**, **Responsável…**, **Prioridade…** e **Excluir…**.
+4. Cada botão pergunta antes de agir, com o número de tarefas, e tem **Cancelar**:
+
+| Botão | Pergunta | Confirmação |
+|---|---|---|
+| **Concluir** | *Concluir N tarefas?* | **Concluir** |
+| **Prazo…** | uma data (digitada ou do calendário) ou **Sem prazo** | **Mudar prazo** (ou **Tirar prazo**) |
+| **Responsável…** | o nome, **Eu** ou **Sem responsável** | **Atribuir** (ou **Tirar responsável**) |
+| **Prioridade…** | *Baixa*, *Normal*, *Alta* ou *Urgente* | **Mudar prioridade** |
+| **Excluir…** | *Excluir N tarefas? Elas vão para a Lixeira.* (desabilitado enquanto outra operação, como a sincronização, está em andamento) | **Excluir** |
+
+Os botões de confirmação só ficam ativos quando a escolha está completa. Mudar a seleção fecha a pergunta aberta.
+
+**O que fica de fora.** Cada tarefa passa pelas mesmas regras de uma alteração feita uma a uma. As que não podem receber a ação ficam como estão, e a linha de resultado diz quais e por quê:
+
+| Motivo mostrado | Quando |
+|---|---|
+| *já está concluída* | ao concluir, a tarefa já estava concluída |
+| *depende de uma tarefa em aberto* | ao concluir, falta concluir uma tarefa anterior ([6.4](#64-dependências-entre-tarefas)). Se a anterior também está na seleção, ela é concluída primeiro e a dependente entra em seguida |
+| *foi alterada depois da seleção* | alguém (inclusive outro computador) mudou a tarefa entre a seleção e o clique de confirmação |
+| *já tem esse prazo / responsável / prioridade* | a tarefa já tinha o valor pedido |
+| *está na Lixeira ou não existe mais* | a tarefa foi excluída entre a seleção e a confirmação |
+
+As tarefas que ficaram de fora continuam selecionadas. Ao mudar o prazo, a origem do prazo anotada na tarefa é limpa, porque ela explicava a data antiga.
+
+**O resultado e o Desfazer.** Uma linha embaixo diz o que foi feito (por exemplo, *3 tarefas concluídas.*) e, em seguida, uma linha por motivo, com os títulos das tarefas de fora. Quando concluir a última tarefa de um documento principal conclui também as dos documentos juntados, a linha avisa. **Desfazer** fica na linha por **30 segundos** e devolve as tarefas ao que eram, mexendo só no que a ação mudou; uma tarefa alterada de novo depois da ação em lote é deixada como está, e a linha de resultado do desfazer também diz isso. Tarefas excluídas ficam na **Lixeira** (Ajustes ▸ Lixeira): a linha diz *Estão na Lixeira*, e **Desfazer** as restaura. Nada é enviado ao SIGADOC.
+
+### 6.6 Lembretes de prazos
+
+Uma vez por dia, o Ponte mostra um aviso do Windows com o que pede atenção. O aviso, de título *Prazos de hoje no Ponte*, traz **só as quantidades**, nunca títulos nem números de documentos, porque pode aparecer sobre outras janelas e na tela de bloqueio. Ele conta, com as mesmas regras da área Hoje:
+
+- as tarefas atrasadas e as tarefas para hoje;
+- os atendimentos abertos com prazo vencido ou para hoje;
+- as tarefas abertas cuja data de lembrete chegou (e que ainda não entraram nas contas acima).
+
+Exemplo: *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Quando nada vence, não há aviso.
+
+- **Quando:** uma vez por dia, a partir do horário escolhido (9h, de fábrica). Se o Ponte abre depois do horário, o aviso vem cerca de um minuto depois da abertura. Só funciona **enquanto o Ponte está aberto ou minimizado**: fechado, não avisa.
+- **Com o Ponte na frente:** o aviso do Windows não é mostrado, e a mesma frase aparece no aviso do canto inferior direito da janela.
+- **Clicar no aviso do Windows** traz o Ponte para a frente, em **Hoje**. Se há algo sem salvar, o Ponte pergunta antes de sair da tela, como sempre.
+- **Ajustes ▸ Lembretes** (ligado de fábrica): a caixa **Lembrar dos prazos uma vez por dia** liga e desliga; **Horário** escolhe hora e minuto (de 5 em 5 minutos); **Mostrar um aviso de teste** mostra o aviso na hora, com números de exemplo, sem relação com o seu acervo.
+- **Se nada aparecer:** abra *Configurações do Windows ▸ Sistema ▸ Notificações* e confira que as notificações do Ponte, e o modo Não perturbe ou Assistente de foco, permitem o aviso.
+- **Privacidade:** o aviso é montado no computador, com contagens; nada é enviado a lugar nenhum. A escolha de ligar, o horário e o último dia avisado ficam num arquivo pequeno da pasta de dados (`lembretes.txt`), sem nada do acervo.
 
 ---
 
@@ -768,6 +829,9 @@ Por padrão, nada. O que pode sair, e só por escolha sua:
 | Texto do documento, notas e fontes | A cada clique em **Analisar** ou **Gerar com IA**, nas opções de IA em nuvem ([9.1](#91-onde-a-ia-roda)) | Ollama Cloud, o servidor informado ou a OpenAI |
 | O acervo, cifrado com a sua senha | Na pasta compartilhada, ao sincronizar ([8.2](#82-uma-pessoa-dois-computadores-pasta-compartilhada)) | A pasta que você indicou |
 | A página da ficha ([5.7](#57-imprimir-ou-salvar-a-ficha)) | Ao escolher **Imprimir ou salvar a ficha…** | O arquivo `.html` na pasta que você escolheu, **fora do acervo protegido** |
+| A nota escrita no painel da extensão ([5.4](#54-importar-de-novo-o-mesmo-documento)) | Ao clicar em **Importar para o assistente** | Só ao Ponte deste computador, pela ligação entre o navegador e o programa. Depois é uma nota comum do documento: segue para a equipe ou a pasta compartilhada se você usa uma delas |
+| Os avisos de prazos do Windows ([6.6](#66-lembretes-de-prazos)) | Uma vez por dia | Para ninguém: são só contagens, mostradas neste computador. Nenhum título ou número de documento entra no aviso |
+| A lista de importações recentes ([5.4](#54-importar-de-novo-o-mesmo-documento)) | Durante a sessão do navegador | Para ninguém: fica na memória do navegador e some ao fechá-lo |
 | Uma consulta à página de versões no GitHub | Só quando você clica em **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** | `github.com/demusis/ponteproj`, sem nenhum dado do acervo |
 
 **Verificar se há versão nova.** O Ponte não procura atualização sozinho: a consulta só acontece nesse clique. Ele pergunta ao GitHub qual é a versão mais recente publicada, sem enviar nada do acervo, compara com a instalada e mostra uma destas respostas: *Você já tem a versão mais recente*, *Há uma versão nova* (com a data de publicação, quando houver) ou um aviso de falha (sem internet, o GitHub não respondeu ou a resposta não pôde ser entendida), com **Tentar de novo**. Se há versão nova, **Abrir a página de download** abre a página da versão no navegador. O Ponte não baixa nem instala nada: **feche o Ponte antes de instalar**; o instalador faz uma cópia de segurança do acervo antes de atualizar ([seção 1](#atualizar-e-desinstalar)).
@@ -792,6 +856,8 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | *"Importação ignorada: o SIGADOC mostra o mesmo conteúdo já importado em …"* (laranja) | Não é erro: o documento já está no Ponte exatamente assim. Se ele mudou, atualize a página (F5) e importe de novo. |
 | *"A página ainda não terminou de carregar"* | Espere a página abrir por completo e clique de novo. |
 | Tela inicial diz *✗ O navegador ainda não foi ligado ao Ponte* | O registro não existe para esta conta do Windows. Rode o instalador. |
+| O link **Adicionar nota ou prioridade** não aparece no painel | O Ponte instalado é anterior à 0.31 ou a extensão é anterior à 0.3.0. Atualize o Ponte (e a extensão, se veio da pasta) e reinicie o navegador. |
+| *"A importação foi feita, mas a nota não foi salva…"* | O documento foi importado; só a nota falhou. Escreva-a na ficha, em **Notas e minutas**. A prioridade, se também falhou, se escolhe na ficha. |
 | Dois botões "Importar" na página | Há duas extensões, a da pasta e a da loja. Remova a da pasta em `chrome://extensions`. |
 
 ### 11.2 IA
@@ -823,6 +889,8 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 |---|---|
 | *"Não foi possível proteger/abrir os dados deste perfil Windows"* | O acervo pertence a outra conta do Windows. Entre com a conta que fez a instalação. |
 | *"Item na lixeira; restaure antes de editar"* | O item foi excluído. Restaure-o em Ajustes ▸ Lixeira. |
+| O aviso diário de prazos não aparece | Confira em **Ajustes ▸ Lembretes** se está ligado e se o horário já passou; o Ponte precisa estar aberto ou minimizado, e só avisa quando algo vence. Use **Mostrar um aviso de teste** e, se nem ele aparecer, veja *Configurações do Windows ▸ Sistema ▸ Notificações*. |
+| Em Tarefas, uma ação em lote deixou tarefas de fora | Não é erro: a linha de resultado diz quais e por quê ([6.5](#65-ações-em-lote)). **Desfazer** vale por 30 segundos; tarefas excluídas estão em Ajustes ▸ Lixeira. |
 
 ---
 
@@ -884,12 +952,13 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/help_ui.rs` | O ⓘ de ajuda: explica ao passar o mouse e, ao clicar, deixa a explicação aberta ao lado |
 | `src/storage.rs`, `src/protection.rs` | SQLite + DPAPI; `Store` é a única porta de entrada aos dados |
 | `src/model.rs` | `Capture` (o que a extensão envia) e sua validação |
-| `src/native.rs`, `src/main.rs` | Host nativo: quadros com tamanho, ações `ping`, `import_capture` e `import_bundle`, IDs de extensão aceitos |
+| `src/native.rs`, `src/main.rs` | Host nativo: quadros com tamanho, ações `ping`, `import_capture` e `import_bundle`, IDs de extensão aceitos. Os `extras` (nota e prioridade) são conferidos antes de importar e aplicados depois (`apply_extras`: a nota entra ao fim, com a data, e a falha em gravar nunca desfaz a importação); `ping` informa a ação `import_extras` |
 | `src/files.rs`, `src/pdf_reader.rs` | PDFs importados; leitor e OCR do Windows |
 | `src/dossier.rs` | Vínculos entre documentos, versões importadas, detecção de juntada |
 | `src/manual.rs` | Registros manuais |
 | `src/attachments.rs` | Anexos de documentos, tarefas e atendimentos, inclusive os arquivos arrastados do Explorador |
-| `src/tasks.rs`, `src/tasks_ui.rs` | Tarefas, dependências, painel |
+| `src/tasks.rs`, `src/tasks_ui.rs` | Tarefas, dependências, painel. Em `tasks_ui.rs`, o `mod batch` faz as ações em lote (seleção, pergunta, tarefas puladas e motivo, desfazer por 30 s) pelas mesmas chamadas do `Store` de uma alteração avulsa |
+| `src/reminders.rs` | Lembrete diário de prazos: contagens, decisão por data (não por tempo decorrido) e arquivo `lembretes.txt`; o aviso do Windows fica em `src/windows_ui.rs` |
 | `src/saiop.rs` | Atendimentos: modelo, importador `.xlsx` (leitor ZIP/XML próprio), painel |
 | `src/trash.rs` | Lixeira, restauração e limpeza por prazo |
 | `src/intranet.rs` | Modos de rede, sincronização em thread própria, fila offline, mesclagem em três vias; o computador principal atende cada conexão numa thread, com limite por computador |
@@ -914,7 +983,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/windows_ui.rs`, `src/paths.rs` | Seletores de arquivo, verificação do registro do host, pastas de dados |
 | `src/icon.rs`, `build.rs`, `assets/` | Ícone da janela e do executável |
 | `src/lib.rs`, `src/main.rs` | A biblioteca com todos os módulos; `main.rs` decide se abre a janela, atende o navegador ou executa uma opção de linha de comando |
-| `extension/` | Extensão MV3: `capture-core.js` (leitura da página e validação), `content.js` (painel), `history.js` (tramitação), `files.js` e `background.js` (PDFs e host nativo), `popup.*` |
+| `extension/` | Extensão MV3: `capture-core.js` (leitura da página e validação), `content.js` (painel), `history.js` (tramitação), `files.js` e `background.js` (PDFs e host nativo), `popup.*` (inclui a lista de importações recentes, guardada na memória de sessão do navegador) |
 | `installer/Ponte.iss` | Instalador Inno Setup |
 | `scripts/` | `build.ps1`, `build-installer.ps1`, `build-webstore-package.ps1`, `install-app.ps1`, `install-native-host.ps1` |
 | `tests/` | Fluxo nativo (`native_flow.rs`), extensão (`node --test`, Playwright) e fixtures fictícias |
@@ -970,7 +1039,7 @@ node --test .\tests\extension\core.test.cjs .\tests\extension\dom.test.cjs .\tes
 
 Onde ficam os testes: os unitários num `#[cfg(test)] mod tests` no fim de cada arquivo de `src/`; o fluxo de ponta a ponta do host nativo em `tests/native_flow.rs`; os da extensão em `tests/extension/`. Fixtures em `tests/fixtures/` e `tests/extension/*.html`, sempre com dados fictícios. Sem Playwright, os testes de página da extensão se pulam sozinhos; `PONTEPROJ_BROWSER_CHANNEL` escolhe o navegador (padrão `chrome`).
 
-Hoje são 206 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 57 na extensão.
+Hoje são 239 testes unitários (mais dois que exigem um Ollama ou uma conta do Gmail de verdade e ficam de fora do `Test`) e 4 de integração no aplicativo, e 81 na extensão.
 
 Se o projeto estiver numa pasta sincronizada (Google Drive, OneDrive), use `$env:CARGO_BUILD_JOBS='2'` ou aponte `CARGO_TARGET_DIR` para fora dela: a compilação paralela pode derrubar a montagem do drive.
 
