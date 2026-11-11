@@ -6561,10 +6561,10 @@ impl IntranetPanel {
                     plural(conflicts.len(), "conflito de edição", "conflitos de edição")
                 ));
                 ui.add_space(theme::S2);
-                egui::ScrollArea::vertical()
-                    .id_salt("sync_conflicts_scroll")
-                    .max_height(360.0)
-                    .show(ui, |ui| {
+                // No scroll area of its own: inside the scrolling page it was
+                // squeezed to a sliver. The page scrolls; every conflict is
+                // shown whole.
+                ui.vertical(|ui| {
                         for conflict in &conflicts {
                             let differences = store.conflict_differences(conflict);
                             let both_sides = differences.iter().filter(|d| d.changed_by() == "pelos dois lados").count();
@@ -6719,6 +6719,8 @@ impl IntranetPanel {
                 egui::ScrollArea::vertical()
                     .id_salt("offline_outbox_scroll")
                     .max_height(140.0)
+                    // Never squeezed below its own height by the page around it.
+                    .min_scrolled_height(140.0)
                     .show(ui, |ui| {
                         for (index, entry) in outbox.iter().enumerate() {
                             if index > 0 {
@@ -6751,6 +6753,7 @@ impl IntranetPanel {
                     }
                     egui::ScrollArea::vertical()
                         .max_height(200.0)
+                        .min_scrolled_height(200.0)
                         .show(ui, |ui| {
                             for (index, ev) in events.into_iter().enumerate() {
                                 if index > 0 {
