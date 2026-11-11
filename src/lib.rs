@@ -24,6 +24,8 @@ pub mod native;
 pub mod paths;
 pub mod prompting;
 pub mod protection;
+/// A record with its attachments created in one operation (all or nothing).
+pub mod record_import;
 pub mod sharedfolder;
 pub mod storage;
 pub mod suggestion;
@@ -33,6 +35,8 @@ pub mod tasks_ui;
 pub mod template_bundle;
 #[cfg(feature = "desktop")]
 pub mod templates_ui;
+/// Messages copied from a WhatsApp conversation, read into a record.
+pub mod whatsapp;
 pub mod work_context;
 pub mod work_templates;
 

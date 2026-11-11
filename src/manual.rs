@@ -19,6 +19,7 @@ pub const KINDS: &[(&str, &str)] = &[
     ("email", "E-mail recebido"),
     ("papel", "Ofício ou documento em papel"),
     ("reuniao", "Reunião ou despacho verbal"),
+    ("whatsapp", "Conversa do WhatsApp"),
     ("outro", "Outro"),
 ];
 
