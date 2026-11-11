@@ -255,9 +255,47 @@ impl TextSize {
     }
 }
 
-/// Texts, icons and spacing grow together, like the zoom of a browser.
+/// The smallest window, in egui points (the same at every text size, so the
+/// same amount of content fits at the minimum).
+const MIN_WINDOW_POINTS: [f32; 2] = [900.0, 620.0];
+
+/// Minimum size for the viewport builder at start-up. The builder's size is
+/// in logical units that eframe multiplies by the zoom factor of the moment
+/// (still 1.0 when the window is created), so the zoom is applied here to
+/// reach `MIN_WINDOW_POINTS` once the setting takes effect.
+pub fn min_window_size(size: TextSize) -> [f32; 2] {
+    [
+        MIN_WINDOW_POINTS[0] * size.factor(),
+        MIN_WINDOW_POINTS[1] * size.factor(),
+    ]
+}
+
+/// Texts, icons and spacing grow together, like the zoom of a browser. The
+/// window's minimum follows: `ViewportCommand::MinInnerSize` is in points and
+/// egui-winit multiplies it by the current pixels per point (zoom included),
+/// so the same points at every size keep the same content fitting.
 pub fn set_text_size(ctx: &egui::Context, size: TextSize) {
     ctx.set_zoom_factor(size.factor());
+    ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
+        MIN_WINDOW_POINTS[0],
+        MIN_WINDOW_POINTS[1],
+    )));
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn the_start_up_minimum_grows_with_the_text_size() {
+        assert_eq!(min_window_size(TextSize::Normal), [900.0, 620.0]);
+        for size in TextSize::ALL {
+            let min = min_window_size(size);
+            // Divided by the zoom, the same points at every size.
+            assert!((min[0] / size.factor() - 900.0).abs() < 0.01);
+            assert!((min[1] / size.factor() - 620.0).abs() < 0.01);
+        }
+    }
 }
 
 fn windows_font(file: &str) -> Option<Vec<u8>> {

@@ -29,11 +29,138 @@ struct Request {
     document_number: Option<String>,
     /// `open_document`: the local id a lookup or an import returned.
     document_id: Option<i64>,
+    /// `import_capture` / `import_bundle`: a note and a priority the person
+    /// typed in the extension before importing.
+    extras: Option<Extras>,
+}
+
+/// What the person added to an import. Both fields are optional.
+///
+/// Rule: the extras are validated BEFORE anything is imported and a
+/// malformed object refuses the whole request (nothing stored), so a bad
+/// request never half-applies. A valid one is applied AFTER the import
+/// succeeded, whatever its outcome (imported, confirmed, unchanged: the
+/// person typed it now). A failure to apply never undoes or fails the import;
+/// the reply says so (`extras_applied`, `extras_message`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Extras {
+    note: Option<String>,
+    priority: Option<String>,
+}
+
+const MAX_EXTRAS_NOTE_CHARS: usize = 2000;
+/// The priorities the ficha offers (`work_context`).
+const EXTRAS_PRIORITIES: [&str; 4] = ["baixa", "normal", "alta", "urgente"];
+
+/// Extras checked and normalised: the note trimmed (`None` when empty).
+struct CheckedExtras {
+    note: Option<String>,
+    priority: Option<&'static str>,
+}
+
+fn check_extras(extras: &Extras) -> std::result::Result<CheckedExtras, String> {
+    let note = extras
+        .note
+        .as_deref()
+        .map(|note| note.replace("\r\n", "\n").trim().to_owned())
+        .filter(|note| !note.is_empty());
+    if let Some(note) = &note {
+        if note.chars().count() > MAX_EXTRAS_NOTE_CHARS {
+            return Err(format!(
+                "A observação passa de {MAX_EXTRAS_NOTE_CHARS} caracteres. Encurte o texto e importe de novo."
+            ));
+        }
+        if note
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t')
+        {
+            return Err(
+                "A observação tem caracteres que o Ponte não aceita. Digite o texto de novo."
+                    .to_owned(),
+            );
+        }
+    }
+    let priority = match extras.priority.as_deref() {
+        None => None,
+        Some(value) => Some(
+            EXTRAS_PRIORITIES
+                .iter()
+                .copied()
+                .find(|known| *known == value)
+                .ok_or_else(|| {
+                    "A prioridade escolhida não é reconhecida pelo Ponte. Escolha baixa, normal, alta ou urgente."
+                        .to_owned()
+                })?,
+        ),
+    };
+    Ok(CheckedExtras { note, priority })
+}
+
+/// Applies checked extras to a document. Returns what could not be applied,
+/// as one Portuguese sentence. The note is appended as a new paragraph
+/// prefixed by the date, never replacing the existing text; `skip_repeat`
+/// avoids appending the same entry twice (a retried, already confirmed
+/// request).
+fn apply_extras(
+    store: &mut Store,
+    document_id: i64,
+    extras: &CheckedExtras,
+    skip_repeat: bool,
+) -> std::result::Result<(), String> {
+    let mut problems = Vec::new();
+    if let Some(note) = &extras.note {
+        let entry = format!("{} — {note}", chrono::Local::now().format("%d/%m/%Y"));
+        let result = (|| -> Result<()> {
+            let version = store
+                .item_version("note", document_id)
+                .ok()
+                .map(|v| v.version);
+            let current = store.load_document(document_id)?.note;
+            if skip_repeat && current.contains(&entry) {
+                return Ok(());
+            }
+            let joined = if current.trim().is_empty() {
+                entry.clone()
+            } else {
+                format!("{}\n\n{entry}", current.trim_end())
+            };
+            store.save_note_checked(document_id, &joined, version)
+        })();
+        if let Err(err) = result {
+            problems.push(format!("a observação não foi salva ({err})"));
+        }
+    }
+    if let Some(priority) = extras.priority {
+        let result = (|| -> Result<()> {
+            let mut context = store.load_work_context(document_id)?;
+            if context.priority == priority {
+                return Ok(());
+            }
+            let version = store
+                .item_version("work_context", document_id)
+                .ok()
+                .map(|v| v.version);
+            context.priority = priority.to_owned();
+            store.save_work_context_checked(document_id, &context, version)
+        })();
+        if let Err(err) = result {
+            problems.push(format!("a prioridade não foi alterada ({err})"));
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "A importação foi feita, mas {}. Ajuste na ficha do documento.",
+            problems.join(" e ")
+        ))
+    }
 }
 
 /// What this Ponte answers besides importing; the extension reads it from
 /// the `ping` to know whether the Ponte is recent enough.
-pub const ACTIONS: [&str; 2] = ["lookup", "open_document"];
+pub const ACTIONS: [&str; 3] = ["lookup", "open_document", "import_extras"];
 
 /// Whether the browser launched us for one of the Ponte's own extensions:
 /// the one loaded from the installed folder or the one from the store. The
@@ -190,6 +317,11 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
             }
         }
         "import_capture" | "import_bundle" => {
+            // Malformed extras refuse the whole request before anything is stored.
+            let extras = match request.extras.as_ref().map(check_extras).transpose() {
+                Ok(extras) => extras,
+                Err(message) => return (error("invalid_extras", &message), None),
+            };
             let Some(capture) = request.capture else {
                 return (
                     error(
@@ -212,6 +344,20 @@ pub fn handle_request(bytes: &[u8], store: &mut Store) -> (Value, Option<i64>) {
                 Ok(receipt) => {
                     let outcome = receipt.effective_outcome();
                     let mut response = json!({"protocol_version":1,"ok":true,"request_id":receipt.request_id,"document_id":receipt.document_id,"capture_id":receipt.capture_id,"duplicate":receipt.duplicate,"outcome":outcome.as_str()});
+                    response["extras_applied"] = json!(false);
+                    if let Some(extras) =
+                        extras.filter(|e| e.note.is_some() || e.priority.is_some())
+                    {
+                        match apply_extras(
+                            store,
+                            receipt.document_id,
+                            &extras,
+                            outcome == ImportOutcome::Confirmed,
+                        ) {
+                            Ok(()) => response["extras_applied"] = json!(true),
+                            Err(message) => response["extras_message"] = json!(message),
+                        }
+                    }
                     match outcome {
                         ImportOutcome::Imported => {
                             response["message"] =
@@ -332,7 +478,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
         let (ping, _) = ask(&mut store, json!({"protocol_version":1,"action":"ping"}));
-        assert_eq!(ping["actions"], json!(["lookup", "open_document"]));
+        assert_eq!(
+            ping["actions"],
+            json!(["lookup", "open_document", "import_extras"])
+        );
 
         let capture = crate::model::sample_capture();
         let number = capture.document_number.clone();
@@ -447,5 +596,78 @@ mod tests {
             assert_eq!(reply["error"]["message"], "Atualize o Ponte.");
         }
         assert!(read_frame(&mut reader).unwrap().is_none());
+    }
+
+    fn today() -> String {
+        chrono::Local::now().format("%d/%m/%Y").to_string()
+    }
+    fn import_request(extras: Value) -> Value {
+        let capture = serde_json::to_value(crate::model::sample_capture()).unwrap();
+        json!({"protocol_version":1,"action":"import_capture","capture":capture,"extras":extras})
+    }
+
+    #[test]
+    fn extras_apply_after_import_and_append_to_the_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let (reply, _) = ask(
+            &mut store,
+            import_request(json!({"note":"  Falar com o setor  ","priority":"alta"})),
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["outcome"], "imported");
+        assert_eq!(reply["extras_applied"], true);
+        let id = reply["document_id"].as_i64().unwrap();
+        let detail = store.load_document(id).unwrap();
+        assert_eq!(detail.note, format!("{} — Falar com o setor", today()));
+        assert_eq!(detail.summary.priority, "alta");
+
+        // The same page again: unchanged, and the new note is appended below
+        // the existing one; the priority already matches.
+        let (reply, _) = ask(
+            &mut store,
+            import_request(json!({"note":"Segunda observação","priority":"alta"})),
+        );
+        assert_eq!(reply["outcome"], "unchanged");
+        assert_eq!(reply["extras_applied"], true);
+        let note = store.load_document(id).unwrap().note;
+        assert_eq!(
+            note,
+            format!(
+                "{0} — Falar com o setor\n\n{0} — Segunda observação",
+                today()
+            )
+        );
+
+        // No extras: nothing changes and the reply says so.
+        let (reply, _) = ask(&mut store, import_request(json!({})));
+        assert_eq!(reply["extras_applied"], false);
+        assert!(reply.get("extras_message").is_none());
+        assert_eq!(store.load_document(id).unwrap().note, note);
+    }
+
+    #[test]
+    fn malformed_extras_refuse_the_whole_request_before_importing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        for extras in [
+            json!({"priority":"critica"}),
+            json!({"note":"x".repeat(2001)}),
+            json!({"note":"texto\u{0}oculto"}),
+            json!({"nota":"campo desconhecido"}),
+        ] {
+            let (reply, open) = ask(&mut store, import_request(extras));
+            assert_eq!(reply["ok"], false);
+            assert!(open.is_none());
+            assert!(store.list_documents("").unwrap().is_empty());
+        }
+        let (reply, _) = ask(&mut store, import_request(json!({"priority":"critica"})));
+        assert_eq!(reply["error"]["code"], "invalid_extras");
+        // Newline and tab are allowed; exactly 2000 characters too.
+        let (reply, _) = ask(
+            &mut store,
+            import_request(json!({"note":format!("a\n\tb{}", "x".repeat(1996))})),
+        );
+        assert_eq!(reply["extras_applied"], true, "{reply}");
     }
 }

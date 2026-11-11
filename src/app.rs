@@ -476,7 +476,7 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
         ))
         .with_icon(crate::icon::app_window_icon())
         .with_inner_size(window_size())
-        .with_min_inner_size([900.0, 620.0]);
+        .with_min_inner_size(crate::theme::min_window_size(app.text_size));
     // The pictures of the screens are taken away from the desktop, without
     // taking the keyboard from whoever is working.
     #[cfg(feature = "shots")]

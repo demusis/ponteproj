@@ -27,6 +27,12 @@ fn link_button(ui: &mut egui::Ui, label: &str, raw_url: &str) {
     }
 }
 
+/// Flag set by the Resumo's "Editar nota" and consumed by the notes card of
+/// the same document.
+fn note_edit_request_id(document: i64) -> egui::Id {
+    egui::Id::NULL.with(("note-edit-request", document))
+}
+
 /// The pill of a task's deadline: late, today, on time or none.
 fn due_pill(ui: &mut egui::Ui, task: &crate::tasks::Task, today_iso: &str) {
     if task.due_date.is_empty() {
@@ -576,6 +582,11 @@ impl PonteApp {
             },
         );
         if edit {
+            // One shot, consumed by the Notas e minutas tab: it opens the note
+            // expanded and puts the cursor in it. Arriving by the tab itself
+            // sets nothing.
+            let request = note_edit_request_id(detail.summary.id);
+            ui.ctx().data_mut(|d| d.insert_temp(request, true));
             self.tab = Tab::Notes;
         }
     }
@@ -1772,6 +1783,21 @@ impl PonteApp {
         let mut discard = false;
         let dirty = self.editors[&id].note_dirty();
         let open_id = ui.make_persistent_id(("note-open", id));
+        // "Editar nota" on the Resumo asked for this note to open and be focused.
+        let requested = ui.ctx().data_mut(|d| {
+            let asked = d
+                .get_temp::<bool>(note_edit_request_id(id))
+                .unwrap_or(false);
+            d.remove_temp::<bool>(note_edit_request_id(id));
+            asked
+        });
+        if requested {
+            let focus_id = ui.make_persistent_id(("note-focus", id));
+            ui.data_mut(|d| {
+                d.insert_temp(open_id, true);
+                d.insert_temp(focus_id, true);
+            });
+        }
         let chosen = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
         let collapsed = compact && !dirty && !chosen;
         let mut set_open: Option<bool> = None;

@@ -29,6 +29,9 @@ pub(super) struct TodayData {
     pub dated_tasks: Vec<Task>,
     /// Every open atendimento with a deadline (the calendar shows them all).
     pub dated_attendances: Vec<SaiopAttendance>,
+    /// `dated_tasks` and `dated_attendances` grouped by day, computed once
+    /// per refresh (the calendar reads it on every frame).
+    by_day: std::collections::BTreeMap<String, Vec<CalItem>>,
     /// Why the library could not be read, if it could not.
     pub error: Option<String>,
 }
@@ -73,6 +76,7 @@ impl TodayData {
             }
             Err(error) => data.error = Some(error.to_string()),
         }
+        data.by_day = items_by_day(&data.dated_tasks, &data.dated_attendances, today);
         data
     }
 
@@ -606,7 +610,6 @@ fn calendar_view(
 ) {
     use chrono::Datelike;
     let p = theme::c();
-    let today_iso = today.to_string();
     let (mut year, mut month) = ui
         .data(|d| d.get_temp::<(i32, u32)>(month_id()))
         .unwrap_or((today.year(), today.month()));
@@ -642,7 +645,7 @@ fn calendar_view(
         selected.clear();
     }
     let weeks = month_weeks(year, month);
-    let by_day = items_by_day(&data.dated_tasks, &data.dated_attendances, &today_iso);
+    let by_day = &data.by_day;
     let width = ui.available_width();
     let col_w = width / 7.0;
     let rows = weeks.len().max(1) as f32;
@@ -1287,5 +1290,32 @@ mod tests {
         assert_eq!(day[1].label, "Assunto");
         assert_eq!(day[1].state, DueState::Today);
         assert_eq!(days["2026-11-12"][0].state, DueState::Future);
+    }
+
+    #[test]
+    fn the_cached_grouping_equals_the_function_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let capture = crate::model::sample_capture();
+        let document = store.import_capture(&capture).unwrap().document_id;
+        let data = TodayData::load(&store, "2026-11-10");
+        assert_eq!(
+            data.by_day,
+            items_by_day(&data.dated_tasks, &data.dated_attendances, "2026-11-10")
+        );
+        let mut dated = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.document_id == Some(document))
+            .expect("triage task");
+        dated.due_date = "2026-11-12".to_owned();
+        store.save_task(&dated).unwrap();
+        let data = TodayData::load(&store, "2026-11-10");
+        assert_eq!(data.by_day["2026-11-12"].len(), 1);
+        assert_eq!(
+            data.by_day,
+            items_by_day(&data.dated_tasks, &data.dated_attendances, "2026-11-10")
+        );
     }
 }

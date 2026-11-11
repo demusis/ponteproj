@@ -136,7 +136,9 @@ impl CreatedId {
 pub trait Frame {
     /// PDFs of a capture, in the order they were stored.
     fn files_of_capture(&self, capture: i64) -> Result<Vec<i64>>;
-    /// The triage task created with the document (its first task).
+    /// The triage task created with the document: its lowest-numbered task
+    /// whose action is "triar". A task moved here from elsewhere (relinked)
+    /// with another action is never taken for it.
     fn first_task_of(&self, document: i64) -> Result<Option<i64>>;
     /// The atendimento an import records for a SIGADOC document.
     fn import_attendance_of(&self, document: i64, number: &str) -> Result<Option<i64>>;
@@ -160,15 +162,7 @@ impl Frame for Store {
     }
 
     fn first_task_of(&self, document: i64) -> Result<Option<i64>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT min(id) FROM tasks WHERE document_id=?1",
-                [document],
-                |r| r.get::<_, Option<i64>>(0),
-            )
-            .optional()?
-            .flatten())
+        self.triage_task_of(document)
     }
 
     fn import_attendance_of(&self, document: i64, number: &str) -> Result<Option<i64>> {
@@ -235,7 +229,7 @@ impl Frame for CabinetSnapshot {
         Ok(self
             .tasks
             .iter()
-            .filter(|t| t.document_id == Some(document))
+            .filter(|t| t.document_id == Some(document) && t.action == "triar")
             .map(|t| t.id)
             .min())
     }
@@ -920,6 +914,75 @@ mod tests {
             entries: BTreeMap::new(),
             watermark: watermark.iter().copied().collect(),
         }
+    }
+
+    fn open_store(dir: &tempfile::TempDir) -> Store {
+        Store::open(&dir.path().join("acervo.sqlite3")).unwrap()
+    }
+
+    #[test]
+    fn the_triage_task_is_the_one_the_import_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir);
+        // Plain import.
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let triage = store.first_task_of(document).unwrap().expect("triage");
+        let task = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == triage)
+            .unwrap();
+        assert_eq!(task.action, "triar");
+        // No tasks at all: none.
+        assert_eq!(store.first_task_of(document + 99).unwrap(), None);
+    }
+
+    #[test]
+    fn an_older_relinked_task_is_not_taken_for_the_triage_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir);
+        // A task without document, older than the one the import creates.
+        let mut free = crate::tasks::Task::blank(None);
+        free.title = "Tarefa avulsa".to_owned();
+        let free_id = store.save_task(&free).unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        store.relink_task(free_id, Some(document), None).unwrap();
+        let triage = store.first_task_of(document).unwrap().expect("triage");
+        assert_ne!(triage, free_id);
+        assert!(triage > free_id);
+    }
+
+    #[test]
+    fn a_concluded_or_removed_triage_task_is_still_found_and_none_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir);
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let triage = store.first_task_of(document).unwrap().unwrap();
+        store.complete_task(triage).unwrap();
+        assert_eq!(store.first_task_of(document).unwrap(), Some(triage));
+        store
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Task,
+                id: triage,
+            })
+            .unwrap();
+        assert_eq!(store.first_task_of(document).unwrap(), Some(triage));
+        // A task of another action alone is not a triage task.
+        let mut other = crate::tasks::Task::new(document);
+        other.action = "examinar".to_owned();
+        let other_id = store.save_task(&other).unwrap();
+        assert_ne!(store.first_task_of(document).unwrap(), Some(other_id));
+        assert_eq!(store.first_task_of(document).unwrap(), Some(triage));
     }
 
     #[test]
