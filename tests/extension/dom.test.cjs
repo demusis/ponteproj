@@ -473,7 +473,7 @@ test("note and priority: the link exists only for a Ponte that takes them, and t
     const root = window.__testShadow, area = root.querySelector("textarea");
     return { rows: area.rows, max: area.maxLength, placeholder: area.placeholder, labels: [...root.querySelectorAll(".extras-box label")].map(label => label.firstChild.textContent), options: [...root.querySelectorAll("option")].map(option => [option.value, option.textContent]) };
   });
-  assert.deepEqual(spec, { rows: 3, max: 2000, placeholder: "Ex.: responder até sexta; falar com o setor de protocolo", labels: ["Nota para o Ponte", "Prioridade"], options: [["", "Não mudar"], ["baixa", "Baixa"], ["normal", "Normal"], ["alta", "Alta"], ["urgente", "Urgente"]] });
+  assert.deepEqual(spec, { rows: 3, max: -1, placeholder: "Ex.: responder até sexta; falar com o setor de protocolo", labels: ["Nota para o Ponte", "Prioridade"], options: [["", "Não mudar"], ["baixa", "Baixa"], ["normal", "Normal"], ["alta", "Alta"], ["urgente", "Urgente"]] });
   // The counter only appears above 1800 characters.
   await typeExtras(page, "a".repeat(1800), "");
   assert.equal((await extrasState(page)).count, "");
@@ -539,12 +539,16 @@ test("note only and priority only say so; a message of the Ponte replaces the se
   await answerImport(page, { extras_applied: false, extras_message: "A nota não foi aplicada: o documento está na lixeira." });
   await page.waitForTimeout(50);
   assert.equal((await extrasState(page)).status, "Importado. O Ponte abriu o documento. A nota não foi aplicada: o documento está na lixeira.");
-  await openExtras(page);
+  // The Ponte did not keep them: the text stays in the controls, open and editable.
+  let kept = await extrasState(page);
+  assert.deepEqual([kept.note, kept.priority, kept.box, kept.locked], ["Outra", "baixa", true, false]);
   await typeExtras(page, "Mais uma", "");
   await clickImport(page);
   await answerImport(page, { extras_skipped: true });
   await page.waitForTimeout(50);
-  assert.equal((await extrasState(page)).status, "Importado. O Ponte abriu o documento. O Ponte instalado não recebe nota nem prioridade; a importação foi feita sem elas. Atualize o Ponte.");
+  kept = await extrasState(page);
+  assert.equal(kept.status, "Importado. O Ponte abriu o documento. O Ponte instalado não recebe nota nem prioridade; a importação foi feita sem elas. Atualize o Ponte.");
+  assert.deepEqual([kept.note, kept.box, kept.locked], ["Mais uma", true, false]);
   await page.close();
 });
 test("note and priority survive an import error and the retry sends exactly the same ones", options, async () => {
@@ -668,5 +672,52 @@ test("popup: an older Ponte gets the hint about note and priority and no open li
   const page = await popupPage(items, { protocol_version: 1, ok: true, app_version: "0.30.0", actions: ["lookup"] });
   assert.equal(await page.evaluate(() => { const el = document.getElementById("extras-old"); return !el.hidden && el.textContent; }), "Atualize o Ponte para enviar nota e prioridade ao importar.");
   assert.equal(await page.evaluate(() => document.querySelectorAll("#recent li button").length), 0);
+  await page.close();
+});
+
+test("values the person cannot see are not sent; they come back with the area", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: EXTRAS_PING });
+  await page.waitForTimeout(900);
+  await openExtras(page);
+  await typeExtras(page, "Nota escondida", "alta");
+  // The Ponte stops answering (the status is asked again): the area is gone.
+  await page.evaluate(() => { window.__native.ping = { protocol_version: 1, ok: false, error: { code: "HOST_CONNECTION", message: "x" } }; });
+  await page.evaluate(() => window.__testShadow.querySelector(".ponte button.link").click());
+  await page.waitForTimeout(900);
+  assert.equal((await extrasState(page)).box, false);
+  await clickImport(page);
+  assert.equal("extras" in (await page.evaluate(() => window.__imports.at(-1))), false);
+  await answerImport(page);
+  await page.waitForTimeout(50);
+  // The Ponte is back: the same document shows the same text again.
+  await page.evaluate(ping => { window.__native.ping = ping; }, EXTRAS_PING);
+  await page.evaluate(() => window.__testShadow.querySelector(".ponte button.link").click());
+  await page.waitForTimeout(900);
+  const back = await extrasState(page);
+  assert.deepEqual([back.box, back.note, back.priority], [true, "Nota escondida", "alta"]);
+  await page.close();
+  // An area that was never opened sends nothing either, whatever the controls hold.
+  const closed = await pageFor();
+  await instrumentContent(closed, { ping: EXTRAS_PING });
+  await closed.waitForTimeout(900);
+  await closed.evaluate(() => { const area = window.__testShadow.querySelector("textarea"); area.value = "fechada"; });
+  await clickImport(closed);
+  assert.equal("extras" in (await closed.evaluate(() => window.__imports.at(-1))), false);
+  await closed.close();
+});
+test("the note is limited by characters in the panel, not by UTF-16 units, and a cut emoji is repaired", options, async () => {
+  const page = await pageFor();
+  await instrumentContent(page, { ping: EXTRAS_PING });
+  await page.waitForTimeout(900);
+  await openExtras(page);
+  await typeExtras(page, "😀".repeat(2100), "");
+  let state = await extrasState(page);
+  assert.equal(Array.from(state.note).length, 2000);
+  assert.equal(state.count, "2000 de 2000");
+  await typeExtras(page, "ok " + "😀".slice(0, 1), "");
+  await clickImport(page);
+  const extras = await page.evaluate(() => window.__imports.at(-1).extras);
+  assert.ok(extras.note.startsWith("ok") && !/[\ud800-\udfff]/.test(extras.note));
   await page.close();
 });

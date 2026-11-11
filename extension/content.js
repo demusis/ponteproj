@@ -75,7 +75,6 @@
   noteLabel.textContent = "Nota para o Ponte";
   const noteArea = document.createElement("textarea");
   noteArea.rows = 3;
-  noteArea.maxLength = Core.MAX_NOTE_CHARS;
   noteArea.placeholder = "Ex.: responder até sexta; falar com o setor de protocolo";
   noteLabel.append(noteArea);
   const noteCount = document.createElement("p");
@@ -218,7 +217,8 @@
     extrasOpen = false;
   }
   extrasLink.addEventListener("click", () => { extrasOpen = !extrasOpen; render(); if (extrasOpen) noteArea.focus(); });
-  noteArea.addEventListener("input", render);
+  // The limit counts characters, not UTF-16 units: enforced here, not by the control.
+  noteArea.addEventListener("input", () => { const limited = Core.limitNote(noteArea.value); if (limited !== noteArea.value) noteArea.value = limited; render(); });
   function openTarget(view) {
     if (!snapshot || !ponteActions?.includes("open_document")) return 0;
     const sent = session.capture ? Core.identity(session.capture) : null;
@@ -286,7 +286,10 @@
     try {
       capture = retrying ? session.capture : Core.buildCapture(snapshot);
       // A retry carries exactly the note and priority of the first attempt.
-      extras = retrying ? retryExtras : Core.buildExtras(noteArea.value, prioritySelect.value);
+      // Only what the person can see is sent: the area must be available and open.
+      // Values typed earlier stay in memory and come back with the area.
+      const seen = Boolean(ponteActions?.includes("import_extras")) && extrasOpen;
+      extras = retrying ? retryExtras : seen ? Core.buildExtras(noteArea.value, prioritySelect.value) : null;
     }
     catch (error) { notice = null; pageError = error.message; status.textContent = pageError; return; }
     if (!capture.metadata.movement_history && !(session.state === "error" && capture === session.capture) && globalThis.PonteHistory) {
@@ -301,7 +304,8 @@
     render();
     notice = { ...(await promise), extras };
     // Delivered: the note and priority were passed on; the controls start empty again.
-    if (notice.result.ok && notice.capture.document_number === extrasNumber) clearExtras();
+    // Cleared only when the Ponte kept them; otherwise the person can copy or send again.
+    if (notice.result.ok && extras && notice.result.extras_applied === true && notice.capture.document_number === extrasNumber) clearExtras();
     if (notice.result.ok) retryExtras = null;
     sendExtras = null;
     refresh();

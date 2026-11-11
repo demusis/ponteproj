@@ -396,6 +396,15 @@ test("extras: exact shape, trimmed note up to 2000 characters, no control charac
   for (const priority of ["baixa", "normal", "alta", "urgente"]) assert.deepEqual(plainOf(Core.validateExtras({ priority })), { priority });
   assert.doesNotThrow(() => Core.validateExtras({ note: "a".repeat(2000) }));
   assert.doesNotThrow(() => Core.validateExtras({ note: "😀".repeat(2000) }));
+  // Unpaired surrogates (a cut emoji from a paste) are repaired when building and refused when validating.
+  const cut = "nota " + "😀".slice(0, 1);
+  const repaired = Core.buildExtras(cut, "").note;
+  assert.ok(!/[\ud800-\udfff]/.test(repaired) && repaired.startsWith("nota"));
+  assert.equal(JSON.parse(JSON.stringify(repaired)), repaired);
+  assert.deepEqual(plainOf(Core.buildExtras("a😀b", "")), { note: "a😀b" });
+  for (const note of ["x\ud83d", "\ude00x", "a\ud83dB"]) assert.throws(() => Core.validateExtras({ note }), error => error.code === "EXTRAS_INVALID");
+  assert.equal(Core.limitNote("😀".repeat(2100)).length, 4000);
+  assert.equal(Core.limitNote("abc"), "abc");
   for (const bad of [{}, null, [], "x", { note: "" }, { note: " a" }, { note: "a " }, { note: "a".repeat(2001) }, { note: "😀".repeat(2001) }, { note: 5 }, { note: "a\u0000b" }, { note: "a\rb" }, { note: "a\u007fb" }, { note: "a\u0085b" }, { priority: "Alta" }, { priority: "" }, { priority: "critica" }, { priority: 1 }, { note: "a", extra: 1 }, { note: "a", priority: "alta", more: true }, { note: undefined, priority: "alta" }]) {
     assert.throws(() => Core.validateExtras(bad), error => error.code === "EXTRAS_INVALID", JSON.stringify(bad));
   }

@@ -383,13 +383,18 @@
   const EXTRAS_PRIORITIES = ["baixa", "normal", "alta", "urgente"];
   const MAX_NOTE_CHARS = 2000;
   const NOTE_CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+  // A lone surrogate is not valid text for the Ponte's JSON parser.
+  const LONE_SURROGATE_RE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+  function wellFormed(text) { return typeof text.toWellFormed === "function" ? text.toWellFormed() : text.replace(new RegExp(LONE_SURROGATE_RE.source, "g"), "�"); }
   function noteLength(note) { return Array.from(note).length; }
+  // The first `MAX_NOTE_CHARS` characters (code points) of a text.
+  function limitNote(text) { const chars = Array.from(text); return chars.length > MAX_NOTE_CHARS ? chars.slice(0, MAX_NOTE_CHARS).join("") : text; }
   function validateExtras(extras) {
     const keys = plain(extras) ? Object.keys(extras) : [];
     if (!keys.length || keys.some(key => !["note", "priority"].includes(key))) fail("EXTRAS_INVALID", "A nota ou a prioridade não pôde ser enviada. Confira o que foi escrito e tente de novo.");
     if (Object.hasOwn(extras, "note")) {
       const note = extras.note;
-      if (typeof note !== "string" || !note || note !== note.trim() || noteLength(note) > MAX_NOTE_CHARS || NOTE_CONTROL_RE.test(note)) fail("EXTRAS_INVALID", "A nota não pôde ser enviada: use até 2000 caracteres, sem caracteres de controle.");
+      if (typeof note !== "string" || !note || note !== note.trim() || noteLength(note) > MAX_NOTE_CHARS || NOTE_CONTROL_RE.test(note) || LONE_SURROGATE_RE.test(note)) fail("EXTRAS_INVALID", "A nota não pôde ser enviada: use até 2000 caracteres, sem caracteres de controle.");
     }
     if (Object.hasOwn(extras, "priority") && !EXTRAS_PRIORITIES.includes(extras.priority)) fail("EXTRAS_INVALID", "A prioridade escolhida não é válida.");
     return extras;
@@ -397,7 +402,7 @@
   // What the controls of the panel hold -> the extras to send, or null when both are empty.
   function buildExtras(noteText, priority) {
     const extras = {};
-    const note = String(noteText || "").replace(/\r\n?/g, "\n").replace(new RegExp(NOTE_CONTROL_RE.source, "g"), "").trim();
+    const note = wellFormed(String(noteText || "")).replace(/\r\n?/g, "\n").replace(new RegExp(NOTE_CONTROL_RE.source, "g"), "").trim();
     if (note) extras.note = note;
     if (priority) extras.priority = priority;
     return Object.keys(extras).length ? validateExtras(extras) : null;
@@ -483,6 +488,6 @@
       return this.inFlight;
     }
   }
-  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, importOutcome, identity, errorResult, filesNotDownloaded, checkOutcome, statusView, UNRECOGNIZED_TEXT, OLD_PONTE_HINT, nativeError, ImportSession, bytes, exactKeys, validateExtras, buildExtras, extrasNotice, MAX_NOTE_CHARS, EXTRAS_PRIORITIES };
+  return { ORIGIN, HOST, ADAPTER, MAX_TEXT_BYTES, MAX_PAYLOAD_BYTES, CaptureError, allowedOrigin, cleanUrl, documentNumber, safeText, extractDocument, buildCapture, validateCapture, validateReceipt, importOutcome, identity, errorResult, filesNotDownloaded, checkOutcome, statusView, UNRECOGNIZED_TEXT, OLD_PONTE_HINT, nativeError, ImportSession, bytes, exactKeys, validateExtras, buildExtras, extrasNotice, limitNote, MAX_NOTE_CHARS, EXTRAS_PRIORITIES };
 });
 
