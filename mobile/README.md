@@ -2,12 +2,13 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (0.5.0)
+## O que faz (0.6.0)
 
 Quatro áreas numa barra no rodapé — **Hoje**, **Tarefas**, **Documentos** e **E-mail** — e telas próprias para cada coisa que se abre (ficha, texto, nota, nova tarefa, registro por foto, ajustes). Tema claro e escuro, seguindo o aparelho.
 
 - **Hoje (0.5.0):** a tela de abertura: tarefas atrasadas, para hoje e as próximas, e os atendimentos com prazo vencido ou para hoje, pelas mesmas regras do computador.
 - **Tarefa (0.5.0):** tocar numa tarefa abre a tela dela: título, ação, prioridade, prazo, responsável e observações; concluir ou reabrir; vincular a um documento, trocar de documento ou desvincular. **Nova tarefa**, na aba Tarefas, cria uma tarefa sem documento. Se a tarefa mudou depois de aberta (em outro aparelho, por exemplo), o aplicativo avisa e não grava por cima.
+- **Novidades da 0.6.0:** seu nome em Ajustes, botão **Eu** e sugestões de responsável; **atendimentos** (lista e ficha, só leitura) no seletor Tarefas | Atendimentos; **busca em tudo** (documentos com texto e notas, tarefas, atendimentos); **aviso diário de prazos** opcional, só com quantidades; **Anexar…** na ficha (foto ou arquivo); e o aplicativo **recebe arquivos, fotos e textos compartilhados** por outros aplicativos (tela Guardar no Ponte), sempre depois do bloqueio. O APK passa a ser assinado com chave própria, guardada fora do projeto.
 - **Tarefas:** atrasadas, para hoje, próximas, sem prazo e concluídas; marcar conclui na hora, com "Desfazer"; tocar no texto abre a ficha do documento.
 - **Documentos:** busca e filtros (todos, com tarefa, e-mails, registros); ficha com tarefas, nota, resumo da análise, PDFs e anexos (abertos no leitor do celular); o texto completo abre numa tela de leitura.
 - **Registro por foto:** o botão abre a câmera; depois, um formulário curto cria o registro manual com a foto anexada (redimensionada, abaixo do limite de anexos).

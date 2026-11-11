@@ -49,7 +49,13 @@ internal fun AppRoot() {
     }
 
     // What waited behind the lock (a refusal of a share) is said once the app is open.
-    LaunchedEffect(c.locked) { if (!c.locked) Intake.flushNotice() }
+    LaunchedEffect(c.locked) {
+        if (!c.locked) {
+            Intake.flushNotice()
+            // An attach whose camera or file came back while the app was locked.
+            Intake.onUnlocked()
+        }
+    }
 
     // On the lock screen Back does not unlock.
     SafeBackHandler(enabled = c.canGoBack() && !c.locked) { c.back() }

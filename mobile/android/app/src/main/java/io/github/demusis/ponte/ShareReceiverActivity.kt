@@ -71,7 +71,10 @@ class ShareReceiverActivity : Activity() {
         Intake.offer(Intake.Offer(action, i.type, uri, count, text, subject))
         val forward = Intent(this, MainActivity::class.java).apply {
             setAction(Intake.ACTION_RECEIVED)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            // No CLEAR_TOP: whatever sits above the main screen (camera, picker, unlock prompt) stays.
+            // If the main screen is on top it gets the marker (onNewIntent); if not, the instance this
+            // makes finishes at once and the share is taken when the person is back (see MainActivity).
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             if (uri != null) {
                 // The sender's grant is given on to the app's main screen, for the reading that follows.
                 clipData = ClipData.newRawUri("", uri)

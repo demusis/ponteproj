@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
 import java.io.File
+import java.time.LocalDate
 import java.time.ZonedDateTime
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -37,6 +38,9 @@ internal object NoticeScheduler {
     private const val K_ON = "notice_on"
     private const val K_TIME = "notice_min"
 
+    /** The day (ISO date) the notice last fired: so opening the app after a late alarm never skips a day, and no day gets two. */
+    private const val K_SHOWN = "notice_shown"
+
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("ponte", Context.MODE_PRIVATE)
 
     /** The switch: off until the person turns it on. */
@@ -47,10 +51,30 @@ internal object NoticeScheduler {
 
     fun setOn(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(K_ON, on).apply()
+        if (on) skipTodayIfPast(ctx)
     }
 
     fun setTime(ctx: Context, time: DeadlineNotice.Time) {
         prefs(ctx).edit().putInt(K_TIME, time.minutes).apply()
+        skipTodayIfPast(ctx)
+    }
+
+    private fun shownOn(ctx: Context): LocalDate? = try {
+        prefs(ctx).getString(K_SHOWN, null)?.let { LocalDate.parse(it) }
+    } catch (_: Throwable) {
+        null
+    }
+
+    /** The notice fired (or is being shown) today: the next one is tomorrow's. */
+    fun markShown(ctx: Context, day: LocalDate = LocalDate.now()) {
+        prefs(ctx).edit().putString(K_SHOWN, day.toString()).apply()
+    }
+
+    /** Turning the notice on, or moving its time, after that time today means "from tomorrow", not "now". */
+    private fun skipTodayIfPast(ctx: Context) {
+        val now = ZonedDateTime.now()
+        val t = time(ctx)
+        if (!now.toLocalTime().isBefore(java.time.LocalTime.of(t.hour, t.minute))) markShown(ctx, now.toLocalDate())
     }
 
     /** The app may show notifications: the permission (Android 13 or newer) and the phone's own switch. */
@@ -80,7 +104,7 @@ internal object NoticeScheduler {
                 alarms.cancel(pending)
                 return
             }
-            val next = DeadlineNotice.nextTrigger(ZonedDateTime.now(), time(app))
+            val next = DeadlineNotice.nextAlarm(ZonedDateTime.now(), time(app), shownOn(app))
             alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.toInstant().toEpochMilli(), pending)
         } catch (_: Throwable) {
         }
@@ -143,8 +167,12 @@ internal object NoticeCounts {
 
     fun read(ctx: Context): Counts? {
         if (SyncRunner.keyBroken) return null
+        if (!IntakeRules.noticeMayRead(
+                SyncRunner.ready, SyncRunner.keyBroken, File(ctx.filesDir, "acervo.sqlite3").isFile,
+                SyncRunner.libraryKeyStored(ctx)
+            )
+        ) return null
         if (!SyncRunner.ready) {
-            if (!File(ctx.filesDir, "acervo.sqlite3").isFile) return null
             val key = SyncRunner.libraryKeyIfPresent(ctx) ?: return null
             val opened = JSONObject(SyncRunner.core.init(ctx.filesDir.absolutePath, key, phoneMemberName()))
             if (!opened.optBoolean("ok")) return null
@@ -191,7 +219,9 @@ class NoticeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != NoticeScheduler.ACTION_TICK) return
         val app = context.applicationContext
-        // Tomorrow's alarm before anything that could fail.
+        // Today's notice is counted as shown the moment the alarm rings (so the next alarm is tomorrow's
+        // and a day never gets two), and tomorrow's alarm is set before anything that could fail.
+        NoticeScheduler.markShown(app)
         NoticeScheduler.arm(app)
         if (!NoticeScheduler.isOn(app)) return
         val pending = goAsync()

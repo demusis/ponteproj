@@ -321,9 +321,14 @@ internal object SyncRunner {
      * only reads (the daily notice): it never creates a key, so it never starts a library.
      */
     fun libraryKeyIfPresent(ctx: Context): ByteArray? {
-        val prefs = prefsOf(ctx)
-        if (prefs.getString("key_ct", null) == null || prefs.getString("key_iv", null) == null) return null
+        if (!libraryKeyStored(ctx)) return null
         return loadOrCreateLibraryKey(ctx)
+    }
+
+    /** A library key was made on this phone before (reads the preferences only; creates nothing). */
+    fun libraryKeyStored(ctx: Context): Boolean {
+        val prefs = prefsOf(ctx)
+        return prefs.getString("key_ct", null) != null && prefs.getString("key_iv", null) != null
     }
 
     /** Returns the 32-byte library key, creating it on first run (wrapped by a Keystore AES key). */

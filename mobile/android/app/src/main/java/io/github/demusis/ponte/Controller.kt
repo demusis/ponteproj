@@ -369,6 +369,7 @@ internal object Controller {
             if (k.isNotEmpty()) {
                 manualKinds = k
                 photo = photo.copy(kinds = k)
+                Intake.onKinds(k)
             }
             ch.optJSONObject("limits")?.let { l ->
                 AttachLimits.maxBytes = l.optLong("max_attachment_bytes", AttachLimits.maxBytes)
@@ -757,8 +758,7 @@ internal object Controller {
     fun showToday() {
         // A photo being made, a task or a note being typed stay as they are: the person is in the
         // middle of something. (While locked nothing is shown anyway; this only moves the state.)
-        val busy = stack.any { it is Route.Photo || it is Route.EditTask || it is Route.Note || it is Route.NewTask || it is Route.Setup || it is Route.Share }
-        if (busy) return
+        if (NavGuard.busy(stack.toList(), Intake.attachBusy)) return
         stack.clear()
         tab = 0
         shell = shell.copy(tab = 0)
@@ -1313,6 +1313,9 @@ internal object Controller {
     private fun reloadDocument() {
         if (stack.any { it is Route.Document }) loadDocument()
     }
+
+    /** True once the first Activity has attached: a later Activity that finds this is a duplicate. */
+    fun isStarted() = started
 
     /** Reads the ficha again (after something was attached to it). */
     fun refreshDocument() = reloadDocument()

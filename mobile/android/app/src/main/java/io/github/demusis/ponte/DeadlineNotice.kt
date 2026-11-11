@@ -36,7 +36,7 @@ internal object DeadlineNotice {
     const val TITLE = "Prazos de hoje"
 
     /** What the notice says on a locked screen: no counts, no names. */
-    const val PUBLIC_TEXT = "Ponte de bolso: há prazos para hoje."
+    const val PUBLIC_TEXT = "Ponte de bolso: há prazos a conferir."
 
     /**
      * The first moment after [after] that is [time] on the clock of [after]'s zone. Calendar
@@ -48,6 +48,26 @@ internal object DeadlineNotice {
         val at = LocalTime.of(time.hour, time.minute)
         val today = ZonedDateTime.of(after.toLocalDate(), at, after.zone)
         return if (today.isAfter(after)) today else ZonedDateTime.of(after.toLocalDate().plusDays(1), at, after.zone)
+    }
+
+    /** How long after the chosen time a missed notice is still fired ("soon"). */
+    const val SOON_SECONDS = 60L
+
+    /**
+     * When the next alarm is due, knowing the day the notice was last shown ([shownOn], or null).
+     * Today's notice already shown: tomorrow at the chosen time. Not shown yet: at the chosen time
+     * if it is still ahead, otherwise SOON (the alarm was late or lost, the phone was off, the app
+     * opened first), never skipping to tomorrow. A [shownOn] that is not today (yesterday, or a day
+     * ahead because the clock was set back) counts as not shown.
+     */
+    fun nextAlarm(now: ZonedDateTime, time: Time, shownOn: java.time.LocalDate?): ZonedDateTime {
+        val at = LocalTime.of(time.hour, time.minute)
+        val todayAt = ZonedDateTime.of(now.toLocalDate(), at, now.zone)
+        return when {
+            shownOn == now.toLocalDate() -> ZonedDateTime.of(now.toLocalDate().plusDays(1), at, now.zone)
+            todayAt.isAfter(now) -> todayAt
+            else -> now.plusSeconds(SOON_SECONDS)
+        }
     }
 
     /**

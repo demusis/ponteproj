@@ -10,6 +10,8 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.graphics.BitmapFactory
+import androidx.lifecycle.Lifecycle
 import android.system.Os
 import android.webkit.MimeTypeMap
 import androidx.compose.runtime.getValue
@@ -21,6 +23,7 @@ import java.io.FileNotFoundException
 import java.io.InputStream
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.Executors
 
 /** How the "Guardar no Ponte" screen is working. */
 internal enum class ShareMode { CHOOSE, RECORD, ATTACH }
@@ -80,11 +83,13 @@ internal object Intake {
 
     /** An image bigger than the limit is shrunk like a photo; it may be up to this size when it arrives. */
     private const val IMAGE_INPUT_CAP = 40L * 1024 * 1024
-    private const val OFFER_LIFETIME_MS = 30_000L
+    private const val OFFER_LIFETIME_MS = 5L * 60 * 1000
 
     private lateinit var app: Context
     private val main = Handler(Looper.getMainLooper())
-    private var counter = 0
+
+    /** ONE worker for every copy and decode: they run one after the other, never in parallel. */
+    private val stager = Executors.newSingleThreadExecutor { r -> Thread(r, "ponte-intake").apply { isDaemon = true } }
 
     fun init(ctx: Context) {
         app = ctx.applicationContext
@@ -96,10 +101,8 @@ internal object Intake {
 
     private fun dir(): File = File(app.cacheDir, DIR).apply { mkdirs() }
 
-    private fun workFile(prefix: String): File {
-        counter++
-        return File(dir(), prefix + "-" + System.currentTimeMillis() + "-" + counter + ".tmp")
-    }
+    /** A new, uniquely named empty file in the private folder (the system makes the name, so no two collide). */
+    private fun workFile(prefix: String): File = File.createTempFile(prefix + "-", ".tmp", dir())
 
     /** Cold start: nothing left from an earlier run is kept (the share is lost with the process; see [receive]). */
     fun cleanAll(ctx: Context) {
@@ -110,7 +113,7 @@ internal object Intake {
     }
 
     /** Camera pictures taken for an "Anexar…" that must survive a lock while the camera is in front. */
-    fun keepPaths(): Set<String> = setOfNotNull(attachPhoto?.absolutePath)
+    fun keepPaths(): Set<String> = setOfNotNull(attachPhoto?.absolutePath, resizing?.absolutePath)
 
     // ------------------------------------------------------------------ reading a Uri
 
@@ -165,7 +168,7 @@ internal object Intake {
      * is cleaned, and gets the extension of the MIME hint when it has none. The type of the content
      * is not judged here: the core does it when the file is stored.
      */
-    private fun stage(uri: Uri, mimeHint: String?, allowBigImage: Boolean): Staged {
+    private fun stage(uri: Uri, mimeHint: String?, allowBigImage: Boolean, cancelled: () -> Boolean = { false }): Staged {
         val auth = uri.authority
         if (!"content".equals(uri.scheme, ignoreCase = true) || auth.isNullOrBlank()) {
             throw PonteException(ShareRules.MSG_NOT_CONTENT)
@@ -191,9 +194,10 @@ internal object Intake {
             ShareRules.withExtension(ShareRules.cleanName(rawName, AttachLimits.maxNameChars), mime, ::extFor),
             AttachLimits.maxNameChars
         )
-        val image = allowBigImage && ShareRules.looksLikeImage(mime)
-        val cap = if (image) IMAGE_INPUT_CAP else limit
-        val tooBig = if (image) "A imagem passa de ${IMAGE_INPUT_CAP / (1024 * 1024)} MB. Compartilhe uma versão menor."
+        val image = ShareRules.looksLikeImage(mime)
+        val big = image && allowBigImage
+        val cap = if (big) IMAGE_INPUT_CAP else limit
+        val tooBig = if (big) "A imagem passa de ${IMAGE_INPUT_CAP / (1024 * 1024)} MB. Compartilhe uma versão menor."
         else ShareRules.tooBigMessage(name, limit)
         // The size the provider announces is only a hint: it lets an obvious case fail early.
         if (declared > cap) throw PonteException(tooBig)
@@ -202,12 +206,14 @@ internal object Intake {
         var done = false
         try {
             try {
-                openForRead(uri).use { input -> work.outputStream().use { out -> BoundedCopy.copy(input, out, cap) } }
+                openForRead(uri).use { input -> work.outputStream().use { out -> BoundedCopy.copy(input, out, cap, cancelled) } }
             } catch (_: TooBigException) {
                 throw PonteException(tooBig)
             }
             var file = work
-            if (image && work.length() > limit) {
+            // Re-encoded to JPEG when over the limit, or when what the decoder really finds in it is a
+            // type the core does not take (HEIC, WebP...): by content, never by the sender's label.
+            if (image && ShareRules.needsReencode(realImageType(work), work.length(), limit)) {
                 val shrunk = workFile("img")
                 try {
                     Images.resizeForUpload(work, shrunk)
@@ -216,7 +222,7 @@ internal object Intake {
                     throw e
                 } catch (e: Throwable) {
                     shrunk.delete()
-                    throw PonteException("Não foi possível reduzir a imagem. Compartilhe uma versão menor.")
+                    throw PonteException(ShareRules.MSG_CONVERT)
                 }
                 work.delete()
                 file = shrunk
@@ -227,6 +233,15 @@ internal object Intake {
         } finally {
             if (!done) work.delete()
         }
+    }
+
+    /** The type the decoder finds in the content (reads only the header), or null when it is not an image it knows. */
+    private fun realImageType(f: File): String? = try {
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(f.absolutePath, o)
+        if (o.outWidth > 0 && o.outHeight > 0) o.outMimeType else null
+    } catch (_: Throwable) {
+        null
     }
 
     // ------------------------------------------------------------------ "Anexar…" in the ficha
@@ -268,14 +283,24 @@ internal object Intake {
         }
     }
 
+    /** A result of the camera or the picker, already in a private working file, waiting for the unlock. */
+    private class Parked(val docId: Long, val file: File, val name: String, val description: String)
+
+    private var parked: Parked? = null
+
+    /** The camera picture being shrunk (kept out of the lock's cleanup meanwhile). */
+    @Volatile private var resizing: File? = null
+
     /**
-     * The camera answered. After a process death the state above is gone and the picture is
-     * just deleted (the person takes it again); nothing is attached behind a lock either.
+     * The camera answered. The picture is shrunk to a private working file at once, even if the app
+     * locked while the camera was open; then it is attached, or, while locked, PARKED until the
+     * person unlocks ([onUnlocked]). After a process death the state is gone and the picture is
+     * just deleted (the person takes it again).
      */
     fun onAttachPhotoResult(ok: Boolean) {
         val f = attachPhoto ?: return
         attachPhoto = null
-        if (!ok || !f.isFile || f.length() == 0L || Controller.locked) {
+        if (IntakeRules.attachResult(ok, f.isFile && f.length() > 0L, locked = false) == IntakeRules.Result.DROP) {
             f.delete()
             return
         }
@@ -283,20 +308,49 @@ internal object Intake {
         val description = attachDescription.ifEmpty { "Foto tirada no celular" }
         attachDocId = 0L
         attachBusy = true
-        Thread {
+        resizing = f
+        stager.execute {
             val out = workFile("foto")
             try {
                 Images.resizeForUpload(f, out)
                 val name = "foto-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmmss")) + ".jpg"
                 f.delete()
-                ui { runAttach(docId, out, name, description) }
+                ui { resizing = null; deliver(docId, out, name, description) }
             } catch (e: Throwable) {
                 f.delete()
                 out.delete()
                 val m = PhoneWords.explain(e, "Não foi possível guardar a foto. Tente de novo.")
-                ui { attachBusy = false; Controller.say(m, long = true) }
+                ui { resizing = null; attachBusy = false; Controller.say(m, long = true) }
             }
-        }.start()
+        }
+    }
+
+    /**
+     * A working file is ready for [docId]: attach it now, or park it while the app is locked (and
+     * still in front of the person; a locked app that is already out of sight keeps nothing).
+     */
+    private fun deliver(docId: Long, file: File, name: String, description: String) {
+        when (IntakeRules.attachResult(true, true, Controller.locked)) {
+            IntakeRules.Result.ATTACH -> runAttach(docId, file, name, description)
+            IntakeRules.Result.PARK -> {
+                val front = MainActivity.live?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED) == true
+                if (front) {
+                    parked?.file?.delete()
+                    parked = Parked(docId, file, name, description)
+                } else {
+                    file.delete()
+                    attachBusy = false
+                }
+            }
+            IntakeRules.Result.DROP -> { file.delete(); attachBusy = false }
+        }
+    }
+
+    /** From the compose tree once the app is unlocked: what waited behind the lock is attached now. */
+    fun onUnlocked() {
+        val p = parked ?: return
+        parked = null
+        runAttach(p.docId, p.file, p.name, p.description)
     }
 
     /** The system picker (any type, one file), for a file to attach to document [documentId]. */
@@ -318,22 +372,26 @@ internal object Intake {
         }
     }
 
-    /** The picker answered with [uri] (null when the person gave up). Dropped when the app locked meanwhile. */
+    /**
+     * The picker answered with [uri] (null when the person gave up). The file is copied at once,
+     * with the grant it came with, even if the app locked meanwhile; then attached, or parked
+     * while locked.
+     */
     fun onAttachPicked(uri: Uri?) {
-        if (uri == null || Controller.locked || attachDocId <= 0 || attachBusy) return
+        if (uri == null || attachDocId <= 0 || attachBusy) return
         val docId = attachDocId
         val description = attachDescription
         attachDocId = 0L
         attachBusy = true
-        Thread {
+        stager.execute {
             try {
                 val s = stage(uri, null, allowBigImage = false)
-                ui { runAttach(docId, s.file, s.name, description) }
+                ui { deliver(docId, s.file, s.name, description) }
             } catch (e: Throwable) {
                 val m = PhoneWords.explain(e, "Não foi possível ler o arquivo. Tente de novo.")
                 ui { attachBusy = false; Controller.say(m, long = true) }
             }
-        }.start()
+        }
     }
 
     /** Hands the working file to the core; it is deleted on every path. */
@@ -385,7 +443,10 @@ internal object Intake {
         private set
 
     /** A generation: grows whenever the pending share is replaced or dropped, so late work discards itself. */
-    private var gen = 0
+    @Volatile private var gen = 0
+
+    /** The person chose a kind by hand: the kinds arriving later (see [onKinds]) must not change it. */
+    private var kindTouched = false
 
     /** The "Guardar no Ponte" screen has been shown (unlocked) at least once. */
     private var seen = false
@@ -425,13 +486,20 @@ internal object Intake {
         )
         if (!verdict.ok) { tell(verdict.message); return }
         if (!Controller.isSetUp()) { tell(ShareRules.MSG_NOT_SET_UP); return }
-        if (share.busy) { tell("Aguarde: outro arquivo está sendo guardado."); return }
+        // One share at a time: while one is being received or is on the screen (a form being filled,
+        // a save running) the first is kept untouched and the person is told. Nothing of the second
+        // is read. Only a share whose copy failed (nothing to keep) is replaced.
+        if (IntakeRules.arrival(share.reading, share.item != null) == IntakeRules.Arrival.KEEP_FIRST) {
+            tell(ShareRules.MSG_KEEP_FIRST)
+            return
+        }
         dropShare(removeRoute = true)
         gen++
         seen = false
+        kindTouched = false
         val mine = gen
         val kinds = Controller.photo.kinds
-        val kind = kinds.firstOrNull { it.key == "outro" }?.key ?: kinds.first().key
+        val kind = ShareRules.defaultKind(kinds.map { it.key })
         val subject = ShareRules.oneLine(o.subject, AttachLimits.maxTitleBytes)
         val text = ShareRules.plainText(o.text, AttachLimits.maxTextBytes)
         val uri = o.uri
@@ -443,11 +511,11 @@ internal object Intake {
         }
         share = ShareState(reading = true, kinds = kinds, kind = kind)
         Controller.stack.add(Route.Share)
-        Thread {
+        stager.execute {
             try {
-                val s = stage(uri, o.mime, allowBigImage = true)
+                val s = stage(uri, o.mime, allowBigImage = true, cancelled = { IntakeRules.isLate(gen, mine) })
                 ui {
-                    if (gen == mine) {
+                    if (!IntakeRules.isLate(gen, mine)) {
                         val title = subject.ifEmpty { ShareRules.oneLine(ShareRules.titleFromName(s.name), AttachLimits.maxTitleBytes) }
                         share = share.copy(
                             reading = false, error = "",
@@ -456,13 +524,22 @@ internal object Intake {
                         )
                     } else s.file.delete()
                 }
+            } catch (_: CopyCancelled) {
+                // A newer share or a cancel replaced this one: its file was already deleted.
             } catch (e: Throwable) {
                 val m = PhoneWords.explain(e, "Não foi possível receber o arquivo. Compartilhe-o de novo.")
                 ui {
-                    if (gen == mine) share = share.copy(reading = false, error = m)
+                    if (!IntakeRules.isLate(gen, mine)) share = share.copy(reading = false, error = m)
                 }
             }
-        }.start()
+        }
+    }
+
+    /** The manual kinds arrived (the library's choices load after the app starts): the form uses them. */
+    fun onKinds(kinds: List<Choice>) {
+        if (kinds.isEmpty() || share.item == null && !share.reading) return
+        val keep = kindTouched && kinds.any { it.key == share.kind }
+        share = share.copy(kinds = kinds, kind = if (keep) share.kind else ShareRules.defaultKind(kinds.map { it.key }))
     }
 
     /** Deletes the pending share's working file and forgets it; optionally takes its screens off the stack. */
@@ -483,6 +560,7 @@ internal object Intake {
     fun reset() {
         if (share.busy) return
         pendingNotice = null
+        dropParked()
         dropShare(removeRoute = true)
     }
 
@@ -494,10 +572,21 @@ internal object Intake {
      * (then it waits behind a later lock like any form in progress).
      */
     fun onHostStop(changingConfiguration: Boolean) {
-        if (changingConfiguration || !Controller.locked || Controller.unlockInProgress()) return
-        pendingNotice = null
-        if (share.busy || seen || !hasShare()) return
-        dropShare(removeRoute = true)
+        val unlocking = Controller.unlockInProgress()
+        if (IntakeRules.dropParkedOnStop(changingConfiguration, Controller.locked, unlocking, parked != null)) dropParked()
+        if (!changingConfiguration && Controller.locked && !unlocking) pendingNotice = null
+        if (IntakeRules.dropShareOnStop(
+                changingConfiguration, Controller.locked, unlocking, share.busy, seen, hasShare()
+            )
+        ) dropShare(removeRoute = true)
+    }
+
+    /** A result parked for the unlock is thrown away (the person left without unlocking). */
+    private fun dropParked() {
+        val p = parked ?: return
+        parked = null
+        try { p.file.delete() } catch (_: Throwable) { }
+        attachBusy = false
     }
 
     /** Back on the screen: from a form to the first step, from the first step out. */
@@ -527,7 +616,7 @@ internal object Intake {
     }
 
     fun setTitle(v: String) { share = share.copy(title = v, titleError = "") }
-    fun setKind(v: String) { share = share.copy(kind = v) }
+    fun setKind(v: String) { kindTouched = true; share = share.copy(kind = v) }
     fun setDate(v: String) { share = share.copy(date = v) }
     fun setOrigin(v: String) { share = share.copy(origin = v) }
     fun setNotes(v: String) { share = share.copy(notes = v) }

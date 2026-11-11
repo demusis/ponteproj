@@ -235,6 +235,6 @@ class NomeBuscaAvisoTest {
         assertEquals(35, DeadlineNotice.CHOICES.size)
         assertTrue(DeadlineNotice.DEFAULT in DeadlineNotice.CHOICES)
         // The public text of a locked screen says nothing about the counts.
-        assertEquals("Ponte de bolso: há prazos para hoje.", DeadlineNotice.PUBLIC_TEXT)
+        assertEquals("Ponte de bolso: há prazos a conferir.", DeadlineNotice.PUBLIC_TEXT)
     }
 }

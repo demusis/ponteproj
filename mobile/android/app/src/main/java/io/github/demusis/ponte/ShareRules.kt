@@ -18,8 +18,8 @@ internal object AttachLimits {
     /** "8 MB", for the sentences shown to the person. */
     fun maxLabel(): String = (maxBytes / (1024 * 1024)).toString() + " MB"
 
-    /** "Até 8 MB. Programas e arquivos compactados não são aceitos." */
-    fun upFront(): String = "Até " + maxLabel() + ". Programas e arquivos compactados não são aceitos."
+    /** What the core accepts (its accepted-types text, in short) and how big a file may be. */
+    fun upFront(): String = "Até " + maxLabel() + ". Aceita PDF, documentos do Office, texto, imagens e e-mails."
 }
 
 /** More bytes than allowed were read from a stream; nothing past the limit was written. */
@@ -41,7 +41,9 @@ internal object ShareRules {
     const val MSG_OWN_FILE = "Este arquivo é do próprio Ponte de bolso e não pode ser guardado de novo."
     const val MSG_EMPTY = "Não há nada para guardar neste compartilhamento."
     const val MSG_BAD_TYPE = "Não foi possível receber este compartilhamento."
-    const val MSG_NOT_SET_UP = "Configure o Ponte de bolso antes de receber arquivos."
+    const val MSG_NOT_SET_UP = "Configure o Ponte de bolso antes de guardar algo nele."
+    const val MSG_KEEP_FIRST = "Termine ou cancele o que está guardando antes de receber outro arquivo."
+    const val MSG_CONVERT = "Não foi possível converter a imagem. Compartilhe uma versão em JPEG ou PNG."
 
     enum class Reason { OK, MULTIPLE, NOT_SENT, NOT_CONTENT, OWN_FILE, EMPTY, BAD_TYPE }
 
@@ -118,6 +120,20 @@ internal object ShareRules {
             dir.isNotEmpty() && (p == dir || p.startsWith("$dir/"))
         }
     }
+
+    /** Image types the core accepts as attachments (png, jpg, gif, bmp, tif). */
+    val ACCEPTED_IMAGES = setOf("image/jpeg", "image/png", "image/gif", "image/bmp", "image/tiff")
+
+    /**
+     * Whether an image must be re-encoded to JPEG before it is stored: it is over the limit, or its
+     * REAL type (read from the content by the decoder, never the sender's label) is one the core
+     * does not accept (HEIC, WebP...). A type that cannot be read is left alone; the core judges it.
+     */
+    fun needsReencode(realMime: String?, size: Long, limit: Long): Boolean =
+        size > limit || (realMime != null && realMime.lowercase() !in ACCEPTED_IMAGES)
+
+    /** The kind a record starts with: "outro" when offered, else the first one. */
+    fun defaultKind(keys: List<String>): String = if ("outro" in keys) "outro" else keys.firstOrNull() ?: "outro"
 
     /** The sender says it is an image: only then may a file past the limit be shrunk like a photo. */
     fun looksLikeImage(mime: String?): Boolean = mime != null && mime.lowercase().startsWith("image/")
@@ -242,6 +258,74 @@ internal object ShareRules {
             "Reduza o arquivo (PDF com compressão, imagem em resolução menor) ou divida-o em partes e envie uma de cada vez."
 }
 
+/** The copy was cancelled (a newer share replaced it); what was written is deleted by the caller. */
+internal class CopyCancelled : Exception("Cópia cancelada.")
+
+/**
+ * What [Intake] decides, as plain functions of plain values so it can be tested without Android.
+ */
+internal object IntakeRules {
+    enum class Result { DROP, PARK, ATTACH }
+
+    /**
+     * What to do with the result of the camera or the picker for "Anexar…": nothing usable (the
+     * person gave up, the file is empty or gone) drops it; usable while the app is locked PARKS it
+     * (already copied to a private file, handled after unlocking); otherwise attach now.
+     */
+    fun attachResult(ok: Boolean, usable: Boolean, locked: Boolean): Result = when {
+        !ok || !usable -> Result.DROP
+        locked -> Result.PARK
+        else -> Result.ATTACH
+    }
+
+    /**
+     * A share that arrived and was never shown is dropped when the Activity stops while locked,
+     * with no unlock prompt running and nothing being saved. Not for a rotation.
+     */
+    fun dropShareOnStop(
+        changing: Boolean, locked: Boolean, unlocking: Boolean, busy: Boolean, seen: Boolean, hasShare: Boolean
+    ): Boolean = !changing && locked && !unlocking && !busy && !seen && hasShare
+
+    /** A parked attach result is dropped when the person leaves without unlocking. */
+    fun dropParkedOnStop(changing: Boolean, locked: Boolean, unlocking: Boolean, hasParked: Boolean): Boolean =
+        !changing && locked && !unlocking && hasParked
+
+    /** Work that finishes after a newer share (or a drop) started must discard its result. */
+    fun isLate(current: Int, mine: Int): Boolean = current != mine
+
+    enum class Arrival { ACCEPT, KEEP_FIRST }
+
+    /**
+     * A second share while one is still being received or is on the screen: the first is kept and
+     * the person is told. A share whose copy failed (no item, no copy running) may be replaced.
+     */
+    fun arrival(reading: Boolean, hasItem: Boolean): Arrival =
+        if (reading || hasItem) Arrival.KEEP_FIRST else Arrival.ACCEPT
+
+    /** The notice reads the library only when it exists already: never creates a key or a library. */
+    fun noticeMayRead(ready: Boolean, keyBroken: Boolean, libraryFileExists: Boolean, keyStored: Boolean): Boolean =
+        !keyBroken && (ready || (libraryFileExists && keyStored))
+}
+
+/**
+ * Where "Hoje" may take the person without throwing work away. The notice (and anyone who can send
+ * the same intent to the launcher) only ever brings the app forward and asks for this.
+ */
+internal object NavGuard {
+    /**
+     * True when the stack holds anything with input that is not saved: a photo, a task or note
+     * being typed, the settings or an account form, the first setup, a search, a share or the list
+     * to pick a document for it, or an attach in progress. Only read-only screens (a ficha, a text,
+     * an atendimento) may be left.
+     */
+    fun busy(stack: List<Route>, attachBusy: Boolean): Boolean = attachBusy || stack.any {
+        when (it) {
+            is Route.Document, is Route.Text, is Route.Attendance -> false
+            else -> true
+        }
+    }
+}
+
 /** Copying a stream under a hard cap. */
 internal object BoundedCopy {
     private const val BUFFER = 64 * 1024
@@ -251,10 +335,11 @@ internal object BoundedCopy {
      * the limit has been read, it stops with [TooBigException] (the extra byte is not written, and
      * the rest of the stream is never read). Returns the number of bytes copied.
      */
-    fun copy(input: InputStream, output: OutputStream, limit: Long): Long {
+    fun copy(input: InputStream, output: OutputStream, limit: Long, cancelled: () -> Boolean = { false }): Long {
         val buf = ByteArray(BUFFER)
         var total = 0L
         while (true) {
+            if (cancelled()) throw CopyCancelled()
             val n = input.read(buf)
             if (n < 0) break
             if (total + n > limit) {

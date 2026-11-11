@@ -14,7 +14,33 @@ import androidx.activity.enableEdgeToEdge
  */
 class MainActivity : ComponentActivity() {
 
+    /**
+     * True for an instance that was made only because something started the launcher Activity while
+     * another one was alive but not on top (the camera, the file picker or a viewer in front: the
+     * deadline notice, a share). It does nothing but pass the request on and finish; see [onCreate].
+     */
+    private var duplicate = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // One MainActivity only. The launch mode stays "standard" on purpose: singleTask would
+        // finish the camera, the picker or the unlock prompt sitting above the live instance
+        // (their result would come back cancelled and the photo would be lost). Instead, an
+        // instance made while a live one exists is a duplicate: the request goes to the live state
+        // through the same guarded paths as onNewIntent, and the duplicate finishes, so what was
+        // in front (the camera...) is in front again and nothing of the started Controller is reset.
+        // A recreation (saved state present) is never a duplicate.
+        val other = live
+        if (savedInstanceState == null && other != null && other !== this &&
+            !other.isFinishing && !other.isDestroyed && Controller.isStarted()
+        ) {
+            duplicate = true
+            super.onCreate(savedInstanceState)
+            if (intent?.action == NoticeScheduler.ACTION_TODAY) Controller.showToday()
+            // A share marker needs nothing here: its offer waits in memory and the live instance
+            // takes it when the person is back in front of it (onResume).
+            finish()
+            return
+        }
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         live = this
@@ -34,24 +60,30 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        if (duplicate) return
         live = this
         Controller.onActivityStart()
     }
 
     override fun onResume() {
         super.onResume()
+        if (duplicate) return
         live = this
         SyncRunner.listener = { Controller.render() }
         Controller.render()
         Controller.onActivityResumed()
+        // A share that came while something else was in front is delivered now, that the person is back.
+        Intake.receive()
     }
 
     override fun onPause() {
+        if (duplicate) { super.onPause(); return }
         SyncRunner.listener = null
         super.onPause()
     }
 
     override fun onStop() {
+        if (duplicate) { super.onStop(); return }
         Controller.onActivityStop(isChangingConfigurations)
         Intake.onHostStop(isChangingConfigurations)
         super.onStop()
@@ -67,6 +99,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (duplicate) { super.onDestroy(); return }
         // An old instance destroyed after a new one started must not touch the new one's prompt.
         if (live === this || live == null) Controller.onActivityDestroyed()
         if (live === this) live = null
@@ -75,12 +108,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        Controller.save(outState)
+        if (!duplicate) Controller.save(outState)
     }
 
     /** The deadline notice was tapped while the app was already open: it goes to Hoje. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (duplicate) return
         setIntent(intent)
         if (intent.action == NoticeScheduler.ACTION_TODAY) Controller.showToday()
         handleReceived(intent)
