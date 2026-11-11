@@ -18,8 +18,8 @@ const plainOf = value => JSON.parse(JSON.stringify(value));
 
 // ------------------------------------------------------------------ shared vectors
 test("every shared vector: reader, participants, first/last, record text, origin and title", () => {
-  assert.equal(vectors.version, 1);
-  assert.ok(vectors.cases.length >= 40);
+  assert.equal(vectors.version, 2);
+  assert.ok(vectors.cases.length >= 59);
   for (const item of vectors.cases) {
     if (item.error) {
       assert.throws(() => WA.parseCopied(item.input), error => error instanceof WA.WhatsAppError && error.code === "NOT_WHATSAPP", item.name);
@@ -227,7 +227,8 @@ function worker(options = {}) {
     permissions: {
       contains: async query => { assert.equal(JSON.stringify(query), JSON.stringify({ origins: ["https://web.whatsapp.com/*"] })); return state.granted; },
       remove: async query => { state.removeCalls.push(plainOf(query)); state.granted = false; return true; },
-      onRemoved: { addListener: value => { handlers.removed = value; } }
+      onRemoved: { addListener: value => { handlers.removed = value; } },
+      onAdded: { addListener: value => { handlers.added = value; } }
     },
     scripting: {
       getRegisteredContentScripts: async () => state.registered.slice(),
@@ -425,7 +426,7 @@ test("adapter on a synthetic page: rows, authors, text without the time filler, 
   // The label "(você)" is not part of the chat name.
   assert.equal(found.chat, "Unidade A");
   assert.deepEqual(found.messages.map(m => [m.when, m.author, m.text, m.images.length]), [
-    ["2026-11-10T14:01", null, "(foto)", 1],
+    [null, null, "(foto)", 1],
     ["2026-11-10T14:02", "Servidor A", "Bom dia", 0],
     ["2026-11-10T14:03", "Servidor B", "Combinado 🙂 ok", 0],
     ["2026-11-10T14:05", "Servidor A", "Foto da sala", 1],
@@ -437,6 +438,9 @@ test("adapter on a synthetic page: rows, authors, text without the time filler, 
   // The row of the audio message is counted, not read; two rows (photo, document) have no author.
   assert.equal(found.skipped, 1);
   assert.equal(found.bare, 2);
+  // The first row (a photo) has no earlier dated row: its date cannot be known.
+  assert.equal(found.undatedPhotos, 1);
+  assert.equal(found.undatedFiles, 0);
   // Text never carries the time of the filler ("Bom dia14:02"); data: thumbnails are never taken.
   assert.ok(!found.messages.some(m => /dd:dd$/.test(m.text)));
   for (const m of found.messages) assert.ok(m.images.every(url => url.startsWith("blob:https://web.whatsapp.com/")));
@@ -455,7 +459,8 @@ test("adapter on a synthetic page: rows, authors, text without the time filler, 
   const record = await page.evaluate(rect => { const read = PonteWhatsApp.readVisible(document, rect); return PonteWhatsApp.buildRecord({ title: "", origin: read.chat, messages: read.messages }); }, viewport);
   assert.doesNotThrow(() => WA.validateRecord(record));
   assert.equal(record.title, "Conversa com Unidade A \u2014 10/11/2026");
-  assert.ok(record.text.startsWith("[10/11/2026 14:01] — (foto)\n[10/11/2026 14:02] Servidor A: Bom dia\n"));
+  assert.ok(record.text.startsWith("[sem data] — (foto)\n[10/11/2026 14:02] Servidor A: Bom dia\n"));
+  assert.ok(record.text.includes("Servidor B: Linha 1\n    Linha 2\n"));
   assert.ok(record.text.endsWith("[10/11/2026 14:09] — (arquivo: Ofício.pdf)"));
   assert.ok(record.text.includes("[10/11/2026 14:07] Servidor A: (foto)"));
   await page.close();
@@ -507,24 +512,40 @@ test("adapter: hostile pages and every doubt return null", options, async () => 
   assert.equal((await read(pageOf(rowHtml(valid), title(`<span data-testid="conversation-info-header-chat-title">${"N".repeat(300)}</span>`)))).chat.length, 200);
   await page.close();
 });
-test("rows without prefix take the date of the nearest row that has one: before first, else after, else unknown", options, async () => {
+test("rows without prefix are dated only when the date is certain; otherwise [sem data] and the time is dropped", options, async () => {
   const page = await pageFor();
-  const read = html => page.evaluate(([html, rect]) => { document.body.innerHTML = html; const found = PonteWhatsApp.readVisible(document, rect); return found && found.messages.map(m => [m.when, m.author, m.text]); }, [html, viewport]);
+  const read = html => page.evaluate(([html, rect]) => { document.body.innerHTML = html; const found = PonteWhatsApp.readVisible(document, rect); return found && { m: found.messages.map(m => [m.when, m.author, m.text]), p: found.undatedPhotos, f: found.undatedFiles }; }, [html, viewport]);
   const text = (day, time) => rowHtml(`[${time}, ${day}] Servidor A: `);
-  const photo = (time, label = "") => mediaRow(thumb(`<img src="blob:https://web.whatsapp.com/p-${time.replace(":", "")}">`), time, label);
+  const photo = (time, label = "") => mediaRow(thumb(`<img src="blob:https://web.whatsapp.com/p-${time.replace(/[^0-9a-z]/gi, "")}">`), time, label);
   const document_ = time => mediaRow(`<div data-testid="document-thumb"><div title="Ata.pdf">Ata.pdf</div></div>`, time);
-  // Preceding wins over following.
-  assert.deepEqual(await read(pageOf(text("09/11/2026", "10:00") + photo("10:05") + text("10/11/2026", "11:00") + document_("11:05"))), [
-    ["2026-11-09T10:00", "Servidor A", "texto"], ["2026-11-09T10:05", null, "(foto)"], ["2026-11-10T11:00", "Servidor A", "texto"], ["2026-11-10T11:05", null, "(arquivo: Ata.pdf)"]]);
-  // Nothing precedes: the following one gives the date.
-  assert.deepEqual(await read(pageOf(photo("09:00") + document_("09:01") + text("10/11/2026", "11:00"))), [
-    ["2026-11-10T09:00", null, "(foto)"], ["2026-11-10T09:01", null, "(arquivo: Ata.pdf)"], ["2026-11-10T11:00", "Servidor A", "texto"]]);
-  // No row with a prefix at all: unknown date, a system line at its position; the author label may be used.
-  assert.deepEqual(await read(pageOf(photo("09:00", `<span aria-label="Você:"></span>`) + document_("09:01"))), [[null, "Você", "(foto)"], [null, null, "(arquivo: Ata.pdf)"]]);
+  // Both sides agree: dated.
+  assert.deepEqual(await read(pageOf(text("10/11/2026", "10:00") + photo("10:05") + text("10/11/2026", "11:00") + document_("11:05"))), {
+    m: [["2026-11-10T10:00", "Servidor A", "texto"], ["2026-11-10T10:05", null, "(foto)"], ["2026-11-10T11:00", "Servidor A", "texto"], ["2026-11-10T11:05", null, "(arquivo: Ata.pdf)"]], p: 0, f: 0 });
+  // Across midnight: yesterday's messages, a photo at 00:30 and today's message. The sides differ: unknown, never yesterday's date.
+  assert.deepEqual(await read(pageOf(text("09/11/2026", "23:50") + photo("00:30") + text("10/11/2026", "08:00"))), {
+    m: [["2026-11-09T23:50", "Servidor A", "texto"], [null, null, "(foto)"], ["2026-11-10T08:00", "Servidor A", "texto"]], p: 1, f: 0 });
+  // Only an earlier row: dated when the time is not earlier than that row's time, else (possibly the next day) unknown.
+  assert.deepEqual((await read(pageOf(text("09/11/2026", "23:50") + photo("23:55")))).m[1], ["2026-11-09T23:55", null, "(foto)"]);
+  assert.deepEqual((await read(pageOf(text("09/11/2026", "23:50") + photo("00:30")))).m[1], [null, null, "(foto)"]);
+  // Only a later row: unknown (it may be on the day before).
+  assert.deepEqual((await read(pageOf(photo("09:00") + document_("09:01") + text("10/11/2026", "11:00")))).m, [[null, null, "(foto)"], [null, null, "(arquivo: Ata.pdf)"], ["2026-11-10T11:00", "Servidor A", "texto"]]);
+  // The neighbours are looked for in the whole pane, not only among the chosen rows.
+  const pane = await page.evaluate(([html, rect]) => { document.body.innerHTML = html; const range = document.createRange(); range.selectNode(document.querySelectorAll("[role=row]")[1]); return PonteWhatsApp.readSelection(document, range).messages.map(m => m.when); }, [pageOf(text("10/11/2026", "10:00") + photo("10:05") + text("10/11/2026", "11:00")), viewport]);
+  assert.deepEqual(pane, ["2026-11-10T10:05"]);
+  // No row with a prefix at all: unknown date; the author label may be used.
+  assert.deepEqual((await read(pageOf(photo("09:00", `<span aria-label="Você:"></span>`) + document_("09:01")))).m, [[null, "Você", "(foto)"], [null, null, "(arquivo: Ata.pdf)"]]);
   // A status label is not an author.
-  assert.deepEqual(await read(pageOf(photo("09:00", `<span aria-label=" Lida "></span>`))), [[null, null, "(foto)"]]);
-  // No readable time: unknown date as well.
-  assert.deepEqual(await read(pageOf(photo("") + text("10/11/2026", "11:00"))), [[null, null, "(foto)"], ["2026-11-10T11:00", "Servidor A", "texto"]]);
+  assert.deepEqual((await read(pageOf(photo("09:00", `<span aria-label=" Lida "></span>`)))).m, [[null, null, "(foto)"]]);
+  // No readable time: unknown as well.
+  assert.deepEqual((await read(pageOf(text("10/11/2026", "10:00") + photo("") + text("10/11/2026", "11:00")))).m[1], [null, null, "(foto)"]);
+  // 12-hour times of other locales use the reader's AM/PM rule; an unparseable marker makes the time unknown.
+  const day = rows => read(pageOf(text("10/11/2026", "10:00") + rows + text("10/11/2026", "23:00")));
+  assert.equal((await day(photo("2:30 PM"))).m[1][0], "2026-11-10T14:30");
+  assert.equal((await day(photo("12:05 AM"))).m[1][0], "2026-11-10T00:05");
+  assert.equal((await day(photo("2:30 p. m."))).m[1][0], "2026-11-10T14:30");
+  assert.equal((await day(photo("2:30 PM"))).m[1][0], "2026-11-10T14:30");
+  assert.equal((await day(photo("14:30"))).m[1][0], "2026-11-10T14:30");
+  for (const odd of ["13:30 PM", "0:30 AM", "2:30 p m", "2:30 a . m", "25:00", "10:75"]) assert.equal((await day(photo(odd))).m[1][0], null, odd);
   const record = await page.evaluate(() => PonteWhatsApp.recordText([{ when: null, author: null, text: "(foto)" }]));
   assert.equal(record, "[sem data] — (foto)");
   await page.close();
@@ -637,7 +658,7 @@ test("selected passage: preview first, nothing sent before the button, then the 
   assert.deepEqual(Object.keys(sent[0]), ["action", "record", "attachments"]);
   assert.equal(sent[0].record.title, "Combinado da sala");
   assert.equal(sent[0].record.origin, "Unidade A");
-  assert.equal(sent[0].record.text, "[10/11/2026 14:03] Servidor B: Combinado 🙂 ok\n[10/11/2026 14:05] Servidor A: Foto da sala\n[10/11/2026 14:06] Servidor B: Linha 1\nLinha 2\n[10/11/2026 14:07] Servidor A: (foto)");
+  assert.equal(sent[0].record.text, "[10/11/2026 14:03] Servidor B: Combinado 🙂 ok\n[10/11/2026 14:05] Servidor A: Foto da sala\n[10/11/2026 14:06] Servidor B: Linha 1\n    Linha 2\n[10/11/2026 14:07] Servidor A: (foto)");
   assert.doesNotThrow(() => WA.validateRecord(sent[0].record));
   assert.equal(sent[0].attachments.length, 1);
   assert.equal(sent[0].attachments[0].name, "foto-1.png");
@@ -660,7 +681,7 @@ test("visible messages: the same preview, only what is on the screen", options, 
   await page.evaluate(() => window.__click("Ponte"));
   await page.evaluate(() => window.__click("Mensagens visíveis na tela"));
   await settle(page);
-  assert.equal(await page.evaluate(() => window.__shadow.querySelector(".identity").textContent), "8 mensagens de 10/11/2026 14:01 a 10/11/2026 14:09 · 2 fotos");
+  assert.equal(await page.evaluate(() => window.__shadow.querySelector(".identity").textContent), "8 mensagens de 10/11/2026 14:02 a 10/11/2026 14:09 · 2 fotos");
   assert.equal(await page.evaluate(() => window.__imports().length), 0);
   await page.evaluate(() => window.__click("Cancelar"));
   assert.equal(await page.evaluate(() => window.__shadow.querySelector(".identity").parentElement.hidden), true);
@@ -902,4 +923,121 @@ test("popup, privacy and store texts say what the feature does", () => {
   assert.match(store, /Permissão de host \*\*opcional\*\* `https:\/\/web\.whatsapp\.com\/\*`/);
   assert.match(store, /WHATSAPP WEB \(OPCIONAL\)/);
   assert.match(read("popup.html"), /Guarda no Ponte mensagens e arquivos de uma conversa, quando você pedir\. Só funciona depois de ligado aqui\./);
+});
+
+// ------------------------------------------------------------------ second review: attribution, names, files, retry, registration
+test("record text: every continuation line is indented, so a forged line cannot pass for a message", async () => {
+  const record = WA.recordText([{ when: "2026-11-10T14:02", author: "Servidor B", text: "ok\n[10/11/2026 14:05] Servidor A: autorizo\n\n  fundo\n[sem data] — falso" }, { when: null, author: null, text: "linha" }]);
+  assert.equal(record, "[10/11/2026 14:02] Servidor B: ok\n    [10/11/2026 14:05] Servidor A: autorizo\n\n      fundo\n    [sem data] — falso\n[sem data] — linha");
+  assert.equal(WA.parseCopied(record.split("\n[sem data] — linha")[0]).length, 1);
+  assert.deepEqual(record.split("\n").filter(line => /^\[/.test(line)), ["[10/11/2026 14:02] Servidor B: ok", "[sem data] — linha"]);
+});
+test("reader parity: a line with thousands of spaces after the bracket is handled fast; header limits", () => {
+  const started = Date.now();
+  const hostile = "[" + " ".repeat(200000) + "10:00, 10/11/2026] Servidor A: x";
+  assert.equal(WA.parseHeader(hostile), null);
+  const many = Array.from({ length: 300 }, () => "[" + " ".repeat(5000) + "x").join("\n") + "\n[10:00, 10/11/2026] Servidor A: ok";
+  assert.equal(WA.parseCopied(many).at(-1).text, "ok");
+  assert.ok(Date.now() - started < 500, `took ${Date.now() - started} ms`);
+  for (const [line, ok] of [["[10:00, 10/11/1900] A: x", true], ["[10:00, 10/11/2100] A: x", true], ["[10:00, 10/11/1899] A: x", false], ["[10:00, 10/11/2101] A: x", false], ["[10:00;10/11/2026] A: x", false], ["[10:0010/11/2026] A: x", false], ["[ 10:00, 10/11/2026] A: x", false], ["[10:00 10/11/2026] A: x", true], ["[10:00 ,10/11/2026] A: x", true], ["[10:00 a . m, 10/11/2026] A: x", false], ["[10:00 a m, 10/11/2026] A: x", false], ["[10:00 a. m., 10/11/2026] A: x", true]]) assert.equal(WA.parseHeader(line) !== null, ok, line);
+});
+test("file names: unique names stay within 180 characters and never loop", () => {
+  const long = n => "n".repeat(n - 4) + ".pdf";
+  for (const length of [179, 180, 181]) {
+    const name = WA.sanitizeFileName(long(length));
+    assert.ok(Array.from(name).length <= 180, String(length));
+    const second = WA.uniqueName(name, [name]);
+    assert.notEqual(second, name);
+    assert.ok(Array.from(second).length <= 180 && second.endsWith(" (2).pdf"), `${length}: ${second.length}`);
+    const third = WA.uniqueName(name, [name, second]);
+    assert.ok(third.endsWith(" (3).pdf") && Array.from(third).length <= 180);
+    assert.doesNotThrow(() => WA.validateAttachments([{ name, data_base64: "QUJD" }, { name: second, data_base64: "QUJD" }, { name: third, data_base64: "QUJD" }]));
+  }
+  const taken = ["a.pdf", ...Array.from({ length: 98 }, (_, n) => `a (${n + 2}).pdf`)];
+  assert.equal(WA.uniqueName("a.pdf", taken), null);
+  assert.equal(WA.uniqueName("a.pdf", ["a.pdf", "a (2).pdf"]), "a (3).pdf");
+  assert.ok(WA.uniqueName("x".repeat(15) + "." + "e".repeat(19), ["x".repeat(15) + "." + "e".repeat(19)]).length <= 180);
+  assert.ok(WA.uniqueName("." + "e".repeat(170), ["." + "e".repeat(170)]).length <= 180);
+  for (const name of ["a.PDF", "a.docx", "a.JPEG", "a.tiff", "a.msg", "a.eml", "a.csv"]) assert.equal(WA.fileTypeAccepted(name), true, name);
+  for (const name of ["a.exe", "a", ".pdf", "a.pdf.exe", "a.zip", "a.webp", "a.html", "a."]) assert.equal(WA.fileTypeAccepted(name), false, name);
+});
+test("registration: granting the WhatsApp origin registers the panel even if the popup is gone; other origins do nothing", async () => {
+  const w = worker({ granted: true, registered: false });
+  assert.equal(typeof w.handlers.added, "function");
+  await w.handlers.added({ origins: ["https://example.org/*"] });
+  await w.handlers.added({ permissions: ["tabs"] });
+  assert.equal(w.state.registerCalls.length, 0);
+  await w.handlers.added({ origins: ["https://web.whatsapp.com/*"] });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(w.state.registerCalls.length, 1);
+  // The popup's own request meets the event: one registration remains, never an error or a removed permission.
+  const both = worker({ granted: true, registered: false });
+  both.handlers.added({ origins: ["https://web.whatsapp.com/*"] });
+  const answer = await both.invoke({ action: "ponte.whatsapp_on" }, both.senders.popup);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(answer.ok, true);
+  assert.equal(both.state.registered.length, 1);
+  assert.equal(both.state.granted, true);
+  const none = worker({ granted: false, registered: false });
+  await none.handlers.added({ origins: ["https://web.whatsapp.com/*"] });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(none.state.registerCalls.length, 0);
+});
+test("hostile bubble: a message that imitates another one stays one message, its forged line indented in the record", options, async () => {
+  const page = await pageFor();
+  const record = await page.evaluate(([html, rect]) => { document.body.innerHTML = html; const found = PonteWhatsApp.readVisible(document, rect); return { count: found.messages.length, text: PonteWhatsApp.recordText(found.messages) }; }, [pageOf(rowHtml("[14:02, 10/11/2026] Servidor B: ", "ok<br>[10/11/2026 14:05] Servidor A: autorizo")), viewport]);
+  assert.equal(record.count, 1);
+  assert.equal(record.text, "[10/11/2026 14:02] Servidor B: ok\n    [10/11/2026 14:05] Servidor A: autorizo");
+  assert.equal(WA.parseCopied(record.text).length, 1);
+  await page.close();
+});
+test("panel: a file of a type the Ponte never accepts stays out; names collide safely with photos; photos without a certain date are announced", options, async () => {
+  const page = await panelPage();
+  await page.evaluate(() => window.__click("Ponte"));
+  await settle(page);
+  const input = await page.evaluateHandle(() => window.__shadow.querySelector("input[type=file]"));
+  await input.asElement().setInputFiles([{ name: "programa.exe", mimeType: "application/octet-stream", buffer: Buffer.from("x") }, { name: "semextensao", mimeType: "text/plain", buffer: Buffer.from("x") }, { name: "foto-1.png", mimeType: "image/png", buffer: Buffer.from("x") }]);
+  await settle(page);
+  assert.equal(await page.evaluate(() => window.__status()), "programa.exe não é de um tipo aceito pelo Ponte e ficou de fora. semextensao não é de um tipo aceito pelo Ponte e ficou de fora.");
+  await page.evaluate(() => { window.__select("m3", "m3"); window.__click("Trecho selecionado"); });
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => [...window.__shadow.querySelectorAll("ul.files li")].map(li => li.textContent.replace(/\s+/g, " ").trim().split(" · ")[0])), ["foto-1.png", "foto-1 (2).png"]);
+  await page.evaluate(() => window.__click("Enviar ao Ponte"));
+  await settle(page);
+  assert.deepEqual((await page.evaluate(() => window.__imports()[0].attachments)).map(item => item.name), ["foto-1.png", "foto-1 (2).png"]);
+  await page.close();
+  const visible = await panelPage();
+  await visible.evaluate(() => { window.__click("Ponte"); window.__click("Mensagens visíveis na tela"); });
+  await settle(visible);
+  assert.deepEqual(await visible.evaluate(() => [...window.__shadow.querySelectorAll("ul.notes li")].map(li => li.textContent)), ["1 foto em formato não aceito ficou de fora.", "1 mensagem de outro tipo ficou de fora.", "1 foto entrou sem data.", "Fotos e arquivos sem legenda entram sem autor."]);
+  await visible.close();
+});
+test("panel: already in the Ponte with files says they were not added again; a refused file does not lock the person in", options, async () => {
+  const page = await panelPage(fixture, { imports: [{ protocol_version: 1, ok: true, outcome: "already", document_id: 7, document_number: "MANUAL-2026/0007", attachments_added: 0, ui_opened: true }, { protocol_version: 1, ok: false, error: { code: "invalid_attachment", message: "O arquivo ata.pdf não pôde ser guardado: está danificado." } }, { protocol_version: 1, ok: true, outcome: "imported", document_id: 8, document_number: "MANUAL-2026/0008", attachments_added: 0, ui_opened: true }] });
+  await page.evaluate(() => window.__click("Ponte"));
+  await settle(page);
+  const input = await page.evaluateHandle(() => window.__shadow.querySelector("input[type=file]"));
+  await input.asElement().setInputFiles({ name: "ata.pdf", mimeType: "application/pdf", buffer: Buffer.from("conteudo") });
+  await settle(page);
+  await page.evaluate(() => { window.__shadow.querySelector("textarea").value = "[14:02, 10/11/2026] Servidor A: Oi"; window.__click("Usar o texto colado"); window.__click("Enviar ao Ponte"); });
+  await settle(page);
+  assert.equal(await page.evaluate(() => window.__status()), "Esta conversa já estava no Ponte. Os arquivos não foram juntados de novo; para juntá-los, abra o registro no Ponte e use Anexos.");
+  await page.evaluate(() => { window.__click("Guardar outra conversa"); window.__shadow.querySelector("textarea").value = "[14:02, 10/11/2026] Servidor A: Oi"; window.__click("Usar o texto colado"); });
+  await input.asElement().setInputFiles({ name: "ata.pdf", mimeType: "application/pdf", buffer: Buffer.from("conteudo") });
+  await settle(page);
+  await page.evaluate(() => window.__click("Enviar ao Ponte"));
+  await settle(page);
+  assert.equal(await page.evaluate(() => window.__status()), "O arquivo ata.pdf não pôde ser guardado: está danificado.");
+  const state = await page.evaluate(() => ({ retry: Boolean(window.__btn("Tentar de novo")), send: Boolean(window.__btn("Enviar ao Ponte")) && !window.__btn("Enviar ao Ponte").disabled, title: window.__shadow.querySelector("input[type=text]").disabled, remove: [...window.__shadow.querySelectorAll("ul.files button")].every(button => !button.disabled), pick: !window.__btn("Escolher arquivo…").disabled }));
+  assert.deepEqual(state, { retry: false, send: true, title: false, remove: true, pick: true });
+  await page.evaluate(() => window.__shadow.querySelector("ul.files button").click());
+  await page.evaluate(() => window.__click("Enviar ao Ponte"));
+  await settle(page);
+  const imports = await page.evaluate(() => window.__imports());
+  assert.equal(imports.length, 3);
+  assert.equal(imports[1].attachments.length, 1);
+  assert.deepEqual(imports[2].attachments, []);
+  assert.deepEqual(imports[2].record, imports[1].record);
+  assert.equal(await page.evaluate(() => window.__status()), "Guardado no Ponte.");
+  await page.close();
 });

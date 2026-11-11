@@ -151,7 +151,7 @@ titleLabel.append(titleInput);
       linesList.replaceChildren();
       const shown = draft.messages.length > 1 ? [draft.messages[0], draft.messages[draft.messages.length - 1]] : draft.messages;
       shown.forEach((item, index) => {
-        const line = WA.recordText([item]).replace(/\n/g, " / ");
+        const line = WA.recordText([item]).replace(/\n\s*/g, " / ");
         linesList.append(make("li", { text: `${shown.length > 1 ? (index ? "Fim" : "Início") : "Mensagem"}: ${line.length > 140 ? line.slice(0, 139) + "…" : line}` }));
       });
       notesList.replaceChildren(...previewNotes.map(text => make("li", { text })));
@@ -256,7 +256,9 @@ titleLabel.append(titleInput);
       const type = WA.sniffImageType(data);
       if (!WA.ACCEPTED_PHOTO_TYPES.includes(type)) { kept.unsupported++; continue; }
       if (totalBytes() + kept.photos.reduce((sum, item) => sum + item.bytes.length, 0) + data.length > WA.MAX_TOTAL_BYTES) { kept.full++; continue; }
-      kept.photos.push({ name: `foto-${kept.photos.length + 1}.${type}`, bytes: data, kind: "foto" });
+      const name = WA.uniqueName(`foto-${kept.photos.length + 1}.${type}`, [...attachments, ...kept.photos].map(item => item.name));
+      if (!name) { kept.full++; continue; }
+      kept.photos.push({ name, bytes: data, kind: "foto" });
     }
     return kept;
   }
@@ -288,6 +290,8 @@ titleLabel.append(titleInput);
     attachments.push(...kept.photos);
     previewNotes = photoNotes(kept);
     if (found.skipped) previewNotes.push(found.skipped === 1 ? "1 mensagem de outro tipo ficou de fora." : `${found.skipped} mensagens de outro tipo ficaram de fora.`);
+    if (found.undatedPhotos) previewNotes.push(found.undatedPhotos === 1 ? "1 foto entrou sem data." : `${found.undatedPhotos} fotos entraram sem data.`);
+    if (found.undatedFiles) previewNotes.push(found.undatedFiles === 1 ? "1 arquivo entrou sem data." : `${found.undatedFiles} arquivos entraram sem data.`);
     if (found.bare) previewNotes.push("Fotos e arquivos sem legenda entram sem autor.");
     showDraft(found.messages, found.chat);
     say("");
@@ -320,12 +324,15 @@ titleLabel.append(titleInput);
       const label = WA.sanitizeFileName(file.name);
       if (attachments.length >= WA.MAX_ATTACHMENTS) { fileNotes.push(`${label} ficou de fora: o limite é de 10 arquivos.`); continue; }
       if (file.size > WA.MAX_FILE_BYTES) { fileNotes.push(`${label} passa de 8 MB e ficou de fora.`); continue; }
+      if (!WA.fileTypeAccepted(label)) { fileNotes.push(`${label} não é de um tipo aceito pelo Ponte e ficou de fora.`); continue; }
       if (file.size === 0) { fileNotes.push(`${label} está vazio e ficou de fora.`); continue; }
       if (totalBytes() + file.size > WA.MAX_TOTAL_BYTES) { fileNotes.push(`${label} ficou de fora: os arquivos juntos passam de 16 MB.`); continue; }
       let bytes;
       try { bytes = new Uint8Array(await file.arrayBuffer()); } catch { fileNotes.push(`${label} não pôde ser lido.`); continue; }
       if (bytes.length > WA.MAX_FILE_BYTES) { fileNotes.push(`${label} passa de 8 MB e ficou de fora.`); continue; }
-      attachments.push({ name: WA.uniqueName(label, attachments.map(item => item.name)), bytes, kind: "arquivo" });
+      const name = WA.uniqueName(label, attachments.map(item => item.name));
+      if (!name) { fileNotes.push(`${label} ficou de fora: já há arquivos demais com esse nome.`); continue; }
+      attachments.push({ name, bytes, kind: "arquivo" });
     }
     render();
   }
@@ -355,8 +362,10 @@ titleLabel.append(titleInput);
     draft = null; attachments = []; previewNotes = []; fileNotes = []; retryRequest = null; sentExtras = null;
     titleInput.value = ""; chatInput.value = ""; pasteArea.value = ""; noteArea.value = ""; prioritySelect.value = ""; extrasBox.open = false;
   }
-  function resultText(response) {
+  function resultText(response, files) {
     let text = response.outcome === "already" ? "Esta conversa já estava no Ponte." : "Guardado no Ponte.";
+    // The Ponte adds no attachment to a record that already exists.
+    if (response.outcome === "already" && files) text += " Os arquivos não foram juntados de novo; para juntá-los, abra o registro no Ponte e use Anexos.";
     if (response.outcome !== "already" && response.ui_opened === false) text += " Abra o Ponte para ver o registro.";
     const extras = Core.extrasNotice(response, sentExtras);
     return extras ? `${text} ${extras}` : text;
@@ -380,11 +389,14 @@ titleLabel.append(titleInput);
     busy = false;
     if (response.ok === true) {
       result = response;
-      say(resultText(response), "success");
+      say(resultText(response, Array.isArray(request.attachments) && request.attachments.length > 0), "success");
       forget();
       view = "done";
     } else {
-      retryRequest = request;
+      // A refusal for a reason the person can fix (a file, the record, the note) leaves everything editable;
+      // only a transport failure keeps the locked retry of exactly the same request.
+      const code = response.error && typeof response.error.code === "string" ? response.error.code : "";
+      retryRequest = /^(invalid_|record_invalid$|attachment_invalid$|extras_invalid$|payload_too_large$|ponte_old$)/i.test(code) ? null : request;
       say(response.error && typeof response.error.message === "string" ? response.error.message : "O Ponte não respondeu. Abra o Ponte e tente de novo.", "error");
     }
     render();

@@ -241,16 +241,18 @@ fn invalid_record(message: &str) -> Refusal {
     ("invalid_record", message.to_owned())
 }
 
-/// Whether the line starts a message: `[dd/mm/aaaa hh:mm]`, the shape of
-/// every message of the record.
+/// Whether the line starts a message: at column 0, `[dd/mm/aaaa hh:mm]` or
+/// `[sem data]`, the shape of every message of the record. Continuation lines
+/// are indented in the record, so an indented line never counts.
 fn has_message_start(line: &str) -> bool {
     const SHAPE: &[u8; 18] = b"[dd/dd/dddd dd:dd]";
     let bytes = line.as_bytes();
-    bytes.len() >= SHAPE.len()
-        && SHAPE.iter().zip(bytes).all(|(shape, byte)| match shape {
-            b'd' => byte.is_ascii_digit(),
-            other => other == byte,
-        })
+    line.starts_with("[sem data]")
+        || bytes.len() >= SHAPE.len()
+            && SHAPE.iter().zip(bytes).all(|(shape, byte)| match shape {
+                b'd' => byte.is_ascii_digit(),
+                other => other == byte,
+            })
 }
 
 fn no_control(text: &str, allow_text_breaks: bool) -> bool {
@@ -1272,6 +1274,25 @@ mod tests {
             reply["error"]["message"],
             "O Ponte só recebe conversas do WhatsApp por este caminho."
         );
+        // Only lines at column 0 are messages: 600 indented header-looking
+        // lines are one message; 501 real ones are refused.
+        let mut one = record_request(record_value());
+        one["record"]["text"] = json!(format!(
+            "[04/11/2026 10:00] Servidor A: início\n{}",
+            (0..600)
+                .map(|_| "    [04/11/2026 10:01] Servidor B: falso")
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+        let (reply, _) = ask(&mut store, one);
+        assert_eq!(reply["ok"], true, "{reply}");
+        let mut many = record_request(record_value());
+        many["record"]["text"] = json!((0..501)
+            .map(|i| format!("[04/11/2026 10:00] Servidor A: mensagem {i}"))
+            .collect::<Vec<_>>()
+            .join("\n"));
+        let (reply, _) = ask(&mut store, many);
+        assert_eq!(reply["error"]["code"], "invalid_record");
         // The limits are inclusive: 10 files, 500 messages, 500 characters.
         let ten: Vec<Value> = (0..10)
             .map(|i| file(&format!("f{i}.pdf"), format!("%PDF-1.4 {i}").as_bytes()))

@@ -1,5 +1,5 @@
 {
- "version": 1,
+ "version": 2,
  "cases": [
   {
    "name": "tempo-primeiro-basico",
@@ -369,10 +369,10 @@
     ],
     "first": "2026-11-10T14:02",
     "last": "2026-11-10T14:03",
-    "record_text": "[10/11/2026 14:02] Servidor A: Linha 1\nlinha 2\n[10/11/2026 14:03] Servidor B: ok",
+    "record_text": "[10/11/2026 14:02] Servidor A: Linha 1\n    linha 2\n[10/11/2026 14:03] Servidor B: ok",
     "origin": "",
     "title": "Conversa do WhatsApp \u2014 10/11/2026",
-    "request_id": "365d3e39-b80c-884b-9fac-09745497bc12"
+    "request_id": "bd75b900-b20d-8be1-b1fe-cb33ea0091c1"
    }
   },
   {
@@ -398,10 +398,10 @@
     ],
     "first": "2026-11-10T14:02",
     "last": "2026-11-10T14:10",
-    "record_text": "[10/11/2026 14:02] Servidor A: Pauta:\n1. Sala\n\n2. Of\u00edcio ORG-OFI-2026/00431\n[10/11/2026 14:10] Servidor B: Anotado",
+    "record_text": "[10/11/2026 14:02] Servidor A: Pauta:\n    1. Sala\n\n    2. Of\u00edcio ORG-OFI-2026/00431\n[10/11/2026 14:10] Servidor B: Anotado",
     "origin": "",
     "title": "Conversa do WhatsApp \u2014 10/11/2026",
-    "request_id": "0853cfc3-1f50-82b4-a853-0dc44d5ee13d"
+    "request_id": "a81a95f0-2b79-84ad-a196-701d190a8d68"
    }
   },
   {
@@ -564,10 +564,10 @@
     ],
     "first": "2026-11-10T14:02",
     "last": "2026-11-10T14:03",
-    "record_text": "[10/11/2026 14:02] Servidor A: Veja\n[ver anexo] depois\n[31/02/2026 10:00] Servidor B: imposs\u00edvel\n[10/11/2026 14:03] Servidor B: ok",
+    "record_text": "[10/11/2026 14:02] Servidor A: Veja\n    [ver anexo] depois\n    [31/02/2026 10:00] Servidor B: imposs\u00edvel\n[10/11/2026 14:03] Servidor B: ok",
     "origin": "",
     "title": "Conversa do WhatsApp \u2014 10/11/2026",
-    "request_id": "44a71f0a-3008-88b2-a285-f6d21bf2e22e"
+    "request_id": "324bd715-9cfb-82e4-8322-5d85d1a3e3c2"
    }
   },
   {
@@ -622,10 +622,10 @@
     ],
     "first": "2026-02-12T09:00",
     "last": "2026-02-12T09:00",
-    "record_text": "[12/02/2026 09:00] Servidor A: In\u00edcio\n[09:01, 02/13/2026] Servidor B: continua\u00e7\u00e3o",
+    "record_text": "[12/02/2026 09:00] Servidor A: In\u00edcio\n    [09:01, 02/13/2026] Servidor B: continua\u00e7\u00e3o",
     "origin": "",
     "title": "Conversa do WhatsApp \u2014 12/02/2026",
-    "request_id": "183bab4a-4bc5-8a38-915e-9a3275ffd516"
+    "request_id": "ed145e7f-c41e-8733-ac57-ed8301668bf8"
    }
   },
   {
@@ -743,10 +743,10 @@
     ],
     "first": "2026-11-10T14:02",
     "last": "2026-11-10T14:03",
-    "record_text": "[10/11/2026 14:02] Servidor A: Item\n   recuado\n[10/11/2026 14:03] Servidor B: ok",
+    "record_text": "[10/11/2026 14:02] Servidor A: Item\n       recuado\n[10/11/2026 14:03] Servidor B: ok",
     "origin": "",
     "title": "Conversa do WhatsApp \u2014 10/11/2026",
-    "request_id": "90bdfd4b-fb88-847d-b66b-a57f24f8f089"
+    "request_id": "4ff2763a-d09c-8066-babc-ec326a2b871a"
    }
   },
   {
@@ -829,10 +829,10 @@
     ],
     "first": "2026-11-10T14:02",
     "last": "2026-11-10T14:03",
-    "record_text": "[10/11/2026 14:02] Servidor A: a\nbcde\tf\n[10/11/2026 14:03] Servidor B: ok",
+    "record_text": "[10/11/2026 14:02] Servidor A: a\n    bcde\tf\n[10/11/2026 14:03] Servidor B: ok",
     "origin": "",
     "title": "Conversa do WhatsApp \u2014 10/11/2026",
-    "request_id": "97f1ea20-a426-8a90-aeb3-e48876d4e7fa"
+    "request_id": "a4ba56a7-8977-8361-9095-6589b2e9356a"
    }
   },
   {
@@ -986,6 +986,373 @@
     "origin": "",
     "title": "Conversa do WhatsApp \u2014 10/11/2026",
     "request_id": "4afa037e-9315-8a82-98da-65a5261229ff"
+   }
+  },
+  {
+   "name": "ano-1999-e-2100",
+   "input": "[10:00, 10/11/1999] Servidor A: x\n[10:00, 10/11/2100] Servidor B: y",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "1999-11-10T10:00",
+      "author": "Servidor A",
+      "text": "x"
+     },
+     {
+      "when": "2100-11-10T10:00",
+      "author": "Servidor B",
+      "text": "y"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "1999-11-10T10:00",
+    "last": "2100-11-10T10:00",
+    "record_text": "[10/11/1999 10:00] Servidor A: x\n[10/11/2100 10:00] Servidor B: y",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2100",
+    "request_id": "e1f6ddcd-dec4-8c67-9e47-47dd78bad5cf"
+   }
+  },
+  {
+   "name": "ano-1899-e-2101-nao-sao-cabecalho",
+   "input": "[10:00, 10/11/1899] Servidor A: x\n[10:00, 10/11/2101] Servidor B: y",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "separador-ponto-e-virgula",
+   "input": "[10:00;10/11/2026] Servidor A: x",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "sem-separador-entre-hora-e-data",
+   "input": "[10:0010/11/2026] Servidor A: x",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "espaco-antes-da-hora",
+   "input": "[ 10:00, 10/11/2026] Servidor A: x",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "espaco-antes-da-hora-vira-continuacao",
+   "input": "[10:00, 10/11/2026] Servidor A: x\n[ 10:01, 10/11/2026] Servidor B: y",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor A",
+      "text": "x\n[ 10:01, 10/11/2026] Servidor B: y"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T10:00",
+    "record_text": "[10/11/2026 10:00] Servidor A: x\n    [ 10:01, 10/11/2026] Servidor B: y",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "9c9d0926-8bf6-800c-a248-e4be616a8234"
+   }
+  },
+  {
+   "name": "marcadores-am-pm-aceitos",
+   "input": "[10:00 a.m., 10/11/2026] Servidor A: 1\n[10:01 a. m., 10/11/2026] Servidor A: 2\n[10:02 am, 10/11/2026] Servidor A: 3\n[10:03 AM, 10/11/2026] Servidor A: 4\n[1:04 p.m., 10/11/2026] Servidor A: 5\n[1:05 p. m., 10/11/2026] Servidor A: 6\n[1:06 PM, 10/11/2026] Servidor A: 7",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor A",
+      "text": "1"
+     },
+     {
+      "when": "2026-11-10T10:01",
+      "author": "Servidor A",
+      "text": "2"
+     },
+     {
+      "when": "2026-11-10T10:02",
+      "author": "Servidor A",
+      "text": "3"
+     },
+     {
+      "when": "2026-11-10T10:03",
+      "author": "Servidor A",
+      "text": "4"
+     },
+     {
+      "when": "2026-11-10T13:04",
+      "author": "Servidor A",
+      "text": "5"
+     },
+     {
+      "when": "2026-11-10T13:05",
+      "author": "Servidor A",
+      "text": "6"
+     },
+     {
+      "when": "2026-11-10T13:06",
+      "author": "Servidor A",
+      "text": "7"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T13:06",
+    "record_text": "[10/11/2026 10:00] Servidor A: 1\n[10/11/2026 10:01] Servidor A: 2\n[10/11/2026 10:02] Servidor A: 3\n[10/11/2026 10:03] Servidor A: 4\n[10/11/2026 13:04] Servidor A: 5\n[10/11/2026 13:05] Servidor A: 6\n[10/11/2026 13:06] Servidor A: 7",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "08e6a2d8-e155-8da5-9390-0fd46fdfbaaf"
+   }
+  },
+  {
+   "name": "marcador-com-espaco-antes-do-ponto",
+   "input": "[10:00 a . m, 10/11/2026] Servidor A: x",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "marcador-com-espaco-sem-ponto",
+   "input": "[10:00 a m, 10/11/2026] Servidor A: x",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "colchete-fecha-no-limite-de-48",
+   "input": "[10:00,                               10/11/2026] Servidor A: x",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor A",
+      "text": "x"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T10:00",
+    "record_text": "[10/11/2026 10:00] Servidor A: x",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "97464358-f772-890b-9984-c54385cbb5a3"
+   }
+  },
+  {
+   "name": "colchete-fecha-depois-do-limite",
+   "input": "[10:00,                                10/11/2026] Servidor A: x",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "espacos-demais-no-colchete",
+   "input": "[10:00,                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        10/11/2026] Servidor A: x",
+   "chat": "",
+   "error": true
+  },
+  {
+   "name": "texto-aparado-nos-dois-lados",
+   "input": "[10:00, 10/11/2026] Servidor A:    texto   \n[10:01, 10/11/2026]   Servidor   B  : oi",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor A",
+      "text": "texto"
+     },
+     {
+      "when": "2026-11-10T10:01",
+      "author": "Servidor   B",
+      "text": "oi"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor   B"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T10:01",
+    "record_text": "[10/11/2026 10:00] Servidor A: texto\n[10/11/2026 10:01] Servidor   B: oi",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "0bbe92b9-375f-82f9-9417-a5ab9fd65348"
+   }
+  },
+  {
+   "name": "separadores-de-linha-unicode",
+   "input": "[10:00, 10/11/2026] Servidor A: linha 1\u2028linha 2\u2029[10:01, 10/11/2026] Servidor B: ok",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor A",
+      "text": "linha 1\nlinha 2"
+     },
+     {
+      "when": "2026-11-10T10:01",
+      "author": "Servidor B",
+      "text": "ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T10:01",
+    "record_text": "[10/11/2026 10:00] Servidor A: linha 1\n    linha 2\n[10/11/2026 10:01] Servidor B: ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "af6fa3cd-81b7-8193-a269-45bea8096c9b"
+   }
+  },
+  {
+   "name": "espacos-unicode-no-fim-da-linha",
+   "input": "[10:00, 10/11/2026] Servidor A: fim\u00a0\u202f\n[10:01, 10/11/2026] Servidor B: ok\u00a0",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor A",
+      "text": "fim"
+     },
+     {
+      "when": "2026-11-10T10:01",
+      "author": "Servidor B",
+      "text": "ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T10:01",
+    "record_text": "[10/11/2026 10:00] Servidor A: fim\n[10/11/2026 10:01] Servidor B: ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "a5c1fc31-6a3e-8ae6-83f2-2b22c6d86695"
+   }
+  },
+  {
+   "name": "nome-da-conversa-com-espacos-internos",
+   "input": "[10:00, 10/11/2026] Servidor A: x",
+   "chat": "Unidade\u00a0 A\t\t Setor\n 2  ",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor A",
+      "text": "x"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T10:00",
+    "record_text": "[10/11/2026 10:00] Servidor A: x",
+    "origin": "Unidade A Setor 2",
+    "title": "Conversa com Unidade A Setor 2 \u2014 10/11/2026",
+    "request_id": "6267b1b7-1b14-80db-8c35-4745369c277b"
+   }
+  },
+  {
+   "name": "nome-da-conversa-cortado-num-espaco",
+   "input": "[10:00, 10/11/2026] Servidor A: x",
+   "chat": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA BBBBB",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor A",
+      "text": "x"
+     }
+    ],
+    "participants": [
+     "Servidor A"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T10:00",
+    "record_text": "[10/11/2026 10:00] Servidor A: x",
+    "origin": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "title": "Conversa com AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \u2014 10/11/2026",
+    "request_id": "4e3ea7da-dc06-8e79-bfb2-c016767fd793"
+   }
+  },
+  {
+   "name": "linha-parecida-com-mensagem-e-lida-como-mensagem-na-colagem",
+   "input": "[10:00, 10/11/2026] Servidor B: ok\n[10/11/2026 14:05] Servidor A: autorizo",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor B",
+      "text": "ok"
+     },
+     {
+      "when": "2026-11-10T14:05",
+      "author": "Servidor A",
+      "text": "autorizo"
+     }
+    ],
+    "participants": [
+     "Servidor B",
+     "Servidor A"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T14:05",
+    "record_text": "[10/11/2026 10:00] Servidor B: ok\n[10/11/2026 14:05] Servidor A: autorizo",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "c941bdb0-8272-8d4b-8dbb-8b741d1a3754"
+   }
+  },
+  {
+   "name": "mensagem-de-varias-linhas-com-linhas-vazias-e-indentadas",
+   "input": "[10:00, 10/11/2026] Servidor A: a\n\n  b\n   \nc\n[10:01, 10/11/2026] Servidor B: ok",
+   "chat": "",
+   "expect": {
+    "messages": [
+     {
+      "when": "2026-11-10T10:00",
+      "author": "Servidor A",
+      "text": "a\n\n  b\n\nc"
+     },
+     {
+      "when": "2026-11-10T10:01",
+      "author": "Servidor B",
+      "text": "ok"
+     }
+    ],
+    "participants": [
+     "Servidor A",
+     "Servidor B"
+    ],
+    "first": "2026-11-10T10:00",
+    "last": "2026-11-10T10:01",
+    "record_text": "[10/11/2026 10:00] Servidor A: a\n\n      b\n\n    c\n[10/11/2026 10:01] Servidor B: ok",
+    "origin": "",
+    "title": "Conversa do WhatsApp \u2014 10/11/2026",
+    "request_id": "fce5795e-70c0-886b-afaf-e260b12a641e"
    }
   }
  ]

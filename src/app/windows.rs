@@ -161,7 +161,15 @@ impl PonteApp {
                     ));
                 }
             }
-            Err(error) => self.manual_form.message = error.to_string(),
+            Err(error) => {
+                let text = error.to_string();
+                self.manual_form.message = if text.contains("lixeira") {
+                    "Esta conversa já foi guardada antes e está na Lixeira. Restaure-a em Ajustes ▸ Lixeira."
+                        .to_owned()
+                } else {
+                    text
+                };
+            }
         }
     }
 

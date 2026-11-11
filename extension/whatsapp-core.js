@@ -16,7 +16,7 @@
   const MAX_FILE_BYTES = 8 * 1024 * 1024;
   const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
   const MAX_NAME_CHARS = 180;
-  const YEAR_MIN = 2000, YEAR_MAX = 2099;
+  const YEAR_MIN = 1900, YEAR_MAX = 2100;
   const META_KEYS = ["wa_chat", "wa_first", "wa_last", "wa_messages"];
   const RECORD_KEYS = ["kind", "title", "origin", "document_date", "text", "meta"];
   class WhatsAppError extends Error {
@@ -40,10 +40,13 @@
   const BIDI_AND_ZERO_RE = /[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g;
 
   // ---------------------------------------------------------------- the reader of copied text
-  const TIME_SRC = String.raw`(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([ap])\s*\.?\s*m\.?)?`;
+  const TIME_SRC = String.raw`(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([ap])(?:m\.?|\.\s?m\.?))?`;
   const DATE_SRC = String.raw`(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4}|\d{2})`;
-  const TIME_FIRST_RE = new RegExp(`^\\s*${TIME_SRC}\\s*[,;]?\\s*${DATE_SRC}\\s*$`, "i");
-  const DATE_FIRST_RE = new RegExp(`^\\s*${DATE_SRC}\\s*[,;]?\\s*${TIME_SRC}\\s*$`, "i");
+  // Between time and date: a comma and/or white space (never ";" and never nothing). Nothing before or after inside the brackets.
+  const SEPARATOR_SRC = String.raw`(?:\s*,\s*|\s+)`;
+  const TIME_FIRST_RE = new RegExp(`^${TIME_SRC}${SEPARATOR_SRC}${DATE_SRC}$`, "i");
+  const DATE_FIRST_RE = new RegExp(`^${DATE_SRC}${SEPARATOR_SRC}${TIME_SRC}$`, "i");
+  const MAX_BRACKET_INDEX = 48;       // the "]" must be within the first 49 characters of the line
   const pad = (value, size = 2) => String(value).padStart(size, "0");
   // dd/mm only; never mm/dd. Returns "AAAA-MM-DDTHH:MM" or null when anything is impossible.
   function whenFrom(day, month, year, hour, minute, second, marker) {
@@ -62,29 +65,30 @@
     if (d > new Date(Date.UTC(y, mo, 0)).getUTCDate()) return null;
     return `${pad(y, 4)}-${pad(mo)}-${pad(d)}T${pad(h)}:${pad(mi)}`;
   }
+  // Marks and controls out; every kind of line end (CR, LF, CR LF, U+2028, U+2029) becomes "\n".
   function cleanLines(text) {
-    return String(text).replace(MARKS_RE, "").replace(/\r\n?/g, "\n").replace(CONTROL_RE, "");
+    return String(text).replace(MARKS_RE, "").replace(/\r\n|[\r\u2028\u2029]/g, "\n").replace(CONTROL_RE, "");
   }
+  const trimEnd = line => line.trimEnd();
   // One line that starts a message: "[hh:mm, dd/mm/aaaa] Nome: texto" (or the date-first form).
   // Returns { when, author, text } or null when the line does not start a message.
   function parseHeader(line) {
     if (typeof line !== "string" || line[0] !== "[") return null;
-    const close = line.indexOf("]");
+    const close = line.slice(0, MAX_BRACKET_INDEX + 1).indexOf("]");
     if (close < 0) return null;
-    const inner = line.slice(1, close).replace(/[\u00a0\u2009\u202f]/g, " ");
+    const inner = line.slice(1, close).replace(/[   ]/g, " ");
     let when = null;
     let match = TIME_FIRST_RE.exec(inner);
     if (match) when = whenFrom(match[5], match[6], match[7], match[1], match[2], match[3], match[4]);
     else if ((match = DATE_FIRST_RE.exec(inner))) when = whenFrom(match[1], match[2], match[3], match[4], match[5], match[6], match[7]);
     if (!when) return null;
-    let rest = line.slice(close + 1).replace(/[ \t]+$/, "");
-    if (rest[0] === " " || rest[0] === "\u00a0") rest = rest.slice(1);
+    const rest = line.slice(close + 1).trim();
     const split = /^(.+?)(?:: |:$)(.*)$/.exec(rest);
-    if (split && split[1].trim()) return { when, author: split[1].trim(), text: split[2] };
+    if (split && split[1].trim()) return { when, author: split[1].trim(), text: split[2].trim() };
     return { when, author: null, text: rest };
   }
   function finishText(lines) {
-    const out = lines.map(line => line.replace(/[ \t]+$/, ""));
+    const out = lines.map(trimEnd);
     while (out.length && out[out.length - 1] === "") out.pop();
     return out.join("\n");
   }
@@ -96,11 +100,10 @@
     let current = null;
     let any = false;
     for (const raw of lines) {
-      const line = raw.replace(/[ \t]+$/, "");
+      const line = trimEnd(raw);
       const head = parseHeader(line);
       if (head) {
         any = true;
-        if (current) current.text = finishText(current.lines);
         current = { when: head.when, author: head.author, lines: [head.text] };
         messages.push(current);
       } else if (current) current.lines.push(line);
@@ -125,11 +128,16 @@
     return names;
   }
   // Exactly `[dd/mm/aaaa hh:mm] Nome: texto`; a system line is `[...] — texto`; a line without date `[sem data] — texto`.
+  // Every continuation line of a message is indented by four spaces (blank ones stay empty), so a line at
+  // column 0 that starts with `[dd/mm/aaaa hh:mm]` or `[sem data]` is always a real message.
+  const INDENT = "    ";
   function recordText(messages) {
     return messages.map(message => {
       const stamp = message.when ? `[${formatWhen(message.when)}]` : "[sem data]";
-      return `${stamp} ${message.author ? message.author + ": " : "— "}${message.text}`;
-    }).join("\n").replace(/[ \t]+$/gm, "");
+      const [first, ...more] = message.text.split("\n");
+      const lines = [`${stamp} ${message.author ? message.author + ": " : "— "}${first}`, ...more.map(line => line.trim() === "" ? "" : INDENT + line)];
+      return lines.join("\n");
+    }).join("\n").split("\n").map(trimEnd).join("\n");
   }
   function cleanChatName(value) {
     let name = wellFormed(String(value || "")).replace(MARKS_RE, "").replace(CONTROL_RE, " ").replace(/\s+/g, " ").trim();
@@ -150,7 +158,7 @@
   function normalizeMessage(message) {
     if (!plain(message) || (message.when !== null && !(typeof message.when === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(message.when))) || typeof message.text !== "string" || !(message.author === null || typeof message.author === "string")) fail("RECORD_INVALID", "As mensagens não puderam ser organizadas. Tente de novo.");
     const text = finishText(cleanLines(wellFormed(message.text)).split("\n"));
-    let author = message.author === null ? "" : cleanLines(wellFormed(message.author)).replace(/\s+/g, " ").trim();
+    let author = message.author === null ? "" : cleanLines(wellFormed(message.author)).replace(/\n/g, " ").trim();
     return { when: message.when, author: author || null, text };
   }
   // The `record` object of the contract. Throws WhatsAppError with a sentence for the person.
@@ -206,15 +214,27 @@
     }
     return name;
   }
-  // Same name twice becomes "nome (2).ext".
+  // Same name twice becomes "nome (2).ext"; the stem is shortened by the suffix so the name stays
+  // within the limit. Returns null (never loops) when no free name is found among (2) to (99).
   function uniqueName(name, taken) {
     if (!taken.includes(name)) return name;
     const dot = name.lastIndexOf(".");
-    const stem = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : "";
-    for (let n = 2; ; n++) {
-      const candidate = sanitizeFileName(`${stem} (${n})${ext}`);
+    const hasExt = dot > 0 && chars(name.slice(dot)) <= 20;
+    const stem = Array.from(hasExt ? name.slice(0, dot) : name), ext = hasExt ? name.slice(dot) : "";
+    for (let n = 2; n <= 99; n++) {
+      const suffix = ` (${n})`;
+      const room = MAX_NAME_CHARS - chars(ext) - chars(suffix);
+      if (room < 1) return null;
+      const candidate = stem.slice(0, room).join("").trimEnd() + suffix + ext;
       if (!taken.includes(candidate)) return candidate;
     }
+    return null;
+  }
+  // Extensions the Ponte accepts for attachments; anything else is left out before sending.
+  const ACCEPTED_EXTENSIONS = ["pdf", "doc", "docx", "odt", "rtf", "txt", "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp", "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "eml", "msg"];
+  function fileTypeAccepted(name) {
+    const dot = String(name).lastIndexOf(".");
+    return dot > 0 && ACCEPTED_EXTENSIONS.includes(String(name).slice(dot + 1).toLowerCase());
   }
   function toBase64(bytes) {
     let binary = "";
@@ -339,11 +359,22 @@
       return cleanChatName(name);
     } catch { return ""; }
   }
+  // "HH:MM" (24 h) from the time WhatsApp shows in the row; 12-hour times use the reader's AM/PM rule.
+  // Anything doubtful (a marker that cannot be parsed, impossible values) gives "" (unknown).
+  const MARKER_LIKE_RE = /(^|[\d\s])[ap]\s*\.?\s*m(?![a-z])/i;
+  const CLOCK_RE = new RegExp(TIME_SRC, "i");
   function clock(row) {
     const meta = row.querySelector('[data-testid="msg-meta"]');
-    const match = meta && /(\d{1,2}):(\d{2})/.exec(meta.textContent || "");
-    if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return "";
-    return `${pad(match[1])}:${match[2]}`;
+    const text = meta ? String(meta.textContent || "").replace(/[   ]/g, " ") : "";
+    const match = CLOCK_RE.exec(text);
+    if (!match) return "";
+    let hour = Number(match[1]);
+    if (Number(match[2]) > 59 || (match[3] !== undefined && Number(match[3]) > 59)) return "";
+    if (match[4]) {
+      if (hour < 1 || hour > 12) return "";
+      hour = hour % 12 + (match[4].toLowerCase() === "p" ? 12 : 0);
+    } else if (hour > 23 || MARKER_LIKE_RE.test(text)) return "";
+    return `${pad(hour)}:${match[2]}`;
   }
   function labelOf(row) {
     for (const element of row.querySelectorAll("span[aria-label]")) {
@@ -375,14 +406,19 @@
       }
       info.push({ row, element: marked.length ? marked[0] : null, head });
     }
-    const dated = info.map(item => item.head && item.head.when ? item.head.when.slice(0, 10) : "");
-    const dateFor = index => {
-      for (let i = index - 1; i >= 0; i--) if (dated[i]) return dated[i];
-      for (let i = index + 1; i < dated.length; i++) if (dated[i]) return dated[i];
+    // A row without prefix is dated only when that is certain: the nearest dated rows before and after
+    // (in the whole pane) agree, or only an earlier one exists and this row is not earlier in the day.
+    const stamps = info.map(item => item.head && item.head.when ? item.head.when : "");
+    const dateFor = (index, time) => {
+      let before = "", after = "";
+      for (let i = index - 1; i >= 0 && !before; i--) before = stamps[i];
+      for (let i = index + 1; i < stamps.length && !after; i++) after = stamps[i];
+      if (before && after) return before.slice(0, 10) === after.slice(0, 10) ? before.slice(0, 10) : "";
+      if (before && !after) return time >= before.slice(11, 16) ? before.slice(0, 10) : "";
       return "";
     };
     const messages = [];
-    let skipped = 0, bare = 0, textRows = 0, withText = 0;
+    let skipped = 0, bare = 0, textRows = 0, withText = 0, undatedPhotos = 0, undatedFiles = 0;
     info.forEach((item, index) => {
       if (!wanted(item.row)) return;
       const { row, element, head } = item;
@@ -401,15 +437,16 @@
       }
       if (!images.length && !document_) { skipped++; return; }
       const time = clock(row);
-      const day = dateFor(index);
+      const day = time ? dateFor(index, time) : "";
       const when = time && day ? `${day}T${time}` : null;
+      if (!when) { if (images.length) undatedPhotos++; else undatedFiles++; }
       const author = labelOf(row);
       if (!author) bare++;
       messages.push({ when, author, text: images.length ? "(foto)" : documentLine(row), images });
     });
     // A row whose prefix does not parse, or text rows without any selectable text: not the structure we know.
     if (messages.includes(null) || (textRows > 0 && withText === 0)) return null;
-    return { chat: chatName(main), messages, skipped, bare };
+    return { chat: chatName(main), messages, skipped, bare, undatedPhotos, undatedFiles };
   }
   function documentLine(row) {
     const named = row.querySelector("div[title]");
@@ -444,5 +481,5 @@
     const pictures = photos ? ` \u00b7 ${photos === 1 ? "1 foto" : photos + " fotos"}` : "";
     return count + span + pictures;
   }
-  return { ORIGIN, MAX_MESSAGES, MAX_TEXT_BYTES, TITLE_MIN, TITLE_MAX, ORIGIN_MAX, MAX_ATTACHMENTS, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_NAME_CHARS, META_KEYS, ACCEPTED_PHOTO_TYPES, WhatsAppError, parseHeader, parseCopied, recordText, suggestedTitle, cleanChatName, cleanTitle, buildRecord, validateRecord, firstLast, participants, formatWhen, summary, sanitizeFileName, uniqueName, toBase64, decodedLength, validateAttachments, sniffImageType, isOwnBlobUrl, allowedOrigin, readSelection, readVisible, wellFormed };
+  return { ORIGIN, MAX_MESSAGES, MAX_TEXT_BYTES, TITLE_MIN, TITLE_MAX, ORIGIN_MAX, MAX_ATTACHMENTS, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_NAME_CHARS, META_KEYS, ACCEPTED_PHOTO_TYPES, WhatsAppError, parseHeader, parseCopied, recordText, suggestedTitle, cleanChatName, cleanTitle, buildRecord, validateRecord, firstLast, participants, formatWhen, summary, sanitizeFileName, uniqueName, fileTypeAccepted, ACCEPTED_EXTENSIONS, toBase64, decodedLength, validateAttachments, sniffImageType, isOwnBlobUrl, allowedOrigin, readSelection, readVisible, wellFormed };
 });

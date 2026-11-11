@@ -1237,7 +1237,7 @@ impl PonteApp {
         Self::section(ui, id, text_title, true, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if detail.summary.whatsapp {
-                    widgets::small_muted(ui, "Mensagens da conversa, como foram guardadas. Para alterá-las, use “Editar registro” no topo.");
+                    widgets::small_muted(ui, "Mensagens da conversa, como foram guardadas. Linhas recuadas continuam a mensagem de cima. Para alterá-las, use “Editar registro” no topo.");
                 } else if manual {
                     widgets::small_muted(ui, "Texto digitado por quem criou o registro. Para alterá-lo, use “Editar registro” no topo.");
                 } else {

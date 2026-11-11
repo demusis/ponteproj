@@ -233,21 +233,33 @@ async function whatsappRegistered() {
 async function whatsappUnregister() {
   try { if (await whatsappRegistered()) await chrome.scripting.unregisterContentScripts({ ids: [WA_SCRIPT_ID] }); } catch { /* nothing registered */ }
 }
-async function whatsappRegister() {
+// One change of the registration at a time: the popup, the start-up and the permission events may all ask.
+let waTurn = Promise.resolve();
+function waSerial(work) {
+  const run = waTurn.then(work, work);
+  waTurn = run.catch(() => {});
+  return run;
+}
+async function registerNow() {
   await whatsappUnregister();
   await chrome.scripting.registerContentScripts([{ id: WA_SCRIPT_ID, js: WA_SCRIPT_FILES, matches: [WA_PATTERN], runAt: "document_idle", allFrames: false, world: "ISOLATED", persistAcrossSessions: true }]);
 }
+function whatsappRegister() { return waSerial(registerNow); }
 // Registered scripts normally persist; this only repairs them, and only while the permission is still granted.
-async function syncWhatsApp(refresh) {
-  try {
-    if (!chrome.scripting || !chrome.permissions) return;
-    if (!(await whatsappGranted())) { await whatsappUnregister(); return; }
-    if (refresh || !(await whatsappRegistered())) await whatsappRegister();
-  } catch { /* the popup shows the state and can turn it on again */ }
+function syncWhatsApp(refresh) {
+  return waSerial(async () => {
+    try {
+      if (!chrome.scripting || !chrome.permissions) return;
+      if (!(await whatsappGranted())) { await whatsappUnregister(); return; }
+      if (refresh || !(await whatsappRegistered())) await registerNow();
+    } catch { /* the popup shows the state and can turn it on again */ }
+  });
 }
 chrome.runtime.onStartup?.addListener(() => { syncWhatsApp(false); });
 chrome.runtime.onInstalled?.addListener(() => { syncWhatsApp(true); });
 chrome.permissions?.onRemoved?.addListener(() => { syncWhatsApp(false); });
+// Granted from the popup or from anywhere else: the panel must never be granted but unregistered.
+chrome.permissions?.onAdded?.addListener(permissions => { if (Array.isArray(permissions?.origins) && permissions.origins.includes(WA_PATTERN)) syncWhatsApp(false); });
 async function storedRecent() {
   try {
     const value = (await chrome.storage.session.get(RECENT_KEY))?.[RECENT_KEY];

@@ -81,7 +81,8 @@ fn normalise(input: &str) -> String {
                 }
                 out.push('\n');
             }
-            '\n' | '\t' => out.push(c),
+            '\n' | '\u{2028}' | '\u{2029}' => out.push('\n'),
+            '\t' => out.push(c),
             c if is_mark(c) || c.is_control() => {}
             c => out.push(c),
         }
@@ -89,15 +90,25 @@ fn normalise(input: &str) -> String {
     out
 }
 
-/// The chat name as kept in the record: no marks or control characters,
-/// trimmed, at most 200 characters.
+/// The chat name as kept in the record: marks removed, controls and runs of
+/// whitespace become one space, trimmed, the first 200 characters, trimmed
+/// again (it never ends with a space).
 pub fn clean_chat(chat: &str) -> String {
-    let spaced: String = chat
-        .chars()
-        .filter(|c| !is_mark(*c))
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    spaced.trim().chars().take(MAX_CHAT_CHARS).collect()
+    let mut out = String::new();
+    let mut pending_space = false;
+    for c in chat.chars().filter(|c| !is_mark(*c)) {
+        if c.is_control() || c.is_whitespace() {
+            pending_space = !out.is_empty();
+        } else {
+            if pending_space {
+                out.push(' ');
+                pending_space = false;
+            }
+            out.push(c);
+        }
+    }
+    let cut: String = out.chars().take(MAX_CHAT_CHARS).collect();
+    cut.trim_end().to_owned()
 }
 
 // ---- the header of a message line ----
@@ -128,10 +139,11 @@ fn marker(c: &[char], p: &mut usize) -> Option<bool> {
         _ => return None,
     };
     q += 1;
+    // `a.m.`, `a. m.` (a space only after the first dot), `am`.
     if c.get(q) == Some(&'.') {
         q += 1;
+        skip_space(c, &mut q);
     }
-    skip_space(c, &mut q);
     if !c.get(q)?.eq_ignore_ascii_case(&'m') {
         return None;
     }
@@ -339,6 +351,14 @@ fn show(when: NaiveDateTime) -> String {
 /// `[dd/mm/aaaa hh:mm] Nome: texto`, continuation lines unprefixed, a system
 /// line as `[dd/mm/aaaa hh:mm] — texto`, the text before the first message
 /// as `[sem data] — texto`. No line ends with a space.
+///
+/// EVERY continuation line of a message is written indented by four spaces
+/// (blank ones stay empty), so in a stored record a line at column 0 that
+/// starts with `[dd/mm/aaaa hh:mm]` or `[sem data]` is always a real
+/// message boundary: a message whose text holds a line that looks like
+/// another message cannot forge one. The reader of PASTED text is unchanged
+/// (WhatsApp's own copy format cannot tell the two apart, so the paste path
+/// can be no better than that format).
 pub fn record_text(conversation: &Conversation) -> String {
     let mut out = String::new();
     for (index, message) in conversation.messages.iter().enumerate() {
@@ -354,10 +374,51 @@ pub fn record_text(conversation: &Conversation) -> String {
             if line_index > 0 {
                 out.push('\n');
             }
-            out.push_str(line.trim_end());
+            let line = line.trim_end();
+            if line_index > 0 && !line.is_empty() {
+                out.push_str("    ");
+            }
+            out.push_str(line);
         }
     }
     out
+}
+
+/// What the text of a STORED record holds: its messages and their period.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoredSummary {
+    pub first: Option<NaiveDateTime>,
+    pub last: Option<NaiveDateTime>,
+    pub messages: usize,
+}
+
+/// Reads the stored shape (not pasted text): a message starts at column 0
+/// with `[dd/mm/aaaa hh:mm]` (a real date and time) or `[sem data]`; indented
+/// lines continue the message above and never count.
+pub fn stored_summary(text: &str) -> StoredSummary {
+    const SHAPE: &[u8; 18] = b"[dd/dd/dddd dd:dd]";
+    let mut summary = StoredSummary::default();
+    for line in text.lines() {
+        let bytes = line.as_bytes();
+        if line.starts_with("[sem data]") {
+            summary.messages += 1;
+            continue;
+        }
+        let shaped = bytes.len() >= SHAPE.len()
+            && SHAPE.iter().zip(bytes).all(|(shape, byte)| match shape {
+                b'd' => byte.is_ascii_digit(),
+                other => other == byte,
+            });
+        if !shaped {
+            continue;
+        }
+        if let Ok(when) = NaiveDateTime::parse_from_str(&line[1..17], "%d/%m/%Y %H:%M") {
+            summary.messages += 1;
+            summary.first.get_or_insert(when);
+            summary.last = Some(when);
+        }
+    }
+    summary
 }
 
 /// `Conversa com <conversa> — dd/mm/aaaa` (date of the last message).
@@ -751,7 +812,7 @@ mod tests {
         assert_eq!(fields.document_date, "2026-11-10");
         assert_eq!(
             fields.text,
-            "[10/11/2026 14:02] Servidor A: Bom dia\n[10/11/2026 16:40] Servidor B: Ok\nlinha 2"
+            "[10/11/2026 14:02] Servidor A: Bom dia\n[10/11/2026 16:40] Servidor B: Ok\n    linha 2"
         );
         fields.validate().unwrap();
         let meta = metadata(" Servidor B ", &conversation, "whatsapp-colado");
@@ -765,6 +826,96 @@ mod tests {
             summary_line(&conversation),
             "2 mensagens de 10/11/2026 14:02 a 10/11/2026 16:40 · Servidor A, Servidor B"
         );
+    }
+
+    #[test]
+    fn a_forged_line_in_a_message_is_indented_in_the_record() {
+        // Built directly, as the extension does: one message whose text
+        // holds a line that looks like a message from someone else.
+        let when = NaiveDate::from_ymd_opt(2026, 11, 10)
+            .unwrap()
+            .and_hms_opt(14, 2, 0)
+            .unwrap();
+        let conversation = Conversation {
+            messages: vec![Message {
+                when: Some(when),
+                author: Some("Servidor B".into()),
+                text: "ok\n[10/11/2026 14:05] Servidor A: autorizo\n\nfim".into(),
+            }],
+            participants: vec!["Servidor B".into()],
+            first: Some(when),
+            last: Some(when),
+        };
+        let text = record_text(&conversation);
+        assert_eq!(
+            text,
+            "[10/11/2026 14:02] Servidor B: ok\n    [10/11/2026 14:05] Servidor A: autorizo\n\n    fim"
+        );
+        let read = stored_summary(&text);
+        assert_eq!(read.messages, 1);
+        assert_eq!(read.first, Some(when));
+    }
+
+    #[test]
+    fn stored_summary_reads_the_stored_shape() {
+        let text = "[sem data] — antes\n    [10/11/2026 09:00] A: falso\n[10/11/2026 09:12] Servidor A: oi\n    linha\n[11/11/2026 10:30] — entrou\n[31/02/2026 10:00] x";
+        let read = stored_summary(text);
+        assert_eq!(read.messages, 3);
+        assert_eq!(iso(read.first), "2026-11-10T09:12");
+        assert_eq!(iso(read.last), "2026-11-11T10:30");
+        assert_eq!(stored_summary("texto livre").messages, 0);
+    }
+
+    #[test]
+    fn editing_a_record_recomputes_the_conversation_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("e.sqlite3")).unwrap();
+        let conversation = sample();
+        let title = suggested_title("Servidor B", &conversation);
+        let id = store
+            .import_whatsapp("Servidor B", &title, &conversation, "whatsapp-colado")
+            .unwrap()
+            .document_id;
+        let detail = store.load_document(id).unwrap();
+        // New chat name, same text: period and count stay, chat follows.
+        let mut edited = ManualFields::from_capture(&detail.capture);
+        edited.origin = "  Unidade   A ".into();
+        store.update_manual_document(id, &edited).unwrap();
+        let meta = store.load_document(id).unwrap().capture.metadata;
+        assert_eq!(meta["wa_chat"], "Unidade A");
+        assert_eq!(meta["wa_messages"], "2");
+        assert_eq!(meta["imported_from"], "whatsapp-colado");
+        // New text: the details are read again.
+        let mut edited = ManualFields::from_capture(&store.load_document(id).unwrap().capture);
+        edited.text = "[12/11/2026 08:00] Servidor A: um\n[12/11/2026 09:30] Servidor B: dois\n[12/11/2026 09:31] Servidor B: três".into();
+        store.update_manual_document(id, &edited).unwrap();
+        let meta = store.load_document(id).unwrap().capture.metadata;
+        assert_eq!(meta["wa_messages"], "3");
+        assert_eq!(meta["wa_first"], "2026-11-12T08:00");
+        assert_eq!(meta["wa_last"], "2026-11-12T09:31");
+        // Text with no message left: the three keys are dropped.
+        let mut edited = ManualFields::from_capture(&store.load_document(id).unwrap().capture);
+        edited.text = "texto livre".into();
+        store.update_manual_document(id, &edited).unwrap();
+        let meta = store.load_document(id).unwrap().capture.metadata;
+        assert!(!meta.contains_key("wa_messages"));
+        assert!(!meta.contains_key("wa_first"));
+        assert!(!meta.contains_key("wa_last"));
+        assert_eq!(meta["imported_from"], "whatsapp-colado");
+    }
+
+    #[test]
+    fn chat_names_and_whitespace_runs_are_cleaned() {
+        assert_eq!(
+            clean_chat(" \u{200e}Unidade\u{a0} A\t\n B  "),
+            "Unidade A B"
+        );
+        let cut = format!("{} {}", "A".repeat(199), "B".repeat(5));
+        assert_eq!(clean_chat(&cut), "A".repeat(199));
+        let spaced = format!("[10:00,{}10/11/2026] Servidor A: x", " ".repeat(5000));
+        let start = std::time::Instant::now();
+        assert!(parse(&spaced).is_err());
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]

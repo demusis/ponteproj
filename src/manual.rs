@@ -189,11 +189,44 @@ impl Store {
         // Where the record came from stays with every version: an e-mail's
         // identity and digest let a later import of it be recognized.
         for (key, value) in &detail.capture.metadata {
-            if key.starts_with("mail_") || key.starts_with("wa_") || key == "imported_from" {
+            if key.starts_with("mail_") || key == "imported_from" {
                 capture
                     .metadata
                     .entry(key.clone())
                     .or_insert_with(|| value.clone());
+            }
+        }
+        if fields.kind == "whatsapp" {
+            // The conversation's details follow what was edited, never the
+            // values of an earlier version.
+            let old = &detail.capture.metadata;
+            let text_changed = fields.text.trim_end() != detail.capture.text.trim_end();
+            let chat = crate::whatsapp::clean_chat(&fields.origin);
+            if !chat.is_empty() {
+                capture.metadata.insert("wa_chat".to_owned(), chat);
+            }
+            if text_changed || !old.contains_key("wa_messages") {
+                let read = crate::whatsapp::stored_summary(&fields.text);
+                if read.messages > 0 {
+                    let iso = |d: Option<chrono::NaiveDateTime>| {
+                        d.map(|d| d.format("%Y-%m-%dT%H:%M").to_string())
+                    };
+                    for (key, value) in [
+                        ("wa_first", iso(read.first)),
+                        ("wa_last", iso(read.last)),
+                        ("wa_messages", Some(read.messages.to_string())),
+                    ] {
+                        if let Some(value) = value {
+                            capture.metadata.insert(key.to_owned(), value);
+                        }
+                    }
+                }
+            } else {
+                for key in ["wa_first", "wa_last", "wa_messages"] {
+                    if let Some(value) = old.get(key) {
+                        capture.metadata.insert(key.to_owned(), value.clone());
+                    }
+                }
             }
         }
         let receipt = self.import_capture(&capture)?;
