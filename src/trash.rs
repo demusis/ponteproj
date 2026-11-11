@@ -52,12 +52,32 @@ pub struct Plan {
     pub blocker: Option<String>,
     pub replacement: Option<i64>,
 }
+#[derive(Clone)]
 pub struct Entry {
     pub target: Target,
     pub document: Option<i64>,
     pub label: String,
     pub deleted_at: String,
     pub parent_trashed: bool,
+    /// What to look for: the number and title of a document, the title of
+    /// a task, the file name of an attachment.
+    pub name: String,
+    /// What it hangs from, in words ("Documento: ORG-… — título",
+    /// "Tarefa sem documento", "Anexo da tarefa …"); may be empty.
+    pub belongs: String,
+}
+
+/// Where an item stands in the library, for telling the person before a
+/// choice that cannot work.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ItemState {
+    Active,
+    /// In the Lixeira since `deleted_at` (RFC 3339).
+    Trashed {
+        deleted_at: String,
+    },
+    /// Not in the library at all (nor in the Lixeira).
+    Missing,
 }
 pub fn contains(conn: &Connection, kind: Kind, id: i64) -> Result<bool> {
     Ok(conn.query_row(
@@ -239,6 +259,150 @@ fn label(conn: &Connection, kind: Kind, id: i64) -> Result<(Option<i64>, String)
             Ok((doc, format!("Anexo “{}” {owner}", meta.name)))
         }
     }
+}
+/// "ORG-… — title" of a document, whether or not it is in the Lixeira.
+fn document_text(conn: &Connection, id: i64) -> Option<String> {
+    label(conn, Kind::Document, id).ok().map(|(_, text)| text)
+}
+/// The title of a task, whether or not it is in the Lixeira.
+fn task_title(conn: &Connection, id: i64) -> Option<String> {
+    let bytes: Vec<u8> = conn
+        .query_row("SELECT payload FROM tasks WHERE id=?1", [id], |r| r.get(0))
+        .optional()
+        .ok()??;
+    let task: Task = serde_json::from_slice(&protection::unseal(&bytes).ok()?).ok()?;
+    Some(task.title)
+}
+/// What the person looks for in the Lixeira: the main text of an item and
+/// what it hangs from. Display only; `label` (stored in the history) stays.
+fn describe(conn: &Connection, kind: Kind, id: i64) -> Result<(String, String)> {
+    let of_document = |doc: Option<i64>| match doc.and_then(|d| document_text(conn, d)) {
+        Some(text) => format!("Documento: {text}"),
+        None => "Tarefa sem documento".to_owned(),
+    };
+    Ok(match kind {
+        Kind::Document => (
+            document_text(conn, id).context("Documento não encontrado.")?,
+            String::new(),
+        ),
+        Kind::Capture => {
+            let (doc, bytes): (i64, Vec<u8>) = conn.query_row(
+                "SELECT document_id,payload FROM captures WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let capture: Capture = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+            let owner = document_text(conn, doc)
+                .map(|text| format!("Documento: {text}"))
+                .unwrap_or_default();
+            (
+                format!(
+                    "Versão importada de {} em {}",
+                    capture.document_number,
+                    crate::labels::datetime(&capture.captured_at)
+                ),
+                owner,
+            )
+        }
+        Kind::Task => {
+            let (doc, bytes): (Option<i64>, Vec<u8>) = conn.query_row(
+                "SELECT document_id,payload FROM tasks WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let task: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+            (task.title, of_document(doc))
+        }
+        Kind::Attachment => {
+            let (owner_kind, owner_id, doc, bytes): (String, i64, Option<i64>, Vec<u8>) = conn
+                .query_row(
+                    "SELECT owner_kind,owner_id,document_id,metadata FROM attachments WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?
+                .context("Anexo não encontrado.")?;
+            let meta: crate::attachments::AttachmentMeta =
+                serde_json::from_slice(&protection::unseal(&bytes)?)?;
+            let owner = match owner_kind.as_str() {
+                "task" => match task_title(conn, owner_id) {
+                    Some(title) => format!("Anexo da tarefa “{title}”"),
+                    None => "Anexo de uma tarefa".to_owned(),
+                },
+                "saiop" => "Anexo de um atendimento".to_owned(),
+                "example" => "Anexo de um exemplo".to_owned(),
+                _ => match doc.and_then(|d| document_text(conn, d)) {
+                    Some(text) => format!("Anexo do documento {text}"),
+                    None => "Anexo de um documento".to_owned(),
+                },
+            };
+            (meta.name, owner)
+        }
+    })
+}
+/// Lowercase without accents, for searching.
+pub fn fold(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            c => c,
+        })
+        .collect()
+}
+/// True when every word of `query` is in the number, title, file name or
+/// owner of the entry (case and accents ignored). An empty query matches.
+pub fn entry_matches(entry: &Entry, query: &str) -> bool {
+    let haystack = fold(&format!("{} {}", entry.name, entry.belongs));
+    fold(query)
+        .split_whitespace()
+        .all(|word| haystack.contains(word))
+}
+/// The entries to list for `query`, in order, each with whether it is shown
+/// under a document that is also in the Lixeira. A document comes first and
+/// its items right after it. With a query, a document stays when it or any
+/// item under it matches (a matching document shows all its items, otherwise
+/// only the matching ones).
+pub fn arrange(entries: Vec<Entry>, query: &str) -> Vec<(Entry, bool)> {
+    let (children, tops): (Vec<Entry>, Vec<Entry>) =
+        entries.into_iter().partition(|e| e.parent_trashed);
+    let mut children: Vec<Option<Entry>> = children.into_iter().map(Some).collect();
+    let mut out = Vec::new();
+    for top in tops {
+        let own = entry_matches(&top, query);
+        let mut mine = Vec::new();
+        if top.target.kind == Kind::Document {
+            for slot in children.iter_mut() {
+                if slot
+                    .as_ref()
+                    .is_some_and(|c| c.document == Some(top.target.id))
+                {
+                    if let Some(child) = slot.take() {
+                        if own || entry_matches(&child, query) {
+                            mine.push(child);
+                        }
+                    }
+                }
+            }
+        }
+        if own || !mine.is_empty() {
+            out.push((top, false));
+            out.extend(mine.into_iter().map(|c| (c, true)));
+        }
+    }
+    // Items whose document is not in the list: shown alone.
+    for child in children.into_iter().flatten() {
+        if entry_matches(&child, query) {
+            out.push((child, false));
+        }
+    }
+    out
 }
 fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
     let (doc, label) = label(conn, target.kind, target.id)?;
@@ -620,7 +784,61 @@ impl Store {
         tx.commit()?;
         Ok(plan.document)
     }
+    /// Whether a document is usable, in the Lixeira (and since when) or not
+    /// in the library. Read only.
+    /// A failure to read is an error, never "Missing".
+    pub fn document_state(&self, id: i64) -> Result<ItemState> {
+        self.item_state("documents", Kind::Document, id)
+    }
+    /// The same for a task by itself (its document is not looked at).
+    pub fn task_state(&self, id: i64) -> Result<ItemState> {
+        self.item_state("tasks", Kind::Task, id)
+    }
+    fn item_state(&self, table: &str, kind: Kind, id: i64) -> Result<ItemState> {
+        let exists = self.conn.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE id=?1)"),
+            [id],
+            |r| r.get::<_, bool>(0),
+        )?;
+        let deleted_at: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT deleted_at FROM trash WHERE kind=?1 AND item_id=?2",
+                params![kind.key(), id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(match (exists, deleted_at) {
+            (_, Some(deleted_at)) => ItemState::Trashed { deleted_at },
+            (true, None) => ItemState::Active,
+            (false, None) => ItemState::Missing,
+        })
+    }
+    /// "ORG-… — title" of a document, even one in the Lixeira.
+    pub fn document_text(&self, id: i64) -> Option<String> {
+        document_text(&self.conn, id)
+    }
+    /// The title of a task, even one in the Lixeira.
+    pub fn task_title(&self, id: i64) -> Option<String> {
+        task_title(&self.conn, id)
+    }
+    /// The document a task hangs from (`None`: no document, or no task).
+    pub fn task_document(&self, id: i64) -> Option<i64> {
+        self.conn
+            .query_row("SELECT document_id FROM tasks WHERE id=?1", [id], |r| {
+                r.get::<_, Option<i64>>(0)
+            })
+            .optional()
+            .ok()
+            .flatten()
+            .flatten()
+    }
+    /// What is in the Lixeira, memoized until the library changes (reading
+    /// each item decrypts it; the list is drawn on every frame).
     pub fn trash_entries(&self) -> Result<Vec<Entry>> {
+        self.cached("trash_entries", || self.trash_entries_uncached())
+    }
+    fn trash_entries_uncached(&self) -> Result<Vec<Entry>> {
         let mut statement=self.conn.prepare("SELECT kind,item_id,document_id,deleted_at FROM trash ORDER BY deleted_at DESC,kind,item_id")?;
         let rows = statement.query_map([], |r| {
             Ok((
@@ -634,6 +852,8 @@ impl Store {
             let (kind, id, document, deleted_at) = row?;
             let kind = Kind::parse(&kind)?;
             let (_, label) = label(&self.conn, kind, id)?;
+            let (name, belongs) =
+                describe(&self.conn, kind, id).unwrap_or_else(|_| (label.clone(), String::new()));
             let parent_trashed = match document {
                 Some(document) if kind != Kind::Document => {
                     contains(&self.conn, Kind::Document, document)?
@@ -646,6 +866,8 @@ impl Store {
                 label,
                 deleted_at,
                 parent_trashed,
+                name,
+                belongs,
             })
         })
         .collect()
@@ -735,6 +957,8 @@ pub struct Panel {
     message: String,
     /// Items were removed for good; the app refreshes its lists.
     purged: bool,
+    /// What the person typed in the search box of the list.
+    query: String,
 }
 
 /// Choices for "apagar de vez após": days, 0 = never.
@@ -762,6 +986,22 @@ impl Panel {
     pub fn request(&mut self, target: Target) {
         self.pending = Some(target);
         self.message.clear();
+    }
+    /// Development only: the Lixeira as the tour pictures it. "aviso" shows
+    /// the notice of the retention setting, "busca" a search, anything else
+    /// the plain list.
+    #[cfg(feature = "shots")]
+    pub fn shots_open(&mut self, view: &str) {
+        self.pending = None;
+        self.message.clear();
+        self.query.clear();
+        match view {
+            "aviso" => {
+                self.message = "Itens excluídos há mais de 7 dias serão apagados de vez ao abrir o Ponte e uma vez por dia.".into();
+            }
+            "busca" => self.query = "escala".into(),
+            _ => {}
+        }
     }
     pub fn take_purged(&mut self) -> bool {
         std::mem::take(&mut self.purged)
@@ -850,15 +1090,22 @@ impl Panel {
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::icon_button(ui, theme::icon::CLOSE, "Fechar o aviso").clicked() {
-                        close = true;
-                    }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(theme::icon::INFO).size(18.0).color(fg));
+                // `horizontal` fixes the row to the height of its content;
+                // a bare `with_layout` here would take all the height left.
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(theme::icon::INFO).size(18.0).color(fg));
+                    let text_width = (ui.available_width() - 36.0).max(80.0);
+                    ui.scope(|ui| {
+                        ui.set_max_width(text_width);
                         ui.add(
                             egui::Label::new(egui::RichText::new(&self.message).color(fg)).wrap(),
                         );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::icon_button(ui, theme::icon::CLOSE, "Fechar o aviso").clicked()
+                        {
+                            close = true;
+                        }
                     });
                 });
             });
@@ -904,8 +1151,49 @@ impl Panel {
                 return change;
             }
         };
+        let total = entries.len();
+        if total > 0 {
+            ui.horizontal(|ui| {
+                widgets::search(
+                    ui,
+                    &mut self.query,
+                    "Buscar por número, título ou nome do arquivo",
+                    380.0,
+                );
+            });
+        }
+        let shown = arrange(entries, &self.query);
+        if total > 0 {
+            ui.add_space(theme::S1);
+            widgets::small_muted(
+                ui,
+                if self.query.trim().is_empty() {
+                    if total == 1 {
+                        "1 item na lixeira.".to_owned()
+                    } else {
+                        format!("{total} itens na lixeira.")
+                    }
+                } else if shown.len() == 1 {
+                    format!("Mostrando 1 de {total} itens.")
+                } else {
+                    format!("Mostrando {} de {total} itens.", shown.len())
+                },
+            );
+            ui.add_space(theme::S2);
+        }
         widgets::card(ui, |ui| {
-            if entries.is_empty() {
+            if total > 0 && shown.is_empty() {
+                ui.add_space(theme::S3);
+                ui.vertical_centered(|ui| {
+                    widgets::muted(
+                        ui,
+                        format!("Nada na lixeira corresponde a “{}”.", self.query.trim()),
+                    );
+                });
+                ui.add_space(theme::S3);
+                return;
+            }
+            if total == 0 {
                 ui.add_space(theme::S4);
                 ui.vertical_centered(|ui| {
                     ui.label(
@@ -922,7 +1210,7 @@ impl Panel {
                 .max_height(420.0)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    for (index, entry) in entries.into_iter().enumerate() {
+                    for (index, (entry, nested)) in shown.into_iter().enumerate() {
                         if index > 0 {
                             ui.separator();
                         }
@@ -936,6 +1224,9 @@ impl Panel {
                             (_, None) => String::new(),
                         };
                         ui.horizontal(|ui| {
+                            if nested {
+                                ui.add_space(theme::S4);
+                            }
                             ui.vertical(|ui| {
                                 ui.set_width((ui.available_width() - 130.0).max(200.0));
                                 ui.horizontal_wrapped(|ui| {
@@ -946,18 +1237,18 @@ impl Panel {
                                     );
                                     ui.add(
                                         egui::Label::new(
-                                            egui::RichText::new(&entry.label)
+                                            egui::RichText::new(&entry.name)
                                                 .font(theme::font_strong(theme::SIZE_BODY)),
                                         )
                                         .wrap(),
                                     );
                                 });
+                                if !entry.belongs.is_empty() {
+                                    widgets::small_muted(ui, entry.belongs.clone());
+                                }
                                 widgets::small_muted(
                                     ui,
-                                    format!(
-                                        "Excluído localmente em {}. {expires}",
-                                        when(&entry.deleted_at)
-                                    ),
+                                    format!("Excluído em {}. {expires}", when(&entry.deleted_at)),
                                 );
                                 if entry.parent_trashed {
                                     widgets::small_muted(ui, "Restaure o documento primeiro para recuperar este item individualmente.");
@@ -1532,5 +1823,135 @@ mod related_tests {
         dependent.dependencies = vec![task.id];
         assert!(first.save_task(&dependent).is_err());
         assert!(first.list_tasks().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    fn entry(
+        kind: Kind,
+        id: i64,
+        document: Option<i64>,
+        parent: bool,
+        name: &str,
+        belongs: &str,
+    ) -> Entry {
+        Entry {
+            target: Target { kind, id },
+            document,
+            label: String::new(),
+            deleted_at: String::new(),
+            parent_trashed: parent,
+            name: name.into(),
+            belongs: belongs.into(),
+        }
+    }
+
+    #[test]
+    fn search_ignores_case_and_accents_and_needs_every_word() {
+        let task = entry(
+            Kind::Task,
+            3,
+            Some(1),
+            false,
+            "Responder ao Setor Jurídico",
+            "Documento: ORG-OFI-2026/00377 — Pedido de informações sobre escala",
+        );
+        assert!(entry_matches(&task, ""));
+        assert!(entry_matches(&task, "juridico"));
+        assert!(entry_matches(&task, "JURÍDICO escala"));
+        assert!(entry_matches(&task, "00377"));
+        assert!(entry_matches(&task, "informacoes"));
+        assert!(!entry_matches(&task, "juridico veiculos"));
+        let file = entry(
+            Kind::Attachment,
+            4,
+            None,
+            false,
+            "Planilha-de-Veículos.pdf",
+            "Anexo da tarefa “Revisar”",
+        );
+        assert!(entry_matches(&file, "veiculos"));
+        assert!(entry_matches(&file, "revisar"));
+    }
+
+    #[test]
+    fn items_of_a_trashed_document_are_listed_under_it() {
+        let entries = vec![
+            entry(
+                Kind::Task,
+                9,
+                Some(1),
+                true,
+                "Preparar a minuta",
+                "Documento: A",
+            ),
+            entry(Kind::Document, 1, Some(1), false, "ORG-1 — Pedido", ""),
+            entry(
+                Kind::Task,
+                8,
+                None,
+                false,
+                "Outra tarefa",
+                "Tarefa sem documento",
+            ),
+        ];
+        let all = arrange(entries, "");
+        let order: Vec<(i64, bool)> = all.iter().map(|(e, n)| (e.target.id, *n)).collect();
+        assert_eq!(order, vec![(1, false), (9, true), (8, false)]);
+    }
+
+    #[test]
+    fn a_match_inside_a_document_keeps_it_in_sight() {
+        let make = || {
+            vec![
+                entry(
+                    Kind::Task,
+                    9,
+                    Some(1),
+                    true,
+                    "Preparar a minuta",
+                    "Documento: A",
+                ),
+                entry(Kind::Document, 1, Some(1), false, "ORG-1 — Pedido", ""),
+            ]
+        };
+        let found = arrange(make(), "minuta");
+        let order: Vec<(i64, bool)> = found.iter().map(|(e, n)| (e.target.id, *n)).collect();
+        assert_eq!(order, vec![(1, false), (9, true)]);
+        assert_eq!(arrange(make(), "pedido").len(), 2);
+        assert!(arrange(make(), "nada disso").is_empty());
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn the_notice_is_one_line_high_even_in_a_tall_page() {
+        let ctx = eframe::egui::Context::default();
+        let mut panel = Panel {
+            message: "Itens excluídos há mais de 7 dias serão apagados de vez ao abrir o Ponte e uma vez por dia.".into(),
+            ..Panel::default()
+        };
+        let mut height = f32::MAX;
+        let input = eframe::egui::RawInput {
+            screen_rect: Some(eframe::egui::Rect::from_min_size(
+                eframe::egui::Pos2::ZERO,
+                eframe::egui::vec2(1400.0, 1900.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            eframe::egui::CentralPanel::default().show(ui, |ui| {
+                let top = ui.cursor().min.y;
+                panel.message_line(ui);
+                height = ui.cursor().min.y - top;
+            });
+        });
+        output.textures_delta.clear();
+        assert!(height > 20.0 && height < 60.0, "height {height}");
     }
 }

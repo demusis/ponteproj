@@ -731,6 +731,177 @@ fn templates(store: &mut Store) -> Result<()> {
     Ok(())
 }
 
+/// Conflicts and Lixeira items for the pictures of "Edições em conflito" and
+/// of the Lixeira: an ordinary conflict, two about the same task and one
+/// whose document is in the Lixeira, plus a few items of different kinds in
+/// the Lixeira. Run once, after `seed`; does nothing when already done.
+pub fn conflicts_scenario(store: &mut Store) -> Result<()> {
+    use crate::intranet::{IntranetMutation, SyncConflict};
+    use crate::trash::{Kind, Target};
+    if !store.list_sync_conflicts()?.is_empty() {
+        return Ok(());
+    }
+    let find = |store: &Store, title: &str| -> Result<Task> {
+        store
+            .list_tasks()?
+            .into_iter()
+            .find(|t| t.title == title)
+            .with_context(|| format!("tarefa de exemplo {title:?}"))
+    };
+    let conflict =
+        |actor: &str, label: &str, task: &Task, base: &Task, summary: String, minutes_ago: i64| {
+            SyncConflict {
+                id: 0,
+                created_at: (Utc::now() - Duration::minutes(minutes_ago)).to_rfc3339(),
+                actor: actor.into(),
+                item_label: label.into(),
+                local_summary: summary,
+                host_summary: String::new(),
+                reason: "Conflito de edição simultânea".into(),
+                mutation: IntranetMutation::SaveTask {
+                    task: task.clone(),
+                    expected_version: None,
+                },
+                base: Some(IntranetMutation::SaveTask {
+                    task: base.clone(),
+                    expected_version: None,
+                }),
+                unresolved: false,
+            }
+        };
+    let folder = r"[da pasta C:\Exemplo\Pasta\ponte-sync.ponte] ";
+
+    // 1. Changed on both sides, in different fields.
+    let current = find(store, "Confirmar disponibilidade do auditório")?;
+    let mut base = current.clone();
+    base.assignee = "Servidor A".into();
+    base.status = "pendente".into();
+    let mut mine = base.clone();
+    mine.title = "Confirmar disponibilidade do auditório e do som".into();
+    mine.status = "em analise".into();
+    let ordinary = conflict(
+        "Servidor A",
+        &format!("Tarefa #{}: {}", mine.id, mine.title),
+        &mine,
+        &base,
+        String::new(),
+        95,
+    );
+
+    // 2. The same task changed twice on the other device.
+    let current = find(store, "Arquivar o pedido de informações sobre escala")?;
+    let mut done = current.clone();
+    done.status = "concluida".into();
+    let mut reopened = current.clone();
+    reopened.status = "pendente".into();
+    let first = conflict(
+        "Celular de Servidor A",
+        &format!("{folder}Tarefa #{}: {}", done.id, done.title),
+        &done,
+        &current,
+        String::new(),
+        40,
+    );
+    let second = conflict(
+        "Celular de Servidor A",
+        &format!("{folder}Tarefa #{}: {}", reopened.id, reopened.title),
+        &reopened,
+        &done,
+        String::new(),
+        38,
+    );
+
+    // 3. A task whose document went to the Lixeira.
+    let trashed = capture(
+        "ORG-OFI-2026/00512",
+        "Ofício",
+        "Pedido de manutenção de equipamentos",
+        "Seção de Transportes",
+        12,
+        "Solicita a manutenção preventiva dos equipamentos de rádio do Gabinete.",
+        &[],
+    );
+    let trashed_doc = store.import_capture(&trashed)?.document_id;
+    let triage = store
+        .list_tasks()?
+        .into_iter()
+        .find(|t| t.document_id == Some(trashed_doc))
+        .context("tarefa do documento de exemplo")?;
+    let mut changed = triage.clone();
+    changed.status = "concluida".into();
+    let blocked = conflict(
+        "Servidor A",
+        &format!("Tarefa #{}: {}", changed.id, changed.title),
+        &changed,
+        &triage,
+        String::new(),
+        20,
+    );
+    // A task of that document, trashed first: it shows under the document.
+    let minuta = shape(
+        Task::new(trashed_doc),
+        "Preparar a minuta de resposta",
+        "responder",
+        "pendente",
+        "normal",
+        None,
+        "",
+        "",
+    );
+    let minuta_id = store.save_task(&minuta)?;
+    store.trash_item(Target {
+        kind: Kind::Task,
+        id: minuta_id,
+    })?;
+    store.trash_item(Target {
+        kind: Kind::Document,
+        id: trashed_doc,
+    })?;
+
+    // A task and an attachment in the Lixeira by themselves.
+    let loose = shape(
+        Task::new(
+            store
+                .list_documents("")?
+                .into_iter()
+                .find(|d| d.document_number == "ORG-OFI-2026/00377")
+                .map(|d| d.id)
+                .context("documento de exemplo")?,
+        ),
+        "Responder ao Setor Jurídico sobre a escala",
+        "responder",
+        "pendente",
+        "normal",
+        None,
+        "Servidor B",
+        "",
+    );
+    let loose_id = store.save_task(&loose)?;
+    store.trash_item(Target {
+        kind: Kind::Task,
+        id: loose_id,
+    })?;
+    let vehicles = store
+        .list_documents("")?
+        .into_iter()
+        .find(|d| d.document_number == "ORG-OFI-2026/00398")
+        .map(|d| d.id)
+        .context("documento de exemplo")?;
+    let attachment = store.add_attachment(
+        crate::attachments::Owner::Document(vehicles),
+        "planilha-de-veiculos.txt",
+        "Rascunho da distribuição",
+        b"Veiculos por unidade, primeiro trimestre.",
+    )?;
+    store.trash_item(Target {
+        kind: Kind::Attachment,
+        id: attachment,
+    })?;
+
+    store.shots_insert_conflicts(&[ordinary, first, second, blocked])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

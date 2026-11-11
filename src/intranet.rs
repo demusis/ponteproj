@@ -3997,6 +3997,969 @@ impl Store {
     }
 }
 
+/// Where an editing conflict came from, read from how it was recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictOrigin {
+    /// A change that came in another folder's copy ("[da pasta …]").
+    Folder,
+    /// A change made on this computer: refused when it was sent, or found
+    /// again in this computer's own last written copy ("[deste computador]").
+    ThisComputer,
+}
+
+impl ConflictOrigin {
+    pub fn of(item_label: &str) -> Self {
+        if item_label.starts_with("[da pasta ") {
+            Self::Folder
+        } else {
+            Self::ThisComputer
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    /// The target is in the Lixeira: the library refuses changes to it.
+    Trashed,
+    /// The target is no longer in the library.
+    Missing,
+    /// A restoration whose document is still in the Lixeira: it would fail
+    /// until the document is restored first.
+    ParentTrashed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockedItem {
+    Document,
+    Task,
+}
+
+/// Why neither "Combinar" nor "Usar só a minha versão" can work.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConflictBlock {
+    pub kind: BlockKind,
+    pub item: BlockedItem,
+    /// "ORG-… — título" of the document, the title of the task (may be empty).
+    pub name: String,
+    /// When it went to the Lixeira (RFC 3339).
+    pub deleted_at: Option<String>,
+}
+
+impl ConflictBlock {
+    /// The Lixeira is where the person can fix it.
+    pub fn can_open_trash(&self) -> bool {
+        matches!(self.kind, BlockKind::Trashed | BlockKind::ParentTrashed)
+    }
+}
+
+/// What an editing conflict is about, in the person's words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConflictInfo {
+    /// The id of the conflict this describes.
+    pub id: i64,
+    /// "Tarefa: Triar documento", "Nota do documento", …
+    pub title: String,
+    /// Conflicts with the same key are a series: same kind of change, same
+    /// item, same origin and same device, so the last one is the final state.
+    pub group_key: Option<String>,
+    /// The item alone ("task:14"): conflicts about it that are not a series
+    /// are shown next to each other, never merged into one.
+    pub item_key: Option<String>,
+    /// When the conflict was recorded (RFC 3339): the order inside a series.
+    pub created_at: String,
+    /// "Documento: ORG-… — título", "Tarefa sem documento" or empty.
+    pub document_line: String,
+    /// "desta tarefa", "desta nota"… for sentences.
+    pub noun: &'static str,
+    pub origin: ConflictOrigin,
+    pub block: Option<ConflictBlock>,
+    /// The library holds the same thing the change carries, field by field
+    /// and in everything else the change carries: nothing to choose.
+    pub equal: bool,
+    /// A translation of numbers is pending: nothing about the item can be
+    /// looked up or decided until the next synchronization finishes.
+    pub waiting_sync: bool,
+    /// The library could not be read to check the item: no shortcut offered.
+    pub unchecked: bool,
+}
+
+/// What a mutation touches, before looking anything up in the library.
+struct ConflictSubject {
+    title: String,
+    key: Option<String>,
+    noun: &'static str,
+    /// Documents shown in the "Documento:" line (and checked).
+    docs: Vec<i64>,
+    /// Documents only checked (where a relink is going).
+    also_docs: Vec<i64>,
+    task: Option<i64>,
+    /// A task: with no document it says "Tarefa sem documento".
+    taskish: bool,
+    /// Trashing/restoring/purging: a target in the Lixeira is expected.
+    lenient: bool,
+    /// Restoring a task: its document must not be in the Lixeira.
+    restore_under_document: bool,
+}
+
+/// `dd/mm/aaaa` of an RFC 3339 instant, in local time.
+fn day_of(text: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .map(|date| {
+            date.with_timezone(&chrono::Local)
+                .format("%d/%m/%Y")
+                .to_string()
+        })
+        .unwrap_or_else(|_| text.to_owned())
+}
+
+/// The sentence shown on a card whose target is in the Lixeira or gone.
+pub fn block_note(block: &ConflictBlock, noun: &str) -> String {
+    let named = |text: &str| {
+        if text.is_empty() {
+            String::new()
+        } else {
+            format!(" ({text})")
+        }
+    };
+    match (block.kind, block.item) {
+        (BlockKind::Trashed, BlockedItem::Document) => format!(
+            "O documento {noun} está na Lixeira{}{}. Para manter esta alteração, restaure o documento em Ajustes ▸ Lixeira e volte aqui. Para apenas encerrar este aviso, use Dispensar o aviso.",
+            named(&block.name),
+            block
+                .deleted_at
+                .as_deref()
+                .map(|at| format!(", excluído em {}", day_of(at)))
+                .unwrap_or_default()
+        ),
+        (BlockKind::Trashed, BlockedItem::Task) => format!(
+            "Esta tarefa está na Lixeira{}{}. Para manter esta alteração, restaure a tarefa em Ajustes ▸ Lixeira e volte aqui. Para apenas encerrar este aviso, use Dispensar o aviso.",
+            named(&block.name),
+            block
+                .deleted_at
+                .as_deref()
+                .map(|at| format!(", excluída em {}", day_of(at)))
+                .unwrap_or_default()
+        ),
+        (BlockKind::Missing, BlockedItem::Document) => format!(
+            "O documento {noun} não existe mais no acervo, então a alteração não pode ser aplicada. Para encerrar este aviso, use Dispensar o aviso."
+        ),
+        (BlockKind::Missing, BlockedItem::Task) => {
+            "Esta tarefa não existe mais no acervo, então a alteração não pode ser aplicada. Para encerrar este aviso, use Dispensar o aviso."
+                .to_owned()
+        }
+        (BlockKind::ParentTrashed, _) => format!(
+            "O documento {noun}{}{} também está na Lixeira, então esta restauração não pode ser feita agora. Restaure primeiro o documento em Ajustes ▸ Lixeira e volte aqui. Para apenas encerrar este aviso, use Dispensar o aviso.",
+            named(&block.name),
+            block
+                .deleted_at
+                .as_deref()
+                .map(|at| format!(", excluído em {}", day_of(at)))
+                .unwrap_or_default()
+        ),
+    }
+}
+
+/// The words of a conflict card: they name the other side as it really is.
+#[derive(Clone, Copy, Debug)]
+pub struct ConflictWords {
+    shared: bool,
+    foreign: bool,
+}
+
+impl ConflictWords {
+    pub fn new(mode: IntranetMode, origin: ConflictOrigin) -> Self {
+        let shared = mode == IntranetMode::SharedFolder;
+        Self {
+            shared,
+            foreign: shared && origin == ConflictOrigin::Folder,
+        }
+    }
+    /// The sentence under the heading of the card.
+    pub fn intro(mode: IntranetMode, count: usize) -> String {
+        let counted = plural(count, "conflito de edição", "conflitos de edição");
+        if mode == IntranetMode::SharedFolder {
+            format!("{counted}: o mesmo item foi alterado em dois aparelhos e o Ponte não conseguiu juntar as alterações sozinho.")
+        } else {
+            format!("{counted}: você alterou o item sem conexão e ele também foi alterado no computador principal.")
+        }
+    }
+    pub fn other_column(&self) -> &'static str {
+        if self.shared {
+            "Na pasta compartilhada"
+        } else {
+            "No computador principal"
+        }
+    }
+    /// "Alterado" column of a field: the raw words say "computador
+    /// principal" and "você".
+    pub fn changed_by(&self, raw: &str) -> String {
+        match raw {
+            "só no computador principal" if self.shared => "só na pasta".to_owned(),
+            "só por você" if self.foreign => "só pelo outro aparelho".to_owned(),
+            other => other.to_owned(),
+        }
+    }
+    pub fn mine_column(&self) -> &'static str {
+        if self.foreign {
+            "Versão do outro aparelho"
+        } else {
+            "Sua versão"
+        }
+    }
+    pub fn keep_mine_button(&self) -> &'static str {
+        if self.foreign {
+            "Usar só a versão do outro aparelho…"
+        } else {
+            "Usar só a minha versão…"
+        }
+    }
+    pub fn keep_other_button(&self) -> &'static str {
+        if self.shared {
+            "Usar só a versão da pasta…"
+        } else {
+            "Usar só a do computador principal…"
+        }
+    }
+    fn mine(&self) -> &'static str {
+        if self.foreign {
+            "a versão do outro aparelho"
+        } else {
+            "a sua versão"
+        }
+    }
+    pub fn merge_hover(&self) -> String {
+        format!(
+            "Cada campo fica com o lado que o alterou. Textos alterados dos dois lados são juntados; nos demais campos alterados dos dois lados, {} prevalece e o valor {} fica registrado no próprio item.",
+            self.mine(),
+            if self.shared { "da pasta" } else { "do computador principal" }
+        )
+    }
+    pub fn keep_mine_hover(&self) -> String {
+        format!(
+            "Substitui a versão {} por {} em todos os campos.",
+            if self.shared {
+                "da pasta compartilhada"
+            } else {
+                "do computador principal"
+            },
+            self.mine()
+        )
+    }
+    pub fn keep_other_hover(&self) -> &'static str {
+        match (self.shared, self.foreign) {
+            (false, _) => "Descarta a sua alteração feita sem conexão.",
+            (true, false) => "Descarta a sua alteração e mantém o que está na pasta compartilhada.",
+            (true, true) => {
+                "Descarta a alteração do outro aparelho e mantém o que está na pasta compartilhada."
+            }
+        }
+    }
+    /// What the person is asked to confirm. `one_side` and `both_sides`
+    /// count the fields for "Combinar".
+    pub fn confirmation(
+        &self,
+        resolution: ConflictResolution,
+        one_side: usize,
+        both_sides: usize,
+    ) -> String {
+        let other_of = if self.shared {
+            "da pasta"
+        } else {
+            "do computador principal"
+        };
+        match resolution {
+            ConflictResolution::Merge if both_sides > 0 => format!(
+                "Combinar: os campos alterados só de um lado ficam com esse lado ({one_side}); os alterados dos dois lados ({both_sides}) ficam com {} (textos são juntados) e o valor {other_of} é anotado no item.",
+                self.mine()
+            ),
+            ConflictResolution::Merge => {
+                "Combinar: cada campo fica com o lado que o alterou. Nenhum campo foi alterado dos dois lados.".to_owned()
+            }
+            ConflictResolution::KeepLocal => format!(
+                "Usar só {}: o que está {} será substituído.",
+                if self.foreign { "a versão do outro aparelho" } else { "a minha versão" },
+                if self.shared { "na pasta compartilhada" } else { "no computador principal" }
+            ),
+            ConflictResolution::KeepHost => {
+                if self.shared {
+                    format!(
+                        "Usar só a versão da pasta: {} será descartada.",
+                        if self.foreign { "a alteração do outro aparelho" } else { "a sua alteração" }
+                    )
+                } else {
+                    "Usar só a do computador principal: a sua alteração será descartada.".to_owned()
+                }
+            }
+        }
+    }
+    /// The notice after a resolution went through.
+    pub fn done(&self, resolution: ConflictResolution) -> &'static str {
+        match resolution {
+            ConflictResolution::Merge => "Conflito resolvido: as duas versões foram combinadas.",
+            ConflictResolution::KeepLocal if self.foreign => {
+                "Conflito resolvido: a versão do outro aparelho foi aplicada."
+            }
+            ConflictResolution::KeepLocal => "Conflito resolvido: a sua versão foi aplicada.",
+            ConflictResolution::KeepHost if self.shared => {
+                "Conflito resolvido: a versão da pasta compartilhada foi mantida."
+            }
+            ConflictResolution::KeepHost => {
+                "Conflito resolvido: a versão do computador principal foi mantida."
+            }
+        }
+    }
+}
+
+/// When a conflict was recorded, for ordering (RFC 3339 first).
+fn recorded_order(a: &ConflictInfo, b: &ConflictInfo) -> std::cmp::Ordering {
+    let parse = |text: &str| chrono::DateTime::parse_from_rfc3339(text).ok();
+    match (parse(&a.created_at), parse(&b.created_at)) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        _ => a.created_at.cmp(&b.created_at),
+    }
+    .then(a.id.cmp(&b.id))
+}
+
+/// Groups conflicts into series: indexes into `infos`, each series ordered
+/// by when the conflicts were recorded (then by id). Only conflicts with the
+/// same `group_key` (same kind of change, item, origin and device) share a
+/// series; everything else stays alone. Series about the same item are
+/// placed next to each other.
+pub fn group_conflicts(infos: &[ConflictInfo]) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (index, info) in infos.iter().enumerate() {
+        let same = info.group_key.as_ref().and_then(|key| {
+            groups
+                .iter()
+                .position(|g| infos[g[0]].group_key.as_ref() == Some(key))
+        });
+        match same {
+            Some(at) => groups[at].push(index),
+            None => groups.push(vec![index]),
+        }
+    }
+    for group in &mut groups {
+        group.sort_by(|a, b| recorded_order(&infos[*a], &infos[*b]));
+    }
+    let mut placed = vec![false; groups.len()];
+    let mut out = Vec::with_capacity(groups.len());
+    for i in 0..groups.len() {
+        if placed[i] {
+            continue;
+        }
+        placed[i] = true;
+        out.push(groups[i].clone());
+        if let Some(key) = &infos[groups[i][0]].item_key {
+            for j in i + 1..groups.len() {
+                if !placed[j] && infos[groups[j][0]].item_key.as_ref() == Some(key) {
+                    placed[j] = true;
+                    out.push(groups[j].clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What the person is told while a translation of numbers is pending.
+pub fn waiting_sync_note(mode: IntranetMode) -> String {
+    let with = if mode == IntranetMode::SharedFolder {
+        "a pasta compartilhada"
+    } else {
+        "o computador principal"
+    };
+    format!("Sincronize primeiro: a sincronização com {with} ainda não terminou e, até lá, o Ponte não consegue identificar este item nem aplicar nenhuma escolha. Use Sincronizar agora e volte aqui.")
+}
+
+/// A sentence for the notice when resolving a conflict fails: it names the
+/// item and says what to do. Unknown causes keep the original text.
+pub fn explain_resolve_error(
+    mode: IntranetMode,
+    info: Option<&ConflictInfo>,
+    error: &str,
+) -> String {
+    let title = info.map(|i| i.title.as_str()).unwrap_or("este item");
+    let head = format!("Não foi possível resolver o conflito de “{title}”.");
+    let noun = info.map(|i| i.noun).unwrap_or("desta alteração");
+    if error.contains("Conflito de edição não encontrado") {
+        return "Este aviso já foi resolvido (talvez em outra janela). A lista foi atualizada."
+            .to_owned();
+    }
+    if error.contains("Conflito de edição simultânea") {
+        return format!("{head} O item mudou de novo enquanto este aviso estava aberto. Confira as diferenças atualizadas e escolha de novo.");
+    }
+    if error.contains("ainda não terminou") {
+        return if mode == IntranetMode::SharedFolder {
+            format!("{head} A sincronização com a pasta compartilhada ainda não terminou. Sincronize e tente de novo.")
+        } else {
+            format!("{head} A sincronização com o computador principal ainda não terminou. Sincronize e tente de novo.")
+        };
+    }
+    let about_the_item = error.contains("na lixeira") || error.contains("não encontrad");
+    if about_the_item {
+        if let Some(block) = info.and_then(|i| i.block.as_ref()) {
+            return format!("{head} {}", block_note(block, noun));
+        }
+        return if error.contains("na lixeira") {
+            format!("{head} O item desta alteração está na Lixeira. Restaure-o em Ajustes ▸ Lixeira e volte aqui, ou use Dispensar o aviso.")
+        } else {
+            format!("{head} O item desta alteração não existe mais no acervo. Para encerrar este aviso, use Dispensar o aviso.")
+        };
+    }
+    if error.starts_with("A alteração se refere a um item criado sem conexão") {
+        return format!("{head} Esta alteração depende de um item criado sem conexão que não chegou ao acervo. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e use Dispensar o aviso.");
+    }
+    format!("{head} Tente de novo; se continuar, use Dispensar o aviso. Detalhe: {error}")
+}
+
+/// What changed in one side's edit relative to its starting point, short:
+/// "Situação: Concluída | Prazo: 12/11/2026".
+fn change_summary(conflict: &SyncConflict) -> Option<String> {
+    let (now, before) = match (&conflict.mutation, &conflict.base) {
+        (
+            IntranetMutation::SaveTask { task, .. },
+            Some(IntranetMutation::SaveTask { task: base, .. }),
+        ) => (task_fields(task), task_fields(base)),
+        (
+            IntranetMutation::SaveWorkContext { value, .. },
+            Some(IntranetMutation::SaveWorkContext { value: base, .. }),
+        ) => (context_fields(value), context_fields(base)),
+        (
+            IntranetMutation::SaveSaiopAttendance { attendance, .. },
+            Some(IntranetMutation::SaveSaiopAttendance {
+                attendance: base, ..
+            }),
+        ) => (saiop_fields(attendance), saiop_fields(base)),
+        _ => return None,
+    };
+    let short = |text: &str| -> String {
+        if text.is_empty() {
+            return "(vazio)".to_owned();
+        }
+        let mut cut: String = text.chars().take(60).collect();
+        if text.chars().count() > 60 {
+            cut.push('…');
+        }
+        cut
+    };
+    let parts: Vec<String> = now
+        .iter()
+        .zip(before.iter())
+        .filter(|(n, b)| n.1 != b.1)
+        .map(|(n, _)| format!("{}: {}", n.0, short(&n.1)))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" | "))
+}
+
+impl Store {
+    /// "Situação: Concluída" for the 1st change of a pair of conflicts,
+    /// falling back to the summary recorded with the conflict.
+    pub fn conflict_change_text(&self, conflict: &SyncConflict) -> String {
+        change_summary(conflict).unwrap_or_else(|| conflict.local_summary.clone())
+    }
+
+    fn named_item(&self, kind: &str, id: i64) -> Option<String> {
+        match kind {
+            "document" => self.document_text(id),
+            "task" => self.task_title(id),
+            _ => None,
+        }
+    }
+
+    fn conflict_subject(&self, mutation: &IntranetMutation) -> ConflictSubject {
+        use IntranetMutation as M;
+        let mut s = ConflictSubject {
+            title: String::new(),
+            key: None,
+            noun: "desta alteração",
+            docs: Vec::new(),
+            also_docs: Vec::new(),
+            task: None,
+            taskish: false,
+            lenient: false,
+            restore_under_document: false,
+        };
+        // A task's document as the library has it now, else as the change says.
+        let live_document = |id: i64, fallback: Option<i64>| -> Option<i64> {
+            if matches!(self.task_state(id), Ok(crate::trash::ItemState::Missing)) {
+                fallback
+            } else {
+                self.task_document(id)
+            }
+        };
+        match mutation {
+            M::ImportCapture { .. } | M::ImportBundle { .. } => s.title = mutation_label(mutation),
+            M::SaveNote { document_id, .. } => {
+                s.title = "Nota do documento".into();
+                s.noun = "desta nota";
+                s.docs = vec![*document_id];
+                s.key = Some(format!("note:{document_id}"));
+            }
+            M::SaveDraft {
+                document_id, kind, ..
+            } => {
+                s.title = format!("Minuta: {}", crate::labels::draft_kind(kind));
+                s.noun = "desta minuta";
+                s.docs = vec![*document_id];
+                s.key = Some(format!("draft:{document_id}:{kind}"));
+            }
+            M::SaveAnalysis { document_id, .. } => {
+                s.title = "Análise do documento".into();
+                s.noun = "desta análise";
+                s.docs = vec![*document_id];
+            }
+            M::SaveTask { task, .. } => {
+                s.noun = "desta tarefa";
+                s.taskish = true;
+                if task.id > 0 {
+                    s.title = format!("Tarefa: {}", task.title);
+                    s.task = Some(task.id);
+                    s.key = Some(format!("task:{}", task.id));
+                    s.docs = live_document(task.id, task.document_id)
+                        .into_iter()
+                        .collect();
+                } else {
+                    s.title = format!("Nova tarefa: {}", task.title);
+                    s.docs = task.document_id.into_iter().collect();
+                }
+            }
+            M::RelinkTask {
+                task_id,
+                document_id,
+                ..
+            } => {
+                s.title = match self.task_title(*task_id) {
+                    Some(name) => format!("Troca de documento da tarefa: {name}"),
+                    None => "Troca de documento de uma tarefa".to_owned(),
+                };
+                s.noun = "desta tarefa";
+                s.taskish = true;
+                s.task = Some(*task_id);
+                s.key = Some(format!("task:{task_id}"));
+                s.docs = live_document(*task_id, None).into_iter().collect();
+                s.also_docs = document_id.iter().copied().collect();
+            }
+            M::SaveWorkContext { document_id, .. } => {
+                s.title = "Contexto de trabalho do documento".into();
+                s.noun = "deste contexto de trabalho";
+                s.docs = vec![*document_id];
+                s.key = Some(format!("context:{document_id}"));
+            }
+            M::SavePageText { file_id, page, .. } => {
+                s.title = format!("Texto lido da página {page} de um PDF");
+                s.noun = "deste texto";
+                s.docs = self
+                    .conn
+                    .query_row(
+                        "SELECT c.document_id FROM files f JOIN captures c ON c.id=f.capture_id WHERE f.id=?1",
+                        [file_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .optional()
+                    .ok()
+                    .flatten()
+                    .into_iter()
+                    .collect();
+            }
+            M::AddDocumentLink { source, target, .. } => {
+                s.title = "Vínculo entre documentos".into();
+                s.noun = "deste vínculo";
+                s.docs = vec![*source, *target];
+            }
+            M::SetLinkActive { id, .. } => {
+                s.title = "Situação de um vínculo entre documentos".into();
+                s.noun = "deste vínculo";
+                if let Ok(Some((a, b))) = self
+                    .conn
+                    .query_row(
+                        "SELECT source_id,target_id FROM document_links WHERE id=?1",
+                        [id],
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()
+                {
+                    s.docs = vec![a, b];
+                }
+            }
+            M::TrashItem { kind, id } | M::RestoreItem { kind, id } => {
+                let trash = matches!(mutation, M::TrashItem { .. });
+                let what = crate::labels::item_kind(kind);
+                let name = self
+                    .named_item(kind, *id)
+                    .map(|n| format!(": {n}"))
+                    .unwrap_or_default();
+                s.title = if trash {
+                    format!("Excluir {what}{name}")
+                } else {
+                    format!("Restaurar {what} da Lixeira{name}")
+                };
+                s.lenient = true;
+                match kind.as_str() {
+                    "document" => s.docs = vec![*id],
+                    "task" => {
+                        s.task = Some(*id);
+                        s.taskish = true;
+                        s.restore_under_document = !trash;
+                        s.docs = live_document(*id, None).into_iter().collect();
+                    }
+                    _ => {}
+                }
+            }
+            M::DeleteDocument { id } => {
+                s.title = "Exclusão do documento".into();
+                s.docs = vec![*id];
+                s.lenient = true;
+            }
+            M::SaveSaiopAttendance { attendance, .. } => {
+                s.noun = "deste atendimento";
+                if attendance.id > 0 {
+                    s.title = format!("Atendimento: {}", attendance.reference_raw);
+                    s.key = Some(format!("saiop:{}", attendance.id));
+                } else {
+                    s.title = format!("Novo atendimento: {}", attendance.reference_raw);
+                }
+                s.docs = attendance.document_id.into_iter().collect();
+            }
+            M::ImportSaiopBatch { file_name, .. } => {
+                s.title = format!("Importação da planilha {file_name}");
+            }
+            M::UndoSaiopBatch { .. } => s.title = "Desfazer a importação de uma planilha".into(),
+            M::DeleteSaiopAttendance { id } => {
+                let reference = self
+                    .list_saiop_attendances()
+                    .ok()
+                    .and_then(|all| all.into_iter().find(|a| a.id == *id))
+                    .map(|a| a.reference_raw);
+                s.title = match reference {
+                    Some(reference) => format!("Exclusão do atendimento: {reference}"),
+                    None => "Exclusão de um atendimento".to_owned(),
+                };
+            }
+            M::CreateTaskForSaiop { title, task, .. } => {
+                s.title = format!("Tarefa do atendimento: {title}");
+                s.noun = "desta tarefa";
+                s.taskish = true;
+                s.docs = task
+                    .as_ref()
+                    .and_then(|t| t.document_id)
+                    .into_iter()
+                    .collect();
+            }
+            M::AddAttachment {
+                owner_kind,
+                owner_id,
+                name,
+                ..
+            } => {
+                s.title = format!("Anexo: {name}");
+                s.noun = "deste anexo";
+                match owner_kind.as_str() {
+                    "document" => s.docs = vec![*owner_id],
+                    "task" => {
+                        s.task = Some(*owner_id);
+                        s.taskish = true;
+                        s.docs = live_document(*owner_id, None).into_iter().collect();
+                    }
+                    _ => {}
+                }
+            }
+            M::UpdateAttachment { .. } => s.title = "Descrição de um anexo".into(),
+            M::DeleteAttachment { .. } => s.title = "Exclusão de um anexo".into(),
+            M::PurgeTrash { kind, .. } => {
+                s.title = format!(
+                    "Apagar de vez da Lixeira: {}",
+                    crate::labels::item_kind(kind)
+                );
+                s.lenient = true;
+            }
+            M::SaveTemplate { template, .. } => {
+                s.title = format!("Modelo de trabalho: {}", template.name);
+                s.key = Some(format!("template:{}", template.uid));
+            }
+            M::SetTemplateStatus { .. } => s.title = "Situação de um modelo de trabalho".into(),
+            M::DeleteTemplate { .. } => s.title = "Exclusão de um modelo de trabalho".into(),
+            M::SaveInstructionBlock { block, .. } => {
+                s.title = format!("Instrução: {}", block.name);
+                s.key = Some(format!("block:{}", block.uid));
+            }
+            M::SetBlockStatus { .. } => s.title = "Situação de uma instrução".into(),
+            M::DeleteBlock { .. } => s.title = "Exclusão de uma instrução".into(),
+            M::SaveExample { example, .. } => {
+                s.title = format!("Exemplo: {}", example.title);
+                s.key = Some(format!("example:{}", example.uid));
+            }
+            M::DeleteExample { .. } => s.title = "Exclusão de um exemplo".into(),
+            M::RecordGeneration { record } => {
+                s.title = "Registro de uso da IA".into();
+                s.noun = "deste registro";
+                s.docs = vec![record.document_id];
+            }
+            M::ExtractAttachmentText { .. } => s.title = "Texto lido de um anexo".into(),
+            M::ReviewAttachmentText { .. } => s.title = "Texto conferido de um anexo".into(),
+        }
+        s
+    }
+
+    /// Read-only. A failure to read is an error: it must never look like
+    /// the item being gone.
+    fn conflict_block(&self, s: &ConflictSubject) -> Result<Option<ConflictBlock>> {
+        use crate::trash::ItemState;
+        for doc in s.docs.iter().chain(&s.also_docs) {
+            match self.document_state(*doc)? {
+                ItemState::Missing => {
+                    return Ok(Some(ConflictBlock {
+                        kind: BlockKind::Missing,
+                        item: BlockedItem::Document,
+                        name: String::new(),
+                        deleted_at: None,
+                    }))
+                }
+                ItemState::Trashed { deleted_at } if s.restore_under_document => {
+                    return Ok(Some(ConflictBlock {
+                        kind: BlockKind::ParentTrashed,
+                        item: BlockedItem::Document,
+                        name: self.document_text(*doc).unwrap_or_default(),
+                        deleted_at: Some(deleted_at),
+                    }))
+                }
+                ItemState::Trashed { deleted_at } if !s.lenient => {
+                    return Ok(Some(ConflictBlock {
+                        kind: BlockKind::Trashed,
+                        item: BlockedItem::Document,
+                        name: self.document_text(*doc).unwrap_or_default(),
+                        deleted_at: Some(deleted_at),
+                    }))
+                }
+                _ => {}
+            }
+        }
+        let Some(id) = s.task else {
+            return Ok(None);
+        };
+        Ok(match self.task_state(id)? {
+            ItemState::Missing => Some(ConflictBlock {
+                kind: BlockKind::Missing,
+                item: BlockedItem::Task,
+                name: String::new(),
+                deleted_at: None,
+            }),
+            ItemState::Trashed { deleted_at } if !s.lenient => Some(ConflictBlock {
+                kind: BlockKind::Trashed,
+                item: BlockedItem::Task,
+                name: self.task_title(id).unwrap_or_default(),
+                deleted_at: Some(deleted_at),
+            }),
+            _ => None,
+        })
+    }
+
+    /// True only when the library holds exactly what the change carries:
+    /// the row exists, the id is a real one and everything the change
+    /// carries (not only the fields shown) is equal.
+    fn conflict_equal(&self, conflict: &SyncConflict) -> bool {
+        fn same<T: Serialize>(a: &T, b: &T) -> bool {
+            matches!((serde_json::to_value(a), serde_json::to_value(b)), (Ok(x), Ok(y)) if x == y)
+        }
+        match &conflict.mutation {
+            IntranetMutation::SaveNote {
+                document_id, note, ..
+            } => self
+                .load_document(*document_id)
+                .map(|d| d.note == *note)
+                .unwrap_or(false),
+            IntranetMutation::SaveTask { task, .. } if task.id > 0 => self
+                .list_tasks()
+                .ok()
+                .and_then(|all| all.into_iter().find(|t| t.id == task.id))
+                .is_some_and(|host| same(&host, task)),
+            IntranetMutation::SaveWorkContext {
+                document_id, value, ..
+            } => self
+                .load_work_context(*document_id)
+                .map(|host| host == *value)
+                .unwrap_or(false),
+            IntranetMutation::SaveSaiopAttendance { attendance, .. } if attendance.id > 0 => self
+                .list_saiop_attendances()
+                .ok()
+                .and_then(|all| all.into_iter().find(|a| a.id == attendance.id))
+                .is_some_and(|host| same(&host, attendance)),
+            _ => false,
+        }
+    }
+
+    /// What the conflict is about, in the person's words, looked up in the
+    /// library now. Read only. While a translation of numbers is pending
+    /// nothing is looked up (the numbers still mean the team's, not this
+    /// library's) and no shortcut is offered.
+    pub fn conflict_info(&self, conflict: &SyncConflict) -> ConflictInfo {
+        let origin = ConflictOrigin::of(&conflict.item_label);
+        let pending = crate::idmap::has_pending(&self.conn);
+        if !matches!(pending, Ok(false)) {
+            return ConflictInfo {
+                id: conflict.id,
+                title: "Alteração aguardando a sincronização".to_owned(),
+                group_key: None,
+                item_key: None,
+                created_at: conflict.created_at.clone(),
+                document_line: String::new(),
+                noun: "desta alteração",
+                origin,
+                block: None,
+                equal: false,
+                waiting_sync: true,
+                unchecked: false,
+            };
+        }
+        let mut subject = self.conflict_subject(&conflict.mutation);
+        if conflict.unresolved {
+            // Its numbers mean nothing in this library: nothing is looked up.
+            subject.docs.clear();
+            subject.also_docs.clear();
+            subject.task = None;
+            subject.key = None;
+        }
+        let document_line = match subject.docs.len() {
+            0 if subject.taskish && !conflict.unresolved => "Tarefa sem documento".to_owned(),
+            0 => String::new(),
+            1 => format!(
+                "Documento: {}",
+                self.document_text(subject.docs[0])
+                    .unwrap_or_else(|| "(não está mais no acervo)".to_owned())
+            ),
+            _ => format!(
+                "Documentos: {}",
+                subject
+                    .docs
+                    .iter()
+                    .map(|id| {
+                        self.document_text(*id)
+                            .unwrap_or_else(|| "(não está mais no acervo)".to_owned())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        let mut unchecked = false;
+        let block = if conflict.unresolved {
+            None
+        } else {
+            match self.conflict_block(&subject) {
+                Ok(block) => block,
+                Err(_) => {
+                    unchecked = true;
+                    None
+                }
+            }
+        };
+        let equal =
+            !conflict.unresolved && !unchecked && block.is_none() && self.conflict_equal(conflict);
+        // A series: the same kind of change, to the same item, from the same
+        // origin and device. Anything else is never treated as "the last one".
+        let group_key = subject.key.as_ref().map(|key| {
+            format!(
+                "{key}|{:?}|{origin:?}|{}",
+                std::mem::discriminant(&conflict.mutation),
+                conflict.actor.trim()
+            )
+        });
+        ConflictInfo {
+            id: conflict.id,
+            title: subject.title,
+            group_key,
+            item_key: subject.key,
+            created_at: conflict.created_at.clone(),
+            document_line,
+            noun: subject.noun,
+            origin,
+            block,
+            equal,
+            waiting_sync: false,
+            unchecked,
+        }
+    }
+
+    /// The conflicts with everything the card shows, computed once per change
+    /// of the library (memoized like the other lists).
+    pub fn conflict_views(&self) -> Result<std::sync::Arc<Vec<ConflictView>>> {
+        self.cached("conflict_views", || {
+            let views = self
+                .list_sync_conflicts()?
+                .into_iter()
+                .map(|conflict| {
+                    let info = self.conflict_info(&conflict);
+                    // While a translation is pending the numbers do not match
+                    // this library: nothing is compared.
+                    let differences = if info.waiting_sync {
+                        Vec::new()
+                    } else {
+                        self.conflict_differences(&conflict)
+                    };
+                    let change_text = self.conflict_change_text(&conflict);
+                    ConflictView {
+                        conflict,
+                        info,
+                        differences,
+                        change_text,
+                    }
+                })
+                .collect();
+            Ok(std::sync::Arc::new(views))
+        })
+    }
+
+    /// Dismisses the earlier conflicts of a series, all or none, keeping the
+    /// library as it is (what "usar só a versão da pasta / do computador
+    /// principal" does to the data). Every id must still exist, belong to the
+    /// same series as `last_id` and be older than it; otherwise nothing is
+    /// dismissed. Returns how many were dismissed.
+    pub fn dismiss_earlier_conflicts(&mut self, last_id: i64, older: &[i64]) -> Result<usize> {
+        const CHANGED: &str = "A lista de conflitos mudou. Confira e tente de novo.";
+        let unique: std::collections::BTreeSet<i64> = older.iter().copied().collect();
+        ensure!(
+            !older.is_empty() && unique.len() == older.len() && !unique.contains(&last_id),
+            CHANGED
+        );
+        let all = self.list_sync_conflicts()?;
+        let describe = |id: i64| -> Option<ConflictInfo> {
+            all.iter()
+                .find(|c| c.id == id)
+                .map(|c| self.conflict_info(c))
+        };
+        let last = describe(last_id).context(CHANGED)?;
+        let key = last.group_key.clone().context(CHANGED)?;
+        for id in older {
+            let info = describe(*id).context(CHANGED)?;
+            ensure!(
+                info.group_key.as_ref() == Some(&key)
+                    && recorded_order(&info, &last) == std::cmp::Ordering::Less,
+                CHANGED
+            );
+        }
+        let tx = self.conn.transaction()?;
+        for id in older {
+            tx.execute("DELETE FROM offline_conflicts WHERE id=?1", params![id])?;
+        }
+        tx.commit()?;
+        Ok(older.len())
+    }
+
+    /// Development only: records conflicts the way an exchange does.
+    #[cfg(any(test, feature = "shots"))]
+    pub fn shots_insert_conflicts(&mut self, conflicts: &[SyncConflict]) -> Result<()> {
+        self.keep_conflicts(conflicts)
+    }
+}
+
+/// A conflict with what its card shows, memoized by the library.
+#[derive(Clone, Debug)]
+pub struct ConflictView {
+    pub conflict: SyncConflict,
+    pub info: ConflictInfo,
+    pub differences: Vec<FieldDiff>,
+    /// "Situação: Concluída": what this edit changed.
+    pub change_text: String,
+}
+
 /// `(value, changed_on_both_sides)` for a scalar field in a three-way merge.
 fn pick<T: PartialEq + Clone>(base: Option<&T>, host: &T, local: &T) -> (T, bool) {
     if local == host {
@@ -5264,6 +6227,23 @@ pub struct IntranetPanel {
     force_next_sync: bool,
     manual_sync: bool,
     pending_resolution: Option<(i64, ConflictResolution)>,
+    /// The state of that card when the choice was made.
+    pending_card: Option<CardKind>,
+    /// The last conflict of a series (and its size) whose earlier ones the
+    /// person is about to dismiss, waiting for the confirmation.
+    pending_dismiss: Option<(i64, usize)>,
+    /// A card asked to open the Lixeira; the app takes it (`take_open_trash`).
+    open_trash: bool,
+    /// Development only: the way of working to word the cards for, and
+    /// whether the page shows only the conflicts.
+    #[cfg(feature = "shots")]
+    shots_mode: Option<IntranetMode>,
+    #[cfg(feature = "shots")]
+    shots_conflicts: bool,
+    /// Development only: conflicts left out of the picture, so a tall card
+    /// can be pictured in parts.
+    #[cfg(feature = "shots")]
+    shots_skip: usize,
     repaint: Option<egui::Context>,
     connection_code_input: String,
     /// Result of "Testar conexão": the address tested, success, text.
@@ -5294,6 +6274,11 @@ impl IntranetPanel {
         if self.repaint.is_none() {
             self.repaint = Some(ctx.clone());
         }
+    }
+
+    /// A conflict card asked for the Lixeira (Ajustes ▸ Lixeira): true once.
+    pub fn take_open_trash(&mut self) -> bool {
+        std::mem::take(&mut self.open_trash)
     }
 
     pub fn syncing(&self) -> bool {
@@ -6128,6 +7113,12 @@ impl IntranetPanel {
         }
         let mut refresh_needed = false;
 
+        #[cfg(feature = "shots")]
+        if self.shots_conflicts {
+            self.conflicts_card(ui, store, db_path, &mut refresh_needed);
+            return refresh_needed;
+        }
+
         self.state_card(ui, store, db_path, &mut refresh_needed);
         let dirty = self.has_unsaved_draft(store);
 
@@ -6518,24 +7509,25 @@ impl IntranetPanel {
                 .inner_margin(egui::Margin::symmetric(12, 8))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if widgets::icon_button(ui, icon::CLOSE, "Fechar o aviso").clicked() {
-                            close = true;
-                        }
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(if self.error {
-                                    icon::ERROR
-                                } else {
-                                    icon::INFO
-                                })
+                    // `horizontal` fixes the row to its content's height.
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(if self.error { icon::ERROR } else { icon::INFO })
                                 .size(18.0)
                                 .color(fg),
-                            );
+                        );
+                        let text_width = (ui.available_width() - 36.0).max(80.0);
+                        ui.scope(|ui| {
+                            ui.set_max_width(text_width);
                             ui.add(
                                 egui::Label::new(egui::RichText::new(&self.message).color(fg))
                                     .wrap(),
                             );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if widgets::icon_button(ui, icon::CLOSE, "Fechar o aviso").clicked() {
+                                close = true;
+                            }
                         });
                     });
                 });
@@ -6545,163 +7537,7 @@ impl IntranetPanel {
         }
 
         let outbox = store.list_offline_outbox().unwrap_or_default();
-        let conflicts = store.list_sync_conflicts().unwrap_or_default();
-
-        if !conflicts.is_empty() {
-            ui.add_space(theme::S3);
-            let mut resolution_action: Option<(i64, ConflictResolution)> = None;
-            widgets::card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    widgets::section(ui, "Edições em conflito");
-                    widgets::pill(ui, conflicts.len().to_string(), Tone::Danger);
-                });
-                ui.add_space(theme::S1);
-                ui.label(format!(
-                    "{}: você alterou o item sem conexão e ele também foi alterado no computador principal.",
-                    plural(conflicts.len(), "conflito de edição", "conflitos de edição")
-                ));
-                ui.add_space(theme::S2);
-                // No scroll area of its own: inside the scrolling page it was
-                // squeezed to a sliver. The page scrolls; every conflict is
-                // shown whole.
-                ui.vertical(|ui| {
-                        for conflict in &conflicts {
-                            let differences = store.conflict_differences(conflict);
-                            let both_sides = differences.iter().filter(|d| d.changed_by() == "pelos dois lados").count();
-                            egui::Frame::new()
-                                .fill(theme::c().sunken)
-                                .corner_radius(egui::CornerRadius::same(theme::RADIUS))
-                                .inner_margin(egui::Margin::same(12))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.label(
-                                        egui::RichText::new(format!("Conflito: {}", conflict.item_label))
-                                            .font(theme::font_strong(theme::SIZE_BODY)),
-                                    );
-                                    widgets::small_muted(ui, format!(
-                                        "Sua alteração de {} ({})",
-                                        crate::labels::datetime(&conflict.created_at),
-                                        conflict.actor
-                                    ));
-                                    ui.add_space(theme::S2);
-                                    if differences.is_empty() {
-                                        ui.label("As duas versões já coincidem campo a campo.");
-                                        widgets::small_muted(ui, format!("Resumo da sua versão: {}", conflict.local_summary));
-                                    } else {
-                                        egui::Grid::new(("conflict-diff", conflict.id))
-                                            .striped(true)
-                                            .num_columns(4)
-                                            .spacing([theme::S3, theme::S1])
-                                            .max_col_width(220.0)
-                                            .show(ui, |ui| {
-                                                for head in ["Campo", "No computador principal", "Sua versão", "Alterado"] {
-                                                    widgets::field_label(ui, head);
-                                                }
-                                                ui.end_row();
-                                                for d in &differences {
-                                                    ui.label(egui::RichText::new(&d.label).font(theme::font_strong(theme::SIZE_BODY)));
-                                                    ui.add(egui::Label::new(if d.host.is_empty() { "(vazio)" } else { &d.host }).wrap());
-                                                    ui.add(egui::Label::new(if d.local.is_empty() { "(vazio)" } else { &d.local }).wrap());
-                                                    widgets::small_muted(ui, d.changed_by());
-                                                    ui.end_row();
-                                                }
-                                            });
-                                    }
-                                    ui.add_space(theme::S2);
-                                    let pending_here = self
-                                        .pending_resolution
-                                        .filter(|(id, _)| *id == conflict.id);
-                                    match pending_here {
-                                        None if conflict.unresolved => {
-                                            widgets::small_muted(ui, "Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.");
-                                            ui.add_space(theme::S1);
-                                            if ui.add(widgets::secondary("Dispensar o aviso")).clicked() {
-                                                self.pending_resolution = Some((conflict.id, ConflictResolution::KeepHost));
-                                            }
-                                        }
-                                        None => {
-                                            ui.horizontal_wrapped(|ui| {
-                                                if ui
-                                                    .add(widgets::secondary("Combinar as duas versões…"))
-                                                    .on_hover_text("Cada campo fica com o lado que o alterou. Textos alterados dos dois lados são juntados; nos demais campos alterados dos dois lados, sua versão prevalece e o valor do computador principal fica registrado no próprio item.")
-                                                    .clicked()
-                                                {
-                                                    self.pending_resolution = Some((conflict.id, ConflictResolution::Merge));
-                                                }
-                                                if ui
-                                                    .add(widgets::secondary("Usar só a minha versão…"))
-                                                    .on_hover_text("Substitui a versão do computador principal pela sua em todos os campos.")
-                                                    .clicked()
-                                                {
-                                                    self.pending_resolution = Some((conflict.id, ConflictResolution::KeepLocal));
-                                                }
-                                                if ui
-                                                    .add(widgets::secondary("Usar só a do computador principal…"))
-                                                    .on_hover_text("Descarta a sua alteração feita sem conexão.")
-                                                    .clicked()
-                                                {
-                                                    self.pending_resolution = Some((conflict.id, ConflictResolution::KeepHost));
-                                                }
-                                            });
-                                        }
-                                        Some((_, resolution)) => {
-                                            let description = match resolution {
-                                                ConflictResolution::Merge => {
-                                                    if both_sides > 0 {
-                                                        format!("Combinar: os campos alterados só de um lado ficam com esse lado ({}); os alterados dos dois lados ({both_sides}) ficam com a sua versão (textos são juntados) e o valor do computador principal é anotado no item.", differences.len() - both_sides)
-                                                    } else {
-                                                        "Combinar: cada campo fica com o lado que o alterou. Nenhum campo foi alterado dos dois lados.".to_owned()
-                                                    }
-                                                }
-                                                ConflictResolution::KeepLocal => "Usar só a minha versão: o que está no computador principal será substituído.".to_owned(),
-                                                ConflictResolution::KeepHost => "Usar só a do computador principal: a sua alteração será descartada.".to_owned(),
-                                            };
-                                            soft_note(ui, Tone::Warn, icon::WARNING, &description);
-                                            ui.add_space(theme::S1);
-                                            ui.horizontal(|ui| {
-                                                if ui.add(widgets::primary("Confirmar")).clicked() {
-                                                    resolution_action = Some((conflict.id, resolution));
-                                                    self.pending_resolution = None;
-                                                }
-                                                if ui.add(widgets::secondary("Cancelar")).clicked() {
-                                                    self.pending_resolution = None;
-                                                }
-                                            });
-                                        }
-                                    }
-                                });
-                            ui.add_space(theme::S2);
-                        }
-                    });
-            });
-
-            if let Some((conflict_id, res)) = resolution_action {
-                match store.resolve_sync_conflict(conflict_id, res) {
-                    Ok(()) => {
-                        self.error = false;
-                        self.message = match res {
-                            ConflictResolution::Merge => {
-                                "Conflito resolvido: as duas versões foram combinadas.".into()
-                            }
-                            ConflictResolution::KeepLocal => {
-                                "Conflito resolvido: a sua versão foi aplicada.".into()
-                            }
-                            ConflictResolution::KeepHost => {
-                                "Conflito resolvido: a versão do computador principal foi mantida."
-                                    .into()
-                            }
-                        };
-                        self.last_sync_request = None;
-                        let _ = self.refresh_client(store, db_path);
-                        refresh_needed = true;
-                    }
-                    Err(e) => {
-                        self.error = true;
-                        self.message = format!("Não foi possível resolver o conflito agora: {e}");
-                    }
-                }
-            }
-        }
+        self.conflicts_card(ui, store, db_path, &mut refresh_needed);
 
         if !outbox.is_empty() {
             ui.add_space(theme::S3);
@@ -6779,6 +7615,500 @@ impl IntranetPanel {
             });
         });
         refresh_needed
+    }
+}
+
+/// "Alteração de Servidor A, ...": where the change came from, in words.
+pub fn conflict_origin_text(
+    mode: IntranetMode,
+    conflict: &SyncConflict,
+    origin: ConflictOrigin,
+) -> String {
+    let who = if conflict.actor.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" de {}", conflict.actor.trim())
+    };
+    let date = crate::labels::datetime(&conflict.created_at);
+    match (origin, mode) {
+        (ConflictOrigin::Folder, _) => format!(
+            "Alteração{who} recebida pela pasta compartilhada; o conflito foi percebido em {date}."
+        ),
+        (ConflictOrigin::ThisComputer, IntranetMode::SharedFolder) => {
+            format!("Alteração{who} feita neste computador; o conflito foi percebido em {date}.")
+        }
+        (ConflictOrigin::ThisComputer, _) => format!(
+            "Alteração{who} feita sem conexão neste computador; o conflito foi percebido em {date}."
+        ),
+    }
+}
+
+/// Whether the two sides of this kind of change can be compared field by field.
+#[cfg(feature = "desktop")]
+fn comparable_conflict(mutation: &IntranetMutation) -> bool {
+    matches!(
+        mutation,
+        IntranetMutation::SaveNote { .. }
+            | IntranetMutation::SaveTask { .. }
+            | IntranetMutation::SaveWorkContext { .. }
+            | IntranetMutation::SaveSaiopAttendance { .. }
+    )
+}
+
+#[cfg(feature = "desktop")]
+type ConflictAction = Option<(i64, ConflictResolution, bool)>;
+
+/// The state a card was in when the person picked a choice: a choice made in
+/// one state is dropped when the card turns into another (a synchronization
+/// can block the item or make both sides equal in between).
+#[cfg(feature = "desktop")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CardKind {
+    Ordinary,
+    Blocked,
+    Equal,
+    Unresolved,
+}
+
+#[cfg(feature = "desktop")]
+impl IntranetPanel {
+    fn conflict_mode(&self, store: &Store) -> IntranetMode {
+        #[cfg(feature = "shots")]
+        if let Some(mode) = self.shots_mode {
+            return mode;
+        }
+        store
+            .load_intranet_config()
+            .map(|cfg| cfg.mode)
+            .unwrap_or_default()
+    }
+
+    /// The card "Edições em conflito": one block per item, with what it is,
+    /// where it came from and only the choices that can work.
+    fn conflicts_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &mut Store,
+        db_path: &std::path::Path,
+        refresh_needed: &mut bool,
+    ) {
+        use crate::theme;
+        use crate::widgets::{self, Tone};
+        let all = store.conflict_views().unwrap_or_default();
+        #[cfg(feature = "shots")]
+        let skip = self.shots_skip;
+        #[cfg(not(feature = "shots"))]
+        let skip = 0;
+        let views: Vec<&ConflictView> = all.iter().skip(skip).collect();
+        if views.is_empty() {
+            return;
+        }
+        let mode = self.conflict_mode(store);
+        let infos: Vec<ConflictInfo> = views.iter().map(|v| v.info.clone()).collect();
+        let groups = group_conflicts(&infos);
+        let mut action: ConflictAction = None;
+        let mut dismiss: Option<(i64, Vec<i64>)> = None;
+        ui.add_space(theme::S3);
+        widgets::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                widgets::section(ui, "Edições em conflito");
+                widgets::pill(ui, views.len().to_string(), Tone::Danger);
+            });
+            ui.add_space(theme::S1);
+            ui.label(ConflictWords::intro(mode, views.len()));
+            ui.add_space(theme::S2);
+            for group in &groups {
+                self.conflict_group(ui, mode, &views, group, &mut action, &mut dismiss);
+                ui.add_space(theme::S2);
+            }
+        });
+
+        if let Some((last_id, ids)) = dismiss {
+            match store.dismiss_earlier_conflicts(last_id, &ids) {
+                Ok(count) => {
+                    self.error = false;
+                    self.message = if count == 1 {
+                        "1 aviso anterior dispensado.".to_owned()
+                    } else {
+                        format!("{count} avisos anteriores dispensados.")
+                    };
+                    self.last_sync_request = None;
+                    let _ = self.refresh_client(store, db_path);
+                }
+                Err(error) => {
+                    self.error = true;
+                    let info = views.iter().find(|v| v.info.id == last_id).map(|v| &v.info);
+                    self.message = explain_resolve_error(mode, info, &error.to_string());
+                }
+            }
+            *refresh_needed = true;
+        }
+        if let Some((id, resolution, quiet)) = action {
+            let Some(view) = views.iter().find(|v| v.conflict.id == id) else {
+                return;
+            };
+            match store.resolve_sync_conflict(id, resolution) {
+                Ok(()) => {
+                    self.error = false;
+                    self.message = if quiet {
+                        "Aviso encerrado. Nada mudou no acervo.".to_owned()
+                    } else {
+                        ConflictWords::new(mode, view.info.origin)
+                            .done(resolution)
+                            .to_owned()
+                    };
+                    self.last_sync_request = None;
+                    let _ = self.refresh_client(store, db_path);
+                    *refresh_needed = true;
+                }
+                Err(error) => {
+                    self.error = true;
+                    self.message =
+                        explain_resolve_error(mode, Some(&view.info), &error.to_string());
+                    *refresh_needed = true;
+                }
+            }
+        }
+    }
+
+    fn conflict_group(
+        &mut self,
+        ui: &mut egui::Ui,
+        mode: IntranetMode,
+        views: &[&ConflictView],
+        group: &[usize],
+        action: &mut ConflictAction,
+        dismiss: &mut Option<(i64, Vec<i64>)>,
+    ) {
+        use crate::theme::{self, icon};
+        use crate::widgets::{self, Tone};
+        let Some(&last) = group.last() else {
+            return;
+        };
+        let last_id = views[last].conflict.id;
+        if group.len() == 1 && self.pending_dismiss.is_some_and(|(id, _)| id == last_id) {
+            self.pending_dismiss = None;
+        }
+        egui::Frame::new()
+            .fill(theme::c().sunken)
+            .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if group.len() == 1 {
+                    self.conflict_item(ui, mode, views[last], None, true, action);
+                    return;
+                }
+                // A series: same kind of change, item, origin and device, so
+                // the last one is the final state.
+                let head = &views[last].info;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(&head.title).font(theme::font_strong(theme::SIZE_BODY)),
+                    );
+                    widgets::pill(ui, format!("{} alterações", group.len()), Tone::Info);
+                });
+                if !head.document_line.is_empty() {
+                    widgets::small_muted(ui, head.document_line.clone());
+                }
+                widgets::small_muted(
+                    ui,
+                    "A última alteração é a que vale; as anteriores podem ser dispensadas.",
+                );
+                if let Some(block) = &head.block {
+                    ui.add_space(theme::S1);
+                    soft_note(ui, Tone::Warn, icon::WARNING, &block_note(block, head.noun));
+                    if block.can_open_trash() {
+                        ui.add_space(theme::S1);
+                        if ui
+                            .add(widgets::primary(format!("{} Abrir a Lixeira", icon::TRASH)))
+                            .clicked()
+                        {
+                            self.open_trash = true;
+                        }
+                    }
+                }
+                ui.add_space(theme::S1);
+                let earlier = group.len() - 1;
+                if self.pending_dismiss == Some((last_id, group.len())) {
+                    soft_note(
+                        ui,
+                        Tone::Warn,
+                        icon::WARNING,
+                        &if earlier == 1 {
+                            "Dispensar a alteração anterior? Ela será descartada e nada muda no acervo; só a última continua para você decidir.".to_owned()
+                        } else {
+                            format!("Dispensar as {earlier} alterações anteriores? Elas serão descartadas e nada muda no acervo; só a última continua para você decidir.")
+                        },
+                    );
+                    ui.add_space(theme::S1);
+                    ui.horizontal(|ui| {
+                        if ui.add(widgets::primary("Confirmar")).clicked() {
+                            *dismiss = Some((
+                                last_id,
+                                group[..earlier]
+                                    .iter()
+                                    .map(|i| views[*i].conflict.id)
+                                    .collect(),
+                            ));
+                            self.pending_dismiss = None;
+                        }
+                        if ui.add(widgets::secondary("Cancelar")).clicked() {
+                            self.pending_dismiss = None;
+                        }
+                    });
+                } else if ui
+                    .add(widgets::secondary("Dispensar as anteriores…"))
+                    .on_hover_text("Descarta os avisos das alterações mais antigas deste item; a última continua na lista.")
+                    .clicked()
+                {
+                    self.pending_dismiss = Some((last_id, group.len()));
+                }
+                for (position, index) in group.iter().enumerate() {
+                    ui.add_space(theme::S2);
+                    egui::Frame::new()
+                        .fill(theme::c().surface)
+                        .corner_radius(egui::CornerRadius::same(theme::RADIUS))
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            self.conflict_item(
+                                ui,
+                                mode,
+                                views[*index],
+                                Some(position + 1),
+                                false,
+                                action,
+                            );
+                        });
+                }
+            });
+    }
+
+    /// One conflict: what it is, where it came from, the differences and the
+    /// choices that can work. `ordinal` is its place in a series;
+    /// `block_note_here` says whether a blocked item explains itself on this
+    /// card (a series explains it once, on top).
+    fn conflict_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        mode: IntranetMode,
+        view: &ConflictView,
+        ordinal: Option<usize>,
+        block_note_here: bool,
+        action: &mut ConflictAction,
+    ) {
+        use crate::theme::{self, icon};
+        use crate::widgets::{self, Tone};
+        let conflict = &view.conflict;
+        let info = &view.info;
+        let words = ConflictWords::new(mode, info.origin);
+        let differences = &view.differences;
+        let both_sides = differences
+            .iter()
+            .filter(|d| d.changed_by() == "pelos dois lados")
+            .count();
+        let one_side = differences.len() - both_sides;
+        match ordinal {
+            None => {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&info.title).font(theme::font_strong(theme::SIZE_BODY)),
+                    )
+                    .wrap(),
+                );
+                if !info.document_line.is_empty() {
+                    ui.add(egui::Label::new(egui::RichText::new(&info.document_line)).wrap());
+                }
+            }
+            Some(n) => {
+                ui.label(
+                    egui::RichText::new(format!("{n}ª alteração"))
+                        .font(theme::font_strong(theme::SIZE_BODY)),
+                );
+                ui.add(egui::Label::new(egui::RichText::new(&view.change_text)).wrap());
+            }
+        }
+        widgets::small_muted(ui, conflict_origin_text(mode, conflict, info.origin));
+        ui.add_space(theme::S2);
+
+        // Waiting for a synchronization: nothing can be told or chosen.
+        if info.waiting_sync {
+            soft_note(ui, Tone::Warn, icon::WARNING, &waiting_sync_note(mode));
+            return;
+        }
+        let kind = if conflict.unresolved {
+            CardKind::Unresolved
+        } else if info.block.is_some() {
+            CardKind::Blocked
+        } else if info.equal {
+            CardKind::Equal
+        } else {
+            CardKind::Ordinary
+        };
+        let comparable = comparable_conflict(&conflict.mutation);
+        if !differences.is_empty() {
+            egui::Grid::new(("conflict-diff", conflict.id))
+                .striped(true)
+                .num_columns(4)
+                .spacing([theme::S3, theme::S1])
+                .max_col_width(220.0)
+                .show(ui, |ui| {
+                    for head in [
+                        "Campo",
+                        words.other_column(),
+                        words.mine_column(),
+                        "Alterado",
+                    ] {
+                        widgets::field_label(ui, head);
+                    }
+                    ui.end_row();
+                    for d in differences {
+                        ui.label(
+                            egui::RichText::new(&d.label)
+                                .font(theme::font_strong(theme::SIZE_BODY)),
+                        );
+                        ui.add(
+                            egui::Label::new(if d.host.is_empty() {
+                                "(vazio)"
+                            } else {
+                                &d.host
+                            })
+                            .wrap(),
+                        );
+                        ui.add(
+                            egui::Label::new(if d.local.is_empty() {
+                                "(vazio)"
+                            } else {
+                                &d.local
+                            })
+                            .wrap(),
+                        );
+                        widgets::small_muted(ui, words.changed_by(d.changed_by()));
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(theme::S2);
+        } else if kind == CardKind::Equal {
+            ui.label("As duas alterações são iguais: não há o que escolher.");
+            ui.add_space(theme::S2);
+        } else if kind == CardKind::Ordinary && comparable {
+            widgets::small_muted(ui, "O Ponte não encontrou diferenças nos campos mostrados, mas não pôde garantir que as duas versões são iguais. Confira antes de escolher.");
+            ui.add_space(theme::S2);
+        }
+        if info.unchecked {
+            soft_note(
+                ui,
+                Tone::Warn,
+                icon::WARNING,
+                "Não foi possível conferir agora se o item ainda está no acervo. Se a escolha falhar, o Ponte explicará o motivo.",
+            );
+            ui.add_space(theme::S2);
+        }
+        let quiet = kind != CardKind::Ordinary;
+        // A choice made when the card was in another state is dropped.
+        let mut pending_here = self.pending_resolution.filter(|(id, _)| *id == conflict.id);
+        if pending_here.is_some() && self.pending_card != Some(kind) {
+            self.pending_resolution = None;
+            self.pending_card = None;
+            pending_here = None;
+        }
+        let choose = |panel: &mut Self, resolution: ConflictResolution| {
+            panel.pending_resolution = Some((conflict.id, resolution));
+            panel.pending_card = Some(kind);
+        };
+        match pending_here {
+            Some((_, resolution)) => {
+                let description = match kind {
+                    CardKind::Equal => {
+                        "Encerrar o aviso: as duas alterações são iguais e nada muda no acervo."
+                            .to_owned()
+                    }
+                    CardKind::Blocked | CardKind::Unresolved => {
+                        "Dispensar o aviso: a alteração não será aplicada e nada muda no acervo."
+                            .to_owned()
+                    }
+                    CardKind::Ordinary => words.confirmation(resolution, one_side, both_sides),
+                };
+                soft_note(ui, Tone::Warn, icon::WARNING, &description);
+                ui.add_space(theme::S1);
+                ui.horizontal(|ui| {
+                    if ui.add(widgets::primary("Confirmar")).clicked() {
+                        *action = Some((conflict.id, resolution, quiet));
+                        self.pending_resolution = None;
+                        self.pending_card = None;
+                    }
+                    if ui.add(widgets::secondary("Cancelar")).clicked() {
+                        self.pending_resolution = None;
+                        self.pending_card = None;
+                    }
+                });
+            }
+            None if kind == CardKind::Blocked => {
+                if let Some(block) = &info.block {
+                    if block_note_here {
+                        soft_note(ui, Tone::Warn, icon::WARNING, &block_note(block, info.noun));
+                        ui.add_space(theme::S1);
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        if block_note_here
+                            && block.can_open_trash()
+                            && ui
+                                .add(widgets::primary(format!("{} Abrir a Lixeira", icon::TRASH)))
+                                .clicked()
+                        {
+                            self.open_trash = true;
+                        }
+                        if ui
+                            .add(widgets::secondary("Dispensar o aviso"))
+                            .on_hover_text(
+                                "Descarta esta alteração e encerra o aviso. Nada muda no acervo.",
+                            )
+                            .clicked()
+                        {
+                            choose(self, ConflictResolution::KeepHost);
+                        }
+                    });
+                }
+            }
+            None if kind == CardKind::Unresolved => {
+                widgets::small_muted(ui, "Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.");
+                ui.add_space(theme::S1);
+                if ui.add(widgets::secondary("Dispensar o aviso")).clicked() {
+                    choose(self, ConflictResolution::KeepHost);
+                }
+            }
+            None if kind == CardKind::Equal => {
+                if ui.add(widgets::primary("Encerrar o aviso")).clicked() {
+                    choose(self, ConflictResolution::KeepHost);
+                }
+            }
+            None => {
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add(widgets::secondary("Combinar as duas versões…"))
+                        .on_hover_text(words.merge_hover())
+                        .clicked()
+                    {
+                        choose(self, ConflictResolution::Merge);
+                    }
+                    if ui
+                        .add(widgets::secondary(words.keep_mine_button()))
+                        .on_hover_text(words.keep_mine_hover())
+                        .clicked()
+                    {
+                        choose(self, ConflictResolution::KeepLocal);
+                    }
+                    if ui
+                        .add(widgets::secondary(words.keep_other_button()))
+                        .on_hover_text(words.keep_other_hover())
+                        .clicked()
+                    {
+                        choose(self, ConflictResolution::KeepHost);
+                    }
+                });
+            }
+        }
     }
 }
 
@@ -8306,6 +9636,10 @@ pub const SHOTS: &[&str] = &[
     "conectar-teste",
     "conectar-falha",
     "local",
+    "conflitos",
+    "conflitos-principal",
+    "conflitos-grupo",
+    "conflitos-lixeira",
 ];
 
 #[cfg(feature = "shots")]
@@ -8318,6 +9652,24 @@ impl IntranetPanel {
         }
         self.loaded = true;
         self.open = true;
+        self.shots_conflicts = view.starts_with("conflitos");
+        self.shots_skip = match view {
+            "conflitos-grupo" => 1,
+            "conflitos-lixeira" => 3,
+            _ => 0,
+        };
+        self.shots_mode = match view {
+            "conflitos" | "conflitos-grupo" | "conflitos-lixeira" => {
+                Some(IntranetMode::SharedFolder)
+            }
+            "conflitos-principal" => Some(IntranetMode::Client),
+            _ => None,
+        };
+        if self.shots_conflicts {
+            if let Err(error) = crate::shots_data::conflicts_scenario(store) {
+                eprintln!("amostra dos conflitos: {error:#}");
+            }
+        }
         self.draft.mode = match view {
             "pasta" => {
                 self.draft.folder_files =
@@ -8554,5 +9906,637 @@ mod standalone_task_sync_tests {
         let at_a = find(&a, "Revisar a minuta");
         assert_eq!(at_a.document_id, Some(document));
         assert_eq!(at_a.notes, "Segunda nota.");
+    }
+}
+
+#[cfg(test)]
+mod conflict_card_tests {
+    use super::*;
+    use crate::trash::{Kind, Target};
+
+    fn open(dir: &std::path::Path) -> (Store, i64, Task) {
+        let mut store = Store::open(&dir.join("c.sqlite3")).unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let task = store.list_tasks().unwrap().remove(0);
+        (store, document, task)
+    }
+
+    fn conflict(label: &str, mutation: IntranetMutation) -> SyncConflict {
+        SyncConflict {
+            id: 0,
+            created_at: now_iso(),
+            actor: "Servidor A".into(),
+            item_label: label.into(),
+            local_summary: String::new(),
+            host_summary: String::new(),
+            reason: String::new(),
+            mutation,
+            base: None,
+            unresolved: false,
+        }
+    }
+
+    fn save(task: &Task) -> IntranetMutation {
+        IntranetMutation::SaveTask {
+            task: task.clone(),
+            expected_version: None,
+        }
+    }
+
+    #[test]
+    fn a_conflict_says_what_it_is_and_which_document_it_belongs_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, document, mut task) = open(dir.path());
+        let text = store.document_text(document).unwrap();
+        task.title = "Triar documento".into();
+        let info = store.conflict_info(&conflict("Tarefa #14: Triar documento", save(&task)));
+        assert_eq!(info.title, "Tarefa: Triar documento");
+        assert_eq!(info.document_line, format!("Documento: {text}"));
+        assert_eq!(info.origin, ConflictOrigin::ThisComputer);
+        assert!(info.block.is_none());
+        assert!(!info.title.contains('#') && !info.document_line.contains('#'));
+
+        // Folder origin is read from the recorded label; no path is shown.
+        let info = store.conflict_info(&conflict(
+            r"[da pasta C:\Exemplo\Pasta\ponte-sync.ponte] Tarefa #14: Triar documento",
+            save(&task),
+        ));
+        assert_eq!(info.origin, ConflictOrigin::Folder);
+        assert!(!info.title.contains("Exemplo") && !info.document_line.contains("Exemplo"));
+
+        // A task without document.
+        let mut loose = Task::standalone();
+        loose.title = "Renovar o certificado".into();
+        let id = store.save_task(&loose).unwrap();
+        loose.id = id;
+        let info = store.conflict_info(&conflict("x", save(&loose)));
+        assert_eq!(info.title, "Tarefa: Renovar o certificado");
+        assert_eq!(info.document_line, "Tarefa sem documento");
+
+        // Other kinds.
+        let kinds = [
+            (
+                IntranetMutation::SaveNote {
+                    document_id: document,
+                    note: String::new(),
+                    expected_version: None,
+                },
+                "Nota do documento",
+            ),
+            (
+                IntranetMutation::SaveWorkContext {
+                    document_id: document,
+                    value: WorkContext::default(),
+                    expected_version: None,
+                },
+                "Contexto de trabalho do documento",
+            ),
+            (
+                IntranetMutation::SaveDraft {
+                    document_id: document,
+                    capture_id: 1,
+                    kind: "resposta".into(),
+                    body: String::new(),
+                    materials: vec![],
+                    provenance: None,
+                },
+                "Minuta: Resposta",
+            ),
+            (
+                IntranetMutation::RelinkTask {
+                    task_id: id,
+                    document_id: Some(document),
+                    expected_version: None,
+                },
+                "Troca de documento da tarefa: Renovar o certificado",
+            ),
+            (
+                IntranetMutation::AddAttachment {
+                    owner_kind: "document".into(),
+                    owner_id: document,
+                    name: "ata.pdf".into(),
+                    description: String::new(),
+                    data_base64: String::new(),
+                },
+                "Anexo: ata.pdf",
+            ),
+            (
+                IntranetMutation::DeleteDocument { id: document },
+                "Exclusão do documento",
+            ),
+            (
+                IntranetMutation::AddDocumentLink {
+                    source: document,
+                    target: document,
+                    kind: String::new(),
+                    reason: String::new(),
+                },
+                "Vínculo entre documentos",
+            ),
+            (
+                IntranetMutation::DeleteExample { uid: "u".into() },
+                "Exclusão de um exemplo",
+            ),
+        ];
+        for (mutation, title) in kinds {
+            let info = store.conflict_info(&conflict("x", mutation));
+            assert_eq!(info.title, title);
+            assert!(!info.title.contains('#'), "{}", info.title);
+        }
+        // Unresolved: nothing is looked up in a library whose numbers differ.
+        let mut stray = conflict("x", save(&loose));
+        stray.unresolved = true;
+        let info = store.conflict_info(&stray);
+        assert!(info.document_line.is_empty() && info.block.is_none() && info.group_key.is_none());
+    }
+
+    #[test]
+    fn a_choice_that_cannot_work_is_detected_before_the_click() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, document, mut task) = open(dir.path());
+        task.title = "Triar documento".into();
+        let label = "Tarefa #1: Triar documento";
+        assert!(store
+            .conflict_info(&conflict(label, save(&task)))
+            .block
+            .is_none());
+
+        // The task alone in the Lixeira.
+        let extra = {
+            let mut t = Task::new(document);
+            t.title = "Outra tarefa".into();
+            t.id = store.save_task(&t).unwrap();
+            t
+        };
+        store
+            .trash_item(Target {
+                kind: Kind::Task,
+                id: extra.id,
+            })
+            .unwrap();
+        let block = store
+            .conflict_info(&conflict(label, save(&extra)))
+            .block
+            .unwrap();
+        assert_eq!(
+            (block.kind, block.item),
+            (BlockKind::Trashed, BlockedItem::Task)
+        );
+        assert_eq!(block.name, "Outra tarefa");
+        assert!(
+            block_note(&block, "desta tarefa").contains("restaure a tarefa em Ajustes ▸ Lixeira")
+        );
+
+        // The document in the Lixeira: the note, the task and the document itself.
+        let text = store.document_text(document).unwrap();
+        store
+            .trash_item(Target {
+                kind: Kind::Document,
+                id: document,
+            })
+            .unwrap();
+        for mutation in [
+            save(&task),
+            IntranetMutation::SaveNote {
+                document_id: document,
+                note: String::new(),
+                expected_version: None,
+            },
+        ] {
+            let info = store.conflict_info(&conflict(label, mutation));
+            let block = info.block.clone().unwrap();
+            assert_eq!(
+                (block.kind, block.item),
+                (BlockKind::Trashed, BlockedItem::Document)
+            );
+            assert_eq!(block.name, text);
+            assert!(block.can_open_trash());
+            let note = block_note(&block, info.noun);
+            assert!(
+                note.contains(&text) && note.contains("Dispensar o aviso"),
+                "{note}"
+            );
+            assert!(note.contains("excluído em "));
+            // The document is still named in the card.
+            assert_eq!(info.document_line, format!("Documento: {text}"));
+        }
+        // Restoring the document is expected, not blocked.
+        let info = store.conflict_info(&conflict(
+            "x",
+            IntranetMutation::RestoreItem {
+                kind: "document".into(),
+                id: document,
+            },
+        ));
+        assert!(info.block.is_none());
+
+        // An item that no longer exists at all.
+        let gone = IntranetMutation::SaveNote {
+            document_id: 9999,
+            note: String::new(),
+            expected_version: None,
+        };
+        let block = store.conflict_info(&conflict("x", gone)).block.unwrap();
+        assert_eq!(block.kind, BlockKind::Missing);
+        assert!(!block.can_open_trash());
+        assert!(block_note(&block, "desta nota").contains("não existe mais"));
+        let mut ghost = task.clone();
+        ghost.id = 9999;
+        ghost.document_id = None;
+        let block = store
+            .conflict_info(&conflict("x", save(&ghost)))
+            .block
+            .unwrap();
+        assert_eq!(
+            (block.kind, block.item),
+            (BlockKind::Missing, BlockedItem::Task)
+        );
+    }
+
+    #[test]
+    fn resolution_errors_name_the_item_and_say_what_to_do() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, document, mut task) = open(dir.path());
+        task.title = "Triar documento".into();
+        let text = store.document_text(document).unwrap();
+        store
+            .trash_item(Target {
+                kind: Kind::Document,
+                id: document,
+            })
+            .unwrap();
+        let c = conflict("Tarefa #14: Triar documento", save(&task));
+        let info = store.conflict_info(&c);
+        let raw = "Documento na lixeira. Restaure-o antes de usar ou importar novamente.";
+        let said = explain_resolve_error(IntranetMode::SharedFolder, Some(&info), raw);
+        assert!(
+            said.contains("Tarefa: Triar documento") && said.contains(&text),
+            "{said}"
+        );
+        assert!(said.contains("Ajustes ▸ Lixeira") && !said.contains("Restaure-o antes"));
+
+        let plain = ConflictInfo {
+            block: None,
+            ..info.clone()
+        };
+        let said = explain_resolve_error(IntranetMode::Client, Some(&plain), raw);
+        assert!(said.contains("Lixeira") && said.contains("Tarefa: Triar documento"));
+        let said =
+            explain_resolve_error(IntranetMode::Client, Some(&plain), "Tarefa não encontrada.");
+        assert!(said.contains("não existe mais no acervo"));
+        let said = explain_resolve_error(
+            IntranetMode::SharedFolder,
+            Some(&plain),
+            "A sincronização com o computador principal ainda não terminou. Sincronize e tente de novo.",
+        );
+        assert!(said.contains("pasta compartilhada") && !said.contains("computador principal"));
+        let said = explain_resolve_error(
+            IntranetMode::Client,
+            Some(&plain),
+            "Conflito de edição simultânea: este registro já foi atualizado",
+        );
+        assert!(said.contains("O item mudou de novo"));
+        let said = explain_resolve_error(IntranetMode::Client, Some(&plain), "falha estranha");
+        assert!(said.contains("falha estranha") && said.contains("Tarefa: Triar documento"));
+        assert!(!said.contains('\\'));
+    }
+
+    #[test]
+    fn words_follow_the_way_of_working() {
+        let own = ConflictWords::new(IntranetMode::SharedFolder, ConflictOrigin::ThisComputer);
+        let foreign = ConflictWords::new(IntranetMode::SharedFolder, ConflictOrigin::Folder);
+        let client = ConflictWords::new(IntranetMode::Client, ConflictOrigin::ThisComputer);
+        assert_eq!(own.other_column(), "Na pasta compartilhada");
+        assert_eq!(client.other_column(), "No computador principal");
+        assert_eq!(own.keep_other_button(), "Usar só a versão da pasta…");
+        assert_eq!(
+            client.keep_other_button(),
+            "Usar só a do computador principal…"
+        );
+        assert_eq!(foreign.mine_column(), "Versão do outro aparelho");
+        assert_eq!(own.mine_column(), "Sua versão");
+        for words in [own, foreign] {
+            for resolution in [
+                ConflictResolution::Merge,
+                ConflictResolution::KeepLocal,
+                ConflictResolution::KeepHost,
+            ] {
+                assert!(!words
+                    .confirmation(resolution, 1, 1)
+                    .contains("computador principal"));
+                assert!(!words.done(resolution).contains("computador principal"));
+            }
+            assert!(!words.merge_hover().contains("computador principal"));
+        }
+        assert!(!ConflictWords::intro(IntranetMode::SharedFolder, 2).contains("principal"));
+        assert!(ConflictWords::intro(IntranetMode::Client, 1).contains("computador principal"));
+    }
+
+    #[test]
+    fn the_change_text_names_what_the_edit_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _document, task) = open(dir.path());
+        let mut done = task.clone();
+        done.status = "concluida".into();
+        let mut c = conflict("x", save(&done));
+        c.base = Some(save(&task));
+        assert_eq!(store.conflict_change_text(&c), "Situação: Concluída");
+    }
+
+    fn recorded(label: &str, actor: &str, at: &str, mutation: IntranetMutation) -> SyncConflict {
+        let mut c = conflict(label, mutation);
+        c.actor = actor.into();
+        c.created_at = at.into();
+        c
+    }
+
+    const FOLDER: &str = r"[da pasta C:\Exemplo\Pasta\ponte-sync.ponte] Tarefa #1: x";
+
+    #[test]
+    fn only_a_series_from_the_same_device_is_grouped_and_ordered_by_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, _document, task) = open(dir.path());
+        let relink = IntranetMutation::RelinkTask {
+            task_id: task.id,
+            document_id: None,
+            expected_version: None,
+        };
+        store
+            .keep_conflicts(&[
+                // Recorded first, but the later change.
+                recorded(FOLDER, "Celular", "2026-11-11T12:00:00+00:00", save(&task)),
+                // Recorded second, but the earlier change.
+                recorded(FOLDER, "Celular", "2026-11-11T09:00:00+00:00", save(&task)),
+                // Another device.
+                recorded(FOLDER, "Tablet", "2026-11-11T10:00:00+00:00", save(&task)),
+                // Another origin.
+                recorded("x", "Celular", "2026-11-11T10:00:00+00:00", save(&task)),
+                // Another kind of change to the same task.
+                recorded(FOLDER, "Celular", "2026-11-11T11:00:00+00:00", relink),
+            ])
+            .unwrap();
+        let views = store.conflict_views().unwrap();
+        let infos: Vec<ConflictInfo> = views.iter().map(|v| v.info.clone()).collect();
+        let groups = group_conflicts(&infos);
+        assert_eq!(groups.len(), 4, "{groups:?}");
+        let series: Vec<&Vec<usize>> = groups.iter().filter(|g| g.len() > 1).collect();
+        assert_eq!(series.len(), 1);
+        // The earlier change (recorded later, higher id) comes first.
+        assert_eq!(series[0], &vec![1, 0]);
+        // Everything is about one task, so the cards sit next to each other.
+        assert!(infos.iter().all(|i| i.item_key == infos[0].item_key));
+        // Unrelated kinds and unnumbered items are never in a series.
+        let alone = |key: Option<&str>| ConflictInfo {
+            group_key: key.map(str::to_owned),
+            ..infos[0].clone()
+        };
+        let mut two = vec![alone(None), alone(None)];
+        two[1].id += 1;
+        assert_eq!(group_conflicts(&two), vec![vec![0], vec![1]]);
+    }
+
+    #[test]
+    fn two_sides_count_as_equal_only_when_everything_is_known_to_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, document, task) = open(dir.path());
+        let host = store.list_tasks().unwrap().remove(0);
+        assert!(store.conflict_info(&conflict("x", save(&host))).equal);
+
+        // A field the table does not show.
+        let mut other = host.clone();
+        other.dependencies = vec![9999];
+        assert!(!store.conflict_info(&conflict("x", save(&other))).equal);
+        // A new task, and a task that is gone.
+        let mut fresh = host.clone();
+        fresh.id = 0;
+        fresh.title = "Nova tarefa".into();
+        assert!(!store.conflict_info(&conflict("x", save(&fresh))).equal);
+        let mut ghost = host.clone();
+        ghost.id = 9999;
+        let info = store.conflict_info(&conflict("x", save(&ghost)));
+        assert!(!info.equal && info.block.is_some());
+
+        // Atendimentos: new, equal, and different only in what is not shown.
+        let mut attendance = crate::saiop::SaiopAttendance::new_manual();
+        attendance.reference_raw = "ORG-ATE-2026/0001".into();
+        let new = IntranetMutation::SaveSaiopAttendance {
+            attendance: attendance.clone(),
+            expected_version: None,
+        };
+        assert!(!store.conflict_info(&conflict("x", new)).equal);
+        let id = store.save_saiop_attendance(&attendance, None).unwrap();
+        let mut saved = store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+        let same = IntranetMutation::SaveSaiopAttendance {
+            attendance: saved.clone(),
+            expected_version: None,
+        };
+        assert!(store.conflict_info(&conflict("x", same)).equal);
+        saved.tags = vec!["urgente".into()];
+        let tagged = IntranetMutation::SaveSaiopAttendance {
+            attendance: saved,
+            expected_version: None,
+        };
+        let c = conflict("x", tagged);
+        assert!(store.conflict_differences(&c).is_empty());
+        assert!(!store.conflict_info(&c).equal);
+
+        // A note: equal only when the document could be read and matches.
+        let note = |text: &str| IntranetMutation::SaveNote {
+            document_id: document,
+            note: text.into(),
+            expected_version: None,
+        };
+        let current = store.load_document(document).unwrap().note;
+        assert!(store.conflict_info(&conflict("x", note(&current))).equal);
+        assert!(!store.conflict_info(&conflict("x", note("outra"))).equal);
+        let _ = task;
+    }
+
+    #[test]
+    fn nothing_is_looked_up_while_a_translation_of_numbers_is_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, document, task) = open(dir.path());
+        store.keep_conflicts(&[conflict("x", save(&task))]).unwrap();
+        let normal = store.conflict_views().unwrap();
+        assert!(!normal[0].info.waiting_sync);
+        assert!(normal[0]
+            .info
+            .document_line
+            .contains(&store.document_text(document).unwrap()));
+        store
+            .conn
+            .execute(
+                "INSERT INTO offline_id_map(kind,local_id,target_id) VALUES('x',5,NULL)",
+                [],
+            )
+            .unwrap();
+        let waiting = store.conflict_views().unwrap();
+        let view = &waiting[0];
+        assert!(view.info.waiting_sync);
+        assert!(view.info.document_line.is_empty() && view.info.block.is_none());
+        assert!(view.info.group_key.is_none() && !view.info.equal);
+        assert!(view.differences.is_empty());
+        assert!(!view.info.title.contains(&task.title));
+        assert!(waiting_sync_note(IntranetMode::SharedFolder).contains("pasta compartilhada"));
+        assert!(waiting_sync_note(IntranetMode::Client).contains("computador principal"));
+    }
+
+    #[test]
+    fn dismissing_earlier_conflicts_is_all_or_nothing_and_only_within_the_series() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, _document, mut task) = open(dir.path());
+        let before = store.list_tasks().unwrap();
+        let times = [
+            "2026-11-11T09:00:00+00:00",
+            "2026-11-11T10:00:00+00:00",
+            "2026-11-11T11:00:00+00:00",
+        ];
+        let add = |store: &mut Store, task: &mut Task, actor: &str| {
+            let mut list = Vec::new();
+            for (status, at) in ["concluida", "pendente", "em analise"].iter().zip(times) {
+                task.status = (*status).into();
+                list.push(recorded("Tarefa #1: x", actor, at, save(task)));
+            }
+            store.keep_conflicts(&list).unwrap();
+        };
+        add(&mut store, &mut task, "Celular");
+        let stored = store.list_sync_conflicts().unwrap();
+        let (a, b, c) = (stored[0].id, stored[1].id, stored[2].id);
+        // An id that does not exist: nothing is dismissed.
+        assert!(store.dismiss_earlier_conflicts(c, &[a, 99_999]).is_err());
+        assert_eq!(store.list_sync_conflicts().unwrap().len(), 3);
+        // The "last" is not the latest: refused.
+        assert!(store.dismiss_earlier_conflicts(a, &[b, c]).is_err());
+        // Repeated or including the last: refused.
+        assert!(store.dismiss_earlier_conflicts(c, &[a, a]).is_err());
+        assert!(store.dismiss_earlier_conflicts(c, &[a, c]).is_err());
+        assert!(store.dismiss_earlier_conflicts(c, &[]).is_err());
+        assert_eq!(store.list_sync_conflicts().unwrap().len(), 3);
+        // A conflict of another device is not in the series.
+        add(&mut store, &mut task, "Tablet");
+        let other = store
+            .list_sync_conflicts()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.actor == "Tablet")
+            .unwrap()
+            .id;
+        assert!(store.dismiss_earlier_conflicts(c, &[a, other]).is_err());
+        assert_eq!(store.list_sync_conflicts().unwrap().len(), 6);
+        // The ordinary case.
+        assert_eq!(store.dismiss_earlier_conflicts(c, &[a, b]).unwrap(), 2);
+        let left: Vec<i64> = store
+            .list_sync_conflicts()
+            .unwrap()
+            .iter()
+            .map(|x| x.id)
+            .collect();
+        assert!(left.contains(&c) && !left.contains(&a) && !left.contains(&b));
+        assert_eq!(left.len(), 4);
+        // The library did not change.
+        assert_eq!(before.len(), store.list_tasks().unwrap().len());
+        assert_eq!(before[0].status, store.list_tasks().unwrap()[0].status);
+    }
+
+    #[test]
+    fn a_failure_to_read_never_looks_like_an_absent_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, document, task) = open(dir.path());
+        store.conn.execute("DROP TABLE trash", []).unwrap();
+        assert!(store.document_state(document).is_err());
+        assert!(store.task_state(task.id).is_err());
+        let info = store.conflict_info(&conflict("x", save(&task)));
+        assert!(info.unchecked);
+        assert!(info.block.is_none() && !info.equal);
+    }
+
+    #[test]
+    fn restoring_a_task_under_a_trashed_document_says_so_before_the_click() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, document, _task) = open(dir.path());
+        let mut extra = Task::new(document);
+        extra.title = "Outra tarefa".into();
+        let id = store.save_task(&extra).unwrap();
+        store
+            .trash_item(Target {
+                kind: Kind::Task,
+                id,
+            })
+            .unwrap();
+        let restore = IntranetMutation::RestoreItem {
+            kind: "task".into(),
+            id,
+        };
+        // The document is active: nothing in the way.
+        assert!(store
+            .conflict_info(&conflict("x", restore.clone()))
+            .block
+            .is_none());
+        store
+            .trash_item(Target {
+                kind: Kind::Document,
+                id: document,
+            })
+            .unwrap();
+        let info = store.conflict_info(&conflict("x", restore));
+        let block = info.block.unwrap();
+        assert_eq!(block.kind, BlockKind::ParentTrashed);
+        assert!(block.can_open_trash());
+        assert!(block_note(&block, info.noun).contains("Restaure primeiro o documento"));
+    }
+
+    #[test]
+    fn an_already_resolved_conflict_is_not_reported_as_a_missing_item() {
+        let said = explain_resolve_error(
+            IntranetMode::Client,
+            None,
+            "Conflito de edição não encontrado.",
+        );
+        assert!(said.contains("já foi resolvido") && !said.contains("não existe mais"));
+        // A block does not hijack an error about something else.
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _document, task) = open(dir.path());
+        let mut info = store.conflict_info(&conflict("x", save(&task)));
+        info.block = Some(ConflictBlock {
+            kind: BlockKind::Trashed,
+            item: BlockedItem::Document,
+            name: "ORG-X — título".into(),
+            deleted_at: None,
+        });
+        let said = explain_resolve_error(IntranetMode::Client, Some(&info), "falha estranha");
+        assert!(said.contains("falha estranha") && !said.contains("Lixeira"));
+        let said = explain_resolve_error(
+            IntranetMode::Client,
+            Some(&info),
+            "Documento na lixeira. Restaure-o antes de usar ou importar novamente.",
+        );
+        assert!(said.contains("ORG-X — título"));
+    }
+
+    #[test]
+    fn this_computers_own_changes_are_not_called_another_device() {
+        assert_eq!(
+            ConflictOrigin::of("[deste computador] Tarefa #1: x"),
+            ConflictOrigin::ThisComputer
+        );
+        assert_eq!(ConflictOrigin::of(FOLDER), ConflictOrigin::Folder);
+        assert_eq!(
+            ConflictOrigin::of("Tarefa #1: x"),
+            ConflictOrigin::ThisComputer
+        );
+        let own = ConflictWords::new(
+            IntranetMode::SharedFolder,
+            ConflictOrigin::of("[deste computador] x"),
+        );
+        assert_eq!(own.keep_mine_button(), "Usar só a minha versão…");
+        assert_eq!(own.mine_column(), "Sua versão");
     }
 }

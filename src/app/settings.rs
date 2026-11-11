@@ -133,6 +133,10 @@ impl PonteApp {
             self.intranet.open = false;
             self.open_settings(SettingsSection::Team);
         }
+        // "Abrir a Lixeira" on a conflict whose item was deleted.
+        if self.intranet.take_open_trash() {
+            self.trash.open = true;
+        }
         if self.trash.open {
             self.trash.open = false;
             self.open_settings(SettingsSection::Trash);

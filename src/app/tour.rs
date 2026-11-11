@@ -37,6 +37,8 @@ impl PonteApp {
         "janela-ia",
         "janela-email",
         "janela-lixeira",
+        "ajustes-lixeira",
+        "ajustes-lixeira-busca",
         "janela-registro-manual",
         "janela-colar-whatsapp",
         "janela-sobre",
@@ -264,9 +266,17 @@ impl PonteApp {
                 self.area = Area::Settings;
                 self.settings_section = super::SettingsSection::Mail;
             }
-            "janela-lixeira" => {
+            "janela-lixeira" | "ajustes-lixeira" | "ajustes-lixeira-busca" => {
+                if let Err(error) = crate::shots_data::conflicts_scenario(&mut self.store) {
+                    eprintln!("amostra da lixeira: {error:#}");
+                }
                 self.area = Area::Settings;
-                self.trash.open = true;
+                self.settings_section = super::SettingsSection::Trash;
+                self.trash.shots_open(match name {
+                    "ajustes-lixeira" => "aviso",
+                    "ajustes-lixeira-busca" => "busca",
+                    _ => "",
+                });
             }
             "janela-registro-manual" => {
                 self.area = Area::Documents;
