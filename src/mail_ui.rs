@@ -1031,12 +1031,11 @@ impl MailPanel {
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    if widgets::icon_button(ui, icon::CLOSE, "Fechar o resultado").clicked() {
-                        close = true;
-                    }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                // As in `notice_line`: the row is as high as its content.
+                ui.horizontal_top(|ui| {
+                    {
                         ui.vertical(|ui| {
+                            ui.set_max_width((ui.available_width() - 36.0).max(80.0));
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(glyph).size(18.0).color(fg));
                                 ui.label(
@@ -1063,6 +1062,11 @@ impl MailPanel {
                                     });
                             }
                         });
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if widgets::icon_button(ui, icon::CLOSE, "Fechar o resultado").clicked() {
+                            close = true;
+                        }
                     });
                 });
             });
@@ -1298,13 +1302,18 @@ fn notice_line(ui: &mut egui::Ui, text: &str, error: bool) -> bool {
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::icon_button(ui, icon::CLOSE, "Fechar o aviso").clicked() {
-                    close = true;
-                }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(glyph).size(18.0).color(fg));
+            // `horizontal` keeps the row as high as its content; a bare
+            // `with_layout` here would take all the height left in the page.
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(glyph).size(18.0).color(fg));
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - 36.0).max(80.0));
                     ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::icon_button(ui, icon::CLOSE, "Fechar o aviso").clicked() {
+                        close = true;
+                    }
                 });
             });
         });
@@ -1327,7 +1336,7 @@ fn busy_note(ui: &mut egui::Ui, state: MailBusy, quick: bool) {
 /// Development only: the views of this screen pictured by `--shots`, by
 /// name. The tour calls `shots_open` with each one on a fresh panel.
 #[cfg(feature = "shots")]
-pub const SHOTS: &[&str] = &["contas", "nova-conta", "mensagens"];
+pub const SHOTS: &[&str] = &["contas", "conta-salva", "nova-conta", "mensagens"];
 
 #[cfg(feature = "shots")]
 impl MailPanel {
@@ -1337,6 +1346,8 @@ impl MailPanel {
     pub fn shots_open(&mut self, _store: &mut crate::storage::Store, view: &str) {
         self.open_full();
         match view {
+            // The notice after saving: one line high, however tall the page.
+            "conta-salva" => self.set_notice("Conta salva.", false),
             "nova-conta" => {
                 self.form = Some(AccountForm::new(MailAccount {
                     host: "imap.gmail.com".into(),

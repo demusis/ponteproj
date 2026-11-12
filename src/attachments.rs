@@ -1212,18 +1212,27 @@ fn soft_note(
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(close) = close {
-                    if crate::widgets::icon_button(ui, crate::theme::icon::CLOSE, "Fechar o aviso")
-                        .clicked()
-                    {
-                        *close = true;
-                    }
-                }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(glyph).size(18.0).color(fg));
+            // `horizontal` keeps the row as high as its content; a bare
+            // `with_layout` here would take all the height left in the page.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(glyph).size(18.0).color(fg));
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - 36.0).max(80.0));
                     ui.add(egui::Label::new(egui::RichText::new(text).color(fg)).wrap());
                 });
+                if let Some(close) = close {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::widgets::icon_button(
+                            ui,
+                            crate::theme::icon::CLOSE,
+                            "Fechar o aviso",
+                        )
+                        .clicked()
+                        {
+                            *close = true;
+                        }
+                    });
+                }
             });
         });
 }
