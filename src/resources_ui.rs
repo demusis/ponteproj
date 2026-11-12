@@ -46,6 +46,16 @@ pub enum UseLink {
     Task(i64),
 }
 
+/// What a panel of another area (atendimento, task) asks the app to do with
+/// the uses of resources linked to it: the panel cannot navigate by itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UseRequest {
+    /// Open this use (by uid) in Recursos.
+    Open(String),
+    /// Start a new use linked to the atendimento or task.
+    Reserve(UseLink),
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers (no window, no library)
 
@@ -58,6 +68,69 @@ pub fn uses_linked_to<'a>(uses: &'a [ResourceUse], link: &UseLink) -> Vec<&'a Re
             UseLink::Task(id) => item.task_id == Some(*id),
         })
         .collect()
+}
+
+/// A use as the other screens list it (ficha of a document, atendimento or
+/// task, exported ficha). Never carries the notes of the use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkedUse {
+    pub uid: String,
+    pub resource: String,
+    pub who: String,
+    pub sector: String,
+    /// "10/11 14:00–16:00".
+    pub period: String,
+    /// The line from [`use_line`].
+    pub text: String,
+    pub tone: Tone,
+    /// The situation as the person reads it ("Reservado", "Atrasado"...).
+    pub label: String,
+}
+
+/// The uses linked to `link`, ready to list, from lists already read.
+pub fn linked_uses_from(
+    resources: &[Resource],
+    uses: &[ResourceUse],
+    link: &UseLink,
+    now: &str,
+) -> Vec<LinkedUse> {
+    uses_linked_to(uses, link)
+        .into_iter()
+        .map(|item| {
+            let name = resources
+                .iter()
+                .find(|r| r.uid == item.resource_uid)
+                .map_or("Recurso removido", |r| r.name.as_str());
+            let (text, tone, label) = use_line(name, item, now);
+            LinkedUse {
+                uid: item.uid.clone(),
+                resource: name.to_owned(),
+                who: item.who.clone(),
+                sector: item.sector.clone(),
+                period: period_text(&item.start, &item.end),
+                text,
+                tone,
+                label,
+            }
+        })
+        .collect()
+}
+
+/// The uses linked to `link`, read from the memoized lists of the library
+/// (empty when they cannot be read). Call once per frame, not per row.
+pub fn linked_uses(store: &Store, link: &UseLink) -> Vec<LinkedUse> {
+    let Ok(uses) = store.list_resource_uses() else {
+        return Vec::new();
+    };
+    if !uses.iter().any(|item| match link {
+        UseLink::Document(id) => item.document_id == Some(*id),
+        UseLink::Attendance(id) => item.saiop_id == Some(*id),
+        UseLink::Task(id) => item.task_id == Some(*id),
+    }) {
+        return Vec::new();
+    }
+    let resources = store.list_resources().unwrap_or_default();
+    linked_uses_from(&resources, &uses, link, &now_moment())
 }
 
 /// "10/11 14:00–16:00", or both dates when the use crosses days.
@@ -722,6 +795,15 @@ impl ResourcesPanel {
     /// A message for the app's floating notice, once.
     pub fn take_message(&mut self) -> Option<String> {
         self.toast.take()
+    }
+
+    /// The uid of the saved use open in the ficha, if any (for the way back
+    /// from a document opened out of it).
+    pub fn open_use_uid(&self) -> Option<String> {
+        self.use_editor
+            .as_ref()
+            .map(|e| e.uid.clone())
+            .filter(|uid| !uid.is_empty())
     }
 
     /// Something was saved or deleted: the app refreshes its counters.

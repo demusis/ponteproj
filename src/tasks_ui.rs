@@ -1469,6 +1469,8 @@ pub struct TaskPanel {
     blocked: Option<Intent>,
     /// Document the person wants to read without leaving the form.
     consult_requested: Option<i64>,
+    /// A use of a resource to open, or a new one to start, in Recursos.
+    use_request: Option<crate::resources_ui::UseRequest>,
     /// "Abrir" clicked in the dependency chain of the form.
     open_task_requested: Option<Task>,
     /// The form shows the document search (to choose the document of a new
@@ -1517,6 +1519,11 @@ impl TaskPanel {
     /// Document to show in the read-only consultation window.
     pub fn take_consult_request(&mut self) -> Option<i64> {
         self.consult_requested.take()
+    }
+    /// What the person asked about the uses of resources in the form
+    /// ("Abrir" a use, "Reservar recurso…"), for the app to serve.
+    pub fn take_use_request(&mut self) -> Option<crate::resources_ui::UseRequest> {
+        self.use_request.take()
     }
     /// Title of the unsaved task, for the "leave the edit?" question.
     pub fn editing_title(&self) -> Option<String> {
@@ -2935,6 +2942,43 @@ impl TaskPanel {
                 if ui.add(widgets::quiet("Cancelar")).clicked() {
                     self.picking = false;
                     self.doc_picker.clear();
+                }
+            }
+            // Uses of rooms, books and equipment tied to a saved task.
+            if task_id > 0 {
+                let link = crate::resources_ui::UseLink::Task(task_id);
+                let uses = crate::resources_ui::linked_uses(store, &link);
+                ui.add_space(S1);
+                for item in &uses {
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(widgets::quiet("Abrir"))
+                                .on_hover_text("Abre o uso na área Recursos.")
+                                .clicked()
+                            {
+                                self.use_request =
+                                    Some(crate::resources_ui::UseRequest::Open(item.uid.clone()));
+                            }
+                            widgets::pill(ui, item.label.clone(), item.tone);
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.add(egui::Label::new(item.text.as_str()).wrap());
+                                },
+                            );
+                        });
+                    });
+                }
+                if ui
+                    .add(widgets::quiet(format!(
+                        "{} Reservar recurso…",
+                        icon::RESOURCES
+                    )))
+                    .on_hover_text("Reserva ou empresta uma sala, um livro ou um equipamento para esta tarefa.")
+                    .clicked()
+                {
+                    self.use_request = Some(crate::resources_ui::UseRequest::Reserve(link));
                 }
             }
         });

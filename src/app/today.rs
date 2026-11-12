@@ -35,8 +35,24 @@ pub(super) struct TodayData {
     /// `dated_tasks` and `dated_attendances` grouped by day, computed once
     /// per refresh (the calendar reads it on every frame).
     by_day: std::collections::BTreeMap<String, Vec<CalItem>>,
+    /// Uses of resources in use and past their expected end, oldest first.
+    pub overdue_uses: Vec<UseRow>,
+    /// Reserved or in-use uses touching today (the late ones are listed
+    /// above, not repeated here).
+    pub today_uses: Vec<UseRow>,
     /// Why the library could not be read, if it could not.
     pub error: Option<String>,
+}
+
+/// A use of a resource as a row of the list (read once per refresh).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct UseRow {
+    pub uid: String,
+    /// The line from `use_line`.
+    pub text: String,
+    pub tone: Tone,
+    /// The situation as the person reads it.
+    pub label: String,
 }
 
 impl TodayData {
@@ -80,6 +96,19 @@ impl TodayData {
             Err(error) => data.error = Some(error.to_string()),
         }
         data.by_day = items_by_day(&data.dated_tasks, &data.dated_attendances, today);
+        // Resources: the lists are memoized by the library, read once here.
+        match (store.list_resources(), store.list_resource_uses()) {
+            (Ok(resources), Ok(uses)) => {
+                let now = crate::resources::now_moment();
+                let groups = resource_groups(&resources, &uses, today, &now);
+                data.overdue_uses = groups.overdue;
+                data.today_uses = groups.today;
+                for (day, items) in groups.by_day {
+                    data.by_day.entry(day).or_default().extend(items);
+                }
+            }
+            (Err(error), _) | (_, Err(error)) => data.error = Some(error.to_string()),
+        }
         data
     }
 
@@ -157,6 +186,8 @@ fn due_tone(state: DueState) -> Tone {
 enum ItemKind {
     Task,
     Attendance,
+    /// A reservation or loan of a resource.
+    Resource,
 }
 
 /// One deadline in a day of the calendar; `index` points into the task or
@@ -170,6 +201,10 @@ struct CalItem {
     label: String,
     /// The full text, for the tooltip and the day list.
     detail: String,
+    /// Resources only: the use, to open it.
+    uid: String,
+    /// Resources only: the situation as the person reads it.
+    situation: String,
 }
 
 /// Open items with a deadline grouped by day (ISO date), tasks first and
@@ -192,6 +227,8 @@ fn items_by_day(
                 state: due_state(&task.due_date, today),
                 label: task.title.clone(),
                 detail: task.title.clone(),
+                uid: String::new(),
+                situation: String::new(),
             });
     }
     for (index, attendance) in attendances.iter().enumerate() {
@@ -218,9 +255,111 @@ fn items_by_day(
                 state: due_state(&attendance.due_date, today),
                 label: reference.to_owned(),
                 detail,
+                uid: String::new(),
+                situation: String::new(),
             });
     }
     days
+}
+
+/// How many days of a long use the calendar marks, from its start.
+const USE_DAYS_LIMIT: i64 = 31;
+
+/// What the area shows about resources.
+#[derive(Default)]
+struct ResourceGroups {
+    overdue: Vec<UseRow>,
+    today: Vec<UseRow>,
+    by_day: std::collections::BTreeMap<String, Vec<CalItem>>,
+}
+
+/// Splits the open uses (reserved or in use) into the late returns, the ones
+/// touching `today`, and calendar items: one on each day from the start to
+/// the end of the use (at most [`USE_DAYS_LIMIT`] days). Closed uses
+/// (returned, cancelled) appear nowhere. Pure: `now` comes from the caller.
+fn resource_groups(
+    resources: &[crate::resources::Resource],
+    uses: &[crate::resources::ResourceUse],
+    today: &str,
+    now: &str,
+) -> ResourceGroups {
+    use crate::resources::{parse_moment, UseStatus};
+    let names: std::collections::BTreeMap<&str, &str> = resources
+        .iter()
+        .map(|r| (r.uid.as_str(), r.name.as_str()))
+        .collect();
+    let name_of = |uid: &str| names.get(uid).copied().unwrap_or("Recurso removido");
+    let day_start = format!("{today}T00:00");
+    let day_end = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d")
+        .map(|d| {
+            format!(
+                "{}T00:00",
+                (d + chrono::Duration::days(1)).format("%Y-%m-%d")
+            )
+        })
+        .unwrap_or_default();
+    let mut groups = ResourceGroups::default();
+    let mut overdue: Vec<&crate::resources::ResourceUse> = Vec::new();
+    let mut touching: Vec<&crate::resources::ResourceUse> = Vec::new();
+    for item in uses {
+        if !matches!(item.status, UseStatus::Reserved | UseStatus::InUse) {
+            continue;
+        }
+        let name = name_of(&item.resource_uid);
+        let (text, _, label) = crate::resources_ui::use_line(name, item, now);
+        if item.overdue_at(now) {
+            overdue.push(item);
+        } else if item
+            .occupies_at(now)
+            .is_some_and(|(from, to)| from < day_end && day_start < to)
+        {
+            touching.push(item);
+        }
+        // Calendar: the start day and each following day of the use.
+        let (Ok(start), Ok(end)) = (parse_moment(&item.start), parse_moment(&item.end)) else {
+            continue;
+        };
+        let mut last = end.date();
+        // Ending at midnight sharp does not touch the day that begins there.
+        if end.time() == chrono::NaiveTime::MIN && last > start.date() {
+            last -= chrono::Duration::days(1);
+        }
+        let mut day = start.date();
+        let mut marked = 0;
+        while day <= last && marked < USE_DAYS_LIMIT {
+            let iso = day.format("%Y-%m-%d").to_string();
+            groups.by_day.entry(iso.clone()).or_default().push(CalItem {
+                kind: ItemKind::Resource,
+                index: 0,
+                state: if item.overdue_at(now) {
+                    DueState::Late
+                } else {
+                    due_state(&iso, today)
+                },
+                label: name.to_owned(),
+                detail: text.clone(),
+                uid: item.uid.clone(),
+                situation: label.clone(),
+            });
+            day += chrono::Duration::days(1);
+            marked += 1;
+        }
+    }
+    overdue.sort_by(|a, b| (&a.end, &a.uid).cmp(&(&b.end, &b.uid)));
+    touching.sort_by(|a, b| (&a.start, &a.uid).cmp(&(&b.start, &b.uid)));
+    let row = |item: &crate::resources::ResourceUse| {
+        let (text, tone, label) =
+            crate::resources_ui::use_line(name_of(&item.resource_uid), item, now);
+        UseRow {
+            uid: item.uid.clone(),
+            text,
+            tone,
+            label,
+        }
+    };
+    groups.overdue = overdue.into_iter().map(row).collect();
+    groups.today = touching.into_iter().map(row).collect();
+    groups
 }
 
 /// "07/11" from "2026-11-07".
@@ -237,6 +376,8 @@ enum Asked {
     OpenTask(Task),
     OpenDocument(i64),
     OpenAttendance(i64),
+    /// A use of a resource, by uid.
+    OpenUse(String),
 }
 
 impl PonteApp {
@@ -265,6 +406,7 @@ impl PonteApp {
         let late = self.today.late.len();
         let due = self.today.today.len();
         let attendances = self.today.attendances.len();
+        let returns = self.today.overdue_uses.len();
         ui.horizontal_wrapped(|ui| {
             if late > 0 {
                 widgets::pill(
@@ -291,7 +433,14 @@ impl PonteApp {
                     Tone::Info,
                 );
             }
-            if late + due + attendances == 0 && self.today.error.is_none() {
+            if returns > 0 {
+                widgets::pill(
+                    ui,
+                    crate::labels::count(returns, "devolução atrasada", "devoluções atrasadas"),
+                    Tone::Danger,
+                );
+            }
+            if late + due + attendances + returns == 0 && self.today.error.is_none() {
                 widgets::pill(ui, "Nada vence hoje", Tone::Ok);
             }
         });
@@ -375,6 +524,14 @@ impl PonteApp {
                 };
                 let right = |ui: &mut egui::Ui, asked: &mut Option<Asked>| {
                     attendance_group(ui, &self.today.attendances, &now.to_string(), asked);
+                    use_group(
+                        ui,
+                        "Devoluções atrasadas",
+                        Some(p.danger),
+                        &self.today.overdue_uses,
+                        asked,
+                    );
+                    use_group(ui, "Reservas de hoje", None, &self.today.today_uses, asked);
                     recent_group(ui, &self.today.recent, asked);
                 };
                 if wide {
@@ -417,6 +574,7 @@ impl PonteApp {
                     self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
                 }
             }
+            Some(Asked::OpenUse(uid)) => self.open_use(&uid),
         }
     }
 
@@ -485,8 +643,18 @@ fn state_text(kind: ItemKind, state: DueState) -> &'static str {
     match (kind, state) {
         (ItemKind::Task, DueState::Late) => "Atrasada",
         (ItemKind::Attendance, DueState::Late) => "Prazo vencido",
+        // A use says its own situation (see `item_state`).
+        (ItemKind::Resource, _) => "",
         (_, DueState::Today) => "Para hoje",
         (_, DueState::Future) => "No prazo",
+    }
+}
+
+/// The words that say where a calendar item stands.
+fn item_state(item: &CalItem) -> &str {
+    match item.kind {
+        ItemKind::Resource => item.situation.as_str(),
+        kind => state_text(kind, item.state),
     }
 }
 
@@ -494,6 +662,7 @@ fn item_text(data: &CalItem, text: &str) -> String {
     match data.kind {
         ItemKind::Task => text.to_owned(),
         ItemKind::Attendance => format!("{} {text}", icon::ATTENDANCES),
+        ItemKind::Resource => format!("{} {text}", icon::RESOURCES),
     }
 }
 
@@ -508,6 +677,7 @@ fn asked_for(item: &CalItem, data: &TodayData) -> Option<Asked> {
             .dated_attendances
             .get(item.index)
             .map(|a| Asked::OpenAttendance(a.id)),
+        ItemKind::Resource => Some(Asked::OpenUse(item.uid.clone())),
     }
 }
 
@@ -571,19 +741,14 @@ fn calendar_view(
                 let response = ui
                     .interact(
                         line,
-                        base.with((
-                            "cal-item",
-                            iso,
-                            item.kind == ItemKind::Attendance,
-                            item.index,
-                        )),
+                        base.with(("cal-item", iso, item.kind as u8, item.index, &item.uid)),
                         egui::Sense::click(),
                     )
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text(format!(
                         "{}\n{}",
                         item_text(item, &item.detail),
-                        state_text(item.kind, item.state)
+                        item_state(item)
                     ));
                 if response.clicked() {
                     if let Some(ask) = asked_for(item, data) {
@@ -640,11 +805,7 @@ fn calendar_view(
         for (index, item) in items.iter().enumerate() {
             let clicked = row(
                 ui,
-                (
-                    "cal-day-item",
-                    item.kind == ItemKind::Attendance,
-                    item.index,
-                ),
+                ("cal-day-item", item.kind as u8, item.index, &item.uid),
                 index + 1 == items.len(),
                 |ui| {
                     ui.horizontal(|ui| {
@@ -658,11 +819,7 @@ fn calendar_view(
                             .truncate(),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            widgets::pill(
-                                ui,
-                                state_text(item.kind, item.state),
-                                due_tone(item.state),
-                            );
+                            widgets::pill(ui, item_state(item), due_tone(item.state));
                         });
                     });
                 },
@@ -920,6 +1077,52 @@ fn attendance_group(
     ui.add_space(S3);
 }
 
+/// Uses of resources (late returns, today's reservations); nothing when none.
+fn use_group(
+    ui: &mut egui::Ui,
+    title: &str,
+    color: Option<egui::Color32>,
+    uses: &[UseRow],
+    asked: &mut Option<Asked>,
+) {
+    if uses.is_empty() {
+        return;
+    }
+    widgets::overline(ui, title, color);
+    ui.add_space(S1);
+    list_card(ui, |ui| {
+        for (index, item) in uses.iter().enumerate() {
+            let clicked = row(
+                ui,
+                ("today-use", &item.uid),
+                index + 1 == uses.len(),
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = S3;
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            widgets::pill(ui, item.label.clone(), item.tone);
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&item.text)
+                                            .font(theme::font_strong(theme::SIZE_BODY)),
+                                    )
+                                    .selectable(false)
+                                    .truncate(),
+                                );
+                            });
+                        });
+                    });
+                },
+            );
+            if clicked {
+                *asked = Some(Asked::OpenUse(item.uid.clone()));
+            }
+        }
+    });
+    ui.add_space(S3);
+}
+
 fn recent_group(ui: &mut egui::Ui, documents: &[DocumentSummary], asked: &mut Option<Asked>) {
     if documents.is_empty() {
         return;
@@ -1071,6 +1274,151 @@ mod tests {
         assert_eq!(day[1].label, "Assunto");
         assert_eq!(day[1].state, DueState::Today);
         assert_eq!(days["2026-11-12"][0].state, DueState::Future);
+    }
+
+    fn resource(uid: &str, name: &str) -> crate::resources::Resource {
+        crate::resources::Resource {
+            uid: uid.into(),
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    fn booking(
+        uid: &str,
+        status: crate::resources::UseStatus,
+        start: &str,
+        end: &str,
+    ) -> crate::resources::ResourceUse {
+        crate::resources::ResourceUse {
+            uid: uid.into(),
+            resource_uid: "r1".into(),
+            who: "Servidor A".into(),
+            start: start.into(),
+            end: end.into(),
+            status,
+            notes: "Levar o cabo".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resources_split_into_late_returns_today_and_calendar_days() {
+        use crate::resources::UseStatus::{Cancelled, InUse, Reserved, Returned};
+        let resources = [resource("r1", "Projetor")];
+        let uses = [
+            booking("late", InUse, "2026-11-08T09:00", "2026-11-09T09:00"),
+            booking("today", Reserved, "2026-11-10T14:00", "2026-11-10T16:00"),
+            booking("span", Reserved, "2026-11-09T18:00", "2026-11-11T08:00"),
+            booking("later", Reserved, "2026-11-15T09:00", "2026-11-15T10:00"),
+            booking("done", Returned, "2026-11-10T09:00", "2026-11-10T10:00"),
+            booking("off", Cancelled, "2026-11-10T09:00", "2026-11-10T10:00"),
+        ];
+        let groups = resource_groups(&resources, &uses, "2026-11-10", "2026-11-10T10:00");
+        let uids = |rows: &[UseRow]| rows.iter().map(|r| r.uid.clone()).collect::<Vec<_>>();
+        assert_eq!(uids(&groups.overdue), ["late"]);
+        assert_eq!(groups.overdue[0].label, "Atrasado");
+        assert_eq!(groups.overdue[0].tone, Tone::Danger);
+        // The late one is listed above, not repeated; the multi-day one
+        // touches today.
+        assert_eq!(uids(&groups.today), ["span", "today"]);
+        // Never the notes.
+        assert!(!groups.today[0].text.contains("cabo"));
+        // Calendar: closed uses are absent; the multi-day use is on each day.
+        let days = &groups.by_day;
+        assert!(days
+            .values()
+            .flatten()
+            .all(|i| i.uid != "done" && i.uid != "off"));
+        let on = |day: &str| {
+            days.get(day)
+                .map(|items| items.iter().map(|i| i.uid.as_str()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        assert_eq!(on("2026-11-08"), ["late"]);
+        assert_eq!(on("2026-11-09"), ["late", "span"]);
+        assert_eq!(on("2026-11-10"), ["today", "span"]);
+        assert_eq!(on("2026-11-11"), ["span"]);
+        assert_eq!(on("2026-11-15"), ["later"]);
+        // Tones: overdue danger, today warn, future info.
+        let item = |day: &str, uid: &str| {
+            days[day]
+                .iter()
+                .find(|i| i.uid == uid)
+                .expect("item")
+                .clone()
+        };
+        assert_eq!(due_tone(item("2026-11-08", "late").state), Tone::Danger);
+        assert_eq!(due_tone(item("2026-11-10", "today").state), Tone::Warn);
+        assert_eq!(due_tone(item("2026-11-15", "later").state), Tone::Info);
+        assert_eq!(item("2026-11-10", "today").situation, "Reservado");
+        assert_eq!(item("2026-11-10", "today").kind, ItemKind::Resource);
+    }
+
+    #[test]
+    fn a_long_use_marks_at_most_31_days_and_midnight_ends_the_day_before() {
+        use crate::resources::UseStatus::Reserved;
+        let resources = [resource("r1", "Auditório")];
+        let uses = [
+            booking("long", Reserved, "2026-11-01T09:00", "2027-02-01T09:00"),
+            booking("midnight", Reserved, "2026-11-20T20:00", "2026-11-21T00:00"),
+        ];
+        let groups = resource_groups(&resources, &uses, "2026-11-10", "2026-11-10T10:00");
+        let long = groups
+            .by_day
+            .values()
+            .filter(|items| items.iter().any(|i| i.uid == "long"))
+            .count();
+        assert_eq!(long, 31);
+        assert!(groups.by_day.contains_key("2026-12-01"));
+        assert!(!groups.by_day.contains_key("2026-12-02"));
+        // Ending at midnight sharp does not touch the day that begins there.
+        assert!(groups.by_day["2026-11-20"]
+            .iter()
+            .any(|i| i.uid == "midnight"));
+        assert!(!groups
+            .by_day
+            .get("2026-11-21")
+            .map(|items| items.iter().any(|i| i.uid == "midnight"))
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn the_library_load_reads_resources_once_into_groups_and_calendar() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let uid = store
+            .save_resource(
+                &crate::resources::Resource {
+                    name: "Auditório".into(),
+                    kind: "sala".into(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let start = chrono::Local::now().naive_local() + chrono::Duration::days(3);
+        let item = crate::resources::ResourceUse {
+            resource_uid: uid,
+            quantity: 1,
+            who: "Servidor A".into(),
+            start: crate::resources::format_moment(start),
+            end: crate::resources::format_moment(start + chrono::Duration::hours(2)),
+            ..Default::default()
+        };
+        store.save_resource_use(&item, None).unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let data = TodayData::load(&store, &today);
+        assert!(data.overdue_uses.is_empty() && data.today_uses.is_empty());
+        assert_eq!(
+            data.by_day
+                .values()
+                .flatten()
+                .filter(|i| i.kind == ItemKind::Resource)
+                .count(),
+            1
+        );
+        assert_eq!(data.pending_tasks(), 0);
     }
 
     #[test]

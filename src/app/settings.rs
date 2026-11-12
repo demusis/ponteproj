@@ -59,7 +59,7 @@ impl PonteApp {
             });
             widgets::small_muted(
                 ui,
-                "O Ponte mostra um aviso do Windows com a quantidade de tarefas e atendimentos que vencem. Só enquanto o Ponte está aberto ou minimizado.",
+                "O Ponte mostra um aviso do Windows com a quantidade de tarefas e atendimentos que vencem, de reservas de recursos para hoje e de devoluções atrasadas. Só enquanto o Ponte está aberto ou minimizado.",
             );
             ui.add_space(S1);
             if ui

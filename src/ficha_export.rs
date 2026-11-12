@@ -53,6 +53,19 @@ pub struct AttendanceLine {
     pub assignee: String,
 }
 
+/// One use of a resource (room, equipment, book) tied to the document.
+/// Never carries the notes of the use.
+#[derive(Clone, Debug, Default)]
+pub struct ResourceLine {
+    pub resource: String,
+    pub who: String,
+    pub sector: String,
+    /// Already in the person's words ("10/11 14:00–16:00").
+    pub period: String,
+    /// Already in the person's words ("Reservado", "Atrasado").
+    pub status: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FileLine {
     pub name: String,
@@ -90,6 +103,7 @@ pub struct FichaPage {
     pub analysis: Option<AnalysisBlock>,
     pub tasks: Vec<TaskLine>,
     pub attendances: Vec<AttendanceLine>,
+    pub resources: Vec<ResourceLine>,
     pub note: String,
     pub text: String,
     /// Heading of the text section; "Texto do documento" when empty.
@@ -330,6 +344,21 @@ pub fn html(page: &FichaPage) -> String {
         o.push_str("</table>\n</section>\n");
     }
 
+    if !page.resources.is_empty() {
+        o.push_str("<section>\n<h2>Recursos usados</h2>\n<table class=\"grid\">\n<tr><th>Recurso</th><th>Quem</th><th>Setor</th><th>Período</th><th>Situação</th></tr>\n");
+        for r in &page.resources {
+            o.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                esc(&r.resource),
+                esc(&r.who),
+                esc(&r.sector),
+                esc(&r.period),
+                esc(&r.status)
+            ));
+        }
+        o.push_str("</table>\n</section>\n");
+    }
+
     if !page.note.trim().is_empty() {
         o.push_str(&format!(
             "<section>\n<h2>Nota</h2>\n<p class=\"pre\">{}</p>\n</section>\n",
@@ -438,6 +467,13 @@ mod tests {
                 due_date: "2026-03-25".into(),
                 assignee: "Servidor B".into(),
             }],
+            resources: vec![ResourceLine {
+                resource: "Sala de reuniões do 2º andar".into(),
+                who: "Servidor A".into(),
+                sector: "Setor Administrativo".into(),
+                period: "10/11 14:00–16:00".into(),
+                status: "Reservado".into(),
+            }],
             note: "Primeira linha\nSegunda linha".into(),
             text: "Texto do ofício.\nSegundo parágrafo.".into(),
             text_title: "Texto importado".into(),
@@ -480,6 +516,7 @@ mod tests {
             "Análise",
             "Tarefas",
             "Atendimento",
+            "Recursos usados",
             "Nota",
             "Texto do documento",
             "Arquivos e anexos",
@@ -488,6 +525,29 @@ mod tests {
         ] {
             assert!(!out.contains(&format!("<h2>{h}")), "{h}");
         }
+    }
+
+    #[test]
+    fn resources_are_listed_after_attendances_and_escaped() {
+        let out = html(&sample());
+        assert!(out.contains("<h2>Recursos usados</h2>"));
+        assert!(out.contains("<th>Quem</th><th>Setor</th><th>Período</th>"));
+        assert!(out.contains("Sala de reuniões do 2º andar"));
+        assert!(out.contains("10/11 14:00–16:00"));
+        let at = out.find("<h2>Atendimento").unwrap();
+        let rs = out.find("<h2>Recursos usados").unwrap();
+        let nt = out.find("<h2>Nota").unwrap();
+        assert!(at < rs && rs < nt);
+        let page = FichaPage {
+            resources: vec![ResourceLine {
+                resource: "<b>Projetor</b>".into(),
+                ..Default::default()
+            }],
+            ..sample()
+        };
+        let out = html(&page);
+        assert!(!out.contains("<b>Projetor"));
+        assert!(out.contains("&lt;b&gt;Projetor&lt;/b&gt;"));
     }
 
     #[test]

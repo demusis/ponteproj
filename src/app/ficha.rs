@@ -186,13 +186,14 @@ fn summary_rows(detail: &DocumentDetail) -> Vec<(&'static str, String)> {
 impl PonteApp {
     /// On the ficha: the way back to where the person came from.
     pub(super) fn return_bar(&mut self, ui: &mut egui::Ui) {
-        let Some(origin) = self.return_to else {
+        let Some(origin) = self.return_to.clone() else {
             return;
         };
         let label = match origin {
             ReturnTo::Today => "Voltar a Hoje",
             ReturnTo::Task(_) => "Voltar à tarefa",
             ReturnTo::Attendance(_) => "Voltar ao atendimento",
+            ReturnTo::Resources(_) => "Voltar ao uso",
         };
         if !ui
             .add(widgets::quiet(format!("{} {label}", icon::BACK)))
@@ -220,6 +221,31 @@ impl PonteApp {
                     self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
                 }
             }
+            ReturnTo::Resources(uid) => self.open_use(&uid),
+        }
+    }
+
+    /// Opens a use of a resource in Recursos; says why when it cannot be.
+    pub(super) fn open_use(&mut self, uid: &str) {
+        match self.resources.focus_use(&self.store, uid) {
+            Ok(()) => self.navigate(Leave::Resources),
+            Err(text) => self.error(text),
+        }
+    }
+
+    /// Does what an atendimento or a task asked about its uses of resources.
+    pub(super) fn serve_use_request(&mut self, request: crate::resources_ui::UseRequest) {
+        match request {
+            crate::resources_ui::UseRequest::Open(uid) => self.open_use(&uid),
+            crate::resources_ui::UseRequest::Reserve(link) => self.reserve_resource(link),
+        }
+    }
+
+    /// Starts a new use of a resource tied to the screen it was asked from.
+    pub(super) fn reserve_resource(&mut self, link: crate::resources_ui::UseLink) {
+        match self.resources.new_use_linked(&self.store, link) {
+            Ok(()) => self.navigate(Leave::Resources),
+            Err(text) => self.error(text),
         }
     }
 
@@ -454,42 +480,47 @@ impl PonteApp {
             }
         });
         ui.add_space(S2);
-        egui::ScrollArea::vertical()
+        #[allow(unused_mut)]
+        let mut content = egui::ScrollArea::vertical()
             .id_salt(("document-content", id, self.tab as u8))
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = S4;
-                match self.tab {
-                    Tab::Overview => self.overview(ui, detail),
-                    Tab::Document => self.document_tab(ui, detail),
-                    Tab::Notes => {
-                        if ui.available_width() >= 1000.0 {
-                            // Two columns: notes on the left, the draft beside them.
-                            let gap = S4;
-                            let total = ui.available_width();
-                            let left = ((total - gap) * 0.36).floor();
-                            let right = total - gap - left;
-                            ui.horizontal_top(|ui| {
-                                ui.spacing_mut().item_spacing.x = gap;
-                                ui.vertical(|ui| {
-                                    ui.set_width(left);
-                                    self.notes(ui, detail, false);
-                                });
-                                ui.vertical(|ui| {
-                                    ui.set_width(right);
-                                    ui.spacing_mut().item_spacing.y = S4;
-                                    self.drafts(ui, detail);
-                                });
+            .auto_shrink([false, false]);
+        #[cfg(feature = "shots")]
+        if self.shots_ficha_scroll > 0.0 {
+            content = content.vertical_scroll_offset(self.shots_ficha_scroll);
+        }
+        content.show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = S4;
+            match self.tab {
+                Tab::Overview => self.overview(ui, detail),
+                Tab::Document => self.document_tab(ui, detail),
+                Tab::Notes => {
+                    if ui.available_width() >= 1000.0 {
+                        // Two columns: notes on the left, the draft beside them.
+                        let gap = S4;
+                        let total = ui.available_width();
+                        let left = ((total - gap) * 0.36).floor();
+                        let right = total - gap - left;
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = gap;
+                            ui.vertical(|ui| {
+                                ui.set_width(left);
+                                self.notes(ui, detail, false);
                             });
-                        } else {
-                            self.notes(ui, detail, true);
-                            self.drafts(ui, detail);
-                        }
+                            ui.vertical(|ui| {
+                                ui.set_width(right);
+                                ui.spacing_mut().item_spacing.y = S4;
+                                self.drafts(ui, detail);
+                            });
+                        });
+                    } else {
+                        self.notes(ui, detail, true);
+                        self.drafts(ui, detail);
                     }
-                    Tab::More => self.more_tab(ui, detail),
                 }
-                ui.add_space(S2);
-            });
+                Tab::More => self.more_tab(ui, detail),
+            }
+            ui.add_space(S2);
+        });
     }
 
     pub(super) fn section<R>(
@@ -527,6 +558,7 @@ impl PonteApp {
                 self.document_summary(&mut columns[0], detail);
                 self.document_tasks(&mut columns[1], detail);
                 self.saiop_links(&mut columns[1], detail);
+                self.resource_links(&mut columns[1], detail);
                 self.overview_note(&mut columns[1], detail);
             });
         } else {
@@ -534,6 +566,7 @@ impl PonteApp {
             self.document_summary(ui, detail);
             self.document_tasks(ui, detail);
             self.saiop_links(ui, detail);
+            self.resource_links(ui, detail);
             self.overview_note(ui, detail);
         }
         ui.horizontal(|ui| {
@@ -958,6 +991,71 @@ impl PonteApp {
             } else {
                 self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
             }
+        }
+    }
+
+    /// Uses of rooms, books and equipment tied to this document. With none,
+    /// the card is only the quiet way to book one (not for a document in the
+    /// Lixeira); with some, the same action sits in the card header.
+    fn resource_links(&mut self, ui: &mut egui::Ui, detail: &DocumentDetail) {
+        let id = detail.summary.id;
+        let link = crate::resources_ui::UseLink::Document(id);
+        let mine = crate::resources_ui::linked_uses(&self.store, &link);
+        let mut open_use = None;
+        let mut reserve = false;
+        if mine.is_empty() {
+            if !self.store.is_active_document(id) {
+                return;
+            }
+            widgets::card(ui, |ui| {
+                reserve = ui
+                    .add(widgets::quiet(format!(
+                        "{} Reservar recurso…",
+                        icon::RESOURCES
+                    )))
+                    .on_hover_text("Reserva ou empresta uma sala, um livro ou um equipamento para este documento.")
+                    .clicked();
+            });
+        } else {
+            titled_card(
+                ui,
+                "Recursos usados",
+                |ui| {
+                    reserve = ui
+                        .add(widgets::quiet("Reservar recurso…"))
+                        .on_hover_text("Reserva ou empresta outro recurso para este documento.")
+                        .clicked();
+                },
+                |ui| {
+                    for (index, item) in mine.iter().enumerate() {
+                        if index > 0 {
+                            ui.separator();
+                        }
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.add(widgets::quiet("Abrir")).clicked() {
+                                        open_use = Some(item.uid.clone());
+                                    }
+                                    pill(ui, item.label.clone(), item.tone);
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add(egui::Label::new(item.text.as_str()).wrap());
+                                        },
+                                    );
+                                },
+                            );
+                        });
+                    }
+                },
+            );
+        }
+        if let Some(uid) = open_use {
+            self.open_use(&uid);
+        } else if reserve {
+            self.reserve_resource(link);
         }
     }
 
@@ -1720,6 +1818,19 @@ impl PonteApp {
                     assignee: a.assignee.clone(),
                 })
                 .collect(),
+            resources: crate::resources_ui::linked_uses(
+                &self.store,
+                &crate::resources_ui::UseLink::Document(id),
+            )
+            .into_iter()
+            .map(|u| fx::ResourceLine {
+                resource: u.resource,
+                who: u.who,
+                sector: u.sector,
+                period: u.period,
+                status: u.label,
+            })
+            .collect(),
             note,
             text: detail.capture.text.clone(),
             text_title: if detail.summary.manual {

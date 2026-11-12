@@ -2952,6 +2952,11 @@ pub struct SaiopPanel {
     confirm_delete: Option<i64>,
     /// Task the person asked to open in the Tarefas panel.
     open_task: Option<Task>,
+    /// A use of a resource to open, or a new one to start, in Recursos.
+    use_request: Option<crate::resources_ui::UseRequest>,
+    /// Development only: how far the ficha is scrolled in the pictures.
+    #[cfg(feature = "shots")]
+    shots_scroll: f32,
 }
 
 #[cfg(feature = "desktop")]
@@ -2990,6 +2995,9 @@ impl Default for SaiopPanel {
             attachments: Default::default(),
             confirm_delete: None,
             open_task: None,
+            use_request: None,
+            #[cfg(feature = "shots")]
+            shots_scroll: 0.0,
         }
     }
 }
@@ -3004,6 +3012,12 @@ impl SaiopPanel {
     /// in the Tarefas panel.
     pub fn take_open_task(&mut self) -> Option<Task> {
         self.open_task.take()
+    }
+
+    /// What the person asked about the uses of resources in the ficha
+    /// ("Abrir" a use, "Reservar recurso…"), for the app to serve.
+    pub fn take_use_request(&mut self) -> Option<crate::resources_ui::UseRequest> {
+        self.use_request.take()
     }
 
     /// Tells the panel which document the library has open (id and number).
@@ -4379,9 +4393,15 @@ impl SaiopPanel {
                     });
 
                 // ---- Form --------------------------------------------------------
-                egui::ScrollArea::vertical()
+                #[allow(unused_mut)]
+                let mut detail_area = egui::ScrollArea::vertical()
                     .id_salt("saiop-detail-scroll")
-                    .auto_shrink([false, false])
+                    .auto_shrink([false, false]);
+                #[cfg(feature = "shots")]
+                if self.shots_scroll > 0.0 {
+                    detail_area = detail_area.vertical_scroll_offset(self.shots_scroll);
+                }
+                detail_area
                     .show(ui, |ui| {
                         egui::Frame::new()
                             .inner_margin(egui::Margin::symmetric(16, 0))
@@ -4872,6 +4892,53 @@ impl SaiopPanel {
                             *create_task_clicked = true;
                         }
                     });
+                },
+            );
+
+            // Uses of rooms, books and equipment tied to this atendimento.
+            let link = crate::resources_ui::UseLink::Attendance(ed.id);
+            let uses = crate::resources_ui::linked_uses(store, &link);
+            fold(
+                ui,
+                &format!("Recursos usados ({})", uses.len()),
+                ("saiop-fold-resources", ed_id),
+                !uses.is_empty(),
+                |ui| {
+                    if uses.is_empty() {
+                        widgets::small_muted(ui, "Nenhum recurso usado neste atendimento.");
+                    }
+                    for item in &uses {
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(widgets::quiet("Abrir"))
+                                        .on_hover_text("Abre o uso na área Recursos.")
+                                        .clicked()
+                                    {
+                                        self.use_request = Some(
+                                            crate::resources_ui::UseRequest::Open(item.uid.clone()),
+                                        );
+                                    }
+                                    widgets::pill(ui, item.label.clone(), item.tone);
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add(egui::Label::new(item.text.as_str()).wrap());
+                                        },
+                                    );
+                                },
+                            );
+                        });
+                    }
+                    if ui
+                        .add(widgets::secondary("Reservar recurso…"))
+                        .on_hover_text("Reserva ou empresta uma sala, um livro ou um equipamento para este atendimento.")
+                        .clicked()
+                    {
+                        self.use_request = Some(crate::resources_ui::UseRequest::Reserve(link));
+                    }
                 },
             );
         }
@@ -5499,6 +5566,7 @@ pub const SHOTS: &[&str] = &[
     "vazia-busca",
     "ligar",
     "estreita",
+    "com-recursos",
 ];
 
 #[cfg(feature = "shots")]
@@ -5512,6 +5580,22 @@ impl SaiopPanel {
                         self.load_into_editor(store, first);
                     }
                 }
+            }
+            "com-recursos" => {
+                // The atendimento that has uses of resources, scrolled down
+                // to the "Recursos usados" block.
+                let linked: std::collections::BTreeSet<i64> = store
+                    .list_resource_uses()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|u| u.saiop_id)
+                    .collect();
+                if let Ok(list) = store.list_saiop_attendances() {
+                    if let Some(att) = list.into_iter().find(|a| linked.contains(&a.id)) {
+                        self.load_into_editor(store, att);
+                    }
+                }
+                self.shots_scroll = 700.0;
             }
             "filtros" => self.filters_open = true,
             "importar" => self.import_open = true,

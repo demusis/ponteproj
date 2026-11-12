@@ -1,6 +1,6 @@
 # Ponte — Assistente documental SIGADOC
 
-O **Ponte** é um programa para Windows que guarda, no seu computador, os documentos que você importa do SIGADOC, com texto, PDFs e histórico de tramitação. Com eles guardados, você anota, prepara minutas, acompanha prazos (com um aviso diário do Windows, se você quiser), controla as demandas do gabinete e, se quiser, trabalha em equipe.
+O **Ponte** é um programa para Windows que guarda, no seu computador, os documentos que você importa do SIGADOC, com texto, PDFs e histórico de tramitação. Com eles guardados, você anota, prepara minutas, acompanha prazos (com um aviso diário do Windows, se você quiser), controla as demandas do gabinete, reserva salas, livros e equipamentos e, se quiser, trabalha em equipe.
 
 Ele tem duas partes, que funcionam juntas:
 
@@ -15,8 +15,8 @@ Ele tem duas partes, que funcionam juntas:
 |---|---|
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
-| **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em dez seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.32.5 (extensão 0.4.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
+| **Versão** | 0.33.0 (extensão 0.4.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.32.5.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.33.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -97,6 +97,8 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | **Ficha** | A tela de um documento, com quatro abas: Resumo, Documento, Notas e minutas, Mais. |
 | **Tarefa** | Uma providência a tomar sobre um documento, com responsável e prazo. Toda tarefa pertence a um documento. |
 | **Atendimento** | Uma **passagem** de um documento ou de uma demanda pelo gabinete: quando entrou, com quem está, em que situação, quando saiu. É o que muitos gabinetes controlam em planilha. O mesmo documento pode ter várias passagens, e um atendimento pode existir sem documento. |
+| **Recurso** | Uma sala, um livro, um equipamento ou outra coisa que o gabinete reserva ou empresta, com uma quantidade (por exemplo, `Sala de reuniões do 2º andar`, ou `Projetor`). |
+| **Uso** | Uma reserva ou um empréstimo de um recurso, com data e hora de início e de fim previsto, quem usa e, no fim, a devolução. Fica na área **Recursos**. |
 | **Anexo** | Um arquivo do seu computador que você junta a um documento, a uma tarefa ou a um atendimento. Não confundir com os PDFs do SIGADOC, que vêm na importação. |
 | **Minuta** | O rascunho de uma resposta, encaminhamento ou pedido de complementação, escrito no Ponte e depois colado no SIGADOC. |
 | **Lixeira** | Para onde vai o que você exclui. De lá se restaura. |
@@ -126,7 +128,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Barra lateral (esquerda):** no alto, **Buscar** (Ctrl+K) procura em todo o acervo (veja **Buscar em todo o acervo**, abaixo). Em seguida, escolhe a área. **Hoje** (Ctrl+1) é a tela em que o Ponte abre; com o acervo vazio, abre em Documentos, na tela inicial com o card **Primeiros passos** ([seção 1](#1-instalar-em-5-minutos)). **Documentos** (Ctrl+2) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+3) é a lista de tarefas. **Atendimentos** (Ctrl+4) é o controle do gabinete. **Modelos** (Ctrl+5) é a área dos modelos de trabalho ([seção 9.5](#95-modelos-de-trabalho)). Um número vermelho em **Hoje** (tarefas atrasadas ou para hoje, mais atendimentos com prazo vencido ou para hoje) e em **Tarefas** (só as tarefas atrasadas ou para hoje) mostra o que pede atenção. Embaixo ficam **Ajustes** e **Ajuda**, que abre o guia curto.
+- **Barra lateral (esquerda):** no alto, **Buscar** (Ctrl+K) procura em todo o acervo (veja **Buscar em todo o acervo**, abaixo). Em seguida, escolhe a área. **Hoje** (Ctrl+1) é a tela em que o Ponte abre; com o acervo vazio, abre em Documentos, na tela inicial com o card **Primeiros passos** ([seção 1](#1-instalar-em-5-minutos)). **Documentos** (Ctrl+2) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+3) é a lista de tarefas. **Atendimentos** (Ctrl+4) é o controle do gabinete. **Modelos** (Ctrl+5) é a área dos modelos de trabalho ([seção 9.5](#95-modelos-de-trabalho)). **Recursos** (Ctrl+6) é o controle de salas, livros e equipamentos (veja **A área Recursos**, abaixo). Um número vermelho em **Hoje** (tarefas atrasadas ou para hoje, mais atendimentos com prazo vencido ou para hoje), em **Tarefas** (só as tarefas atrasadas ou para hoje) e em **Recursos** (devoluções atrasadas) mostra o que pede atenção. Embaixo ficam **Ajustes** e **Ajuda**, que abre o guia curto.
 - **Hoje:** a tela do começo do dia (veja abaixo, em **A área Hoje**).
 - **Documentos:** a lista fica à esquerda e a ficha do documento selecionado, à direita. A lista de documentos existe só nesta área.
 - **Tarefas e Atendimentos abrem com tudo.** Não seguem o documento selecionado em Documentos. Para ver só os de um documento, veja [6.1](#61-a-área-tarefas) e [7.2](#72-ver-só-os-de-um-documento).
@@ -135,11 +137,11 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 
 | Atalho | O que faz |
 |---|---|
-| **Ctrl+1** a **Ctrl+5** | Ir para Hoje, Documentos, Tarefas, Atendimentos e Modelos |
-| **Ctrl+K** | Abrir a busca em todo o acervo (documentos, tarefas e atendimentos), de qualquer área |
+| **Ctrl+1** a **Ctrl+6** | Ir para Hoje, Documentos, Tarefas, Atendimentos, Modelos e Recursos |
+| **Ctrl+K** | Abrir a busca em todo o acervo (documentos, tarefas, atendimentos e recursos), de qualquer área |
 | **Ctrl+F** | Ir para a busca da área; a partir de outras áreas, para a busca de documentos |
-| **Ctrl+N** | Criar: registro manual (em Hoje e Documentos), nova tarefa (em Tarefas: sem documento, ou do documento pelo qual a lista está filtrada), nova entrada (em Atendimentos) |
-| **Ctrl+S** | Salvar o que está em edição: tarefa, atendimento, notas do documento, modelo ou configuração de IA. Em Notas e minutas, salva a nota ou, estando a nota já salva, uma nova versão da minuta |
+| **Ctrl+N** | Criar: registro manual (em Hoje e Documentos), nova tarefa (em Tarefas: sem documento, ou do documento pelo qual a lista está filtrada), nova entrada (em Atendimentos), nova reserva (em Recursos; na aba **Recursos**, novo recurso) |
+| **Ctrl+S** | Salvar o que está em edição: tarefa, atendimento, reserva ou recurso, notas do documento, modelo ou configuração de IA. Em Notas e minutas, salva a nota ou, estando a nota já salva, uma nova versão da minuta |
 | **Ctrl+A** | Em Tarefas, no modo de seleção (**Selecionar**, [6.5](#65-ações-em-lote)): selecionar todas as tarefas da lista |
 | **Esc** | Fechar a janela ou o painel lateral aberto, se não houver nada sem salvar. Em Tarefas, no modo de seleção: fechar a pergunta aberta e, depois, sair da seleção |
 
@@ -169,11 +171,15 @@ Na área **Modelos**, **Ctrl+F** (buscar modelo), **Ctrl+N** (**Novo modelo**), 
 - **Atendimentos com prazo vencido ou para hoje:** um clique abre o atendimento em Atendimentos.
 - **Documentos recentes:** os últimos documentos trabalhados; um clique abre a ficha.
 
+Com recursos cadastrados, a tela também mostra as **Reservas de hoje** e as **Devoluções atrasadas**.
+
 Quando nada está atrasado nem para hoje, a tela diz *Nenhuma tarefa atrasada ou para hoje*. Ao concluir uma tarefa por aqui, o aviso do canto inferior direito traz **Desfazer**, por alguns segundos.
 
 **Calendário de prazos.** No alto de Hoje, os botões **Lista** e **Calendário** trocam a visão. O calendário mostra o mês com as tarefas e os atendimentos que têm prazo: vermelho é atraso, âmbar é para hoje, azul está no prazo, e os atendimentos levam um ícone. As setas trocam de mês e **Hoje** volta ao mês atual. Clique num item para abri-lo; clique em "+N", ou num dia com itens, para listar os desse dia sob o calendário (**Fechar** esconde a lista). Tarefas concluídas e atendimentos encerrados não aparecem.
 
-**Buscar em todo o acervo.** **Buscar**, no alto da barra lateral, ou **Ctrl+K**, abre uma caixa de busca sobre qualquer área. Digite pelo menos duas letras: o Ponte procura em documentos (número, assunto, texto, notas e PDFs), tarefas e atendimentos, e agrupa os resultados em **Documentos**, **Tarefas** e **Atendimentos**, com até 8 de cada e uma linha "e mais N" quando há outros. Nas tarefas e nos atendimentos, a busca ignora maiúsculas e acentos. As setas movem o destaque, **Enter** (ou o clique) abre o item, levando à ficha, à tarefa ou ao atendimento, e **Esc** fecha. A busca da própria área (**Ctrl+F**) continua como antes.
+**Buscar em todo o acervo.** **Buscar**, no alto da barra lateral, ou **Ctrl+K**, abre uma caixa de busca sobre qualquer área. Digite pelo menos duas letras: o Ponte procura em documentos (número, assunto, texto, notas e PDFs), tarefas e atendimentos, e agrupa os resultados em **Documentos**, **Tarefas** e **Atendimentos**, com até 8 de cada e uma linha "e mais N" quando há outros. Nas tarefas e nos atendimentos, a busca ignora maiúsculas e acentos. As setas movem o destaque, **Enter** (ou o clique) abre o item, levando à ficha, à tarefa ou ao atendimento, e **Esc** fecha. Os recursos e as reservas de recursos também são encontrados, em grupos próprios. A busca da própria área (**Ctrl+F**) continua como antes.
+
+**A área Recursos.** Controla o que o gabinete reserva ou empresta: salas, livros, equipamentos. Cada **recurso** é cadastrado uma vez (nome, tipo, **quantidade**, onde fica, identificação); cada reserva ou empréstimo é um **uso**, com data e hora de início e de fim previsto, quem usa, setor e finalidade. A área tem três abas: **Agora e próximos** (atrasados, em uso, hoje e os próximos dias, com busca e filtros), **Calendário** (o mês, por recurso ou todos) e **Recursos** (o cadastro). O Ponte não guarda duas reservas que passem da quantidade do recurso no mesmo horário: recusa e diz quem está com ele e até quando. Os botões **Reservar**, **Registrar uso agora**, **Registrar devolução**, **Prorrogar**, **Cancelar a reserva**, **Reabrir** e **Apagar de vez…** ficam na ficha do uso; o uso pode ser ligado a um documento, a um atendimento e a uma tarefa, e **Criar tarefa de devolução** cria a tarefa com prazo no dia do fim previsto. Um recurso que já teve usos não é apagado: fica **Fora de uso**. Documentos, atendimentos e tarefas mostram os usos ligados a eles e têm **Reservar recurso…**; Hoje e o lembrete diário contam as reservas de hoje e as devoluções atrasadas. **Exportar dados para CSV…** ganha `recursos.csv` e `usos-de-recursos.csv` ([10.5](#105-exportar-dados-csv)), e **Exportar esta lista…** grava só os usos filtrados. Em equipe, duas reservas do mesmo horário feitas sem conexão viram um **conflito de edição** ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)); os horários são os do relógio de cada computador. Esta versão muda o formato do acervo: atualize todos os computadores e o celular juntos. No Ponte de bolso 0.7.0, Recursos é só de consulta.
 
 **Datas:** todo campo de data aceita digitar `dd/mm/aaaa` ou escolher no calendário, pelo ícone de calendário. O calendário abre o mês, com os dias da semana (D S T Q Q S S), setas ◀ ▶ para trocar de mês, hoje em destaque e os atalhos **Hoje** e **Limpar**. Uma data inválida, como `31/02/2026`, fica marcada em vermelho.
 
@@ -502,6 +508,8 @@ Uma vez por dia, o Ponte mostra um aviso do Windows com o que pede atenção. O 
 - as tarefas atrasadas e as tarefas para hoje;
 - os atendimentos abertos com prazo vencido ou para hoje;
 - as tarefas abertas cuja data de lembrete chegou (e que ainda não entraram nas contas acima).
+
+- as reservas de recursos de hoje e as devoluções atrasadas.
 
 Exemplo: *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Quando nada vence, não há aviso.
 
@@ -848,15 +856,17 @@ Excluir documento, tarefa, anexo ou versão importada pede confirmação e manda
 
 ### 10.5 Exportar dados (CSV)
 
-**Ajustes ▸ Cópia de segurança e exportação ▸ Exportar dados para CSV…** grava três arquivos numa pasta nova, `exportados\csv-AAAAMMDD-HHMMSS\`:
+**Ajustes ▸ Cópia de segurança e exportação ▸ Exportar dados para CSV…** grava cinco arquivos numa pasta nova, `exportados\csv-AAAAMMDD-HHMMSS\`:
 
 | Arquivo | Conteúdo |
 |---|---|
 | `documentos.csv` | número, título, tipo, origem, datas, processo, remetente, finalidade, assuntos, prioridade, juntada, contagem de tarefas e de anexos |
 | `tarefas.csv` | tarefa, ação, situação, prioridade, responsável, prazo, atraso, conclusão |
 | `atendimentos.csv` | as passagens da área Atendimentos |
+| `recursos.csv` | ID, nome, tipo, quantidade, local, identificação, situação, criado em |
+| `usos-de-recursos.csv` | ID, recurso, tipo, quantidade, quem, setor, finalidade, início, fim previsto e devolução (data e hora, em colunas separadas), duração em horas, mês, situação, atrasado (*Sim* ou *Não*), documento ligado (número), atendimento ligado (referência), tarefa ligada (*Sim* ou *Não*) |
 
-Formato: UTF-8, separador `;`, datas `AAAA-MM-DD` e uma coluna "Mês" para séries mensais. **Não saem** textos de documentos, notas, minutas, observações nem anexos. Os arquivos abrem no Excel e servem de entrada para painéis: marque a coluna `ID` como identificador para reimportar sem duplicar.
+Formato: UTF-8, separador `;`, datas `AAAA-MM-DD` e uma coluna "Mês" para séries mensais. **Não saem** textos de documentos, notas, minutas, observações nem anexos. Em `usos-de-recursos.csv`, os horários são os do relógio do computador, sem fuso. Os arquivos abrem no Excel e servem de entrada para painéis: marque a coluna `ID` como identificador para reimportar sem duplicar.
 
 ### 10.6 O que sai do computador
 
@@ -901,6 +911,8 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | *"O Ponte não reconheceu esta página do WhatsApp Web"* | O WhatsApp pode ter mudado a página. Use **Colar mensagens copiadas**, no painel, ou **Novo ▸ Registro manual… ▸ Colar conversa do WhatsApp**, no Ponte. |
 | *"Atualize o Ponte para guardar conversas do WhatsApp"* | O Ponte instalado é anterior à 0.32. Instale a versão mais recente e reinicie o navegador. |
 | *"Esta conversa já foi guardada antes e está na Lixeira…"* | Restaure-a em Ajustes ▸ Lixeira. |
+| *"O recurso … já está reservado (ou em uso) por … até …"* | Não é erro: o horário escolhido está ocupado. Escolha outro horário ou outro recurso, ou espere a devolução. Em **Ocupação do dia**, na ficha da reserva, aparecem os horários já tomados. |
+| O Ponte diz que o arquivo de sincronização ou o acervo é de uma versão mais nova | Outro computador ou o celular já está na versão nova. Instale a versão mais recente do Ponte neste computador (e a do Ponte de bolso). Nada se perdeu. |
 | Dois botões "Importar" na página | Há duas extensões, a da pasta e a da loja. Remova a da pasta em `chrome://extensions`. |
 
 ### 11.2 IA
@@ -1005,6 +1017,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/tasks.rs`, `src/tasks_ui.rs` | Tarefas, dependências, painel. Em `tasks_ui.rs`, o `mod batch` faz as ações em lote (seleção, pergunta, tarefas puladas e motivo, desfazer por 30 s) pelas mesmas chamadas do `Store` de uma alteração avulsa |
 | `src/reminders.rs` | Lembrete diário de prazos: contagens, decisão por data (não por tempo decorrido) e arquivo `lembretes.txt`; o aviso do Windows fica em `src/windows_ui.rs` |
 | `src/saiop.rs` | Atendimentos: modelo, importador `.xlsx` (leitor ZIP/XML próprio), painel |
+| `src/resources.rs`, `src/resources_ui.rs` | Recursos: dados selados (`resources`, `resource_uses`), regra de choque de horário dentro da transação de gravação, sincronização e conflito próprio para a reserva dupla; a área com as abas Agora e próximos, Calendário e Recursos |
 | `src/trash.rs` | Lixeira, restauração e limpeza por prazo |
 | `src/intranet.rs` | Modos de rede, sincronização em thread própria, fila offline, mesclagem em três vias; o computador principal atende cada conexão numa thread, com limite por computador |
 | `src/idmap.rs` | Tradução dos números de itens criados sem conexão para os que receberam no acervo da equipe |
@@ -1020,7 +1033,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/mail.rs` | Importação de e-mails `.eml`: decodificador MIME próprio (cabeçalhos, base64, quoted-printable, multipart, HTML → texto), registro manual idempotente pelo Message-ID, anexos |
 | `src/imap.rs` | Cliente IMAP mínimo sobre TLS (`rustls`, raízes Mozilla): LIST, EXAMINE, UID SEARCH, UID FETCH com literais, só leitura; contas seladas só neste computador; nomes de pasta em UTF-7 modificado |
 | `src/mail_ui.rs` | Contas, pasta e filtro, lista das mensagens e importação das marcadas: dentro de Ajustes ▸ E-mail e na janela "Importar do e-mail" (atalho de Documentos ▸ Novo) |
-| `src/export.rs` | Exportação CSV |
+| `src/export.rs` | Exportação CSV (documentos, tarefas, atendimentos, recursos e usos de recursos) |
 | `src/app/search.rs` | Busca em todo o acervo (Ctrl+K): documentos, tarefas e atendimentos, com resultados agrupados e teclado |
 | `src/ficha_export.rs` | A ficha como página `.html` única, para imprimir ou salvar em PDF (**Imprimir ou salvar a ficha…**) |
 | `src/update_check.rs` | **Verificar se há versão nova**: consulta, só a pedido, a última versão publicada no GitHub; não envia dados do acervo, não baixa nem instala |

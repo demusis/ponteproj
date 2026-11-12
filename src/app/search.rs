@@ -1,6 +1,8 @@
-//! Search across the whole library — documents, tasks and atendimentos — in
-//! one box (Ctrl+K), over whatever area is on screen.
+//! Search across the whole library — documents, tasks, atendimentos,
+//! resources and uses of resources — in one box (Ctrl+K), over whatever
+//! area is on screen.
 use super::{Leave, PonteApp};
+use crate::resources::{Resource, ResourceStatus, ResourceUse, UseStatus};
 use crate::saiop::SaiopAttendance;
 use crate::tasks::Task;
 use crate::theme::{self, S1, S2, S3};
@@ -45,6 +47,25 @@ struct AttendanceRow {
     status: String,
 }
 
+/// A resource found.
+struct ResourceRow {
+    uid: String,
+    name: String,
+    /// "Sala · 2º andar": the kind and where it is, as one muted line.
+    detail: String,
+    active: bool,
+}
+
+/// A use of a resource found.
+struct ResourceUseRow {
+    uid: String,
+    /// The line from `use_line`.
+    text: String,
+    tone: Tone,
+    /// The situation as the person reads it.
+    label: String,
+}
+
 /// At most `GROUP_LIMIT` rows of a group and how many were left out.
 struct Group<T> {
     rows: Vec<T>,
@@ -73,13 +94,19 @@ struct Results {
     documents: Group<DocumentRow>,
     tasks: Group<TaskRow>,
     attendances: Group<AttendanceRow>,
+    resources: Group<ResourceRow>,
+    resource_uses: Group<ResourceUseRow>,
     /// Why the library could not be read, if it could not.
     error: Option<String>,
 }
 
 impl Results {
     fn total(&self) -> usize {
-        self.documents.rows.len() + self.tasks.rows.len() + self.attendances.rows.len()
+        self.documents.rows.len()
+            + self.tasks.rows.len()
+            + self.attendances.rows.len()
+            + self.resources.rows.len()
+            + self.resource_uses.rows.len()
     }
 }
 
@@ -88,6 +115,10 @@ enum Pick {
     Document(i64),
     Task(i64),
     Attendance(i64),
+    /// A resource, by uid.
+    Resource(String),
+    /// A use of a resource, by uid.
+    ResourceUse(String),
 }
 
 /// What the search box holds between frames.
@@ -160,6 +191,78 @@ fn attendance_matches(attendance: &SaiopAttendance, needle: &str) -> bool {
             &attendance.assignee,
         ],
     )
+}
+
+/// Name, kind, where it is and identification (patrimônio, ISBN…).
+fn resource_matches(resource: &Resource, needle: &str) -> bool {
+    fields_match(
+        needle,
+        &[
+            &resource.name,
+            crate::resources::kind_label(&resource.kind),
+            &resource.location,
+            &resource.identification,
+        ],
+    )
+}
+
+/// Resource name, who, sector and purpose; never the notes.
+fn resource_use_matches(item: &ResourceUse, resource_name: &str, needle: &str) -> bool {
+    fields_match(
+        needle,
+        &[resource_name, &item.who, &item.sector, &item.purpose],
+    )
+}
+
+/// Closed uses (returned, cancelled) older than this many days stay out of
+/// the search: they are history, and leaving them out keeps the search fast
+/// and the results about what is current. The Recursos area still lists them.
+const CLOSED_USE_DAYS: i64 = 90;
+
+/// The moment before which a closed use is left out of the search.
+fn closed_use_cutoff(now: &str) -> String {
+    crate::resources::parse_moment(now)
+        .map(|moment| {
+            crate::resources::format_moment(moment - chrono::Duration::days(CLOSED_USE_DAYS))
+        })
+        .unwrap_or_default()
+}
+
+/// Open uses always count; closed ones only when they ended after `cutoff`.
+fn use_is_searchable(item: &ResourceUse, cutoff: &str) -> bool {
+    match item.status {
+        UseStatus::Reserved | UseStatus::InUse => true,
+        UseStatus::Returned | UseStatus::Cancelled => item.end.as_str() >= cutoff,
+    }
+}
+
+/// The uses that match, open ones first, then closed ones, the latest first.
+fn matching_uses<'a>(
+    uses: &'a [ResourceUse],
+    resources: &[Resource],
+    needle: &str,
+    now: &str,
+) -> Vec<(&'a ResourceUse, String)> {
+    let cutoff = closed_use_cutoff(now);
+    let name_of = |uid: &str| {
+        resources
+            .iter()
+            .find(|r| r.uid == uid)
+            .map_or("Recurso removido", |r| r.name.as_str())
+            .to_owned()
+    };
+    let (mut open, mut closed): (Vec<_>, Vec<_>) = uses
+        .iter()
+        .filter(|item| use_is_searchable(item, &cutoff))
+        .filter_map(|item| {
+            let name = name_of(&item.resource_uid);
+            resource_use_matches(item, &name, needle).then_some((item, name))
+        })
+        .partition(|(item, _)| matches!(item.status, UseStatus::Reserved | UseStatus::InUse));
+    open.sort_by(|a, b| a.0.start.cmp(&b.0.start));
+    closed.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+    open.extend(closed);
+    open
 }
 
 fn task_done(task: &Task) -> bool {
@@ -278,6 +381,47 @@ impl GlobalSearch {
             }
             Err(error) => errors.push(error.to_string()),
         }
+        match (store.list_resources(), store.list_resource_uses()) {
+            (Ok(resources), Ok(uses)) => {
+                results.resources = Group::limited(
+                    resources
+                        .iter()
+                        .filter(|r| resource_matches(r, &needle))
+                        .map(|r| ResourceRow {
+                            uid: r.uid.clone(),
+                            name: r.name.clone(),
+                            detail: if r.location.trim().is_empty() {
+                                crate::resources::kind_label(&r.kind).to_owned()
+                            } else {
+                                format!(
+                                    "{} · {}",
+                                    crate::resources::kind_label(&r.kind),
+                                    r.location.trim()
+                                )
+                            },
+                            active: r.status == ResourceStatus::Active,
+                        })
+                        .collect(),
+                );
+                let now = crate::resources::now_moment();
+                results.resource_uses = Group::limited(
+                    matching_uses(&uses, &resources, &needle, &now)
+                        .into_iter()
+                        .map(|(item, name)| {
+                            let (text, tone, label) =
+                                crate::resources_ui::use_line(&name, item, &now);
+                            ResourceUseRow {
+                                uid: item.uid.clone(),
+                                text,
+                                tone,
+                                label,
+                            }
+                        })
+                        .collect(),
+                );
+            }
+            (Err(error), _) | (_, Err(error)) => errors.push(error.to_string()),
+        }
         if !errors.is_empty() {
             results.error = Some(errors.join("; "));
         }
@@ -290,15 +434,27 @@ impl GlobalSearch {
         let r = &self.results;
         let documents = r.documents.rows.len();
         let tasks = r.tasks.rows.len();
+        let attendances = r.attendances.rows.len();
+        let resources = r.resources.rows.len();
         if index < documents {
             Some(Pick::Document(r.documents.rows[index].id))
         } else if index < documents + tasks {
             Some(Pick::Task(r.tasks.rows[index - documents].id))
+        } else if index < documents + tasks + attendances {
+            Some(Pick::Attendance(
+                r.attendances.rows[index - documents - tasks].id,
+            ))
+        } else if index < documents + tasks + attendances + resources {
+            Some(Pick::Resource(
+                r.resources.rows[index - documents - tasks - attendances]
+                    .uid
+                    .clone(),
+            ))
         } else {
-            r.attendances
+            r.resource_uses
                 .rows
-                .get(index - documents - tasks)
-                .map(|a| Pick::Attendance(a.id))
+                .get(index - documents - tasks - attendances - resources)
+                .map(|u| Pick::ResourceUse(u.uid.clone()))
         }
     }
 }
@@ -467,7 +623,7 @@ impl PonteApp {
                                 widgets::search(
                                     ui,
                                     &mut search.query,
-                                    "Buscar no acervo, nas tarefas e nos atendimentos",
+                                    "Buscar no acervo, nas tarefas, nos atendimentos e nos recursos",
                                     inner,
                                 )
                             })
@@ -492,7 +648,7 @@ impl PonteApp {
                         if trimmed.chars().count() < MIN_CHARS {
                             widgets::muted(
                                 ui,
-                                "Busque por número, assunto, texto, tarefa ou atendimento.",
+                                "Busque por número, assunto, texto, tarefa, atendimento ou recurso.",
                             );
                         } else if search.searched != search.query && search.results.total() == 0 {
                             // Still waiting for the pause: say nothing yet.
@@ -541,6 +697,11 @@ impl PonteApp {
                     self.message("Este atendimento não está mais disponível.");
                 }
             }
+            Pick::Resource(uid) => match self.resources.focus_resource(&self.store, &uid) {
+                Ok(()) => self.navigate(Leave::Resources),
+                Err(text) => self.error(text),
+            },
+            Pick::ResourceUse(uid) => self.open_use(&uid),
         }
     }
 }
@@ -759,6 +920,98 @@ fn draw_results(
                 }
                 more_line(ui, results.attendances.more);
             }
+            if !results.resources.rows.is_empty() {
+                heading(ui, "Recursos");
+                for resource in &results.resources.rows {
+                    let on = search.highlight == Some(index);
+                    if result_row(
+                        ui,
+                        ("gs-resource", &resource.uid),
+                        on,
+                        scroll_to_highlight,
+                        !resource.active,
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = S2;
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&resource.name)
+                                                .font(theme::font_strong(theme::SIZE_BODY)),
+                                        )
+                                        .selectable(false)
+                                        .truncate(),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&resource.detail)
+                                                .size(theme::SIZE_SMALL)
+                                                .color(p.muted),
+                                        )
+                                        .selectable(false)
+                                        .truncate(),
+                                    );
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Min),
+                                    |ui| {
+                                        if !resource.active {
+                                            widgets::pill(ui, "Fora de uso", Tone::Neutral);
+                                        }
+                                    },
+                                );
+                            });
+                        },
+                    ) {
+                        clicked = Some(Pick::Resource(resource.uid.clone()));
+                    }
+                    index += 1;
+                }
+                more_line(ui, results.resources.more);
+            }
+            if !results.resource_uses.rows.is_empty() {
+                heading(ui, "Usos de recursos");
+                for item in &results.resource_uses.rows {
+                    let on = search.highlight == Some(index);
+                    if result_row(
+                        ui,
+                        ("gs-use", &item.uid),
+                        on,
+                        scroll_to_highlight,
+                        false,
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = S2;
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Min),
+                                    |ui| {
+                                        widgets::pill(ui, item.label.clone(), item.tone);
+                                        ui.with_layout(
+                                            egui::Layout::left_to_right(egui::Align::Min),
+                                            |ui| {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(&item.text).font(
+                                                            theme::font_strong(theme::SIZE_BODY),
+                                                        ),
+                                                    )
+                                                    .selectable(false)
+                                                    .truncate(),
+                                                );
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        },
+                    ) {
+                        clicked = Some(Pick::ResourceUse(item.uid.clone()));
+                    }
+                    index += 1;
+                }
+                more_line(ui, results.resource_uses.more);
+            }
         });
     clicked
 }
@@ -828,6 +1081,154 @@ mod tests {
         assert!(attendance_matches(&a, "retorno"));
         assert!(attendance_matches(&a, "servidor b"));
         assert!(!attendance_matches(&a, "inexistente"));
+    }
+
+    fn resource(uid: &str, name: &str, kind: &str, location: &str, tag: &str) -> Resource {
+        Resource {
+            uid: uid.into(),
+            name: name.into(),
+            kind: kind.into(),
+            location: location.into(),
+            identification: tag.into(),
+            notes: "Chave com a recepção".into(),
+            ..Resource::default()
+        }
+    }
+
+    fn booking(uid: &str, status: UseStatus, start: &str, end: &str) -> ResourceUse {
+        ResourceUse {
+            uid: uid.into(),
+            resource_uid: "r1".into(),
+            who: "Servidor A".into(),
+            sector: "Setor Jurídico".into(),
+            purpose: "Reunião de equipe".into(),
+            notes: "Levar o cabo".into(),
+            start: start.into(),
+            end: end.into(),
+            status,
+            ..ResourceUse::default()
+        }
+    }
+
+    #[test]
+    fn resources_match_on_name_kind_location_or_identification_but_not_notes() {
+        let r = resource(
+            "r1",
+            "Sala de reuniões do 2º andar",
+            "sala",
+            "Ala norte",
+            "PAT-0042",
+        );
+        assert!(resource_matches(&r, "sala"));
+        assert!(resource_matches(&r, "reunioes andar"));
+        assert!(resource_matches(&r, "ala norte"));
+        assert!(resource_matches(&r, "pat-0042"));
+        assert!(!resource_matches(&r, "recepcao"));
+        let p = resource("r2", "Projetor", "equipamento", "", "");
+        assert!(resource_matches(&p, "equipamento"));
+        assert!(!resource_matches(&p, "sala"));
+    }
+
+    #[test]
+    fn uses_match_on_resource_who_sector_or_purpose_but_not_notes() {
+        let u = booking(
+            "u1",
+            UseStatus::Reserved,
+            "2026-11-10T14:00",
+            "2026-11-10T16:00",
+        );
+        assert!(resource_use_matches(&u, "Projetor", "projetor"));
+        assert!(resource_use_matches(&u, "Projetor", "servidor a"));
+        assert!(resource_use_matches(&u, "Projetor", "juridico"));
+        assert!(resource_use_matches(&u, "Projetor", "reuniao equipe"));
+        assert!(!resource_use_matches(&u, "Projetor", "cabo"));
+    }
+
+    #[test]
+    fn old_closed_uses_stay_out_of_the_search_and_open_ones_come_first() {
+        let resources = [resource("r1", "Projetor", "equipamento", "", "")];
+        let uses = [
+            booking(
+                "old",
+                UseStatus::Returned,
+                "2026-06-01T09:00",
+                "2026-06-01T10:00",
+            ),
+            booking(
+                "recent",
+                UseStatus::Returned,
+                "2026-11-02T09:00",
+                "2026-11-02T10:00",
+            ),
+            booking(
+                "cancelled",
+                UseStatus::Cancelled,
+                "2026-08-20T09:00",
+                "2026-08-20T10:00",
+            ),
+            booking(
+                "open",
+                UseStatus::Reserved,
+                "2026-12-01T09:00",
+                "2026-12-01T10:00",
+            ),
+            booking(
+                "forgotten",
+                UseStatus::InUse,
+                "2026-01-01T09:00",
+                "2026-01-01T10:00",
+            ),
+        ];
+        let now = "2026-11-10T09:00";
+        assert_eq!(closed_use_cutoff(now), "2026-08-12T09:00");
+        let found: Vec<&str> = matching_uses(&uses, &resources, "projetor", now)
+            .iter()
+            .map(|(item, _)| item.uid.as_str())
+            .collect();
+        // Open ones by start, then closed ones, the latest first; the
+        // returned use of June is older than 90 days and is left out, while
+        // an old use still in use is not "closed".
+        assert_eq!(found, ["forgotten", "open", "recent", "cancelled"]);
+    }
+
+    #[test]
+    fn a_use_of_a_removed_resource_is_still_found() {
+        let uses = [booking(
+            "u1",
+            UseStatus::Reserved,
+            "2026-11-10T14:00",
+            "2026-11-10T16:00",
+        )];
+        let found = matching_uses(&uses, &[], "recurso removido", "2026-11-10T09:00");
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn rows_of_resources_come_after_the_attendances() {
+        let mut search = GlobalSearch::default();
+        search.results.attendances = Group::limited(vec![AttendanceRow {
+            id: 30,
+            reference: "ORG-ATD-1".into(),
+            subject: String::new(),
+            status: "Em análise".into(),
+        }]);
+        search.results.resources = Group::limited(vec![ResourceRow {
+            uid: "r1".into(),
+            name: "Projetor".into(),
+            detail: "Equipamento".into(),
+            active: true,
+        }]);
+        search.results.resource_uses = Group::limited(vec![ResourceUseRow {
+            uid: "u1".into(),
+            text: "Projetor · Servidor A".into(),
+            tone: Tone::Info,
+            label: "Reservado".into(),
+        }]);
+        assert_eq!(search.results.total(), 3);
+        assert!(matches!(search.pick_at(0), Some(Pick::Attendance(30))));
+        assert!(matches!(search.pick_at(1), Some(Pick::Resource(ref u)) if u == "r1"));
+        assert!(matches!(search.pick_at(2), Some(Pick::ResourceUse(ref u)) if u == "u1"));
+        assert!(search.pick_at(3).is_none());
     }
 
     #[test]

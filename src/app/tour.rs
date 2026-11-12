@@ -10,10 +10,13 @@ impl PonteApp {
         "hoje",
         "busca",
         "busca-tarefas",
+        "busca-sala",
+        "busca-projetor",
         "hoje-calendario",
         "documentos-inicio",
         "documentos-filtros",
         "ficha-resumo",
+        "ficha-recursos",
         "ficha-documento",
         "ficha-notas",
         "ficha-mais",
@@ -21,8 +24,10 @@ impl PonteApp {
         "ficha-email",
         "ficha-whatsapp",
         "ficha-juntada",
+        "ficha-sem-recursos",
         "tarefas",
         "tarefa-aberta",
+        "tarefa-com-recurso",
         "atendimentos",
         "atendimento-aberto",
         "modelos",
@@ -112,6 +117,7 @@ impl PonteApp {
         self.notice = None;
         self.global_search.open = false;
         self.update.last = None;
+        self.shots_ficha_scroll = 0.0;
         super::today::shots_calendar(ctx, false);
         let dark = name.starts_with("escuro-");
         crate::theme::set_appearance(
@@ -129,11 +135,66 @@ impl PonteApp {
                 self.refresh();
                 self.area = Area::Today;
             }
-            "busca" | "busca-tarefas" => {
+            "busca" | "busca-tarefas" | "busca-sala" | "busca-projetor" => {
                 self.refresh();
                 self.area = Area::Today;
-                self.global_search
-                    .shots_open(if name == "busca" { "or" } else { "veículos" });
+                self.global_search.shots_open(match name {
+                    "busca" => "or",
+                    "busca-sala" => "sala",
+                    "busca-projetor" => "projetor",
+                    _ => "veículos",
+                });
+            }
+            "ficha-sem-recursos" => {
+                // A document no use points at.
+                let used: std::collections::BTreeSet<i64> = self
+                    .store
+                    .list_resource_uses()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|u| u.document_id)
+                    .collect();
+                let free = self
+                    .store
+                    .list_documents("")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|d| !used.contains(&d.id) && !d.manual)
+                    .map(|d| d.id);
+                if let Some(id) = free {
+                    self.area = Area::Documents;
+                    self.select(id);
+                }
+                self.tab = Tab::Overview;
+                self.shots_ficha_scroll = 420.0;
+            }
+            "ficha-recursos" => {
+                // The Resumo scrolled down to "Recursos usados".
+                if let Some(id) = document {
+                    self.select(id);
+                }
+                self.tab = Tab::Overview;
+                self.shots_ficha_scroll = 900.0;
+            }
+            "tarefa-com-recurso" => {
+                self.tasks = Default::default();
+                let linked: std::collections::BTreeSet<i64> = self
+                    .store
+                    .list_resource_uses()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|u| u.task_id)
+                    .collect();
+                let task = self
+                    .store
+                    .list_tasks()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|t| linked.contains(&t.id));
+                if let Some(task) = task {
+                    self.perform_leave(Leave::OpenTask(task));
+                }
+                self.area = Area::Tasks;
             }
             "ajustes-sobre" | "ajustes-sobre-versao-nova" => {
                 self.area = Area::Settings;

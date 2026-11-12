@@ -978,11 +978,13 @@ enum NoticeAction {
 
 /// Where the person was before a document was opened for them, so the ficha
 /// can offer the way back.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum ReturnTo {
     Today,
     Task(i64),
     Attendance(i64),
+    /// The use (by uid) of a resource the document was opened from.
+    Resources(String),
 }
 
 /// Success notices leave by themselves; errors stay until closed.
@@ -1108,6 +1110,9 @@ struct PonteApp {
     settings_section: SettingsSection,
     #[cfg(feature = "shots")]
     tour: Option<crate::shots::Tour>,
+    /// Development only: how far the ficha is scrolled in the pictures.
+    #[cfg(feature = "shots")]
+    shots_ficha_scroll: f32,
     /// Navigation waiting for a decision about the unsaved task.
     leave: Option<Leave>,
     /// Why "Salvar e continuar" failed, shown inside the question.
@@ -1203,6 +1208,8 @@ impl PonteApp {
             settings_section: SettingsSection::Team,
             #[cfg(feature = "shots")]
             tour: crate::shots::Tour::start(),
+            #[cfg(feature = "shots")]
+            shots_ficha_scroll: 0.0,
             leave: None,
             leave_error: None,
             consult: None,
@@ -2685,12 +2692,16 @@ impl PonteApp {
                         ui.spacing_mut().item_spacing.y = 4.0;
                         ui.vertical_centered(|ui| {
                     if rail_item(ui, icon::SEARCH, "Buscar", self.global_search.open, 0, false)
-                        .on_hover_text("Busca em todo o acervo: documentos, tarefas e atendimentos. (Ctrl+K)")
+                        .on_hover_text("Busca em todo o acervo: documentos, tarefas, atendimentos e recursos. (Ctrl+K)")
                         .clicked()
                     {
                         self.global_search.open = true;
                     }
-                    let today_badge = self.today.pending_tasks() + self.today.attendances.len();
+                    // Late returns of resources count like attendances with a
+                    // due deadline; today's reservations do not (they are not late).
+                    let today_badge = self.today.pending_tasks()
+                        + self.today.attendances.len()
+                        + self.today.overdue_uses.len();
                     if rail_item(
                         ui,
                         icon::TODAY,
@@ -2699,7 +2710,7 @@ impl PonteApp {
                         today_badge,
                         false,
                     )
-                    .on_hover_text("O que pede atenção agora: tarefas atrasadas e de hoje, atendimentos com prazo vencido. (Ctrl+1)")
+                    .on_hover_text("O que pede atenção agora: tarefas atrasadas e de hoje, atendimentos com prazo vencido, devoluções de recursos atrasadas e reservas de hoje. (Ctrl+1)")
                     .clicked()
                     {
                         self.navigate(Leave::Today);
@@ -3451,7 +3462,8 @@ impl eframe::App for PonteApp {
                 } else if self.area == Area::Resources {
                     match self.resources.show(ui, &mut self.store) {
                         Some(crate::resources_ui::Ask::Document(id)) => {
-                            self.return_after_select = None;
+                            self.return_after_select =
+                                self.resources.open_use_uid().map(ReturnTo::Resources);
                             self.navigate(Leave::Select(id));
                         }
                         Some(crate::resources_ui::Ask::Attendance(id)) => {
@@ -3500,6 +3512,9 @@ impl eframe::App for PonteApp {
                             self.error("Há uma tarefa com alterações não salvas no painel Tarefas. Salve ou descarte antes de abrir outra.");
                         }
                     }
+                    if let Some(request) = self.saiop.take_use_request() {
+                        self.serve_use_request(request);
+                    }
                 } else if self.area == Area::Tasks {
                     // A batch delete waits for a running job, as a single one does.
                     self.tasks
@@ -3526,6 +3541,9 @@ impl eframe::App for PonteApp {
                         });
                     }
                     if let Some(document_id) = self.tasks.take_consult_request() { self.open_consult(document_id); }
+                    if let Some(request) = self.tasks.take_use_request() {
+                        self.serve_use_request(request);
+                    }
                     if let Some(target)=self.tasks.take_trash_request(){self.request_trash(target);}
                     if let Some((attachment, label)) = self.tasks.take_attachment_pdf_request() {
                         self.pdf_reader.open_attachment(&self.store, attachment, &label, &ctx);

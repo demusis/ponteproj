@@ -1,6 +1,6 @@
 # Ponte — Guia do usuário
 
-O Ponte guarda, no seu computador, os documentos que você importa do SIGADOC, com texto, PDFs e histórico de tramitação. Com eles guardados, você anota, prepara minutas, acompanha prazos e controla as demandas do gabinete. O Ponte **nunca envia nada ao SIGADOC**: assinar e tramitar continuam sendo feitos lá.
+O Ponte guarda, no seu computador, os documentos que você importa do SIGADOC, com texto, PDFs e histórico de tramitação. Com eles guardados, você anota, prepara minutas, acompanha prazos, controla as demandas do gabinete e as reservas de salas, livros e equipamentos. O Ponte **nunca envia nada ao SIGADOC**: assinar e tramitar continuam sendo feitos lá.
 
 Este é o guia curto. A documentação completa, com exemplos e todas as opções, está em <https://github.com/demusis/ponteproj>.
 
@@ -16,7 +16,7 @@ Este é o guia curto. A documentação completa, com exemplos e todas as opçõe
 
 **Deu certo quando:** na tela inicial do Ponte, **Ponte ligado ao navegador** aparece marcado; o ícone da extensão diz *✓ Ligado ao Ponte*; e, numa ficha de documento do SIGADOC, aparece o painel **Importar para o assistente**. O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega por ela.
 
-**Atualizar:** feche o Ponte e rode o instalador novo. Seus dados são mantidos, e o instalador faz uma cópia de segurança antes. Para saber se há versão nova, use **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** (veja a seção 10).
+**Atualizar:** feche o Ponte e rode o instalador novo. Seus dados são mantidos, e o instalador faz uma cópia de segurança antes. Para saber se há versão nova, use **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** (veja a seção 11).
 
 **Desinstalar:** em *Aplicativos instalados* do Windows. Seus dados não são apagados.
 
@@ -24,8 +24,8 @@ Os dados ficam só na sua conta do Windows, cifrados. Outra conta no mesmo compu
 
 ## 2. A janela em um minuto
 
-- **Barra lateral (esquerda):** no alto, **Buscar** (Ctrl+K) procura em todo o acervo; veja **Buscar em todo o acervo**, abaixo. Em seguida, escolhe a área. **Hoje** (Ctrl+1) é a tela em que o Ponte abre (com o acervo vazio, abre em Documentos, com o card **Primeiros passos**). **Documentos** (Ctrl+2) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+3) é a lista de tarefas. **Atendimentos** (Ctrl+4) é o controle do gabinete. **Modelos** (Ctrl+5) guarda os modelos de trabalho. Um número vermelho em Hoje (tarefas atrasadas ou para hoje, mais atendimentos com prazo vencido ou para hoje) e em Tarefas (só as tarefas) avisa o que pede atenção. Embaixo ficam **Ajustes** e **Ajuda** (abre este guia).
-- **Atalhos:** **Ctrl+K** abre a busca em todo o acervo, de qualquer área. **Ctrl+F** vai para a busca da área (de outras áreas, para a busca de documentos). **Ctrl+N** cria: registro manual em Hoje e Documentos, nova tarefa em Tarefas (do documento selecionado), nova entrada em Atendimentos. **Ctrl+S** salva o que está em edição (tarefa, atendimento, notas do documento, nova versão da minuta, modelo, configuração de IA). Em Modelos, **Ctrl+F** (busca), **Ctrl+N** (novo modelo), **Ctrl+S** (salvar rascunho) e **Esc** também funcionam. **Esc** fecha a janela ou o painel lateral aberto, se nada estiver sem salvar. Em Tarefas, no modo de seleção (seção 5), **Ctrl+A** seleciona todas as tarefas da lista e **Esc** fecha a pergunta aberta e, depois, sai da seleção.
+- **Barra lateral (esquerda):** no alto, **Buscar** (Ctrl+K) procura em todo o acervo; veja **Buscar em todo o acervo**, abaixo. Em seguida, escolhe a área. **Hoje** (Ctrl+1) é a tela em que o Ponte abre (com o acervo vazio, abre em Documentos, com o card **Primeiros passos**). **Documentos** (Ctrl+2) tem a lista de documentos e a ficha do selecionado. **Tarefas** (Ctrl+3) é a lista de tarefas. **Atendimentos** (Ctrl+4) é o controle do gabinete. **Modelos** (Ctrl+5) guarda os modelos de trabalho. **Recursos** (Ctrl+6) é o controle de salas, livros e equipamentos, com reservas e empréstimos (seção 8). Um número vermelho em Hoje (tarefas atrasadas ou para hoje, mais atendimentos com prazo vencido ou para hoje), em Tarefas (só as tarefas) e em Recursos (devoluções atrasadas) avisa o que pede atenção. Embaixo ficam **Ajustes** e **Ajuda** (abre este guia).
+- **Atalhos:** **Ctrl+K** abre a busca em todo o acervo, de qualquer área. **Ctrl+F** vai para a busca da área (de outras áreas, para a busca de documentos). **Ctrl+N** cria: registro manual em Hoje e Documentos, nova tarefa em Tarefas (do documento selecionado), nova entrada em Atendimentos, nova reserva em Recursos (na aba **Recursos**, novo recurso). **Ctrl+S** salva o que está em edição (tarefa, atendimento, reserva ou recurso, notas do documento, nova versão da minuta, modelo, configuração de IA). Em Modelos, **Ctrl+F** (busca), **Ctrl+N** (novo modelo), **Ctrl+S** (salvar rascunho) e **Esc** também funcionam. **Esc** fecha a janela ou o painel lateral aberto, se nada estiver sem salvar. Em Tarefas, no modo de seleção (seção 5), **Ctrl+A** seleciona todas as tarefas da lista e **Esc** fecha a pergunta aberta e, depois, sai da seleção.
 - **Tarefas e Atendimentos abrem com tudo**, sem seguir o documento selecionado em Documentos. Para ver só os de um documento: em Tarefas, **Ver todas** no card Tarefas da ficha ou **Só as de <número>** ao fim dos botões de visão; em Atendimentos, **Só os de <número>** dentro de **Filtros**. Uma faixa avisa que a lista está restrita e traz **Ver todas** / **Ver todos**.
 - **Voltar:** ao ir de uma tarefa, de um atendimento ou de Hoje para um documento, a ficha mostra no alto **Voltar à tarefa**, **Voltar ao atendimento** ou **Voltar a Hoje**.
 - **Barra inferior:** um ponto colorido mostra a situação da rede, e **Sincronizar** aparece no modo pasta compartilhada. Clicar na situação abre Ajustes ▸ Equipe e sincronização.
@@ -34,7 +34,7 @@ Os dados ficam só na sua conta do Windows, cifrados. Outra conta no mesmo compu
 - **Datas:** digite `dd/mm/aaaa` ou clique no ícone de calendário; **Hoje** preenche a data de hoje.
 - **Nada se perde ao trocar de tela:** se há algo não salvo, o Ponte pergunta antes.
 
-**Buscar em todo o acervo.** Clique em **Buscar**, no alto da barra lateral, ou aperte **Ctrl+K**. Digite pelo menos duas letras: o Ponte procura em documentos (número, assunto, texto, notas e PDFs), tarefas e atendimentos, e mostra os resultados em três grupos, **Documentos**, **Tarefas** e **Atendimentos**, com até 8 de cada. Se há mais, a linha "e mais N" avisa; refine o que digitou. Nas tarefas e nos atendimentos, a busca não diferencia maiúsculas de minúsculas nem acentos. As setas do teclado trocam de resultado, **Enter** abre o escolhido e **Esc** fecha a busca. Também se abre um resultado com o clique. O Ponte leva direto ao documento, à tarefa ou ao atendimento.
+**Buscar em todo o acervo.** Clique em **Buscar**, no alto da barra lateral, ou aperte **Ctrl+K**. Digite pelo menos duas letras: o Ponte procura em documentos (número, assunto, texto, notas e PDFs), tarefas e atendimentos, e mostra os resultados em três grupos, **Documentos**, **Tarefas** e **Atendimentos**, com até 8 de cada. Os recursos e as reservas de recursos também são encontrados, em grupos próprios. Se há mais, a linha "e mais N" avisa; refine o que digitou. Nas tarefas e nos atendimentos, a busca não diferencia maiúsculas de minúsculas nem acentos. As setas do teclado trocam de resultado, **Enter** abre o escolhido e **Esc** fecha a busca. Também se abre um resultado com o clique. O Ponte leva direto ao documento, à tarefa ou ao atendimento.
 
 ## 3. Importar um documento
 
@@ -44,7 +44,7 @@ Os dados ficam só na sua conta do Windows, cifrados. Outra conta no mesmo compu
 
 O painel avisa antes do clique: **Já está no Ponte — importado em…** (com **Abrir no Ponte** e o botão **Importar de novo**) ou **Ainda não está no Ponte**. Se o Ponte não responde, o aviso aparece ali mesmo, com **Tentar de novo**. O atalho **Alt+Shift+I** faz o mesmo que o botão (pode ser trocado em chrome://extensions/shortcuts). Com o Ponte já aberto, a importação traz a janela existente para a frente, no documento; não abre outra.
 
-**Nota e prioridade na hora de importar.** No painel, clique em **Adicionar nota ou prioridade** (o link passa a dizer **Ocultar nota e prioridade**). Escreva em **Nota para o Ponte** (até 2000 caracteres) e/ou escolha a **Prioridade** (*Baixa*, *Normal*, *Alta* ou *Urgente*; *Não mudar* deixa como está), e então clique em **Importar para o assistente**. A nota é acrescentada ao fim da nota do documento, com a data (por exemplo, `10/11/2026 — responder até sexta`), sem apagar o que já estava escrito; a prioridade é aplicada ao documento. Depois da importação, o painel diz *Nota e prioridade enviadas.* (ou só uma delas). Isso exige o Ponte 0.31 e a extensão 0.3.0; com um Ponte mais antigo, o link não aparece ou o painel avisa que a importação foi feita sem a nota. Se o Ponte não conseguir gravar, a importação vale mesmo assim e o painel diz o que faltou, por exemplo *A importação foi feita, mas a nota não foi salva. Escreva a nota na ficha do documento.*; a prioridade também pode ser escolhida lá. A nota vai só ao Ponte deste computador; ela só sai dele se você usa equipe ou pasta compartilhada (seção 8), como qualquer outra nota.
+**Nota e prioridade na hora de importar.** No painel, clique em **Adicionar nota ou prioridade** (o link passa a dizer **Ocultar nota e prioridade**). Escreva em **Nota para o Ponte** (até 2000 caracteres) e/ou escolha a **Prioridade** (*Baixa*, *Normal*, *Alta* ou *Urgente*; *Não mudar* deixa como está), e então clique em **Importar para o assistente**. A nota é acrescentada ao fim da nota do documento, com a data (por exemplo, `10/11/2026 — responder até sexta`), sem apagar o que já estava escrito; a prioridade é aplicada ao documento. Depois da importação, o painel diz *Nota e prioridade enviadas.* (ou só uma delas). Isso exige o Ponte 0.31 e a extensão 0.3.0; com um Ponte mais antigo, o link não aparece ou o painel avisa que a importação foi feita sem a nota. Se o Ponte não conseguir gravar, a importação vale mesmo assim e o painel diz o que faltou, por exemplo *A importação foi feita, mas a nota não foi salva. Escreva a nota na ficha do documento.*; a prioridade também pode ser escolhida lá. A nota vai só ao Ponte deste computador; ela só sai dele se você usa equipe ou pasta compartilhada (seção 9), como qualquer outra nota.
 
 **Importações recentes.** Clique no ícone da extensão, na barra do navegador: abaixo do estado da ligação, **Importações recentes** lista as últimas importações desta sessão do navegador (até 8), com número, hora e resultado (*Importado*, *Já estava no Ponte* ou *Não concluída*). **Abrir no Ponte** abre o documento; **Limpar a lista** esvazia. A lista fica só na memória do navegador e some quando ele é fechado; nada dela vai para o Ponte.
 
@@ -108,7 +108,7 @@ Depois disso, a página do WhatsApp Web ganha um botão pequeno escrito **Ponte*
 
 Se o painel não reconhecer a página (*O Ponte não reconheceu esta página do WhatsApp Web*), abra **Colar mensagens copiadas**, no próprio painel, e cole ali o que copiou no WhatsApp. Para desligar, clique no ícone da extensão e em **Desligar**; o navegador retira o acesso.
 
-**O que o registro guarda.** Ele recebe número `MANUAL-ano/número`, como os registros manuais, e uma tarefa de triagem, como todo registro. O texto tem uma linha por mensagem, no formato `[dd/mm/aaaa hh:mm] Nome: mensagem`. As linhas seguintes da mesma mensagem ficam recuadas, para que uma linha dentro de uma mensagem nunca passe por mensagem de outra pessoa. Mensagens do próprio WhatsApp (como "fulano entrou no grupo") aparecem sem nome. Na ficha, **Dados do documento** traz **Conversa com**, **Período**, **Mensagens** e **Origem** (*Extensão do navegador* ou *Colado no Ponte*). Fotos e arquivos ficam em **Anexos**. O registro acompanha a equipe ou a pasta compartilhada como qualquer outro (seção 8). **Editar registro…** funciona como nos demais, e o período e a contagem são lidos de novo do texto.
+**O que o registro guarda.** Ele recebe número `MANUAL-ano/número`, como os registros manuais, e uma tarefa de triagem, como todo registro. O texto tem uma linha por mensagem, no formato `[dd/mm/aaaa hh:mm] Nome: mensagem`. As linhas seguintes da mesma mensagem ficam recuadas, para que uma linha dentro de uma mensagem nunca passe por mensagem de outra pessoa. Mensagens do próprio WhatsApp (como "fulano entrou no grupo") aparecem sem nome. Na ficha, **Dados do documento** traz **Conversa com**, **Período**, **Mensagens** e **Origem** (*Extensão do navegador* ou *Colado no Ponte*). Fotos e arquivos ficam em **Anexos**. O registro acompanha a equipe ou a pasta compartilhada como qualquer outro (seção 9). **Editar registro…** funciona como nos demais, e o período e a contagem são lidos de novo do texto.
 
 **Limites e cuidados.**
 
@@ -134,7 +134,7 @@ Se o painel não reconhecer a página (*O Ponte não reconheceu esta página do 
 - **Ler sem sair da tarefa:** **Consultar documento** abre o texto e os PDFs por cima.
 - **Tarefa que depende de outra** aparece recuada, com o aviso `⛓ 1 de 2 anterior(es) em aberto` e a linha *depende de*, que lista as anteriores. A tarefa só pode ser concluída depois delas. A linha *libera* mostra quem espera por ela.
 - **Juntados seguem o principal:** concluir a última tarefa de um documento principal conclui as tarefas das peças juntadas a ele. A mensagem lista o que foi concluído.
-- **Lembretes de prazos:** uma vez por dia, no horário escolhido (9h, se você não mudou), o Windows mostra um aviso, *Prazos de hoje no Ponte*, só com as quantidades: tarefas atrasadas, tarefas para hoje, atendimentos com prazo vencido ou para hoje e tarefas cuja data de lembrete chegou, por exemplo *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Os títulos nunca aparecem, porque o aviso pode ficar visível sobre outras janelas. Não há aviso quando nada vence. Ele só aparece enquanto o Ponte está aberto ou minimizado, e, se o Ponte abrir depois do horário, aparece pouco depois da abertura. Com o Ponte na frente, a mesma frase surge no aviso do canto da janela. Clicar no aviso do Windows traz o Ponte para a frente, em **Hoje**. Está ligado de fábrica. Em **Ajustes ▸ Lembretes**, desmarque **Lembrar dos prazos uma vez por dia** para desligar, ou escolha o **Horário**; **Mostrar um aviso de teste** mostra como o aviso fica (com números de exemplo). Se nada aparecer, veja *Configurações do Windows ▸ Sistema ▸ Notificações*.
+- **Lembretes de prazos:** uma vez por dia, no horário escolhido (9h, se você não mudou), o Windows mostra um aviso, *Prazos de hoje no Ponte*, só com as quantidades: tarefas atrasadas, tarefas para hoje, atendimentos com prazo vencido ou para hoje e tarefas cuja data de lembrete chegou, por exemplo *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Também entram, só como números, as reservas de recursos de hoje e as devoluções atrasadas. Os títulos nunca aparecem, porque o aviso pode ficar visível sobre outras janelas. Não há aviso quando nada vence. Ele só aparece enquanto o Ponte está aberto ou minimizado, e, se o Ponte abrir depois do horário, aparece pouco depois da abertura. Com o Ponte na frente, a mesma frase surge no aviso do canto da janela. Clicar no aviso do Windows traz o Ponte para a frente, em **Hoje**. Está ligado de fábrica. Em **Ajustes ▸ Lembretes**, desmarque **Lembrar dos prazos uma vez por dia** para desligar, ou escolha o **Horário**; **Mostrar um aviso de teste** mostra como o aviso fica (com números de exemplo). Se nada aparecer, veja *Configurações do Windows ▸ Sistema ▸ Notificações*.
 
 ## 6. Notas, minutas e IA
 
@@ -192,7 +192,87 @@ Um atendimento é uma **passagem** de um documento ou de uma demanda pelo gabine
 - **Fila**, a lista suspensa no alto da área, agrupa os atendimentos (prazo vencido, vence hoje, sem responsável…). **Filtros** abre responsável, origem, destino e situação.
 - **Planilha:** **Importar planilha** lê a aba PROCESSOS de um arquivo .xlsx, mostra uma prévia e importa só as linhas novas. A importação pode ser desfeita.
 
-## 8. Mais de um computador
+## 8. Recursos
+
+A área **Recursos** (Ctrl+6) controla o que o gabinete empresta ou reserva: salas, livros, equipamentos. Cada **recurso** é cadastrado uma vez; cada reserva ou empréstimo é um **uso**, com data e hora de início e de fim previsto. Nada é enviado a lugar nenhum: é um controle interno, como os atendimentos.
+
+A área tem três abas: **Agora e próximos**, **Calendário** e **Recursos** (o cadastro). No alto, etiquetas contam os recursos em uso, as reservas de hoje e as devoluções atrasadas.
+
+**Cadastrar um recurso.** Na aba **Recursos**, clique em **Novo recurso** (ou Ctrl+N) e preencha:
+
+| Campo | Exemplo |
+|---|---|
+| Nome | `Sala de reuniões do 2º andar` |
+| Tipo | *Sala*, *Equipamento*, *Livro* ou *Outro* |
+| Quantidade | `1` (uma sala); `40` (cadeiras empilháveis); `3` (três exemplares de um livro) |
+| Onde fica | `2º andar, bloco A` |
+| Identificação | tombo, patrimônio, ISBN… |
+| Observações | texto livre |
+
+Só o nome é obrigatório. A **quantidade** diz quantos podem ser usados ao mesmo tempo: com `2` notebooks, duas pessoas reservam o mesmo horário. Um recurso que já teve usos **não é apagado**: clique em **Marcar como fora de uso** (e **Voltar a usar**, para reativar). Ele deixa de aceitar reservas novas; as que já existem continuam, e dá para registrar a devolução. **Apagar de vez…** só aparece para recurso que nunca teve nenhum uso. Não se reduz a quantidade abaixo do que reservas e usos já marcados precisam; o Ponte diz qual uso impede.
+
+**Reservar e registrar o uso.** Em **Reservar** (no alto da área; Ctrl+N), preencha a ficha que abre à direita:
+
+- **Recurso** e, quando há mais de um, **Quantidade**. Logo abaixo, o Ponte diz *Livre neste horário* ou *Ocupado neste horário* (ou, para quantidades, por exemplo *1 de 2 livres neste horário*).
+- **Quem** (o botão **Eu** preenche o seu nome), **Setor** e **Finalidade**.
+- **Início** e **Fim previsto**, cada um com **data e hora**. A hora pode ser digitada como `9`, `930`, `9:30` ou `09h30`; o Ponte a escreve como `09:30`. O fim precisa ser depois do início.
+- **Ocupação do dia:** abaixo das datas, os outros usos do mesmo recurso naquele dia, para você escolher um horário livre antes de salvar.
+- **Observações** e **Vínculos** (veja abaixo).
+
+**Reservar** guarda a reserva para o horário escolhido. **Registrar uso agora** faz o uso começar neste momento (situação *Em uso*), para quando alguém já levou o recurso.
+
+**Situações.** Um uso é *Reservado*, depois *Em uso* e, por fim, *Devolvido*; ou *Cancelado*. Quando o fim previsto passa e o recurso não foi devolvido, o uso aparece como **Atrasado** (não é uma situação a escolher: é um aviso que some quando a devolução é registrada). Uma reserva cujo dia passou sem ser usada vai para os encerrados.
+
+**Quando o horário está ocupado.** O Ponte não guarda duas reservas que passem da quantidade do recurso no mesmo horário. Ele recusa e diz quem está com o recurso e até quando, por exemplo: *O recurso “Sala de reuniões do 2º andar” já está reservado por Servidor B até 12/11/2026 17:00.* Troque o horário (ou o recurso) e salve de novo. Um uso que termina às 10:00 não impede outro que começa às 10:00. Um recurso *em uso* e não devolvido continua ocupado, mesmo depois do fim previsto.
+
+**Durante e depois do uso**, na ficha:
+
+- **Registrar devolução:** mostra **Devolvido em** com a data e a hora de agora; corrija, se preciso, e clique em **Confirmar devolução** (ou em **Voltar**, para desistir).
+- **Prorrogar:** leva ao campo **Fim previsto**; informe a nova data e hora e clique em **Salvar**. Se o novo horário já estiver ocupado, o Ponte avisa.
+- **Cancelar a reserva:** a reserva deixa de ocupar o recurso e vai para os encerrados.
+- **Reabrir** (em usos devolvidos ou cancelados): um uso devolvido volta a *Em uso*; um cancelado volta a *Reservado*.
+- **Apagar de vez…** apaga o uso, com confirmação. Não há Lixeira para usos, como nos atendimentos. O recurso, o documento e a tarefa ligados permanecem.
+
+Em usos devolvidos ou cancelados, os campos ficam só para leitura.
+
+**As três abas.**
+
+- **Agora e próximos:** os usos em grupos: **Atrasados**, **Em uso agora**, **Hoje**, **Próximos dias**, **Mais adiante** e, ao clicar em **Ver mais antigos / encerrados**, **Mais antigos e encerrados**. Clique num uso para abrir a ficha. A busca procura em recurso, quem, setor e finalidade. **Filtros** acrescenta **Tipo**, **Situação**, **Recurso** e **Período** (de… até…); **Limpar** desfaz tudo.
+- **Calendário:** o mês, com todos os recursos ou só um, escolhido na lista. As setas trocam de mês e **Hoje** volta ao mês atual. Cada linha mostra a hora e o recurso (ou quem, quando se escolhe um recurso); uso que atravessa dias aparece em cada um. Clique num dia para listar os usos dele; **Reservar neste dia** abre a ficha com o início nesse dia. Reservas canceladas não aparecem.
+- **Recursos:** o cadastro. Cada linha mostra o tipo, a situação e *livre: 1 de 1* ou *em uso agora: 1 de 2*. A busca procura em nome, tipo, local e identificação, e **Mostrar fora de uso** inclui ou esconde os recursos fora de uso. Clicar num recurso abre a ficha dele, com os próximos usos e o botão **Reservar…**.
+
+Em **Agora e próximos**, o botão **⋯** (Mais ações) tem **Exportar esta lista…** (veja **Exportar**, abaixo).
+
+**Vínculos.** Na ficha do uso, a seção **Vínculos** liga a reserva ao que a motivou:
+
+- **Documento:** busque por número, assunto ou texto. Vale também para e-mails e conversas do WhatsApp guardados, que são documentos: o pedido de sala que chegou por WhatsApp vira a reserva.
+- **Atendimento:** busque por referência, assunto ou responsável.
+- **Tarefa:** busque uma tarefa que já existe ou clique em **Criar tarefa de devolução**. Ela cria uma tarefa com prazo no dia do fim previsto, ligada ao documento do uso (quando há) e ao próprio uso. O uso é salvo antes, se tinha alterações.
+
+**Abrir** leva ao item ligado; **Desligar** desfaz o vínculo.
+
+**Onde mais os recursos aparecem.**
+
+- **Ficha do documento, atendimento e tarefa:** mostram os usos ligados a eles, e **Reservar recurso…** abre uma reserva nova já ligada ao item.
+- **Hoje:** as **Reservas de hoje** e as **Devoluções atrasadas** aparecem junto do que pede atenção no dia, e as reservas entram no calendário de prazos.
+- **Lembrete diário** (seção 5): conta as reservas de hoje e as devoluções atrasadas, só como números e sem alarme na hora da reserva.
+- **Busca em todo o acervo** (Ctrl+K): encontra recursos e usos.
+- **Ficha impressa do documento:** lista os recursos que ele usou.
+
+**Exportar.** **Ajustes ▸ Cópia de segurança e exportação ▸ Exportar dados para CSV…** passa a gravar dois arquivos a mais, no mesmo padrão dos outros:
+
+| Arquivo | Colunas |
+|---|---|
+| `recursos.csv` | ID, Nome, Tipo, Quantidade, Local, Identificação, Situação, Criado em |
+| `usos-de-recursos.csv` | ID, Recurso, Tipo, Quantidade, Quem, Setor, Finalidade, Início (data), Início (hora), Fim previsto (data), Fim previsto (hora), Devolvido em (data), Devolvido em (hora), Duração em horas, Mês, Situação, Atrasado (*Sim* ou *Não*), Documento ligado (o número), Atendimento ligado (a referência), Tarefa ligada (*Sim* ou *Não*) |
+
+As observações não saem. **Exportar esta lista…** (em **⋯**, na aba **Agora e próximos**) grava só os usos que a lista mostra naquele momento, com os filtros escolhidos, num arquivo que você escolhe (o nome sugerido é `usos-de-recursos.csv`).
+
+**Em equipe.** Recursos e usos acompanham a equipe ou a pasta compartilhada como o resto do acervo (seção 9). Se duas pessoas reservam o mesmo horário do mesmo recurso, cada uma num computador sem conexão, a primeira reserva a chegar vale. A outra vira um **conflito de edição**, com a explicação de quem ocupou o horário e até quando: para mantê-la, mude o horário ou a quantidade e salve de novo; ou use **Dispensar o aviso**. Os horários são os do relógio de cada computador: todos devem estar no mesmo fuso. **Esta versão muda o formato do acervo: na equipe e com o celular, atualize todos os aparelhos juntos.**
+
+**No celular.** No Ponte de bolso (0.7.0), **Recursos** é o terceiro item do seletor, ao lado de Tarefas e Atendimentos, só para consulta: **Usos** (nos mesmos grupos de Agora e próximos) e **Recursos** (o cadastro, com a ocupação de hoje). **Hoje** e o aviso diário do celular contam reservas de hoje e devoluções atrasadas. Reservar e registrar devolução pelo celular vêm numa versão futura; por ora, use o Ponte no computador.
+
+## 9. Mais de um computador
 
 Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este computador está trabalhando, a situação, a última sincronização e, nos modos que sincronizam, **Sincronizar agora**. Abaixo, quatro cartões escolhem o modo: **Só neste computador**, **Computador principal**, **Conectar ao computador principal** e **Pasta compartilhada**. Trocar de modo nunca apaga dados. Enquanto há mudanças sem salvar, aparece a etiqueta **Não salvo**.
 
@@ -210,14 +290,14 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 
 **Nunca** instale o Ponte nem copie o acervo para dentro do Google Drive ou do OneDrive: o acervo só abre na conta do Windows que o gravou.
 
-## 9. Cópia de segurança, lixeira e exportação
+## 10. Cópia de segurança, lixeira e exportação
 
 - **Cópia de segurança:** **Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora** cria uma cópia do acervo na pasta de backups. A página mostra onde as cópias ficam (**Abrir pasta**) e a data da última cópia feita nesta sessão. Ela só abre na mesma conta do Windows.
 - **Lixeira:** excluir documento, tarefa, anexo ou versão importada manda para a **Lixeira** (Ajustes), de onde se restaura. Logo após excluir, o aviso do canto traz **Desfazer** por alguns segundos. Cada item da Lixeira mostra o número e o título do documento, ou o título da tarefa e o documento dela, e a caixa de busca encontra por número, título ou nome do arquivo. Por padrão nada é apagado de vez. Na seção Lixeira você pode definir um prazo, de 7 dias a 1 ano, para a limpeza automática, que o Ponte faz sozinho ao abrir e uma vez por dia. Para apagar antes disso, use **Apagar de vez…** em um item ou **Esvaziar a lixeira…** para todos. O Ponte pergunta antes, e o que for apagado de vez não volta.
-- **Exportar:** **Ajustes ▸ Cópia de segurança e exportação ▸ Exportar dados para CSV…** grava documentos, tarefas e atendimentos em três arquivos para o Excel, sem textos nem anexos.
+- **Exportar:** **Ajustes ▸ Cópia de segurança e exportação ▸ Exportar dados para CSV…** grava documentos, tarefas, atendimentos, recursos e usos de recursos em cinco arquivos para o Excel, sem textos, observações nem anexos. Os dois últimos são descritos na seção 8.
 - **Ao fechar** com algo não salvo, o Ponte lista o que está pendente, com um botão **Ir para** em cada item.
 
-## 10. Se algo der errado
+## 11. Se algo der errado
 
 | Situação | O que fazer |
 |---|---|
@@ -231,6 +311,8 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 | O botão **Ponte** não aparece no WhatsApp Web | O recurso não foi ligado (ícone da extensão ▸ **Usar no WhatsApp Web**) ou a página não foi recarregada depois de ligar. Recarregue a página (F5). Exige a extensão 0.4.0. |
 | "O Ponte não reconheceu esta página do WhatsApp Web" | O WhatsApp pode ter mudado a página. Abra **Colar mensagens copiadas** no painel e cole o que copiou no WhatsApp, ou use **Novo ▸ Registro manual… ▸ Colar conversa do WhatsApp** no Ponte. |
 | "Atualize o Ponte para guardar conversas do WhatsApp" | O Ponte instalado é anterior à 0.32. Instale a versão mais recente e reinicie o navegador. |
+| O Ponte diz que o recurso já está reservado ou em uso | Não é erro: o horário escolhido está ocupado. A frase diz por quem e até quando. Escolha outro horário, ou outro recurso, ou espere a devolução. Em **Ocupação do dia**, na ficha da reserva, aparecem os horários já tomados. |
+| O Ponte diz que o arquivo ou o acervo é de uma versão mais nova | Outro computador ou o celular já está na versão nova. Instale a versão mais recente do Ponte neste computador (e a do Ponte de bolso, no celular). Nada se perdeu. |
 
 A lista completa de mensagens e soluções está na seção "Solução de problemas" de <https://github.com/demusis/ponteproj>. A versão instalada aparece em **Ajustes ▸ Sobre o Ponte**.
 

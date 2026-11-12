@@ -29,6 +29,10 @@ pub struct Counts {
     pub today_tasks: usize,
     /// Open atendimentos whose deadline is today or past.
     pub due_attendances: usize,
+    /// Reserved or in-use resources whose time touches today.
+    pub resource_reservations: usize,
+    /// Resources in use and past their expected return.
+    pub overdue_returns: usize,
     /// Open tasks whose reminder date is today or past, not already counted
     /// as late or due today.
     pub reminders: usize,
@@ -36,12 +40,24 @@ pub struct Counts {
 
 impl Counts {
     pub fn total(&self) -> usize {
-        self.late_tasks + self.today_tasks + self.due_attendances + self.reminders
+        self.late_tasks
+            + self.today_tasks
+            + self.due_attendances
+            + self.resource_reservations
+            + self.overdue_returns
+            + self.reminders
     }
 
     /// Reads the library once. Rules of `app/today.rs` (`split_tasks`,
     /// `due_attendances`) and of the "Com lembrete" view of the tasks.
     pub fn from_store(store: &Store, today: NaiveDate) -> Result<Counts> {
+        Self::from_store_at(store, today, &crate::resources::now_moment())
+    }
+
+    /// Like [`Counts::from_store`] with the moment ("AAAA-MM-DDTHH:MM") that
+    /// decides what is overdue given by the caller.
+    pub fn from_store_at(store: &Store, today: NaiveDate, now: &str) -> Result<Counts> {
+        let today_date = today;
         let today = today.format("%Y-%m-%d").to_string();
         let mut counts = Counts::default();
         for task in store.list_tasks()? {
@@ -75,6 +91,9 @@ impl Counts {
                 a.is_open() && !a.due_date.is_empty() && a.due_date.as_str() <= today.as_str()
             })
             .count();
+        let day = crate::resources::day_counts(&store.list_resource_uses()?, today_date, now);
+        counts.resource_reservations = day.reservations_today;
+        counts.overdue_returns = day.overdue;
         Ok(counts)
     }
 
@@ -104,6 +123,20 @@ impl Counts {
                 self.due_attendances,
                 "atendimento com prazo",
                 "atendimentos com prazo",
+            ));
+        }
+        if self.resource_reservations > 0 {
+            parts.push(plural(
+                self.resource_reservations,
+                "reserva de recurso hoje",
+                "reservas de recursos hoje",
+            ));
+        }
+        if self.overdue_returns > 0 {
+            parts.push(plural(
+                self.overdue_returns,
+                "devolução atrasada",
+                "devoluções atrasadas",
             ));
         }
         if self.reminders > 0 {
@@ -391,6 +424,8 @@ impl Reminders {
             late_tasks: 3,
             today_tasks: 2,
             due_attendances: 1,
+            resource_reservations: 2,
+            overdue_returns: 1,
             reminders: 0,
         };
         // It must not read as a real count of what is due.
@@ -445,6 +480,8 @@ mod tests {
             late_tasks: 3,
             today_tasks: 2,
             due_attendances: 1,
+            resource_reservations: 0,
+            overdue_returns: 0,
             reminders: 0,
         }
     }
@@ -455,6 +492,27 @@ mod tests {
             due().summary(),
             "3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo."
         );
+        let resources = Counts {
+            resource_reservations: 2,
+            overdue_returns: 1,
+            ..due()
+        };
+        assert_eq!(
+            resources.summary(),
+            "3 tarefas atrasadas, 2 para hoje, 1 atendimento com prazo, 2 reservas de recursos hoje e 1 devolução atrasada."
+        );
+        assert_eq!(resources.total(), 9);
+        let single = Counts {
+            resource_reservations: 1,
+            ..Counts::default()
+        };
+        assert_eq!(single.summary(), "1 reserva de recurso hoje.");
+        assert_eq!(single.total(), 1);
+        let late = Counts {
+            overdue_returns: 3,
+            ..Counts::default()
+        };
+        assert_eq!(late.summary(), "3 devoluções atrasadas.");
         let one = Counts {
             late_tasks: 1,
             ..Counts::default()
@@ -594,8 +652,53 @@ mod tests {
                 late_tasks: 2,
                 today_tasks: 1,
                 due_attendances: 0,
+                resource_reservations: 0,
+                overdue_returns: 0,
                 reminders: 1,
             }
         );
+    }
+
+    #[test]
+    fn resources_are_counted_without_names() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let mut store = Store::open(&dir.path().join("ponte.sqlite3")).expect("a library");
+        let today = NaiveDate::from_ymd_opt(2026, 6, 10).expect("a valid date");
+        let now = "2026-06-10T10:00";
+        let room = store
+            .save_resource(
+                &crate::resources::Resource {
+                    name: "Auditório".into(),
+                    kind: "sala".into(),
+                    quantity: 5,
+                    ..Default::default()
+                },
+                None,
+            )
+            .expect("resource");
+        let mut add = |status: crate::resources::UseStatus, start: &str, end: &str| {
+            let item = crate::resources::ResourceUse {
+                resource_uid: room.clone(),
+                quantity: 1,
+                who: "Servidor A".into(),
+                start: start.into(),
+                end: end.into(),
+                status,
+                ..Default::default()
+            };
+            store.save_resource_use(&item, None).expect("use");
+        };
+        use crate::resources::UseStatus::{Cancelled, InUse, Reserved};
+        add(Reserved, "2026-06-10T14:00", "2026-06-10T16:00"); // today
+        add(Reserved, "2026-06-09T09:00", "2026-06-11T09:00"); // spans today
+        add(Reserved, "2026-06-12T09:00", "2026-06-12T10:00"); // later
+        add(InUse, "2026-06-08T09:00", "2026-06-09T09:00"); // overdue
+        add(Cancelled, "2026-06-10T09:00", "2026-06-10T10:00"); // nothing
+        let counts = Counts::from_store_at(&store, today, now).expect("counts");
+        assert_eq!(counts.overdue_returns, 1);
+        // The overdue use is still out, so it touches today as well.
+        assert_eq!(counts.resource_reservations, 3);
+        assert_eq!(counts.total(), 4);
+        assert!(!counts.summary().contains("Auditório"));
     }
 }
