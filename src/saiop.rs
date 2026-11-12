@@ -2644,7 +2644,7 @@ fn inflate_raw(input: &[u8], expected_size: usize) -> Result<Vec<u8>> {
 #[cfg(feature = "desktop")]
 use crate::theme::{self, c, icon, S1, S2, S3, S4};
 #[cfg(feature = "desktop")]
-use crate::widgets::{self, Tone};
+use crate::widgets::{self, fold, form_section, labeled, pick, Tone};
 
 #[cfg(feature = "desktop")]
 /// Width of the side panel (the ficha).
@@ -2741,54 +2741,6 @@ fn notice_line(ui: &mut egui::Ui, text: &str, tone: Tone) -> bool {
             });
         });
     closed
-}
-
-#[cfg(feature = "desktop")]
-/// A titled block of the ficha: small capitals, then the rows.
-fn form_section(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(S3);
-    widgets::overline(ui, title, None);
-    ui.add_space(S1);
-    rows(ui);
-}
-
-#[cfg(feature = "desktop")]
-/// A field with its name above it.
-fn labeled(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui)) {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 3.0;
-        widgets::field_label(ui, label);
-        field(ui);
-    });
-}
-
-#[cfg(feature = "desktop")]
-/// A combo box that fills the width it is in.
-fn pick(ui: &mut egui::Ui, id: &str, text: String, options: impl FnOnce(&mut egui::Ui)) {
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(text)
-        .width(ui.available_width().max(80.0))
-        .show_ui(ui, options);
-}
-
-#[cfg(feature = "desktop")]
-/// A less-used part of the ficha: a title row that opens and closes.
-fn fold<R>(
-    ui: &mut egui::Ui,
-    title: &str,
-    id: impl egui::AsIdSalt,
-    open: bool,
-    body: impl FnOnce(&mut egui::Ui) -> R,
-) {
-    ui.separator();
-    egui::CollapsingHeader::new(RichText::new(title).font(theme::font_strong(theme::SIZE_BODY)))
-        .id_salt(id)
-        .default_open(open)
-        .show(ui, |ui| {
-            ui.add_space(S1);
-            body(ui);
-            ui.add_space(S1);
-        });
 }
 
 #[cfg(feature = "desktop")]

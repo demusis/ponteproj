@@ -12,7 +12,7 @@ use crate::{
 };
 use crate::{
     theme::{self, icon},
-    widgets::{self, Tone},
+    widgets::{self, pick_row, Tone},
 };
 use eframe::egui::{self, RichText};
 use std::{
@@ -279,60 +279,6 @@ fn version_text(current: u32, pending: bool) -> String {
         text.push_str("rascunho pendente");
     }
     text
-}
-
-/// One row of a list: thin line below, soft fill and a bar on the left when
-/// selected. `pad` is the side padding.
-fn pick_row(
-    ui: &mut egui::Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
-    selected: bool,
-    pad: i8,
-    add: impl FnOnce(&mut egui::Ui),
-) -> egui::Response {
-    let p = theme::c();
-    let full = ui.available_width();
-    let shape = ui.painter().add(egui::Shape::Noop);
-    let rect = egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(pad, 8))
-        .show(ui, |ui| {
-            ui.set_width((full - 2.0 * f32::from(pad)).max(0.0));
-            ui.style_mut().interaction.selectable_labels = false;
-            ui.spacing_mut().item_spacing.y = theme::S1;
-            add(ui);
-        })
-        .response
-        .rect;
-    let response = ui
-        .interact(rect, ui.make_persistent_id(id), egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let fill = if selected {
-        Some(p.primary_soft)
-    } else if response.hovered() {
-        Some(p.sunken)
-    } else {
-        None
-    };
-    if let Some(fill) = fill {
-        ui.painter().set(
-            shape,
-            egui::Shape::rect_filled(rect, egui::CornerRadius::ZERO, fill),
-        );
-    }
-    if selected {
-        let bar = egui::Rect::from_min_max(
-            rect.left_top(),
-            egui::pos2(rect.left() + 3.0, rect.bottom()),
-        );
-        ui.painter()
-            .rect_filled(bar, egui::CornerRadius::ZERO, p.primary);
-    }
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom() - 0.5,
-        egui::Stroke::new(1.0, p.outline),
-    );
-    response
 }
 
 /// The name of a row, semibold when selected.

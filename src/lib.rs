@@ -84,6 +84,10 @@ pub mod shots_data;
 #[cfg(feature = "desktop")]
 pub mod doc_picker;
 
+/// The "Recursos" area of the window.
+#[cfg(feature = "desktop")]
+pub mod resources_ui;
+
 /// One window per library.
 #[cfg(feature = "desktop")]
 pub mod single_instance;

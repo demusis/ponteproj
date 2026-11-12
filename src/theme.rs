@@ -536,6 +536,8 @@ pub mod icon {
     pub const TASKS: &str = "\u{e184}";
     pub const ATTENDANCES: &str = "\u{e4aa}";
     pub const TEMPLATES: &str = "\u{e6d6}";
+    /// Phosphor "package": rooms, books and equipment.
+    pub const RESOURCES: &str = "\u{e390}";
     pub const SETTINGS: &str = "\u{e434}";
     pub const HELP: &str = "\u{e3e8}";
     pub const SEARCH: &str = "\u{e30c}";

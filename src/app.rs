@@ -7,6 +7,7 @@ use crate::theme::{self, icon, S1, S2, S3};
 use crate::widgets::{self, Tone};
 use anyhow::{Context, Result};
 
+pub(crate) mod calendar;
 mod ficha;
 mod library;
 mod minuta;
@@ -631,6 +632,7 @@ enum Area {
     Tasks,
     Saiop,
     Templates,
+    Resources,
     Settings,
 }
 
@@ -998,6 +1000,7 @@ enum PendingTarget {
     Tasks,
     Saiop,
     Templates,
+    Resources,
     Mail,
     Suggestion,
     Settings,
@@ -1015,6 +1018,8 @@ enum Leave {
     Saiop,
     /// The "Modelos" screen.
     Templates,
+    /// The "Recursos" screen.
+    Resources,
     /// The "Ajustes" screen.
     Settings,
     /// The "Documento" screen with whatever document is selected.
@@ -1075,6 +1080,10 @@ struct PonteApp {
     work_context: crate::work_context::ContextPanel,
     tasks: crate::tasks_ui::TaskPanel,
     saiop: crate::saiop::SaiopPanel,
+    /// The "Recursos" area.
+    resources: crate::resources_ui::ResourcesPanel,
+    /// Returns overdue, for the badge of the rail (read on each refresh).
+    resources_overdue: usize,
     intranet: crate::intranet::IntranetPanel,
     /// The area on screen (the rail on the left chooses it).
     area: Area,
@@ -1176,6 +1185,8 @@ impl PonteApp {
             work_context: Default::default(),
             tasks: Default::default(),
             saiop: Default::default(),
+            resources: Default::default(),
+            resources_overdue: 0,
             intranet: Default::default(),
             // The welcome screen (or the opened document) is the first thing seen.
             area: Area::Today,
@@ -1420,6 +1431,12 @@ impl PonteApp {
                 go: PendingTarget::Templates,
             });
         }
+        if self.resources.dirty() {
+            out.push(Pending {
+                label: "Recurso ou uso em edição no painel Recursos".into(),
+                go: PendingTarget::Resources,
+            });
+        }
         if self.mail.dirty() {
             out.push(Pending {
                 label: "Conta de e-mail em edição".into(),
@@ -1518,6 +1535,9 @@ impl PonteApp {
             PendingTarget::Templates => {
                 self.area = Area::Templates;
             }
+            PendingTarget::Resources => {
+                self.area = Area::Resources;
+            }
             PendingTarget::Mail => self.mail.open_full(),
             PendingTarget::Suggestion => self.suggestion_open = true,
             PendingTarget::Settings => self.settings_open = true,
@@ -1563,6 +1583,9 @@ impl PonteApp {
             }
             Leave::Templates => {
                 self.area = Area::Templates;
+            }
+            Leave::Resources => {
+                self.area = Area::Resources;
             }
             Leave::Settings => self.area = Area::Settings,
             Leave::Today => self.area = Area::Today,
@@ -1742,9 +1765,22 @@ impl PonteApp {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         self.today = today::TodayData::load(&self.store, &today);
         self.task_badge = self.today.pending_tasks();
+        self.resources_overdue = self.overdue_returns();
         if let Some(id) = self.selected_id {
             self.reload(id);
         }
+    }
+
+    /// Returns past their expected end, for the badge of "Recursos".
+    fn overdue_returns(&self) -> usize {
+        let now = crate::resources::now_moment();
+        let today = crate::resources::parse_moment(&now)
+            .map(|moment| moment.date())
+            .unwrap_or_else(|_| chrono::Local::now().date_naive());
+        self.store
+            .list_resource_uses()
+            .map(|uses| crate::resources::day_counts(&uses, today, &now).overdue)
+            .unwrap_or(0)
     }
 
     fn reload(&mut self, id: i64) {
@@ -2609,99 +2645,14 @@ impl PonteApp {
                     .color(p.rail_on),
             );
             ui.add_space(6.0);
-            if rail_item(ui, icon::SEARCH, "Buscar", self.global_search.open, 0, false)
-                .on_hover_text("Busca em todo o acervo: documentos, tarefas e atendimentos. (Ctrl+K)")
-                .clicked()
-            {
-                self.global_search.open = true;
-            }
-            let today_badge = self.today.pending_tasks() + self.today.attendances.len();
-            if rail_item(
-                ui,
-                icon::TODAY,
-                "Hoje",
-                self.area == Area::Today,
-                today_badge,
-                false,
-            )
-            .on_hover_text("O que pede atenção agora: tarefas atrasadas e de hoje, atendimentos com prazo vencido. (Ctrl+1)")
-            .clicked()
-            {
-                self.navigate(Leave::Today);
-            }
-            let notes_dirty = self.editors.values().any(Editor::dirty);
-            if rail_item(
-                ui,
-                icon::DOCUMENTS,
-                "Documentos",
-                self.area == Area::Documents,
-                0,
-                notes_dirty,
-            )
-            .on_hover_text("Documentos importados e registros, com a ficha de cada um. (Ctrl+2)")
-            .clicked()
-            {
-                self.navigate(Leave::Documents);
-            }
-            let tasks = rail_item(
-                ui,
-                icon::TASKS,
-                "Tarefas",
-                self.area == Area::Tasks,
-                self.task_badge,
-                self.tasks.dirty(),
-            );
-            let tasks = if self.tasks.dirty() {
-                tasks.on_hover_text("Há uma tarefa com alterações não salvas. (Ctrl+3)")
-            } else if self.task_badge > 0 {
-                tasks.on_hover_text(format!(
-                    "{} ou para hoje. (Ctrl+3)",
-                    plural(
-                        self.task_badge,
-                        "tarefa atrasada",
-                        "tarefas atrasadas"
-                    )
-                ))
-            } else {
-                tasks.on_hover_text("Tarefas de todos os documentos. (Ctrl+3)")
-            };
-            if tasks.clicked() {
-                self.go_tasks();
-            }
-            if rail_item(
-                ui,
-                icon::ATTENDANCES,
-                "Atendimentos",
-                self.area == Area::Saiop,
-                0,
-                self.saiop.dirty(),
-            )
-            .on_hover_text("Controle de entradas e prazos do setor. (Ctrl+4)")
-            .clicked()
-            {
-                self.navigate(Leave::Saiop);
-            }
-            if rail_item(
-                ui,
-                icon::TEMPLATES,
-                "Modelos",
-                self.area == Area::Templates,
-                0,
-                self.templates.dirty(),
-            )
-            .on_hover_text("Modelos de trabalho: estrutura, instruções, exemplos e referências para as minutas. (Ctrl+5)")
-            .clicked()
-            {
-                self.navigate(Leave::Templates);
-            }
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.add_space(2.0);
-                if rail_item(ui, icon::HELP, "Ajuda", false, 0, false)
-                    .on_hover_text("Abre o guia do usuário no navegador. Funciona sem internet.")
-                    .clicked()
-                {
-                    self.open_guide();
-                }
+        });
+        egui::Panel::bottom("rail-bottom")
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                ui.vertical_centered(|ui| {
+                    ui.add_space(2.0);
                 if rail_item(
                     ui,
                     icon::SETTINGS,
@@ -2715,8 +2666,137 @@ impl PonteApp {
                 {
                     self.navigate(Leave::Settings);
                 }
+                if rail_item(ui, icon::HELP, "Ajuda", false, 0, false)
+                    .on_hover_text("Abre o guia do usuário no navegador. Funciona sem internet.")
+                    .clicked()
+                {
+                    self.open_guide();
+                }
+                });
             });
-        });
+        // The areas scroll when the window is too short for all of them;
+        // Ajustes and Ajuda stay in place under them.
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.vertical_centered(|ui| {
+                    if rail_item(ui, icon::SEARCH, "Buscar", self.global_search.open, 0, false)
+                        .on_hover_text("Busca em todo o acervo: documentos, tarefas e atendimentos. (Ctrl+K)")
+                        .clicked()
+                    {
+                        self.global_search.open = true;
+                    }
+                    let today_badge = self.today.pending_tasks() + self.today.attendances.len();
+                    if rail_item(
+                        ui,
+                        icon::TODAY,
+                        "Hoje",
+                        self.area == Area::Today,
+                        today_badge,
+                        false,
+                    )
+                    .on_hover_text("O que pede atenção agora: tarefas atrasadas e de hoje, atendimentos com prazo vencido. (Ctrl+1)")
+                    .clicked()
+                    {
+                        self.navigate(Leave::Today);
+                    }
+                    let notes_dirty = self.editors.values().any(Editor::dirty);
+                    if rail_item(
+                        ui,
+                        icon::DOCUMENTS,
+                        "Documentos",
+                        self.area == Area::Documents,
+                        0,
+                        notes_dirty,
+                    )
+                    .on_hover_text("Documentos importados e registros, com a ficha de cada um. (Ctrl+2)")
+                    .clicked()
+                    {
+                        self.navigate(Leave::Documents);
+                    }
+                    let tasks = rail_item(
+                        ui,
+                        icon::TASKS,
+                        "Tarefas",
+                        self.area == Area::Tasks,
+                        self.task_badge,
+                        self.tasks.dirty(),
+                    );
+                    let tasks = if self.tasks.dirty() {
+                        tasks.on_hover_text("Há uma tarefa com alterações não salvas. (Ctrl+3)")
+                    } else if self.task_badge > 0 {
+                        tasks.on_hover_text(format!(
+                            "{} ou para hoje. (Ctrl+3)",
+                            plural(
+                                self.task_badge,
+                                "tarefa atrasada",
+                                "tarefas atrasadas"
+                            )
+                        ))
+                    } else {
+                        tasks.on_hover_text("Tarefas de todos os documentos. (Ctrl+3)")
+                    };
+                    if tasks.clicked() {
+                        self.go_tasks();
+                    }
+                    if rail_item(
+                        ui,
+                        icon::ATTENDANCES,
+                        "Atendimentos",
+                        self.area == Area::Saiop,
+                        0,
+                        self.saiop.dirty(),
+                    )
+                    .on_hover_text("Controle de entradas e prazos do setor. (Ctrl+4)")
+                    .clicked()
+                    {
+                        self.navigate(Leave::Saiop);
+                    }
+                    if rail_item(
+                        ui,
+                        icon::TEMPLATES,
+                        "Modelos",
+                        self.area == Area::Templates,
+                        0,
+                        self.templates.dirty(),
+                    )
+            .on_hover_text("Modelos de trabalho: estrutura, instruções, exemplos e referências para as minutas. (Ctrl+5)")
+                    .clicked()
+                    {
+                        self.navigate(Leave::Templates);
+                    }
+                    let resources = rail_item(
+                        ui,
+                        icon::RESOURCES,
+                        "Recursos",
+                        self.area == Area::Resources,
+                        self.resources_overdue,
+                        self.resources.dirty(),
+                    );
+                    let resources = if self.resources.dirty() {
+                        resources.on_hover_text("Há um recurso ou uso com alterações não salvas. (Ctrl+6)")
+                    } else if self.resources_overdue > 0 {
+                        resources.on_hover_text(format!(
+                            "{} (Ctrl+6)",
+                            plural(
+                                self.resources_overdue,
+                                "devolução atrasada",
+                                "devoluções atrasadas"
+                            )
+                        ))
+                    } else {
+                        resources.on_hover_text("Salas, livros e equipamentos: reservas, usos e devoluções. (Ctrl+6)")
+                    };
+                    if resources.clicked() {
+                        self.navigate(Leave::Resources);
+                    }
+                        });
+                    });
+            });
     }
 
     /// The keyboard, in one place. Ctrl+1 to Ctrl+5 change the area, like the
@@ -2742,6 +2822,8 @@ impl PonteApp {
             self.navigate(Leave::Saiop);
         } else if pressed(Key::Num5) {
             self.navigate(Leave::Templates);
+        } else if pressed(Key::Num6) {
+            self.navigate(Leave::Resources);
         } else if pressed(Key::K) {
             self.global_search.open = true;
         } else if pressed(Key::F) {
@@ -2750,6 +2832,7 @@ impl PonteApp {
                 Area::Saiop => self.saiop.key_find(),
                 Area::Documents => self.focus_search = true,
                 Area::Templates => self.templates.key_find(),
+                Area::Resources => self.resources.key_find(),
                 Area::Today | Area::Settings => {
                     self.focus_search = true;
                     self.navigate(Leave::Documents);
@@ -2770,6 +2853,9 @@ impl PonteApp {
                 }
                 Area::Templates => {
                     self.templates.key_new();
+                }
+                Area::Resources => {
+                    self.resources.key_new(&self.store);
                 }
                 Area::Settings => {}
             }
@@ -2794,6 +2880,9 @@ impl PonteApp {
                 }
                 Area::Templates => {
                     self.templates.key_save(&mut self.store);
+                }
+                Area::Resources => {
+                    self.resources.key_save(&mut self.store);
                 }
                 Area::Today => {}
             }
@@ -2820,6 +2909,9 @@ impl PonteApp {
                     Area::Templates => {
                         self.templates.key_escape();
                     }
+                    Area::Resources => {
+                        self.resources.key_escape();
+                    }
                     _ => {}
                 }
             }
@@ -2844,7 +2936,7 @@ impl PonteApp {
     /// edge of the window and keep the room inside.
     fn area_margin(&self) -> egui::Margin {
         match self.area {
-            Area::Tasks | Area::Saiop | Area::Settings => egui::Margin::ZERO,
+            Area::Tasks | Area::Saiop | Area::Resources | Area::Settings => egui::Margin::ZERO,
             _ => egui::Margin::symmetric(20, 14),
         }
     }
@@ -3124,6 +3216,7 @@ impl eframe::App for PonteApp {
             || self.work_context.dirty()
             || self.tasks.dirty()
             || self.saiop.dirty()
+            || self.resources.dirty()
             || self.manual_form.dirty()
             || self.intranet.unsent_folder_changes(&self.store) > 0
             || self.editors.values().any(Editor::dirty)
@@ -3354,6 +3447,38 @@ impl eframe::App for PonteApp {
                             }
                         }
                         crate::templates_ui::TemplatesAction::None => {}
+                    }
+                } else if self.area == Area::Resources {
+                    match self.resources.show(ui, &mut self.store) {
+                        Some(crate::resources_ui::Ask::Document(id)) => {
+                            self.return_after_select = None;
+                            self.navigate(Leave::Select(id));
+                        }
+                        Some(crate::resources_ui::Ask::Attendance(id)) => {
+                            if self.saiop.focus_attendance(&self.store, id) {
+                                self.navigate(Leave::Saiop);
+                            } else {
+                                self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
+                            }
+                        }
+                        Some(crate::resources_ui::Ask::Task(id)) => {
+                            let task = self
+                                .store
+                                .list_tasks()
+                                .ok()
+                                .and_then(|tasks| tasks.into_iter().find(|t| t.id == id));
+                            match task {
+                                Some(task) => self.navigate(Leave::OpenTask(task)),
+                                None => self.error("A tarefa ligada não foi encontrada."),
+                            }
+                        }
+                        None => {}
+                    }
+                    if let Some(text) = self.resources.take_message() {
+                        self.message(text);
+                    }
+                    if self.resources.take_changed() {
+                        self.refresh();
                     }
                 } else if self.area == Area::Saiop {
                     let context = self.selected_id.and_then(|id| {

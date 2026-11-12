@@ -207,6 +207,89 @@ pub fn parse_typed_date(text: &str) -> Option<String> {
     None
 }
 
+/// Reads what a person types as a time of day: `9`, `930`, `0930`, `9:30`,
+/// `09h30`, `9h`. Returns `HH:MM`. Minutes need two digits (`9:5` is refused
+/// because it could mean 9:05 or 9:50).
+pub fn parse_typed_time(text: &str) -> Option<String> {
+    let text = text.trim().to_lowercase().replace(['h', '.'], ":");
+    if text.is_empty() {
+        return None;
+    }
+    let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    let (hours, minutes) = match text.split_once(':') {
+        Some((h, m)) => {
+            if !digits(h) || h.len() > 2 || !(m.is_empty() || (digits(m) && m.len() == 2)) {
+                return None;
+            }
+            (h.to_owned(), if m.is_empty() { "00" } else { m }.to_owned())
+        }
+        None => {
+            if !digits(&text) {
+                return None;
+            }
+            match text.len() {
+                1 | 2 => (text, "00".to_owned()),
+                3 => (text[..1].to_owned(), text[1..].to_owned()),
+                4 => (text[..2].to_owned(), text[2..].to_owned()),
+                _ => return None,
+            }
+        }
+    };
+    let (hours, minutes): (u32, u32) = (hours.parse().ok()?, minutes.parse().ok()?);
+    (hours < 24 && minutes < 60).then(|| format!("{hours:02}:{minutes:02}"))
+}
+
+#[cfg(feature = "desktop")]
+/// Text field for a time of day. The person types `9`, `930`, `9:30` or
+/// `09h30`; the backing string keeps `HH:MM` (or the raw text when invalid,
+/// so that saving is refused instead of silently keeping an old value). The
+/// text is rewritten as `HH:MM` when the field loses the keyboard.
+pub fn time_field(
+    ui: &mut eframe::egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    value: &mut String,
+) -> eframe::egui::Response {
+    use eframe::egui;
+    let id = ui.make_persistent_id(("ponte-time-field", id_salt));
+    // (buffer shown, backing value it was derived from)
+    let mut state: (String, String) = ui
+        .data(|d| d.get_temp::<(String, String)>(id))
+        .unwrap_or_default();
+    if state.1 != *value {
+        state = (value.clone(), value.clone());
+    }
+    let valid = value.trim().is_empty() || parse_typed_time(value).is_some();
+    let mut edit = egui::TextEdit::singleline(&mut state.0)
+        .hint_text("HH:MM")
+        .desired_width(56.0);
+    if !valid {
+        edit = edit.text_color(crate::theme::error());
+    }
+    let response = ui.add(edit);
+    if !valid {
+        crate::widgets::outline(ui, response.rect, crate::theme::error());
+        response
+            .clone()
+            .on_hover_text("Hora inválida. Use o formato HH:MM, como 09:30.");
+    }
+    if response.changed() {
+        *value = match parse_typed_time(&state.0) {
+            Some(time) => time,
+            None if state.0.trim().is_empty() => String::new(),
+            None => state.0.clone(),
+        };
+        state.1 = value.clone();
+    }
+    if response.lost_focus() {
+        if let Some(time) = parse_typed_time(&state.0) {
+            state = (time.clone(), time.clone());
+            *value = time;
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(id, state));
+    response
+}
+
 #[cfg(feature = "desktop")]
 /// Text field for a date. The person sees and types `dd/mm/aaaa`; the backing
 /// string keeps `AAAA-MM-DD` (or the raw text when invalid, so that saving is
@@ -467,6 +550,33 @@ mod tests {
         );
         assert_eq!(february.iter().flatten().flatten().count(), 29);
         assert!(month_grid(2026, 13).is_empty());
+    }
+
+    #[test]
+    fn typed_times_are_normalized_to_hh_mm() {
+        for (typed, shown) in [
+            ("9", "09:00"),
+            ("14", "14:00"),
+            ("930", "09:30"),
+            ("0930", "09:30"),
+            ("1445", "14:45"),
+            ("9:30", "09:30"),
+            ("09:30", "09:30"),
+            ("09h30", "09:30"),
+            ("9h", "09:00"),
+            ("9H15", "09:15"),
+            ("  8:05 ", "08:05"),
+            ("0", "00:00"),
+            ("23:59", "23:59"),
+        ] {
+            assert_eq!(parse_typed_time(typed).as_deref(), Some(shown), "{typed}");
+        }
+        for typed in [
+            "", "  ", "24", "2400", "25:00", "9:60", "9:5", "12345", "9:30:10", "abc", "9h3x",
+            "-1", "9,30",
+        ] {
+            assert_eq!(parse_typed_time(typed), None, "{typed}");
+        }
     }
 
     #[test]

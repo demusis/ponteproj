@@ -1,6 +1,9 @@
 //! The "Hoje" area: what needs attention now, from every area, in one place.
 //! Tasks that are late or due today, atendimentos whose deadline has come,
 //! what comes in the next days, and the documents seen most recently.
+use super::calendar::{
+    self, grid_row_h, line_rect, lines_that_fit, long_date, month_grid, month_weeks, paint_line,
+};
 use super::{Area, Leave, NoticeAction, PonteApp, ReturnTo};
 use crate::model::DocumentSummary;
 use crate::saiop::SaiopAttendance;
@@ -125,56 +128,6 @@ fn due_attendances(list: Vec<SaiopAttendance>, today: &str) -> Vec<SaiopAttendan
     due
 }
 
-const MONTHS: [&str; 12] = [
-    "janeiro",
-    "fevereiro",
-    "março",
-    "abril",
-    "maio",
-    "junho",
-    "julho",
-    "agosto",
-    "setembro",
-    "outubro",
-    "novembro",
-    "dezembro",
-];
-
-/// Weekday initials of the calendar, Sunday first.
-const WEEKDAY_INITIALS: [&str; 7] = ["D", "S", "T", "Q", "Q", "S", "S"];
-
-/// "novembro de 2026".
-fn month_title(year: i32, month: u32) -> String {
-    format!("{} de {year}", MONTHS[(month.clamp(1, 12) - 1) as usize])
-}
-
-/// The month `delta` months away from `(year, month)`.
-fn shift_month((year, month): (i32, u32), delta: i32) -> (i32, u32) {
-    let index = year * 12 + month as i32 - 1 + delta;
-    (index.div_euclid(12), index.rem_euclid(12) as u32 + 1)
-}
-
-/// The weeks that cover a month, Sunday first (4 to 6 rows of seven dates);
-/// the first and last rows carry days of the neighbouring months.
-fn month_weeks(year: i32, month: u32) -> Vec<[chrono::NaiveDate; 7]> {
-    use chrono::{Datelike, Duration, NaiveDate};
-    let Some(first) = NaiveDate::from_ymd_opt(year, month, 1) else {
-        return Vec::new();
-    };
-    let (next_year, next_month) = shift_month((year, month), 1);
-    let Some(next_first) = NaiveDate::from_ymd_opt(next_year, next_month, 1) else {
-        return Vec::new();
-    };
-    let last = next_first - Duration::days(1);
-    let mut start = first - Duration::days(i64::from(first.weekday().num_days_from_sunday()));
-    let mut weeks = Vec::new();
-    while start <= last {
-        weeks.push(std::array::from_fn(|i| start + Duration::days(i as i64)));
-        start += Duration::days(7);
-    }
-    weeks
-}
-
 /// Where a deadline stands against today.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DueState {
@@ -268,26 +221,6 @@ fn items_by_day(
             });
     }
     days
-}
-
-/// "terça-feira, 10 de novembro".
-fn long_date(date: chrono::NaiveDate) -> String {
-    use chrono::Datelike;
-    const DAYS: [&str; 7] = [
-        "segunda-feira",
-        "terça-feira",
-        "quarta-feira",
-        "quinta-feira",
-        "sexta-feira",
-        "sábado",
-        "domingo",
-    ];
-    format!(
-        "{}, {} de {}",
-        DAYS[date.weekday().num_days_from_monday() as usize],
-        date.day(),
-        MONTHS[date.month0() as usize]
-    )
 }
 
 /// "07/11" from "2026-11-07".
@@ -547,11 +480,6 @@ pub(super) fn shots_calendar(ctx: &egui::Context, on: bool) {
     });
 }
 
-const LINE_H: f32 = 18.0;
-const HEAD_H: f32 = 26.0;
-const DAY_NUMBER_H: f32 = 28.0;
-const MIN_ROW_H: f32 = 84.0;
-
 /// The words that say where an item stands.
 fn state_text(kind: ItemKind, state: DueState) -> &'static str {
     match (kind, state) {
@@ -560,22 +488,6 @@ fn state_text(kind: ItemKind, state: DueState) -> &'static str {
         (_, DueState::Today) => "Para hoje",
         (_, DueState::Future) => "No prazo",
     }
-}
-
-/// One line of the grid: text cut with an ellipsis at the width of the rectangle.
-fn paint_line(painter: &egui::Painter, rect: egui::Rect, text: &str, color: egui::Color32) {
-    let mut job = egui::text::LayoutJob::simple_singleline(
-        text.to_owned(),
-        theme::font(theme::SIZE_SMALL),
-        color,
-    );
-    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 8.0).max(1.0));
-    let galley = painter.layout_job(job);
-    painter.galley(
-        egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0),
-        galley,
-        color,
-    );
 }
 
 fn item_text(data: &CalItem, text: &str) -> String {
@@ -618,152 +530,50 @@ fn calendar_view(
         .unwrap_or_default();
 
     let shown = (year, month);
-    ui.horizontal(|ui| {
-        if widgets::icon_button(ui, icon::LEFT, "Mês anterior").clicked() {
-            (year, month) = shift_month((year, month), -1);
-        }
-        ui.allocate_ui_with_layout(
-            egui::vec2(170.0, 30.0),
-            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-            |ui| widgets::section(ui, month_title(year, month)),
-        );
-        if widgets::icon_button(ui, icon::RIGHT, "Próximo mês").clicked() {
-            (year, month) = shift_month((year, month), 1);
-        }
-        if ui
-            .add(widgets::quiet("Hoje"))
-            .on_hover_text("Voltar ao mês atual")
-            .clicked()
-        {
-            (year, month) = (today.year(), today.month());
-        }
-    });
+    (year, month) = calendar::month_nav(ui, shown, today);
     ui.add_space(S1);
 
     if (year, month) != shown {
         // The day list belongs to the month that was on show.
         selected.clear();
     }
-    let weeks = month_weeks(year, month);
     let by_day = &data.by_day;
-    let width = ui.available_width();
-    let col_w = width / 7.0;
-    let rows = weeks.len().max(1) as f32;
-    let row_h = ((avail_h - 44.0 - HEAD_H) / rows).max(MIN_ROW_H);
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(width, HEAD_H + row_h * rows),
-        egui::Sense::hover(),
-    );
+    let row_h = grid_row_h(avail_h, month_weeks(year, month).len());
     let base = ui.make_persistent_id("today-calendar");
-    let painter = ui.painter().clone();
-    let radius = theme::RADIUS_CARD;
-    painter.rect_filled(rect, egui::CornerRadius::same(radius), p.surface);
-    let body_top = rect.top() + HEAD_H;
-    for (c, initial) in WEEKDAY_INITIALS.iter().enumerate() {
-        painter.text(
-            egui::pos2(
-                rect.left() + col_w * (c as f32 + 0.5),
-                rect.top() + HEAD_H / 2.0,
-            ),
-            egui::Align2::CENTER_CENTER,
-            initial,
-            theme::font_strong(theme::SIZE_SMALL),
-            p.muted,
-        );
-    }
-    let mut chosen: Option<String> = None;
-    let last_row = weeks.len().saturating_sub(1);
-    for (r, week) in weeks.iter().enumerate() {
-        for (c, date) in week.iter().enumerate() {
-            let cell = egui::Rect::from_min_size(
-                egui::pos2(rect.left() + col_w * c as f32, body_top + row_h * r as f32),
-                egui::vec2(col_w, row_h),
-            );
-            let in_month = date.month() == month;
-            let iso = date.to_string();
-            let items: &[CalItem] = if in_month {
-                by_day.get(&iso).map(Vec::as_slice).unwrap_or(&[])
+    let chosen = month_grid(
+        ui,
+        base,
+        (year, month),
+        today,
+        &selected,
+        row_h,
+        |iso| by_day.get(iso).is_some_and(|items| !items.is_empty()),
+        |ui, painter, cell| {
+            let iso = cell.iso;
+            let items: &[CalItem] = if cell.in_month {
+                by_day.get(iso).map(Vec::as_slice).unwrap_or(&[])
             } else {
                 &[]
             };
-            // Weekends sunken; the open day tinted.
-            let weekend = c == 0 || c == 6;
-            let fill = if !items.is_empty() && selected == iso {
-                Some(p.primary_soft)
-            } else if weekend {
-                Some(p.sunken)
-            } else {
-                None
-            };
-            if let Some(fill) = fill {
-                let corner = |on: bool| if on { radius } else { 0 };
-                painter.rect_filled(
-                    cell.shrink(0.5),
-                    egui::CornerRadius {
-                        nw: 0,
-                        ne: 0,
-                        sw: corner(r == last_row && c == 0),
-                        se: corner(r == last_row && c == 6),
-                    },
-                    fill,
-                );
-            }
-            if !items.is_empty() {
-                let response = ui
-                    .interact(
-                        cell,
-                        base.with(("cal-cell", iso.as_str())),
-                        egui::Sense::click(),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                if response.clicked() {
-                    chosen = Some(iso.clone());
-                }
-            }
-            // The day number; today inside a filled circle.
-            let center = egui::pos2(cell.left() + 17.0, cell.top() + 14.0);
-            let number_color = if *date == today {
-                painter.circle_filled(center, 11.0, p.primary);
-                p.on_primary
-            } else if in_month {
-                p.text
-            } else {
-                p.muted
-            };
-            painter.text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                date.day(),
-                theme::font_strong(13.0),
-                number_color,
-            );
+            let mut more_clicked = false;
             // The deadlines: as many lines as fit, then "+N".
-            let lines = (((row_h - DAY_NUMBER_H - 2.0) / LINE_H).floor() as usize).max(1);
+            let lines = lines_that_fit(cell.row_h);
             let shown = if items.len() > lines {
                 lines.saturating_sub(1)
             } else {
                 items.len()
             };
-            let line_rect = |i: usize| {
-                egui::Rect::from_min_size(
-                    egui::pos2(
-                        cell.left() + 4.0,
-                        cell.top() + DAY_NUMBER_H + LINE_H * i as f32,
-                    ),
-                    egui::vec2(col_w - 8.0, LINE_H - 2.0),
-                )
-            };
             for (i, item) in items.iter().take(shown).enumerate() {
-                let line = line_rect(i);
+                let line = line_rect(cell.rect, cell.col_w, i);
                 let (fg, bg) = due_tone(item.state).colors();
                 painter.rect_filled(line, egui::CornerRadius::same(3), bg);
-                paint_line(&painter, line, &item_text(item, &item.label), fg);
+                paint_line(painter, line, &item_text(item, &item.label), fg);
                 let response = ui
                     .interact(
                         line,
                         base.with((
                             "cal-item",
-                            iso.as_str(),
+                            iso,
                             item.kind == ItemKind::Attendance,
                             item.index,
                         )),
@@ -782,54 +592,24 @@ fn calendar_view(
                 }
             }
             if items.len() > shown {
-                let line = line_rect(shown);
+                let line = line_rect(cell.rect, cell.col_w, shown);
                 let rest = &items[shown..];
-                paint_line(&painter, line, &format!("+{}", rest.len()), p.muted);
+                paint_line(painter, line, &format!("+{}", rest.len()), p.muted);
                 let list = rest
                     .iter()
                     .map(|item| item_text(item, &item.detail))
                     .collect::<Vec<_>>()
                     .join("\n");
                 let response = ui
-                    .interact(
-                        line,
-                        base.with(("cal-more", iso.as_str())),
-                        egui::Sense::click(),
-                    )
+                    .interact(line, base.with(("cal-more", iso)), egui::Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text(list);
                 if response.clicked() {
-                    chosen = Some(iso.clone());
+                    more_clicked = true;
                 }
             }
-            if *date == today {
-                painter.rect_stroke(
-                    cell.shrink(1.0),
-                    egui::CornerRadius::same(3),
-                    egui::Stroke::new(2.0, p.primary),
-                    egui::StrokeKind::Inside,
-                );
-            }
-        }
-    }
-    // Grid lines and the outer border over the fills.
-    let line = egui::Stroke::new(1.0, p.outline);
-    painter.hline(rect.x_range(), body_top, line);
-    for r in 1..weeks.len() {
-        painter.hline(rect.x_range(), body_top + row_h * r as f32, line);
-    }
-    for c in 1..7 {
-        painter.vline(
-            rect.left() + col_w * c as f32,
-            body_top..=rect.bottom(),
-            line,
-        );
-    }
-    painter.rect_stroke(
-        rect,
-        egui::CornerRadius::same(radius),
-        line,
-        egui::StrokeKind::Inside,
+            more_clicked
+        },
     );
 
     if let Some(iso) = chosen {
@@ -1183,6 +963,7 @@ fn recent_group(ui: &mut egui::Ui, documents: &[DocumentSummary], asked: &mut Op
 
 #[cfg(test)]
 mod tests {
+    use super::calendar::{month_title, shift_month};
     use super::*;
 
     fn task(id: i64, due: &str, status: &str) -> Task {

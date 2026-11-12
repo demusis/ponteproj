@@ -441,3 +441,101 @@ pub fn outline(ui: &Ui, rect: egui::Rect, color: Color32) {
         StrokeKind::Inside,
     );
 }
+
+/// A titled block of the ficha: small capitals, then the rows.
+pub fn form_section(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(theme::S3);
+    overline(ui, title, None);
+    ui.add_space(theme::S1);
+    rows(ui);
+}
+
+/// A field with its name above it.
+pub fn labeled(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui)) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 3.0;
+        field_label(ui, label);
+        field(ui);
+    });
+}
+
+/// A combo box that fills the width it is in.
+pub fn pick(ui: &mut egui::Ui, id: &str, text: String, options: impl FnOnce(&mut egui::Ui)) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(text)
+        .width(ui.available_width().max(80.0))
+        .show_ui(ui, options);
+}
+
+/// A less-used part of the ficha: a title row that opens and closes.
+pub fn fold<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    id: impl egui::AsIdSalt,
+    open: bool,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) {
+    ui.separator();
+    egui::CollapsingHeader::new(RichText::new(title).font(theme::font_strong(theme::SIZE_BODY)))
+        .id_salt(id)
+        .default_open(open)
+        .show(ui, |ui| {
+            ui.add_space(theme::S1);
+            body(ui);
+            ui.add_space(theme::S1);
+        });
+}
+
+/// One row of a list: thin line below, soft fill and a bar on the left when
+/// selected. `pad` is the side padding.
+pub fn pick_row(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    selected: bool,
+    pad: i8,
+    add: impl FnOnce(&mut Ui),
+) -> Response {
+    let p = theme::c();
+    let full = ui.available_width();
+    let shape = ui.painter().add(egui::Shape::Noop);
+    let rect = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(pad, 8))
+        .show(ui, |ui| {
+            ui.set_width((full - 2.0 * f32::from(pad)).max(0.0));
+            ui.style_mut().interaction.selectable_labels = false;
+            ui.spacing_mut().item_spacing.y = theme::S1;
+            add(ui);
+        })
+        .response
+        .rect;
+    let response = ui
+        .interact(rect, ui.make_persistent_id(id), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let fill = if selected {
+        Some(p.primary_soft)
+    } else if response.hovered() {
+        Some(p.sunken)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter().set(
+            shape,
+            egui::Shape::rect_filled(rect, egui::CornerRadius::ZERO, fill),
+        );
+    }
+    if selected {
+        let bar = egui::Rect::from_min_max(
+            rect.left_top(),
+            egui::pos2(rect.left() + 3.0, rect.bottom()),
+        );
+        ui.painter()
+            .rect_filled(bar, egui::CornerRadius::ZERO, p.primary);
+    }
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, p.outline),
+    );
+    response
+}

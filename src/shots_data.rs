@@ -62,6 +62,7 @@ fn seed_all(store: &mut Store) -> Result<()> {
     attendances(store, &ids).context("atendimentos de exemplo")?;
     analysis(store, &ids).context("análise de exemplo")?;
     templates(store).context("modelos de exemplo")?;
+    resources(store, &ids).context("recursos de exemplo")?;
     Ok(())
 }
 
@@ -282,6 +283,282 @@ fn whatsapp(store: &mut Store) -> Result<()> {
     let conversation = crate::whatsapp::parse(&copied)?;
     let title = crate::whatsapp::suggested_title("Servidor B", &conversation);
     store.import_whatsapp("Servidor B", &title, &conversation, "whatsapp-colado")?;
+    Ok(())
+}
+
+/// Rooms, equipment and a book, and their uses around today (so that the
+/// pictures always show: one return overdue, one use going on now, two
+/// reservations today, several in the next days, a loan of days and one
+/// that competes for the notebooks).
+fn resources(store: &mut Store, ids: &Ids) -> Result<()> {
+    use crate::resources::{format_moment, now_moment, parse_moment, Resource, ResourceStatus};
+    use crate::resources::{ResourceUse, UseStatus};
+    let mut uid_of: BTreeMap<&str, String> = BTreeMap::new();
+    let catalogue = [
+        (
+            "Sala de reuniões do 2º andar",
+            "sala",
+            1,
+            "2º andar, bloco A",
+            "",
+            ResourceStatus::Active,
+        ),
+        (
+            "Auditório",
+            "sala",
+            1,
+            "Térreo, bloco A",
+            "",
+            ResourceStatus::Active,
+        ),
+        (
+            "Projetor",
+            "equipamento",
+            1,
+            "Armário da recepção",
+            "Patrimônio 000123",
+            ResourceStatus::Active,
+        ),
+        (
+            "Notebook de apresentações",
+            "equipamento",
+            2,
+            "Armário da recepção",
+            "Patrimônios 000210 e 000211",
+            ResourceStatus::Active,
+        ),
+        (
+            "Cadeiras empilháveis",
+            "equipamento",
+            40,
+            "Depósito do térreo",
+            "",
+            ResourceStatus::Active,
+        ),
+        (
+            "Manual de redação oficial",
+            "livro",
+            3,
+            "Biblioteca do gabinete",
+            "3 exemplares",
+            ResourceStatus::Active,
+        ),
+        (
+            "Câmera de vídeo",
+            "equipamento",
+            1,
+            "Armário da recepção",
+            "Patrimônio 000345",
+            ResourceStatus::Inactive,
+        ),
+    ];
+    for (name, kind, quantity, location, identification, status) in catalogue {
+        let resource = Resource {
+            name: name.to_owned(),
+            kind: kind.to_owned(),
+            quantity,
+            location: location.to_owned(),
+            identification: identification.to_owned(),
+            status,
+            ..Default::default()
+        };
+        uid_of.insert(name, store.save_resource(&resource, None)?);
+    }
+    let now = parse_moment(&now_moment())?;
+    let rel = |minutes: i64| format_moment(now + Duration::minutes(minutes));
+    let at = |offset: i64, hm: &str| format!("{}T{hm}", iso(offset));
+    let chat = store
+        .list_documents("")?
+        .into_iter()
+        .find(|d| d.whatsapp)
+        .map(|d| d.id);
+    let attendance = store.list_saiop_attendances()?.first().map(|a| a.id);
+    let task = store
+        .list_tasks()?
+        .into_iter()
+        .find(|t| t.document_id == Some(ids.logistics))
+        .map(|t| t.id);
+    let sample = |resource: &str,
+                  who: &str,
+                  sector: &str,
+                  purpose: &str,
+                  start: String,
+                  end: String,
+                  status: UseStatus|
+     -> ResourceUse {
+        ResourceUse {
+            resource_uid: uid_of[resource].clone(),
+            who: who.to_owned(),
+            sector: sector.to_owned(),
+            purpose: purpose.to_owned(),
+            start,
+            end,
+            status,
+            ..Default::default()
+        }
+    };
+    let admin = "Setor Administrativo";
+    let legal = "Setor Jurídico";
+    let mut uses = vec![
+        // Late: out for two days and never brought back.
+        sample(
+            "Projetor",
+            "Servidor C",
+            admin,
+            "Evento de capacitação",
+            at(-2, "09:00"),
+            at(-1, "17:00"),
+            UseStatus::InUse,
+        ),
+        // Going on now.
+        sample(
+            "Notebook de apresentações",
+            "Servidor A",
+            legal,
+            "Apresentação ao Comitê Gestor",
+            rel(-90),
+            rel(120),
+            UseStatus::InUse,
+        ),
+        // Today.
+        ResourceUse {
+            document_id: chat,
+            ..sample(
+                "Sala de reuniões do 2º andar",
+                "Servidor B",
+                admin,
+                "Reunião da Unidade A",
+                at(0, "14:00"),
+                at(0, "17:00"),
+                UseStatus::Reserved,
+            )
+        },
+        sample(
+            "Auditório",
+            "Servidor C",
+            admin,
+            "Ensaio da cerimônia",
+            at(0, "16:00"),
+            at(0, "18:00"),
+            UseStatus::Reserved,
+        ),
+        // The next days.
+        ResourceUse {
+            document_id: Some(ids.logistics),
+            task_id: task,
+            ..sample(
+                "Sala de reuniões do 2º andar",
+                "Servidor A",
+                legal,
+                "Despachos da semana",
+                at(1, "09:00"),
+                at(1, "10:30"),
+                UseStatus::Reserved,
+            )
+        },
+        // A loan of days.
+        sample(
+            "Manual de redação oficial",
+            "Servidor B",
+            legal,
+            "Empréstimo para consulta",
+            at(1, "09:00"),
+            at(8, "17:00"),
+            UseStatus::Reserved,
+        ),
+        sample(
+            "Sala de reuniões do 2º andar",
+            "Servidor B",
+            admin,
+            "Atendimento externo",
+            at(2, "14:00"),
+            at(2, "16:00"),
+            UseStatus::Reserved,
+        ),
+        // The notebooks: two at once is the most there is.
+        ResourceUse {
+            quantity: 2,
+            ..sample(
+                "Notebook de apresentações",
+                "Servidor C",
+                admin,
+                "Treinamento de servidores",
+                at(3, "09:00"),
+                at(3, "12:00"),
+                UseStatus::Reserved,
+            )
+        },
+        sample(
+            "Notebook de apresentações",
+            "Servidor B",
+            legal,
+            "Reunião externa",
+            at(2, "10:00"),
+            at(2, "13:00"),
+            UseStatus::Reserved,
+        ),
+        // An event: the hall and the chairs, linked to an atendimento.
+        ResourceUse {
+            saiop_id: attendance,
+            quantity: 30,
+            ..sample(
+                "Cadeiras empilháveis",
+                "Servidor A",
+                admin,
+                "Evento no auditório",
+                at(3, "08:00"),
+                at(3, "18:00"),
+                UseStatus::Reserved,
+            )
+        },
+        ResourceUse {
+            saiop_id: attendance,
+            ..sample(
+                "Auditório",
+                "Servidor A",
+                admin,
+                "Evento no auditório",
+                at(3, "09:00"),
+                at(3, "17:00"),
+                UseStatus::Reserved,
+            )
+        },
+        sample(
+            "Sala de reuniões do 2º andar",
+            "Servidor C",
+            admin,
+            "Reunião trimestral",
+            at(20, "14:00"),
+            at(20, "15:00"),
+            UseStatus::Reserved,
+        ),
+        // Over.
+        ResourceUse {
+            returned_at: Some(at(-6, "11:40")),
+            ..sample(
+                "Projetor",
+                "Servidor B",
+                legal,
+                "Capacitação interna",
+                at(-6, "09:00"),
+                at(-6, "12:00"),
+                UseStatus::Returned,
+            )
+        },
+        sample(
+            "Sala de reuniões do 2º andar",
+            "Servidor C",
+            admin,
+            "Reunião cancelada",
+            at(-3, "10:00"),
+            at(-3, "11:00"),
+            UseStatus::Cancelled,
+        ),
+    ];
+    uses.sort_by(|a, b| a.start.cmp(&b.start));
+    for item in &uses {
+        store.save_resource_use(item, None)?;
+    }
     Ok(())
 }
 
@@ -932,6 +1209,19 @@ mod tests {
             attendances.len()
         );
         assert!(store.list_templates().unwrap().len() >= 2);
+        let resources = store.list_resources().unwrap();
+        assert!(resources.iter().any(|r| r.quantity > 1));
+        assert!(resources
+            .iter()
+            .any(|r| r.status == crate::resources::ResourceStatus::Inactive));
+        let uses = store.list_resource_uses().unwrap();
+        let now = crate::resources::now_moment();
+        assert!(
+            uses.iter().any(|u| u.overdue_at(&now)),
+            "one return is late"
+        );
+        assert!(uses.iter().any(|u| u.document_id.is_some()));
+        assert!(uses.iter().any(|u| u.saiop_id.is_some()));
         assert!(store.auto_attendance_enabled().unwrap());
     }
 }

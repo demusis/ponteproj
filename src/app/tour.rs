@@ -50,10 +50,11 @@ impl PonteApp {
     /// (`SHOTS` in its own file), then everything again in the dark theme.
     pub(super) fn tour_names() -> Vec<String> {
         let mut names: Vec<String> = Self::TOUR.iter().map(|name| (*name).to_owned()).collect();
-        let panels: [(&str, &[&str]); 5] = [
+        let panels: [(&str, &[&str]); 6] = [
             ("tarefas", crate::tasks_ui::SHOTS),
             ("atendimentos", crate::saiop::SHOTS),
             ("modelos", crate::templates_ui::SHOTS),
+            ("recursos", crate::resources_ui::SHOTS),
             ("email", crate::mail_ui::SHOTS),
             ("rede", crate::intranet::SHOTS),
         ];
@@ -319,6 +320,11 @@ Se mudar o horário, me avise.
                     self.templates = Default::default();
                     self.area = Area::Templates;
                     self.templates.shots_open(&mut self.store, view);
+                } else if let Some(view) = other.strip_prefix("recursos-") {
+                    self.resources = Default::default();
+                    self.refresh();
+                    self.area = Area::Resources;
+                    self.resources.shots_open(&mut self.store, view);
                 } else if let Some(view) = other.strip_prefix("email-") {
                     self.mail = Default::default();
                     self.area = Area::Settings;
