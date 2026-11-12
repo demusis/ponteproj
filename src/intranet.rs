@@ -567,6 +567,9 @@ pub struct CabinetSnapshot {
     /// Work templates, blocks, examples and generation records.
     #[serde(default)]
     pub templates: crate::work_templates::TemplatesSnapshot,
+    /// Recursos and their uses. A copy written before them loads without.
+    #[serde(default)]
+    pub resources: crate::resources::ResourcesSnapshot,
 }
 
 // Captures and file bundles make some variants large. A change is built,
@@ -742,6 +745,22 @@ pub enum IntranetMutation {
     ReviewAttachmentText {
         attachment_id: i64,
         text: String,
+    },
+    /// Recursos and their uses are addressed by uid; a use's document,
+    /// atendimento and task numbers are translated like any other change's.
+    SaveResource {
+        resource: crate::resources::Resource,
+        expected_version: Option<i64>,
+    },
+    DeleteResource {
+        uid: String,
+    },
+    SaveResourceUse {
+        item: crate::resources::ResourceUse,
+        expected_version: Option<i64>,
+    },
+    DeleteResourceUse {
+        uid: String,
     },
 }
 
@@ -1543,6 +1562,7 @@ impl Store {
             saiop_attendances,
             attachments,
             templates: self.export_templates()?,
+            resources: self.export_resources()?,
         })
     }
 
@@ -1664,7 +1684,9 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Clear `trash` first so active-record triggers never block re-inserting archived items.
         tx.execute_batch(
-            "DELETE FROM attachment_texts;
+            "DELETE FROM resource_uses;
+             DELETE FROM resources;
+             DELETE FROM attachment_texts;
              DELETE FROM draft_generations;
              DELETE FROM template_examples;
              DELETE FROM work_template_versions;
@@ -1887,6 +1909,7 @@ impl Store {
         }
         // Populate `trash` last so active-item triggers remain satisfied throughout the batch.
         crate::work_templates::apply_templates(&tx, &snapshot.templates)?;
+        crate::resources::apply_resources(&tx, &snapshot.resources)?;
         for t in &snapshot.trash {
             tx.execute(
                 "INSERT INTO trash(kind,item_id,document_id,deleted_at) VALUES(?1,?2,?3,?4)",
@@ -2001,6 +2024,24 @@ impl Store {
                 .map(|e| MutationReply::Id(e.id)),
             IntranetMutation::DeleteExample { uid } => {
                 self.delete_example(&uid).map(|()| MutationReply::Unit)
+            }
+            IntranetMutation::SaveResource {
+                resource,
+                expected_version,
+            } => self
+                .save_resource(&resource, expected_version)
+                .map(|_| MutationReply::Unit),
+            IntranetMutation::DeleteResource { uid } => {
+                self.delete_resource(&uid).map(|()| MutationReply::Unit)
+            }
+            IntranetMutation::SaveResourceUse {
+                item,
+                expected_version,
+            } => self
+                .save_resource_use(&item, expected_version)
+                .map(|_| MutationReply::Unit),
+            IntranetMutation::DeleteResourceUse { uid } => {
+                self.delete_resource_use(&uid).map(|()| MutationReply::Unit)
             }
             IntranetMutation::RecordGeneration { record } => self
                 .record_generation(&record)
@@ -3192,12 +3233,33 @@ impl Store {
                     expected_version: ver,
                 }
             }
+            IntranetMutation::SaveResource {
+                resource,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("resource", &resource.uid));
+                IntranetMutation::SaveResource {
+                    resource,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SaveResourceUse {
+                item,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("resource_use", &item.uid));
+                IntranetMutation::SaveResourceUse {
+                    item,
+                    expected_version: ver,
+                }
+            }
             other => other,
         }
     }
 
-    /// The version of a uid-addressed item (template, block, example), or
-    /// `None` when it does not exist here yet (a creation).
+    /// The version of a uid-addressed item (template, block, example,
+    /// resource, use of a resource), or `None` when it does not exist here
+    /// yet (a creation).
     fn uid_version(&self, kind: &str, uid: &str) -> Option<i64> {
         if uid.is_empty() {
             return None;
@@ -3205,6 +3267,8 @@ impl Store {
         let exists: bool = match kind {
             "template" => self.template_by_uid(uid).ok().flatten().is_some(),
             "block" => self.block_by_uid(uid).ok().flatten().is_some(),
+            "resource" => self.resource_exists(uid),
+            "resource_use" => self.resource_use_exists(uid),
             _ => self
                 .list_examples()
                 .ok()
@@ -3257,6 +3321,28 @@ impl Store {
                     .find(|a| a.id == attendance.id)?;
                 Some(IntranetMutation::SaveSaiopAttendance {
                     attendance: current,
+                    expected_version: None,
+                })
+            }
+            IntranetMutation::SaveResource { resource, .. } if !resource.uid.is_empty() => {
+                let current = self
+                    .list_resources()
+                    .ok()?
+                    .into_iter()
+                    .find(|r| r.uid == resource.uid)?;
+                Some(IntranetMutation::SaveResource {
+                    resource: current,
+                    expected_version: None,
+                })
+            }
+            IntranetMutation::SaveResourceUse { item, .. } if !item.uid.is_empty() => {
+                let current = self
+                    .list_resource_uses()
+                    .ok()?
+                    .into_iter()
+                    .find(|u| u.uid == item.uid)?;
+                Some(IntranetMutation::SaveResourceUse {
+                    item: current,
                     expected_version: None,
                 })
             }
@@ -3564,6 +3650,20 @@ impl Store {
                 let ver = self.uid_version("example", &example.uid);
                 IntranetMutation::SaveExample {
                     example,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SaveResource { resource, .. } => {
+                let ver = self.uid_version("resource", &resource.uid);
+                IntranetMutation::SaveResource {
+                    resource,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::SaveResourceUse { item, .. } => {
+                let ver = self.uid_version("resource_use", &item.uid);
+                IntranetMutation::SaveResourceUse {
+                    item,
                     expected_version: ver,
                 }
             }
@@ -3901,8 +4001,179 @@ impl Store {
                     expected_version: Some(ver),
                 })
             }
+            IntranetMutation::SaveResource {
+                resource: local, ..
+            } => {
+                let ver = self.uid_version("resource", &local.uid);
+                let host = self
+                    .list_resources()?
+                    .into_iter()
+                    .find(|r| r.uid == local.uid);
+                let base_item = match base {
+                    Some(IntranetMutation::SaveResource { resource, .. }) => Some(resource),
+                    _ => None,
+                };
+                let merged = if let Some(h) = host {
+                    let mut m = h.clone();
+                    let mut kept = Vec::new();
+                    macro_rules! scalar {
+                        ($field:ident, $label:expr, $show:expr) => {{
+                            let (value, both) =
+                                pick(base_item.map(|b| &b.$field), &h.$field, &local.$field);
+                            if both {
+                                kept.push(format!(
+                                    "{}: no computador principal estava \"{}\"",
+                                    $label,
+                                    $show(&h.$field)
+                                ));
+                            }
+                            m.$field = value;
+                        }};
+                    }
+                    let plain = |v: &String| v.clone();
+                    scalar!(name, "Nome", plain);
+                    scalar!(kind, "Tipo", |v: &String| {
+                        crate::resources::kind_label(v).to_owned()
+                    });
+                    scalar!(quantity, "Quantidade", |v: &u32| v.to_string());
+                    scalar!(location, "Onde fica", plain);
+                    scalar!(identification, "Identificação", plain);
+                    scalar!(
+                        status,
+                        "Situação",
+                        |v: &crate::resources::ResourceStatus| { v.label().to_owned() }
+                    );
+                    m.notes = pick_text(
+                        base_item.map(|b| b.notes.as_str()),
+                        &h.notes,
+                        &local.notes,
+                        actor,
+                    );
+                    if !kept.is_empty() {
+                        m.notes.push_str(&format!(
+                            "\n\n{stamp} Campos alterados nos dois lados; sua versão prevaleceu:\n• {}",
+                            kept.join("\n• ")
+                        ));
+                    }
+                    m
+                } else {
+                    local
+                };
+                Ok(IntranetMutation::SaveResource {
+                    resource: merged,
+                    expected_version: ver,
+                })
+            }
+            IntranetMutation::SaveResourceUse { item: local, .. } => {
+                let ver = self.uid_version("resource_use", &local.uid);
+                let host = self
+                    .list_resource_uses()?
+                    .into_iter()
+                    .find(|u| u.uid == local.uid);
+                let base_item = match base {
+                    Some(IntranetMutation::SaveResourceUse { item, .. }) => Some(item),
+                    _ => None,
+                };
+                let merged = if let Some(h) = host {
+                    let mut m = h.clone();
+                    let mut kept = Vec::new();
+                    macro_rules! scalar {
+                        ($field:ident, $label:expr, $show:expr) => {{
+                            let (value, both) =
+                                pick(base_item.map(|b| &b.$field), &h.$field, &local.$field);
+                            if both {
+                                kept.push(format!(
+                                    "{}: no computador principal estava \"{}\"",
+                                    $label,
+                                    $show(&h.$field)
+                                ));
+                            }
+                            m.$field = value;
+                        }};
+                    }
+                    let plain = |v: &String| v.clone();
+                    scalar!(resource_uid, "Recurso", |v: &String| self.resource_name(v));
+                    scalar!(quantity, "Quantidade", |v: &u32| v.to_string());
+                    scalar!(who, "Quem", plain);
+                    scalar!(sector, "Setor", plain);
+                    scalar!(status, "Situação", |v: &crate::resources::UseStatus| {
+                        v.label().to_owned()
+                    });
+                    scalar!(returned_at, "Devolvido em", |v: &Option<String>| {
+                        v.as_deref()
+                            .map(crate::resources::moment_label)
+                            .unwrap_or_default()
+                    });
+                    // The start and the end go together: one side's start
+                    // with the other's end could end before it begins.
+                    let host_span = (h.start.clone(), h.end.clone());
+                    let local_span = (local.start.clone(), local.end.clone());
+                    let base_span = base_item.map(|b| (b.start.clone(), b.end.clone()));
+                    let (span, both) = pick(base_span.as_ref(), &host_span, &local_span);
+                    if both {
+                        kept.push(format!(
+                            "Horário: no computador principal estava \"{} a {}\"",
+                            crate::resources::moment_label(&host_span.0),
+                            crate::resources::moment_label(&host_span.1)
+                        ));
+                    }
+                    (m.start, m.end) = span;
+                    m.document_id = pick(
+                        base_item.map(|b| &b.document_id),
+                        &h.document_id,
+                        &local.document_id,
+                    )
+                    .0;
+                    m.saiop_id =
+                        pick(base_item.map(|b| &b.saiop_id), &h.saiop_id, &local.saiop_id).0;
+                    m.task_id = pick(base_item.map(|b| &b.task_id), &h.task_id, &local.task_id).0;
+                    m.purpose = pick_text(
+                        base_item.map(|b| b.purpose.as_str()),
+                        &h.purpose,
+                        &local.purpose,
+                        actor,
+                    );
+                    m.notes = pick_text(
+                        base_item.map(|b| b.notes.as_str()),
+                        &h.notes,
+                        &local.notes,
+                        actor,
+                    );
+                    if m.status != crate::resources::UseStatus::Returned {
+                        m.returned_at = None;
+                    } else if m.returned_at.is_none() {
+                        m.returned_at = local
+                            .returned_at
+                            .clone()
+                            .or_else(|| h.returned_at.clone())
+                            .or_else(|| Some(crate::resources::now_moment()));
+                    }
+                    if !kept.is_empty() {
+                        m.notes.push_str(&format!(
+                            "\n\n{stamp} Campos alterados nos dois lados; sua versão prevaleceu:\n• {}",
+                            kept.join("\n• ")
+                        ));
+                    }
+                    m
+                } else {
+                    local
+                };
+                Ok(IntranetMutation::SaveResourceUse {
+                    item: merged,
+                    expected_version: ver,
+                })
+            }
             other => self.rebase_mutation_to_current(other),
         }
+    }
+
+    /// The name of a resource, or a plain word when it is not here.
+    fn resource_name(&self, uid: &str) -> String {
+        self.list_resources()
+            .ok()
+            .and_then(|all| all.into_iter().find(|r| r.uid == uid))
+            .map(|r| r.name)
+            .unwrap_or_else(|| "(recurso que não existe mais)".to_owned())
     }
 
     /// The fields in which the host (as mirrored locally after the last sync)
@@ -3992,8 +4263,67 @@ impl Store {
                 };
                 diff(saiop_fields(&host), saiop_fields(attendance), base)
             }
+            IntranetMutation::SaveResource { resource, .. } => {
+                let Some(host) = self
+                    .list_resources()
+                    .ok()
+                    .and_then(|all| all.into_iter().find(|h| h.uid == resource.uid))
+                else {
+                    return vec![];
+                };
+                let base = match &conflict.base {
+                    Some(IntranetMutation::SaveResource { resource, .. }) => {
+                        Some(resource_fields(resource))
+                    }
+                    _ => None,
+                };
+                diff(resource_fields(&host), resource_fields(resource), base)
+            }
+            IntranetMutation::SaveResourceUse { item, .. } => {
+                let Some(host) = self
+                    .list_resource_uses()
+                    .ok()
+                    .and_then(|all| all.into_iter().find(|h| h.uid == item.uid))
+                else {
+                    return vec![];
+                };
+                let base = match &conflict.base {
+                    Some(IntranetMutation::SaveResourceUse { item, .. }) => {
+                        Some(self.resource_use_fields(item))
+                    }
+                    _ => None,
+                };
+                diff(
+                    self.resource_use_fields(&host),
+                    self.resource_use_fields(item),
+                    base,
+                )
+            }
             _ => vec![],
         }
+    }
+
+    /// The fields of a use as a card shows them.
+    fn resource_use_fields(
+        &self,
+        u: &crate::resources::ResourceUse,
+    ) -> Vec<(&'static str, String)> {
+        let at = crate::resources::moment_label;
+        vec![
+            ("Recurso", self.resource_name(&u.resource_uid)),
+            ("Quantidade", u.quantity.to_string()),
+            ("Quem", u.who.clone()),
+            ("Setor", u.sector.clone()),
+            ("Finalidade", u.purpose.clone()),
+            ("Início", at(&u.start)),
+            ("Fim previsto", at(&u.end)),
+            (
+                "Devolvido em",
+                u.returned_at.as_deref().map(at).unwrap_or_default(),
+            ),
+            ("Situação", u.status.label().to_owned()),
+            ("Observações", u.notes.clone()),
+        ]
     }
 }
 
@@ -4395,6 +4725,16 @@ pub fn explain_resolve_error(
             format!("{head} A sincronização com o computador principal ainda não terminou. Sincronize e tente de novo.")
         };
     }
+    if error.contains(crate::resources::HORARIO_OCUPADO.trim_end()) {
+        let sentence = crate::resources::strip_marker(error);
+        // The sentence may carry where the change came from, in brackets.
+        let sentence = sentence
+            .split(" (alteração vinda de")
+            .next()
+            .unwrap_or(sentence)
+            .trim();
+        return format!("{head} {sentence} Para manter este uso, mude o horário ou a quantidade neste computador e salve de novo; para encerrar este aviso, use Dispensar o aviso.");
+    }
     let about_the_item = error.contains("na lixeira") || error.contains("não encontrad");
     if about_the_item {
         if let Some(block) = info.and_then(|i| i.block.as_ref()) {
@@ -4414,7 +4754,7 @@ pub fn explain_resolve_error(
 
 /// What changed in one side's edit relative to its starting point, short:
 /// "Situação: Concluída | Prazo: 12/11/2026".
-fn change_summary(conflict: &SyncConflict) -> Option<String> {
+fn change_summary(store: &Store, conflict: &SyncConflict) -> Option<String> {
     let (now, before) = match (&conflict.mutation, &conflict.base) {
         (
             IntranetMutation::SaveTask { task, .. },
@@ -4430,6 +4770,17 @@ fn change_summary(conflict: &SyncConflict) -> Option<String> {
                 attendance: base, ..
             }),
         ) => (saiop_fields(attendance), saiop_fields(base)),
+        (
+            IntranetMutation::SaveResource { resource, .. },
+            Some(IntranetMutation::SaveResource { resource: base, .. }),
+        ) => (resource_fields(resource), resource_fields(base)),
+        (
+            IntranetMutation::SaveResourceUse { item, .. },
+            Some(IntranetMutation::SaveResourceUse { item: base, .. }),
+        ) => (
+            store.resource_use_fields(item),
+            store.resource_use_fields(base),
+        ),
         _ => return None,
     };
     let short = |text: &str| -> String {
@@ -4455,7 +4806,7 @@ impl Store {
     /// "Situação: Concluída" for the 1st change of a pair of conflicts,
     /// falling back to the summary recorded with the conflict.
     pub fn conflict_change_text(&self, conflict: &SyncConflict) -> String {
-        change_summary(conflict).unwrap_or_else(|| conflict.local_summary.clone())
+        change_summary(self, conflict).unwrap_or_else(|| conflict.local_summary.clone())
     }
 
     fn named_item(&self, kind: &str, id: i64) -> Option<String> {
@@ -4689,6 +5040,22 @@ impl Store {
                 s.key = Some(format!("example:{}", example.uid));
             }
             M::DeleteExample { .. } => s.title = "Exclusão de um exemplo".into(),
+            M::SaveResource { resource, .. } => {
+                s.title = format!("Recurso: {}", resource.name);
+                s.noun = "deste recurso";
+                s.key = Some(format!("resource:{}", resource.uid));
+            }
+            M::DeleteResource { .. } => s.title = "Exclusão de um recurso".into(),
+            M::SaveResourceUse { item, .. } => {
+                s.title = format!(
+                    "Uso: {} — {}",
+                    self.resource_name(&item.resource_uid),
+                    item.who
+                );
+                s.noun = "deste uso";
+                s.key = Some(format!("resource_use:{}", item.uid));
+            }
+            M::DeleteResourceUse { .. } => s.title = "Exclusão de um uso de recurso".into(),
             M::RecordGeneration { record } => {
                 s.title = "Registro de uso da IA".into();
                 s.noun = "deste registro";
@@ -4783,6 +5150,16 @@ impl Store {
                 .ok()
                 .and_then(|all| all.into_iter().find(|a| a.id == attendance.id))
                 .is_some_and(|host| same(&host, attendance)),
+            IntranetMutation::SaveResource { resource, .. } => self
+                .list_resources()
+                .ok()
+                .and_then(|all| all.into_iter().find(|r| r.uid == resource.uid))
+                .is_some_and(|host| host.same_content(resource)),
+            IntranetMutation::SaveResourceUse { item, .. } => self
+                .list_resource_uses()
+                .ok()
+                .and_then(|all| all.into_iter().find(|u| u.uid == item.uid))
+                .is_some_and(|host| host.same_content(item)),
             _ => false,
         }
     }
@@ -5076,6 +5453,18 @@ fn saiop_fields(a: &crate::saiop::SaiopAttendance) -> Vec<(&'static str, String)
     ]
 }
 
+fn resource_fields(r: &crate::resources::Resource) -> Vec<(&'static str, String)> {
+    vec![
+        ("Nome", r.name.clone()),
+        ("Tipo", crate::resources::kind_label(&r.kind).to_owned()),
+        ("Quantidade", r.quantity.to_string()),
+        ("Onde fica", r.location.clone()),
+        ("Identificação", r.identification.clone()),
+        ("Situação", r.status.label().to_owned()),
+        ("Observações", r.notes.clone()),
+    ]
+}
+
 fn merge_text_blocks(host_text: &str, local_text: &str, actor: &str) -> String {
     let h = host_text.trim();
     let l = local_text.trim();
@@ -5101,6 +5490,12 @@ fn mutation_target_key(mutation: &IntranetMutation) -> Option<String> {
         }
         IntranetMutation::SaveSaiopAttendance { attendance, .. } if attendance.id > 0 => {
             Some(format!("saiop:{}", attendance.id))
+        }
+        IntranetMutation::SaveResource { resource, .. } if !resource.uid.is_empty() => {
+            Some(format!("resource:{}", resource.uid))
+        }
+        IntranetMutation::SaveResourceUse { item, .. } if !item.uid.is_empty() => {
+            Some(format!("resource_use:{}", item.uid))
         }
         _ => None,
     }
@@ -5155,6 +5550,26 @@ fn preserve_original_base_version(
             IntranetMutation::SaveSaiopAttendance { attendance, .. },
         ) => IntranetMutation::SaveSaiopAttendance {
             attendance,
+            expected_version: *orig,
+        },
+        (
+            IntranetMutation::SaveResource {
+                expected_version: orig,
+                ..
+            },
+            IntranetMutation::SaveResource { resource, .. },
+        ) => IntranetMutation::SaveResource {
+            resource,
+            expected_version: *orig,
+        },
+        (
+            IntranetMutation::SaveResourceUse {
+                expected_version: orig,
+                ..
+            },
+            IntranetMutation::SaveResourceUse { item, .. },
+        ) => IntranetMutation::SaveResourceUse {
+            item,
             expected_version: *orig,
         },
         (_, other) => other,
@@ -5216,6 +5631,17 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
             format!("Exemplo \"{}\"", example.title)
         }
         IntranetMutation::DeleteExample { .. } => "Exclusão de exemplo".to_owned(),
+        IntranetMutation::SaveResource { resource, .. } => {
+            format!("Recurso \"{}\"", resource.name)
+        }
+        IntranetMutation::DeleteResource { .. } => "Exclusão de recurso".to_owned(),
+        IntranetMutation::SaveResourceUse { item, .. } => format!(
+            "Uso de recurso: {} ({} a {})",
+            item.who,
+            crate::resources::moment_label(&item.start),
+            crate::resources::moment_label(&item.end)
+        ),
+        IntranetMutation::DeleteResourceUse { .. } => "Exclusão de uso de recurso".to_owned(),
         IntranetMutation::RecordGeneration { record } => {
             format!("Registro de geração do documento #{}", record.document_id)
         }
@@ -5491,6 +5917,42 @@ fn build_sync_conflict(
                 attendance.observation
             );
             (local_desc, host_desc)
+        }
+        IntranetMutation::SaveResource { resource, .. } => {
+            let host_desc = host_snapshot
+                .and_then(|s| s.resources.resources.iter().find(|r| r.uid == resource.uid))
+                .map(|r| {
+                    format!(
+                        "Nome: '{}' | Quantidade: {} | Situação: {}",
+                        r.value.name,
+                        r.value.quantity,
+                        r.value.status.label()
+                    )
+                })
+                .unwrap_or_else(|| "(não localizado no computador principal)".into());
+            let local_desc = format!(
+                "Nome: '{}' | Quantidade: {} | Situação: {}",
+                resource.name,
+                resource.quantity,
+                resource.status.label()
+            );
+            (local_desc, host_desc)
+        }
+        IntranetMutation::SaveResourceUse { item, .. } => {
+            let describe = |u: &crate::resources::ResourceUse| {
+                format!(
+                    "Quem: '{}' | Início: {} | Fim previsto: {} | Situação: {}",
+                    u.who,
+                    crate::resources::moment_label(&u.start),
+                    crate::resources::moment_label(&u.end),
+                    u.status.label()
+                )
+            };
+            let host_desc = host_snapshot
+                .and_then(|s| s.resources.uses.iter().find(|r| r.uid == item.uid))
+                .map(|r| describe(&r.value))
+                .unwrap_or_else(|| "(não localizado no computador principal)".into());
+            (describe(item), host_desc)
         }
         _ => (
             entry.label.clone(),
@@ -7663,6 +8125,8 @@ fn comparable_conflict(mutation: &IntranetMutation) -> bool {
             | IntranetMutation::SaveTask { .. }
             | IntranetMutation::SaveWorkContext { .. }
             | IntranetMutation::SaveSaiopAttendance { .. }
+            | IntranetMutation::SaveResource { .. }
+            | IntranetMutation::SaveResourceUse { .. }
     )
 }
 
@@ -10549,5 +11013,604 @@ mod conflict_card_tests {
         );
         assert_eq!(own.keep_mine_button(), "Usar só a minha versão…");
         assert_eq!(own.mine_column(), "Sua versão");
+    }
+}
+
+#[cfg(test)]
+mod resources_sync_tests {
+    use super::*;
+    use crate::resources::{Resource, ResourceUse, UseStatus};
+
+    const KEY: &str = "senha-de-teste-123";
+    const DAY: &str = "2099-01-05";
+
+    fn config(member: &str, files: &[String]) -> IntranetConfig {
+        IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: member.into(),
+            folder_files: files.to_vec(),
+            folder_key: KEY.into(),
+            ..IntranetConfig::default()
+        }
+    }
+
+    fn sync(store: &mut Store) -> FolderSyncReport {
+        let cfg = store.load_intranet_config().unwrap();
+        store
+            .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+            .unwrap()
+    }
+
+    /// Two computers sharing a library that has one document.
+    fn pair(dir: &std::path::Path) -> (Store, Store, i64) {
+        let folder = dir.join("Drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
+        let files = vec![folder.display().to_string()];
+        let mut a = Store::open(&dir.join("a.sqlite3")).unwrap();
+        a.save_intranet_config(&config("Servidor A", &files))
+            .unwrap();
+        let document = a
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        sync(&mut a);
+        let mut b = Store::open(&dir.join("b.sqlite3")).unwrap();
+        b.save_intranet_config(&config("Servidor B", &files))
+            .unwrap();
+        sync(&mut b);
+        (a, b, document)
+    }
+
+    fn capture_numbered(number: &str) -> crate::model::Capture {
+        let mut capture = crate::model::sample_capture();
+        capture.request_id = uuid::Uuid::new_v4().to_string();
+        capture.document_number = number.into();
+        capture.source_url = format!(
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla={}",
+            number.replace('/', "%2F")
+        );
+        capture
+    }
+
+    fn resource(store: &mut Store, name: &str, quantity: u32) -> Resource {
+        let uid = store
+            .save_resource(
+                &Resource {
+                    name: name.into(),
+                    kind: "sala".into(),
+                    quantity,
+                    ..Resource::default()
+                },
+                None,
+            )
+            .unwrap();
+        store
+            .list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.uid == uid)
+            .unwrap()
+    }
+
+    fn booking(resource: &Resource, who: &str, start: &str, end: &str) -> ResourceUse {
+        ResourceUse {
+            resource_uid: resource.uid.clone(),
+            who: who.into(),
+            start: format!("{DAY}T{start}"),
+            end: format!("{DAY}T{end}"),
+            ..ResourceUse::default()
+        }
+    }
+
+    fn uses_of(store: &Store) -> Vec<ResourceUse> {
+        store.list_resource_uses().unwrap()
+    }
+
+    #[test]
+    fn resources_and_uses_travel_through_the_folders_with_their_links_translated() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, shared_document) = pair(dir.path());
+        let room = resource(&mut a, "Sala de reuniões do 2º andar", 1);
+        let mut first = booking(&room, "Servidor A", "09:00", "10:00");
+        first.document_id = Some(shared_document);
+        first.sector = "Setor Jurídico".into();
+        let first_uid = a.save_resource_use(&first, None).unwrap();
+        sync(&mut a);
+        let report = sync(&mut b);
+        assert_eq!(report.conflicts, 0);
+        // The same identities, versions and link on the other computer.
+        assert_eq!(b.list_resources().unwrap(), a.list_resources().unwrap());
+        assert_eq!(b.resource_version(&room.uid).unwrap(), 1);
+        assert_eq!(b.resource_use_version(&first_uid).unwrap(), 1);
+        let on_b = uses_of(&b);
+        assert_eq!(on_b.len(), 1);
+        assert_eq!(on_b[0].document_id, Some(shared_document));
+        assert_eq!(on_b[0].sector, "Setor Jurídico");
+        assert_eq!(on_b[0].created_by, "Servidor A");
+
+        // Each makes a document offline (they get the same number on both
+        // computers) and books the room for it: the links must follow the
+        // numbers the documents get in the shared library.
+        let doc_a = a
+            .import_capture(&capture_numbered("ORG-OFI-2026/00431"))
+            .unwrap();
+        let doc_b = b
+            .import_capture(&capture_numbered("ORG-OFI-2026/00432"))
+            .unwrap();
+        assert_eq!(doc_a.document_id, doc_b.document_id, "same number on both");
+        let task_b = b
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.document_id == Some(doc_b.document_id))
+            .unwrap();
+        let attendance_b = b
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.document_id == Some(doc_b.document_id))
+            .unwrap();
+        let mut second = booking(&room, "Servidor B", "10:00", "11:00");
+        second.document_id = Some(doc_b.document_id);
+        second.task_id = Some(task_b.id);
+        second.saiop_id = Some(attendance_b.id);
+        let second_uid = b.save_resource_use(&second, None).unwrap();
+        sync(&mut a);
+        let report = sync(&mut b);
+        assert_eq!(
+            report.conflicts,
+            0,
+            "{:?}",
+            b.list_sync_conflicts().unwrap()
+        );
+        sync(&mut a);
+        for store in [&a, &b] {
+            let item = uses_of(store)
+                .into_iter()
+                .find(|u| u.uid == second_uid)
+                .expect("the booking arrived");
+            let document = store.load_document(item.document_id.unwrap()).unwrap();
+            assert_eq!(
+                document.capture.document_number, "ORG-OFI-2026/00432",
+                "the link follows the document, not its old number"
+            );
+            let task = store
+                .list_tasks()
+                .unwrap()
+                .into_iter()
+                .find(|t| Some(t.id) == item.task_id)
+                .expect("the task link was translated");
+            assert_eq!(task.document_id, item.document_id);
+            let attendance = store
+                .list_saiop_attendances()
+                .unwrap()
+                .into_iter()
+                .find(|x| Some(x.id) == item.saiop_id)
+                .expect("the atendimento link was translated");
+            assert_eq!(attendance.document_id, item.document_id);
+        }
+        assert_eq!(uses_of(&a).len(), 2);
+    }
+
+    #[test]
+    fn a_slot_booked_offline_on_two_computers_ends_as_one_booking_and_one_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, _) = pair(dir.path());
+        let room = resource(&mut a, "Sala de reuniões do 2º andar", 1);
+        sync(&mut a);
+        sync(&mut b);
+        // Neither knows about the other's booking.
+        let a_uid = a
+            .save_resource_use(&booking(&room, "Servidor A", "09:00", "10:00"), None)
+            .unwrap();
+        let mut theirs = booking(&room, "Servidor B", "09:30", "10:30");
+        theirs.purpose = "Reunião do Setor Jurídico".into();
+        let b_uid = b.save_resource_use(&theirs, None).unwrap();
+        assert_eq!(uses_of(&b).len(), 1, "valid here until the exchange");
+
+        assert_eq!(sync(&mut a).conflicts, 0);
+        let report = sync(&mut b);
+        assert_eq!(report.conflicts, 1, "{}", report.summary());
+        // Exactly one booking is valid, on both sides.
+        sync(&mut a);
+        for store in [&a, &b] {
+            let uses = uses_of(store);
+            assert_eq!(uses.len(), 1);
+            assert_eq!(uses[0].uid, a_uid);
+        }
+        // Nothing was lost: the refused booking waits as a conflict that says
+        // why.
+        let conflicts = b.list_sync_conflicts().unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert!(
+            conflicts[0]
+                .reason
+                .starts_with(crate::resources::HORARIO_OCUPADO),
+            "{}",
+            conflicts[0].reason
+        );
+        assert!(conflicts[0]
+            .reason
+            .contains("já está reservado por Servidor A até 05/01/2099 10:00"));
+        let IntranetMutation::SaveResourceUse { item, .. } = &conflicts[0].mutation else {
+            panic!("the booking is kept whole");
+        };
+        assert_eq!(item.uid, b_uid);
+        assert_eq!(item.purpose, "Reunião do Setor Jurídico");
+        let views = b.conflict_views().unwrap();
+        assert_eq!(
+            views[0].info.title,
+            "Uso: Sala de reuniões do 2º andar — Servidor B"
+        );
+        assert!(!views[0].info.equal);
+        // "Usar só a minha versão" cannot work, and the card says what to do.
+        let id = conflicts[0].id;
+        let error = b
+            .resolve_sync_conflict(id, ConflictResolution::KeepLocal)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(crate::resources::HORARIO_OCUPADO),
+            "{error}"
+        );
+        let said = explain_resolve_error(IntranetMode::SharedFolder, Some(&views[0].info), &error);
+        assert!(
+            said.contains("já está reservado por Servidor A até 05/01/2099 10:00.")
+                && !said.contains("horario-ocupado")
+                && said.contains("mude o horário")
+                && said.contains("Dispensar o aviso"),
+            "{said}"
+        );
+        assert_eq!(b.list_sync_conflicts().unwrap().len(), 1, "still there");
+        // Moving it to a free slot works, and the notice is dismissed.
+        let mut moved = item.clone();
+        moved.start = format!("{DAY}T10:00");
+        moved.end = format!("{DAY}T11:00");
+        b.save_resource_use(&moved, None).unwrap();
+        b.resolve_sync_conflict(id, ConflictResolution::KeepHost)
+            .unwrap();
+        assert!(b.list_sync_conflicts().unwrap().is_empty());
+        sync(&mut b);
+        sync(&mut a);
+        assert_eq!(uses_of(&a).len(), 2);
+    }
+
+    #[test]
+    fn a_booking_replayed_later_never_becomes_a_lost_change() {
+        // A loan registered "now" occupies until now when it is replayed,
+        // which can be much later: if that clashes, it is a conflict.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, _) = pair(dir.path());
+        let projector = resource(&mut a, "Projetor", 1);
+        sync(&mut a);
+        sync(&mut b);
+        let past = chrono::Local::now().naive_local() - chrono::Duration::hours(6);
+        let moment =
+            |hours: i64| crate::resources::format_moment(past + chrono::Duration::hours(hours));
+        // B reserves a slot an hour after the loan was meant to end.
+        let reservation = ResourceUse {
+            resource_uid: projector.uid.clone(),
+            who: "Servidor B".into(),
+            start: moment(2),
+            end: moment(3),
+            ..ResourceUse::default()
+        };
+        // A's loan, made before it, is valid when made (not yet late).
+        let loan = ResourceUse {
+            resource_uid: projector.uid.clone(),
+            who: "Servidor A".into(),
+            start: moment(0),
+            end: format!("{DAY}T10:00"),
+            status: UseStatus::InUse,
+            ..ResourceUse::default()
+        };
+        a.save_resource_use(&loan, None).unwrap();
+        b.save_resource_use(&reservation, None).unwrap();
+        assert_eq!(sync(&mut a).conflicts, 0);
+        let report = sync(&mut b);
+        // Nothing is lost either way: a booking that no longer fits is a
+        // conflict that keeps it whole.
+        assert_eq!(report.conflicts, b.list_sync_conflicts().unwrap().len());
+        let kept = uses_of(&b).len() + b.list_sync_conflicts().unwrap().len();
+        assert_eq!(kept, 2);
+    }
+
+    #[test]
+    fn offline_edits_of_one_resource_or_use_become_conflicts_that_merge_field_by_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, _) = pair(dir.path());
+        let room = resource(&mut a, "Auditório", 2);
+        let uid = a
+            .save_resource_use(&booking(&room, "Servidor A", "09:00", "10:00"), None)
+            .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+
+        // A changes where the room is and the purpose; B changes the
+        // quantity and the sector of the same two items, offline.
+        let mut room_a = a.list_resources().unwrap().remove(0);
+        room_a.location = "Térreo".into();
+        a.save_resource(&room_a, None).unwrap();
+        let mut use_a = uses_of(&a).remove(0);
+        use_a.purpose = "Palestra".into();
+        a.save_resource_use(&use_a, None).unwrap();
+        let mut room_b = b.list_resources().unwrap().remove(0);
+        room_b.quantity = 3;
+        b.save_resource(&room_b, None).unwrap();
+        let mut use_b = uses_of(&b).remove(0);
+        use_b.sector = "Setor Administrativo".into();
+        b.save_resource_use(&use_b, None).unwrap();
+
+        sync(&mut a);
+        let report = sync(&mut b);
+        assert_eq!(report.conflicts, 2, "{}", report.summary());
+        let views = b.conflict_views().unwrap();
+        assert_eq!(views.len(), 2);
+        let titles: Vec<String> = views.iter().map(|v| v.info.title.clone()).collect();
+        assert!(
+            titles.contains(&"Recurso: Auditório".to_owned()),
+            "{titles:?}"
+        );
+        assert!(
+            titles.contains(&"Uso: Auditório — Servidor A".to_owned()),
+            "{titles:?}"
+        );
+        for view in views.iter() {
+            assert!(!view.info.equal && view.info.block.is_none());
+            assert!(!view.differences.is_empty(), "{}", view.info.title);
+            assert!(!view.change_text.is_empty());
+        }
+        let resource_view = views
+            .iter()
+            .find(|v| v.info.title.starts_with("Recurso"))
+            .unwrap();
+        let labels: Vec<&str> = resource_view
+            .differences
+            .iter()
+            .map(|d| d.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Quantidade", "Onde fica"]);
+        assert_eq!(resource_view.change_text, "Quantidade: 3");
+        for view in views.iter() {
+            b.resolve_sync_conflict(view.conflict.id, ConflictResolution::Merge)
+                .unwrap();
+        }
+        assert!(b.list_sync_conflicts().unwrap().is_empty());
+        sync(&mut b);
+        sync(&mut a);
+        for store in [&a, &b] {
+            let room = store.list_resources().unwrap().remove(0);
+            assert_eq!((room.location.as_str(), room.quantity), ("Térreo", 3));
+            let item = uses_of(store).remove(0);
+            assert_eq!(item.uid, uid);
+            assert_eq!(
+                (item.purpose.as_str(), item.sector.as_str()),
+                ("Palestra", "Setor Administrativo")
+            );
+        }
+    }
+
+    #[test]
+    fn the_card_of_a_resource_or_a_use_names_it_and_knows_when_both_sides_agree() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("c.sqlite3")).unwrap();
+        let room = resource(&mut store, "Sala de reuniões do 2º andar", 1);
+        let mut item = booking(&room, "Servidor A", "09:00", "10:00");
+        let uid = store.save_resource_use(&item, None).unwrap();
+        item = uses_of(&store).remove(0);
+        assert_eq!(item.uid, uid);
+        let conflict = |mutation: IntranetMutation| SyncConflict {
+            id: 0,
+            created_at: now_iso(),
+            actor: "Servidor A".into(),
+            item_label: "x".into(),
+            local_summary: String::new(),
+            host_summary: String::new(),
+            reason: String::new(),
+            mutation,
+            base: None,
+            unresolved: false,
+        };
+        let save_use = |item: &ResourceUse| {
+            conflict(IntranetMutation::SaveResourceUse {
+                item: item.clone(),
+                expected_version: None,
+            })
+        };
+        let save_resource = |resource: &Resource| {
+            conflict(IntranetMutation::SaveResource {
+                resource: resource.clone(),
+                expected_version: None,
+            })
+        };
+        let info = store.conflict_info(&save_use(&item));
+        assert_eq!(info.title, "Uso: Sala de reuniões do 2º andar — Servidor A");
+        assert_eq!(info.noun, "deste uso");
+        assert_eq!(info.item_key, Some(format!("resource_use:{uid}")));
+        assert!(info.group_key.is_some());
+        assert!(info.equal, "the library holds exactly this");
+        // The dates the store sets do not make it different...
+        let mut stamped = item.clone();
+        stamped.updated_at = "outra data".into();
+        stamped.created_by = "outra pessoa".into();
+        assert!(store.conflict_info(&save_use(&stamped)).equal);
+        // ...anything the change carries does.
+        for change in [
+            (|u: &mut ResourceUse| u.who = "Servidor B".into()) as fn(&mut ResourceUse),
+            |u| u.notes = "nota".into(),
+            |u| u.purpose = "outra".into(),
+            |u| u.quantity = 2,
+            |u| u.end = format!("{DAY}T10:30"),
+            |u| u.status = UseStatus::Cancelled,
+            |u| u.document_id = Some(1),
+        ] {
+            let mut changed = item.clone();
+            change(&mut changed);
+            assert!(!store.conflict_info(&save_use(&changed)).equal);
+        }
+        // Not in the library at all: not equal.
+        let mut missing = item.clone();
+        missing.uid = "c".repeat(32);
+        assert!(!store.conflict_info(&save_use(&missing)).equal);
+
+        let info = store.conflict_info(&save_resource(&room));
+        assert_eq!(info.title, "Recurso: Sala de reuniões do 2º andar");
+        assert_eq!(info.noun, "deste recurso");
+        assert!(info.equal);
+        let mut changed = room.clone();
+        changed.location = "2º andar".into();
+        assert!(!store.conflict_info(&save_resource(&changed)).equal);
+        changed = room.clone();
+        changed.status = crate::resources::ResourceStatus::Inactive;
+        assert!(!store.conflict_info(&save_resource(&changed)).equal);
+
+        // Deletions are named too, and the labels of the queue say what they are.
+        let info = store.conflict_info(&conflict(IntranetMutation::DeleteResource {
+            uid: room.uid.clone(),
+        }));
+        assert_eq!(info.title, "Exclusão de um recurso");
+        let delete_use = IntranetMutation::DeleteResourceUse { uid: uid.clone() };
+        assert_eq!(
+            store.conflict_info(&conflict(delete_use.clone())).title,
+            "Exclusão de um uso de recurso"
+        );
+        assert_eq!(mutation_label(&delete_use), "Exclusão de uso de recurso");
+        assert_eq!(
+            mutation_label(&save_use(&item).mutation),
+            "Uso de recurso: Servidor A (05/01/2099 09:00 a 05/01/2099 10:00)"
+        );
+        assert_eq!(
+            mutation_label(&save_resource(&room).mutation),
+            "Recurso \"Sala de reuniões do 2º andar\""
+        );
+        assert_eq!(crate::labels::item_kind("resource"), "recurso");
+        assert_eq!(crate::labels::item_kind("resource_use"), "uso de recurso");
+        // A series of edits of one use is merged in the queue, keeping the
+        // version the first one saw.
+        let first = IntranetMutation::SaveResourceUse {
+            item: item.clone(),
+            expected_version: Some(4),
+        };
+        let second = IntranetMutation::SaveResourceUse {
+            item: stamped,
+            expected_version: Some(5),
+        };
+        assert_eq!(mutation_target_key(&first), mutation_target_key(&second));
+        let IntranetMutation::SaveResourceUse {
+            expected_version, ..
+        } = preserve_original_base_version(&first, second)
+        else {
+            panic!("same kind");
+        };
+        assert_eq!(expected_version, Some(4));
+        let first = IntranetMutation::SaveResource {
+            resource: room.clone(),
+            expected_version: Some(2),
+        };
+        let second = IntranetMutation::SaveResource {
+            resource: room.clone(),
+            expected_version: Some(3),
+        };
+        let IntranetMutation::SaveResource {
+            expected_version, ..
+        } = preserve_original_base_version(&first, second)
+        else {
+            panic!("same kind");
+        };
+        assert_eq!(expected_version, Some(2));
+        // The version of a new item is "none", of a saved one the current.
+        assert_eq!(store.uid_version("resource", &"d".repeat(32)), None);
+        assert_eq!(store.uid_version("resource", &room.uid), Some(1));
+        assert_eq!(store.uid_version("resource_use", &uid), Some(1));
+        assert_eq!(store.uid_version("resource_use", &room.uid), None);
+    }
+
+    #[test]
+    fn a_copy_written_before_resources_loads_without_them_and_a_newer_one_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("c.sqlite3")).unwrap();
+        let room = resource(&mut store, "Auditório", 1);
+        store
+            .save_resource_use(&booking(&room, "Servidor A", "09:00", "10:00"), None)
+            .unwrap();
+        let snapshot = store.export_snapshot().unwrap();
+        assert_eq!(snapshot.resources.resources.len(), 1);
+        assert_eq!(snapshot.resources.uses.len(), 1);
+        // An old copy has no `resources` key at all.
+        let mut json: serde_json::Value = serde_json::to_value(&snapshot).unwrap();
+        json.as_object_mut().unwrap().remove("resources");
+        let old: CabinetSnapshot = serde_json::from_value(json).unwrap();
+        assert!(old.resources.resources.is_empty() && old.resources.uses.is_empty());
+        let mut other = Store::open(&dir.path().join("o.sqlite3")).unwrap();
+        other
+            .apply_snapshot(&snapshot, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        assert_eq!(other.list_resources().unwrap().len(), 1);
+        assert_eq!(other.list_resource_uses().unwrap().len(), 1);
+        other
+            .apply_snapshot(&old, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        assert!(other.list_resources().unwrap().is_empty());
+        assert!(other.list_resource_uses().unwrap().is_empty());
+        // Schema 15 and format 3 are the ones this build writes.
+        assert_eq!(crate::storage::SCHEMA_VERSION, 15);
+        assert_eq!(crate::sharedfolder::FORMAT, 3);
+    }
+    #[test]
+    fn a_client_books_through_the_main_computer_which_refuses_a_clash() {
+        let dir = tempfile::tempdir().unwrap();
+        let host_path = dir.path().join("host.sqlite3");
+        let token = generate_token();
+        let mut host = Store::open(&host_path).unwrap();
+        host.save_intranet_config(&IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "Servidor A".into(),
+            cabinet_token: token.clone(),
+            ..IntranetConfig::default()
+        })
+        .unwrap();
+        let mut server = HostServer::start(host_path, "127.0.0.1:0").unwrap();
+        let mut client = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        client
+            .save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::Client,
+                member_name: "Servidor B".into(),
+                host_url: format!("http://{}", server.local_addr()),
+                cabinet_token: token,
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+        let room = resource(&mut client, "Auditório", 1);
+        assert_eq!(host.list_resources().unwrap().len(), 1, "saved on the host");
+        let first = client
+            .save_resource_use(&booking(&room, "Servidor B", "09:00", "10:00"), None)
+            .unwrap();
+        // The host's own booking of the same slot is refused there...
+        let error = host
+            .save_resource_use(&booking(&room, "Servidor A", "09:30", "10:30"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(crate::resources::HORARIO_OCUPADO),
+            "{error}"
+        );
+        // ...and so is the client's, with the sentence intact.
+        let error = client
+            .save_resource_use(&booking(&room, "Servidor B", "09:30", "10:30"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("já está reservado por Servidor B até 05/01/2099 10:00"),
+            "{error}"
+        );
+        assert_eq!(client.list_resource_uses().unwrap().len(), 1);
+        assert_eq!(host.list_resource_uses().unwrap()[0].uid, first);
+        assert_eq!(
+            client.resource_use_version(&first).unwrap(),
+            host.resource_use_version(&first).unwrap()
+        );
+        client.delete_resource_use(&first).unwrap();
+        assert!(host.list_resource_uses().unwrap().is_empty());
+        server.stop();
     }
 }

@@ -327,6 +327,12 @@ pub fn created_ids(
         {
             out.push(CreatedId::new(IdKind::Example, "", *id));
         }
+        // Recursos and their uses are addressed by uid: nothing is created
+        // with a number of its own.
+        (
+            IntranetMutation::SaveResource { .. } | IntranetMutation::SaveResourceUse { .. },
+            MutationReply::Unit,
+        ) => {}
         (IntranetMutation::CreateTaskForSaiop { task: Some(_), .. }, MutationReply::Id(id))
             if *id > 0 =>
         {
@@ -666,7 +672,22 @@ impl IdMap {
             | M::SetBlockStatus { .. }
             | M::DeleteBlock { .. }
             | M::SaveExample { .. }
-            | M::DeleteExample { .. } => {}
+            | M::DeleteExample { .. }
+            | M::DeleteResource { .. }
+            | M::SaveResource { .. }
+            | M::DeleteResourceUse { .. } => {}
+            // Addressed by uid; only the links to numbered items change.
+            M::SaveResourceUse { item, .. } => {
+                if let Some(document) = item.document_id {
+                    item.document_id = Some(t(K::Document, document)?);
+                }
+                if let Some(attendance) = item.saiop_id {
+                    item.saiop_id = Some(t(K::Saiop, attendance)?);
+                }
+                if let Some(task) = item.task_id {
+                    item.task_id = Some(t(K::Task, task)?);
+                }
+            }
             M::RecordGeneration { record } => {
                 record.document_id = t(K::Document, record.document_id)?;
                 record.capture_id = t(K::Capture, record.capture_id)?;

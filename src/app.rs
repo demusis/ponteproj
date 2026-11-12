@@ -2489,10 +2489,12 @@ impl PonteApp {
             WorkResult::Export(result) => match result {
                 Ok(report) => {
                     self.message(format!(
-                        "Exportação concluída: {}, {} e {}, em {}. No CERES, envie cada arquivo .csv como um conjunto.",
+                        "Exportação concluída: {}, {}, {}, {} e {}, em {}. No CERES, envie cada arquivo .csv como um conjunto.",
                         plural(report.documents, "documento", "documentos"),
                         plural(report.tasks, "tarefa", "tarefas"),
                         plural(report.attendances, "atendimento", "atendimentos"),
+                        plural(report.resources, "recurso", "recursos"),
+                        plural(report.resource_uses, "uso de recurso", "usos de recursos"),
                         report.folder.display()
                     ));
                     crate::windows_ui::reveal_in_explorer(&report.folder);

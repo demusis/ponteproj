@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const SCHEMA_VERSION: i64 = 14;
+pub(crate) const SCHEMA_VERSION: i64 = 15;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -221,12 +221,13 @@ impl Store {
         store.ensure_attachments()?;
         store.ensure_work_templates()?;
         store.ensure_mail_accounts()?;
+        store.ensure_resources()?;
         store.ensure_write_guards()?;
         crate::idmap::init_watermark(&store.conn)?;
-        // Schema 14 (tasks without document) stamps the library, so an older
-        // Ponte refuses to open it with the "versão mais nova" message
-        // instead of misreading a task without document. The other steps keep
-        // their own, lower numbers; this one is the last word.
+        // Schema 15 (recursos) stamps the library, so an older Ponte refuses
+        // to open it with the "versão mais nova" message instead of saving
+        // without knowing the new tables. The other steps keep their own,
+        // lower numbers; this one is the last word.
         if store
             .conn
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?
@@ -276,6 +277,8 @@ impl Store {
             "draft_generations",
             "attachment_texts",
             "mail_accounts",
+            "resources",
+            "resource_uses",
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());
@@ -1871,12 +1874,45 @@ mod tests {
         let mut a = analysis(receipt.capture_id);
         a.summary = "MARCADOR_ANALISE_CONFIDENCIAL".into();
         db.save_analysis(receipt.document_id, &a).unwrap();
+        let resource_uid = db
+            .save_resource(
+                &crate::resources::Resource {
+                    name: "MARCADOR_RECURSO_CONFIDENCIAL".into(),
+                    location: "MARCADOR_LOCAL_CONFIDENCIAL".into(),
+                    identification: "MARCADOR_TOMBO_CONFIDENCIAL".into(),
+                    notes: "MARCADOR_RECURSO_NOTA_CONFIDENCIAL".into(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        db.save_resource_use(
+            &crate::resources::ResourceUse {
+                resource_uid: resource_uid.clone(),
+                who: "MARCADOR_USO_QUEM_CONFIDENCIAL".into(),
+                sector: "MARCADOR_USO_SETOR_CONFIDENCIAL".into(),
+                purpose: "MARCADOR_USO_FINALIDADE_CONFIDENCIAL".into(),
+                notes: "MARCADOR_USO_NOTA_CONFIDENCIAL".into(),
+                start: "2031-03-04T09:00".into(),
+                end: "2031-03-04T10:00".into(),
+                document_id: Some(receipt.document_id),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
         let backup = dir.path().join("backup.sqlite3");
         db.backup(&backup).unwrap();
         let mut restored = Store::open(&backup).unwrap();
         assert_eq!(
             restored.load_document(receipt.document_id).unwrap().note,
             "MARCADOR_NOTA_CONFIDENCIAL"
+        );
+        // The backup carries the recursos and their uses, with the link.
+        assert_eq!(restored.list_resources().unwrap().len(), 1);
+        assert_eq!(
+            restored.list_resource_uses().unwrap()[0].document_id,
+            Some(receipt.document_id)
         );
         for entry in std::fs::read_dir(dir.path()).unwrap() {
             let path = entry.unwrap().path();
@@ -1888,6 +1924,15 @@ mod tests {
                 "MARCADOR_NOTA_CONFIDENCIAL",
                 "MARCADOR_MINUTA_CONFIDENCIAL",
                 "MARCADOR_ANALISE_CONFIDENCIAL",
+                "MARCADOR_RECURSO_CONFIDENCIAL",
+                "MARCADOR_LOCAL_CONFIDENCIAL",
+                "MARCADOR_TOMBO_CONFIDENCIAL",
+                "MARCADOR_RECURSO_NOTA_CONFIDENCIAL",
+                "MARCADOR_USO_QUEM_CONFIDENCIAL",
+                "MARCADOR_USO_SETOR_CONFIDENCIAL",
+                "MARCADOR_USO_FINALIDADE_CONFIDENCIAL",
+                "MARCADOR_USO_NOTA_CONFIDENCIAL",
+                "2031-03-04T09:00",
             ] {
                 assert!(
                     !bytes
@@ -2008,5 +2053,28 @@ mod writer_guard_tests {
             .unwrap();
         assert_eq!(store.list_tasks().unwrap().len(), 1);
         store.backup(&dir.path().join("backup.sqlite3")).unwrap();
+        // The recursos tables are guarded like the others: a connection of an
+        // older Ponte (schema below the current one) may read, not write.
+        let uid = store
+            .save_resource(
+                &crate::resources::Resource {
+                    name: "Auditório".into(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            old.query_row("SELECT count(*) FROM resources", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert!(old
+            .execute(
+                "UPDATE resources SET payload=zeroblob(1) WHERE uid=?1",
+                [&uid]
+            )
+            .is_err());
+        assert!(old.execute("DELETE FROM resource_uses", []).is_err());
     }
 }

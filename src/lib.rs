@@ -55,6 +55,9 @@ pub mod intranet;
 
 pub mod saiop;
 
+/// Rooms, books and equipment, and their bookings and loans.
+pub mod resources;
+
 #[cfg(feature = "desktop")]
 pub mod icon;
 

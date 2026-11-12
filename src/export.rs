@@ -15,6 +15,8 @@ pub struct ExportReport {
     pub documents: usize,
     pub tasks: usize,
     pub attendances: usize,
+    pub resources: usize,
+    pub resource_uses: usize,
 }
 
 pub struct Table {
@@ -22,8 +24,8 @@ pub struct Table {
     pub rows: Vec<Vec<String>>,
 }
 
-/// Writes `documentos.csv`, `tarefas.csv` and `atendimentos.csv` in a new
-/// dated folder under `exportados`.
+/// Writes `documentos.csv`, `tarefas.csv`, `atendimentos.csv`, `recursos.csv`
+/// and `usos-de-recursos.csv` in a new dated folder under `exportados`.
 pub fn export_all(store: &Store) -> Result<ExportReport> {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let folder = crate::paths::data_dir()?
@@ -38,10 +40,21 @@ pub fn export_to(store: &Store, folder: &Path) -> Result<ExportReport> {
     let documents = documents_table(store)?;
     let tasks = tasks_table(store)?;
     let attendances = attendances_table(store)?;
+    let resources = store.list_resources()?;
+    let resource_uses = resource_uses_table(
+        &resources,
+        &store.list_resource_uses()?,
+        &document_numbers(store)?,
+        &attendance_references(store)?,
+        &crate::resources::now_moment(),
+    );
+    let resources = resources_table(&resources);
     for (name, table) in [
         ("documentos.csv", &documents),
         ("tarefas.csv", &tasks),
         ("atendimentos.csv", &attendances),
+        ("recursos.csv", &resources),
+        ("usos-de-recursos.csv", &resource_uses),
     ] {
         let path = folder.join(name);
         std::fs::write(&path, render_csv(table))
@@ -52,7 +65,159 @@ pub fn export_to(store: &Store, folder: &Path) -> Result<ExportReport> {
         documents: documents.rows.len(),
         tasks: tasks.rows.len(),
         attendances: attendances.rows.len(),
+        resources: resources.rows.len(),
+        resource_uses: resource_uses.rows.len(),
     })
+}
+
+fn document_numbers(store: &Store) -> Result<BTreeMap<i64, String>> {
+    Ok(store
+        .list_documents("")?
+        .into_iter()
+        .map(|d| (d.id, d.document_number))
+        .collect())
+}
+
+fn attendance_references(store: &Store) -> Result<BTreeMap<i64, String>> {
+    Ok(store
+        .list_saiop_attendances()?
+        .into_iter()
+        .map(|a| (a.id, a.reference_raw.trim().to_owned()))
+        .collect())
+}
+
+/// `recursos.csv`: one row per resource (no notes).
+pub fn resources_table(resources: &[crate::resources::Resource]) -> Table {
+    let rows = resources
+        .iter()
+        .map(|r| {
+            vec![
+                r.uid.clone(),
+                r.name.trim().to_owned(),
+                crate::resources::kind_label(&r.kind).to_owned(),
+                r.quantity.to_string(),
+                r.location.trim().to_owned(),
+                r.identification.trim().to_owned(),
+                r.status.label().to_owned(),
+                iso_date(&r.created_at),
+            ]
+        })
+        .collect();
+    Table {
+        headers: vec![
+            "ID",
+            "Nome",
+            "Tipo",
+            "Quantidade",
+            "Local",
+            "Identificação",
+            "Situação",
+            "Criado em",
+        ],
+        rows,
+    }
+}
+
+/// `usos-de-recursos.csv`: one row per use (no notes). `documents` and
+/// `attendances` name the linked ones by number; `now` (`AAAA-MM-DDTHH:MM`)
+/// says what is overdue. The screens pass the slice they show.
+pub fn resource_uses_table(
+    resources: &[crate::resources::Resource],
+    uses: &[crate::resources::ResourceUse],
+    documents: &BTreeMap<i64, String>,
+    attendances: &BTreeMap<i64, String>,
+    now: &str,
+) -> Table {
+    use crate::resources::{hours_between, moment_date, moment_time};
+    let rows = uses
+        .iter()
+        .map(|u| {
+            let resource = resources.iter().find(|r| r.uid == u.resource_uid);
+            let until = u.returned_at.as_deref().unwrap_or(&u.end);
+            let hours = hours_between(&u.start, until)
+                .map(|h| format!("{h:.1}"))
+                .unwrap_or_default();
+            let returned = u.returned_at.as_deref().unwrap_or("");
+            let start_date = moment_date(&u.start);
+            vec![
+                u.uid.clone(),
+                resource
+                    .map(|r| r.name.trim().to_owned())
+                    .unwrap_or_default(),
+                resource
+                    .map(|r| crate::resources::kind_label(&r.kind).to_owned())
+                    .unwrap_or_default(),
+                u.quantity.to_string(),
+                u.who.trim().to_owned(),
+                u.sector.trim().to_owned(),
+                u.purpose.trim().to_owned(),
+                start_date.clone(),
+                moment_time(&u.start),
+                moment_date(&u.end),
+                moment_time(&u.end),
+                moment_date(returned),
+                moment_time(returned),
+                hours,
+                month_of(&start_date),
+                u.status.label().to_owned(),
+                yes_no(u.overdue_at(now)),
+                u.document_id
+                    .and_then(|id| documents.get(&id).cloned())
+                    .unwrap_or_default(),
+                u.saiop_id
+                    .and_then(|id| attendances.get(&id).cloned())
+                    .unwrap_or_default(),
+                yes_no(u.task_id.is_some()),
+            ]
+        })
+        .collect();
+    Table {
+        headers: vec![
+            "ID",
+            "Recurso",
+            "Tipo",
+            "Quantidade",
+            "Quem",
+            "Setor",
+            "Finalidade",
+            "Início (data)",
+            "Início (hora)",
+            "Fim previsto (data)",
+            "Fim previsto (hora)",
+            "Devolvido em (data)",
+            "Devolvido em (hora)",
+            "Duração em horas",
+            "Mês",
+            "Situação",
+            "Atrasado",
+            "Documento ligado",
+            "Atendimento ligado",
+            "Tarefa ligada",
+        ],
+        rows,
+    }
+}
+
+/// The text of `usos-de-recursos.csv` for the uses given.
+pub fn resource_uses_csv(
+    resources: &[crate::resources::Resource],
+    uses: &[crate::resources::ResourceUse],
+    documents: &BTreeMap<i64, String>,
+    attendances: &BTreeMap<i64, String>,
+    now: &str,
+) -> String {
+    render_csv(&resource_uses_table(
+        resources,
+        uses,
+        documents,
+        attendances,
+        now,
+    ))
+}
+
+/// The text of `recursos.csv` for the resources given.
+pub fn resources_csv(resources: &[crate::resources::Resource]) -> String {
+    render_csv(&resources_table(resources))
 }
 
 /// UTF-8 with BOM (Excel opens it with accents), CRLF, fields quoted when
@@ -297,11 +462,7 @@ fn tasks_table(store: &Store) -> Result<Table> {
 }
 
 fn attendances_table(store: &Store) -> Result<Table> {
-    let numbers: BTreeMap<i64, String> = store
-        .list_documents("")?
-        .into_iter()
-        .map(|d| (d.id, d.document_number))
-        .collect();
+    let numbers = document_numbers(store)?;
     let mut rows = Vec::new();
     for item in store.list_saiop_attendances()? {
         let entry = iso_date(&item.entry_date);
@@ -411,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn export_writes_three_files_with_documents_tasks_and_attendances() {
+    fn export_writes_five_files_with_documents_tasks_attendances_resources_and_uses() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
         let receipt = store
@@ -430,6 +591,11 @@ mod tests {
             (report.documents, report.tasks, report.attendances),
             (1, 1, 1)
         );
+        assert_eq!((report.resources, report.resource_uses), (0, 0));
+        for name in ["recursos.csv", "usos-de-recursos.csv"] {
+            let rows = parse(&std::fs::read_to_string(folder.join(name)).unwrap());
+            assert_eq!(rows.len(), 1, "{name}: only the header");
+        }
         let documents = parse(&std::fs::read_to_string(folder.join("documentos.csv")).unwrap());
         assert_eq!(documents[0][1], "Documento");
         let header = &documents[0];
@@ -463,5 +629,167 @@ mod tests {
         ]
         .join("");
         assert!(!all.contains("papel e material"));
+    }
+    fn resource_sample() -> (crate::resources::Resource, crate::resources::Resource) {
+        let projector = crate::resources::Resource {
+            uid: "a".repeat(32),
+            name: "Projetor; portátil".into(),
+            kind: "equipamento".into(),
+            quantity: 2,
+            location: "Sala 3".into(),
+            identification: "PAT-0001".into(),
+            notes: "NOTA_DO_RECURSO_SECRETA".into(),
+            created_at: "2026-11-02T10:00:00+00:00".into(),
+            ..Default::default()
+        };
+        let room = crate::resources::Resource {
+            uid: "b".repeat(32),
+            name: "Sala de reuniões do 2º andar".into(),
+            kind: "sala".into(),
+            status: crate::resources::ResourceStatus::Inactive,
+            ..Default::default()
+        };
+        (projector, room)
+    }
+
+    #[test]
+    fn resources_csv_has_the_columns_in_order_and_no_notes() {
+        let (projector, room) = resource_sample();
+        let text = resources_csv(&[projector, room]);
+        assert!(text.starts_with(
+            "\u{feff}ID;Nome;Tipo;Quantidade;Local;Identificação;Situação;Criado em\r\n"
+        ));
+        let rows = parse(&text);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows[1],
+            [
+                "a".repeat(32).as_str(),
+                "Projetor; portátil",
+                "Equipamento",
+                "2",
+                "Sala 3",
+                "PAT-0001",
+                "Ativo",
+                "2026-11-02",
+            ]
+        );
+        assert_eq!(rows[2][2], "Sala");
+        assert_eq!(rows[2][6], "Fora de uso");
+        assert_eq!(rows[2][7], "");
+        assert!(
+            text.contains("\"Projetor; portátil\""),
+            "the dialect quotes the separator"
+        );
+        assert!(!text.contains("SECRETA"));
+    }
+
+    #[test]
+    fn uses_csv_has_the_columns_in_order_the_duration_the_late_flag_and_no_notes() {
+        use crate::resources::{ResourceUse, UseStatus};
+        let (projector, room) = resource_sample();
+        let base_use = |uid: &str, resource: &crate::resources::Resource| ResourceUse {
+            uid: uid.into(),
+            resource_uid: resource.uid.clone(),
+            who: "Servidor A".into(),
+            sector: "Setor Jurídico".into(),
+            purpose: "Reunião; com ponto e vírgula".into(),
+            notes: "NOTA_DO_USO_SECRETA".into(),
+            start: "2026-11-10T09:00".into(),
+            end: "2026-11-10T10:30".into(),
+            ..Default::default()
+        };
+        let mut late = base_use("l".repeat(32).as_str(), &projector);
+        late.status = UseStatus::InUse;
+        late.quantity = 2;
+        late.document_id = Some(7);
+        late.saiop_id = Some(3);
+        late.task_id = Some(9);
+        let mut returned = base_use("r".repeat(32).as_str(), &room);
+        returned.status = UseStatus::Returned;
+        returned.returned_at = Some("2026-11-10T11:15".into());
+        let reserved = base_use("s".repeat(32).as_str(), &room);
+        let documents = BTreeMap::from([(7, "ORG-OFI-2026/00431".to_owned())]);
+        let attendances = BTreeMap::from([(3, "ORG-ATD-2026/0007".to_owned())]);
+        let text = resource_uses_csv(
+            &[projector, room],
+            &[late, returned, reserved],
+            &documents,
+            &attendances,
+            "2026-11-10T12:00",
+        );
+        let rows = parse(&text);
+        assert_eq!(
+            rows[0],
+            [
+                "ID",
+                "Recurso",
+                "Tipo",
+                "Quantidade",
+                "Quem",
+                "Setor",
+                "Finalidade",
+                "Início (data)",
+                "Início (hora)",
+                "Fim previsto (data)",
+                "Fim previsto (hora)",
+                "Devolvido em (data)",
+                "Devolvido em (hora)",
+                "Duração em horas",
+                "Mês",
+                "Situação",
+                "Atrasado",
+                "Documento ligado",
+                "Atendimento ligado",
+                "Tarefa ligada",
+            ]
+        );
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|r| r.len() == rows[0].len()));
+        // The loan still out: expected duration, late, with its links.
+        assert_eq!(
+            rows[1][1..],
+            [
+                "Projetor; portátil",
+                "Equipamento",
+                "2",
+                "Servidor A",
+                "Setor Jurídico",
+                "Reunião; com ponto e vírgula",
+                "2026-11-10",
+                "09:00",
+                "2026-11-10",
+                "10:30",
+                "",
+                "",
+                "1.5",
+                "2026-11-01",
+                "Em uso",
+                "Sim",
+                "ORG-OFI-2026/00431",
+                "ORG-ATD-2026/0007",
+                "Sim",
+            ]
+        );
+        // The one handed back: the real duration, on time.
+        assert_eq!(rows[2][11..14], ["2026-11-10", "11:15", "2.2"]);
+        assert_eq!(
+            (rows[2][15].as_str(), rows[2][16].as_str()),
+            ("Devolvido", "Não")
+        );
+        assert_eq!(rows[2][17..], ["", "", "Não"]);
+        // A reservation is never late.
+        assert_eq!(rows[3][16], "Não");
+        assert_eq!(rows[3][2], "Sala");
+        assert!(!text.contains("SECRETA"), "notes never leave");
+        // A use whose resource is gone still goes out.
+        let orphan = resource_uses_csv(
+            &[],
+            &[ResourceUse::default()],
+            &documents,
+            &attendances,
+            "2026-11-10T12:00",
+        );
+        assert_eq!(parse(&orphan).len(), 2);
     }
 }
