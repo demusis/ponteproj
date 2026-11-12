@@ -40,6 +40,9 @@ pub(super) struct TodayData {
     /// Reserved or in-use uses touching today (the late ones are listed
     /// above, not repeated here).
     pub today_uses: Vec<UseRow>,
+    /// The library has at least one resource: the card of resources stays
+    /// in sight even when nothing is in use or reserved today.
+    pub has_resources: bool,
     /// Why the library could not be read, if it could not.
     pub error: Option<String>,
 }
@@ -101,6 +104,7 @@ impl TodayData {
             (Ok(resources), Ok(uses)) => {
                 let now = crate::resources::now_moment();
                 let groups = resource_groups(&resources, &uses, today, &now);
+                data.has_resources = !resources.is_empty();
                 data.overdue_uses = groups.overdue;
                 data.today_uses = groups.today;
                 for (day, items) in groups.by_day {
@@ -378,6 +382,8 @@ enum Asked {
     OpenAttendance(i64),
     /// A use of a resource, by uid.
     OpenUse(String),
+    /// The Recursos area (from the card of today's resources).
+    OpenResources,
 }
 
 impl PonteApp {
@@ -524,14 +530,7 @@ impl PonteApp {
                 };
                 let right = |ui: &mut egui::Ui, asked: &mut Option<Asked>| {
                     attendance_group(ui, &self.today.attendances, &now.to_string(), asked);
-                    use_group(
-                        ui,
-                        "Devoluções atrasadas",
-                        Some(p.danger),
-                        &self.today.overdue_uses,
-                        asked,
-                    );
-                    use_group(ui, "Reservas de hoje", None, &self.today.today_uses, asked);
+                    resources_group(ui, &self.today, asked);
                     recent_group(ui, &self.today.recent, asked);
                 };
                 if wide {
@@ -575,6 +574,7 @@ impl PonteApp {
                 }
             }
             Some(Asked::OpenUse(uid)) => self.open_use(&uid),
+            Some(Asked::OpenResources) => self.navigate(Leave::Resources),
         }
     }
 
@@ -1077,19 +1077,35 @@ fn attendance_group(
     ui.add_space(S3);
 }
 
-/// Uses of resources (late returns, today's reservations); nothing when none.
-fn use_group(
-    ui: &mut egui::Ui,
-    title: &str,
-    color: Option<egui::Color32>,
-    uses: &[UseRow],
-    asked: &mut Option<Asked>,
-) {
-    if uses.is_empty() {
+/// The resources of the day in one standing card: late returns first, then
+/// what is in use and what is reserved for today. It stays in sight, with a
+/// line saying so, when nothing is in use or reserved; it only goes away in a
+/// library without resources.
+fn resources_group(ui: &mut egui::Ui, data: &TodayData, asked: &mut Option<Asked>) {
+    let uses: Vec<&UseRow> = data
+        .overdue_uses
+        .iter()
+        .chain(data.today_uses.iter())
+        .collect();
+    if uses.is_empty() && !data.has_resources {
         return;
     }
-    widgets::overline(ui, title, color);
+    widgets::overline(ui, "Recursos em uso e reservados para hoje", None);
     ui.add_space(S1);
+    if uses.is_empty() {
+        widgets::card(ui, |ui| {
+            widgets::muted(ui, "Nenhum recurso em uso nem reservado para hoje.");
+            if ui
+                .add(widgets::quiet("Abrir Recursos"))
+                .on_hover_text("Abre a área Recursos, para reservar ou registrar um uso.")
+                .clicked()
+            {
+                *asked = Some(Asked::OpenResources);
+            }
+        });
+        ui.add_space(S3);
+        return;
+    }
     list_card(ui, |ui| {
         for (index, item) in uses.iter().enumerate() {
             let clicked = row(
