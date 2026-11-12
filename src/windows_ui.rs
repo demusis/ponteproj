@@ -46,6 +46,27 @@ pub fn pick_file(title: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
 /// Standard Windows dialog to choose where to save a file. `suggested` is
 /// the initial file name; the person may change it. Asks before overwriting.
 pub fn save_file(title: &str, suggested: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
+    file_place(title, suggested, filters, true)
+}
+
+/// The same dialog for choosing where a file lives when choosing it writes
+/// nothing: a file that already exists there is taken as it is, so Windows
+/// does not ask whether to replace it (the question frightens: nothing is
+/// replaced).
+pub fn choose_file_place(
+    title: &str,
+    suggested: &str,
+    filters: &[(&str, &str)],
+) -> Option<PathBuf> {
+    file_place(title, suggested, filters, false)
+}
+
+fn file_place(
+    title: &str,
+    suggested: &str,
+    filters: &[(&str, &str)],
+    ask_before_replacing: bool,
+) -> Option<PathBuf> {
     use windows::Win32::UI::Controls::Dialogs::{
         GetSaveFileNameW, OFN_EXPLORER, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST,
         OPENFILENAMEW,
@@ -66,7 +87,11 @@ pub fn save_file(title: &str, suggested: &str, filters: &[(&str, &str)]) -> Opti
         lpstrFile: PWSTR(buffer.as_mut_ptr()),
         nMaxFile: buffer.len() as u32,
         lpstrTitle: PCWSTR(title.as_ptr()),
-        Flags: OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        Flags: if ask_before_replacing {
+            OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR
+        } else {
+            OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR
+        },
         ..Default::default()
     };
     // SAFETY: every pointer in `dialog` refers to a buffer that outlives the call.

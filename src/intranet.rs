@@ -6372,48 +6372,57 @@ impl IntranetPanel {
             let mut remove: Option<usize> = None;
             for (index, path) in self.draft.folder_files.clone().iter().enumerate() {
                 let generic_hint = "Confira se a pasta está disponível neste computador.";
-                let (line, pill_text, tone, what_to_do) =
-                    match crate::sharedfolder::read_header(std::path::Path::new(path)) {
-                        Ok(Some(header)) => {
-                            let line = crate::sharedfolder::describe(&header);
-                            if header.revision < saved_revision {
-                                (line, "Atrás deste computador", Tone::Warn, None)
-                            } else {
-                                (line, "Em dia", Tone::Ok, None)
-                            }
-                        }
-                        Ok(None) => {
-                            if std::path::Path::new(path)
-                                .parent()
-                                .is_some_and(|p| p.is_dir())
-                            {
-                                (
-                                    "Pasta acessível; arquivo ainda não criado.".to_owned(),
-                                    "Arquivo a criar",
+                let (line, pill_text, tone, what_to_do) = match crate::sharedfolder::read_header(
+                    std::path::Path::new(path),
+                ) {
+                    Ok(Some(header)) => {
+                        let line = crate::sharedfolder::describe(&header);
+                        if first_time {
+                            // A computer joining a file that is already there.
+                            (
+                                    line,
+                                    "Arquivo já existente",
                                     Tone::Info,
-                                    None,
+                                    Some("Este arquivo não será apagado. Na primeira sincronização, este computador recebe o acervo que está nele; se já houver documentos aqui, o Ponte pergunta antes de trocá-los."),
                                 )
-                            } else {
-                                let hint = if path.to_lowercase().contains("google drive") {
-                                    "Abra o Google Drive e espere a pasta aparecer."
-                                } else {
-                                    generic_hint
-                                };
-                                (
-                                    "Pasta fora de alcance agora.".to_owned(),
-                                    "Fora de alcance",
-                                    Tone::Danger,
-                                    Some(hint),
-                                )
-                            }
+                        } else if header.revision < saved_revision {
+                            (line, "Atrás deste computador", Tone::Warn, None)
+                        } else {
+                            (line, "Em dia", Tone::Ok, None)
                         }
-                        Err(error) => (
-                            error.to_string(),
-                            "Com problema",
-                            Tone::Danger,
-                            Some(generic_hint),
-                        ),
-                    };
+                    }
+                    Ok(None) => {
+                        if std::path::Path::new(path)
+                            .parent()
+                            .is_some_and(|p| p.is_dir())
+                        {
+                            (
+                                "Pasta acessível; arquivo ainda não criado.".to_owned(),
+                                "Arquivo a criar",
+                                Tone::Info,
+                                None,
+                            )
+                        } else {
+                            let hint = if path.to_lowercase().contains("google drive") {
+                                "Abra o Google Drive e espere a pasta aparecer."
+                            } else {
+                                generic_hint
+                            };
+                            (
+                                "Pasta fora de alcance agora.".to_owned(),
+                                "Fora de alcance",
+                                Tone::Danger,
+                                Some(hint),
+                            )
+                        }
+                    }
+                    Err(error) => (
+                        error.to_string(),
+                        "Com problema",
+                        Tone::Danger,
+                        Some(generic_hint),
+                    ),
+                };
                 if index > 0 {
                     ui.separator();
                 }
@@ -6450,11 +6459,13 @@ impl IntranetPanel {
                 ui.add_space(theme::S2);
                 if ui
                     .add(widgets::secondary(format!("{} Adicionar pasta…", icon::FOLDER)))
-                    .on_hover_text("Escolha a pasta (do Drive, do OneDrive, do pendrive…) e mantenha o nome ponte-sync.ponte.")
+                    .on_hover_text("Escolha a pasta (do Drive, do OneDrive, do pendrive…) e mantenha o nome ponte-sync.ponte. Se o arquivo já existe ali, pode escolhê-lo: ele não é apagado.")
                     .clicked()
                 {
-                    if let Some(path) = crate::windows_ui::save_file(
-                        "Onde guardar o arquivo de sincronização",
+                    // Choosing writes nothing: an existing file is read at the
+                    // first exchange, never replaced by this choice.
+                    if let Some(path) = crate::windows_ui::choose_file_place(
+                        "Pasta do arquivo de sincronização (um arquivo que já existe é mantido)",
                         "ponte-sync.ponte",
                         &[("Arquivo de sincronização do Ponte", "*.ponte")],
                     ) {
