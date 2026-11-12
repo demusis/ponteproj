@@ -115,7 +115,7 @@ pub fn find_quote(
 }
 
 /// Lowercase without accents, for comparing words.
-fn fold(word: &str) -> String {
+pub(crate) fn fold(word: &str) -> String {
     word.to_lowercase()
         .chars()
         .map(|c| match c {

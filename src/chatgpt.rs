@@ -1192,6 +1192,7 @@ fn respond_at_with(
     );
     reporter.check()?;
     let mut strict = schema.as_ref().is_some_and(strict_ok) && !strict_refused(base);
+    let mut was_strict = false;
     loop {
         let call = Exchange {
             url: format!("{}/responses", base.trim_end_matches('/')),
@@ -1207,12 +1208,19 @@ fn respond_at_with(
         match result {
             Err(error) if strict && error.downcast_ref::<SchemaRefused>().is_some() => {
                 strict = false;
-                if let Ok(mut bases) = strict_refused_bases().lock() {
-                    bases.insert(base.to_owned());
-                }
+                was_strict = true;
                 reporter.check()?;
             }
-            other => return other,
+            other => {
+                // Remembered for the session only when the plain request
+                // worked: a 400 for another reason must not mark the server.
+                if was_strict && other.is_ok() {
+                    if let Ok(mut bases) = strict_refused_bases().lock() {
+                        bases.insert(base.to_owned());
+                    }
+                }
+                return other;
+            }
         }
     }
 }
@@ -1278,14 +1286,12 @@ fn refusal(
         .or_else(|| value["error"]["type"].as_str())
         .unwrap_or("");
     let status = status.as_u16();
+    // Any 400 to a request that carried the strict schema is taken as a
+    // refusal of the strict form: the wording of the provider is not known,
+    // so the request is repeated once as a plain schema (and only that
+    // second answer decides whether the refusal was really about the schema).
     if strict && status == 400 {
-        let text = String::from_utf8_lossy(body).to_lowercase();
-        if ["schema", "strict", "text.format", "response_format"]
-            .iter()
-            .any(|word| text.contains(word))
-        {
-            return anyhow::Error::new(SchemaRefused);
-        }
+        return anyhow::Error::new(SchemaRefused);
     }
     // The limits of the plan are not a hiccup: waiting seconds does not
     // bring the allowance back.
@@ -1951,13 +1957,16 @@ mod transport_tests {
             deep = json!({"type":"object","additionalProperties":false,"required":["n"],"properties":{"n":deep}});
         }
         assert!(!strict_ok(&deep));
-        // The analysis schema of today (with maxLength) is sent as plain.
-        assert!(!strict_ok(&crate::ai::analysis_schema()));
+        // A schema with length limits is sent as plain.
+        assert!(!strict_ok(
+            &json!({"type":"object","additionalProperties":false,"required":["s"],"properties":{"s":{"type":"string","maxLength":500}}})
+        ));
     }
 
     #[test]
     fn strict_is_sent_when_the_schema_allows_and_refused_once_then_plain() {
-        let refusal = r#"HTTP 400|{"error":{"code":"invalid_json_schema","message":"Invalid schema for response_format 'ponte'"}}"#;
+        // The wording of the refusal is not known: any 400 counts.
+        let refusal = r#"HTTP 400|{"error":{"message":"Bad request."}}"#;
         let (base, received, server) = mock_responses(vec![
             "OK {\"a\":\"x\",\"b\":null}".into(),
             refusal.into(),
@@ -1985,6 +1994,26 @@ mod transport_tests {
         assert_eq!(bodies[2]["text"]["format"]["strict"], false);
         assert_eq!(bodies[3]["text"]["format"]["strict"], false);
         assert_eq!(bodies[0]["text"]["format"]["schema"], strict_schema());
+    }
+
+    #[test]
+    fn a_400_that_is_not_about_the_schema_is_asked_once_more_and_does_not_mark_the_server() {
+        let refusal = r#"HTTP 400|{"error":{"message":"Bad request."}}"#;
+        let (base, received, server) = mock_responses(vec![
+            refusal.into(),
+            refusal.into(),
+            "OK {\"a\":\"x\",\"b\":null}".into(),
+        ]);
+        let silent = Reporter::silent();
+        assert!(call(&base, Some(strict_schema()), &silent, &quick()).is_err());
+        // Not remembered: the next request is strict again.
+        call(&base, Some(strict_schema()), &silent, &quick()).unwrap();
+        server.join().unwrap();
+        let bodies: Vec<Value> = received.try_iter().collect();
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies[0]["text"]["format"]["strict"], true);
+        assert_eq!(bodies[1]["text"]["format"]["strict"], false);
+        assert_eq!(bodies[2]["text"]["format"]["strict"], true);
     }
 
     #[test]

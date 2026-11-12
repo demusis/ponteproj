@@ -4,6 +4,10 @@
 // The development-only screen tour appends its hooks at the end of the files.
 #![cfg_attr(feature = "shots", allow(clippy::items_after_test_module))]
 pub mod ai;
+/// The set of fictitious cases that measures the roles.
+pub mod ai_eval;
+/// The Extrator and the Propositor of the document analysis.
+pub mod ai_roles;
 #[cfg(feature = "desktop")]
 pub mod app;
 pub mod attachments;
