@@ -174,7 +174,7 @@ O caminho do dia a dia:
 
 Se duas instruções se contradisserem, o Ponte avisa antes de gerar. É só um aviso: decida você.
 
-**Em equipe:** ao publicar com o escopo **Compartilhado com a equipe**, o modelo chega a todos na próxima sincronização. Qualquer integrante pode revisar, e o histórico guarda quem fez cada versão. **Pessoal** apenas esconde o modelo dos outros na tela; não é uma proteção. Os modelos pessoais antigos viram modelos pessoais publicados, sem perda de texto. Esta atualização muda o formato do acervo: na equipe, atualize todos os computadores juntos.
+**Em equipe:** ao publicar com o escopo **Compartilhado com a equipe**, o modelo chega a todos na próxima sincronização. Qualquer integrante pode revisar, e o histórico guarda quem fez cada versão. **Pessoal** apenas esconde o modelo dos outros na tela; não é uma proteção. Os modelos pessoais também vão na sincronização, mas só aparecem para o nome que os criou: se você usa dois computadores, deixe o mesmo nome nos dois, em **Ajustes ▸ Equipe e sincronização ▸ Seu nome na equipe** (o nome inicial é o do usuário do Windows, que costuma ser diferente em cada computador). Quando há modelos pessoais de outro nome no acervo, a lista de Modelos avisa. Os modelos pessoais antigos viram modelos pessoais publicados, sem perda de texto. Esta atualização muda o formato do acervo: na equipe, atualize todos os computadores juntos.
 
 ## 7. Atendimentos
 

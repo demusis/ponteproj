@@ -129,6 +129,10 @@ impl PonteApp {
     /// flags (status bar, "Ir para", the tour): each request becomes a visit
     /// to the section of Ajustes that now holds that content.
     pub(super) fn route_settings_requests(&mut self) {
+        // "Abrir Equipe e sincronização" in the note of the Modelos list.
+        if self.templates.take_open_team() {
+            self.intranet.open = true;
+        }
         if self.intranet.open {
             self.intranet.open = false;
             self.open_settings(SettingsSection::Team);

@@ -69,6 +69,8 @@ pub struct TemplatesPanel {
     filter_kind: String,
     show_archived: bool,
     only_mine: bool,
+    /// The note about hidden personal items asked for Ajustes ▸ Equipe.
+    open_team: bool,
     message: String,
     error: bool,
     tab: Tab,
@@ -936,6 +938,24 @@ impl TemplatesPanel {
                                 }
                             } else if !searching {
                                 widgets::small_muted(ui, "Nenhum modelo para mostrar.");
+                            }
+                        });
+                }
+                // Personal items come with the sync but show only to the name
+                // that owns them; on a second computer with another name the
+                // list looks empty. Say so instead of leaving the person guessing.
+                let (hidden, owners) = hidden_personal(&self.templates, &self.blocks, member);
+                if hidden > 0 {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(16, 10))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            widgets::small_muted(ui, hidden_personal_text(hidden, &owners, member));
+                            if ui
+                                .add(widgets::quiet("Abrir Equipe e sincronização"))
+                                .clicked()
+                            {
+                                self.open_team = true;
                             }
                         });
                 }
@@ -2255,6 +2275,9 @@ impl TemplatesPanel {
     }
 
     /// A PDF of an example the person asked to read in the Ponte.
+    pub fn take_open_team(&mut self) -> bool {
+        std::mem::take(&mut self.open_team)
+    }
     pub fn take_pdf_request(&mut self) -> Option<(i64, String)> {
         self.pdf_request.take()
     }
@@ -2709,9 +2732,94 @@ impl TemplatesPanel {
     }
 }
 
+/// Personal templates and instructions that `member` does not see because
+/// another name owns them (archived ones aside): how many, and whose.
+fn hidden_personal(
+    templates: &[WorkTemplate],
+    blocks: &[InstructionBlock],
+    member: &str,
+) -> (usize, Vec<String>) {
+    let mut owners = std::collections::BTreeSet::new();
+    let mut count = 0;
+    let all = templates
+        .iter()
+        .map(|t| (t.visible_to(member), t.status, &t.owner))
+        .chain(
+            blocks
+                .iter()
+                .map(|b| (b.visible_to(member), b.status, &b.owner)),
+        );
+    for (visible, status, owner) in all {
+        if !visible && status != Status::Archived {
+            count += 1;
+            if !owner.trim().is_empty() {
+                owners.insert(owner.trim().to_owned());
+            }
+        }
+    }
+    (count, owners.into_iter().collect())
+}
+
+/// What the Modelos list says about them.
+fn hidden_personal_text(count: usize, owners: &[String], member: &str) -> String {
+    let what = if count == 1 {
+        "Há 1 modelo ou instrução pessoal".to_owned()
+    } else {
+        format!("Há {count} modelos ou instruções pessoais")
+    };
+    let whose = match owners {
+        [] => String::new(),
+        [one] => format!(" de “{one}”"),
+        many => format!(
+            " de {}",
+            many.iter()
+                .map(|o| format!("“{o}”"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    format!(
+        "{what}{whose} neste acervo que não aparece{} aqui, porque o nome deste computador é “{}”. Os modelos pessoais só aparecem para o nome que os criou. Se são seus, use o mesmo nome em todos os seus computadores, em Ajustes ▸ Equipe e sincronização ▸ Seu nome na equipe.",
+        if count == 1 { "" } else { "m" },
+        member.trim()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn personal_items_of_another_name_are_counted_and_named() {
+        let template = |scope, owner: &str, status| WorkTemplate {
+            scope,
+            owner: owner.into(),
+            status,
+            ..Default::default()
+        };
+        let templates = vec![
+            template(Scope::Personal, "Servidor A", Status::Published),
+            template(Scope::Personal, "servidor a ", Status::Draft),
+            template(Scope::Personal, "Servidor B", Status::Published),
+            template(Scope::Personal, "Servidor B", Status::Archived),
+            template(Scope::Shared, "Servidor B", Status::Published),
+        ];
+        let blocks = vec![InstructionBlock {
+            scope: Scope::Personal,
+            owner: "Servidor B".into(),
+            ..Default::default()
+        }];
+        // The owner sees its own, whatever the case or the spaces.
+        let (count, owners) = hidden_personal(&templates, &blocks, "Servidor A");
+        assert_eq!((count, owners), (2, vec!["Servidor B".to_owned()]));
+        let (count, owners) = hidden_personal(&templates, &blocks, "Servidor B");
+        assert_eq!(count, 2);
+        assert_eq!(owners.len(), 2, "the two spellings of the other name");
+        assert_eq!(hidden_personal(&templates[4..], &[], "Outro").0, 0);
+        let text = hidden_personal_text(1, &["Servidor B".into()], "Servidor A");
+        assert!(text.contains("1 modelo ou instrução pessoal de “Servidor B”"));
+        assert!(text.contains("não aparece aqui"));
+        assert!(hidden_personal_text(3, &[], "X").contains("não aparecem aqui"));
+    }
 
     #[test]
     fn name_filter_ignores_case_and_accents() {
