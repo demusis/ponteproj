@@ -45,6 +45,10 @@ internal object Api {
 
     fun attendance(id: Long): AttendanceDetail = c(core.getAttendance(id)).toAttendanceDetail()
 
+    fun resources(): List<ResourceItem> = c(core.listResources()).optJSONArray("resources").objs().map { it.toResource() }
+
+    fun resourceUses(): List<ResourceUseItem> = c(core.listResourceUses()).optJSONArray("uses").objs().map { it.toResourceUse() }
+
     /** The query is passed on and forgotten: nothing here keeps or logs it. */
     fun search(query: String): SearchResult = c(core.search(query)).toSearchResult()
 

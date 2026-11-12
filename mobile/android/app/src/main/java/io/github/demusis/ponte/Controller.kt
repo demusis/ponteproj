@@ -62,6 +62,12 @@ internal sealed class Route {
     /** The ficha of an atendimento (read-only). */
     data class Attendance(val id: Long) : Route() { override val key get() = "att:$id" }
 
+    /** The screen of one use of a resource (read-only), by the uid the core gave it. */
+    data class ResourceUse(val uid: String) : Route() { override val key get() = "use:$uid" }
+
+    /** The screen of one resource (read-only): its data, next uses and today's occupation. */
+    data class Resource(val uid: String) : Route() { override val key get() = "res:$uid" }
+
     /** The search over documents, tasks and atendimentos. */
     object Search : Route() { override val key get() = "search" }
 
@@ -93,6 +99,8 @@ internal sealed class Route {
                 "edit" -> arg.toLongOrNull()?.let { EditTask(it) }
                 "pick" -> arg.toLongOrNull()?.let { Pick(it) }
                 "att" -> arg.toLongOrNull()?.let { Attendance(it) }
+                "use" -> arg.takeIf { it.isNotEmpty() }?.let { ResourceUse(it) }
+                "res" -> arg.takeIf { it.isNotEmpty() }?.let { Resource(it) }
                 "search" -> Search
                 "photo" -> Photo
                 "settings" -> Settings
@@ -167,6 +175,14 @@ internal object Controller {
         private set
     var attendances by mutableStateOf(AttendancesState())
         private set
+
+    /** The Recursos list of the Tarefas area (uses and register); read again with the tasks and after a sync. */
+    var resources by mutableStateOf(ResourcesState())
+        private set
+
+    /** What is typed in the search box of the Recursos list (memory only), and which of its two views: 0 Usos, 1 Recursos. */
+    var resQuery by mutableStateOf("")
+    var resView by mutableStateOf(0)
 
     /** What is typed in the search box of the Atendimentos list (memory only). */
     var attQuery by mutableStateOf("")
@@ -280,7 +296,7 @@ internal object Controller {
     /** After the process died: navigation and the photo form come back. */
     private fun restore(s: Bundle) {
         tab = s.getInt("tab", 0).coerceIn(0, 3)
-        tasksSegment = s.getInt("segment", 0).coerceIn(0, 1)
+        tasksSegment = s.getInt("segment", 0).coerceIn(0, 2)
         docQuery = s.getString("query") ?: ""
         docFilter = try { DocFilter.valueOf(s.getString("filter") ?: "") } catch (_: Throwable) { DocFilter.ALL }
         stack.clear()
@@ -304,6 +320,8 @@ internal object Controller {
                 is Route.NewTask -> if (r.id > 0) documentId = r.id
                 is Route.EditTask -> loadTask(r.id)
                 is Route.Pick -> {}
+                // Read from the lists, which are read again at start.
+                is Route.ResourceUse, is Route.Resource -> {}
                 // One atendimento screen at most (see openAttendance): the top-most one comes back.
                 is Route.Attendance -> if (r == stack.lastOrNull { it is Route.Attendance }) {
                     attGen++
@@ -655,7 +673,8 @@ internal object Controller {
                 statusLine = line,
                 statusKind = kind,
                 syncEnabled = !SyncRunner.keyBroken,
-                attendances = tasksSegment == 1
+                attendances = tasksSegment == 1,
+                resources = tasksSegment == 2
             )
             if (stack.lastOrNull() == Route.Setup && setup.step == 2) {
                 setup = setup.copy(
@@ -747,11 +766,22 @@ internal object Controller {
         }
     }
 
-    /** Tarefas | Atendimentos, at the top of the Tarefas area. */
+    /** Tarefas | Atendimentos | Recursos, at the top of the Tarefas area. */
     fun selectSegment(i: Int) {
-        tasksSegment = i.coerceIn(0, 1)
-        shell = shell.copy(attendances = tasksSegment == 1)
+        tasksSegment = i.coerceIn(0, 2)
+        shell = shell.copy(attendances = tasksSegment == 1, resources = tasksSegment == 2)
         refreshAttendances()
+        refreshResources()
+    }
+
+    /** From Hoje: the Recursos list, in the Tarefas area. */
+    fun openResources() {
+        stack.clear()
+        tab = 1
+        shell = shell.copy(tab = 1)
+        resView = 0
+        resQuery = ""
+        selectSegment(2)
     }
 
     /** The notice was tapped with the app open: back to Hoje, unless something is half done. */
@@ -922,6 +952,7 @@ internal object Controller {
             fail = "Não foi possível ler as tarefas. Toque em Sincronizar agora e tente de novo.")
         refreshToday()
         refreshAttendances()
+        refreshResources()
         refreshAssignees()
     }
 
@@ -976,6 +1007,33 @@ internal object Controller {
     private fun refreshOpenAttendance() {
         val id = (stack.lastOrNull() as? Route.Attendance)?.id ?: return
         if (attendance.id == id) loadAttendance(id)
+    }
+
+    // ---------------------------------------------------------------- recursos (read-only)
+
+    /** Reads the uses and the register of resources (the detail screens are drawn from them). */
+    private fun refreshResources() {
+        SyncRunner.background({ Api.resourceUses() to Api.resources() }, { (uses, list) ->
+            resources = ResourcesState(loading = false, error = null, uses = uses, resources = list)
+        }, { resources = resources.copy(loading = false, error = it) },
+            fail = "Não foi possível ler os recursos. Toque em Sincronizar agora e tente de novo.")
+    }
+
+    /** Opens one use. Opening the one already on the stack brings it back to the top (keys stay unique). */
+    fun openResourceUse(uid: String) {
+        if (uid.isEmpty()) return
+        val r = Route.ResourceUse(uid)
+        if (stack.lastOrNull() == r) return
+        stack.remove(r)
+        stack.add(r)
+    }
+
+    fun openResource(uid: String) {
+        if (uid.isEmpty()) return
+        val r = Route.Resource(uid)
+        if (stack.lastOrNull() == r) return
+        stack.remove(r)
+        stack.add(r)
     }
 
     // ---------------------------------------------------------------- search
@@ -1037,7 +1095,9 @@ internal object Controller {
             val tasksOf = { key: String -> o.optJSONArray(key).objs().map { it.toTask() } }
             TodayState(
                 loading = false, late = tasksOf("late"), today = tasksOf("today"), upcoming = tasksOf("upcoming"),
-                attendances = o.optJSONArray("attendances").objs().map { it.toAttendance() }
+                attendances = o.optJSONArray("attendances").objs().map { it.toAttendance() },
+                reservationsToday = o.optJSONObject("resources")?.optInt("reservations_today") ?: 0,
+                overdueReturns = o.optJSONObject("resources")?.optInt("overdue") ?: 0
             )
         }, { read ->
             val open = { list: List<TaskItem> -> list.map { it.withPending() }.filter { !it.done } }

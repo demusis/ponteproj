@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -31,7 +32,8 @@ internal fun TodayScreen(
     state: TodayState,
     onToggle: (TaskItem) -> Unit,
     onOpen: (TaskItem) -> Unit,
-    onOpenAttendance: (AttendanceItem) -> Unit = {}
+    onOpenAttendance: (AttendanceItem) -> Unit = {},
+    onOpenResources: () -> Unit = {}
 ) {
     val c = Ponte.colors
     if (state.loading && state.isEmpty) {
@@ -54,11 +56,13 @@ internal fun TodayScreen(
             }
         } else {
             item(key = "summary") {
-                val line = todaySummary(state.late.size, state.today.size, state.attendances.size)
+                val line = todaySummary(
+                    state.late.size, state.today.size, state.attendances.size, state.reservationsToday, state.overdueReturns
+                )
                 Text(
                     line, Modifier.padding(start = 4.dp, bottom = 4.dp),
                     fontSize = 17.sp, fontWeight = FontWeight.Medium,
-                    color = if (state.late.isNotEmpty()) c.error else c.text
+                    color = if (state.late.isNotEmpty() || state.overdueReturns > 0) c.error else c.text
                 )
             }
         }
@@ -70,6 +74,15 @@ internal fun TodayScreen(
                 SectionLabel("Atendimentos com prazo · ${state.attendances.size}", Modifier.padding(top = 8.dp))
             }
             items(state.attendances, key = { "a-${it.id}" }) { a -> AttendanceCard(a, onClick = { onOpenAttendance(a) }) }
+        }
+        if (state.reservationsToday > 0 || state.overdueReturns > 0) {
+            item(key = "h-res") { SectionLabel(PhoneWords.RES_AREA, Modifier.padding(top = 8.dp)) }
+            if (state.overdueReturns > 0) {
+                item(key = "res-overdue") { ResourceCountCard(PhoneWords.RES_OVERDUE_LINE, state.overdueReturns, Tone.ERROR, onOpenResources) }
+            }
+            if (state.reservationsToday > 0) {
+                item(key = "res-today") { ResourceCountCard(PhoneWords.RES_TODAY_LINE, state.reservationsToday, Tone.ACCENT, onOpenResources) }
+            }
         }
     }
 }
@@ -89,3 +102,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     items(list, key = { "t-${it.id}" }) { t -> TaskCard(t, onToggle, onOpen) }
 }
 
+/** A line of Hoje about resources ("Reservas de hoje", 2): a count only, a tap opens the Recursos list. */
+@Composable
+internal fun ResourceCountCard(title: String, count: Int, tone: Tone, onClick: () -> Unit) {
+    val c = Ponte.colors
+    PonteCard(onClick = onClick) {
+        Row(
+            Modifier.heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(title, Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, color = c.text, maxLines = 2)
+            Spacer(Modifier.width(8.dp))
+            Pill(count.toString(), tone)
+        }
+    }
+}

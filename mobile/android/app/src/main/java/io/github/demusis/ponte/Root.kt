@@ -83,16 +83,23 @@ internal fun AppRoot() {
                     when (c.tab) {
                         0 -> TodayScreen(
                             c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
-                            onOpenAttendance = { c.openAttendance(it.id) }
+                            onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources
                         )
-                        // Tarefas | Atendimentos: the atendimentos have no tab of their own (four is the limit).
+                        // Tarefas | Atendimentos | Recursos: they have no tab of their own (four is the limit).
                         1 -> Column(Modifier.fillMaxSize()) {
-                            SegmentedTabs(listOf("Tarefas", "Atendimentos"), c.tasksSegment, c::selectSegment)
+                            SegmentedTabs(listOf("Tarefas", "Atendimentos", PhoneWords.RES_AREA), c.tasksSegment, c::selectSegment)
                             Box(Modifier.weight(1f).fillMaxWidth()) {
                                 if (c.tasksSegment == 0) {
                                     TasksScreen(
                                         c.tasks, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
                                         onNew = c::openNewTaskWithoutDocument
+                                    )
+                                } else if (c.tasksSegment == 2) {
+                                    ResourcesScreen(
+                                        c.resources, now = ResourceRules.nowMoment(),
+                                        query = c.resQuery, onQuery = { c.resQuery = it },
+                                        view = c.resView, onView = { c.resView = it },
+                                        onOpenUse = { c.openResourceUse(it.uid) }, onOpenResource = { c.openResource(it.uid) }
                                     )
                                 } else {
                                     AttendancesScreen(
@@ -157,6 +164,15 @@ private fun RouteScreen(route: Route) {
         is Route.Attendance -> AttendanceScreen(
             routeId = route.id, state = c.attendance, onBack = c::back,
             onOpenDocument = c::openDocument, onOpenTask = c::openTask, onOpenFile = c::openFile
+        )
+        is Route.ResourceUse -> ResourceUseScreen(
+            uid = route.uid, state = c.resources, now = ResourceRules.nowMoment(), onBack = c::back,
+            onOpenResource = c::openResource, onOpenDocument = c::openDocument,
+            onOpenAttendance = c::openAttendance, onOpenTask = c::openTask
+        )
+        is Route.Resource -> ResourceScreen(
+            uid = route.uid, state = c.resources, now = ResourceRules.nowMoment(), onBack = c::back,
+            onOpenUse = c::openResourceUse
         )
         Route.Search -> SearchScreen(
             state = c.search, onQuery = c::setSearchQuery, onBack = c::back,

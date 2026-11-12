@@ -30,6 +30,45 @@ internal object PhoneWords {
         "Falha interna do Ponte de bolso. Feche e abra o Ponte de bolso; se continuar, sincronize pelo computador e avise quem cuida do Ponte."
     const val GENERIC = "Não foi possível concluir. Tente de novo; se continuar, feche e abra o Ponte de bolso."
 
+    // Recursos (rooms, books, equipment and their uses): the words of the computer's Recursos area.
+    // A booking or loan is a "uso", never a "registro" or an "atendimento".
+    const val RES_AREA = "Recursos"
+    const val RES_USES = "Usos"
+    const val RES_USE_TITLE = "Uso"
+    const val RES_RESOURCE_TITLE = "Recurso"
+    const val RES_WHO = "Quem"
+    const val RES_SECTOR = "Setor"
+    const val RES_PURPOSE = "Finalidade"
+    const val RES_START = "Início"
+    const val RES_END = "Fim previsto"
+    const val RES_RETURNED = "Devolvido em"
+    const val RES_STATUS = "Situação"
+    const val RES_NOTES = "Observações"
+    const val RES_QUANTITY = "Quantidade"
+    const val RES_LOCATION = "Onde fica"
+    const val RES_IDENTIFICATION = "Identificação"
+    const val RES_KIND = "Tipo"
+    const val RES_OVERDUE = "Atrasado"
+    const val RES_INACTIVE = "Fora de uso"
+    const val RES_GROUP_LATE = "Atrasados"
+    const val RES_GROUP_IN_USE = "Em uso agora"
+    const val RES_GROUP_TODAY = "Hoje"
+    const val RES_GROUP_NEXT = "Próximos dias"
+    const val RES_GROUP_LATER = "Mais adiante"
+    const val RES_GROUP_CLOSED = "Encerrados"
+    const val RES_TODAY_LINE = "Reservas de hoje"
+    const val RES_OVERDUE_LINE = "Devoluções atrasadas"
+    const val RES_SEARCH_USES = "Buscar por recurso, quem ou finalidade"
+    const val RES_SEARCH_RESOURCES = "Buscar por nome, tipo ou local"
+
+    /** Every text above that names the thing, to check the vocabulary ("uso", never "registro"/"atendimento"). */
+    val RES_TEXTS: List<String> = listOf(
+        RES_AREA, RES_USES, RES_USE_TITLE, RES_RESOURCE_TITLE, RES_WHO, RES_SECTOR, RES_PURPOSE, RES_START, RES_END,
+        RES_RETURNED, RES_STATUS, RES_NOTES, RES_QUANTITY, RES_LOCATION, RES_IDENTIFICATION, RES_KIND, RES_OVERDUE,
+        RES_INACTIVE, RES_GROUP_LATE, RES_GROUP_IN_USE, RES_GROUP_TODAY, RES_GROUP_NEXT, RES_GROUP_LATER,
+        RES_GROUP_CLOSED, RES_TODAY_LINE, RES_OVERDUE_LINE, RES_SEARCH_USES, RES_SEARCH_RESOURCES
+    )
+
     /** "1 tarefa" or "3 tarefas". */
     fun plural(n: Int, one: String, many: String) = if (n == 1) "1 $one" else "$n $many"
 

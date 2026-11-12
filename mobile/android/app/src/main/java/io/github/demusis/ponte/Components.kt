@@ -135,7 +135,11 @@ internal fun MainShell(
     val c = Ponte.colors
     val titles = listOf("Hoje", "Tarefas", "Documentos", "E-mail")
     // The Tarefas area shows its Atendimentos list under another title.
-    val heading = if (state.tab == 1 && state.attendances) "Atendimentos" else titles.getOrElse(state.tab) { "" }
+    val heading = when {
+        state.tab == 1 && state.attendances -> "Atendimentos"
+        state.tab == 1 && state.resources -> PhoneWords.RES_AREA
+        else -> titles.getOrElse(state.tab) { "" }
+    }
     Column(Modifier.fillMaxSize().background(c.ground)) {
         Row(
             Modifier.statusBarsPadding().fillMaxWidth().padding(start = 20.dp, top = 12.dp, end = 8.dp, bottom = 6.dp),

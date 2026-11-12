@@ -72,17 +72,22 @@ internal object DeadlineNotice {
 
     /**
      * The notice text from the same counts Hoje shows (tasks late, tasks due today, atendimentos
-     * with a deadline), only counts and never a title: "3 tarefas atrasadas, 2 para hoje e 1
-     * atendimento com prazo.". Null when nothing is due: then there is no notice.
+     * with a deadline, reservations of resources today, overdue returns), only counts and never a
+     * title or a name: "3 tarefas atrasadas, 2 para hoje, 1 atendimento com prazo e 2 reservas de
+     * hoje.". Null when nothing is due: then there is no notice.
      */
-    fun body(late: Int, today: Int, attendances: Int): String? {
+    fun body(late: Int, today: Int, attendances: Int, reservations: Int = 0, overdueReturns: Int = 0): String? {
         val l = late.coerceAtLeast(0)
         val t = today.coerceAtLeast(0)
         val a = attendances.coerceAtLeast(0)
+        val r = reservations.coerceAtLeast(0)
+        val d = overdueReturns.coerceAtLeast(0)
         val parts = ArrayList<String>()
         if (l > 0) parts.add(PhoneWords.plural(l, "tarefa atrasada", "tarefas atrasadas"))
         if (t > 0) parts.add(if (l > 0) "$t para hoje" else PhoneWords.plural(t, "tarefa para hoje", "tarefas para hoje"))
         if (a > 0) parts.add(PhoneWords.plural(a, "atendimento com prazo", "atendimentos com prazo"))
+        if (r > 0) parts.add(ResourceRules.reservationsLine(r))
+        if (d > 0) parts.add(ResourceRules.overdueLine(d))
         if (parts.isEmpty()) return null
         val joined = if (parts.size == 1) parts[0] else parts.dropLast(1).joinToString(", ") + " e " + parts.last()
         return "$joined."

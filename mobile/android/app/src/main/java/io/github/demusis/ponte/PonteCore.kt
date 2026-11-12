@@ -65,6 +65,21 @@ class PonteCore {
     external fun getAttendance(attendanceId: Long): String
 
     /**
+     * The resources register, by name: {resources: [{uid, name, kind, kind_label, quantity, location,
+     * identification, notes, status, status_label, active}]}. Read-only.
+     */
+    external fun listResources(): String
+
+    /**
+     * Every use of a resource, by start: {uses: [{uid, resource_uid, resource_name, resource_kind,
+     * resource_kind_label, quantity, who, sector, purpose, start, end (AAAA-MM-DDTHH:MM), returned_at
+     * (null or text), status, status_label, notes, overdue, document_id, document_number,
+     * document_title, attendance_id, attendance_reference, task_id, task_title}]} (links that do not
+     * exist come as 0 and ""). The answer of [today] also carries "resources": {reservations_today, overdue}.
+     */
+    external fun listResourceUses(): String
+
+    /**
      * The search over the whole library (two characters or more): {documents, tasks,
      * attendances}, each {rows: [...], more: N} already cut at eight.
      */

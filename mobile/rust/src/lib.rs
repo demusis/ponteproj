@@ -660,7 +660,9 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_today<'local>(
     answer(&mut env, |_| {
         with_store(|store| {
             let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
-            today_lists(store, &today)
+            let mut lists = today_lists(store, &today)?;
+            lists["resources"] = resource_counts(store, &today, &ponteproj::resources::now_moment())?;
+            Ok(lists)
         })
     })
 }
@@ -1177,6 +1179,103 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_getAttendance<'loc
             let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
             get_attendance(store, attendance_id, &today)
         })
+    })
+}
+
+/// A resource of the register, for the phone (read-only). `notes` are shown on the detail screen,
+/// as on the computer; nothing here is logged.
+fn resource_json(r: &ponteproj::resources::Resource) -> Value {
+    json!({
+        "uid": r.uid,
+        "name": r.name,
+        "kind": r.kind,
+        "kind_label": ponteproj::resources::kind_label(&r.kind),
+        "quantity": r.quantity,
+        "location": r.location,
+        "identification": r.identification,
+        "notes": r.notes,
+        "status": r.status.as_str(),
+        "status_label": r.status.label(),
+        "active": r.status == ponteproj::resources::ResourceStatus::Active,
+    })
+}
+
+/// Every resource, by name (the core's order).
+fn resource_rows(store: &Store) -> Result<Value> {
+    let rows = store.list_resources()?.iter().map(resource_json).collect::<Vec<_>>();
+    Ok(json!({ "resources": rows }))
+}
+
+/// Every use with the names the list and the detail need (resource, linked document, atendimento
+/// and task). A link that no longer exists comes as 0 / empty. `now` is `AAAA-MM-DDTHH:MM`.
+fn resource_use_rows(store: &Store, now: &str) -> Result<Value> {
+    use ponteproj::resources::kind_label;
+    let resources = store.list_resources()?;
+    let documents = store.list_documents("")?;
+    let attendances = store.list_saiop_attendances()?;
+    let tasks = store.list_tasks()?;
+    let rows = store
+        .list_resource_uses()?
+        .iter()
+        .map(|u| {
+            let resource = resources.iter().find(|r| r.uid == u.resource_uid);
+            let document = u.document_id.and_then(|d| documents.iter().find(|x| x.id == d));
+            let attendance = u.saiop_id.and_then(|a| attendances.iter().find(|x| x.id == a));
+            let task = u.task_id.and_then(|t| tasks.iter().find(|x| x.id == t));
+            json!({
+                "uid": u.uid,
+                "resource_uid": u.resource_uid,
+                "resource_name": resource.map(|r| r.name.as_str()).unwrap_or(""),
+                "resource_kind": resource.map(|r| r.kind.as_str()).unwrap_or(""),
+                "resource_kind_label": resource.map(|r| kind_label(&r.kind)).unwrap_or(""),
+                "quantity": u.quantity,
+                "who": u.who,
+                "sector": u.sector,
+                "purpose": u.purpose,
+                "start": u.start,
+                "end": u.end,
+                "returned_at": u.returned_at,
+                "status": u.status.as_str(),
+                "status_label": u.status.label(),
+                "notes": u.notes,
+                "overdue": u.overdue_at(now),
+                "document_id": document.map(|d| d.id).unwrap_or(0),
+                "document_number": document.map(|d| d.document_number.as_str()).unwrap_or(""),
+                "document_title": document.map(|d| d.title.as_str()).unwrap_or(""),
+                "attendance_id": attendance.map(|a| a.id).unwrap_or(0),
+                "attendance_reference": attendance.map(attendance_reference).unwrap_or(""),
+                "task_id": task.map(|t| t.id).unwrap_or(0),
+                "task_title": task.map(|t| t.title.as_str()).unwrap_or(""),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "uses": rows }))
+}
+
+/// The two counts of Hoje: reservations of the day and overdue returns (counts only).
+fn resource_counts(store: &Store, today: &str, now: &str) -> Result<Value> {
+    let day = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d").context("Data inválida.")?;
+    let counts = ponteproj::resources::day_counts(&store.list_resource_uses()?, day, now);
+    Ok(json!({ "reservations_today": counts.reservations_today, "overdue": counts.overdue }))
+}
+
+/// The resources register (read-only).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listResources<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| with_store(|store| resource_rows(store)))
+}
+
+/// Every use of a resource, with the "overdue" flag computed now.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listResourceUses<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| resource_use_rows(store, &ponteproj::resources::now_moment()))
     })
 }
 
@@ -2437,5 +2536,153 @@ mod tests {
         assert_eq!(limits["max_description_chars"], 500);
         assert_eq!(limits["max_text_bytes"], 500 * 1024);
         assert_eq!(limits["max_title_bytes"], 1000);
+    }
+
+    #[test]
+    fn resources_and_uses_reach_the_phone_by_sync_and_list_with_their_names() {
+        use ponteproj::resources::{Resource, ResourceUse, UseStatus};
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut computer, drive, doc) = first_transport(&dir.0);
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+
+        let room = computer
+            .save_resource(
+                &Resource {
+                    name: "Sala de reuniões do 2º andar".into(),
+                    kind: "sala".into(),
+                    location: "2º andar".into(),
+                    notes: "Chave na portaria.".into(),
+                    ..Resource::default()
+                },
+                None,
+            )
+            .unwrap();
+        let laptops = computer
+            .save_resource(
+                &Resource { name: "Notebook de apresentações".into(), kind: "equipamento".into(), quantity: 2, ..Resource::default() },
+                None,
+            )
+            .unwrap();
+        let task = add_task(&mut computer, Some(doc), "Devolver o notebook", "2026-11-10");
+        computer
+            .save_resource_use(
+                &ResourceUse {
+                    resource_uid: room.clone(),
+                    who: "Servidor B".into(),
+                    sector: "Setor Jurídico".into(),
+                    purpose: "Reunião de equipe".into(),
+                    start: "2099-11-10T14:00".into(),
+                    end: "2099-11-10T16:00".into(),
+                    document_id: Some(doc),
+                    task_id: Some(task),
+                    ..ResourceUse::default()
+                },
+                None,
+            )
+            .unwrap();
+        computer
+            .save_resource_use(
+                &ResourceUse {
+                    resource_uid: laptops.clone(),
+                    quantity: 1,
+                    who: "Servidor A".into(),
+                    start: "2020-01-02T09:00".into(),
+                    end: "2020-01-02T12:00".into(),
+                    status: UseStatus::InUse,
+                    ..ResourceUse::default()
+                },
+                None,
+            )
+            .unwrap();
+        let cfg = computer.load_intranet_config().unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &ponteproj::ai::Reporter::silent()).unwrap();
+
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work.display().to_string(), "", KEY).unwrap();
+
+        let resources = resource_rows(&phone).unwrap();
+        let names: Vec<_> = resources["resources"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Notebook de apresentações", "Sala de reuniões do 2º andar"]);
+        let r = &resources["resources"][1];
+        assert_eq!(r["kind_label"], json!("Sala"));
+        assert_eq!(r["status_label"], json!("Ativo"));
+        assert_eq!(r["quantity"], json!(1));
+        assert_eq!(r["notes"], json!("Chave na portaria."));
+        assert_eq!(resources["resources"][0]["quantity"], json!(2));
+
+        let uses = resource_use_rows(&phone, "2026-11-10T10:00").unwrap();
+        let rows = uses["uses"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        // Sorted by start: the old loan first.
+        let loan = &rows[0];
+        assert_eq!(loan["resource_name"], json!("Notebook de apresentações"));
+        assert_eq!(loan["status"], json!("em_uso"));
+        assert_eq!(loan["status_label"], json!("Em uso"));
+        assert_eq!(loan["overdue"], json!(true));
+        assert_eq!(loan["returned_at"], Value::Null);
+        assert_eq!(loan["document_id"], json!(0));
+        let booking = &rows[1];
+        assert_eq!(booking["resource_name"], json!("Sala de reuniões do 2º andar"));
+        assert_eq!(booking["who"], json!("Servidor B"));
+        assert_eq!(booking["sector"], json!("Setor Jurídico"));
+        assert_eq!(booking["start"], json!("2099-11-10T14:00"));
+        assert_eq!(booking["status_label"], json!("Reservado"));
+        assert_eq!(booking["overdue"], json!(false));
+        let phone_doc = phone.list_documents("").unwrap().remove(0);
+        assert_eq!(booking["document_id"], json!(phone_doc.id));
+        assert_eq!(booking["document_number"], json!(phone_doc.document_number));
+        assert_eq!(booking["task_title"], json!("Devolver o notebook"));
+        assert_eq!(booking["attendance_id"], json!(0));
+    }
+
+    #[test]
+    fn resource_counts_are_the_cores_day_counts_and_come_with_today() {
+        use ponteproj::resources::{Resource, ResourceUse, UseStatus};
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        assert_eq!(
+            resource_counts(&store, "2026-11-10", "2026-11-10T10:00").unwrap(),
+            json!({"reservations_today": 0, "overdue": 0})
+        );
+        let room = store.save_resource(&Resource { name: "Auditório".into(), kind: "sala".into(), ..Resource::default() }, None).unwrap();
+        let projector = store
+            .save_resource(&Resource { name: "Projetor".into(), kind: "equipamento".into(), quantity: 3, ..Resource::default() }, None)
+            .unwrap();
+        let mut put = |resource: &str, start: &str, end: &str, status: UseStatus| {
+            store
+                .save_resource_use(
+                    &ResourceUse {
+                        resource_uid: resource.into(),
+                        who: "Servidor A".into(),
+                        start: start.into(),
+                        end: end.into(),
+                        status,
+                        returned_at: (status == UseStatus::Returned).then(|| end.to_owned()),
+                        ..ResourceUse::default()
+                    },
+                    None,
+                )
+                .unwrap();
+        };
+        put(&room, "2099-11-10T14:00", "2099-11-10T16:00", UseStatus::Reserved);
+        put(&room, "2099-11-11T14:00", "2099-11-11T16:00", UseStatus::Reserved);
+        put(&projector, "2020-11-09T09:00", "2020-11-09T12:00", UseStatus::InUse);
+        put(&projector, "2020-11-08T09:00", "2020-11-08T12:00", UseStatus::Returned);
+        put(&projector, "2099-11-10T09:00", "2099-11-10T10:00", UseStatus::Cancelled);
+        let counts = resource_counts(&store, "2099-11-10", "2099-11-10T10:00").unwrap();
+        // The old loan, still out, is overdue; the cancelled and returned ones count for nothing.
+        assert_eq!(counts["overdue"], json!(1));
+        let expected = ponteproj::resources::day_counts(
+            &store.list_resource_uses().unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2099, 11, 10).unwrap(),
+            "2099-11-10T10:00",
+        );
+        assert_eq!(counts["reservations_today"], json!(expected.reservations_today));
+        assert!(counts["reservations_today"].as_u64().unwrap() >= 1);
+        assert!(resource_counts(&store, "not a date", "2099-11-10T10:00").is_err());
     }
 }

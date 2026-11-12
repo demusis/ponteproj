@@ -49,10 +49,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Two or three words side by side, one of them chosen ("Tarefas | Atendimentos"). */
+/**
+ * Two or three words side by side, one of them chosen ("Tarefas | Atendimentos | Recursos"). The size
+ * is worked out in dp as for the bottom bar, so a narrow screen or a large font setting shrinks the
+ * words instead of cutting them.
+ */
 @Composable
 internal fun SegmentedTabs(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
     val c = Ponte.colors
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    // The row loses 16 dp at each side and its own 3 dp padding.
+    val room = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp - 38
+    val size = with(density) { NavLabel.sizeDp(room, options, 15f * density.fontScale).dp.toSp() }
     Row(
         modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
             .background(c.chip, RoundedCornerShape(24.dp)).padding(3.dp)
@@ -66,8 +74,8 @@ internal fun SegmentedTabs(options: List<String>, selected: Int, onSelect: (Int)
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    label, fontSize = 15.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (on) c.text else c.secondary, maxLines = 1
+                    label, fontSize = size, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (on) c.text else c.secondary, maxLines = 1, softWrap = false
                 )
             }
         }

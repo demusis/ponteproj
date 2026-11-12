@@ -162,8 +162,8 @@ internal object NoticeScheduler {
  * Any failure answers null: the notice is skipped, never shown with an error.
  */
 internal object NoticeCounts {
-    /** Tasks late, tasks due today, atendimentos with a deadline: the counts of Hoje. */
-    data class Counts(val late: Int, val today: Int, val attendances: Int)
+    /** Tasks late, tasks due today, atendimentos with a deadline, resource reservations today and overdue returns: the counts of Hoje. */
+    data class Counts(val late: Int, val today: Int, val attendances: Int, val reservations: Int = 0, val overdueReturns: Int = 0)
 
     fun read(ctx: Context): Counts? {
         if (SyncRunner.keyBroken) return null
@@ -182,7 +182,9 @@ internal object NoticeCounts {
         return Counts(
             late = today.optJSONArray("late")?.length() ?: 0,
             today = today.optJSONArray("today")?.length() ?: 0,
-            attendances = today.optJSONArray("attendances")?.length() ?: 0
+            attendances = today.optJSONArray("attendances")?.length() ?: 0,
+            reservations = today.optJSONObject("resources")?.optInt("reservations_today") ?: 0,
+            overdueReturns = today.optJSONObject("resources")?.optInt("overdue") ?: 0
         )
     }
 }
@@ -201,7 +203,7 @@ internal object NoticeJob {
             try {
                 val counts = NoticeCounts.read(ctx)
                 if (counts != null && !tooLate.get() && NoticeScheduler.allowed(ctx)) {
-                    DeadlineNotice.body(counts.late, counts.today, counts.attendances)?.let {
+                    DeadlineNotice.body(counts.late, counts.today, counts.attendances, counts.reservations, counts.overdueReturns)?.let {
                         if (!tooLate.get()) NoticeScheduler.show(ctx, it)
                     }
                 }

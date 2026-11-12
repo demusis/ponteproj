@@ -183,10 +183,12 @@ internal fun JSONObject.toSearchResult(): SearchResult {
 }
 
 /**
- * "1 tarefa atrasada · 2 para hoje · 1 atendimento com prazo vencido ou para hoje", or
- * "Nada vence hoje." when nothing is late, due today or an atendimento with a deadline.
+ * "1 tarefa atrasada · 2 para hoje · 1 atendimento com prazo vencido ou para hoje · 2 reservas de hoje ·
+ * 1 devolução atrasada", or "Nada vence hoje." when there is nothing in any of them.
  */
-internal fun todaySummary(late: Int, today: Int, attendances: Int = 0): String {
+internal fun todaySummary(
+    late: Int, today: Int, attendances: Int = 0, reservations: Int = 0, overdueReturns: Int = 0
+): String {
     val tasks = when {
         late > 0 && today > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas") + " · $today para hoje"
         late > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas")
@@ -196,7 +198,9 @@ internal fun todaySummary(late: Int, today: Int, attendances: Int = 0): String {
     val att = if (attendances > 0) {
         PhoneWords.plural(attendances, "atendimento com prazo vencido ou para hoje", "atendimentos com prazo vencido ou para hoje")
     } else ""
-    return listOf(tasks, att).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "Nada vence hoje." }
+    val booked = if (reservations > 0) PhoneWords.plural(reservations, "reserva de hoje", "reservas de hoje") else ""
+    val back = if (overdueReturns > 0) PhoneWords.plural(overdueReturns, "devolução atrasada", "devoluções atrasadas") else ""
+    return listOf(tasks, att, booked, back).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "Nada vence hoje." }
 }
 
 /** The checklist of a task (read-only here). */
@@ -427,7 +431,9 @@ internal data class ShellState(
     /** False while the device key is broken. */
     val syncEnabled: Boolean = true,
     /** The Tarefas area shows its Atendimentos list (the title says so). */
-    val attendances: Boolean = false
+    val attendances: Boolean = false,
+    /** The Tarefas area shows its Recursos list (the title says so). */
+    val resources: Boolean = false
 )
 
 internal data class TasksState(
@@ -452,6 +458,90 @@ internal data class AttendanceViewState(
 )
 
 /**
+ * A resource of the register (room, equipment, book...), read-only on the phone. [quantity] is how many
+ * there are of it (the "Notebook de apresentações" may be 2).
+ */
+internal data class ResourceItem(
+    val uid: String,
+    val name: String,
+    val kind: String,
+    val kindLabel: String,
+    val quantity: Int,
+    /** "Onde fica". */
+    val location: String,
+    /** Tombo, patrimônio, ISBN... */
+    val identification: String,
+    val notes: String,
+    /** "ativo" or "fora_de_uso". */
+    val status: String,
+    val statusLabel: String,
+    val active: Boolean
+)
+
+internal fun JSONObject.toResource() = ResourceItem(
+    uid = s("uid"), name = s("name"), kind = s("kind"), kindLabel = s("kind_label"),
+    quantity = optInt("quantity", 1), location = s("location"), identification = s("identification"),
+    notes = s("notes"), status = s("status", "ativo"), statusLabel = s("status_label"),
+    active = optBoolean("active", true)
+)
+
+/** One use of a resource: a reservation or a loan, with its start and end (`AAAA-MM-DDTHH:MM`, local time). */
+internal data class ResourceUseItem(
+    val uid: String,
+    val resourceUid: String,
+    val resourceName: String,
+    val resourceKindLabel: String,
+    val quantity: Int,
+    /** "Quem". */
+    val who: String,
+    val sector: String,
+    /** "Finalidade". */
+    val purpose: String,
+    val start: String,
+    /** "Fim previsto". */
+    val end: String,
+    /** "Devolvido em"; empty while not returned. */
+    val returnedAt: String,
+    /** "reservado", "em_uso", "devolvido" or "cancelado". */
+    val status: String,
+    val statusLabel: String,
+    val notes: String,
+    /** As the core computed it when the list was read; the screens ask [ResourceRules.isOverdue] with the clock. */
+    val overdue: Boolean,
+    /** 0: no document linked. */
+    val documentId: Long = 0,
+    val documentNumber: String = "",
+    val documentTitle: String = "",
+    val attendanceId: Long = 0,
+    val attendanceReference: String = "",
+    val taskId: Long = 0,
+    val taskTitle: String = ""
+) {
+    /** "ORG-… — assunto", or whichever of the two exists. */
+    val documentLine: String
+        get() = listOf(documentNumber, documentTitle).filter { it.isNotBlank() }.joinToString(" — ")
+}
+
+internal fun JSONObject.toResourceUse() = ResourceUseItem(
+    uid = s("uid"), resourceUid = s("resource_uid"), resourceName = s("resource_name"),
+    resourceKindLabel = s("resource_kind_label"), quantity = optInt("quantity", 1),
+    who = s("who"), sector = s("sector"), purpose = s("purpose"), start = s("start"), end = s("end"),
+    returnedAt = s("returned_at"), status = s("status", "reservado"), statusLabel = s("status_label"),
+    notes = s("notes"), overdue = optBoolean("overdue"),
+    documentId = optLong("document_id"), documentNumber = s("document_number"), documentTitle = s("document_title"),
+    attendanceId = optLong("attendance_id"), attendanceReference = s("attendance_reference"),
+    taskId = optLong("task_id"), taskTitle = s("task_title")
+)
+
+/** The Recursos area: the uses and the register, as the core listed them (uses by start, resources by name). */
+internal data class ResourcesState(
+    val loading: Boolean = true,
+    val error: String? = null,
+    val uses: List<ResourceUseItem> = emptyList(),
+    val resources: List<ResourceItem> = emptyList()
+)
+
+/**
  * The search screen. The text lives in memory only (never in the saved state, never logged) and is
  * dropped when the screen closes or the app locks.
  */
@@ -471,9 +561,15 @@ internal data class TodayState(
     val late: List<TaskItem> = emptyList(),
     val today: List<TaskItem> = emptyList(),
     val upcoming: List<TaskItem> = emptyList(),
-    val attendances: List<AttendanceItem> = emptyList()
+    val attendances: List<AttendanceItem> = emptyList(),
+    /** Resources reserved or in use today (a count; the names are in the Recursos list). */
+    val reservationsToday: Int = 0,
+    /** Resources in use past their expected end. */
+    val overdueReturns: Int = 0
 ) {
-    val isEmpty: Boolean get() = late.isEmpty() && today.isEmpty() && upcoming.isEmpty() && attendances.isEmpty()
+    val isEmpty: Boolean
+        get() = late.isEmpty() && today.isEmpty() && upcoming.isEmpty() && attendances.isEmpty() &&
+            reservationsToday == 0 && overdueReturns == 0
 }
 
 /** The task screen: the task as stored, and what is going on with it. */
