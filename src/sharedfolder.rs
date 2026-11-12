@@ -19,12 +19,16 @@ use std::io::{Read, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-/// Format 3 (schema 15) carries the recursos (`resources`) of the library.
-/// A Ponte that only knows format 2 refuses such a file with the "versão mais
-/// nova" message; files of formats 1 and 2 are still read (format 2 may carry
-/// tasks without document, `document_id: null`; a copy without `resources`
-/// loads with none).
-pub const FORMAT: u32 = 3;
+/// Format 4 (schema 16) carries the proposals of the AI: the facts, proposals
+/// and run of the analyses, and the proposal ids of tasks, uses and
+/// atendimentos. A Ponte that only knows format 3 refuses such a file with
+/// the "versão mais nova" message instead of rewriting it without them.
+/// Files of formats 1 to 3 are still read: format 3 (schema 15) carries the
+/// recursos (a copy without `resources` loads with none); format 2 may carry
+/// tasks without document, `document_id: null`; a copy of an older format
+/// loads with no facts, proposals or proposal ids (every new field has a
+/// default).
+pub const FORMAT: u32 = 4;
 const MAGIC: &[u8] = b"PONTE-SYNC1\n";
 pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 /// Journal retention: enough for a few weeks of one person's work.
@@ -457,25 +461,26 @@ mod tests {
         // Truncated or tampered copies are refused, never half-applied.
         std::fs::write(&path, &raw[..raw.len() - 5]).unwrap();
         assert!(read(&path, "senha-forte-123").is_err());
-        // The copy was written with format 3 (recursos).
-        assert_eq!(read_header(&path).unwrap().unwrap().format, 3);
-        // Copies written by format 1 (before tasks without document) and by
-        // format 2 (before recursos) are still read.
-        for older_format in [1, 2] {
+        // The copy was written with format 4 (proposals of the AI).
+        assert_eq!(read_header(&path).unwrap().unwrap().format, 4);
+        // Copies written by format 1 (before tasks without document), format
+        // 2 (before recursos) and format 3 (before the proposals) are still
+        // read.
+        for older_format in [1, 2, 3] {
             let older = String::from_utf8_lossy(&raw)
-                .replace("\"format\":3", &format!("\"format\":{older_format}"));
+                .replace("\"format\":4", &format!("\"format\":{older_format}"));
             std::fs::write(&path, older.as_bytes()).unwrap();
             assert_eq!(read_header(&path).unwrap().unwrap().format, older_format);
         }
-        // One written for format 4 is refused by this reader (built for 3).
-        let newer = String::from_utf8_lossy(&raw).replace("\"format\":3", "\"format\":4");
+        // One written for format 5 is refused by this reader (built for 4).
+        let newer = String::from_utf8_lossy(&raw).replace("\"format\":4", "\"format\":5");
         std::fs::write(&path, newer.as_bytes()).unwrap();
         assert!(read_header(&path)
             .unwrap_err()
             .to_string()
             .contains("Atualize"));
         let mut future = raw.clone();
-        let text = String::from_utf8_lossy(&future).replace("\"format\":3", "\"format\":9");
+        let text = String::from_utf8_lossy(&future).replace("\"format\":4", "\"format\":9");
         future = text.into_bytes();
         std::fs::write(&path, &future).unwrap();
         assert!(read_header(&path)

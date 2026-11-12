@@ -5,7 +5,7 @@
 //! library changes (`Store::cached`).
 use crate::model::*;
 use crate::protection::{seal, unseal};
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -14,7 +14,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-pub(crate) const SCHEMA_VERSION: i64 = 15;
+/// The library schema this build writes. 15 added the recursos; 16 adds the
+/// facts, proposals and run of an analysis and the proposal ids of the tasks,
+/// uses and atendimentos made from them (all inside sealed payloads, so no
+/// table changes): the number is raised so that an older Ponte refuses to
+/// open the library instead of saving over fields it does not know.
+pub(crate) const SCHEMA_VERSION: i64 = 16;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -218,6 +223,7 @@ impl Store {
         store.ensure_intranet()?;
         store.ensure_saiop()?;
         store.ensure_ai_config()?;
+        store.ensure_ai_consent()?;
         store.ensure_attachments()?;
         store.ensure_work_templates()?;
         store.ensure_mail_accounts()?;
@@ -858,6 +864,10 @@ impl Store {
         validate_analysis(analysis)?;
         crate::evidence::validate(&analysis.materials, &analysis.citations)?;
         if let Some(cfg) = self.client_config()? {
+            if !analysis.facts.is_empty() || analysis.proposals.is_some() || analysis.run.is_some()
+            {
+                self.ensure_host_stores_proposals(&cfg)?;
+            }
             self.remote_mutate(
                 &cfg,
                 crate::intranet::IntranetMutation::SaveAnalysis {
@@ -1455,10 +1465,301 @@ pub(crate) fn validate_analysis(analysis: &Analysis) -> Result<()> {
         "Modelo da análise inválido."
     );
     DateTime::parse_from_rfc3339(&analysis.created_at).context("Data da análise inválida.")?;
+    validate_ai_parts(analysis)?;
     ensure!(
         serde_json::to_vec(analysis)?.len() <= 128 * 1024,
         "Análise grande demais."
     );
+    Ok(())
+}
+
+fn collapse(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The facts, proposals and run of an analysis (schema 16). The program sets
+/// what is "conferido": here every claim of that kind is re-derived from the
+/// analysis itself, so one that cannot be (a checked date that its quote does
+/// not write, a deadline without its fact, a quantity above 1 without a fact
+/// that says it) is refused, whatever wrote it.
+fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
+    use crate::evidence::{dates_in, quantities_in, times_in};
+    ensure!(
+        analysis.facts.len() <= MAX_FACTS,
+        "A análise tem fatos demais."
+    );
+    let mut ids = BTreeSet::new();
+    for fact in &analysis.facts {
+        ensure!(
+            valid_proposal_id(&fact.id) && ids.insert(fact.id.as_str()),
+            "Identificação de fato inválida ou repetida."
+        );
+        ensure!(
+            FACT_KINDS.contains(&fact.kind.as_str()),
+            "Tipo de fato inválido."
+        );
+        ensure!(
+            !fact.statement.trim().is_empty()
+                && fact.statement.chars().count() <= MAX_FACT_STATEMENT
+                && !fact.statement.chars().any(|c| c.is_control() && c != '\n'),
+            "Enunciado de fato vazio ou longo demais."
+        );
+        let quote_len = collapse(&fact.quote).chars().count();
+        ensure!(
+            (FACT_QUOTE_MIN..=FACT_QUOTE_MAX).contains(&quote_len),
+            "Trecho de fato fora dos limites."
+        );
+        let source_text = if fact.source_id.is_empty() {
+            None
+        } else {
+            let source = analysis
+                .materials
+                .iter()
+                .find(|s| s.id == fact.source_id)
+                .context("Um fato aponta para uma fonte que não está na análise.")?;
+            Some(&source.text)
+        };
+        if let (true, Some(text)) = (fact.checked.quote, source_text) {
+            ensure!(
+                collapse(text).contains(&collapse(&fact.quote)),
+                "Um fato marcado como conferido não tem o trecho na fonte."
+            );
+        }
+        let claims = [
+            ("data", fact.date.is_some(), fact.checked.date),
+            ("hora", fact.time.is_some(), fact.checked.time),
+            ("hora final", fact.end_time.is_some(), fact.checked.end_time),
+            ("quantidade", fact.quantity.is_some(), fact.checked.quantity),
+        ];
+        for (label, present, checked) in claims {
+            ensure!(
+                !checked || (present && fact.checked.quote),
+                "Um fato marcado como conferido ({label}) não tem o valor ou o trecho conferido."
+            );
+        }
+        if let Some(date) = &fact.date {
+            ensure!(
+                chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok() && date.len() == 10,
+                "Data de fato inválida."
+            );
+            ensure!(
+                !fact.checked.date || dates_in(&fact.quote).contains(date),
+                "Uma data conferida não está escrita no trecho do fato."
+            );
+        }
+        for (value, checked) in [
+            (&fact.time, fact.checked.time),
+            (&fact.end_time, fact.checked.end_time),
+        ] {
+            if let Some(time) = value {
+                ensure!(
+                    time.len() == 5 && chrono::NaiveTime::parse_from_str(time, "%H:%M").is_ok(),
+                    "Hora de fato inválida."
+                );
+                ensure!(
+                    !checked || times_in(&fact.quote).contains(time),
+                    "Uma hora conferida não está escrita no trecho do fato."
+                );
+            }
+        }
+        if let Some(quantity) = fact.quantity {
+            ensure!(
+                (1..=9999).contains(&quantity),
+                "Quantidade de fato inválida."
+            );
+            ensure!(
+                !fact.checked.quantity || quantities_in(&fact.quote).contains(&quantity),
+                "Uma quantidade conferida não está escrita no trecho do fato."
+            );
+        }
+    }
+    let fact_of = |id: &str| analysis.facts.iter().find(|f| f.id == id);
+    // Every id a proposal cites exists and has its quote checked.
+    let cited = |list: &[String], at_least_one: bool| -> Result<()> {
+        ensure!(
+            !at_least_one || !list.is_empty(),
+            "Uma proposta não cita nenhum fato."
+        );
+        ensure!(list.len() <= MAX_FACTS, "Uma proposta cita fatos demais.");
+        for id in list {
+            let fact = fact_of(id).context("Uma proposta cita um fato que não existe.")?;
+            ensure!(
+                fact.checked.quote,
+                "Uma proposta cita um fato cujo trecho não foi conferido."
+            );
+        }
+        Ok(())
+    };
+    // The deadline of a proposal: the date and its source come from a fact
+    // whose date was checked, or are absent.
+    let deadline = |due_fact: &Option<String>,
+                    due_date: &Option<String>,
+                    due_source: &str|
+     -> Result<()> {
+        match (due_fact, due_date) {
+            (Some(id), Some(date)) => {
+                let fact =
+                    fact_of(id).context("O prazo de uma proposta cita um fato que não existe.")?;
+                ensure!(
+                    matches!(fact.kind.as_str(), "prazo" | "data_hora")
+                        && fact.checked.date
+                        && fact.date.as_deref() == Some(date.as_str())
+                        && collapse(due_source) == collapse(&fact.quote),
+                    "O prazo de uma proposta não corresponde a um fato com data conferida."
+                );
+            }
+            (None, None) => ensure!(
+                due_source.trim().is_empty(),
+                "Origem de prazo sem prazo na proposta."
+            ),
+            (Some(_), None) => bail!("O fato do prazo de uma proposta não trouxe data conferida."),
+            (None, Some(_)) => bail!("Uma proposta tem prazo sem o fato que o sustenta."),
+        }
+        Ok(())
+    };
+    let priority_ok = |value: &str| matches!(value, "baixa" | "normal" | "alta" | "urgente");
+    if let Some(proposals) = &analysis.proposals {
+        ensure!(
+            proposals.tasks.len() <= MAX_TASK_PROPOSALS
+                && proposals.reservations.len() <= MAX_RESERVATION_PROPOSALS,
+            "A análise tem propostas demais."
+        );
+        ensure!(
+            proposals.nothing_reason.chars().count() <= 600
+                && (!proposals.is_empty() || !proposals.nothing_reason.trim().is_empty()),
+            "Sem propostas, a análise precisa dizer por quê."
+        );
+        let mut proposal_ids = BTreeSet::new();
+        for task in &proposals.tasks {
+            ensure!(
+                valid_proposal_id(&task.id) && proposal_ids.insert(task.id.as_str()),
+                "Identificação de proposta inválida ou repetida."
+            );
+            ensure!(
+                crate::tasks::ACTIONS.contains(&task.action.as_str())
+                    && !task.title.trim().is_empty()
+                    && task.title.chars().count() <= 160
+                    && priority_ok(&task.priority)
+                    && task.reason.chars().count() <= 600
+                    && task.remark.chars().count() <= 600,
+                "Proposta de tarefa inválida."
+            );
+            cited(&task.facts, true)?;
+            deadline(&task.due_fact, &task.due_date, &task.due_source)?;
+        }
+        if let Some(attendance) = &proposals.attendance {
+            ensure!(
+                valid_proposal_id(&attendance.id) && proposal_ids.insert(attendance.id.as_str()),
+                "Identificação de proposta inválida ou repetida."
+            );
+            ensure!(
+                !attendance.subject.trim().is_empty()
+                    && attendance.subject.chars().count() <= 300
+                    && attendance.received_from.chars().count() <= 300
+                    && crate::saiop::DUE_KIND_OPTIONS
+                        .iter()
+                        .any(|(key, _)| *key == attendance.due_kind)
+                    && priority_ok(&attendance.priority)
+                    && attendance.priority_reason.chars().count() <= 600
+                    && (attendance.planned_doc_type.is_empty()
+                        || crate::saiop::DOC_TYPE_OPTIONS
+                            .contains(&attendance.planned_doc_type.as_str()))
+                    && attendance.remark.chars().count() <= 600,
+                "Proposta de atendimento inválida."
+            );
+            cited(&attendance.facts, false)?;
+            deadline(
+                &attendance.due_fact,
+                &attendance.due_date,
+                &attendance.due_source,
+            )?;
+        }
+        for reservation in &proposals.reservations {
+            ensure!(
+                valid_proposal_id(&reservation.id) && proposal_ids.insert(reservation.id.as_str()),
+                "Identificação de proposta inválida ou repetida."
+            );
+            ensure!(
+                !reservation.what.trim().is_empty()
+                    && reservation.what.chars().count() <= 200
+                    && (1..=9999).contains(&reservation.quantity)
+                    && reservation.purpose.chars().count() <= 300
+                    && reservation.remark.chars().count() <= 600,
+                "Proposta de reserva inválida."
+            );
+            cited(&reservation.facts, false)?;
+            let what_fact = fact_of(&reservation.what_fact)
+                .context("Uma reserva não cita o fato do que foi pedido.")?;
+            ensure!(
+                what_fact.kind == "recurso"
+                    && what_fact.checked.quote
+                    && collapse(&what_fact.quote)
+                        .to_lowercase()
+                        .contains(&collapse(&reservation.what).to_lowercase()),
+                "O que a reserva pede não está escrito no trecho do fato citado."
+            );
+            if reservation.quantity > 1 {
+                let said = std::iter::once(reservation.what_fact.as_str())
+                    .chain(reservation.facts.iter().map(String::as_str))
+                    .filter_map(fact_of)
+                    .any(|f| f.checked.quantity && f.quantity == Some(reservation.quantity));
+                ensure!(
+                    said,
+                    "Uma reserva de mais de uma unidade não tem fato que diga a quantidade."
+                );
+            }
+            let moment = |date: &str, time: &str| format!("{date}T{time}");
+            match (&reservation.when_fact, &reservation.start, &reservation.end) {
+                (None, None, None) => {}
+                (Some(id), start, end) => {
+                    let when =
+                        fact_of(id).context("Uma reserva cita um horário que não existe.")?;
+                    ensure!(
+                        when.kind == "data_hora" && when.checked.quote,
+                        "O horário de uma reserva não vem de um fato de data e hora."
+                    );
+                    if let Some(start) = start {
+                        let (Some(date), Some(time)) = (&when.date, &when.time) else {
+                            bail!("O início de uma reserva não tem data e hora conferidas.");
+                        };
+                        ensure!(
+                            when.checked.date && when.checked.time && *start == moment(date, time),
+                            "O início de uma reserva não corresponde ao fato citado."
+                        );
+                        if let Some(end) = end {
+                            let (Some(date), Some(end_time)) = (&when.date, &when.end_time) else {
+                                bail!("O fim de uma reserva não tem hora final conferida.");
+                            };
+                            ensure!(
+                                when.checked.end_time
+                                    && *end == moment(date, end_time)
+                                    && end > start,
+                                "O fim de uma reserva não corresponde ao fato citado."
+                            );
+                        }
+                    } else {
+                        ensure!(end.is_none(), "Reserva com fim sem início.");
+                    }
+                }
+                _ => bail!("Reserva com início ou fim sem o fato do horário."),
+            }
+        }
+    }
+    if let Some(run) = &analysis.run {
+        ensure!(
+            run.provider.chars().count() <= 200
+                && run.calls <= 64
+                && run.steps.len() <= 8
+                && run.steps.iter().all(|step| {
+                    matches!(step.role.as_str(), "extrator" | "propositor")
+                        && step.attempts <= 64
+                        && step.dropped <= 256
+                        && step.refused.len() <= 64
+                        && step.refused.iter().all(|r| r.chars().count() <= 300)
+                }),
+            "Registro da execução da análise inválido."
+        );
+    }
     Ok(())
 }
 
@@ -2076,5 +2377,469 @@ mod writer_guard_tests {
             )
             .is_err());
         assert!(old.execute("DELETE FROM resource_uses", []).is_err());
+    }
+}
+
+#[cfg(test)]
+mod ai_parts_tests {
+    use super::*;
+    use crate::model::sample_proposed_analysis;
+
+    fn good() -> Analysis {
+        sample_proposed_analysis(1)
+    }
+
+    fn refused(mutate: impl FnOnce(&mut Analysis), why: &str) {
+        let mut analysis = good();
+        mutate(&mut analysis);
+        let error = validate_analysis(&analysis).unwrap_err().to_string();
+        assert!(!error.is_empty(), "{why}");
+    }
+
+    #[test]
+    fn an_analysis_with_checked_facts_and_proposals_is_accepted_and_round_trips() {
+        let analysis = good();
+        validate_analysis(&analysis).unwrap();
+        let again: Analysis =
+            serde_json::from_str(&serde_json::to_string(&analysis).unwrap()).unwrap();
+        validate_analysis(&again).unwrap();
+        assert_eq!(again.facts, analysis.facts);
+        assert_eq!(again.proposals, analysis.proposals);
+        // An analysis written before schema 16 has none of them and still reads.
+        let mut old = serde_json::to_value(&analysis).unwrap();
+        for key in ["facts", "proposals", "run"] {
+            old.as_object_mut().unwrap().remove(key);
+        }
+        let old: Analysis = serde_json::from_value(old).unwrap();
+        assert!(old.facts.is_empty() && old.proposals.is_none() && old.run.is_none());
+        validate_analysis(&old).unwrap();
+        // And an analysis without them does not even write the keys.
+        let plain = serde_json::to_value(&old).unwrap();
+        assert!(plain.get("facts").is_none() && plain.get("proposals").is_none());
+        // Fields a newer Ponte may add are ignored.
+        let mut future = serde_json::to_value(&analysis).unwrap();
+        future["facts"][0]["novidade"] = serde_json::json!(1);
+        future["proposals"]["tasks"][0]["novidade"] = serde_json::json!(1);
+        let _: Analysis = serde_json::from_value(future).unwrap();
+    }
+
+    #[test]
+    fn facts_are_checked_against_their_own_quote_and_limits() {
+        refused(|a| a.facts[1].id = "f1".into(), "repeated id");
+        refused(|a| a.facts[0].id = String::new(), "empty id");
+        refused(|a| a.facts[0].kind = "palpite".into(), "unknown kind");
+        refused(|a| a.facts[0].statement = String::new(), "empty statement");
+        refused(|a| a.facts[0].statement = "x".repeat(301), "long statement");
+        refused(|a| a.facts[0].quote = "curto".into(), "short quote");
+        refused(|a| a.facts[0].quote = "palavra ".repeat(100), "long quote");
+        refused(
+            |a| a.facts[0].source_id = "C9".into(),
+            "source not in the analysis",
+        );
+        refused(
+            |a| {
+                a.facts = (0..65)
+                    .map(|i| Fact {
+                        id: format!("g{i}"),
+                        ..a.facts[0].clone()
+                    })
+                    .collect()
+            },
+            "too many facts",
+        );
+        // A checked date the quote does not write.
+        refused(
+            |a| a.facts[0].date = Some("2026-12-01".into()),
+            "date not in the quote",
+        );
+        // A check without the value, or without the quote check.
+        refused(|a| a.facts[0].date = None, "checked date without a date");
+        refused(
+            |a| a.facts[0].checked.quote = false,
+            "checked date, unchecked quote",
+        );
+        refused(
+            |a| a.facts[1].quantity = Some(21),
+            "quantity not in the quote",
+        );
+        refused(
+            |a| a.facts[2].time = Some("15:00".into()),
+            "time not in the quote",
+        );
+        refused(
+            |a| a.facts[2].end_time = Some("18:00".into()),
+            "end not in the quote",
+        );
+        refused(|a| a.facts[0].date = Some("30/11/2026".into()), "not ISO");
+        refused(|a| a.facts[2].time = Some("25:00".into()), "invalid time");
+        // An unchecked claim is allowed to stay (shown as "não conferido").
+        let mut analysis = good();
+        analysis.facts[0].checked.date = false;
+        analysis.facts[0].date = None;
+        analysis.proposals.as_mut().unwrap().tasks[0].due_fact = None;
+        analysis.proposals.as_mut().unwrap().tasks[0].due_date = None;
+        analysis.proposals.as_mut().unwrap().tasks[0].due_source = String::new();
+        validate_analysis(&analysis).unwrap();
+    }
+
+    #[test]
+    fn a_source_fact_must_find_its_quote_in_the_material_when_checked() {
+        let source = crate::evidence::Source {
+            id: "C1F2P1".into(),
+            document_id: 1,
+            capture_id: 1,
+            label: "Anexo".into(),
+            file_id: Some(2),
+            page: Some(1),
+            method: "pdf".into(),
+            text: "Anexo: responder até 30/11/2026 ao setor.".into(),
+        };
+        let mut analysis = good();
+        analysis.facts[0].source_id = "C1F2P1".into();
+        analysis.materials = vec![source.clone()];
+        validate_analysis(&analysis).unwrap();
+        analysis.materials[0].text = "Texto sem o trecho".into();
+        assert!(validate_analysis(&analysis).is_err());
+    }
+
+    #[test]
+    fn proposals_cite_existing_checked_facts_and_the_program_set_fields_must_agree() {
+        // Task.
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].facts = vec![],
+            "no fact",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].facts = vec!["f9".into()],
+            "missing fact",
+        );
+        refused(
+            |a| a.facts[0].checked = FactCheck::default(),
+            "cites an unchecked quote",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].action = "inventar".into(),
+            "action",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].title = String::new(),
+            "title",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].title = "t".repeat(161),
+            "long title",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].priority = "máxima".into(),
+            "priority",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].reason = "r".repeat(601),
+            "reason",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].id = "com espaço".into(),
+            "id",
+        );
+        // The deadline of a task.
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].due_fact = None,
+            "date without its fact",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].due_date = None,
+            "fact without a date",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].due_date = Some("2026-12-01".into()),
+            "date different from the fact",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().tasks[0].due_source = "outro trecho qualquer".into(),
+            "source different from the quote",
+        );
+        refused(
+            |a| a.facts[0].kind = "assunto".into(),
+            "deadline from the wrong kind of fact",
+        );
+        refused(
+            |a| {
+                let task = &mut a.proposals.as_mut().unwrap().tasks[0];
+                task.due_fact = None;
+                task.due_date = None;
+            },
+            "source without a deadline",
+        );
+        // More than six tasks, or a repeated proposal id.
+        refused(
+            |a| {
+                let p = a.proposals.as_mut().unwrap();
+                let task = p.tasks[0].clone();
+                p.tasks = (0..7)
+                    .map(|i| TaskProposal {
+                        id: format!("t{i}"),
+                        ..task.clone()
+                    })
+                    .collect();
+            },
+            "seven tasks",
+        );
+        refused(
+            |a| {
+                let p = a.proposals.as_mut().unwrap();
+                p.attendance.as_mut().unwrap().id = p.tasks[0].id.clone();
+            },
+            "repeated proposal id",
+        );
+        // Attendance.
+        refused(
+            |a| {
+                a.proposals
+                    .as_mut()
+                    .unwrap()
+                    .attendance
+                    .as_mut()
+                    .unwrap()
+                    .subject = String::new()
+            },
+            "subject",
+        );
+        refused(
+            |a| {
+                a.proposals
+                    .as_mut()
+                    .unwrap()
+                    .attendance
+                    .as_mut()
+                    .unwrap()
+                    .due_kind = "talvez".into()
+            },
+            "due kind",
+        );
+        refused(
+            |a| {
+                a.proposals
+                    .as_mut()
+                    .unwrap()
+                    .attendance
+                    .as_mut()
+                    .unwrap()
+                    .planned_doc_type = "Poema".into()
+            },
+            "doc type",
+        );
+        refused(
+            |a| {
+                a.proposals
+                    .as_mut()
+                    .unwrap()
+                    .attendance
+                    .as_mut()
+                    .unwrap()
+                    .facts = vec!["f9".into()]
+            },
+            "fact",
+        );
+        // Reservation.
+        refused(
+            |a| a.proposals.as_mut().unwrap().reservations[0].what = "mesas".into(),
+            "what not in the quote",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().reservations[0].what_fact = "f1".into(),
+            "what from the wrong fact",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().reservations[0].what_fact = "f9".into(),
+            "missing what fact",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().reservations[0].quantity = 0,
+            "quantity 0",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().reservations[0].quantity = 30,
+            "quantity not said by a fact",
+        );
+        refused(
+            |a| a.facts[1].checked.quantity = false,
+            "quantity fact unchecked",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().reservations[0].when_fact = None,
+            "start without its fact",
+        );
+        refused(
+            |a| {
+                a.proposals.as_mut().unwrap().reservations[0].start =
+                    Some("2026-11-12T15:00".into())
+            },
+            "start differs",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().reservations[0].end = Some("2026-11-12T18:00".into()),
+            "end differs",
+        );
+        refused(
+            |a| a.proposals.as_mut().unwrap().reservations[0].when_fact = Some("f1".into()),
+            "when from the wrong fact",
+        );
+        refused(
+            |a| a.facts[2].checked.time = false,
+            "start from an unchecked time",
+        );
+        refused(
+            |a| {
+                let p = a.proposals.as_mut().unwrap();
+                p.reservations[0].start = None;
+            },
+            "end without start",
+        );
+        refused(
+            |a| {
+                let p = a.proposals.as_mut().unwrap();
+                let r = p.reservations[0].clone();
+                p.reservations = (0..5)
+                    .map(|i| ReservationProposal {
+                        id: format!("r{i}"),
+                        ..r.clone()
+                    })
+                    .collect();
+            },
+            "five reservations",
+        );
+        // A reservation may leave the end for the person.
+        let mut analysis = good();
+        analysis.proposals.as_mut().unwrap().reservations[0].end = None;
+        validate_analysis(&analysis).unwrap();
+        // One unit needs no fact for the quantity.
+        let mut analysis = good();
+        let r = &mut analysis.proposals.as_mut().unwrap().reservations[0];
+        r.quantity = 1;
+        validate_analysis(&analysis).unwrap();
+    }
+
+    #[test]
+    fn nothing_to_propose_needs_its_reason_and_the_run_has_limits() {
+        let mut analysis = good();
+        analysis.proposals = Some(Proposals::default());
+        assert!(validate_analysis(&analysis).is_err());
+        analysis.proposals = Some(Proposals {
+            nothing_reason: "O documento é só para ciência.".into(),
+            ..Proposals::default()
+        });
+        validate_analysis(&analysis).unwrap();
+        analysis.proposals = Some(Proposals {
+            nothing_reason: "x".repeat(601),
+            ..Proposals::default()
+        });
+        assert!(validate_analysis(&analysis).is_err());
+        let mut analysis = good();
+        analysis.run.as_mut().unwrap().steps[0].role = "redator".into();
+        assert!(validate_analysis(&analysis).is_err());
+        let mut analysis = good();
+        analysis.run.as_mut().unwrap().steps[0].refused = vec!["m".repeat(301)];
+        assert!(validate_analysis(&analysis).is_err());
+    }
+
+    #[test]
+    fn the_store_saves_and_reads_back_an_analysis_with_proposals() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        let receipt = store.import_capture(&sample_capture()).unwrap();
+        let analysis = sample_proposed_analysis(receipt.capture_id);
+        store.save_analysis(receipt.document_id, &analysis).unwrap();
+        let loaded = store
+            .load_document(receipt.document_id)
+            .unwrap()
+            .analysis
+            .unwrap();
+        assert_eq!(loaded.facts, analysis.facts);
+        assert_eq!(loaded.proposals, analysis.proposals);
+        assert_eq!(loaded.run, analysis.run);
+        // A claim that cannot be re-derived is refused at the door.
+        let mut forged = analysis;
+        forged.facts[0].date = Some("2026-01-01".into());
+        assert!(store.save_analysis(receipt.document_id, &forged).is_err());
+    }
+}
+
+#[cfg(test)]
+mod proposal_id_tests {
+    use super::*;
+
+    #[test]
+    fn records_made_from_a_proposal_keep_its_id_and_refuse_a_malformed_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("p.sqlite3")).unwrap();
+        let mut task = crate::tasks::Task::standalone();
+        task.title = "Responder o ofício".into();
+        task.action = "responder".into();
+        task.proposal_id = "com espaço".into();
+        assert!(store.save_task(&task).is_err());
+        task.proposal_id = "a1b2c3d4e5f60718293a4b5c6d7e8f90".into();
+        let id = store.save_task(&task).unwrap();
+        let saved = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        assert_eq!(saved.proposal_id, task.proposal_id);
+        // A task of today carries no `proposal_id` in its sealed payload.
+        let plain = crate::tasks::Task::standalone();
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("proposal_id")
+            .is_none());
+        let old: crate::tasks::Task =
+            serde_json::from_value(serde_json::to_value(&plain).unwrap()).unwrap();
+        assert!(old.proposal_id.is_empty());
+
+        let mut attendance = crate::saiop::SaiopAttendance::new_manual();
+        attendance.subject = "Pedido de cadeiras".into();
+        attendance.proposal_ids = vec!["x".repeat(65)];
+        assert!(store.save_saiop_attendance(&attendance, None).is_err());
+        attendance.proposal_ids = (0..9).map(|n| format!("p{n}")).collect();
+        assert!(store.save_saiop_attendance(&attendance, None).is_err());
+        attendance.proposal_ids = vec!["b1b2c3d4e5f60718293a4b5c6d7e8f91".into()];
+        let id = store.save_saiop_attendance(&attendance, None).unwrap();
+        let saved = store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+        assert_eq!(saved.proposal_ids, attendance.proposal_ids);
+
+        let mut resource = crate::resources::Resource {
+            name: "Sala de reuniões".into(),
+            quantity: 1,
+            ..Default::default()
+        };
+        resource.uid = String::new();
+        let resource_uid = store.save_resource(&resource, None).unwrap();
+        let mut item = crate::resources::ResourceUse {
+            resource_uid,
+            who: "Servidor A".into(),
+            start: "2026-11-12T14:00".into(),
+            end: "2026-11-12T17:00".into(),
+            proposal_id: "não vale!".into(),
+            ..Default::default()
+        };
+        assert!(store.save_resource_use(&item, None).is_err());
+        item.proposal_id = "c1b2c3d4e5f60718293a4b5c6d7e8f92".into();
+        let uid = store.save_resource_use(&item, None).unwrap();
+        let saved = store
+            .list_resource_uses()
+            .unwrap()
+            .into_iter()
+            .find(|u| u.uid == uid)
+            .unwrap();
+        assert_eq!(saved.proposal_id, item.proposal_id);
+        // The proposal id is part of what `same_content` compares.
+        let mut other = saved.clone();
+        other.proposal_id.clear();
+        assert!(!saved.same_content(&other));
     }
 }

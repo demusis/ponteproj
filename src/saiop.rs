@@ -202,6 +202,10 @@ pub struct SaiopAttendance {
     pub linked_by_import: bool,
     #[serde(default)]
     pub events: Vec<SaiopEvent>,
+    /// Ids of the proposals of analyses this atendimento was made or
+    /// completed from (schema 16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposal_ids: Vec<String>,
 }
 
 fn default_tri_state() -> String {
@@ -266,6 +270,7 @@ impl SaiopAttendance {
             human_edited: true,
             linked_by_import: false,
             events: Vec::new(),
+            proposal_ids: Vec::new(),
         }
     }
 
@@ -943,7 +948,18 @@ impl Store {
                 .any(|(k, _)| *k == attendance.priority),
             "Prioridade do atendimento inválida."
         );
+        ensure!(
+            attendance.proposal_ids.len() <= 8
+                && attendance
+                    .proposal_ids
+                    .iter()
+                    .all(|id| crate::model::valid_proposal_id(id)),
+            "Identificação de proposta inválida no atendimento."
+        );
         if let Some(cfg) = self.client_config()? {
+            if !attendance.proposal_ids.is_empty() {
+                self.ensure_host_stores_proposals(&cfg)?;
+            }
             return match self.remote_mutate(
                 &cfg,
                 crate::intranet::IntranetMutation::SaveSaiopAttendance {
@@ -1413,6 +1429,7 @@ impl Store {
                         sheet.sheet_name, raw.row_number, file_name
                     ),
                 }],
+                proposal_ids: Vec::new(),
             };
             already_registered.push(if attendance.reference_norm.is_empty() {
                 None
@@ -1707,6 +1724,7 @@ impl Store {
             checklist: Vec::new(),
             outcome: String::new(),
             assignee: assignee.trim().to_owned(),
+            proposal_id: String::new(),
         });
         if let Some(task) = &task {
             task.validate()?;

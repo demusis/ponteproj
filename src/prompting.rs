@@ -405,9 +405,9 @@ pub fn assemble(base_system: &str, req: &DraftRequest) -> Result<Assembled> {
         Intent::Complete | Intent::Revise => req.current_text,
     };
     let data = json!({
-        "capture": req.capture,
+        "capture": crate::ai::capture_for_ai(req.capture),
         "local_context": req.local_context,
-        "selected_sources": req.sources,
+        "selected_sources": crate::ai::sources_for_ai(req.sources),
         "form_examples": form_examples,
         "current_text": current_text,
     });

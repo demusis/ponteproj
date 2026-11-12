@@ -581,6 +581,15 @@ pub struct CabinetSnapshot {
 /// The first library schema that stores recursos.
 pub(crate) const RESOURCES_SCHEMA: i64 = 15;
 
+/// The first library schema that stores the proposals of the AI: the facts,
+/// proposals and run of an analysis, and the proposal ids kept by tasks, uses
+/// and atendimentos made from them.
+pub(crate) const PROPOSALS_SCHEMA: i64 = 16;
+
+/// What a person is told when the main computer does not store the
+/// proposals of the AI.
+pub(crate) const HOST_WITHOUT_PROPOSALS: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda as propostas da IA. Atualize o Ponte no computador principal e tente de novo.";
+
 /// What a person is told when the main computer cannot store recursos.
 pub(crate) const HOST_WITHOUT_RESOURCES: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda recursos. Atualize o Ponte no computador principal e tente de novo.";
 
@@ -952,21 +961,169 @@ fn is_resource_mutation(mutation: &IntranetMutation) -> bool {
     )
 }
 
+/// Whether a change carries something only a schema 16 library keeps.
+fn mutation_carries_proposals(mutation: &IntranetMutation) -> bool {
+    match mutation {
+        IntranetMutation::SaveAnalysis { analysis, .. } => {
+            !analysis.facts.is_empty() || analysis.proposals.is_some() || analysis.run.is_some()
+        }
+        IntranetMutation::SaveTask { task, .. } => !task.proposal_id.is_empty(),
+        IntranetMutation::SaveResourceUse { item, .. } => !item.proposal_id.is_empty(),
+        IntranetMutation::SaveSaiopAttendance { attendance, .. } => {
+            !attendance.proposal_ids.is_empty()
+        }
+        _ => false,
+    }
+}
+
 impl Store {
     /// Before a recurso is written through the main computer: refuses, with
     /// nothing queued, when that computer answers and is a Ponte that does
     /// not store recursos. When it cannot be reached the change is queued as
     /// usual (and waits if it turns out to be too old).
     pub(crate) fn ensure_host_stores_resources(&self, cfg: &IntranetConfig) -> Result<()> {
+        self.ensure_host_schema(cfg, RESOURCES_SCHEMA, HOST_WITHOUT_RESOURCES)
+    }
+
+    /// The same for what carries the proposals of the AI (an analysis with
+    /// facts, proposals or a run; a task, use or atendimento that keeps a
+    /// proposal id): an older main computer would drop those fields without
+    /// a word.
+    pub(crate) fn ensure_host_stores_proposals(&self, cfg: &IntranetConfig) -> Result<()> {
+        self.ensure_host_schema(cfg, PROPOSALS_SCHEMA, HOST_WITHOUT_PROPOSALS)
+    }
+
+    /// Refuses with `message`, nothing queued, when the main computer answers
+    /// and its library schema is below `minimum`. Unreachable, nothing is
+    /// refused here: the change waits in the queue and is checked again when
+    /// it is sent (see `mutation_carries_proposals`).
+    fn ensure_host_schema(&self, cfg: &IntranetConfig, minimum: i64, message: &str) -> Result<()> {
         if cfg.mode != IntranetMode::Client || self.host_known_unreachable() {
             return Ok(());
         }
         if let Ok(RpcResponse::Pong { schema_version, .. }) =
             send_rpc_classified(cfg, &RpcRequest::Ping)
         {
-            ensure!(schema_version >= RESOURCES_SCHEMA, HOST_WITHOUT_RESOURCES);
+            ensure!(schema_version >= minimum, "{message}");
         }
         Ok(())
+    }
+}
+
+/// What an analysis keeps of the proposals of the AI: its `created_at` and
+/// the facts, proposals and run.
+type KeptAnalysis = (
+    String,
+    Vec<crate::model::Fact>,
+    Option<crate::model::Proposals>,
+    Option<crate::model::AnalysisRun>,
+);
+
+/// What a library holds of the proposals of the AI, read before a copy from
+/// an older main computer replaces it. Unreadable rows are left out.
+#[derive(Default)]
+struct KeptProposals {
+    /// Analysis id to what it holds.
+    analyses: BTreeMap<i64, KeptAnalysis>,
+    /// Task id to (document, title, proposal id).
+    tasks: BTreeMap<i64, (Option<i64>, String, String)>,
+    /// Atendimento id to (reference, subject, proposal ids).
+    attendances: BTreeMap<i64, (String, String, Vec<String>)>,
+    /// Use uid to proposal id.
+    uses: BTreeMap<String, String>,
+}
+
+impl KeptProposals {
+    fn read(conn: &Connection) -> Self {
+        fn rows<T: serde::de::DeserializeOwned>(conn: &Connection, sql: &str) -> Vec<(i64, T)> {
+            let Ok(mut statement) = conn.prepare(sql) else {
+                return Vec::new();
+            };
+            let Ok(found) =
+                statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
+            else {
+                return Vec::new();
+            };
+            found
+                .filter_map(std::result::Result::ok)
+                .filter_map(|(id, blob)| {
+                    let plain = unseal(&blob).ok()?;
+                    Some((id, serde_json::from_slice::<T>(&plain).ok()?))
+                })
+                .collect()
+        }
+        let mut kept = Self::default();
+        for (id, a) in rows::<Analysis>(conn, "SELECT id,payload FROM analyses") {
+            if !a.facts.is_empty() || a.proposals.is_some() || a.run.is_some() {
+                kept.analyses
+                    .insert(id, (a.created_at, a.facts, a.proposals, a.run));
+            }
+        }
+        for (id, t) in rows::<Task>(conn, "SELECT id,payload FROM tasks") {
+            if !t.proposal_id.is_empty() {
+                kept.tasks
+                    .insert(id, (t.document_id, t.title, t.proposal_id));
+            }
+        }
+        for (id, a) in
+            rows::<crate::saiop::SaiopAttendance>(conn, "SELECT id,payload FROM saiop_attendances")
+        {
+            if !a.proposal_ids.is_empty() {
+                kept.attendances
+                    .insert(id, (a.reference_raw, a.subject, a.proposal_ids));
+            }
+        }
+        for (_, u) in
+            rows::<crate::resources::ResourceUse>(conn, "SELECT id,payload FROM resource_uses")
+        {
+            if !u.proposal_id.is_empty() {
+                kept.uses.insert(u.uid, u.proposal_id);
+            }
+        }
+        kept
+    }
+
+    fn restore_analysis(&self, id: i64, analysis: &mut Analysis) {
+        if !analysis.facts.is_empty() || analysis.proposals.is_some() || analysis.run.is_some() {
+            return;
+        }
+        if let Some((created_at, facts, proposals, run)) = self.analyses.get(&id) {
+            if *created_at == analysis.created_at {
+                analysis.facts = facts.clone();
+                analysis.proposals = proposals.clone();
+                analysis.run = run.clone();
+            }
+        }
+    }
+
+    fn restore_task(&self, task: &mut Task) {
+        if !task.proposal_id.is_empty() {
+            return;
+        }
+        if let Some((document, title, proposal)) = self.tasks.get(&task.id) {
+            if *document == task.document_id && *title == task.title {
+                task.proposal_id = proposal.clone();
+            }
+        }
+    }
+
+    fn restore_attendance(&self, attendance: &mut crate::saiop::SaiopAttendance) {
+        if !attendance.proposal_ids.is_empty() {
+            return;
+        }
+        if let Some((reference, subject, ids)) = self.attendances.get(&attendance.id) {
+            if *reference == attendance.reference_raw && *subject == attendance.subject {
+                attendance.proposal_ids = ids.clone();
+            }
+        }
+    }
+
+    fn restore_use(&self, item: &mut crate::resources::ResourceUse) {
+        if item.proposal_id.is_empty() {
+            if let Some(proposal) = self.uses.get(&item.uid) {
+                item.proposal_id = proposal.clone();
+            }
+        }
     }
 }
 
@@ -1739,6 +1896,16 @@ impl Store {
         // this library keeps its own (and their links to documents, which
         // the deletion of the documents below would otherwise clear).
         let keep_resources = snapshot.schema_version < RESOURCES_SCHEMA;
+        // A copy from a Ponte before schema 16 knows nothing of the facts,
+        // proposals and run of an analysis, nor of the proposal ids of tasks,
+        // uses and atendimentos: what this library holds of them is put back
+        // on the same rows of the copy (same number and same content), so
+        // an exchange with an older main computer never wipes them.
+        let kept_proposals = if snapshot.schema_version < PROPOSALS_SCHEMA {
+            KeptProposals::read(&tx)
+        } else {
+            KeptProposals::default()
+        };
         let mut kept_links: Vec<(String, i64)> = Vec::new();
         if keep_resources {
             kept_links = tx
@@ -1843,21 +2010,29 @@ impl Store {
             )?;
         }
         for analysis in &snapshot.analyses {
+            let mut value = analysis.analysis.clone();
+            kept_proposals.restore_analysis(analysis.id, &mut value);
             tx.execute(
                 "INSERT INTO analyses(id,document_id,capture_id,payload,created_at) VALUES(?1,?2,?3,?4,?5)",
                 params![
                     analysis.id,
                     analysis.document_id,
                     analysis.capture_id,
-                    seal(&serde_json::to_vec(&analysis.analysis)?)?,
+                    seal(&serde_json::to_vec(&value)?)?,
                     analysis.created_at
                 ],
             )?;
         }
         for task in &snapshot.tasks {
+            let mut value = task.clone();
+            kept_proposals.restore_task(&mut value);
             tx.execute(
                 "INSERT INTO tasks(id,document_id,payload) VALUES(?1,?2,?3)",
-                params![task.id, task.document_id, seal(&serde_json::to_vec(task)?)?],
+                params![
+                    value.id,
+                    value.document_id,
+                    seal(&serde_json::to_vec(&value)?)?
+                ],
             )?;
         }
         for (doc_id, ctx) in &snapshot.work_contexts {
@@ -1942,6 +2117,9 @@ impl Store {
             )?;
         }
         for row in &snapshot.saiop_attendances {
+            let mut row = row.clone();
+            kept_proposals.restore_attendance(&mut row.attendance);
+            let row = &row;
             let raw_blob = match &row.raw_import {
                 Some(raw) => Some(seal(&serde_json::to_vec(raw)?)?),
                 None => None,
@@ -1980,7 +2158,11 @@ impl Store {
         // Populate `trash` last so active-item triggers remain satisfied throughout the batch.
         crate::work_templates::apply_templates(&tx, &snapshot.templates)?;
         if !keep_resources {
-            crate::resources::apply_resources(&tx, &snapshot.resources)?;
+            let mut resources = snapshot.resources.clone();
+            for row in &mut resources.uses {
+                kept_proposals.restore_use(&mut row.value);
+            }
+            crate::resources::apply_resources(&tx, &resources)?;
         }
         for t in &snapshot.trash {
             tx.execute(
@@ -6198,6 +6380,19 @@ fn send_rpc_classified(
 ) -> std::result::Result<RpcResponse, RpcError> {
     let base = validate_host_url(&cfg.host_url).map_err(|e| RpcError::Rejected(e.to_string()))?;
     validate_token(&cfg.cabinet_token).map_err(|e| RpcError::Rejected(e.to_string()))?;
+    // A queued change that keeps the proposals of the AI is not sent to a
+    // main computer that would drop them: it waits, as for any older host.
+    if let RpcRequest::Mutate { mutation, .. } = request {
+        if mutation_carries_proposals(mutation) {
+            if let Ok(RpcResponse::Pong { schema_version, .. }) =
+                send_rpc_classified(cfg, &RpcRequest::Ping)
+            {
+                if schema_version < PROPOSALS_SCHEMA {
+                    return Err(RpcError::Unreachable(HOST_WITHOUT_PROPOSALS.into()));
+                }
+            }
+        }
+    }
     let endpoint = format!("{base}/api/v1/rpc");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(25))
@@ -11734,9 +11929,9 @@ mod resources_sync_tests {
             .unwrap();
         assert!(other.list_resources().unwrap().is_empty());
         assert!(other.list_resource_uses().unwrap().is_empty());
-        // Schema 15 and format 3 are the ones this build writes.
-        assert_eq!(crate::storage::SCHEMA_VERSION, 15);
-        assert_eq!(crate::sharedfolder::FORMAT, 3);
+        // Schema 16 and format 4 are the ones this build writes.
+        assert_eq!(crate::storage::SCHEMA_VERSION, 16);
+        assert_eq!(crate::sharedfolder::FORMAT, 4);
     }
     #[test]
     fn a_client_books_through_the_main_computer_which_refuses_a_clash() {
@@ -12148,6 +12343,230 @@ mod resources_sync_tests {
             .unwrap();
         assert!(here.list_resources().unwrap().is_empty());
         assert!(here.list_resource_uses().unwrap().is_empty());
+    }
+
+    fn proposal_task(title: &str) -> Task {
+        let mut task = Task::standalone();
+        task.title = title.into();
+        task.action = "responder".into();
+        task.proposal_id = "a1b2c3d4e5f60718293a4b5c6d7e8f90".into();
+        task
+    }
+
+    #[test]
+    fn a_main_computer_before_the_proposals_is_told_plainly_and_nothing_is_queued_or_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = old_host(CabinetSnapshot::default());
+        let (mut client, cfg) = client_of(dir.path(), "client.sqlite3", &url);
+        // Early: the host answers and is too old, so nothing is written.
+        let error = client
+            .save_task(&proposal_task("Responder o ofício"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, HOST_WITHOUT_PROPOSALS);
+        let mut attendance = crate::saiop::SaiopAttendance::new_manual();
+        attendance.subject = "Pedido de cadeiras".into();
+        attendance.proposal_ids = vec!["b1b2c3d4e5f60718293a4b5c6d7e8f91".into()];
+        assert_eq!(
+            client
+                .save_saiop_attendance(&attendance, None)
+                .unwrap_err()
+                .to_string(),
+            HOST_WITHOUT_PROPOSALS
+        );
+        let analysis = crate::model::sample_proposed_analysis(1);
+        assert_eq!(
+            client.save_analysis(1, &analysis).unwrap_err().to_string(),
+            HOST_WITHOUT_PROPOSALS
+        );
+        assert!(client.list_offline_outbox().unwrap().is_empty());
+        assert!(client.list_tasks().unwrap().is_empty());
+        // What carries no proposal is not stopped by this gate.
+        let mut plain = analysis.clone();
+        plain.facts.clear();
+        plain.proposals = None;
+        plain.run = None;
+        let other = client.save_analysis(1, &plain).unwrap_err().to_string();
+        assert_ne!(other, HOST_WITHOUT_PROPOSALS, "{other}");
+        // A queued change is not sent to such a computer: it waits, with the
+        // plain sentence, as for a main computer before the recursos.
+        let sent = |mutation| {
+            send_rpc_classified(
+                &cfg,
+                &RpcRequest::Mutate {
+                    actor: "Servidor B".into(),
+                    mutation,
+                },
+            )
+        };
+        let waiting = sent(IntranetMutation::SaveTask {
+            task: proposal_task("Responder o ofício"),
+            expected_version: None,
+        });
+        assert!(
+            matches!(&waiting, Err(RpcError::Unreachable(m)) if m == HOST_WITHOUT_PROPOSALS),
+            "queued, with the plain sentence"
+        );
+        let waiting = sent(IntranetMutation::SaveAnalysis {
+            document_id: 1,
+            analysis: analysis.clone(),
+        });
+        assert!(matches!(&waiting, Err(RpcError::Unreachable(m)) if m == HOST_WITHOUT_PROPOSALS));
+        let ordinary = sent(IntranetMutation::SaveTask {
+            task: Task::standalone(),
+            expected_version: None,
+        });
+        assert!(matches!(ordinary, Err(RpcError::Rejected(_))));
+        // End to end: queued while the host was away, then the host answers.
+        let (mut away, mut away_cfg) = client_of(dir.path(), "away.sqlite3", "http://127.0.0.1:9");
+        away.save_task(&proposal_task("Responder o ofício"))
+            .unwrap();
+        assert_eq!(away.list_offline_outbox().unwrap().len(), 1);
+        away_cfg.host_url = url.clone();
+        away.save_intranet_config(&away_cfg).unwrap();
+        let error = away.sync_from_host(false).unwrap_err().to_string();
+        assert_eq!(error, HOST_WITHOUT_PROPOSALS);
+        assert_eq!(away.list_offline_outbox().unwrap().len(), 1, "still queued");
+        assert!(away.list_sync_conflicts().unwrap().is_empty());
+        assert_eq!(away.list_tasks().unwrap().len(), 1, "and kept here");
+    }
+
+    #[test]
+    fn a_copy_from_a_ponte_before_the_proposals_keeps_the_facts_and_proposal_ids_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut here = Store::open(&dir.path().join("here.sqlite3")).unwrap();
+        let receipt = here
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let analysis = crate::model::sample_proposed_analysis(receipt.capture_id);
+        here.save_analysis(receipt.document_id, &analysis).unwrap();
+        let mut task = proposal_task("Responder o ofício");
+        task.document_id = Some(receipt.document_id);
+        let task_id = here.save_task(&task).unwrap();
+        let mut attendance = crate::saiop::SaiopAttendance::new_manual();
+        attendance.subject = "Pedido de cadeiras".into();
+        attendance.proposal_ids = vec!["b1b2c3d4e5f60718293a4b5c6d7e8f91".into()];
+        let attendance_id = here.save_saiop_attendance(&attendance, None).unwrap();
+        let room = resource(&mut here, "Auditório", 1);
+        let mut item = booking(&room, "Servidor A", "09:00", "10:00");
+        item.proposal_id = "c1b2c3d4e5f60718293a4b5c6d7e8f92".into();
+        let uid = here.save_resource_use(&item, None).unwrap();
+
+        // What an older main computer sends: the same library, written by a
+        // Ponte that does not know any of it (and says its schema).
+        let mut copy = here.export_snapshot().unwrap();
+        assert!(copy.analyses.iter().all(|a| !a.analysis.facts.is_empty()));
+        for row in &mut copy.analyses {
+            row.analysis.facts.clear();
+            row.analysis.proposals = None;
+            row.analysis.run = None;
+        }
+        for task in &mut copy.tasks {
+            task.proposal_id.clear();
+        }
+        for row in &mut copy.saiop_attendances {
+            row.attendance.proposal_ids.clear();
+        }
+        for row in &mut copy.resources.uses {
+            row.value.proposal_id.clear();
+        }
+        copy.schema_version = RESOURCES_SCHEMA;
+        here.apply_snapshot(&copy, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        let kept = here
+            .load_document(receipt.document_id)
+            .unwrap()
+            .analysis
+            .unwrap();
+        assert_eq!(kept.facts, analysis.facts);
+        assert_eq!(kept.proposals, analysis.proposals);
+        assert_eq!(kept.run, analysis.run);
+        let task = here
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == task_id)
+            .unwrap();
+        assert_eq!(task.proposal_id, "a1b2c3d4e5f60718293a4b5c6d7e8f90");
+        let attendances = here.list_saiop_attendances().unwrap();
+        let attendance = attendances.iter().find(|a| a.id == attendance_id).unwrap();
+        assert_eq!(
+            attendance.proposal_ids,
+            ["b1b2c3d4e5f60718293a4b5c6d7e8f91"]
+        );
+        assert_eq!(
+            use_status(&here, &uid).proposal_id,
+            "c1b2c3d4e5f60718293a4b5c6d7e8f92"
+        );
+        // A different analysis on the same row (another content) is not
+        // given the facts of this one.
+        let mut other = copy.clone();
+        other.analyses[0].analysis.created_at = "2020-01-01T00:00:00.000Z".into();
+        here.apply_snapshot(&other, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        let loaded = here
+            .load_document(receipt.document_id)
+            .unwrap()
+            .analysis
+            .unwrap();
+        assert!(loaded.facts.is_empty() && loaded.proposals.is_none());
+        // A copy from a current computer is the truth, with or without them.
+        copy.schema_version = PROPOSALS_SCHEMA;
+        here.apply_snapshot(&copy, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        let loaded = here
+            .load_document(receipt.document_id)
+            .unwrap()
+            .analysis
+            .unwrap();
+        assert!(loaded.facts.is_empty() && loaded.proposals.is_none());
+        assert!(here
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .all(|t| t.proposal_id.is_empty()));
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_facts_and_proposal_ids_between_current_computers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Store::open(&dir.path().join("host.sqlite3")).unwrap();
+        let receipt = host
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let analysis = crate::model::sample_proposed_analysis(receipt.capture_id);
+        host.save_analysis(receipt.document_id, &analysis).unwrap();
+        let mut task = proposal_task("Responder o ofício");
+        task.document_id = Some(receipt.document_id);
+        host.save_task(&task).unwrap();
+        let copy = host.export_snapshot().unwrap();
+        assert_eq!(copy.schema_version, crate::storage::SCHEMA_VERSION);
+        // The consent never travels: not a field of the snapshot.
+        host.record_ai_consent(receipt.document_id, "https://api.openai.com")
+            .unwrap();
+        let json = serde_json::to_string(&host.export_snapshot().unwrap()).unwrap();
+        assert!(!json.contains("ai_consent") && !json.contains("api.openai.com"));
+        let mut other = Store::open(&dir.path().join("other.sqlite3")).unwrap();
+        other
+            .apply_snapshot(&copy, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        let loaded = other
+            .load_document(receipt.document_id)
+            .unwrap()
+            .analysis
+            .unwrap();
+        assert_eq!(loaded.facts, analysis.facts);
+        assert_eq!(loaded.proposals, analysis.proposals);
+        assert!(other
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .any(|t| t.proposal_id == "a1b2c3d4e5f60718293a4b5c6d7e8f90"));
+        assert!(!other.ai_consent_given(receipt.document_id, "https://api.openai.com"));
+        // A conflict compares everything the change carries, the proposal id too.
+        let mut changed = proposal_task("Responder o ofício");
+        changed.proposal_id.clear();
+        assert_ne!(changed, proposal_task("Responder o ofício"));
     }
 
     #[test]

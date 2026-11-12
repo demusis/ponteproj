@@ -42,6 +42,10 @@ pub struct Task {
     pub outcome: String,
     #[serde(default)]
     pub assignee: String,
+    /// Id of the proposal of an analysis this task was made from (schema
+    /// 16); empty for any other task. "Already used" is decided by it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proposal_id: String,
 }
 impl Task {
     pub fn new(document_id: i64) -> Self {
@@ -78,6 +82,7 @@ impl Task {
             checklist: Vec::new(),
             outcome: String::new(),
             assignee: String::new(),
+            proposal_id: String::new(),
         }
     }
     pub fn overdue(&self) -> bool {
@@ -97,6 +102,10 @@ impl Task {
         ensure!(
             ACTIONS.contains(&self.action.as_str()),
             "A ação da tarefa é inválida."
+        );
+        ensure!(
+            self.proposal_id.is_empty() || crate::model::valid_proposal_id(&self.proposal_id),
+            "A identificação da proposta da tarefa é inválida."
         );
         ensure!(
             ["pendente", "em analise", "aguardando", "concluida"].contains(&self.status.as_str()),
@@ -428,6 +437,9 @@ impl Store {
     pub fn save_task_checked(&mut self, task: &Task, expected_version: Option<i64>) -> Result<i64> {
         task.validate()?;
         if let Some(cfg) = self.client_config()? {
+            if !task.proposal_id.is_empty() {
+                self.ensure_host_stores_proposals(&cfg)?;
+            }
             match self.remote_mutate(
                 &cfg,
                 crate::intranet::IntranetMutation::SaveTask {

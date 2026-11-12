@@ -942,9 +942,23 @@ fn api_error(status: reqwest::StatusCode, body: &[u8]) -> anyhow::Error {
     anyhow::anyhow!("{}", explain(status.as_u16(), code, message, param))
 }
 
-/// Maps the documented plan-usage errors to what the person can do.
-fn explain(status: u16, code: &str, message: &str, param: &str) -> String {
-    let detail = clean(message, 300);
+/// A provider code or field name that is safe to show: short and made only
+/// of the characters such identifiers use. Anything else is left out.
+fn ident(text: &str) -> Option<&str> {
+    let text = text.trim();
+    (!text.is_empty()
+        && text.len() <= 60
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
+    .then_some(text)
+}
+
+/// Maps the documented plan-usage errors to what the person can do. What the
+/// provider wrote in its `message` is never shown (it may repeat what was
+/// sent): only the status, the stable code and the name of the field it
+/// objected to, each when it looks like an identifier.
+fn explain(status: u16, code: &str, _message: &str, param: &str) -> String {
     match (code, status) {
         ("subscription_sharing_usage_limit_exceeded", _) | (_, 429) => {
             "A cota do seu plano ChatGPT para o Ponte acabou por enquanto (limite semanal, ou das últimas horas no plano Plus). Veja e ajuste em ChatGPT ▸ Configurações ▸ Uso, ou escolha outro provedor em Ajustes ▸ Inteligência artificial. Nada foi enviado a outro provedor.".into()
@@ -958,7 +972,7 @@ fn explain(status: u16, code: &str, message: &str, param: &str) -> String {
         }
         ("subscription_sharing_unsupported_capability", _) => format!(
             "O ChatGPT recusou um recurso deste pedido{}. Informe o problema aos autores do Ponte.",
-            if param.is_empty() { String::new() } else { format!(" ({})", clean(param, 100)) }
+            ident(param).map_or(String::new(), |p| format!(" ({p})"))
         ),
         ("subscription_sharing_route_not_supported", _) => {
             "O ChatGPT não aceitou este tipo de acesso para uso do plano. Informe o problema aos autores do Ponte.".into()
@@ -966,25 +980,20 @@ fn explain(status: u16, code: &str, message: &str, param: &str) -> String {
         ("subscription_sharing_invalid_user", _) | (_, 401) => {
             "A sessão do ChatGPT não foi aceita. Entre de novo em Ajustes ▸ Inteligência artificial.".into()
         }
-        (_, 403) => format!(
-            "O ChatGPT bloqueou o pedido (política ou região da conta){}.",
-            if detail.is_empty() { String::new() } else { format!(": {detail}") }
-        ),
+        (_, 403) => "O ChatGPT bloqueou o pedido (política ou região da conta).".into(),
         (_, 0) => format!(
-            "O ChatGPT interrompeu a resposta{}{}.",
-            if code.is_empty() { String::new() } else { format!(" ({})", clean(code, 80)) },
-            if detail.is_empty() { String::new() } else { format!(": {detail}") }
+            "O ChatGPT interrompeu a resposta{}.",
+            ident(code).map_or(String::new(), |c| format!(" ({c})"))
         ),
-        _ => format!(
-            "O ChatGPT respondeu com erro (código {status}){}.",
-            if detail.is_empty() { String::new() } else { format!(": {detail}") }
-        ),
+        _ => format!("O ChatGPT respondeu com erro (código {status})."),
     }
 }
 
 /// One answer from the Responses API, streamed as the documented flow
 /// requires. `instructions` is the Ponte's system text; `input` is the
-/// untrusted document data.
+/// untrusted document data. A failure that may pass is tried again, the
+/// call can be cancelled at any moment (also before the first byte), and a
+/// strict schema the server refuses is sent once more as a plain one.
 pub fn respond(
     shared: &SharedSession,
     model: &str,
@@ -993,6 +1002,7 @@ pub fn respond(
     schema: Option<Value>,
     reporter: &crate::ai::Reporter,
 ) -> Result<String> {
+    reporter.check()?;
     let token = access_token(shared)?;
     respond_at(
         API_BASE,
@@ -1014,10 +1024,206 @@ fn respond_at(
     schema: Option<Value>,
     reporter: &crate::ai::Reporter,
 ) -> Result<String> {
+    respond_at_with(
+        base,
+        token,
+        model,
+        instructions,
+        input,
+        schema,
+        reporter,
+        &crate::ai::Timing::standard(),
+    )
+}
+
+/// The server refused the strict form of the schema.
+#[derive(Debug)]
+struct SchemaRefused;
+
+impl std::fmt::Display for SchemaRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("O ChatGPT não aceitou o formato rígido da resposta.")
+    }
+}
+
+impl std::error::Error for SchemaRefused {}
+
+/// Servers (by base address) that refused a strict schema: they are not
+/// asked again in this session.
+fn strict_refused_bases() -> &'static Mutex<std::collections::BTreeSet<String>> {
+    static BASES: std::sync::OnceLock<Mutex<std::collections::BTreeSet<String>>> =
+        std::sync::OnceLock::new();
+    BASES.get_or_init(Default::default)
+}
+
+fn strict_refused(base: &str) -> bool {
+    strict_refused_bases()
+        .lock()
+        .is_ok_and(|bases| bases.contains(base))
+}
+
+/// Whether `schema` fits what the Responses API accepts with
+/// `strict: true`: an object at the root; every object lists all its
+/// properties in `required` and says `additionalProperties: false` (an
+/// optional value is a type array with `"null"`); only the keywords the
+/// strict mode knows (`type`, `enum`, `const`, `properties`, `required`,
+/// `additionalProperties`, `items`, `minItems`, `maxItems`, `anyOf`,
+/// `description`, `title`); at most five levels of objects and arrays and a
+/// hundred properties. `minLength`, `maxLength`, `pattern`, `format` and the
+/// numeric bounds are not in that list on purpose: a schema that uses one is
+/// sent as a plain (non-strict) schema, and the program's own check enforces
+/// the limit. The role schemas are written to pass this.
+pub fn strict_ok(schema: &Value) -> bool {
+    let mut properties = 0;
+    schema["type"] == "object" && strict_node(schema, 1, &mut properties) && properties <= 100
+}
+
+fn strict_node(node: &Value, depth: usize, properties: &mut usize) -> bool {
+    let Some(map) = node.as_object() else {
+        return false;
+    };
+    const KEYWORDS: [&str; 10] = [
+        "type",
+        "enum",
+        "const",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "minItems",
+        "maxItems",
+        "anyOf",
+    ];
+    if map
+        .keys()
+        .any(|key| !KEYWORDS.contains(&key.as_str()) && key != "description" && key != "title")
+    {
+        return false;
+    }
+    let kinds: Vec<&str> = match map.get("type") {
+        Some(Value::String(kind)) => vec![kind.as_str()],
+        Some(Value::Array(kinds)) => {
+            let names: Vec<&str> = kinds.iter().filter_map(Value::as_str).collect();
+            if names.len() != kinds.len() {
+                return false;
+            }
+            names
+        }
+        None => Vec::new(),
+        Some(_) => return false,
+    };
+    if kinds.iter().any(|kind| {
+        ![
+            "object", "array", "string", "number", "integer", "boolean", "null",
+        ]
+        .contains(kind)
+    }) {
+        return false;
+    }
+    if map.get("type").is_none()
+        && !(map.contains_key("enum") || map.contains_key("const") || map.contains_key("anyOf"))
+    {
+        return false;
+    }
+    if let Some(variants) = map.get("anyOf") {
+        let Some(variants) = variants.as_array() else {
+            return false;
+        };
+        if variants.is_empty()
+            || !variants
+                .iter()
+                .all(|variant| strict_node(variant, depth, properties))
+        {
+            return false;
+        }
+    }
+    if kinds.contains(&"object") {
+        if depth > 5 || map.get("additionalProperties") != Some(&Value::Bool(false)) {
+            return false;
+        }
+        let Some(declared) = map.get("properties").and_then(Value::as_object) else {
+            return false;
+        };
+        let Some(required) = map.get("required").and_then(Value::as_array) else {
+            return false;
+        };
+        let mut required: Vec<&str> = required.iter().filter_map(Value::as_str).collect();
+        required.sort_unstable();
+        required.dedup();
+        let mut names: Vec<&str> = declared.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        if required != names {
+            return false;
+        }
+        *properties += declared.len();
+        if !declared
+            .values()
+            .all(|value| strict_node(value, depth + 1, properties))
+        {
+            return false;
+        }
+    }
+    if kinds.contains(&"array") {
+        if depth > 5 {
+            return false;
+        }
+        match map.get("items") {
+            Some(items) if strict_node(items, depth + 1, properties) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn respond_at_with(
+    base: &str,
+    token: &str,
+    model: &str,
+    instructions: &str,
+    input: &str,
+    schema: Option<Value>,
+    reporter: &crate::ai::Reporter,
+    timing: &crate::ai::Timing,
+) -> Result<String> {
     ensure!(
         !model.trim().is_empty() && model.len() <= 128 && !model.chars().any(char::is_control),
         "Escolha o modelo do ChatGPT em Ajustes ▸ Inteligência artificial."
     );
+    reporter.check()?;
+    let mut strict = schema.as_ref().is_some_and(strict_ok) && !strict_refused(base);
+    loop {
+        let call = Exchange {
+            url: format!("{}/responses", base.trim_end_matches('/')),
+            token: token.to_owned(),
+            body: request_body(model, instructions, input, schema.as_ref(), strict),
+            strict,
+            limit: timing.chatgpt_timeout,
+        };
+        let result = crate::ai::with_retries(reporter, timing, || {
+            let call = call.clone();
+            crate::ai::run_cancellable(reporter, move |inner| exchange(call, inner))
+        });
+        match result {
+            Err(error) if strict && error.downcast_ref::<SchemaRefused>().is_some() => {
+                strict = false;
+                if let Ok(mut bases) = strict_refused_bases().lock() {
+                    bases.insert(base.to_owned());
+                }
+                reporter.check()?;
+            }
+            other => return other,
+        }
+    }
+}
+
+fn request_body(
+    model: &str,
+    instructions: &str,
+    input: &str,
+    schema: Option<&Value>,
+    strict: bool,
+) -> Value {
     // With a plan token the gateway insists on `input` being a list of
     // messages ("Input must be a list"), as in OpenAI's examples.
     let mut body = json!({
@@ -1028,31 +1234,116 @@ fn respond_at(
         "stream": true,
     });
     if let Some(schema) = schema {
-        body["text"] = json!({"format": {"type": "json_schema", "name": "ponte", "schema": schema, "strict": false}});
+        body["text"] = json!({"format": {"type": "json_schema", "name": "ponte", "schema": schema, "strict": strict}});
     }
-    let client = http(Duration::from_secs(180))?;
+    body
+}
+
+/// What the helper thread needs for one exchange; it owns all of it.
+#[derive(Clone)]
+struct Exchange {
+    url: String,
+    token: String,
+    body: Value,
+    strict: bool,
+    limit: Duration,
+}
+
+fn network_failure(error: &reqwest::Error, limit: Duration) -> anyhow::Error {
+    if error.is_timeout() {
+        crate::ai::Transient::error(crate::ai::timeout_message(limit), None)
+    } else if error.is_connect() {
+        crate::ai::Transient::error(
+            "Não foi possível conectar ao ChatGPT. Verifique a conexão com a internet.",
+            None,
+        )
+    } else if error.is_builder() {
+        anyhow::anyhow!("Não foi possível preparar a conexão com a OpenAI.")
+    } else {
+        crate::ai::Transient::error("A comunicação com o ChatGPT falhou.", None)
+    }
+}
+
+/// A refusal of the API, as the error the loop above needs: a refused strict
+/// schema, a failure that may pass, or the plain explanation.
+fn refusal(
+    status: reqwest::StatusCode,
+    body: &[u8],
+    strict: bool,
+    retry_after: Option<Duration>,
+) -> anyhow::Error {
+    let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let code = value["error"]["code"]
+        .as_str()
+        .or_else(|| value["error"]["type"].as_str())
+        .unwrap_or("");
+    let status = status.as_u16();
+    if strict && status == 400 {
+        let text = String::from_utf8_lossy(body).to_lowercase();
+        if ["schema", "strict", "text.format", "response_format"]
+            .iter()
+            .any(|word| text.contains(word))
+        {
+            return anyhow::Error::new(SchemaRefused);
+        }
+    }
+    // The limits of the plan are not a hiccup: waiting seconds does not
+    // bring the allowance back.
+    let plan_limit = code.starts_with("subscription_sharing_")
+        && code != "subscription_sharing_usage_unavailable";
+    let message = api_error(
+        reqwest::StatusCode::from_u16(status).unwrap_or(reqwest::StatusCode::BAD_GATEWAY),
+        body,
+    )
+    .to_string();
+    if crate::ai::transient_status(status) && !plan_limit {
+        return crate::ai::Transient::error(message, retry_after);
+    }
+    anyhow::anyhow!(message)
+}
+
+/// One request and its streamed answer, on the helper thread.
+fn exchange(call: Exchange, reporter: &crate::ai::Reporter) -> Result<String> {
+    reporter.check()?;
+    let client = Client::builder()
+        .connect_timeout(crate::ai::CHATGPT_CONNECT_TIMEOUT)
+        .timeout(call.limit)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("Não foi possível preparar a conexão com a OpenAI.")?;
     reporter.step("Enviando ao ChatGPT e aguardando o início da resposta…");
     let response = client
-        .post(format!("{}/responses", base.trim_end_matches('/')))
-        .bearer_auth(token)
+        .post(&call.url)
+        .bearer_auth(&call.token)
         .header("Accept", "text/event-stream")
-        .json(&body)
+        .json(&call.body)
         .send()
-        .map_err(|error| network_error(&error, "analisar"))?;
+        .map_err(|error| network_failure(&error, call.limit))?;
     let status = response.status();
     if !status.is_success() {
+        let retry_after = crate::ai::retry_after_of(response.headers());
         let body = read_limited(response, MAX_ERROR_BYTES)?;
-        return Err(api_error(status, &body));
+        return Err(refusal(status, &body, call.strict, retry_after));
     }
-    read_stream(
+    read_stream_within(
         BufReader::new(response.take(MAX_RESPONSE_BYTES + 1)),
         reporter,
+        call.limit,
     )
 }
 
 /// Collects the text of a server-sent-events stream; success only on
 /// `response.completed`, as documented.
+#[cfg(test)]
 fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<String> {
+    read_stream_within(reader, reporter, crate::ai::CHATGPT_REQUEST_TIMEOUT)
+}
+
+fn read_stream_within(
+    reader: impl BufRead,
+    reporter: &crate::ai::Reporter,
+    limit: Duration,
+) -> Result<String> {
     let mut text = String::new();
     let mut data = String::new();
     let mut completed: Option<Value> = None;
@@ -1072,8 +1363,8 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
             "response.failed" | "error" => {
                 // The documented shapes put the fields at the top level
                 // (`error` event) or under `response.error` (`response.failed`);
-                // some gateways nest them under `error`. Look in all three and,
-                // failing that, show the event itself so it can be reported.
+                // some gateways nest them under `error`. Only the stable code
+                // is read: what the event says in words is never shown.
                 let places = [event, &event["error"], &event["response"]["error"]];
                 let pick = |key: &str| {
                     places
@@ -1094,26 +1385,40 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
                         code
                     }
                 };
-                let mut message = pick("message");
-                if message.is_empty() {
-                    message = format!("evento recebido: {}", clean(&event.to_string(), 400));
+                let message = explain(0, &code, "", &pick("param"));
+                if matches!(
+                    code.as_str(),
+                    "server_error" | "internal_error" | "service_unavailable" | "overloaded_error"
+                ) {
+                    return Err(crate::ai::Transient::error(message, None));
                 }
-                bail!("{}", explain(0, &code, &message, &pick("param")))
+                bail!("{message}")
             }
-            "response.incomplete" => bail!(
-                "A IA interrompeu a resposta antes do fim ({}); nada foi salvo.",
-                clean(
-                    event["response"]["incomplete_details"]["reason"]
-                        .as_str()
-                        .unwrap_or("motivo não informado"),
-                    100
+            "response.incomplete" => {
+                let reason = event["response"]["incomplete_details"]["reason"]
+                    .as_str()
+                    .unwrap_or("");
+                if reason == "max_output_tokens" {
+                    return Err(crate::ai::truncated(
+                        "A IA atingiu o limite de tamanho da resposta; nada foi salvo.",
+                    ));
+                }
+                bail!(
+                    "A IA interrompeu a resposta antes do fim{}; nada foi salvo.",
+                    ident(reason).map_or(String::new(), |r| format!(" ({r})"))
                 )
-            ),
+            }
             _ => Ok(false),
         }
     };
     for line in reader.lines() {
-        let line = line.context("A conexão com o ChatGPT caiu no meio da resposta.")?;
+        let line = line.map_err(|error| {
+            crate::ai::stream_failure(
+                &error,
+                limit,
+                "A conexão com o ChatGPT caiu no meio da resposta.",
+            )
+        })?;
         total += line.len() as u64 + 1;
         ensure!(
             total <= MAX_RESPONSE_BYTES,
@@ -1145,8 +1450,12 @@ fn read_stream(reader: impl BufRead, reporter: &crate::ai::Reporter) -> Result<S
             }
         }
     }
-    let completed = completed
-        .context("A resposta do ChatGPT terminou sem confirmação de conclusão; nada foi salvo.")?;
+    let Some(completed) = completed else {
+        return Err(crate::ai::Transient::error(
+            "A resposta do ChatGPT terminou sem confirmação de conclusão; nada foi salvo.",
+            None,
+        ));
+    };
     if text.trim().is_empty() {
         // Some servers only send the final object.
         if let Some(outputs) = completed["response"]["output"].as_array() {
@@ -1360,18 +1669,20 @@ mod tests {
         let error = read_stream(Cursor::new(nested), &silent)
             .unwrap_err()
             .to_string();
+        // The code is shown, the words of the provider are not.
         assert!(
             error.contains("interrompeu")
                 && error.contains("invalid_request_error")
-                && error.contains("campo recusado"),
+                && !error.contains("campo recusado"),
             "{error}"
         );
         let bare = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"id\":\"r9\"}}\n\n";
         let error = read_stream(Cursor::new(bare), &silent)
             .unwrap_err()
             .to_string();
+        // Nothing of the raw event is shown.
         assert!(
-            error.contains("evento recebido") && error.contains("r9"),
+            error.contains("interrompeu") && !error.contains("evento") && !error.contains("r9"),
             "{error}"
         );
         let only_final ="data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final\"}]}]}}\n\n";
@@ -1488,5 +1799,365 @@ mod tests {
         assert!(body.get("temperature").is_none() && body.get("max_output_tokens").is_none());
         let (_, second) = received.recv().unwrap();
         assert!(second.get("text").is_none());
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use crate::ai::{Reporter, Timing, Transient, Truncated};
+    use std::io::Cursor;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    fn quick() -> Timing {
+        Timing {
+            waits: [Duration::from_millis(20), Duration::from_millis(40)],
+            ollama_timeout: Duration::from_secs(5),
+            chatgpt_timeout: Duration::from_secs(5),
+        }
+    }
+
+    /// Serves one scripted reply per connection and hands back the request
+    /// bodies. Replies: `OK <text>` (a stream ending with the text),
+    /// `HTTP <code>[ retry-after=<s>]|<body>`, `INCOMPLETE <reason>`,
+    /// `SILENT <ms>` (the request is read, nothing comes back).
+    fn mock_responses(
+        replies: Vec<String>,
+    ) -> (String, mpsc::Receiver<Value>, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sent, received) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            for reply in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut all = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                let (header_end, content_length) = loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    all.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = all.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&all[..end]).to_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        break (end + 4, length);
+                    }
+                };
+                while all.len() < header_end + content_length {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    all.extend_from_slice(&buffer[..count]);
+                }
+                let body: Value =
+                    serde_json::from_slice(&all[header_end..header_end + content_length]).unwrap();
+                sent.send(body).unwrap();
+                if let Some(rest) = reply.strip_prefix("HTTP ") {
+                    let (head, refusal) = rest.split_once('|').unwrap_or((rest, ""));
+                    let mut parts = head.split_whitespace();
+                    let code = parts.next().unwrap();
+                    let extra: String = parts
+                        .filter_map(|p| p.strip_prefix("retry-after="))
+                        .map(|seconds| format!("Retry-After: {seconds}\r\n"))
+                        .collect();
+                    let _ = write!(stream, "HTTP/1.1 {code} Refused\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{refusal}", refusal.len());
+                } else if let Some(wait) = reply.strip_prefix("SILENT ") {
+                    std::thread::sleep(Duration::from_millis(wait.trim().parse().unwrap()));
+                } else {
+                    let events = if let Some(reason) = reply.strip_prefix("INCOMPLETE ") {
+                        format!("data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{{\\\"a\\\":\"}}\n\ndata: {{\"type\":\"response.incomplete\",\"response\":{{\"incomplete_details\":{{\"reason\":\"{reason}\"}}}}}}\n\n")
+                    } else {
+                        let text = reply.strip_prefix("OK ").unwrap();
+                        format!("data: {{\"type\":\"response.output_text.delta\",\"delta\":{}}}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{}}}}\n\n", json!(text))
+                    };
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", events.len(), events);
+                }
+            }
+        });
+        (format!("http://{address}"), received, server)
+    }
+
+    fn call(
+        base: &str,
+        schema: Option<Value>,
+        reporter: &Reporter,
+        timing: &Timing,
+    ) -> Result<String> {
+        respond_at_with(
+            base,
+            "tok",
+            "gpt-x",
+            "instruções",
+            "{\"dado\":1}",
+            schema,
+            reporter,
+            timing,
+        )
+    }
+
+    fn strict_schema() -> Value {
+        json!({"type":"object","additionalProperties":false,"required":["a","b"],"properties":{
+            "a":{"type":"string","enum":["x","y"]},
+            "b":{"type":["string","null"]},
+        }})
+    }
+
+    #[test]
+    fn strict_ok_accepts_only_what_the_strict_mode_takes() {
+        assert!(strict_ok(&strict_schema()));
+        // Nested arrays of objects, all required, nullable by type array.
+        assert!(strict_ok(
+            &json!({"type":"object","additionalProperties":false,"required":["items"],"properties":{
+            "items":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["id","date"],"properties":{
+                "id":{"type":"string"},"date":{"type":["string","null"]}}}}}})
+        ));
+        for bad in [
+            // not an object at the root
+            json!({"type":"array","items":{"type":"string"}}),
+            // a property that is not required
+            json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"string"},"b":{"type":"string"}}}),
+            // a required name that is not a property
+            json!({"type":"object","additionalProperties":false,"required":["a","c"],"properties":{"a":{"type":"string"}}}),
+            // additionalProperties missing or true
+            json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}}),
+            json!({"type":"object","additionalProperties":true,"required":["a"],"properties":{"a":{"type":"string"}}}),
+            // keywords the strict mode does not take
+            json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"string","maxLength":10}}}),
+            json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"string","minLength":1}}}),
+            json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"string","pattern":"x"}}}),
+            json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"integer","minimum":1}}}),
+            json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"oneOf":[{"type":"string"}]}}}),
+            json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"$ref":"#/x"}}}),
+            // an array without items; a node with no type at all
+            json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"array"}}}),
+            json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{}}}),
+            // an object without properties
+            json!({"type":"object","additionalProperties":false}),
+            Value::Null,
+        ] {
+            assert!(!strict_ok(&bad), "{bad}");
+        }
+        // Too deep: six levels of objects.
+        let mut deep = json!({"type":"string"});
+        for _ in 0..6 {
+            deep = json!({"type":"object","additionalProperties":false,"required":["n"],"properties":{"n":deep}});
+        }
+        assert!(!strict_ok(&deep));
+        // The analysis schema of today (with maxLength) is sent as plain.
+        assert!(!strict_ok(&crate::ai::analysis_schema()));
+    }
+
+    #[test]
+    fn strict_is_sent_when_the_schema_allows_and_refused_once_then_plain() {
+        let refusal = r#"HTTP 400|{"error":{"code":"invalid_json_schema","message":"Invalid schema for response_format 'ponte'"}}"#;
+        let (base, received, server) = mock_responses(vec![
+            "OK {\"a\":\"x\",\"b\":null}".into(),
+            refusal.into(),
+            "OK {\"a\":\"y\",\"b\":null}".into(),
+            "OK {\"a\":\"x\",\"b\":null}".into(),
+        ]);
+        let silent = Reporter::silent();
+        assert_eq!(
+            call(&base, Some(strict_schema()), &silent, &quick()).unwrap(),
+            "{\"a\":\"x\",\"b\":null}"
+        );
+        // The server refuses the strict form: once more, plain, and the answer is used.
+        assert_eq!(
+            call(&base, Some(strict_schema()), &silent, &quick()).unwrap(),
+            "{\"a\":\"y\",\"b\":null}"
+        );
+        // And it is not asked in the strict form again in this session.
+        call(&base, Some(strict_schema()), &silent, &quick()).unwrap();
+        server.join().unwrap();
+        let bodies: Vec<Value> = received.try_iter().collect();
+        assert_eq!(bodies.len(), 4);
+        assert_eq!(bodies[0]["text"]["format"]["strict"], true);
+        assert_eq!(bodies[0]["text"]["format"]["type"], "json_schema");
+        assert_eq!(bodies[1]["text"]["format"]["strict"], true);
+        assert_eq!(bodies[2]["text"]["format"]["strict"], false);
+        assert_eq!(bodies[3]["text"]["format"]["strict"], false);
+        assert_eq!(bodies[0]["text"]["format"]["schema"], strict_schema());
+    }
+
+    #[test]
+    fn a_schema_the_strict_mode_cannot_take_goes_plain_from_the_start() {
+        let (base, received, server) = mock_responses(vec!["OK {}".into()]);
+        let schema = json!({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":"string","maxLength":5}}});
+        call(&base, Some(schema), &Reporter::silent(), &quick()).unwrap();
+        server.join().unwrap();
+        assert_eq!(received.recv().unwrap()["text"]["format"]["strict"], false);
+    }
+
+    #[test]
+    fn a_failure_that_may_pass_is_tried_again_and_the_limits_of_the_plan_are_not() {
+        let silent = Reporter::silent();
+        // 503 and a rate limit with a short Retry-After pass the second time.
+        let (base, received, server) = mock_responses(vec![
+            "HTTP 503|{}".into(),
+            "HTTP 429 retry-after=0|{\"error\":{\"code\":\"rate_limit_exceeded\"}}".into(),
+            "OK ok".into(),
+        ]);
+        assert_eq!(call(&base, None, &silent, &quick()).unwrap(), "ok");
+        server.join().unwrap();
+        assert_eq!(received.try_iter().count(), 3);
+        // Three in a row end with the plain explanation, no more requests.
+        let (base, received, server) = mock_responses(vec![
+            "HTTP 500|{}".into(),
+            "HTTP 500|{}".into(),
+            "HTTP 500|{}".into(),
+        ]);
+        let error = call(&base, None, &silent, &quick())
+            .unwrap_err()
+            .to_string();
+        server.join().unwrap();
+        assert!(error.contains("código 500"), "{error}");
+        assert_eq!(received.try_iter().count(), 3);
+        // The allowance of the plan is not a hiccup.
+        let (base, received, server) = mock_responses(vec![
+            "HTTP 429|{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\"}}".into(),
+        ]);
+        let error = call(&base, None, &silent, &quick())
+            .unwrap_err()
+            .to_string();
+        server.join().unwrap();
+        assert!(error.contains("cota"), "{error}");
+        assert_eq!(received.try_iter().count(), 1);
+        // Neither is a refusal of the key.
+        let (base, received, server) = mock_responses(vec!["HTTP 401|{}".into()]);
+        assert!(call(&base, None, &silent, &quick())
+            .unwrap_err()
+            .to_string()
+            .contains("Entre de novo"));
+        server.join().unwrap();
+        assert_eq!(received.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn what_the_provider_wrote_is_never_shown() {
+        let silent = Reporter::silent();
+        let secret = "TRECHO-DO-DOCUMENTO-NO-ERRO";
+        for (code, status) in [("400", ""), ("403", ""), ("418", "")] {
+            let (base, _received, server) = mock_responses(vec![format!(
+                "HTTP {code}|{{\"error\":{{\"message\":\"{secret} {status}\",\"code\":\"x y\"}},\"detail\":\"{secret}\"}}"
+            )]);
+            let error = call(&base, None, &silent, &quick())
+                .unwrap_err()
+                .to_string();
+            server.join().unwrap();
+            assert!(!error.contains(secret), "{error}");
+            assert!(error.contains("ChatGPT"), "{error}");
+        }
+        // The same for the events of a stream.
+        for event in [
+            format!("data: {{\"type\":\"error\",\"message\":\"{secret}\"}}\n\n"),
+            format!("data: {{\"type\":\"response.failed\",\"response\":{{\"error\":{{\"code\":\"bad code!\",\"message\":\"{secret}\",\"param\":\"{secret}\"}}}}}}\n\n"),
+            format!("data: {{\"type\":\"response.incomplete\",\"response\":{{\"incomplete_details\":{{\"reason\":\"{secret} com espaços\"}}}}}}\n\n"),
+        ] {
+            let error = read_stream(Cursor::new(event), &silent)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains(secret), "{error}");
+        }
+        // A stable code and a field name that look like identifiers are kept.
+        assert!(explain(
+            400,
+            "subscription_sharing_unsupported_capability",
+            "x",
+            "tools"
+        )
+        .contains("tools"));
+        assert!(explain(0, "invalid_request_error", "frase do provedor", "")
+            .contains("invalid_request_error"));
+        assert!(!explain(0, "invalid_request_error", "frase do provedor", "").contains("frase"));
+        assert!(!explain(403, "", "frase do provedor", "").contains("frase"));
+        assert!(!explain(500, "", "frase do provedor", "").contains("frase"));
+    }
+
+    #[test]
+    fn a_timeout_is_told_as_a_timeout_after_the_tries() {
+        let (base, received, server) = mock_responses(vec![
+            "SILENT 400".into(),
+            "SILENT 400".into(),
+            "SILENT 400".into(),
+        ]);
+        let timing = Timing {
+            chatgpt_timeout: Duration::from_millis(120),
+            ..quick()
+        };
+        let (sender, progress) = mpsc::channel();
+        let reporter = Reporter::new(sender, Arc::new(AtomicBool::new(false)));
+        let error = call(&base, None, &reporter, &timing)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("limite de espera"), "{error}");
+        assert!(!error.contains("caiu"), "{error}");
+        server.join().unwrap();
+        assert_eq!(received.try_iter().count(), 3);
+        let steps: Vec<String> = progress.try_iter().collect();
+        assert!(
+            steps.iter().any(|s| s.contains("Nova tentativa")),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn cancelling_works_before_the_first_byte() {
+        let (base, _received, server) = mock_responses(vec!["SILENT 4000".into()]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (sender, _progress) = mpsc::channel();
+        let reporter = Reporter::new(sender, cancel.clone());
+        let flag = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let error = call(&base, None, &reporter, &quick())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Cancelado"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+        drop(server);
+    }
+
+    #[test]
+    fn an_answer_cut_by_length_is_a_typed_error_and_a_dropped_stream_may_pass() {
+        let silent = Reporter::silent();
+        let cut = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"a\\\":\"}\n\ndata: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n";
+        let error = read_stream(Cursor::new(cut), &silent).unwrap_err();
+        assert!(error.downcast_ref::<Truncated>().is_some(), "{error}");
+        // Another reason is a plain refusal, with the reason when it is an identifier.
+        let filtered = "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"content_filter\"}}}\n\n";
+        let error = read_stream(Cursor::new(filtered), &silent).unwrap_err();
+        assert!(error.downcast_ref::<Truncated>().is_none());
+        assert!(error.to_string().contains("content_filter"), "{error}");
+        // A stream that ends without `response.completed` may pass.
+        let dropped = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n";
+        let error = read_stream(Cursor::new(dropped), &silent).unwrap_err();
+        assert!(error.downcast_ref::<Transient>().is_some(), "{error}");
+        // A server-side failure event may pass; a plan limit may not.
+        let busy = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n";
+        let error = read_stream(Cursor::new(busy), &silent).unwrap_err();
+        assert!(error.downcast_ref::<Transient>().is_some(), "{error}");
+        let limit = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\"}}}\n\n";
+        let error = read_stream(Cursor::new(limit), &silent).unwrap_err();
+        assert!(error.downcast_ref::<Transient>().is_none(), "{error}");
+        // End to end: the cut answer is reported, with nothing saved.
+        let (base, _received, server) = mock_responses(vec!["INCOMPLETE max_output_tokens".into()]);
+        let error = call(&base, None, &silent, &quick()).unwrap_err();
+        server.join().unwrap();
+        assert!(error.downcast_ref::<Truncated>().is_some(), "{error}");
     }
 }

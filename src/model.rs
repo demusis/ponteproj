@@ -256,6 +256,16 @@ pub struct Analysis {
     pub materials: Vec<crate::evidence::Source>,
     #[serde(default)]
     pub citations: Vec<crate::evidence::Citation>,
+    /// What the document says, one excerpt each, checked by the program
+    /// (schema 16). Empty in analyses made before them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<Fact>,
+    /// Proposals made from the checked facts (schema 16); `None` before them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposals: Option<Proposals>,
+    /// How the analysis was made (provider, steps, refusals); schema 16.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<AnalysisRun>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -264,6 +274,223 @@ pub struct ActionSuggestion {
     pub action: String,
     pub reason: String,
     pub evidence: String,
+}
+
+/// Ids the program gives to proposals (a uuid in simple form) and the
+/// records made from them keep.
+pub(crate) fn valid_proposal_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The kinds of fact the Extrator may report.
+pub const FACT_KINDS: &[&str] = &[
+    "pedido",
+    "prazo",
+    "data_hora",
+    "quantidade",
+    "recurso",
+    "remetente",
+    "assunto",
+    "outro",
+];
+
+/// Limits shared by the roles and by `validate_analysis`.
+pub const MAX_FACTS: usize = 64;
+pub const MAX_FACT_STATEMENT: usize = 300;
+pub const FACT_QUOTE_MIN: usize = 8;
+pub const FACT_QUOTE_MAX: usize = 600;
+pub const MAX_TASK_PROPOSALS: usize = 6;
+pub const MAX_RESERVATION_PROPOSALS: usize = 4;
+
+/// One thing the document says, with the literal excerpt that says it. New
+/// fields may be added later: no `deny_unknown_fields`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Fact {
+    /// "f1", "f2"…, given by the model, unique in the analysis.
+    pub id: String,
+    /// One of [`FACT_KINDS`].
+    pub kind: String,
+    /// One plain sentence, at most [`MAX_FACT_STATEMENT`] characters.
+    pub statement: String,
+    /// Literal excerpt ([`FACT_QUOTE_MIN`]..=[`FACT_QUOTE_MAX`] characters
+    /// once the white space is collapsed).
+    pub quote: String,
+    /// "" is the document text or the human context; otherwise the id of a
+    /// selected source.
+    pub source_id: String,
+    /// ISO `AAAA-MM-DD`, only when it is written in the quote.
+    pub date: Option<String>,
+    /// `HH:MM`, only when it is written in the quote.
+    pub time: Option<String>,
+    /// `HH:MM` ("das 14h às 17h").
+    pub end_time: Option<String>,
+    /// Only when it is written in the quote (digits or number words).
+    pub quantity: Option<u32>,
+    /// Set by the program (`evidence::check_fact`), never taken from the
+    /// model: a role builds facts with the default, all false.
+    pub checked: FactCheck,
+}
+
+/// What the program verified about a fact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FactCheck {
+    pub quote: bool,
+    pub date: bool,
+    pub time: bool,
+    pub end_time: bool,
+    pub quantity: bool,
+}
+
+/// What the Propositor suggests. The person reviews and saves each one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Proposals {
+    /// At most [`MAX_TASK_PROPOSALS`].
+    pub tasks: Vec<TaskProposal>,
+    pub attendance: Option<AttendanceProposal>,
+    /// At most [`MAX_RESERVATION_PROPOSALS`].
+    pub reservations: Vec<ReservationProposal>,
+    /// Required, not empty, when all three above are empty.
+    pub nothing_reason: String,
+}
+
+impl Proposals {
+    /// No task, attendance or reservation.
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty() && self.attendance.is_none() && self.reservations.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskProposal {
+    /// uuid (simple form), set by the program.
+    pub id: String,
+    /// One of `tasks::ACTIONS`.
+    pub action: String,
+    pub title: String,
+    /// baixa | normal | alta | urgente
+    pub priority: String,
+    pub reason: String,
+    /// Ids of the facts that support it (at least one, each with a checked
+    /// quote).
+    pub facts: Vec<String>,
+    /// A "prazo" or "data_hora" fact whose date was checked.
+    pub due_fact: Option<String>,
+    /// Set by the program from `due_fact`.
+    pub due_date: Option<String>,
+    /// Set by the program: the quote of `due_fact`.
+    pub due_source: String,
+    /// E.g. a relative deadline the program could not read.
+    pub remark: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AttendanceProposal {
+    pub id: String,
+    pub subject: String,
+    /// Must appear in a cited "remetente" fact quote or in the metadata of
+    /// the capture; otherwise emptied with a remark.
+    pub received_from: String,
+    pub due_fact: Option<String>,
+    pub due_date: Option<String>,
+    pub due_source: String,
+    /// A key of `saiop::DUE_KIND_OPTIONS`; "a_confirmar" unless the quote
+    /// says the date is official.
+    pub due_kind: String,
+    pub priority: String,
+    pub priority_reason: String,
+    /// One of `saiop::DOC_TYPE_OPTIONS` or "".
+    pub planned_doc_type: String,
+    pub facts: Vec<String>,
+    pub remark: String,
+}
+
+impl Default for AttendanceProposal {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            subject: String::new(),
+            received_from: String::new(),
+            due_fact: None,
+            due_date: None,
+            due_source: String::new(),
+            due_kind: "a_confirmar".into(),
+            priority: String::new(),
+            priority_reason: String::new(),
+            planned_doc_type: String::new(),
+            facts: Vec::new(),
+            remark: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReservationProposal {
+    pub id: String,
+    /// The thing asked for, as written in the document: it must appear in the
+    /// quote of the cited "recurso" fact.
+    pub what: String,
+    pub what_fact: String,
+    /// 1 unless a fact with a checked quantity says more.
+    pub quantity: u32,
+    /// A "data_hora" fact.
+    pub when_fact: Option<String>,
+    /// Set by the program from `when_fact`: `AAAA-MM-DDTHH:MM`.
+    pub start: Option<String>,
+    /// Set by the program from the checked `end_time`; otherwise `None`.
+    pub end: Option<String>,
+    pub purpose: String,
+    pub facts: Vec<String>,
+    pub remark: String,
+}
+
+impl Default for ReservationProposal {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            what: String::new(),
+            what_fact: String::new(),
+            quantity: 1,
+            when_fact: None,
+            start: None,
+            end: None,
+            purpose: String::new(),
+            facts: Vec::new(),
+            remark: String::new(),
+        }
+    }
+}
+
+/// The audit of one analysis ("Material utilizado").
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnalysisRun {
+    /// `ai::provider_label`.
+    pub provider: String,
+    /// One per role call sequence.
+    pub steps: Vec<RunStep>,
+    /// Model calls in all.
+    pub calls: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunStep {
+    /// "extrator" | "propositor"
+    pub role: String,
+    pub attempts: u32,
+    /// Reasons of the program for what it refused; never document content.
+    pub refused: Vec<String>,
+    /// Items dropped after the repair round (or for lack of budget).
+    pub dropped: u32,
 }
 
 /// Validate again at the native host boundary; browser data is untrusted.
@@ -563,6 +790,117 @@ pub(crate) fn sample_manual_capture() -> Capture {
             recognized: vec!["registro manual".into()],
             pending: vec![],
         },
+    }
+}
+
+/// An analysis with checked facts and one proposal of each kind, built the
+/// way the roles will build them (generic sample data only).
+#[cfg(test)]
+pub(crate) fn sample_proposed_analysis(capture_id: i64) -> Analysis {
+    let deadline_quote = "responder até 30/11/2026";
+    let checked_all = FactCheck {
+        quote: true,
+        date: true,
+        time: true,
+        end_time: true,
+        quantity: true,
+    };
+    Analysis {
+        capture_id,
+        subjects: vec!["Reserva de cadeiras".into()],
+        priority: "normal".into(),
+        reason: "O setor pede cadeiras e uma resposta.".into(),
+        deadline_candidate: Some(deadline_quote.into()),
+        summary: "Pedido de cadeiras para uma reunião.".into(),
+        model: "teste".into(),
+        created_at: "2026-11-12T12:00:00.000Z".into(),
+        facts: vec![
+            Fact {
+                id: "f1".into(),
+                kind: "prazo".into(),
+                statement: "A resposta é esperada até 30/11/2026.".into(),
+                quote: deadline_quote.into(),
+                date: Some("2026-11-30".into()),
+                checked: FactCheck {
+                    quote: true,
+                    date: true,
+                    ..FactCheck::default()
+                },
+                ..Fact::default()
+            },
+            Fact {
+                id: "f2".into(),
+                kind: "recurso".into(),
+                statement: "Pedem vinte cadeiras.".into(),
+                quote: "reserva de 20 (vinte) cadeiras".into(),
+                quantity: Some(20),
+                checked: FactCheck {
+                    quote: true,
+                    quantity: true,
+                    ..FactCheck::default()
+                },
+                ..Fact::default()
+            },
+            Fact {
+                id: "f3".into(),
+                kind: "data_hora".into(),
+                statement: "A reunião é em 12/11/2026, das 14h às 17h.".into(),
+                quote: "no dia 12 de novembro de 2026, das 14h às 17h".into(),
+                date: Some("2026-11-12".into()),
+                time: Some("14:00".into()),
+                end_time: Some("17:00".into()),
+                checked: FactCheck {
+                    quantity: false,
+                    ..checked_all
+                },
+                ..Fact::default()
+            },
+        ],
+        proposals: Some(Proposals {
+            tasks: vec![TaskProposal {
+                id: "a1b2c3d4e5f60718293a4b5c6d7e8f90".into(),
+                action: "responder".into(),
+                title: "Responder o ofício sobre as cadeiras".into(),
+                priority: "alta".into(),
+                reason: "O documento fixa a data da resposta.".into(),
+                facts: vec!["f1".into()],
+                due_fact: Some("f1".into()),
+                due_date: Some("2026-11-30".into()),
+                due_source: deadline_quote.into(),
+                remark: String::new(),
+            }],
+            attendance: Some(AttendanceProposal {
+                id: "b1b2c3d4e5f60718293a4b5c6d7e8f91".into(),
+                subject: "Pedido de cadeiras".into(),
+                priority: "normal".into(),
+                facts: vec!["f2".into()],
+                ..AttendanceProposal::default()
+            }),
+            reservations: vec![ReservationProposal {
+                id: "c1b2c3d4e5f60718293a4b5c6d7e8f92".into(),
+                what: "cadeiras".into(),
+                what_fact: "f2".into(),
+                quantity: 20,
+                when_fact: Some("f3".into()),
+                start: Some("2026-11-12T14:00".into()),
+                end: Some("2026-11-12T17:00".into()),
+                purpose: "Reunião do setor".into(),
+                facts: vec!["f2".into(), "f3".into()],
+                remark: String::new(),
+            }],
+            nothing_reason: String::new(),
+        }),
+        run: Some(AnalysisRun {
+            provider: "Ollama local".into(),
+            steps: vec![RunStep {
+                role: "extrator".into(),
+                attempts: 1,
+                refused: vec![],
+                dropped: 0,
+            }],
+            calls: 2,
+        }),
+        ..Analysis::default()
     }
 }
 

@@ -189,6 +189,11 @@ pub struct ResourceUse {
     pub document_id: Option<i64>,
     pub saiop_id: Option<i64>,
     pub task_id: Option<i64>,
+    /// Id of the proposal of an analysis this use was made from (schema 16);
+    /// empty otherwise. Part of what `same_content` compares: a difference
+    /// in it changes what the document's proposals show as already used.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub proposal_id: String,
     /// The active actor when it was created, set by the store.
     pub created_by: String,
     pub created_at: String,
@@ -212,6 +217,7 @@ impl Default for ResourceUse {
             document_id: None,
             saiop_id: None,
             task_id: None,
+            proposal_id: String::new(),
             created_by: String::new(),
             created_at: String::new(),
             updated_at: String::new(),
@@ -381,6 +387,10 @@ impl ResourceUse {
         let start = parse_moment(self.start.trim())?;
         let end = parse_moment(self.end.trim())?;
         ensure!(end > start, "O fim previsto precisa ser depois do início.");
+        ensure!(
+            self.proposal_id.is_empty() || crate::model::valid_proposal_id(&self.proposal_id),
+            "A identificação da proposta deste uso é inválida."
+        );
         match (self.status, self.returned_at.as_deref().map(str::trim)) {
             (UseStatus::Returned, None | Some("")) => {
                 bail!("Informe quando o recurso foi devolvido.")
@@ -1003,6 +1013,9 @@ impl Store {
         item.validate()?;
         if let Some(cfg) = self.client_config()? {
             self.ensure_host_stores_resources(&cfg)?;
+            if !item.proposal_id.is_empty() {
+                self.ensure_host_stores_proposals(&cfg)?;
+            }
             self.remote_mutate(
                 &cfg,
                 IntranetMutation::SaveResourceUse {
