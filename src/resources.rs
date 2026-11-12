@@ -299,7 +299,12 @@ impl Resource {
     pub fn normalized(&self) -> Self {
         let mut out = self.clone();
         out.name = out.name.trim().to_owned();
+        // The kind is no longer chosen by anyone, but stays in the record:
+        // what is there is kept, an empty one becomes "outro".
         out.kind = out.kind.trim().to_owned();
+        if out.kind.is_empty() {
+            out.kind = "outro".to_owned();
+        }
         out.location = out.location.trim().to_owned();
         out.identification = out.identification.trim().to_owned();
         out.notes = out.notes.trim().to_owned();
@@ -310,10 +315,9 @@ impl Resource {
         let name = self.name.trim();
         ensure!(!name.is_empty(), "Informe o nome do recurso.");
         check_text(name, MAX_NAME, "Nome do recurso", false)?;
-        ensure!(
-            RESOURCE_KINDS.contains(&self.kind.trim()),
-            "Escolha o tipo do recurso: sala, equipamento, livro ou outro."
-        );
+        // Hidden field kept for the computers that still show it: any short
+        // text is accepted and kept as it is.
+        check_text(self.kind.trim(), 40, "Tipo", false)?;
         ensure!(
             (1..=MAX_QUANTITY).contains(&self.quantity),
             "A quantidade do recurso deve ficar entre 1 e {MAX_QUANTITY}."
@@ -329,10 +333,12 @@ impl Resource {
         Ok(())
     }
 
-    /// Whether two versions say the same thing (dates the store sets aside).
+    /// Whether two versions say the same thing (dates the store sets aside,
+    /// and the hidden `kind`).
     pub fn same_content(&self, other: &Self) -> bool {
         let strip = |r: &Self| {
             let mut r = r.normalized();
+            r.kind.clear();
             r.created_at.clear();
             r.updated_at.clear();
             r
@@ -1629,8 +1635,14 @@ mod tests {
         resource.name = "x".repeat(121);
         assert!(resource.validate().is_err());
         resource.name = "Projetor".into();
+        // The kind is hidden: any short text is accepted, an empty one
+        // becomes "outro", and a very long one is refused.
         resource.kind = "carro".into();
+        assert!(resource.validate().is_ok());
+        resource.kind = "x".repeat(41);
         assert!(resource.validate().is_err());
+        resource.kind = "  ".into();
+        assert_eq!(resource.normalized().kind, "outro");
         resource.kind = "equipamento".into();
         for quantity in [0, MAX_QUANTITY + 1] {
             resource.quantity = quantity;
@@ -2093,5 +2105,58 @@ mod tests {
             clash_sentence(&resource, &[loan], "2026-11-11T16:00"),
             "O recurso “Sala de reuniões do 2º andar” já está em uso por Servidor B até 11/11/2026 17:00."
         );
+    }
+
+    #[test]
+    fn the_hidden_kind_is_kept_as_it_is_and_never_makes_a_difference() {
+        let (_dir, mut store) = store();
+        // A resource made by a 0.33.0 computer, with a kind chosen there.
+        let mut old = Resource {
+            name: "Auditório".into(),
+            kind: "sala".into(),
+            ..Resource::default()
+        };
+        let uid = store.save_resource(&old, None).unwrap();
+        old.uid = uid.clone();
+        assert_eq!(store.list_resources().unwrap()[0].kind, "sala");
+        // Edited here (the screens hand the record back as it was read).
+        let mut edited = store.list_resources().unwrap().remove(0);
+        edited.location = "Térreo".into();
+        store.save_resource(&edited, Some(1)).unwrap();
+        let saved = store.list_resources().unwrap().remove(0);
+        assert_eq!(
+            (saved.kind.as_str(), saved.location.as_str()),
+            ("sala", "Térreo")
+        );
+        // A kind this version has never heard of travels untouched.
+        let mut strange = saved.clone();
+        strange.kind = "veículo".into();
+        store.save_resource(&strange, None).unwrap();
+        assert_eq!(store.list_resources().unwrap()[0].kind, "veículo");
+        // New ones are written as "outro".
+        let fresh = new_resource(&mut store, "Projetor", 1);
+        assert_eq!(fresh.kind, "equipamento", "this helper sets one on purpose");
+        let plain = store
+            .save_resource(
+                &Resource {
+                    name: "Chave do arquivo".into(),
+                    ..Resource::default()
+                },
+                None,
+            )
+            .unwrap();
+        let plain = store
+            .list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.uid == plain)
+            .unwrap();
+        assert_eq!(plain.kind, "outro");
+        // Only the kind differs: the same content.
+        let mut other = saved.clone();
+        other.kind = "livro".into();
+        assert!(saved.same_content(&other));
+        other.name = "Outro nome".into();
+        assert!(!saved.same_content(&other));
     }
 }

@@ -12,9 +12,8 @@
 use crate::{
     doc_picker::DocumentPicker,
     resources::{
-        self, day_counts, free_quantity, kind_label, moment_date, moment_time, now_moment,
-        parse_moment, strip_marker, Resource, ResourceStatus, ResourceUse, UseStatus,
-        RESOURCE_KINDS,
+        self, day_counts, free_quantity, moment_date, moment_time, now_moment, parse_moment,
+        strip_marker, Resource, ResourceStatus, ResourceUse, UseStatus,
     },
     storage::Store,
     tasks::Task,
@@ -286,8 +285,6 @@ pub fn group_uses<'a>(items: &[&'a ResourceUse], today: NaiveDate, now: &str) ->
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filters {
     pub query: String,
-    /// Kind of the resource ("" = any).
-    pub kind: String,
     pub status: Option<UseStatus>,
     /// ISO dates; the use must touch `[from, to]`.
     pub from: String,
@@ -304,9 +301,6 @@ impl Filters {
     /// The filters that are not the search, named for the person.
     pub fn named(&self, resources: &[Resource]) -> Vec<String> {
         let mut out = Vec::new();
-        if !self.kind.is_empty() {
-            out.push(format!("tipo {}", kind_label(&self.kind).to_lowercase()));
-        }
         if let Some(status) = self.status {
             out.push(format!("situação {}", status.label().to_lowercase()));
         }
@@ -341,9 +335,6 @@ pub fn use_matches(item: &ResourceUse, resource: Option<&Resource>, filters: &Fi
     if !filters.resource.is_empty() && item.resource_uid != filters.resource {
         return false;
     }
-    if !filters.kind.is_empty() && resource.is_none_or(|r| r.kind != filters.kind) {
-        return false;
-    }
     if filters.status.is_some_and(|status| item.status != status) {
         return false;
     }
@@ -359,8 +350,10 @@ pub fn use_matches(item: &ResourceUse, resource: Option<&Resource>, filters: &Fi
         return true;
     }
     let haystack = fold_text(&format!(
-        "{} {} {} {}",
+        "{} {} {} {} {} {}",
         resource.map(|r| r.name.as_str()).unwrap_or(""),
+        resource.map(|r| r.location.as_str()).unwrap_or(""),
+        resource.map(|r| r.identification.as_str()).unwrap_or(""),
         item.who,
         item.sector,
         item.purpose
@@ -993,10 +986,7 @@ impl ResourcesPanel {
         }
         self.view = View::Register;
         self.close_ficha();
-        let fresh = Resource {
-            kind: RESOURCE_KINDS[0].to_owned(),
-            ..Default::default()
-        };
+        let fresh = Resource::default();
         self.res_saved = Some(fresh.clone());
         self.res_editor = Some(fresh);
         self.res_version = None;
@@ -1335,19 +1325,14 @@ fn link_marks(ui: &mut egui::Ui, item: &ResourceUse) {
 fn use_row(ui: &mut egui::Ui, item: &ResourceUse, data: &Data, selected: bool) -> bool {
     let (label, tone) = status_pill(item, &data.now);
     let name = data.name(&item.resource_uid);
-    let kind = data
-        .resource(&item.resource_uid)
-        .map(|r| kind_label(&r.kind))
-        .unwrap_or("");
     let links = usize::from(item.document_id.is_some())
         + usize::from(item.saiop_id.is_some())
         + usize::from(item.task_id.is_some());
     pick_row(ui, ("use-row", item.uid.as_str()), selected, 14, |ui| {
         ui.horizontal(|ui| {
             let right = 84.0 + 21.0 * links as f32 + if item.quantity > 1 { 34.0 } else { 0.0 };
-            let kind_w = if kind.is_empty() { 0.0 } else { 90.0 };
             ui.scope(|ui| {
-                ui.set_max_width((ui.available_width() - right - kind_w).max(60.0));
+                ui.set_max_width((ui.available_width() - right).max(60.0));
                 ui.add(
                     egui::Label::new(
                         RichText::new(name).font(theme::font_strong(theme::SIZE_BODY)),
@@ -1355,9 +1340,6 @@ fn use_row(ui: &mut egui::Ui, item: &ResourceUse, data: &Data, selected: bool) -
                     .truncate(),
                 );
             });
-            if !kind.is_empty() {
-                widgets::pill(ui, kind, Tone::Neutral);
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 widgets::pill(ui, label, tone);
                 link_marks(ui, item);
@@ -1385,6 +1367,45 @@ fn use_row(ui: &mut egui::Ui, item: &ResourceUse, data: &Data, selected: bool) -
         );
     })
     .clicked()
+}
+
+/// "Projetor · Sala 12": the name and, when there is one, where it is kept.
+fn place_label(r: &Resource) -> String {
+    let place = r.location.trim();
+    if place.is_empty() {
+        r.name.clone()
+    } else {
+        format!("{} · {place}", r.name)
+    }
+}
+
+/// The name in strong type and, after it, where it is kept in small muted
+/// type, as one line that is cut as a whole.
+fn name_with_place(name: &str, place: &str, color: egui::Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        name,
+        0.0,
+        egui::TextFormat {
+            font_id: theme::font_strong(theme::SIZE_BODY),
+            color,
+            ..Default::default()
+        },
+    );
+    let place = place.trim();
+    if !place.is_empty() {
+        job.append(
+            &format!("  ·  {place}"),
+            0.0,
+            egui::TextFormat {
+                font_id: theme::font(theme::SIZE_SMALL),
+                color: c().muted,
+                valign: egui::Align::Center,
+                ..Default::default()
+            },
+        );
+    }
+    job
 }
 
 /// A list of rows inside a white box with an outline.
@@ -1416,8 +1437,7 @@ impl ResourcesPanel {
         open: &mut Option<String>,
         shown_for_export: &mut Vec<ResourceUse>,
     ) {
-        let advanced = !self.filters.kind.is_empty()
-            || self.filters.status.is_some()
+        let advanced = self.filters.status.is_some()
             || !self.filters.from.is_empty()
             || !self.filters.to.is_empty()
             || !self.filters.resource.is_empty();
@@ -1461,25 +1481,8 @@ impl ResourcesPanel {
         });
         if self.filters_open || advanced {
             widgets::card(ui, |ui| {
-                ui.columns(3, |cols| {
-                    labeled(&mut cols[0], "Tipo", |ui| {
-                        let text = if self.filters.kind.is_empty() {
-                            "Todos".to_owned()
-                        } else {
-                            kind_label(&self.filters.kind).to_owned()
-                        };
-                        pick(ui, "res-filter-kind", text, |ui| {
-                            ui.selectable_value(&mut self.filters.kind, String::new(), "Todos");
-                            for kind in RESOURCE_KINDS {
-                                ui.selectable_value(
-                                    &mut self.filters.kind,
-                                    kind.to_owned(),
-                                    kind_label(kind),
-                                );
-                            }
-                        });
-                    });
-                    labeled(&mut cols[1], "Situação", |ui| {
+                ui.columns(2, |cols| {
+                    labeled(&mut cols[0], "Situação", |ui| {
                         let text = self
                             .filters
                             .status
@@ -1501,7 +1504,7 @@ impl ResourcesPanel {
                             }
                         });
                     });
-                    labeled(&mut cols[2], "Recurso", |ui| {
+                    labeled(&mut cols[1], "Recurso", |ui| {
                         let text = data
                             .resource(&self.filters.resource)
                             .map(|r| r.name.clone())
@@ -1859,7 +1862,7 @@ impl ResourcesPanel {
             let search = widgets::search(
                 ui,
                 &mut self.reg_query,
-                "Buscar por nome, tipo, local ou identificação",
+                "Buscar por nome, local ou identificação",
                 width,
             );
             if std::mem::take(&mut self.focus_search) {
@@ -1877,14 +1880,8 @@ impl ResourcesPanel {
             .filter(|r| {
                 query.is_empty()
                     || query.split_whitespace().all(|word| {
-                        fold_text(&format!(
-                            "{} {} {} {}",
-                            r.name,
-                            kind_label(&r.kind),
-                            r.location,
-                            r.identification
-                        ))
-                        .contains(word)
+                        fold_text(&format!("{} {} {}", r.name, r.location, r.identification))
+                            .contains(word)
                     })
             })
             .collect();
@@ -1899,7 +1896,7 @@ impl ResourcesPanel {
                     if data.resources.is_empty() {
                         widgets::muted(
                             ui,
-                            "Ainda não há recursos. Cadastre uma sala, um equipamento ou um livro com “Novo recurso”.",
+                            "Ainda não há recursos. Cadastre uma sala, um equipamento, um livro ou o que o gabinete empresta com “Novo recurso”.",
                         );
                         if ui.add(widgets::secondary("Novo recurso")).clicked() {
                             self.new_resource();
@@ -1930,7 +1927,7 @@ impl ResourcesPanel {
 static EMPTY: Vec<&ResourceUse> = Vec::new();
 const S5_GAP: f32 = 24.0;
 
-/// "Sala · Servidor B · 10/11 14:00–16:00 · Em uso", for hovering.
+/// "Servidor B · 10/11 14:00–16:00 · Em uso", for hovering.
 fn use_line_hover(item: &ResourceUse, data: &Data) -> String {
     let (text, _, label) = use_line(data.name(&item.resource_uid), item, &data.now);
     format!("{text}\n{label}")
@@ -1944,18 +1941,10 @@ fn resource_row(ui: &mut egui::Ui, r: &Resource, data: &Data, selected: bool) ->
         ui.horizontal(|ui| {
             let right = 220.0;
             ui.scope(|ui| {
-                ui.set_max_width((ui.available_width() - right - 90.0).max(60.0));
-                let text = RichText::new(&r.name).font(theme::font_strong(theme::SIZE_BODY));
-                ui.add(
-                    egui::Label::new(if inactive {
-                        text.color(c().muted)
-                    } else {
-                        text
-                    })
-                    .truncate(),
-                );
+                ui.set_max_width((ui.available_width() - right).max(60.0));
+                let color = if inactive { c().muted } else { c().text };
+                ui.add(egui::Label::new(name_with_place(&r.name, &r.location, color)).truncate());
             });
-            widgets::pill(ui, kind_label(&r.kind), Tone::Neutral);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if inactive {
                     widgets::pill(ui, r.status.label(), Tone::Neutral);
@@ -1981,9 +1970,6 @@ fn resource_row(ui: &mut egui::Ui, r: &Resource, data: &Data, selected: bool) ->
         let mut line = Vec::new();
         if r.quantity > 1 {
             line.push(format!("Quantidade: {}", r.quantity));
-        }
-        if !r.location.trim().is_empty() {
-            line.push(format!("Fica em: {}", r.location.trim()));
         }
         if !r.identification.trim().is_empty() {
             line.push(r.identification.trim().to_owned());
@@ -2088,9 +2074,6 @@ impl ResourcesPanel {
                             ui.horizontal_wrapped(|ui| {
                                 let (label, tone) = status_pill(&ed, &data.now);
                                 widgets::pill(ui, label, tone);
-                                if let Some(r) = data.resource(&ed.resource_uid) {
-                                    widgets::pill(ui, kind_label(&r.kind), Tone::Neutral);
-                                }
                             });
                         }
                     });
@@ -2288,7 +2271,7 @@ impl ResourcesPanel {
                 labeled(ui, "Recurso", |ui| {
                     let text = data
                         .resource(&ed.resource_uid)
-                        .map(|r| r.name.clone())
+                        .map(place_label)
                         .unwrap_or_else(|| "Escolha o recurso".to_owned());
                     pick(ui, "res-use-resource", text, |ui| {
                         for r in &data.resources {
@@ -2296,9 +2279,9 @@ impl ResourcesPanel {
                                 continue;
                             }
                             let label = if r.quantity > 1 {
-                                format!("{} ({})", r.name, r.quantity)
+                                format!("{} ({})", place_label(r), r.quantity)
                             } else {
-                                r.name.clone()
+                                place_label(r)
                             };
                             ui.selectable_value(&mut ed.resource_uid, r.uid.clone(), label);
                         }
@@ -3045,7 +3028,6 @@ impl ResourcesPanel {
                         });
                         if !new {
                             ui.horizontal_wrapped(|ui| {
-                                widgets::pill(ui, kind_label(&ed.kind), Tone::Neutral);
                                 widgets::pill(
                                     ui,
                                     ed.status.label(),
@@ -3142,28 +3124,25 @@ impl ResourcesPanel {
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut ed.name)
                         .desired_width(f32::INFINITY)
-                        .hint_text("Por exemplo: Sala de reuniões do 2º andar"),
+                        .hint_text("O que é e, se ajudar, qual"),
                 );
                 if std::mem::take(&mut self.focus_first) {
                     field.request_focus();
                 }
+                widgets::small_muted(
+                    ui,
+                    "Por exemplo: Sala de reuniões do 2º andar, Carro oficial, Chave do arquivo.",
+                );
             });
-            ui.columns(2, |cols| {
-                labeled(&mut cols[0], "Tipo", |ui| {
-                    pick(ui, "res-kind", kind_label(&ed.kind).to_owned(), |ui| {
-                        for kind in RESOURCE_KINDS {
-                            ui.selectable_value(&mut ed.kind, kind.to_owned(), kind_label(kind));
-                        }
-                    });
-                });
-                labeled(&mut cols[1], "Quantidade", |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut ed.quantity)
-                            .range(1..=resources::MAX_QUANTITY)
-                            .speed(0.2),
-                    )
-                    .on_hover_text("Quantas unidades existem. Uma sala é 1; cadeiras empilháveis podem ser 40.");
-                });
+            labeled(ui, "Quantidade", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut ed.quantity)
+                        .range(1..=resources::MAX_QUANTITY)
+                        .speed(0.2),
+                )
+                .on_hover_text(
+                    "Quantas unidades existem. Uma sala é 1; cadeiras empilháveis podem ser 40.",
+                );
             });
             labeled(ui, "Onde fica", |ui| {
                 ui.add(egui::TextEdit::singleline(&mut ed.location).desired_width(f32::INFINITY));
@@ -3327,7 +3306,7 @@ impl ResourcesPanel {
         match view {
             "agora-filtros" => {
                 self.filters_open = true;
-                self.filters.kind = "equipamento".to_owned();
+                self.filters.status = Some(UseStatus::Reserved);
             }
             "agora-antigos" => self.show_old = true,
             "calendario" => self.view = View::Calendar,
@@ -3680,11 +3659,11 @@ mod tests {
     }
 
     #[test]
-    fn filters_match_by_text_kind_situation_period_and_resource() {
+    fn filters_match_by_text_place_situation_period_and_resource() {
         let mut room = resource("sala", "Sala de reuniões", 1);
-        room.kind = "sala".into();
+        room.location = "2º andar, bloco A".into();
         let mut projector = resource("proj", "Projetor", 1);
-        projector.kind = "equipamento".into();
+        projector.identification = "PAT-0042".into();
         let a = item(
             "a",
             "sala",
@@ -3728,11 +3707,17 @@ mod tests {
         };
         assert!(f(&sector, &a, &room));
 
-        let kind = Filters {
-            kind: "sala".into(),
+        // Where it is kept and its identification are searched too.
+        let place = Filters {
+            query: "bloco".into(),
             ..Default::default()
         };
-        assert!(f(&kind, &a, &room) && !f(&kind, &b, &projector));
+        assert!(f(&place, &a, &room) && !f(&place, &b, &projector));
+        let tag = Filters {
+            query: "pat-0042".into(),
+            ..Default::default()
+        };
+        assert!(f(&tag, &b, &projector) && !f(&tag, &a, &room));
         let status = Filters {
             status: Some(UseStatus::InUse),
             ..Default::default()

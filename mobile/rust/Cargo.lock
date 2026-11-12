@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "ponteproj"
-version = "0.33.0"
+version = "0.33.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

@@ -8,6 +8,9 @@
 //! it goes out with an apostrophe in front (`'=1+1`). No column of the five
 //! files legitimately begins with those characters: numbers, hours and ISO
 //! dates begin with a digit, and none is negative.
+//!
+//! Resources have no "tipo": they are told apart by name, `Local` and
+//! `Identificação`.
 use crate::storage::Store;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -100,7 +103,6 @@ pub fn resources_table(resources: &[crate::resources::Resource]) -> Table {
             vec![
                 r.uid.clone(),
                 r.name.trim().to_owned(),
-                crate::resources::kind_label(&r.kind).to_owned(),
                 r.quantity.to_string(),
                 r.location.trim().to_owned(),
                 r.identification.trim().to_owned(),
@@ -113,7 +115,6 @@ pub fn resources_table(resources: &[crate::resources::Resource]) -> Table {
         headers: vec![
             "ID",
             "Nome",
-            "Tipo",
             "Quantidade",
             "Local",
             "Identificação",
@@ -150,9 +151,6 @@ pub fn resource_uses_table(
                 resource
                     .map(|r| r.name.trim().to_owned())
                     .unwrap_or_default(),
-                resource
-                    .map(|r| crate::resources::kind_label(&r.kind).to_owned())
-                    .unwrap_or_default(),
                 u.quantity.to_string(),
                 u.who.trim().to_owned(),
                 u.sector.trim().to_owned(),
@@ -181,7 +179,6 @@ pub fn resource_uses_table(
         headers: vec![
             "ID",
             "Recurso",
-            "Tipo",
             "Quantidade",
             "Quem",
             "Setor",
@@ -679,9 +676,8 @@ mod tests {
     fn resources_csv_has_the_columns_in_order_and_no_notes() {
         let (projector, room) = resource_sample();
         let text = resources_csv(&[projector, room]);
-        assert!(text.starts_with(
-            "\u{feff}ID;Nome;Tipo;Quantidade;Local;Identificação;Situação;Criado em\r\n"
-        ));
+        assert!(text
+            .starts_with("\u{feff}ID;Nome;Quantidade;Local;Identificação;Situação;Criado em\r\n"));
         let rows = parse(&text);
         assert_eq!(rows.len(), 3);
         assert_eq!(
@@ -689,7 +685,6 @@ mod tests {
             [
                 "a".repeat(32).as_str(),
                 "Projetor; portátil",
-                "Equipamento",
                 "2",
                 "Sala 3",
                 "PAT-0001",
@@ -697,9 +692,9 @@ mod tests {
                 "2026-11-02",
             ]
         );
-        assert_eq!(rows[2][2], "Sala");
-        assert_eq!(rows[2][6], "Fora de uso");
-        assert_eq!(rows[2][7], "");
+        assert_eq!(rows[2][5], "Fora de uso");
+        assert_eq!(rows[2][6], "");
+        assert!(!text.contains("Tipo") && !text.contains("Equipamento"));
         assert!(
             text.contains("\"Projetor; portátil\""),
             "the dialect quotes the separator"
@@ -747,7 +742,6 @@ mod tests {
             [
                 "ID",
                 "Recurso",
-                "Tipo",
                 "Quantidade",
                 "Quem",
                 "Setor",
@@ -774,7 +768,6 @@ mod tests {
             rows[1][1..],
             [
                 "Projetor; portátil",
-                "Equipamento",
                 "2",
                 "Servidor A",
                 "Setor Jurídico",
@@ -795,15 +788,14 @@ mod tests {
             ]
         );
         // The one handed back: the real duration, on time.
-        assert_eq!(rows[2][11..14], ["2026-11-10", "11:15", "2.2"]);
+        assert_eq!(rows[2][10..13], ["2026-11-10", "11:15", "2.2"]);
         assert_eq!(
-            (rows[2][15].as_str(), rows[2][16].as_str()),
+            (rows[2][14].as_str(), rows[2][15].as_str()),
             ("Devolvido", "Não")
         );
-        assert_eq!(rows[2][17..], ["", "", "Não"]);
+        assert_eq!(rows[2][16..], ["", "", "Não"]);
         // A reservation is never late.
-        assert_eq!(rows[3][16], "Não");
-        assert_eq!(rows[3][2], "Sala");
+        assert_eq!(rows[3][15], "Não");
         assert!(!text.contains("SECRETA"), "notes never leave");
         // A use whose resource is gone still goes out.
         let orphan = resource_uses_csv(

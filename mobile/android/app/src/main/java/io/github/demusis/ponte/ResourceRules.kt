@@ -130,13 +130,13 @@ internal object ResourceRules {
     fun matches(u: ResourceUseItem, query: String): Boolean = hasAllWords(
         query,
         listOf(
-            u.resourceName, u.resourceKindLabel, u.who, u.sector, u.purpose, u.documentNumber, u.documentTitle,
+            u.resourceName, u.who, u.sector, u.purpose, u.documentNumber, u.documentTitle,
             u.attendanceReference, u.taskTitle
         )
     )
 
     fun matches(r: ResourceItem, query: String): Boolean =
-        hasAllWords(query, listOf(r.name, r.kindLabel, r.location, r.identification))
+        hasAllWords(query, listOf(r.name, r.location, r.identification))
 
     // ------------------------------------------------------------------ times
 

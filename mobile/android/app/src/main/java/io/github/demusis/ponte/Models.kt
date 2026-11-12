@@ -464,8 +464,6 @@ internal data class AttendanceViewState(
 internal data class ResourceItem(
     val uid: String,
     val name: String,
-    val kind: String,
-    val kindLabel: String,
     val quantity: Int,
     /** "Onde fica". */
     val location: String,
@@ -479,7 +477,7 @@ internal data class ResourceItem(
 )
 
 internal fun JSONObject.toResource() = ResourceItem(
-    uid = s("uid"), name = s("name"), kind = s("kind"), kindLabel = s("kind_label"),
+    uid = s("uid"), name = s("name"),
     quantity = optInt("quantity", 1), location = s("location"), identification = s("identification"),
     notes = s("notes"), status = s("status", "ativo"), statusLabel = s("status_label"),
     active = optBoolean("active", true)
@@ -490,7 +488,6 @@ internal data class ResourceUseItem(
     val uid: String,
     val resourceUid: String,
     val resourceName: String,
-    val resourceKindLabel: String,
     val quantity: Int,
     /** "Quem". */
     val who: String,
@@ -524,7 +521,7 @@ internal data class ResourceUseItem(
 
 internal fun JSONObject.toResourceUse() = ResourceUseItem(
     uid = s("uid"), resourceUid = s("resource_uid"), resourceName = s("resource_name"),
-    resourceKindLabel = s("resource_kind_label"), quantity = optInt("quantity", 1),
+    quantity = optInt("quantity", 1),
     who = s("who"), sector = s("sector"), purpose = s("purpose"), start = s("start"), end = s("end"),
     returnedAt = s("returned_at"), status = s("status", "reservado"), statusLabel = s("status_label"),
     notes = s("notes"), overdue = optBoolean("overdue"),

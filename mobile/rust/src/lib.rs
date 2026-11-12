@@ -1188,8 +1188,6 @@ fn resource_json(r: &ponteproj::resources::Resource) -> Value {
     json!({
         "uid": r.uid,
         "name": r.name,
-        "kind": r.kind,
-        "kind_label": ponteproj::resources::kind_label(&r.kind),
         "quantity": r.quantity,
         "location": r.location,
         "identification": r.identification,
@@ -1209,7 +1207,6 @@ fn resource_rows(store: &Store) -> Result<Value> {
 /// Every use with the names the list and the detail need (resource, linked document, atendimento
 /// and task). A link that no longer exists comes as 0 / empty. `now` is `AAAA-MM-DDTHH:MM`.
 fn resource_use_rows(store: &Store, now: &str) -> Result<Value> {
-    use ponteproj::resources::kind_label;
     let resources = store.list_resources()?;
     let documents = store.list_documents("")?;
     let attendances = store.list_saiop_attendances()?;
@@ -1226,8 +1223,6 @@ fn resource_use_rows(store: &Store, now: &str) -> Result<Value> {
                 "uid": u.uid,
                 "resource_uid": u.resource_uid,
                 "resource_name": resource.map(|r| r.name.as_str()).unwrap_or(""),
-                "resource_kind": resource.map(|r| r.kind.as_str()).unwrap_or(""),
-                "resource_kind_label": resource.map(|r| kind_label(&r.kind)).unwrap_or(""),
                 "quantity": u.quantity,
                 "who": u.who,
                 "sector": u.sector,
@@ -2607,7 +2602,11 @@ mod tests {
         let names: Vec<_> = resources["resources"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["Notebook de apresentações", "Sala de reuniões do 2º andar"]);
         let r = &resources["resources"][1];
-        assert_eq!(r["kind_label"], json!("Sala"));
+        // A resource is its name and where it is: no tipo travels to the phone.
+        for key in ["kind", "kind_label"] {
+            assert!(r.get(key).is_none(), "{key}");
+        }
+        assert_eq!(r["location"], json!("2º andar"));
         assert_eq!(r["status_label"], json!("Ativo"));
         assert_eq!(r["quantity"], json!(1));
         assert_eq!(r["notes"], json!("Chave na portaria."));
@@ -2624,6 +2623,9 @@ mod tests {
         assert_eq!(loan["overdue"], json!(true));
         assert_eq!(loan["returned_at"], Value::Null);
         assert_eq!(loan["document_id"], json!(0));
+        for key in ["resource_kind", "resource_kind_label"] {
+            assert!(loan.get(key).is_none(), "{key}");
+        }
         let booking = &rows[1];
         assert_eq!(booking["resource_name"], json!("Sala de reuniões do 2º andar"));
         assert_eq!(booking["who"], json!("Servidor B"));

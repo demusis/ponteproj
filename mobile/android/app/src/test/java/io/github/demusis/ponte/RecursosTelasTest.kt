@@ -15,23 +15,23 @@ internal object ResourceSamples {
     const val NOW = "2026-11-10T10:00"
 
     private fun resource(
-        uid: String, name: String, kind: String, label: String, quantity: Int = 1, location: String = "",
+        uid: String, name: String, quantity: Int = 1, location: String = "",
         identification: String = "", notes: String = "", active: Boolean = true
     ) = ResourceItem(
-        uid, name, kind, label, quantity, location, identification, notes,
+        uid, name, quantity, location, identification, notes,
         if (active) "ativo" else "fora_de_uso", if (active) "Ativo" else "Fora de uso", active
     )
 
     // By name, as the core lists them.
     val resources = listOf(
-        resource("r2", "Auditório", "sala", "Sala", 1, "Térreo, bloco B"),
-        resource("r5", "Cadeiras empilháveis", "outro", "Outro", 40, "Depósito"),
-        resource("r7", "Câmera antiga", "equipamento", "Equipamento", 1, "Almoxarifado", "Patrimônio 000981", active = false),
-        resource("r6", "Manual de redação oficial", "livro", "Livro", 3, "Biblioteca", "ISBN 000-00-0000-000-0"),
-        resource("r4", "Notebook de apresentações", "equipamento", "Equipamento", 2, "Almoxarifado", "Patrimônio 004520"),
-        resource("r3", "Projetor", "equipamento", "Equipamento", 1, "Almoxarifado", "Patrimônio 004512", "Cabo HDMI na caixa."),
+        resource("r2", "Auditório", 1, "Térreo, bloco B"),
+        resource("r5", "Cadeiras empilháveis", 40, "Depósito"),
+        resource("r7", "Câmera antiga", 1, "Almoxarifado", "Patrimônio 000981", active = false),
+        resource("r6", "Manual de redação oficial", 3, "Biblioteca", "ISBN 000-00-0000-000-0"),
+        resource("r4", "Notebook de apresentações", 2, "Almoxarifado", "Patrimônio 004520"),
+        resource("r3", "Projetor", 1, "Almoxarifado", "Patrimônio 004512", "Cabo HDMI na caixa."),
         resource(
-            "r1", "Sala de reuniões do 2º andar", "sala", "Sala", 1, "2º andar, bloco A", "",
+            "r1", "Sala de reuniões do 2º andar", 1, "2º andar, bloco A", "",
             "A chave fica na portaria."
         )
     )
@@ -45,7 +45,7 @@ internal object ResourceSamples {
         start: String = "2026-11-10T09:00", end: String = "2026-11-10T10:00", quantity: Int = 1,
         returnedAt: String = "", notes: String = ""
     ) = ResourceUseItem(
-        uid = uid, resourceUid = resource.uid, resourceName = resource.name, resourceKindLabel = resource.kindLabel,
+        uid = uid, resourceUid = resource.uid, resourceName = resource.name,
         quantity = quantity, who = who, sector = sector, purpose = purpose, start = start, end = end,
         returnedAt = returnedAt, status = status, statusLabel = labels.getValue(status), notes = notes,
         overdue = status == "em_uso" && end < NOW

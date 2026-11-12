@@ -4144,9 +4144,8 @@ impl Store {
                     }
                     let plain = |v: &String| v.clone();
                     scalar!(name, "Nome", plain);
-                    scalar!(kind, "Tipo", |v: &String| {
-                        crate::resources::kind_label(v).to_owned()
-                    });
+                    // The hidden kind is never merged: the local value stays.
+                    m.kind = local.kind.clone();
                     scalar!(quantity, "Quantidade", |v: &u32| v.to_string());
                     scalar!(location, "Onde fica", plain);
                     scalar!(identification, "Identificação", plain);
@@ -5595,7 +5594,6 @@ fn saiop_fields(a: &crate::saiop::SaiopAttendance) -> Vec<(&'static str, String)
 fn resource_fields(r: &crate::resources::Resource) -> Vec<(&'static str, String)> {
     vec![
         ("Nome", r.name.clone()),
-        ("Tipo", crate::resources::kind_label(&r.kind).to_owned()),
         ("Quantidade", r.quantity.to_string()),
         ("Onde fica", r.location.clone()),
         ("Identificação", r.identification.clone()),
@@ -12150,5 +12148,73 @@ mod resources_sync_tests {
             .unwrap();
         assert!(here.list_resources().unwrap().is_empty());
         assert!(here.list_resource_uses().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_difference_only_in_the_hidden_kind_is_no_conflict_and_a_0_33_0_change_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("k.sqlite3")).unwrap();
+        let mut room = resource(&mut store, "Auditório", 1);
+        room.kind = "sala".into();
+        store.save_resource(&room, None).unwrap();
+        let held = store.list_resources().unwrap().remove(0);
+        assert_eq!(held.kind, "sala");
+        let conflict = |resource: &Resource| SyncConflict {
+            id: 0,
+            created_at: now_iso(),
+            actor: "Servidor A".into(),
+            item_label: "x".into(),
+            local_summary: String::new(),
+            host_summary: String::new(),
+            reason: String::new(),
+            mutation: IntranetMutation::SaveResource {
+                resource: resource.clone(),
+                expected_version: None,
+            },
+            base: None,
+            unresolved: false,
+        };
+        // Same thing but for the kind: equal, with nothing to compare.
+        let mut other_kind = held.clone();
+        other_kind.kind = "livro".into();
+        assert!(store.conflict_info(&conflict(&other_kind)).equal);
+        assert!(store
+            .conflict_differences(&conflict(&other_kind))
+            .is_empty());
+        // A real difference does not show the kind either.
+        other_kind.location = "Térreo".into();
+        let labels: Vec<String> = store
+            .conflict_differences(&conflict(&other_kind))
+            .into_iter()
+            .map(|d| d.label)
+            .collect();
+        assert_eq!(labels, ["Onde fica"]);
+        assert!(!store.conflict_info(&conflict(&other_kind)).equal);
+        // What a 0.33.0 computer sends (a kind of the old list, or any
+        // other) is accepted and kept as sent.
+        for kind in ["sala", "equipamento", "livro", "outro", "veículo"] {
+            let sent = Resource {
+                uid: "c".repeat(32),
+                name: format!("Recurso {kind}"),
+                kind: kind.into(),
+                ..Resource::default()
+            };
+            store
+                .execute_mutation(
+                    "Servidor B",
+                    IntranetMutation::SaveResource {
+                        resource: sent.clone(),
+                        expected_version: store.uid_version("resource", &sent.uid),
+                    },
+                )
+                .unwrap();
+            let kept = store
+                .list_resources()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.uid == sent.uid)
+                .unwrap();
+            assert_eq!(kept.kind, kind);
+        }
     }
 }

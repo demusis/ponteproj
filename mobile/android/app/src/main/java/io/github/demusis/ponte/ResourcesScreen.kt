@@ -49,7 +49,7 @@ internal const val RESOURCE_READ_ONLY = "Para reservar ou devolver, use o Ponte 
 /**
  * The Recursos list, in the Tarefas area. Two views, chosen by a toggle: **Usos** (reservations and
  * loans, in groups: Atrasados, Em uso agora, Hoje, Próximos dias, Mais adiante and the folded Encerrados)
- * and **Recursos** (the register: name, tipo, "N de M em uso agora", onde fica). Read-only: a tap opens
+ * and **Recursos** (the register: name, onde fica, "N de M em uso agora"). Read-only: a tap opens
  * the detail. [header] is a slot under the toggle for what 0.7.1 adds ("Reservar").
  */
 @Composable
@@ -194,7 +194,7 @@ internal fun ResourceUseCard(u: ResourceUseItem, now: String, onClick: (() -> Un
     }
 }
 
-/** A resource of the register in a card: name, tipo and place, and how many are out now. */
+/** A resource of the register in a card: name, where it is, and how many are out now. */
 @Composable
 internal fun ResourceCard(r: ResourceItem, usage: String, onClick: (() -> Unit)? = null) {
     val c = Ponte.colors
@@ -205,9 +205,8 @@ internal fun ResourceCard(r: ResourceItem, usage: String, onClick: (() -> Unit)?
                     r.name, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium,
                     color = if (r.active) c.text else c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis
                 )
-                val kindLine = listOf(r.kindLabel, r.location).filter { it.isNotBlank() }.joinToString(" · ")
-                if (kindLine.isNotEmpty()) {
-                    Text(kindLine, style = MaterialTheme.typography.bodySmall, color = c.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (r.location.isNotBlank()) {
+                    Text(r.location, style = MaterialTheme.typography.bodySmall, color = c.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
                 if (r.active) Text(usage, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1)
             }
@@ -242,7 +241,7 @@ private fun DataCard(title: String, fields: List<Pair<String, String>>) {
 
 /** A tappable card that leads to another screen: small label, one text, "Abrir". */
 @Composable
-private fun LinkCard(icon: ImageVector, label: String, text: String, onClick: () -> Unit) {
+private fun LinkCard(icon: ImageVector, label: String, text: String, onClick: () -> Unit, secondary: String = "") {
     val c = Ponte.colors
     PonteCard(onClick = onClick) {
         Row(
@@ -257,6 +256,9 @@ private fun LinkCard(icon: ImageVector, label: String, text: String, onClick: ()
                     text, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = c.text,
                     maxLines = 3, overflow = TextOverflow.Ellipsis
                 )
+                if (secondary.isNotBlank()) {
+                    Text(secondary, style = MaterialTheme.typography.bodySmall, color = c.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
             Text("Abrir", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.padding(start = 8.dp))
         }
@@ -338,9 +340,8 @@ private fun ResourceUseBody(
             )
         )
         LinkCard(
-            Icons.Outlined.CalendarMonth, PhoneWords.RES_RESOURCE_TITLE,
-            listOf(u.resourceName, resource?.kindLabel ?: u.resourceKindLabel).filter { it.isNotBlank() }.joinToString(" · "),
-            onClick = { onOpenResource(u.resourceUid) }
+            Icons.Outlined.CalendarMonth, PhoneWords.RES_RESOURCE_TITLE, u.resourceName.ifEmpty { PhoneWords.RES_RESOURCE_TITLE },
+            onClick = { onOpenResource(u.resourceUid) }, secondary = resource?.location.orEmpty()
         )
         if (u.documentId > 0) {
             LinkCard(Icons.Outlined.Description, "Documento ligado", u.documentLine.ifEmpty { "Documento" }, onClick = { onOpenDocument(u.documentId) })
@@ -393,10 +394,7 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, now: String, on
     ) {
         Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(r.name, fontSize = 22.sp, lineHeight = 29.sp, fontWeight = FontWeight.SemiBold, color = c.text)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Pill(r.kindLabel, Tone.ACCENT)
-                if (!r.active) Pill(PhoneWords.RES_INACTIVE, Tone.NEUTRAL)
-            }
+            if (!r.active) Pill(PhoneWords.RES_INACTIVE, Tone.NEUTRAL)
             if (r.active) {
                 Text(
                     ResourceRules.usageLine(r, state.uses, now) + " · " +
@@ -409,7 +407,6 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, now: String, on
         DataCard(
             "Dados",
             listOf(
-                PhoneWords.RES_KIND to r.kindLabel,
                 PhoneWords.RES_QUANTITY to r.quantity.toString(),
                 PhoneWords.RES_LOCATION to r.location,
                 PhoneWords.RES_IDENTIFICATION to r.identification,

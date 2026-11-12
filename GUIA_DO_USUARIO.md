@@ -202,14 +202,13 @@ A área tem três abas: **Agora e próximos**, **Calendário** e **Recursos** (o
 
 | Campo | Exemplo |
 |---|---|
-| Nome | `Sala de reuniões do 2º andar` |
-| Tipo | *Sala*, *Equipamento*, *Livro* ou *Outro* |
+| Nome | `Sala de reuniões do 2º andar`, `Carro oficial`, `Chave do arquivo`: o que é e, se ajudar, qual |
 | Quantidade | `1` (uma sala); `40` (cadeiras empilháveis); `3` (três exemplares de um livro) |
 | Onde fica | `2º andar, bloco A` |
 | Identificação | tombo, patrimônio, ISBN… |
 | Observações | texto livre |
 
-Só o nome é obrigatório. A **quantidade** diz quantos podem ser usados ao mesmo tempo: com `2` notebooks, duas pessoas reservam o mesmo horário. Um recurso que já teve usos **não é apagado**: clique em **Marcar como fora de uso** (e **Voltar a usar**, para reativar). Ele deixa de aceitar reservas novas; as que já existem continuam, e dá para registrar a devolução. **Apagar de vez…** só aparece para recurso que nunca teve nenhum uso. Não se reduz a quantidade abaixo do que reservas e usos já marcados precisam; o Ponte diz qual uso impede.
+Só o nome é obrigatório. Não há tipo nem categoria: um recurso é o que o nome diz, e **Onde fica** aparece ao lado do nome nas listas, para distinguir os de nome parecido. A **quantidade** diz quantos podem ser usados ao mesmo tempo: com `2` notebooks, duas pessoas reservam o mesmo horário. Um recurso que já teve usos **não é apagado**: clique em **Marcar como fora de uso** (e **Voltar a usar**, para reativar). Ele deixa de aceitar reservas novas; as que já existem continuam, e dá para registrar a devolução. **Apagar de vez…** só aparece para recurso que nunca teve nenhum uso. Não se reduz a quantidade abaixo do que reservas e usos já marcados precisam; o Ponte diz qual uso impede.
 
 **Reservar e registrar o uso.** Em **Reservar** (no alto da área; Ctrl+N), preencha a ficha que abre à direita:
 
@@ -237,9 +236,9 @@ Em usos devolvidos ou cancelados, os campos ficam só para leitura.
 
 **As três abas.**
 
-- **Agora e próximos:** os usos em grupos: **Atrasados**, **Em uso agora**, **Hoje**, **Próximos dias**, **Mais adiante** e, ao clicar em **Ver mais antigos / encerrados**, **Mais antigos e encerrados**. Clique num uso para abrir a ficha. A busca procura em recurso, quem, setor e finalidade. **Filtros** acrescenta **Tipo**, **Situação**, **Recurso** e **Período** (de… até…); **Limpar** desfaz tudo.
+- **Agora e próximos:** os usos em grupos: **Atrasados**, **Em uso agora**, **Hoje**, **Próximos dias**, **Mais adiante** e, ao clicar em **Ver mais antigos / encerrados**, **Mais antigos e encerrados**. Clique num uso para abrir a ficha. A busca procura em recurso (nome, onde fica e identificação), quem, setor e finalidade. **Filtros** acrescenta **Situação**, **Recurso** e **Período** (de… até…); **Limpar** desfaz tudo.
 - **Calendário:** o mês, com todos os recursos ou só um, escolhido na lista. As setas trocam de mês e **Hoje** volta ao mês atual. Cada linha mostra a hora e o recurso (ou quem, quando se escolhe um recurso); uso que atravessa dias aparece em cada um. Clique num dia para listar os usos dele; **Reservar neste dia** abre a ficha com o início nesse dia. Reservas canceladas não aparecem.
-- **Recursos:** o cadastro. Cada linha mostra o tipo, a situação e *livre: 1 de 1* ou *em uso agora: 1 de 2*. A busca procura em nome, tipo, local e identificação, e **Mostrar fora de uso** inclui ou esconde os recursos fora de uso. Clicar num recurso abre a ficha dele, com os próximos usos e o botão **Reservar…**.
+- **Recursos:** o cadastro. Cada linha mostra o nome, onde fica, a situação e *livre: 1 de 1* ou *em uso agora: 1 de 2*. A busca procura em nome, local e identificação, e **Mostrar fora de uso** inclui ou esconde os recursos fora de uso. Clicar num recurso abre a ficha dele, com os próximos usos e o botão **Reservar…**.
 
 Em **Agora e próximos**, o botão **⋯** (Mais ações) tem **Exportar esta lista…** (veja **Exportar**, abaixo).
 
@@ -263,8 +262,8 @@ Em **Agora e próximos**, o botão **⋯** (Mais ações) tem **Exportar esta li
 
 | Arquivo | Colunas |
 |---|---|
-| `recursos.csv` | ID, Nome, Tipo, Quantidade, Local, Identificação, Situação, Criado em |
-| `usos-de-recursos.csv` | ID, Recurso, Tipo, Quantidade, Quem, Setor, Finalidade, Início (data), Início (hora), Fim previsto (data), Fim previsto (hora), Devolvido em (data), Devolvido em (hora), Duração em horas, Mês, Situação, Atrasado (*Sim* ou *Não*), Documento ligado (o número), Atendimento ligado (a referência), Tarefa ligada (*Sim* ou *Não*) |
+| `recursos.csv` | ID, Nome, Quantidade, Local, Identificação, Situação, Criado em |
+| `usos-de-recursos.csv` | ID, Recurso, Quantidade, Quem, Setor, Finalidade, Início (data), Início (hora), Fim previsto (data), Fim previsto (hora), Devolvido em (data), Devolvido em (hora), Duração em horas, Mês, Situação, Atrasado (*Sim* ou *Não*), Documento ligado (o número), Atendimento ligado (a referência), Tarefa ligada (*Sim* ou *Não*) |
 
 As observações não saem. **Exportar esta lista…** (em **⋯**, na aba **Agora e próximos**) grava só os usos que a lista mostra naquele momento, com os filtros escolhidos, num arquivo que você escolhe (o nome sugerido é `usos-de-recursos.csv`).
 

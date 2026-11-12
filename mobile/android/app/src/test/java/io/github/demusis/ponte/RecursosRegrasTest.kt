@@ -159,7 +159,10 @@ class RecursosRegrasTest {
         assertEquals(listOf("Projetor"), names("patrimônio 004512"))
         assertEquals(listOf("Manual de redação oficial"), names("biblioteca"))
         assertEquals(listOf("Manual de redação oficial"), names("REDACAO"))
-        assertEquals(listOf("Auditório", "Sala de reuniões do 2º andar"), names("sala"))
+        assertEquals(listOf("Sala de reuniões do 2º andar"), names("sala"))
+        // The tipo is gone: "equipamento" matches nothing, "almoxarifado" (onde fica) matches three.
+        assertEquals(emptyList<String>(), names("equipamento"))
+        assertEquals(listOf("Câmera antiga", "Notebook de apresentações", "Projetor").sorted(), names("almoxarifado").sorted())
         assertEquals(emptyList<String>(), names("xyz"))
         assertEquals(s.resources.size, names("").size)
     }
@@ -268,6 +271,11 @@ class RecursosRegrasTest {
         assertEquals("Atrasado", PhoneWords.RES_OVERDUE)
         assertEquals("Reservas de hoje", PhoneWords.RES_TODAY_LINE)
         assertEquals("Devoluções atrasadas", PhoneWords.RES_OVERDUE_LINE)
+    }
+
+    @Test fun nenhumaPalavraDosRecursosDizTipo() {
+        for (text in PhoneWords.RES_TEXTS) assertFalse(text, text.contains("tipo", ignoreCase = true))
+        assertFalse(PhoneWords.RES_SEARCH_RESOURCES.contains("tipo", ignoreCase = true))
     }
 
     @Test fun osTitulosDosGrupos() {

@@ -193,16 +193,11 @@ fn attendance_matches(attendance: &SaiopAttendance, needle: &str) -> bool {
     )
 }
 
-/// Name, kind, where it is and identification (patrimônio, ISBN…).
+/// Name, where it is and identification (patrimônio, ISBN…).
 fn resource_matches(resource: &Resource, needle: &str) -> bool {
     fields_match(
         needle,
-        &[
-            &resource.name,
-            crate::resources::kind_label(&resource.kind),
-            &resource.location,
-            &resource.identification,
-        ],
+        &[&resource.name, &resource.location, &resource.identification],
     )
 }
 
@@ -390,15 +385,7 @@ impl GlobalSearch {
                         .map(|r| ResourceRow {
                             uid: r.uid.clone(),
                             name: r.name.clone(),
-                            detail: if r.location.trim().is_empty() {
-                                crate::resources::kind_label(&r.kind).to_owned()
-                            } else {
-                                format!(
-                                    "{} · {}",
-                                    crate::resources::kind_label(&r.kind),
-                                    r.location.trim()
-                                )
-                            },
+                            detail: r.location.trim().to_owned(),
                             active: r.status == ResourceStatus::Active,
                         })
                         .collect(),
@@ -1111,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn resources_match_on_name_kind_location_or_identification_but_not_notes() {
+    fn resources_match_on_name_location_or_identification_but_not_notes() {
         let r = resource(
             "r1",
             "Sala de reuniões do 2º andar",
@@ -1125,7 +1112,10 @@ mod tests {
         assert!(resource_matches(&r, "pat-0042"));
         assert!(!resource_matches(&r, "recepcao"));
         let p = resource("r2", "Projetor", "equipamento", "", "");
-        assert!(resource_matches(&p, "equipamento"));
+        assert!(
+            !resource_matches(&p, "equipamento"),
+            "the kind is not searched"
+        );
         assert!(!resource_matches(&p, "sala"));
     }
 
@@ -1215,7 +1205,7 @@ mod tests {
         search.results.resources = Group::limited(vec![ResourceRow {
             uid: "r1".into(),
             name: "Projetor".into(),
-            detail: "Equipamento".into(),
+            detail: "Armário da recepção".into(),
             active: true,
         }]);
         search.results.resource_uses = Group::limited(vec![ResourceUseRow {
