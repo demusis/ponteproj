@@ -212,6 +212,264 @@ pub fn times_for_day(day: &str, now: &str) -> (String, String) {
     (format!("{day}T09:00"), format!("{day}T10:00"))
 }
 
+// ---------------------------------------------------------------------------
+// Reservations proposed by an analysis
+
+/// One word of a name or of a request, in the form used to compare them:
+/// lowercase, without accents, and with the plural taken off.
+struct MatchWord {
+    folded: String,
+    stem: String,
+}
+
+impl MatchWord {
+    /// A word the comparison leans on: four letters or more and not one of
+    /// the small words of the language.
+    fn significant(&self) -> bool {
+        const FILLER: [&str; 10] = [
+            "de", "da", "do", "das", "dos", "para", "uma", "um", "o", "a",
+        ];
+        !FILLER.contains(&self.folded.as_str())
+            && self.folded.chars().filter(|ch| ch.is_alphabetic()).count() >= 4
+    }
+}
+
+/// "reuniões" and "reunião", "cadeiras" and "cadeira", "empilháveis" and
+/// "empilhável" read the same.
+fn plural_stem(word: &str) -> String {
+    for (ending, replacement) in [
+        ("oes", "ao"),
+        ("aes", "ao"),
+        ("ais", "al"),
+        ("eis", "el"),
+        ("ores", "or"),
+        ("ares", "ar"),
+    ] {
+        if let Some(base) = word.strip_suffix(ending) {
+            if !base.is_empty() {
+                return format!("{base}{replacement}");
+            }
+        }
+    }
+    if word.chars().count() > 3 {
+        if let Some(base) = word.strip_suffix('s') {
+            return base.to_owned();
+        }
+    }
+    word.to_owned()
+}
+
+fn match_words(text: &str) -> Vec<MatchWord> {
+    fold_text(text)
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| MatchWord {
+            folded: word.to_owned(),
+            stem: plural_stem(word),
+        })
+        .collect()
+}
+
+/// The active resources of the register whose name fits what a document
+/// asks for. A resource fits when every word of its name is in the request,
+/// or when every significant word of the request is in its name (accents,
+/// capitals and the plural do not matter). The program decides this, never
+/// the model: the register is not sent to it.
+pub fn match_resources<'a>(what: &str, resources: &'a [Resource]) -> Vec<&'a Resource> {
+    let asked = match_words(what);
+    let significant: Vec<&MatchWord> = asked.iter().filter(|word| word.significant()).collect();
+    resources
+        .iter()
+        .filter(|resource| resource.status == ResourceStatus::Active)
+        .filter(|resource| {
+            let name = match_words(&resource.name);
+            if name.is_empty() {
+                return false;
+            }
+            let name_in_request = name
+                .iter()
+                .all(|word| asked.iter().any(|other| other.stem == word.stem));
+            let request_in_name = !significant.is_empty()
+                && significant
+                    .iter()
+                    .all(|word| name.iter().any(|other| other.stem == word.stem));
+            name_in_request || request_in_name
+        })
+        .collect()
+}
+
+/// What the program found out about a proposed reservation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Availability {
+    /// One resource fits and it is free at that time.
+    Free { resource: String },
+    /// One resource fits and somebody holds it (the sentence says who).
+    Busy { resource: String, sentence: String },
+    /// One resource fits but the register has fewer than asked.
+    TooMany { resource: String, has: u32 },
+    /// One resource fits, but the document gives no starting time.
+    NoTime { resource: String },
+    /// More than one fits: the person chooses.
+    Several(Vec<String>),
+    /// Nothing in the register fits.
+    NoMatch,
+}
+
+/// The result of [`check_reservation`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReservationCheck {
+    pub availability: Availability,
+    /// The resource to open the form with: only when exactly one fits.
+    pub resource_uid: Option<String>,
+    /// The document gave no end: the check assumed one hour.
+    pub end_assumed: bool,
+}
+
+/// Looks the request up in the register and, with one resource and a
+/// starting time, whether it is free then. `now` is the one clock reading
+/// of the caller.
+pub fn check_reservation(
+    proposal: &crate::model::ReservationProposal,
+    resources: &[Resource],
+    uses: &[ResourceUse],
+    now: &str,
+) -> ReservationCheck {
+    let matches = match_resources(&proposal.what, resources);
+    let resource = match matches.as_slice() {
+        [] => {
+            return ReservationCheck {
+                availability: Availability::NoMatch,
+                resource_uid: None,
+                end_assumed: false,
+            }
+        }
+        [one] => *one,
+        many => {
+            return ReservationCheck {
+                availability: Availability::Several(many.iter().map(|r| r.name.clone()).collect()),
+                resource_uid: None,
+                end_assumed: false,
+            }
+        }
+    };
+    let answer = |availability, end_assumed| ReservationCheck {
+        availability,
+        resource_uid: Some(resource.uid.clone()),
+        end_assumed,
+    };
+    let name = resource.name.clone();
+    if proposal.quantity > resource.quantity {
+        return answer(
+            Availability::TooMany {
+                resource: name,
+                has: resource.quantity,
+            },
+            false,
+        );
+    }
+    let Some(start) = proposal.start.as_deref() else {
+        return answer(Availability::NoTime { resource: name }, false);
+    };
+    let Ok(start_moment) = parse_moment(start) else {
+        return answer(Availability::NoTime { resource: name }, false);
+    };
+    let (end, assumed) = match proposal
+        .end
+        .as_deref()
+        .filter(|end| parse_moment(end).is_ok_and(|moment| moment > start_moment))
+    {
+        Some(end) => (end.to_owned(), false),
+        None => (
+            resources::format_moment(start_moment + Duration::hours(1)),
+            true,
+        ),
+    };
+    let free = free_quantity(resource, uses, start, &end, "", now);
+    if free >= proposal.quantity {
+        return answer(Availability::Free { resource: name }, assumed);
+    }
+    let candidate = ResourceUse {
+        resource_uid: resource.uid.clone(),
+        quantity: proposal.quantity,
+        start: start.to_owned(),
+        end,
+        ..Default::default()
+    };
+    let clashing = resources::clashes(resource, uses, &candidate, now);
+    answer(
+        Availability::Busy {
+            resource: name,
+            sentence: resources::clash_sentence(resource, &clashing, now),
+        },
+        assumed,
+    )
+}
+
+/// What the form of a prefilled use asks the person to look at again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeCheck {
+    /// Start and end both come from the document.
+    Given,
+    /// The document gave the start only: the end is one hour later.
+    EndAssumed,
+    /// The document gave no usable time: the form's usual proposal.
+    Assumed,
+}
+
+/// The use a reservation proposal pre-fills (never saved by this call): the
+/// resource only when `resource_uid` is given (exactly one fits), the
+/// document as link, the proposal's id, `who` as the "Eu" button would fill
+/// it. Nothing is invented about the time except an end one hour after the
+/// start, and that is flagged.
+pub fn use_draft_from_proposal(
+    proposal: &crate::model::ReservationProposal,
+    document_id: i64,
+    resource_uid: Option<&str>,
+    who: &str,
+    now: &str,
+) -> (ResourceUse, TimeCheck) {
+    let start = proposal
+        .start
+        .as_deref()
+        .and_then(|start| parse_moment(start).ok());
+    let (start_text, end_text, check) = match start {
+        Some(start_moment) => {
+            let end = proposal
+                .end
+                .as_deref()
+                .filter(|end| parse_moment(end).is_ok_and(|moment| moment > start_moment));
+            match end {
+                Some(end) => (
+                    resources::format_moment(start_moment),
+                    end.to_owned(),
+                    TimeCheck::Given,
+                ),
+                None => (
+                    resources::format_moment(start_moment),
+                    resources::format_moment(start_moment + Duration::hours(1)),
+                    TimeCheck::EndAssumed,
+                ),
+            }
+        }
+        None => {
+            let (start, end) = default_times(now);
+            (start, end, TimeCheck::Assumed)
+        }
+    };
+    let draft = ResourceUse {
+        resource_uid: resource_uid.unwrap_or_default().to_owned(),
+        quantity: proposal.quantity.max(1),
+        who: who.to_owned(),
+        purpose: proposal.purpose.trim().to_owned(),
+        start: start_text,
+        end: end_text,
+        document_id: Some(document_id),
+        proposal_id: proposal.id.clone(),
+        ..Default::default()
+    };
+    (draft, check)
+}
+
 /// What of a resource is out at `now`: every use in use (even a late one),
 /// and the reserved ones whose time has come.
 pub fn taken_now(uses: &[ResourceUse], resource_uid: &str, now: &str) -> u32 {
@@ -693,6 +951,9 @@ pub struct ResourcesPanel {
     pending_task: Option<(String, i64)>,
     use_error: String,
     focus_end: bool,
+    /// A use opened from a proposal with a time the person must look at
+    /// again, and the times as they were (it goes away once one changes).
+    time_check: Option<(TimeCheck, (String, String, String, String))>,
     focus_first: bool,
     confirm_delete_use: bool,
     doc_picker: DocumentPicker,
@@ -856,6 +1117,62 @@ impl ResourcesPanel {
         self.new_use(store, None, None, Some(link))
     }
 
+    /// Opens a new use filled in from a proposal of an analysis. Nothing is
+    /// saved: the ficha holds it as unsaved work (leaving asks), `check` says
+    /// which time the person must look at again.
+    pub fn new_use_prefilled(
+        &mut self,
+        store: &Store,
+        draft: ResourceUse,
+        check: TimeCheck,
+    ) -> Result<(), String> {
+        if self.dirty() {
+            return Err(BLOCKED.to_owned());
+        }
+        if self.view == View::Register {
+            self.view = View::Now;
+        }
+        let blank = ResourceUse {
+            start: draft.start.clone(),
+            end: draft.end.clone(),
+            document_id: draft.document_id,
+            ..Default::default()
+        };
+        self.load_use(store, draft);
+        // What the "Nova reserva" button would have opened: the proposal's
+        // content is then a change that is not saved yet.
+        self.use_saved = Some(blank);
+        self.time_check = (check != TimeCheck::Given).then(|| {
+            (
+                check,
+                (
+                    self.form.start_date.clone(),
+                    self.form.start_time.clone(),
+                    self.form.end_date.clone(),
+                    self.form.end_time.clone(),
+                ),
+            )
+        });
+        Ok(())
+    }
+
+    /// Opens a new resource of the register with its name typed (the
+    /// "Cadastrar recurso…" of a proposal that matches nothing).
+    pub fn new_resource_named(&mut self, name: &str) -> Result<(), String> {
+        if self.dirty() {
+            return Err(BLOCKED.to_owned());
+        }
+        self.new_resource();
+        if let Some(editor) = self.res_editor.as_mut() {
+            let mut letters = name.trim().chars();
+            editor.name = letters
+                .next()
+                .map(|first| first.to_uppercase().chain(letters).collect())
+                .unwrap_or_default();
+        }
+        Ok(())
+    }
+
     // -- opening and closing -------------------------------------------------
 
     fn set_notice(&mut self, text: impl Into<String>, error: bool) {
@@ -871,6 +1188,7 @@ impl ResourcesPanel {
         self.returning = false;
         self.use_error.clear();
         self.res_error.clear();
+        self.time_check = None;
         self.confirm_delete_use = false;
         self.confirm_delete_res = false;
         self.doc_picker.clear();
@@ -2408,6 +2726,30 @@ impl ResourcesPanel {
                         );
                     });
                 });
+                if let Some((check, times)) = &self.time_check {
+                    let now_times = (
+                        self.form.start_date.clone(),
+                        self.form.start_time.clone(),
+                        self.form.end_date.clone(),
+                        self.form.end_time.clone(),
+                    );
+                    if &now_times == times {
+                        let (label, text) = match check {
+                            TimeCheck::EndAssumed => (
+                                "confira o fim",
+                                "O documento não diz até que horas: foi proposta 1 hora depois do início.",
+                            ),
+                            _ => (
+                                "confira o horário",
+                                "O documento não traz data e hora certas: este é o horário comum de uma nova reserva.",
+                            ),
+                        };
+                        ui.horizontal_wrapped(|ui| {
+                            widgets::pill(ui, label, Tone::Warn);
+                            widgets::small_muted(ui, text);
+                        });
+                    }
+                }
             });
             if self.returning || ed.status == UseStatus::Returned {
                 let editable = self.returning;
@@ -4201,5 +4543,326 @@ mod tests {
         assert!(panel.dirty(), "leaving would drop the typed time");
         panel.returning = false;
         assert!(!panel.dirty());
+    }
+}
+
+#[cfg(test)]
+mod proposal_tests {
+    use super::*;
+    use crate::model::ReservationProposal;
+
+    fn resource(uid: &str, name: &str, quantity: u32, status: ResourceStatus) -> Resource {
+        Resource {
+            uid: uid.to_owned(),
+            name: name.to_owned(),
+            quantity,
+            status,
+            ..Default::default()
+        }
+    }
+
+    fn register() -> Vec<Resource> {
+        let active = ResourceStatus::Active;
+        vec![
+            resource("sala", "Sala de reuniões do 2º andar", 1, active),
+            resource("aud", "Auditório", 1, active),
+            resource("proj", "Projetor", 1, active),
+            resource("note", "Notebook de apresentações", 2, active),
+            resource("cad", "Cadeiras empilháveis", 40, active),
+            resource("livro", "Manual de redação oficial", 3, active),
+            resource("cam", "Câmera de vídeo", 1, ResourceStatus::Inactive),
+        ]
+    }
+
+    fn uids<'a>(found: &[&'a Resource]) -> Vec<&'a str> {
+        found.iter().map(|r| r.uid.as_str()).collect()
+    }
+
+    #[test]
+    fn a_request_finds_the_resource_by_name_ignoring_accents_capitals_and_plural() {
+        let register = register();
+        assert_eq!(
+            uids(&match_resources("sala de reuniões do 2º andar", &register)),
+            ["sala"]
+        );
+        assert_eq!(
+            uids(&match_resources("SALA DE REUNIAO DO 2º ANDAR", &register)),
+            ["sala"]
+        );
+        assert_eq!(uids(&match_resources("auditório", &register)), ["aud"]);
+        assert_eq!(uids(&match_resources("20 cadeiras", &register)), ["cad"]);
+        assert_eq!(
+            uids(&match_resources("2 (dois) projetores com tela", &register)),
+            ["proj"]
+        );
+        assert_eq!(uids(&match_resources("um notebook", &register)), ["note"]);
+    }
+
+    #[test]
+    fn a_request_with_nothing_in_the_register_finds_nothing() {
+        let register = register();
+        assert!(match_resources("veículo", &register).is_empty());
+        assert!(match_resources("2 (dois) veículos, com motorista", &register).is_empty());
+        assert!(match_resources("", &register).is_empty());
+        // Small words and numbers alone never match anything.
+        assert!(match_resources("de uma para o 20", &register).is_empty());
+    }
+
+    #[test]
+    fn an_inactive_resource_is_never_offered() {
+        let register = register();
+        assert!(match_resources("câmera de vídeo", &register).is_empty());
+    }
+
+    #[test]
+    fn two_rooms_both_match_the_word_sala() {
+        let mut register = register();
+        register.push(resource(
+            "sala2",
+            "Sala de treinamento",
+            1,
+            ResourceStatus::Active,
+        ));
+        let found = match_resources("uma sala", &register);
+        assert_eq!(uids(&found), ["sala", "sala2"]);
+        // The longer request still tells them apart.
+        assert_eq!(
+            uids(&match_resources("sala de treinamento", &register)),
+            ["sala2"]
+        );
+    }
+
+    fn proposal(
+        what: &str,
+        quantity: u32,
+        start: Option<&str>,
+        end: Option<&str>,
+    ) -> ReservationProposal {
+        ReservationProposal {
+            id: "res1".into(),
+            what: what.into(),
+            what_fact: "f1".into(),
+            quantity,
+            start: start.map(str::to_owned),
+            end: end.map(str::to_owned),
+            purpose: "  Reunião de preparação ".into(),
+            ..Default::default()
+        }
+    }
+
+    fn held(uid: &str, resource_uid: &str, start: &str, end: &str) -> ResourceUse {
+        ResourceUse {
+            uid: uid.into(),
+            resource_uid: resource_uid.into(),
+            who: "Servidor B".into(),
+            start: start.into(),
+            end: end.into(),
+            ..Default::default()
+        }
+    }
+
+    const NOW: &str = "2031-02-09T08:00";
+    const ROOM: &str = "sala de reuniões do 2º andar";
+
+    #[test]
+    fn a_free_slot_is_free_and_a_held_one_says_who_holds_it() {
+        let register = register();
+        let uses = vec![held("u1", "sala", "2031-02-10T14:00", "2031-02-10T17:00")];
+        let free = check_reservation(
+            &proposal(ROOM, 1, Some("2031-02-11T14:00"), Some("2031-02-11T17:00")),
+            &register,
+            &uses,
+            NOW,
+        );
+        assert_eq!(
+            free.availability,
+            Availability::Free {
+                resource: "Sala de reuniões do 2º andar".into()
+            }
+        );
+        assert_eq!(free.resource_uid.as_deref(), Some("sala"));
+        assert!(!free.end_assumed);
+        let busy = check_reservation(
+            &proposal(ROOM, 1, Some("2031-02-10T15:00"), Some("2031-02-10T16:00")),
+            &register,
+            &uses,
+            NOW,
+        );
+        match busy.availability {
+            Availability::Busy { resource, sentence } => {
+                assert_eq!(resource, "Sala de reuniões do 2º andar");
+                assert!(sentence.contains("Servidor B"), "{sentence}");
+                assert!(sentence.contains("17:00"), "{sentence}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn without_an_end_the_check_assumes_one_hour_and_says_so() {
+        let register = register();
+        let uses = vec![held("u1", "sala", "2031-02-10T15:30", "2031-02-10T17:00")];
+        let answer = check_reservation(
+            &proposal(ROOM, 1, Some("2031-02-10T14:00"), None),
+            &register,
+            &uses,
+            NOW,
+        );
+        assert!(answer.end_assumed);
+        assert!(
+            matches!(answer.availability, Availability::Free { .. }),
+            "14:00 to 15:00 does not touch 15:30"
+        );
+        let later = check_reservation(
+            &proposal(ROOM, 1, Some("2031-02-10T15:00"), None),
+            &register,
+            &uses,
+            NOW,
+        );
+        assert!(matches!(later.availability, Availability::Busy { .. }));
+    }
+
+    #[test]
+    fn several_none_too_many_and_no_time_are_told_apart() {
+        let mut register = register();
+        register.push(resource(
+            "sala2",
+            "Sala de treinamento",
+            1,
+            ResourceStatus::Active,
+        ));
+        let several = check_reservation(
+            &proposal("uma sala", 1, Some("2031-02-11T14:00"), None),
+            &register,
+            &[],
+            NOW,
+        );
+        assert_eq!(
+            several.availability,
+            Availability::Several(vec![
+                "Sala de reuniões do 2º andar".into(),
+                "Sala de treinamento".into()
+            ])
+        );
+        assert_eq!(several.resource_uid, None, "the person chooses");
+        let none = check_reservation(
+            &proposal("2 (dois) veículos", 2, Some("2031-02-11T14:00"), None),
+            &register,
+            &[],
+            NOW,
+        );
+        assert_eq!(none.availability, Availability::NoMatch);
+        assert_eq!(none.resource_uid, None);
+        let too_many = check_reservation(
+            &proposal("20 cadeiras", 60, Some("2031-02-11T14:00"), None),
+            &register,
+            &[],
+            NOW,
+        );
+        assert_eq!(
+            too_many.availability,
+            Availability::TooMany {
+                resource: "Cadeiras empilháveis".into(),
+                has: 40
+            }
+        );
+        let no_time = check_reservation(&proposal("auditório", 1, None, None), &register, &[], NOW);
+        assert_eq!(
+            no_time.availability,
+            Availability::NoTime {
+                resource: "Auditório".into()
+            }
+        );
+        assert_eq!(no_time.resource_uid.as_deref(), Some("aud"));
+    }
+
+    #[test]
+    fn quantity_counts_against_what_others_hold() {
+        let register = register();
+        let mut taking = held("u1", "cad", "2031-02-11T08:00", "2031-02-11T18:00");
+        taking.quantity = 30;
+        let answer = check_reservation(
+            &proposal(
+                "20 cadeiras",
+                20,
+                Some("2031-02-11T09:00"),
+                Some("2031-02-11T12:00"),
+            ),
+            &register,
+            &[taking],
+            NOW,
+        );
+        assert!(matches!(answer.availability, Availability::Busy { .. }));
+    }
+
+    #[test]
+    fn the_draft_carries_the_proposal_and_invents_nothing_but_a_flagged_end() {
+        let given = proposal(
+            "auditório",
+            1,
+            Some("2031-02-11T14:00"),
+            Some("2031-02-11T17:00"),
+        );
+        let (draft, check) = use_draft_from_proposal(&given, 7, Some("aud"), "Servidor A", NOW);
+        assert_eq!(check, TimeCheck::Given);
+        assert_eq!(draft.resource_uid, "aud");
+        assert_eq!(draft.quantity, 1);
+        assert_eq!(draft.who, "Servidor A");
+        assert_eq!(draft.purpose, "Reunião de preparação");
+        assert_eq!(draft.start, "2031-02-11T14:00");
+        assert_eq!(draft.end, "2031-02-11T17:00");
+        assert_eq!(draft.document_id, Some(7));
+        assert_eq!(draft.proposal_id, "res1");
+        assert!(draft.uid.is_empty(), "never saved by the builder");
+        assert_eq!(draft.status, UseStatus::Reserved);
+        assert!(draft.saiop_id.is_none() && draft.task_id.is_none());
+
+        let open_end = proposal("20 cadeiras", 20, Some("2031-02-11T23:30"), None);
+        let (draft, check) = use_draft_from_proposal(&open_end, 7, None, "", NOW);
+        assert_eq!(check, TimeCheck::EndAssumed);
+        assert_eq!(draft.start, "2031-02-11T23:30");
+        assert_eq!(draft.end, "2031-02-12T00:30");
+        assert_eq!(draft.quantity, 20);
+        assert_eq!(draft.resource_uid, "", "several or none: nothing chosen");
+
+        let no_time = proposal("auditório", 1, None, None);
+        let (draft, check) = use_draft_from_proposal(&no_time, 7, None, "", NOW);
+        assert_eq!(check, TimeCheck::Assumed);
+        assert!(parse_moment(&draft.start).is_ok() && parse_moment(&draft.end).is_ok());
+    }
+
+    #[test]
+    fn a_prefilled_use_is_unsaved_work_and_a_named_resource_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut panel = ResourcesPanel::default();
+        let given = proposal(
+            "auditório",
+            1,
+            Some("2031-02-11T14:00"),
+            Some("2031-02-11T17:00"),
+        );
+        let (draft, check) = use_draft_from_proposal(&given, 7, None, "Servidor A", NOW);
+        assert!(!panel.dirty());
+        panel
+            .new_use_prefilled(&store, draft.clone(), check)
+            .unwrap();
+        assert!(panel.dirty(), "leaving must ask");
+        assert!(panel.time_check.is_none(), "times came from the document");
+        // Another one is refused while this one is open and unsaved.
+        assert!(panel.new_use_prefilled(&store, draft, check).is_err());
+        assert!(panel.new_resource_named("veículos").is_err());
+        let mut other = ResourcesPanel::default();
+        other.new_resource_named("2 (dois) veículos").unwrap();
+        assert_eq!(
+            other.res_editor.as_ref().map(|r| r.name.as_str()),
+            Some("2 (dois) veículos")
+        );
+        assert!(other.dirty());
+        let flagged = proposal("auditório", 1, Some("2031-02-11T14:00"), None);
+        let (draft, check) = use_draft_from_proposal(&flagged, 7, None, "", NOW);
+        let mut third = ResourcesPanel::default();
+        third.new_use_prefilled(&store, draft, check).unwrap();
+        assert!(third.time_check.is_some(), "the end is flagged");
     }
 }

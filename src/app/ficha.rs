@@ -1072,6 +1072,7 @@ impl PonteApp {
         let hover = self.ai_disclosure_text(false);
         let mut analyze = false;
         let mut analyze_band = false;
+        let mut open_material = false;
         let header_hover = hover.clone();
         titled_card(
             ui,
@@ -1150,26 +1151,43 @@ impl PonteApp {
                 ui.add(egui::Label::new(format!("Motivo: {}", analysis.reason)).wrap());
                 let mut prepare: Option<crate::model::ActionSuggestion> = None;
                 let mut open_task: Option<crate::tasks::Task> = None;
-                if !analysis.suggested_actions.is_empty() {
+                // The proposals of the analysis (schema 16), checked by the
+                // program; an older analysis keeps the block below.
+                let proposal_action = super::proposals::proposals_block(
+                    ui,
+                    analysis,
+                    self.proposal_view
+                        .as_ref()
+                        .filter(|view| view.created_at == analysis.created_at),
+                    stale,
+                );
+                if analysis.proposals.is_none() && !analysis.suggested_actions.is_empty() {
                     ui.separator();
                     widgets::field_label(ui, "Providências sugeridas (revise antes de usar)");
                     // A suggestion already turned into a task of this document
                     // is shown folded, with the task, so it is not prepared twice
                     // by mistake (another one can still be prepared on purpose).
-                    let document_tasks: Vec<crate::tasks::Task> = self
-                        .store
-                        .list_tasks()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|t| t.document_id == Some(detail.summary.id))
-                        .collect();
+                    // An old suggestion has no id: it counts as made into a task
+                    // only when a task of the document has its action and the
+                    // notes the suggestion form writes; the automatic "triar"
+                    // task of an import, or a task of the same action made by
+                    // hand, is only mentioned.
+                    let no_tasks: Vec<crate::tasks::Task> = Vec::new();
+                    let document_tasks: &[crate::tasks::Task] = self
+                        .proposal_view
+                        .as_ref()
+                        .map(|view| view.document_tasks.as_slice())
+                        .unwrap_or(&no_tasks);
                     for (index, suggestion) in analysis.suggested_actions.iter().enumerate() {
                         if index > 0 {
                             ui.separator();
                         }
-                        let existing = document_tasks
-                            .iter()
-                            .find(|t| t.action == suggestion.action);
+                        let existing = document_tasks.iter().find(|t| {
+                            t.action == suggestion.action
+                                && t.notes.starts_with(crate::tasks_ui::SUGGESTION_NOTE_MARKER)
+                        });
+                        let similar = existing.is_none()
+                            && document_tasks.iter().any(|t| t.action == suggestion.action);
                         ui.horizontal(|ui| {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                                 if let Some(task) = existing {
@@ -1213,6 +1231,12 @@ impl PonteApp {
                                             });
                                         }
                                         None => {
+                                            if similar {
+                                                widgets::small_muted(
+                                                    ui,
+                                                    "Há uma tarefa com esta providência.",
+                                                );
+                                            }
                                             ui.add(
                                                 egui::Label::new(
                                                     RichText::new(&suggestion.reason)
@@ -1247,6 +1271,9 @@ impl PonteApp {
                         suggestion,
                         priority: analysis.priority.clone(),
                     });
+                }
+                if let Some(action) = proposal_action {
+                    self.run_proposal_action(detail, action);
                 }
                 if !analysis.citations.is_empty() {
                     ui.separator();
@@ -1307,19 +1334,106 @@ impl PonteApp {
                         crate::work_context::show_analysis_context(ui, &analysis.human_context);
                     });
                 }
-                widgets::small_muted(
-                    ui,
-                    format!(
-                        "Modelo de IA {} • {}",
-                        analysis.model,
-                        display_date(&analysis.created_at)
-                    ),
-                );
+                ui.horizontal_wrapped(|ui| {
+                    widgets::small_muted(
+                        ui,
+                        format!(
+                            "Modelo de IA {} • {}",
+                            analysis.model,
+                            display_date(&analysis.created_at)
+                        ),
+                    );
+                    if ui
+                        .add(widgets::quiet("Material utilizado"))
+                        .on_hover_text(
+                            "Mostra o que a IA leu, em que etapas e o que o programa conferiu.",
+                        )
+                        .clicked()
+                    {
+                        open_material = true;
+                    }
+                });
                 self.ai_destination(ui);
             },
         );
+        if open_material {
+            self.analysis_material = Some(detail.summary.id);
+        }
         if analyze || analyze_band {
             self.analyze(detail, ui.ctx());
+        }
+    }
+
+    /// Does what a button of the Propostas block asked. Every path opens a
+    /// form filled in and unsaved, or a record that exists.
+    pub(super) fn run_proposal_action(
+        &mut self,
+        detail: &DocumentDetail,
+        action: super::proposals::ProposalAction,
+    ) {
+        use super::proposals::ProposalAction;
+        let document_id = detail.summary.id;
+        match action {
+            ProposalAction::CreateTask(proposal) => self.navigate(Leave::TaskProposal {
+                document_id,
+                proposal,
+            }),
+            ProposalAction::OpenTask(task) => self.navigate(Leave::OpenTask(*task)),
+            ProposalAction::CompleteAttendance { id, proposal } => {
+                if self.saiop.open_with_changes(&self.store, id, &proposal) {
+                    self.area = Area::Saiop;
+                } else {
+                    self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
+                }
+            }
+            ProposalAction::NewAttendance(proposal) => {
+                let number = detail.summary.document_number.clone();
+                if self.saiop.new_entry_prefilled(
+                    &self.store,
+                    Some((document_id, number)),
+                    &proposal,
+                ) {
+                    self.area = Area::Saiop;
+                } else {
+                    self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
+                }
+            }
+            ProposalAction::OpenAttendance(id) => {
+                if self.saiop.focus_attendance(&self.store, id) {
+                    self.area = Area::Saiop;
+                } else {
+                    self.error("Há um atendimento com alterações não salvas em Atendimentos. Salve ou descarte antes de abrir outro.");
+                }
+            }
+            ProposalAction::Reserve {
+                proposal,
+                resource_uid,
+            } => {
+                // "Quem" is filled as the "Eu" button of the form would.
+                let who = self
+                    .store
+                    .load_intranet_config()
+                    .map(|config| config.member_name)
+                    .unwrap_or_default();
+                let (draft, check) = crate::resources_ui::use_draft_from_proposal(
+                    &proposal,
+                    document_id,
+                    resource_uid.as_deref(),
+                    &who,
+                    &crate::resources::now_moment(),
+                );
+                match self.resources.new_use_prefilled(&self.store, draft, check) {
+                    Ok(()) => self.navigate(Leave::Resources),
+                    Err(text) => self.error(text),
+                }
+            }
+            ProposalAction::OpenUse(uid) => self.open_use(&uid),
+            ProposalAction::RegisterResource(name) => {
+                match self.resources.new_resource_named(&name) {
+                    Ok(()) => self.navigate(Leave::Resources),
+                    Err(text) => self.error(text),
+                }
+            }
         }
     }
 
@@ -1351,9 +1465,12 @@ impl PonteApp {
                 }
             } else {
                 let mut text = detail.capture.text.as_str();
-                let width = ui.available_width().min(900.0);
+                // The box follows the window: the width is read here, outside
+                // the scroll area (inside it the width has no end).
+                let width = ui.available_width();
                 let edit = egui::TextEdit::multiline(&mut text)
                     .desired_width(width)
+                    .margin(egui::Margin::symmetric(10, 8))
                     .desired_rows(24);
                 // Typed text reads in the ordinary font; the imported page keeps
                 // the alignment of its tables, so it stays in fixed width.

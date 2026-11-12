@@ -3020,6 +3020,188 @@ impl Default for SaiopPanel {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Proposals of an analysis (pure: what a proposal would put in the form)
+
+/// One field a proposal would change in an atendimento, as the person reads
+/// it: "campo: atual → proposto".
+#[cfg(feature = "desktop")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttendanceChange {
+    pub label: &'static str,
+    pub current: String,
+    pub proposed: String,
+}
+
+#[cfg(feature = "desktop")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProposedField {
+    Due,
+    DueKind,
+    Priority,
+    PriorityReason,
+    ReceivedFrom,
+    PlannedDocType,
+    Subject,
+}
+
+/// What a proposal would change, field by field. A field is listed only when
+/// the proposal has something for it and it differs from what is there; a
+/// non-empty field is therefore never overwritten without being listed. The
+/// subject is only filled when it is empty, and the kind of the deadline only
+/// moves together with a deadline.
+#[cfg(feature = "desktop")]
+fn plan_changes(
+    current: &SaiopAttendance,
+    proposal: &crate::model::AttendanceProposal,
+) -> Vec<(ProposedField, AttendanceChange)> {
+    let mut out = Vec::new();
+    let mut push = |field, label, current: String, proposed: String| {
+        out.push((
+            field,
+            AttendanceChange {
+                label,
+                current,
+                proposed,
+            },
+        ));
+    };
+    let shown = |value: &str, empty: &str| {
+        if value.trim().is_empty() {
+            empty.to_owned()
+        } else {
+            value.to_owned()
+        }
+    };
+    let due = proposal
+        .due_date
+        .as_deref()
+        .filter(|d| !d.trim().is_empty());
+    if let Some(due) = due {
+        if due != current.due_date {
+            push(
+                ProposedField::Due,
+                "Prazo",
+                if current.due_date.trim().is_empty() {
+                    "sem prazo".to_owned()
+                } else {
+                    crate::labels::date(&current.due_date)
+                },
+                crate::labels::date(due),
+            );
+        }
+        if proposal.due_kind != current.due_kind
+            && DUE_KIND_OPTIONS
+                .iter()
+                .any(|(key, _)| *key == proposal.due_kind)
+        {
+            push(
+                ProposedField::DueKind,
+                "Tipo de prazo",
+                due_kind_label(&current.due_kind).to_owned(),
+                due_kind_label(&proposal.due_kind).to_owned(),
+            );
+        }
+    }
+    if !proposal.priority.is_empty()
+        && proposal.priority != current.priority
+        && PRIORITY_OPTIONS
+            .iter()
+            .any(|(key, _)| *key == proposal.priority)
+    {
+        push(
+            ProposedField::Priority,
+            "Prioridade",
+            priority_label(&current.priority).to_owned(),
+            priority_label(&proposal.priority).to_owned(),
+        );
+    }
+    let reason = proposal.priority_reason.trim();
+    if !reason.is_empty() && reason != current.priority_reason.trim() {
+        push(
+            ProposedField::PriorityReason,
+            "Motivo da prioridade",
+            shown(&current.priority_reason, "vazio"),
+            reason.to_owned(),
+        );
+    }
+    let from = proposal.received_from.trim();
+    if !from.is_empty() && from != current.received_from.trim() {
+        push(
+            ProposedField::ReceivedFrom,
+            "Recebido de",
+            shown(&current.received_from, "vazio"),
+            from.to_owned(),
+        );
+    }
+    if !proposal.planned_doc_type.is_empty()
+        && proposal.planned_doc_type != current.planned_doc_type
+        && DOC_TYPE_OPTIONS.contains(&proposal.planned_doc_type.as_str())
+    {
+        push(
+            ProposedField::PlannedDocType,
+            "Entrega prevista",
+            shown(&current.planned_doc_type, "não definida"),
+            proposal.planned_doc_type.clone(),
+        );
+    }
+    let subject = proposal.subject.trim();
+    if current.subject.trim().is_empty() && !subject.is_empty() {
+        push(
+            ProposedField::Subject,
+            "Assunto",
+            "vazio".to_owned(),
+            subject.to_owned(),
+        );
+    }
+    out
+}
+
+/// The fields a proposal would change in an existing atendimento (the list
+/// "Completar o atendimento" shows before anything is opened).
+#[cfg(feature = "desktop")]
+pub fn attendance_changes(
+    current: &SaiopAttendance,
+    proposal: &crate::model::AttendanceProposal,
+) -> Vec<AttendanceChange> {
+    plan_changes(current, proposal)
+        .into_iter()
+        .map(|(_, change)| change)
+        .collect()
+}
+
+/// Puts the proposal in the atendimento: exactly the fields of
+/// [`attendance_changes`], and the proposal's id among `proposal_ids`.
+/// Nothing is saved here.
+#[cfg(feature = "desktop")]
+pub fn apply_attendance_proposal(
+    attendance: &mut SaiopAttendance,
+    proposal: &crate::model::AttendanceProposal,
+) {
+    for (field, _) in plan_changes(attendance, proposal) {
+        match field {
+            ProposedField::Due => {
+                attendance.due_date = proposal.due_date.clone().unwrap_or_default();
+            }
+            ProposedField::DueKind => attendance.due_kind = proposal.due_kind.clone(),
+            ProposedField::Priority => attendance.priority = proposal.priority.clone(),
+            ProposedField::PriorityReason => {
+                attendance.priority_reason = proposal.priority_reason.trim().to_owned();
+            }
+            ProposedField::ReceivedFrom => {
+                attendance.received_from = proposal.received_from.trim().to_owned();
+            }
+            ProposedField::PlannedDocType => {
+                attendance.planned_doc_type = proposal.planned_doc_type.clone();
+            }
+            ProposedField::Subject => attendance.subject = proposal.subject.trim().to_owned(),
+        }
+    }
+    if !proposal.id.is_empty() && !attendance.proposal_ids.contains(&proposal.id) {
+        attendance.proposal_ids.push(proposal.id.clone());
+    }
+}
+
 #[cfg(feature = "desktop")]
 impl SaiopPanel {
     pub fn dirty(&self) -> bool {
@@ -3113,18 +3295,72 @@ impl SaiopPanel {
             );
             return;
         }
+        let fresh = Self::blank_entry(store, document);
+        self.load_into_editor(store, fresh);
+    }
+
+    /// What "Nova entrada" starts from: the responsável is the active
+    /// member, and with a document the entry is a passage of that document,
+    /// linked and with its number ("Desligar" undoes it).
+    fn blank_entry(store: &Store, document: Option<(i64, String)>) -> SaiopAttendance {
         let mut fresh = SaiopAttendance::new_manual();
         if let Ok(cfg) = store.load_intranet_config() {
             fresh.assignee = cfg.member_name;
         }
-        // With a document, the new entry is a passage of that document:
-        // linked, with its number ("Desligar" undoes it).
         if let Some((id, number)) = document {
             fresh.document_id = Some(id);
             fresh.reference_norm = normalize_reference(&number);
             fresh.reference_raw = number;
         }
-        self.load_into_editor(store, fresh);
+        fresh
+    }
+
+    /// "Nova entrada" filled in from a proposal of an analysis, as it would
+    /// be for `document` (id and number). Nothing is saved: the ficha shows
+    /// "não salvo" and leaving asks. False (nothing changed) while another
+    /// atendimento is being edited.
+    pub fn new_entry_prefilled(
+        &mut self,
+        store: &Store,
+        document: Option<(i64, String)>,
+        proposal: &crate::model::AttendanceProposal,
+    ) -> bool {
+        if self.dirty() {
+            return false;
+        }
+        let blank = Self::blank_entry(store, document);
+        let mut filled = blank.clone();
+        apply_attendance_proposal(&mut filled, proposal);
+        self.load_into_editor(store, blank);
+        // The saved state stays the blank entry: the proposal is a change.
+        self.editor = Some(filled);
+        true
+    }
+
+    /// Opens the atendimento `id` in its ficha with the proposal's fields
+    /// changed in the editor only ("Completar o atendimento"): the saved
+    /// state is untouched, "não salvo" shows and leaving asks. False while
+    /// another atendimento is being edited or when `id` does not exist.
+    pub fn open_with_changes(
+        &mut self,
+        store: &Store,
+        id: i64,
+        proposal: &crate::model::AttendanceProposal,
+    ) -> bool {
+        if self.dirty() {
+            return false;
+        }
+        let Ok(list) = store.list_saiop_attendances() else {
+            return false;
+        };
+        let Some(saved) = list.into_iter().find(|a| a.id == id) else {
+            return false;
+        };
+        let mut changed = saved.clone();
+        apply_attendance_proposal(&mut changed, proposal);
+        self.load_into_editor(store, saved);
+        self.editor = Some(changed);
+        true
     }
 
     /// Clears the search, the filters and the queue (not the narrowing to a
@@ -5654,5 +5890,195 @@ impl SaiopPanel {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod proposal_tests {
+    use super::*;
+    use crate::model::AttendanceProposal;
+
+    fn proposal() -> AttendanceProposal {
+        AttendanceProposal {
+            id: "a1".into(),
+            subject: "Apoio logístico para o seminário".into(),
+            received_from: "Protocolo Geral".into(),
+            due_fact: Some("f1".into()),
+            due_date: Some("2031-02-20".into()),
+            due_source: "confirmação até 20/02/2031".into(),
+            due_kind: "oficial".into(),
+            priority: "alta".into(),
+            priority_reason: "Evento com data marcada".into(),
+            planned_doc_type: "Ofício".into(),
+            facts: vec!["f1".into()],
+            remark: String::new(),
+        }
+    }
+
+    fn existing() -> SaiopAttendance {
+        let mut att = SaiopAttendance::new_manual();
+        att.reference_raw = "ORG-OFI-2026/00431".into();
+        att.subject = "Apoio logístico".into();
+        att.received_from = "Protocolo Geral".into();
+        att.priority = "normal".into();
+        att.due_kind = "a_confirmar".into();
+        att
+    }
+
+    fn labels(changes: &[AttendanceChange]) -> Vec<&str> {
+        changes.iter().map(|c| c.label).collect()
+    }
+
+    #[test]
+    fn only_what_would_change_is_listed_with_current_and_proposed() {
+        let changes = attendance_changes(&existing(), &proposal());
+        assert_eq!(
+            labels(&changes),
+            [
+                "Prazo",
+                "Tipo de prazo",
+                "Prioridade",
+                "Motivo da prioridade",
+                "Entrega prevista"
+            ],
+            "received_from is the same and the subject is not empty"
+        );
+        assert_eq!(changes[0].current, "sem prazo");
+        assert_eq!(changes[0].proposed, "20/02/2031");
+        assert_eq!(changes[1].current, "Texto / a confirmar");
+        assert_eq!(changes[1].proposed, "Prazo oficial");
+        assert_eq!(changes[2].current, "Normal");
+        assert_eq!(changes[2].proposed, "Alta");
+        assert_eq!(changes[4].current, "não definida");
+        assert_eq!(changes[4].proposed, "Ofício");
+    }
+
+    #[test]
+    fn a_non_empty_field_is_overwritten_only_when_it_is_listed() {
+        let mut current = existing();
+        current.due_date = "2031-03-01".into();
+        current.received_from = "Outra unidade".into();
+        current.subject = "Assunto que a pessoa escreveu".into();
+        let changes = attendance_changes(&current, &proposal());
+        assert!(labels(&changes).contains(&"Recebido de"));
+        assert_eq!(
+            changes
+                .iter()
+                .find(|c| c.label == "Prazo")
+                .map(|c| (c.current.as_str(), c.proposed.as_str())),
+            Some(("01/03/2031", "20/02/2031"))
+        );
+        assert!(!labels(&changes).contains(&"Assunto"), "never overwritten");
+        let mut changed = current.clone();
+        apply_attendance_proposal(&mut changed, &proposal());
+        assert_eq!(changed.subject, current.subject);
+        assert_eq!(changed.received_from, "Protocolo Geral");
+        assert_eq!(changed.due_date, "2031-02-20");
+        assert_eq!(changed.due_kind, "oficial");
+        assert_eq!(changed.priority, "alta");
+        assert_eq!(changed.priority_reason, "Evento com data marcada");
+        assert_eq!(changed.planned_doc_type, "Ofício");
+        assert_eq!(changed.proposal_ids, ["a1"]);
+        // Everything else is as it was.
+        let mut expected = current.clone();
+        expected.received_from = changed.received_from.clone();
+        expected.due_date = changed.due_date.clone();
+        expected.due_kind = changed.due_kind.clone();
+        expected.priority = changed.priority.clone();
+        expected.priority_reason = changed.priority_reason.clone();
+        expected.planned_doc_type = changed.planned_doc_type.clone();
+        expected.proposal_ids = changed.proposal_ids.clone();
+        assert_eq!(changed, expected);
+        // Applying it again changes nothing and does not repeat the id.
+        let mut twice = changed.clone();
+        apply_attendance_proposal(&mut twice, &proposal());
+        assert_eq!(twice, changed);
+        assert!(attendance_changes(&changed, &proposal()).is_empty());
+    }
+
+    #[test]
+    fn an_empty_subject_is_filled_and_without_a_date_the_kind_stays() {
+        let mut current = existing();
+        current.subject = "  ".into();
+        let mut given = proposal();
+        given.due_fact = None;
+        given.due_date = None;
+        given.due_source = String::new();
+        let changes = attendance_changes(&current, &given);
+        assert!(labels(&changes).contains(&"Assunto"));
+        assert!(!labels(&changes).contains(&"Prazo"));
+        assert!(
+            !labels(&changes).contains(&"Tipo de prazo"),
+            "the kind of a deadline moves only with a deadline"
+        );
+        let mut changed = current.clone();
+        apply_attendance_proposal(&mut changed, &given);
+        assert_eq!(changed.subject, "Apoio logístico para o seminário");
+        assert_eq!(changed.due_kind, "a_confirmar");
+        assert!(changed.due_date.is_empty());
+    }
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn a_new_entry_from_a_proposal_is_unsaved_and_keeps_the_document_link() {
+        let (_dir, store) = store();
+        let mut panel = SaiopPanel::default();
+        assert!(!panel.dirty());
+        assert!(panel.new_entry_prefilled(
+            &store,
+            Some((9, "ORG-OFI-2026/00431".into())),
+            &proposal()
+        ));
+        assert!(panel.dirty(), "leaving must ask");
+        let entry = panel.editor.as_ref().unwrap();
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.document_id, Some(9));
+        assert_eq!(entry.reference_raw, "ORG-OFI-2026/00431");
+        assert_eq!(
+            entry.reference_norm,
+            normalize_reference("ORG-OFI-2026/00431")
+        );
+        assert_eq!(entry.subject, "Apoio logístico para o seminário");
+        assert_eq!(entry.received_from, "Protocolo Geral");
+        assert_eq!(entry.due_date, "2031-02-20");
+        assert_eq!(entry.due_kind, "oficial");
+        assert_eq!(entry.priority, "alta");
+        assert_eq!(entry.priority_reason, "Evento com data marcada");
+        assert_eq!(entry.planned_doc_type, "Ofício");
+        assert_eq!(entry.proposal_ids, ["a1"]);
+        // Another one is refused while this one is unsaved.
+        assert!(!panel.new_entry_prefilled(&store, None, &proposal()));
+    }
+
+    #[test]
+    fn completing_an_existing_atendimento_changes_the_editor_and_not_the_library() {
+        let (_dir, mut store) = store();
+        let id = store.save_saiop_attendance(&existing(), None).unwrap();
+        let before = store.list_saiop_attendances().unwrap();
+        let mut panel = SaiopPanel::default();
+        assert!(panel.open_with_changes(&store, id, &proposal()));
+        assert!(panel.dirty());
+        let editor = panel.editor.as_ref().unwrap();
+        assert_eq!(editor.id, id);
+        assert_eq!(editor.priority, "alta");
+        assert_eq!(editor.proposal_ids, ["a1"]);
+        assert_eq!(
+            panel.saved_snapshot.as_ref().map(|a| a.priority.as_str()),
+            Some("normal")
+        );
+        assert_eq!(
+            store.list_saiop_attendances().unwrap(),
+            before,
+            "nothing was saved"
+        );
+        // Descartar goes back to what is saved.
+        panel.editor = panel.saved_snapshot.clone();
+        assert!(!panel.dirty());
+        assert!(!SaiopPanel::default().open_with_changes(&store, id + 100, &proposal()));
     }
 }

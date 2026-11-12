@@ -196,16 +196,23 @@ impl PonteApp {
                 widgets::heading(ui, section.label());
                 widgets::muted(ui, section.summary());
                 ui.add_space(S2);
-                egui::ScrollArea::vertical()
+                let area = egui::ScrollArea::vertical()
                     .id_salt(("settings-section", section.label()))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        // The section follows the window; the room of the
-                        // scroll bar stays free.
-                        ui.set_max_width((ui.available_width() - 14.0).max(240.0));
-                        self.settings_section_body(ui, &ctx, section);
-                        ui.add_space(S3);
-                    });
+                    .auto_shrink([false, false]);
+                // Development only: the pictures scroll to the block they show.
+                #[cfg(feature = "shots")]
+                let area = if self.shots_ficha_scroll > 0.0 {
+                    area.vertical_scroll_offset(self.shots_ficha_scroll)
+                } else {
+                    area
+                };
+                area.show(ui, |ui| {
+                    // The section follows the window; the room of the
+                    // scroll bar stays free.
+                    ui.set_max_width((ui.available_width() - 14.0).max(240.0));
+                    self.settings_section_body(ui, &ctx, section);
+                    ui.add_space(S3);
+                });
             });
     }
 
@@ -849,6 +856,7 @@ impl PonteApp {
             widgets::small_muted(ui, "O servidor só é acessado ao listar modelos, analisar ou gerar uma sugestão. O aplicativo não solicita sua senha do SIGADOC.");
             widgets::small_muted(ui, "A análise é salva no acervo. A sugestão de minuta só é salva por sua ação explícita.");
         });
+        self.ai_test_card(ui);
         if provider_changed {
             self.models_error = None;
             if !self.models_match_current() {
@@ -862,6 +870,217 @@ impl PonteApp {
         if save && self.save_ai_config() {
             self.message("Configuração de IA salva.");
         }
+    }
+
+    /// The card "Testar a IA com casos fictícios": runs the fictitious cases
+    /// of the program against the configured AI and says how it did.
+    fn ai_test_card(&mut self, ui: &mut egui::Ui) {
+        let running = matches!(&self.worker, Some(w) if w.kind == super::WorkKind::AiTest);
+        let busy = self.worker.is_some();
+        let unsaved = self.ai_config_dirty();
+        let no_model = self.ai.model().trim().is_empty();
+        let mut start = false;
+        let mut cancel = false;
+        let mut save = false;
+        let mut copy = false;
+        widgets::card(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = S2;
+            widgets::section(ui, "Testar a IA com casos fictícios");
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Envia à IA configurada alguns documentos fictícios, que acompanham o Ponte, e confere se ela leu e propôs o que se esperava. Nada do seu acervo é enviado e nada é salvo nele.")
+                        .color(theme::c().muted),
+                )
+                .wrap(),
+            );
+            self.ai_destination(ui);
+            ui.horizontal(|ui| {
+                if running {
+                    ui.spinner();
+                    let step = self
+                        .worker
+                        .as_ref()
+                        .map(|w| w.latest.clone())
+                        .unwrap_or_default();
+                    ui.label(if step.is_empty() {
+                        "Testando…".to_owned()
+                    } else {
+                        format!("Testando… {step}")
+                    });
+                    cancel = ui
+                        .add_enabled(
+                            !self.worker.as_ref().is_some_and(super::Worker::cancelling),
+                            widgets::secondary("Cancelar"),
+                        )
+                        .clicked();
+                } else {
+                    let button = ui.add_enabled(
+                        !busy && !unsaved && !no_model,
+                        widgets::secondary("Testar a IA"),
+                    );
+                    let button = if busy {
+                        button.on_disabled_hover_text("Espere o trabalho em andamento terminar.")
+                    } else if unsaved {
+                        button.on_disabled_hover_text("Salve a configuração da IA antes de testar.")
+                    } else if no_model {
+                        button.on_disabled_hover_text("Escolha o modelo da IA antes de testar.")
+                    } else {
+                        button.on_hover_text("Roda os casos fictícios com o modelo configurado. Pode levar alguns minutos.")
+                    };
+                    start = button.clicked();
+                }
+            });
+            match &self.ai_test_report {
+                None => {}
+                Some(Err(error)) => {
+                    super::notice_line(
+                        ui,
+                        Tone::Danger,
+                        format!("Não foi possível testar a IA: {error}"),
+                    );
+                }
+                Some(Ok(report)) => {
+                    ui.separator();
+                    let (passed, total) = ai_test_totals(report);
+                    for case in &report.cases {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(&case.name)
+                                    .font(theme::font_strong(theme::SIZE_BODY)),
+                            );
+                            pill(
+                                ui,
+                                ai_test_summary(case.passed, case.total),
+                                ai_test_tone(case.passed, case.total),
+                            );
+                            widgets::small_muted(
+                                ui,
+                                format!(
+                                    "{} • {:.1} s",
+                                    crate::labels::count(
+                                        case.calls as usize,
+                                        "chamada",
+                                        "chamadas"
+                                    ),
+                                    case.seconds
+                                ),
+                            );
+                        });
+                        for failure in &case.failures {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("• {failure}"))
+                                        .size(theme::SIZE_SMALL)
+                                        .color(theme::c().muted),
+                                )
+                                .wrap(),
+                            );
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Total").font(theme::font_strong(theme::SIZE_BODY)));
+                        pill(
+                            ui,
+                            ai_test_summary(passed, total),
+                            ai_test_tone(passed, total),
+                        );
+                    });
+                    widgets::small_muted(
+                        ui,
+                        "O resultado traz só os casos fictícios: pode ser guardado e enviado a quem cuida da instalação.",
+                    );
+                    ui.horizontal(|ui| {
+                        save = ui.add(widgets::secondary("Salvar o resultado…")).clicked();
+                        copy = ui.add(widgets::quiet("Copiar")).clicked();
+                    });
+                }
+            }
+        });
+        if cancel {
+            self.cancel_worker();
+        }
+        if start {
+            self.request_ai_test(ui.ctx());
+        }
+        if copy {
+            if let Some(Ok(report)) = &self.ai_test_report {
+                ui.ctx().copy_text(report.text());
+                self.message("Resultado copiado.");
+            }
+        }
+        if save {
+            self.save_ai_test();
+        }
+    }
+
+    /// "Salvar o resultado…": a text file where the person chooses (the
+    /// report holds no real data).
+    fn save_ai_test(&mut self) {
+        let Some(Ok(report)) = &self.ai_test_report else {
+            return;
+        };
+        let text = report.text();
+        let Some(mut path) = crate::windows_ui::save_file(
+            "Salvar o resultado do teste da IA",
+            "Teste da IA.txt",
+            &[("Arquivo de texto", "*.txt")],
+        ) else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension("txt");
+        }
+        match std::fs::write(&path, text) {
+            Ok(()) => self.message(format!("Resultado salvo em {}.", path.display())),
+            Err(error) => self.error(format!("Não foi possível salvar o resultado: {error}")),
+        }
+    }
+
+    /// The button "Testar a IA": asks first, like any sending to an outside
+    /// AI, but once per destination in this session (the cases are not a
+    /// document of the acervo, so nothing is recorded in it).
+    pub(super) fn request_ai_test(&mut self, ctx: &egui::Context) {
+        if let Err(error) = self.settings() {
+            self.error(error.to_string());
+            return;
+        }
+        let (_, destination) = self.ai_destination_text();
+        let asked = super::queue::needs_consent(
+            self.ai.provider,
+            self.ai_test_consented.contains(&destination),
+        );
+        if asked {
+            self.send_confirm = Some(self.send_question(
+                super::queue::PendingSend::Test,
+                0,
+                "casos fictícios".to_owned(),
+                0,
+            ));
+            return;
+        }
+        self.start_ai_test(ctx);
+    }
+
+    pub(super) fn start_ai_test(&mut self, ctx: &egui::Context) {
+        let settings = match self.settings() {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.error(error.to_string());
+                return;
+            }
+        };
+        self.ai_test_report = None;
+        self.spawn(
+            "Testando a IA com casos fictícios…".into(),
+            super::WorkKind::AiTest,
+            move |reporter| {
+                super::WorkResult::AiTest(
+                    crate::ai_eval::run_live(&settings, &reporter).map_err(|e| e.to_string()),
+                )
+            },
+            ctx,
+        );
     }
 
     /// Leaving the AI section saves what was changed, as closing its window
@@ -1028,4 +1247,66 @@ fn option_card(
         widgets::outline(ui, choice.rect.expand(2.0), p.primary);
     }
     choice.clicked()
+}
+
+/// "12 de 14 conferências" (or "1 de 1 conferência").
+fn ai_test_summary(passed: u32, total: u32) -> String {
+    format!(
+        "{passed} de {total} {}",
+        if total == 1 {
+            "conferência"
+        } else {
+            "conferências"
+        }
+    )
+}
+
+/// All checks passed, most of them, or fewer than half.
+fn ai_test_tone(passed: u32, total: u32) -> Tone {
+    if total == 0 {
+        Tone::Neutral
+    } else if passed >= total {
+        Tone::Ok
+    } else if passed * 2 >= total {
+        Tone::Warn
+    } else {
+        Tone::Danger
+    }
+}
+
+/// Checks passed and checks made, over every case.
+fn ai_test_totals(report: &crate::ai_eval::Report) -> (u32, u32) {
+    report.cases.iter().fold((0, 0), |(passed, total), case| {
+        (passed + case.passed, total + case.total)
+    })
+}
+
+#[cfg(test)]
+mod ai_test_tests {
+    use super::*;
+    use crate::ai_eval::{score, CaseResult};
+
+    #[test]
+    fn the_summary_reads_as_a_sentence_and_the_tone_follows_the_share() {
+        assert_eq!(ai_test_summary(12, 14), "12 de 14 conferências");
+        assert_eq!(ai_test_summary(1, 1), "1 de 1 conferência");
+        assert_eq!(ai_test_tone(14, 14), Tone::Ok);
+        assert_eq!(ai_test_tone(12, 14), Tone::Warn);
+        assert_eq!(ai_test_tone(3, 14), Tone::Danger);
+        assert_eq!(ai_test_tone(0, 0), Tone::Neutral);
+    }
+
+    #[test]
+    fn the_totals_add_up_every_case() {
+        let case = |name: &str, passed, total| CaseResult {
+            name: name.into(),
+            passed,
+            total,
+            failures: Vec::new(),
+            calls: 2,
+            seconds: 1.5,
+        };
+        let report = score(vec![case("A", 12, 14), case("B", 5, 5)]);
+        assert_eq!(ai_test_totals(&report), (17, 19));
+    }
 }

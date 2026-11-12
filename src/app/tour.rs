@@ -25,6 +25,22 @@ impl PonteApp {
         "ficha-whatsapp",
         "ficha-juntada",
         "ficha-sem-recursos",
+        "ficha-propostas",
+        "ficha-propostas-reservas",
+        "ficha-propostas-conversa",
+        "ficha-propostas-antiga",
+        "proposta-tarefa",
+        "proposta-completar-atendimento",
+        "proposta-atendimento-novo",
+        "proposta-reserva",
+        "proposta-reserva-fim",
+        "proposta-cadastrar-recurso",
+        "envio-confirmacao",
+        "fila-trabalhos",
+        "analise-material",
+        "ajustes-ia-teste",
+        "ficha-texto-largo",
+        "aviso-documento-sumiu",
         "tarefas",
         "tarefa-aberta",
         "tarefa-com-recurso",
@@ -94,6 +110,88 @@ impl PonteApp {
         self.tour = Some(tour);
     }
 
+    /// The first document of the sample that `wanted` accepts.
+    fn tour_find(&self, wanted: impl Fn(&crate::model::DocumentSummary) -> bool) -> Option<i64> {
+        self.store
+            .list_documents("")
+            .ok()?
+            .into_iter()
+            .find(|d| wanted(d))
+            .map(|d| d.id)
+    }
+
+    /// Does what a click on a button of the Propostas block does, so the
+    /// picture shows the form right after it.
+    fn tour_click(&mut self, name: &str) {
+        use super::proposals::ProposalAction;
+        let chat = name == "proposta-atendimento-novo";
+        let id = if chat {
+            self.tour_find(|d| d.whatsapp)
+        } else {
+            self.tour_document()
+        };
+        let Some(id) = id else {
+            return;
+        };
+        self.select(id);
+        let Some(detail) = self.detail.clone() else {
+            return;
+        };
+        let Some(proposals) = detail.analysis.as_ref().and_then(|a| a.proposals.clone()) else {
+            return;
+        };
+        let reservation = |index: usize, view: &Option<super::proposals::ProposalView>| {
+            let proposal = proposals.reservations.get(index).cloned()?;
+            let uid = view
+                .as_ref()
+                .and_then(|v| v.reservations.get(&proposal.id))
+                .and_then(|check| check.resource_uid.clone());
+            Some((proposal, uid))
+        };
+        let action = match name {
+            "proposta-tarefa" => proposals
+                .tasks
+                .get(1)
+                .cloned()
+                .map(ProposalAction::CreateTask),
+            "proposta-completar-atendimento" => {
+                let attendance = self
+                    .proposal_view
+                    .as_ref()
+                    .and_then(|v| v.attendance.as_ref().map(|a| a.id));
+                attendance
+                    .zip(proposals.attendance.clone())
+                    .map(|(id, proposal)| ProposalAction::CompleteAttendance { id, proposal })
+            }
+            "proposta-atendimento-novo" => proposals
+                .attendance
+                .clone()
+                .map(ProposalAction::NewAttendance),
+            "proposta-reserva" => {
+                reservation(0, &self.proposal_view).map(|(proposal, resource_uid)| {
+                    ProposalAction::Reserve {
+                        proposal,
+                        resource_uid,
+                    }
+                })
+            }
+            "proposta-reserva-fim" => {
+                reservation(0, &self.proposal_view).map(|(mut proposal, resource_uid)| {
+                    proposal.end = None;
+                    ProposalAction::Reserve {
+                        proposal,
+                        resource_uid,
+                    }
+                })
+            }
+            _ => reservation(2, &self.proposal_view)
+                .map(|(proposal, _)| ProposalAction::RegisterResource(proposal.what)),
+        };
+        if let Some(action) = action {
+            self.run_proposal_action(&detail, action);
+        }
+    }
+
     pub(super) fn tour_document(&self) -> Option<i64> {
         self.store
             .list_documents("")
@@ -118,6 +216,14 @@ impl PonteApp {
         self.global_search.open = false;
         self.update.last = None;
         self.shots_ficha_scroll = 0.0;
+        self.worker = None;
+        self.queued = None;
+        self.send_confirm = None;
+        self.analysis_material = None;
+        self.ai_test_report = None;
+        self.tasks = Default::default();
+        self.saiop = Default::default();
+        self.resources = Default::default();
         super::today::shots_calendar(ctx, false);
         let dark = name.starts_with("escuro-");
         crate::theme::set_appearance(
@@ -144,6 +250,135 @@ impl PonteApp {
                     "busca-projetor" => "projetor",
                     _ => "veículos",
                 });
+            }
+            "ficha-propostas"
+            | "ficha-propostas-reservas"
+            | "ficha-propostas-conversa"
+            | "ficha-propostas-antiga" => {
+                let found = match name {
+                    "ficha-propostas-conversa" => self.tour_find(|d| d.whatsapp),
+                    "ficha-propostas-antiga" => {
+                        self.tour_find(|d| d.document_number == "ORG-OFI-2026/00398")
+                    }
+                    _ => document,
+                };
+                if let Some(id) = found {
+                    self.select(id);
+                }
+                self.tab = Tab::Overview;
+                self.shots_ficha_scroll = match name {
+                    "ficha-propostas" => 330.0,
+                    "ficha-propostas-reservas" => 800.0,
+                    "ficha-propostas-conversa" => 260.0,
+                    _ => 200.0,
+                };
+            }
+            "proposta-tarefa"
+            | "proposta-completar-atendimento"
+            | "proposta-atendimento-novo"
+            | "proposta-reserva"
+            | "proposta-reserva-fim"
+            | "proposta-cadastrar-recurso" => self.tour_click(name),
+            "envio-confirmacao" => {
+                if let Some(id) = document {
+                    self.select(id);
+                }
+                self.tab = Tab::Overview;
+                self.shots_ficha_scroll = 330.0;
+                self.send_confirm = Some(super::queue::SendConfirm {
+                    what: super::queue::PendingSend::Analysis,
+                    document_id: document.unwrap_or_default(),
+                    number: "ORG-OFI-2026/00431".to_owned(),
+                    provider: "Ollama Cloud".to_owned(),
+                    destination: "https://ollama.com".to_owned(),
+                    model: "gpt-oss:120b".to_owned(),
+                    sources: 2,
+                });
+            }
+            "fila-trabalhos" => {
+                if let Some(id) = document {
+                    self.select(id);
+                }
+                self.tab = Tab::Overview;
+                self.shots_ficha_scroll = 330.0;
+                // A job running (nothing will ever answer) and one waiting.
+                let (sender, receiver) = std::sync::mpsc::channel::<super::WorkResult>();
+                let (progress_sender, progress) = std::sync::mpsc::channel::<String>();
+                std::mem::forget(sender);
+                std::mem::forget(progress_sender);
+                self.worker = Some(super::Worker {
+                    receiver,
+                    label: "Analisando ORG-MEM-2026/01207…".to_owned(),
+                    kind: super::WorkKind::Analysis,
+                    started: std::time::Instant::now(),
+                    progress,
+                    latest: "Etapa 1 de 2: lendo o documento…".to_owned(),
+                    cancel: Default::default(),
+                });
+                self.queued = Some(super::queue::QueuedJob {
+                    key: super::queue::QueueKey {
+                        kind: super::WorkKind::Analysis,
+                        document_id: document.unwrap_or_default(),
+                    },
+                    label: "Analisando ORG-OFI-2026/00431…".to_owned(),
+                    waiting: "analisar ORG-OFI-2026/00431".to_owned(),
+                    capture_id: 0,
+                    context: String::new(),
+                    task: Box::new(|_| super::WorkResult::AiTest(Err(String::new()))),
+                    ctx: ctx.clone(),
+                });
+            }
+            "analise-material" => {
+                if let Some(id) = document {
+                    self.select(id);
+                    self.analysis_material = Some(id);
+                }
+                self.tab = Tab::Overview;
+                self.shots_ficha_scroll = 330.0;
+            }
+            "ajustes-ia-teste" => {
+                self.area = Area::Settings;
+                self.settings_section = super::SettingsSection::Ai;
+                self.shots_ficha_scroll = 900.0;
+                let case = |name: &str, passed, total, failures: &[&str], calls, seconds| {
+                    crate::ai_eval::CaseResult {
+                        name: name.to_owned(),
+                        passed,
+                        total,
+                        failures: failures.iter().map(|f| (*f).to_owned()).collect(),
+                        calls,
+                        seconds,
+                    }
+                };
+                self.ai_test_report = Some(Ok(crate::ai_eval::score(vec![
+                    case("Ofício com prazo", 14, 14, &[], 3, 4.2),
+                    case(
+                        "Pedido de sala por WhatsApp",
+                        12,
+                        14,
+                        &[
+                            "A data da reunião não foi encontrada no trecho citado.",
+                            "A IA propôs uma tarefa que o documento não pede.",
+                        ],
+                        4,
+                        6.8,
+                    ),
+                    case("Documento sem nada a propor", 5, 5, &[], 2, 2.9),
+                ])));
+            }
+            "ficha-texto-largo" => {
+                let manual = self.tour_find(|d| d.manual && !d.email && !d.whatsapp);
+                if let Some(id) = manual {
+                    self.select(id);
+                }
+                self.tab = Tab::Document;
+            }
+            "aviso-documento-sumiu" => {
+                // The document open in the window is not in the library any
+                // more (deleted for good, or removed by a synchronization).
+                self.area = Area::Documents;
+                self.selected_id = Some(987_654);
+                self.reload(987_654);
             }
             "ficha-sem-recursos" => {
                 // A document no use points at.

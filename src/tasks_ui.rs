@@ -2,9 +2,36 @@
 //! attachments of a task.
 use crate::theme::{self, c, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
-use crate::{storage::Store, tasks::Task};
+use crate::{model::TaskProposal, storage::Store, tasks::Task};
 use eframe::egui::{self, RichText};
 use std::collections::BTreeSet;
+
+/// How the notes of a task made from an old-style suggestion begin.
+pub const SUGGESTION_NOTE_MARKER: &str = "Sugestão da IA para revisão.";
+/// How the notes of a task made from a proposal begin.
+pub const PROPOSAL_NOTE_MARKER: &str = "Proposta da IA para revisão.";
+
+/// The task a proposal describes, as the form shows it before "Salvar":
+/// title, providência, priority, the deadline with its source (only when the
+/// proposal has a checked date), the reason in the notes and the proposal's
+/// id. The responsável stays empty: the model never chooses a person.
+pub fn task_from_proposal(document_id: i64, proposal: &TaskProposal) -> Task {
+    let mut task = Task::new(document_id);
+    task.title = proposal.title.trim().to_owned();
+    task.action = proposal.action.clone();
+    task.priority = proposal.priority.clone();
+    if let Some(date) = &proposal.due_date {
+        task.due_date = date.clone();
+        task.due_source = proposal.due_source.clone();
+    }
+    task.notes = if proposal.reason.trim().is_empty() {
+        PROPOSAL_NOTE_MARKER.to_owned()
+    } else {
+        format!("{PROPOSAL_NOTE_MARKER}\nMotivo: {}", proposal.reason.trim())
+    };
+    task.proposal_id = proposal.id.clone();
+    task
+}
 
 /// Views over the task list. The first four are the everyday ones; the rest
 /// live under "Mais".
@@ -1774,18 +1801,37 @@ impl TaskPanel {
         task.action = suggestion.action.clone();
         task.priority = priority.into();
         task.notes = format!(
-            "Sugestão da IA para revisão.\nMotivo: {}\nBase informada: {}",
+            "{SUGGESTION_NOTE_MARKER}\nMotivo: {}\nBase informada: {}",
             suggestion.reason, suggestion.evidence
         );
+        self.open_prepared(task);
+        true
+    }
+
+    /// Opens the form with the task a proposal of an analysis describes
+    /// (`task_from_proposal`): nothing is saved, the form is unsaved work
+    /// until "Salvar". False while another task is being edited.
+    pub fn prepare_proposal(&mut self, document_id: i64, proposal: &TaskProposal) -> bool {
+        if self.dirty() {
+            return false;
+        }
+        self.open_prepared(task_from_proposal(document_id, proposal));
+        true
+    }
+
+    /// The form on a task made by the program: filters and version as
+    /// `start_new` leaves them.
+    fn open_prepared(&mut self, task: Task) {
         self.end_selection();
+        self.keep_filter_for(task.document_id);
         self.draft = Some(task);
         self.original = None;
+        self.base_version = None;
         self.focus_title = true;
         self.notice(
             "Revise e salve para criar a tarefa. Nada foi enviado ao SIGADOC.",
             false,
         );
-        true
     }
     /// True while the form holds something that would be lost. A new task
     /// nobody has touched yet (still exactly what "Nova tarefa" proposes)
@@ -4565,5 +4611,77 @@ mod batch_review_tests {
         let ask = panel.batch_ask.take().unwrap();
         panel.run_batch(&mut store, &ask.snapshot, Change::Trash);
         assert_eq!(store.list_tasks().unwrap().len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod proposal_tests {
+    use super::*;
+
+    fn proposal() -> TaskProposal {
+        TaskProposal {
+            id: "p1".into(),
+            action: "responder".into(),
+            title: "  Responder ao ofício dentro do prazo ".into(),
+            priority: "alta".into(),
+            reason: "O ofício pede resposta.".into(),
+            facts: vec!["f1".into()],
+            due_fact: Some("f1".into()),
+            due_date: Some("2031-02-20".into()),
+            due_source: "a resposta deve chegar até 20/02/2031".into(),
+            remark: "Prazo citado sem data: “até o fim da próxima semana”".into(),
+        }
+    }
+
+    #[test]
+    fn the_task_carries_the_proposal_and_leaves_the_person_empty() {
+        let task = task_from_proposal(7, &proposal());
+        assert_eq!(task.id, 0, "never saved by the builder");
+        assert_eq!(task.document_id, Some(7));
+        assert_eq!(task.title, "Responder ao ofício dentro do prazo");
+        assert_eq!(task.action, "responder");
+        assert_eq!(task.priority, "alta");
+        assert_eq!(task.due_date, "2031-02-20");
+        assert_eq!(task.due_source, "a resposta deve chegar até 20/02/2031");
+        assert_eq!(
+            task.notes,
+            "Proposta da IA para revisão.\nMotivo: O ofício pede resposta."
+        );
+        assert_eq!(task.proposal_id, "p1");
+        assert!(task.assignee.is_empty());
+        assert_eq!(task.status, "pendente");
+        assert!(task.reminder_date.is_empty() && task.dependencies.is_empty());
+    }
+
+    #[test]
+    fn without_a_checked_date_there_is_no_deadline_and_no_source() {
+        let mut given = proposal();
+        given.due_fact = None;
+        given.due_date = None;
+        given.due_source = String::new();
+        given.reason = "  ".into();
+        let task = task_from_proposal(7, &given);
+        assert!(task.due_date.is_empty() && task.due_source.is_empty());
+        assert_eq!(task.notes, "Proposta da IA para revisão.");
+        // The remark is the program's own line, never copied into the record.
+        assert!(!task.notes.contains("Prazo citado"));
+    }
+
+    #[test]
+    fn a_prepared_proposal_is_unsaved_work_and_resets_the_view_like_a_new_task() {
+        let mut panel = TaskPanel {
+            query: "algo".into(),
+            base_version: Some(4),
+            ..Default::default()
+        };
+        assert!(!panel.dirty());
+        assert!(panel.prepare_proposal(7, &proposal()));
+        assert!(panel.dirty(), "leaving must ask");
+        assert_eq!(panel.base_version, None);
+        assert!(panel.query.is_empty());
+        let draft = panel.draft.as_ref().unwrap();
+        assert_eq!(draft.proposal_id, "p1");
+        // A second one is refused while this one is open.
+        assert!(!panel.prepare_proposal(7, &proposal()));
     }
 }

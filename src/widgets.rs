@@ -407,7 +407,26 @@ pub fn toast(ctx: &egui::Context, text: &str, error: bool, action: Option<&str>)
                         if error {
                             ui.label(RichText::new(theme::icon::ERROR).size(18.0).color(fg));
                         }
-                        ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                        // A second line (after a line break) is the technical
+                        // detail: smaller and muted.
+                        let (first, detail) = match text.split_once('\n') {
+                            Some((first, detail)) => (first, Some(detail)),
+                            None => (text, None),
+                        };
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.add(egui::Label::new(RichText::new(first).color(fg)).wrap());
+                            if let Some(detail) = detail {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(detail)
+                                            .size(theme::SIZE_SMALL)
+                                            .color(fg.gamma_multiply(0.7)),
+                                    )
+                                    .wrap(),
+                                );
+                            }
+                        });
                         if let Some(action) = action {
                             let button = egui::Button::new(
                                 RichText::new(action)

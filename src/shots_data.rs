@@ -18,6 +18,11 @@ use anyhow::{Context, Result};
 use chrono::{Duration, Local, NaiveDate, Utc};
 use std::collections::BTreeMap;
 
+/// Days from today of the room asked for in the sample ofício (free at that
+/// time) and of the deadline it gives for the vehicles.
+const SAMPLE_ROOM_DAY: i64 = 4;
+const SAMPLE_VEHICLES_DAY: i64 = 10;
+
 /// Ids of what the first part created, for the parts that follow.
 #[derive(Default)]
 struct Ids {
@@ -149,14 +154,21 @@ fn documents(store: &mut Store) -> Result<Ids> {
         "Solicitação de apoio logístico para evento",
         "Protocolo Geral",
         1,
-        "Senhor Diretor,\n\n\
+        &format!(
+            "Senhor Diretor,\n\n\
          Solicitamos o apoio logístico desta Diretoria para o Seminário de Integração das Equipes, \
          com o empréstimo de 20 (vinte) cadeiras e de equipamento de sonorização completo, \
          incluindo mesa de som e dois microfones sem fio.\n\n\
          Pedimos ainda a disponibilização de 2 (dois) veículos, com motorista, \
          para o transporte dos palestrantes entre o aeroporto e o local do evento.\n\n\
+         Solicitamos também a reserva da sala de reuniões do 2º andar no dia {room_day}, das 14h às 17h, \
+         para a reunião de preparação do evento.\n\n\
          Em razão da data marcada, a resposta deve ser enviada a este Protocolo até o fim da próxima semana, \
-         para que a organização possa confirmar a programação.",
+         para que a organização possa confirmar a programação. \
+         Informamos que a confirmação dos veículos deve chegar ao Protocolo até {vehicles_day}.",
+            room_day = br(SAMPLE_ROOM_DAY),
+            vehicles_day = br(SAMPLE_VEHICLES_DAY),
+        ),
         &[
             (2, "Registro do documento", "Documento recebido e registrado no protocolo."),
             (2, "Despacho", "Encaminhado ao Gabinete para providências."),
@@ -271,11 +283,12 @@ fn whatsapp(store: &mut Store) -> Result<()> {
     let date = (Local::now() - Duration::days(1))
         .format("%d/%m/%Y")
         .to_string();
+    let today = br(0);
     let copied = [
-        format!("[09:12, {date}] Servidor B: Bom dia. A sala de reuniões do 2º andar está livre na quinta?"),
-        format!("[09:15, {date}] Servidor A: Bom dia. Está, das 14h às 17h."),
+        format!("[09:12, {date}] Servidor B: Bom dia. Preciso da sala de reuniões do 2º andar no dia {today}, das 14h às 17h, para a reunião da Unidade A."),
+        format!("[09:15, {date}] Servidor A: Bom dia. Vou conferir a agenda e confirmo."),
         format!("[09:16, {date}] Servidor B: Ótimo. Pode reservar para a reunião da Unidade A?"),
-        format!("[09:20, {date}] Servidor A: Reservei. Anotei também o número do documento: ORG-OFI-2026/00431."),
+        format!("[09:20, {date}] Servidor A: Anotei também o número do documento: ORG-OFI-2026/00431."),
         "Se mudar o horário, me avise.".to_owned(),
         format!("[09:21, {date}] Servidor B: Combinado, obrigado."),
     ]
@@ -877,17 +890,228 @@ fn attendances(store: &mut Store, ids: &Ids) -> Result<()> {
     Ok(())
 }
 
-/// A summary with suggested actions, as the assistant would have saved it,
-/// without calling any AI.
+/// A fact of the sample, checked by the program as the real run would: the
+/// quote must be written in `text`, and the dates, times and quantities in
+/// the quote.
+#[allow(clippy::too_many_arguments)]
+fn sample_fact(
+    text: &str,
+    id: &str,
+    kind: &str,
+    statement: &str,
+    quote: &str,
+    date: Option<String>,
+    times: Option<(&str, Option<&str>)>,
+    quantity: Option<u32>,
+) -> Result<crate::model::Fact> {
+    let mut fact = crate::model::Fact {
+        id: id.into(),
+        kind: kind.into(),
+        statement: statement.into(),
+        quote: quote.into(),
+        date,
+        time: times.map(|(start, _)| start.to_owned()),
+        end_time: times.and_then(|(_, end)| end.map(str::to_owned)),
+        quantity,
+        ..Default::default()
+    };
+    fact.checked = crate::evidence::check_fact(&mut fact, text, "", &[]);
+    anyhow::ensure!(
+        fact.checked.quote,
+        "o trecho de {id} não está escrito no texto da amostra"
+    );
+    Ok(fact)
+}
+
+fn sample_run() -> crate::model::AnalysisRun {
+    use crate::model::RunStep;
+    crate::model::AnalysisRun {
+        provider: "Ollama neste computador".into(),
+        steps: vec![
+            RunStep {
+                role: "extrator".into(),
+                attempts: 2,
+                refused: vec![
+                    "Um trecho citado não está escrito no documento.".into(),
+                    "Uma data não está escrita no trecho do fato.".into(),
+                ],
+                dropped: 1,
+            },
+            RunStep {
+                role: "propositor".into(),
+                attempts: 1,
+                refused: Vec::new(),
+                dropped: 0,
+            },
+        ],
+        calls: 3,
+    }
+}
+
+/// Analyses with facts and proposals, as the program would have saved them
+/// (every "conferido" mark is made by the checker, not written by hand), and
+/// the old kind of suggestion on a third document. No AI is called.
 fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
+    use crate::model::{AttendanceProposal, Proposals, ReservationProposal, TaskProposal};
+    let room_day = iso(SAMPLE_ROOM_DAY);
+    let room_br = br(SAMPLE_ROOM_DAY);
+    let vehicles_day = iso(SAMPLE_VEHICLES_DAY);
+    let vehicles_br = br(SAMPLE_VEHICLES_DAY);
+
+    // 1. The ofício: two tasks (one with a relative deadline the program could
+    // not read), the atendimento it already has, and three reservations (a
+    // free room, chairs without a time, vehicles the register does not have).
+    let detail = store.load_document(ids.logistics)?;
+    let text = detail.capture.text.clone();
+    // The context the analysis was made with: the saved note, so it is current.
+    let human_context = detail.work_context.analysis_text(&detail.note);
+    let facts = vec![
+        sample_fact(
+            &text,
+            "f1",
+            "prazo",
+            "A resposta deve ser enviada ao Protocolo até o fim da próxima semana.",
+            "a resposta deve ser enviada a este Protocolo até o fim da próxima semana",
+            None,
+            None,
+            None,
+        )?,
+        sample_fact(
+            &text,
+            "f2",
+            "prazo",
+            &format!("A confirmação dos veículos deve chegar ao Protocolo até {vehicles_br}."),
+            &format!("a confirmação dos veículos deve chegar ao Protocolo até {vehicles_br}"),
+            Some(vehicles_day.clone()),
+            None,
+            None,
+        )?,
+        sample_fact(
+            &text,
+            "f3",
+            "recurso",
+            "O ofício pede o empréstimo de 20 cadeiras.",
+            "empréstimo de 20 (vinte) cadeiras",
+            None,
+            None,
+            Some(20),
+        )?,
+        sample_fact(
+            &text,
+            "f4",
+            "recurso",
+            "O ofício pede a reserva da sala de reuniões do 2º andar.",
+            "reserva da sala de reuniões do 2º andar",
+            None,
+            None,
+            None,
+        )?,
+        sample_fact(
+            &text,
+            "f5",
+            "data_hora",
+            &format!("A sala é pedida no dia {room_br}, das 14h às 17h."),
+            &format!("no dia {room_br}, das 14h às 17h"),
+            Some(room_day.clone()),
+            Some(("14:00", Some("17:00"))),
+            None,
+        )?,
+        sample_fact(
+            &text,
+            "f6",
+            "recurso",
+            "O ofício pede 2 veículos com motorista.",
+            "2 (dois) veículos, com motorista",
+            None,
+            None,
+            Some(2),
+        )?,
+    ];
+    let proposals = Proposals {
+        tasks: vec![
+            TaskProposal {
+                id: "p-tarefa-resposta".into(),
+                action: "responder".into(),
+                title: "Responder ao Protocolo sobre o apoio ao seminário".into(),
+                priority: "alta".into(),
+                reason: "O ofício pede resposta dentro de um prazo.".into(),
+                facts: vec!["f1".into()],
+                remark: "Prazo citado sem data: “até o fim da próxima semana”".into(),
+                ..Default::default()
+            },
+            TaskProposal {
+                id: "p-tarefa-veiculos".into(),
+                action: "encaminhar".into(),
+                title: "Pedir os veículos à Seção de Transportes".into(),
+                priority: "alta".into(),
+                reason: "Os veículos dependem de outra seção e há data para confirmar.".into(),
+                facts: vec!["f6".into(), "f2".into()],
+                due_fact: Some("f2".into()),
+                due_date: Some(vehicles_day.clone()),
+                due_source: format!(
+                    "a confirmação dos veículos deve chegar ao Protocolo até {vehicles_br}"
+                ),
+                ..Default::default()
+            },
+        ],
+        attendance: Some(AttendanceProposal {
+            id: "p-atendimento".into(),
+            subject: "Apoio logístico para o seminário de integração".into(),
+            received_from: "Protocolo Geral".into(),
+            due_fact: Some("f2".into()),
+            due_date: Some(vehicles_day.clone()),
+            due_source: format!(
+                "a confirmação dos veículos deve chegar ao Protocolo até {vehicles_br}"
+            ),
+            due_kind: "a_confirmar".into(),
+            priority: "alta".into(),
+            priority_reason: "Evento com data marcada e prazo para confirmar os veículos".into(),
+            planned_doc_type: "Ofício".into(),
+            facts: vec!["f2".into()],
+            remark: String::new(),
+        }),
+        reservations: vec![
+            ReservationProposal {
+                id: "p-reserva-sala".into(),
+                what: "sala de reuniões do 2º andar".into(),
+                what_fact: "f4".into(),
+                quantity: 1,
+                when_fact: Some("f5".into()),
+                start: Some(format!("{room_day}T14:00")),
+                end: Some(format!("{room_day}T17:00")),
+                purpose: "Reunião de preparação do evento".into(),
+                facts: vec!["f5".into()],
+                remark: String::new(),
+            },
+            ReservationProposal {
+                id: "p-reserva-cadeiras".into(),
+                what: "cadeiras".into(),
+                what_fact: "f3".into(),
+                quantity: 20,
+                purpose: "Seminário de Integração das Equipes".into(),
+                ..Default::default()
+            },
+            ReservationProposal {
+                id: "p-reserva-veiculos".into(),
+                what: "veículos".into(),
+                what_fact: "f6".into(),
+                quantity: 2,
+                purpose: "Transporte dos palestrantes".into(),
+                ..Default::default()
+            },
+        ],
+        nothing_reason: String::new(),
+    };
     let analysis = Analysis {
         capture_id: ids.logistics_capture,
+        human_context,
         subjects: vec!["Apoio logístico".into(), "Evento institucional".into()],
         priority: "alta".into(),
-        reason: "Há prazo para a resposta e o pedido envolve cadeiras, som e veículos.".into(),
-        deadline_candidate: Some(format!("{} (fim da próxima semana)", br(7))),
-        summary: "O Protocolo Geral pede apoio para um seminário: 20 cadeiras, equipamento de som e 2 veículos \
-                  com motorista. A resposta deve chegar ao Protocolo até o fim da próxima semana."
+        reason: "Há prazo para a resposta e o pedido envolve cadeiras, som, uma sala e veículos.".into(),
+        deadline_candidate: Some("até o fim da próxima semana".into()),
+        summary: "O Protocolo Geral pede apoio para um seminário: 20 cadeiras, equipamento de som, \
+                  a sala de reuniões do 2º andar e 2 veículos com motorista. A resposta deve chegar \
+                  ao Protocolo até o fim da próxima semana."
             .into(),
         model: "amostra".into(),
         created_at: Utc::now().to_rfc3339(),
@@ -895,17 +1119,138 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
             ActionSuggestion {
                 action: "responder".into(),
                 reason: "O ofício exige resposta dentro do prazo informado.".into(),
-                evidence: "\"a resposta deve ser enviada a este Protocolo até o fim da próxima semana\"".into(),
+                evidence: "a resposta deve ser enviada a este Protocolo até o fim da próxima semana".into(),
             },
             ActionSuggestion {
                 action: "encaminhar".into(),
                 reason: "Os veículos dependem da Seção de Transportes.".into(),
-                evidence: "\"2 (dois) veículos, com motorista\"".into(),
+                evidence: "2 (dois) veículos, com motorista".into(),
             },
         ],
+        facts,
+        proposals: Some(proposals),
+        run: Some(sample_run()),
         ..Default::default()
     };
-    store.save_analysis(ids.logistics, &analysis)
+    store.save_analysis(ids.logistics, &analysis)?;
+
+    // 2. The WhatsApp record: a room asked for at a time another use already
+    // holds (to picture "Ocupado"), and an entry the document does not have.
+    let chat = store
+        .list_documents("")?
+        .into_iter()
+        .find(|d| d.whatsapp)
+        .context("conversa do WhatsApp de exemplo")?;
+    let detail = store.load_document(chat.id)?;
+    let text = detail.capture.text.clone();
+    let today_br = br(0);
+    let facts = vec![
+        sample_fact(
+            &text,
+            "g1",
+            "recurso",
+            "Servidor B precisa da sala de reuniões do 2º andar.",
+            "Preciso da sala de reuniões do 2º andar",
+            None,
+            None,
+            None,
+        )?,
+        sample_fact(
+            &text,
+            "g2",
+            "data_hora",
+            &format!("A sala é pedida no dia {today_br}, das 14h às 17h."),
+            &format!("no dia {today_br}, das 14h às 17h"),
+            Some(iso(0)),
+            Some(("14:00", Some("17:00"))),
+            None,
+        )?,
+        sample_fact(
+            &text,
+            "g3",
+            "remetente",
+            "A conversa é com Servidor B.",
+            "Servidor B: Bom dia.",
+            None,
+            None,
+            None,
+        )?,
+    ];
+    let proposals = Proposals {
+        attendance: Some(AttendanceProposal {
+            id: "p-atendimento-conversa".into(),
+            subject: "Reserva da sala de reuniões para a Unidade A".into(),
+            received_from: "Servidor B".into(),
+            due_kind: "a_confirmar".into(),
+            priority: "normal".into(),
+            facts: vec!["g3".into()],
+            ..Default::default()
+        }),
+        reservations: vec![ReservationProposal {
+            id: "p-reserva-sala-conversa".into(),
+            what: "sala de reuniões do 2º andar".into(),
+            what_fact: "g1".into(),
+            quantity: 1,
+            when_fact: Some("g2".into()),
+            start: Some(format!("{}T14:00", iso(0))),
+            end: Some(format!("{}T17:00", iso(0))),
+            purpose: "Reunião da Unidade A".into(),
+            facts: vec!["g2".into()],
+            remark: String::new(),
+        }],
+        ..Default::default()
+    };
+    let analysis = Analysis {
+        capture_id: chat.latest_capture_id,
+        subjects: vec!["Reserva de sala".into()],
+        priority: "normal".into(),
+        reason: "A conversa pede uma sala em data e horário certos.".into(),
+        summary: "Servidor B pede a sala de reuniões do 2º andar, das 14h às 17h, para a reunião da Unidade A."
+            .into(),
+        model: "amostra".into(),
+        created_at: Utc::now().to_rfc3339(),
+        facts,
+        proposals: Some(proposals),
+        run: Some(crate::model::AnalysisRun {
+            provider: "Ollama neste computador".into(),
+            steps: vec![
+                crate::model::RunStep {
+                    role: "extrator".into(),
+                    attempts: 1,
+                    refused: Vec::new(),
+                    dropped: 0,
+                },
+                crate::model::RunStep {
+                    role: "propositor".into(),
+                    attempts: 1,
+                    refused: Vec::new(),
+                    dropped: 0,
+                },
+            ],
+            calls: 2,
+        }),
+        ..Default::default()
+    };
+    store.save_analysis(chat.id, &analysis)?;
+
+    // 3. A document analysed before the proposals existed: the old block.
+    let old = Analysis {
+        capture_id: store.load_document(ids.vehicles)?.summary.latest_capture_id,
+        subjects: vec!["Distribuição de veículos".into()],
+        priority: "normal".into(),
+        reason: "A planilha pede a assinatura do Secretário para publicar.".into(),
+        summary: "A Seção de Transportes envia a distribuição dos veículos e pede a assinatura do Secretário."
+            .into(),
+        model: "amostra".into(),
+        created_at: Utc::now().to_rfc3339(),
+        suggested_actions: vec![ActionSuggestion {
+            action: "encaminhar".into(),
+            reason: "A publicação depende da assinatura.".into(),
+            evidence: "Solicita-se a assinatura do Secretário para a publicação.".into(),
+        }],
+        ..Default::default()
+    };
+    store.save_analysis(ids.vehicles, &old)
 }
 
 fn templates(store: &mut Store) -> Result<()> {

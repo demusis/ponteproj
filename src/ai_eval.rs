@@ -137,6 +137,11 @@ pub struct Report {
     pub cases: Vec<CaseResult>,
 }
 
+/// The report of a set of results.
+pub fn score(cases: Vec<CaseResult>) -> Report {
+    Report { cases }
+}
+
 impl Report {
     pub fn passed(&self) -> u32 {
         self.cases.iter().map(|c| c.passed).sum()

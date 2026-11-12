@@ -11,6 +11,8 @@ pub(crate) mod calendar;
 mod ficha;
 mod library;
 mod minuta;
+mod proposals;
+mod queue;
 mod search;
 mod settings;
 mod today;
@@ -901,10 +903,12 @@ enum WorkResult {
         std::result::Result<crate::imap::Fetched, String>,
         crate::mail::MailSource,
     ),
+    /// The result of "Testar a IA com casos fictícios".
+    AiTest(std::result::Result<crate::ai_eval::Report, String>),
 }
 
 /// What the background worker is doing; the screen adapts buttons to it.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkKind {
     Sources,
     Analysis,
@@ -913,6 +917,8 @@ enum WorkKind {
     Export,
     /// Talking to a mailbox (folders, list, fetch).
     Mail,
+    /// "Testar a IA com casos fictícios".
+    AiTest,
 }
 
 struct Worker {
@@ -974,6 +980,8 @@ enum NoticeAction {
     ReopenTask(i64),
     /// Undo "excluir": the item comes back from the Lixeira.
     Restore(crate::trash::Target),
+    /// Open Ajustes ▸ Lixeira.
+    OpenTrash,
 }
 
 /// Where the person was before a document was opened for them, so the ficha
@@ -1040,6 +1048,11 @@ enum Leave {
         suggestion: crate::model::ActionSuggestion,
         priority: String,
     },
+    /// Prepare a task from a proposal of an analysis of this document.
+    TaskProposal {
+        document_id: i64,
+        proposal: crate::model::TaskProposal,
+    },
 }
 
 impl Leave {
@@ -1047,7 +1060,11 @@ impl Leave {
     fn replaces_task(&self) -> bool {
         matches!(
             self,
-            Leave::NewTask(_) | Leave::OpenTask(_) | Leave::EditTask(_) | Leave::Suggestion { .. }
+            Leave::NewTask(_)
+                | Leave::OpenTask(_)
+                | Leave::EditTask(_)
+                | Leave::Suggestion { .. }
+                | Leave::TaskProposal { .. }
         )
     }
 }
@@ -1072,6 +1089,20 @@ struct PonteApp {
     templates: crate::templates_ui::TemplatesPanel,
     /// The generation record being shown in "Material utilizado".
     material: Option<(i64, String)>,
+    /// The document whose analysis shows its "Material utilizado".
+    analysis_material: Option<i64>,
+    /// The document whose reading failed (told once, not at each refresh).
+    load_error_for: Option<i64>,
+    /// What the Propostas block reads from the library, once per load.
+    proposal_view: Option<proposals::ProposalView>,
+    /// The one AI job waiting for the running one.
+    queued: Option<queue::QueuedJob>,
+    /// The question "Enviar este documento a …?" waiting for an answer.
+    send_confirm: Option<queue::SendConfirm>,
+    /// The last "Testar a IA com casos fictícios" and the destinations the
+    /// person agreed to send the fictitious cases to in this session.
+    ai_test_report: Option<std::result::Result<crate::ai_eval::Report, String>>,
+    ai_test_consented: std::collections::BTreeSet<String>,
     /// The "Importar do e-mail" window.
     mail: crate::mail_ui::MailPanel,
     /// "Anexos" block of the open document.
@@ -1182,6 +1213,13 @@ impl PonteApp {
             draft_tools: Default::default(),
             templates: Default::default(),
             material: None,
+            analysis_material: None,
+            load_error_for: None,
+            proposal_view: None,
+            queued: None,
+            send_confirm: None,
+            ai_test_report: None,
+            ai_test_consented: Default::default(),
             mail: Default::default(),
             attachments: Default::default(),
             sources: Default::default(),
@@ -1382,6 +1420,12 @@ impl PonteApp {
                 }
                 Err(error) => self.error(format!("Não foi possível reabrir a tarefa: {error}")),
             },
+            NoticeAction::OpenTrash => {
+                self.navigate(Leave::Settings);
+                if self.area == Area::Settings {
+                    self.settings_section = SettingsSection::Trash;
+                }
+            }
             NoticeAction::Restore(target) => match self.store.restore_item(target.clone()) {
                 Ok(document) => {
                     self.apply_trash_change(crate::trash::Change {
@@ -1635,6 +1679,16 @@ impl PonteApp {
                     self.error("Salve ou cancele a tarefa em edição antes de preparar outra.");
                 }
             }
+            Leave::TaskProposal {
+                document_id,
+                proposal,
+            } => {
+                if self.tasks.prepare_proposal(document_id, &proposal) {
+                    self.area = Area::Tasks;
+                } else {
+                    self.error("Salve ou cancele a tarefa em edição antes de preparar outra.");
+                }
+            }
         }
     }
 
@@ -1798,6 +1852,9 @@ impl PonteApp {
             .map(|meta| meta.version);
         match self.store.load_document(id) {
             Ok(detail) => {
+                if self.load_error_for == Some(id) {
+                    self.load_error_for = None;
+                }
                 let editor = self
                     .editors
                     .entry(id)
@@ -1836,6 +1893,7 @@ impl PonteApp {
                     }
                     detail.summary.joined_children_count = self.joined_children.len();
                     self.detail = Some(detail);
+                    self.refresh_proposal_view();
                     match self.store.similar_documents(id, 5) {
                         Ok(items) => self.similar = items,
                         Err(error) => self.error(format!(
@@ -1844,7 +1902,43 @@ impl PonteApp {
                     }
                 }
             }
-            Err(error) => self.error(format!("Não foi possível carregar o documento: {error}")),
+            Err(error) => self.document_unavailable(id, &error.to_string()),
+        }
+    }
+
+    /// The open document could not be read. When it is gone or in the
+    /// Lixeira the selection is cleared, the list refreshed and the person
+    /// told once, in plain words (the periodic refresh no longer asks for
+    /// it); any other failure keeps an error with the technical text as a
+    /// second, muted line.
+    fn document_unavailable(&mut self, id: i64, technical: &str) {
+        let state = self.store.document_state(id).ok();
+        let failure = queue::load_failure(state.as_ref());
+        let (text, action) = queue::load_failure_text(failure);
+        if failure == queue::LoadFailure::Other {
+            // Said once: the periodic refresh does not repeat it until the
+            // document has been read again.
+            if self.load_error_for != Some(id) {
+                self.load_error_for = Some(id);
+                // The technical text goes on a second line of the same notice.
+                self.error(format!("{text}\n{technical}"));
+            }
+            return;
+        }
+        if self.selected_id == Some(id) {
+            self.selected_id = None;
+            self.detail = None;
+            self.proposal_view = None;
+            self.similar.clear();
+            self.joined_children.clear();
+            self.return_to = None;
+        }
+        if let Ok(documents) = self.store.list_documents(&self.query) {
+            self.documents = documents;
+        }
+        match action {
+            Some(label) => self.message_with_action(text, label, NoticeAction::OpenTrash),
+            None => self.message(text),
         }
     }
 
@@ -1853,6 +1947,7 @@ impl PonteApp {
         self.area = Area::Documents;
         self.selected_id = Some(id);
         self.detail = None;
+        self.proposal_view = None;
         self.similar.clear();
         self.joined_children.clear();
         self.reload(id);
@@ -2061,9 +2156,14 @@ impl PonteApp {
         kind: WorkKind,
         task: impl FnOnce(ai::Reporter) -> WorkResult + Send + 'static,
         ctx: &egui::Context,
-    ) {
+    ) -> bool {
         if self.worker.is_some() {
-            return;
+            // Never silent: the person is told why nothing started. AI jobs
+            // wait in the queue before they get here (`run_ai_job`).
+            self.error(
+                "Há outro trabalho em andamento. Espere terminar, ou cancele o atual, e tente de novo.",
+            );
+            return false;
         }
         if self.ai.provider == AiProvider::ChatGpt {
             self.chatgpt_sync_pending = true;
@@ -2089,9 +2189,13 @@ impl PonteApp {
                     progress,
                     latest: String::new(),
                     cancel,
-                })
+                });
+                true
             }
-            Err(error) => self.error(format!("Não foi possível iniciar a operação: {error}")),
+            Err(error) => {
+                self.error(format!("Não foi possível iniciar a operação: {error}"));
+                false
+            }
         }
     }
 
@@ -2117,7 +2221,17 @@ impl PonteApp {
             ctx,
         );
     }
+    /// "Analisar": asks first when the document would leave this computer for
+    /// the first time (once per document and destination), then starts.
     fn analyze(&mut self, detail: &DocumentDetail, ctx: &egui::Context) {
+        if self.consent_needed(detail.summary.id) {
+            self.ask_to_send(queue::PendingSend::Analysis, detail);
+            return;
+        }
+        self.analyze_now(detail, ctx);
+    }
+
+    fn analyze_now(&mut self, detail: &DocumentDetail, ctx: &egui::Context) {
         let sources = match self.sources.selected(detail.summary.id, &self.store) {
             Ok(value) => value,
             Err(e) => {
@@ -2149,23 +2263,42 @@ impl PonteApp {
         let document_id = detail.summary.id;
         let capture_id = detail.summary.latest_capture_id;
         let capture = detail.capture.clone();
-        self.spawn(
-            format!("Analisando {}…", detail.summary.document_number),
-            WorkKind::Analysis,
-            move |reporter| WorkResult::Analysis {
+        let number = detail.summary.document_number.clone();
+        let context = human_context.clone();
+        // The model is only told WHETHER the document already has an
+        // atendimento, never what is in it.
+        let extras = ai::AnalyzeExtras {
+            has_attendance: self
+                .store
+                .list_saiop_attendances()
+                .map(|all| all.iter().any(|a| a.document_id == Some(document_id)))
+                .unwrap_or(false),
+            ..Default::default()
+        };
+        self.run_ai_job(queue::QueuedJob {
+            key: queue::QueueKey {
+                kind: WorkKind::Analysis,
                 document_id,
-                result: ai::analyze_with_sources(
+            },
+            label: format!("Analisando {number}…"),
+            waiting: format!("analisar {number}"),
+            capture_id,
+            context,
+            task: Box::new(move |reporter| WorkResult::Analysis {
+                document_id,
+                result: ai::analyze_document(
                     &settings,
                     &capture,
                     capture_id,
                     &human_context,
                     &sources,
+                    extras,
                     &reporter,
                 )
                 .map_err(|e| e.to_string()),
-            },
-            ctx,
-        );
+            }),
+            ctx: ctx.clone(),
+        });
     }
 
     /// Saves unsaved context and notes of this document before an AI action.
@@ -2202,6 +2335,19 @@ impl PonteApp {
     /// ticked blocks and request form the trusted layer; the document, notes,
     /// sources and approved examples are data.
     fn generate(
+        &mut self,
+        detail: &DocumentDetail,
+        intent: crate::work_templates::Intent,
+        ctx: &egui::Context,
+    ) {
+        if self.consent_needed(detail.summary.id) {
+            self.ask_to_send(queue::PendingSend::Draft(intent), detail);
+            return;
+        }
+        self.generate_now(detail, intent, ctx);
+    }
+
+    fn generate_now(
         &mut self,
         detail: &DocumentDetail,
         intent: crate::work_templates::Intent,
@@ -2311,10 +2457,17 @@ impl PonteApp {
             current_text: current_text.clone(),
         };
         let number = detail.summary.document_number.clone();
-        self.spawn(
-            format!("Gerando minuta de {}…", number),
-            WorkKind::Draft,
-            move |reporter| {
+        let context = queue::note_and_context(&self.store, &self.editors, document_id);
+        self.run_ai_job(queue::QueuedJob {
+            key: queue::QueueKey {
+                kind: WorkKind::Draft,
+                document_id,
+            },
+            label: format!("Gerando minuta de {number}…"),
+            waiting: format!("gerar minuta de {number}"),
+            capture_id,
+            context: context.unwrap_or_default(),
+            task: Box::new(move |reporter| {
                 let outcome = ai::generate_draft(&settings, &job, &reporter);
                 WorkResult::Draft {
                     materials: sources,
@@ -2327,9 +2480,9 @@ impl PonteApp {
                     record: outcome.record,
                     result: outcome.result,
                 }
-            },
-            ctx,
-        );
+            }),
+            ctx: ctx.clone(),
+        });
     }
 
     fn backup(&mut self, ctx: &egui::Context) {
@@ -2398,6 +2551,7 @@ impl PonteApp {
             let what = match &result {
                 WorkResult::Analysis { .. } => "Análise cancelada; nada foi salvo.",
                 WorkResult::Draft { .. } => "Geração da minuta cancelada; nada foi alterado.",
+                WorkResult::AiTest(_) => "Teste da IA cancelado.",
                 _ => "Operação cancelada.",
             };
             let finished_anyway = match &result {
@@ -2529,6 +2683,13 @@ impl PonteApp {
                 }
                 Err(error) => self.mail.accept_fetch_error(error),
             },
+            WorkResult::AiTest(result) => {
+                match &result {
+                    Ok(_) => self.message("Teste da IA concluído. O resultado está em Ajustes ▸ Inteligência artificial."),
+                    Err(error) => self.error(format!("Não foi possível testar a IA: {error}")),
+                }
+                self.ai_test_report = Some(result);
+            }
             WorkResult::Export(result) => match result {
                 Ok(report) => {
                     self.message(format!(
@@ -3173,6 +3334,7 @@ impl eframe::App for PonteApp {
         crate::theme::sync(&ctx);
         self.intranet.attach_repaint(&ctx);
         self.poll_worker();
+        self.start_queued();
         self.reminders.update(&ctx, &self.store);
         if self.reminders.take_open_today() {
             // The person clicked the Windows notice: show what is due.
@@ -3240,6 +3402,7 @@ impl eframe::App for PonteApp {
         let enabled = self.replacement.is_none()
             && !self.trash.asking()
             && !self.exit_confirm
+            && self.send_confirm.is_none()
             && self.leave.is_none();
         if enabled {
             self.shortcuts(&ctx);
@@ -3284,11 +3447,14 @@ impl eframe::App for PonteApp {
                         step,
                         worker.started.elapsed().as_secs()
                     ));
-                    if matches!(worker.kind, WorkKind::Analysis | WorkKind::Draft) {
+                    if matches!(
+                        worker.kind,
+                        WorkKind::Analysis | WorkKind::Draft | WorkKind::AiTest
+                    ) {
                         cancel = ui
                             .add_enabled(
                                 !worker.cancelling(),
-                                egui::Button::new("Cancelar").small(),
+                                widgets::quiet("Cancelar"),
                             )
                             .on_hover_text("Interrompe a IA na próxima etapa. Nada é salvo.")
                             .clicked();
@@ -3297,6 +3463,23 @@ impl eframe::App for PonteApp {
             }
             if cancel {
                 self.cancel_worker();
+            }
+            // The AI job waiting for the running one.
+            let mut drop_queue = false;
+            if let Some(job) = &self.queued {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!(
+                        "Na fila: {} — começa quando terminar o trabalho atual",
+                        job.waiting
+                    ));
+                    drop_queue = ui
+                        .add(widgets::quiet("Tirar da fila"))
+                        .on_hover_text("O trabalho não será feito. Nada é enviado nem salvo.")
+                        .clicked();
+                });
+            }
+            if drop_queue {
+                self.drop_queued();
             }
             // Network line: the sync progress while it runs, otherwise a
             // discreet coloured dot with the short status (moved here from
@@ -3563,10 +3746,12 @@ impl eframe::App for PonteApp {
             self.consult_window(&ctx);
             self.suggestion_window(&ctx);
             self.material_window(&ctx);
+            self.analysis_material_window(&ctx);
             self.mail_window(&ctx);
             self.global_search(&ctx);
         }
         self.confirmations(&ctx);
+        self.send_confirm_window(&ctx);
         if let Some(change) = self.trash.show(
             &ctx,
             &mut self.store,
