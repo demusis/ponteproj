@@ -519,6 +519,21 @@ pub fn clash_sentence(resource: &Resource, clashing: &[ResourceUse], now: &str) 
             resource.name
         );
     };
+    let more = match clashing.len() - 1 {
+        0 => String::new(),
+        1 => " (e mais 1 uso nesse horário)".to_owned(),
+        n => format!(" (e mais {n} usos nesse horário)"),
+    };
+    if first.overdue_at(now) {
+        // Its occupation runs "until now", which would read as "free in a
+        // minute": say what is true, that it was not given back.
+        return format!(
+            "O recurso “{}” já está em uso por {}, com devolução atrasada desde {}{more}.",
+            resource.name,
+            first.who.trim(),
+            moment_label(&first.end)
+        );
+    }
     let until = first
         .occupies_at(now)
         .map(|(_, end)| moment_label(&end))
@@ -527,11 +542,6 @@ pub fn clash_sentence(resource: &Resource, clashing: &[ResourceUse], now: &str) 
         "em uso"
     } else {
         "reservado"
-    };
-    let more = match clashing.len() - 1 {
-        0 => String::new(),
-        1 => " (e mais 1 uso nesse horário)".to_owned(),
-        n => format!(" (e mais {n} usos nesse horário)"),
     };
     format!(
         "O recurso “{}” já está {held} por {} até {until}{more}.",
@@ -860,6 +870,7 @@ impl Store {
         check_uid(&resource.uid)?;
         resource.validate()?;
         if let Some(cfg) = self.client_config()? {
+            self.ensure_host_stores_resources(&cfg)?;
             self.remote_mutate(
                 &cfg,
                 IntranetMutation::SaveResource {
@@ -927,13 +938,15 @@ impl Store {
 
     /// Removes a resource that never had a use; otherwise it is marked
     /// "Fora de uso", which keeps its history.
-    pub fn delete_resource(&mut self, uid: &str) -> Result<()> {
+    pub fn delete_resource(&mut self, uid: &str, expected_version: Option<i64>) -> Result<()> {
         check_uid(uid)?;
         if let Some(cfg) = self.client_config()? {
+            self.ensure_host_stores_resources(&cfg)?;
             self.remote_mutate(
                 &cfg,
                 IntranetMutation::DeleteResource {
                     uid: uid.to_owned(),
+                    expected_version,
                 },
             )?;
             return Ok(());
@@ -958,7 +971,7 @@ impl Store {
             &actor,
             "resource",
             version_key(uid),
-            None,
+            expected_version,
             "delete_resource",
             None,
             &format!("Apagou o recurso \"{}\"", resource.name),
@@ -983,6 +996,7 @@ impl Store {
         check_uid(&item.uid)?;
         item.validate()?;
         if let Some(cfg) = self.client_config()? {
+            self.ensure_host_stores_resources(&cfg)?;
             self.remote_mutate(
                 &cfg,
                 IntranetMutation::SaveResourceUse {
@@ -1002,11 +1016,6 @@ impl Store {
         let resource = load_resource(&tx, &item.resource_uid)?.context(
             "O recurso deste uso não foi encontrado. Ele pode ter sido apagado em outro computador.",
         )?;
-        ensure!(
-            item.quantity <= resource.quantity,
-            "A quantidade passa do que o recurso tem ({}).",
-            resource.quantity
-        );
         let blob: Option<Vec<u8>> = tx
             .query_row(
                 "SELECT payload FROM resource_uses WHERE uid=?1",
@@ -1064,6 +1073,14 @@ impl Store {
                 );
             }
             if !unchanged {
+                // The cap is for what takes the resource now: a closed use,
+                // or one that keeps what it already took, keeps its quantity
+                // even when the resource was lowered after it.
+                ensure!(
+                    stored.quantity <= resource.quantity,
+                    "A quantidade passa do que o recurso tem ({}).",
+                    resource.quantity
+                );
                 let uses = uses_of(&tx, &resource.uid)?;
                 let clashing = clashes(&resource, &uses, &stored, &now);
                 if !clashing.is_empty() {
@@ -1152,13 +1169,15 @@ impl Store {
     }
 
     /// Permanent removal of a use; there is no trash for it.
-    pub fn delete_resource_use(&mut self, uid: &str) -> Result<()> {
+    pub fn delete_resource_use(&mut self, uid: &str, expected_version: Option<i64>) -> Result<()> {
         check_uid(uid)?;
         if let Some(cfg) = self.client_config()? {
+            self.ensure_host_stores_resources(&cfg)?;
             self.remote_mutate(
                 &cfg,
                 IntranetMutation::DeleteResourceUse {
                     uid: uid.to_owned(),
+                    expected_version,
                 },
             )?;
             return Ok(());
@@ -1185,7 +1204,7 @@ impl Store {
             &actor,
             "resource_use",
             version_key(uid),
-            None,
+            expected_version,
             "delete_resource_use",
             document_id,
             &format!(
@@ -1731,9 +1750,9 @@ mod tests {
         assert_eq!(after.created_by, saved.created_by);
         assert_eq!(after.created_at, saved.created_at);
         assert_eq!(after.notes, "MARCADOR_USO_NOTA 2");
-        store.delete_resource_use(&early).unwrap();
+        store.delete_resource_use(&early, None).unwrap();
         assert_eq!(store.list_resource_uses().unwrap().len(), 1);
-        assert!(store.delete_resource_use(&early).is_err());
+        assert!(store.delete_resource_use(&early, None).is_err());
         // The team log names the resource, never who or the notes.
         let events: Vec<String> = store
             .list_team_events(50)
@@ -1799,12 +1818,15 @@ mod tests {
         let uid = store
             .save_resource_use(&use_of(&used, "Servidor A", "09:00", "10:00"), None)
             .unwrap();
-        let error = store.delete_resource(&used.uid).unwrap_err().to_string();
+        let error = store
+            .delete_resource(&used.uid, None)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("Fora de uso"), "{error}");
         assert_eq!(store.list_resources().unwrap().len(), 2);
-        store.delete_resource(&unused.uid).unwrap();
+        store.delete_resource(&unused.uid, None).unwrap();
         assert_eq!(store.list_resources().unwrap().len(), 1);
-        assert!(store.delete_resource(&unused.uid).is_err());
+        assert!(store.delete_resource(&unused.uid, None).is_err());
         // Out of use: the history stays, new bookings are refused, and what
         // was already made can still be returned.
         let mut out = used.clone();
@@ -1829,9 +1851,9 @@ mod tests {
         let mut back = found(&store, &gone_uid);
         back.status = UseStatus::Reserved;
         assert!(store.save_resource_use(&back, None).is_err());
-        store.delete_resource_use(&uid).unwrap();
-        store.delete_resource_use(&gone_uid).unwrap();
-        store.delete_resource(&used.uid).unwrap();
+        store.delete_resource_use(&uid, None).unwrap();
+        store.delete_resource_use(&gone_uid, None).unwrap();
+        store.delete_resource(&used.uid, None).unwrap();
         assert!(store.list_resources().unwrap().is_empty());
     }
 
@@ -2002,5 +2024,74 @@ mod tests {
         assert_eq!(after.task_id, None, "its task went with it");
         assert_eq!(after.saiop_id, Some(attendance.id), "the atendimento stays");
         assert_eq!(after.who, "Servidor A");
+    }
+
+    #[test]
+    fn closed_uses_and_unchanged_ones_keep_their_quantity_when_the_resource_is_lowered() {
+        let (_dir, mut store) = store();
+        let chairs = new_resource(&mut store, "Cadeiras empilháveis", 5);
+        // A use of 3 that was handed back, and a reservation of 3 that
+        // ended in the past: neither stops the quantity going down to 2.
+        let mut back = use_of(&chairs, "Servidor A", "09:00", "10:00");
+        back.quantity = 3;
+        let back_uid = store.save_resource_use(&back, None).unwrap();
+        let mut done = found(&store, &back_uid);
+        done.status = UseStatus::Returned;
+        done.returned_at = Some(at(FAR, "09:30"));
+        store.save_resource_use(&done, None).unwrap();
+        let mut old = back.clone();
+        old.uid.clear();
+        old.start = "2020-01-05T09:00".into();
+        old.end = "2020-01-05T10:00".into();
+        let old_uid = store.save_resource_use(&old, None).unwrap();
+        let mut lower = chairs.clone();
+        lower.quantity = 2;
+        store.save_resource(&lower, None).unwrap();
+        // Their notes can still be edited, and a closed use may be changed.
+        let mut noted = found(&store, &back_uid);
+        noted.notes = "Devolvidas no armário".into();
+        store.save_resource_use(&noted, None).unwrap();
+        noted.quantity = 4;
+        store.save_resource_use(&noted, None).unwrap();
+        let mut noted_old = found(&store, &old_uid);
+        noted_old.notes = "Evento passado".into();
+        store.save_resource_use(&noted_old, None).unwrap();
+        assert_eq!(found(&store, &old_uid).quantity, 3);
+        // What takes the resource now still has to fit.
+        noted_old.end = "2020-01-05T11:00".into();
+        let error = store
+            .save_resource_use(&noted_old, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("tem (2)"), "{error}");
+        let mut fresh = use_of(&chairs, "Servidor B", "09:00", "10:00");
+        fresh.quantity = 3;
+        assert!(store.save_resource_use(&fresh, None).is_err());
+        // Bringing a closed use back also needs it to fit.
+        let mut reopened = found(&store, &back_uid);
+        reopened.status = UseStatus::Reserved;
+        assert!(store.save_resource_use(&reopened, None).is_err());
+    }
+
+    #[test]
+    fn a_loan_past_its_end_is_said_to_be_late_not_free_in_a_minute() {
+        let resource = room();
+        let mut loan = booking("l1", "2026-11-11T09:00", "2026-11-11T17:00");
+        loan.status = UseStatus::InUse;
+        let late = "2026-11-11T18:00";
+        assert_eq!(
+            clash_sentence(&resource, std::slice::from_ref(&loan), late),
+            "O recurso “Sala de reuniões do 2º andar” já está em uso por Servidor B, com devolução atrasada desde 11/11/2026 17:00."
+        );
+        let more = clash_sentence(&resource, &[loan.clone(), loan.clone()], late);
+        assert!(
+            more.ends_with("desde 11/11/2026 17:00 (e mais 1 uso nesse horário)."),
+            "{more}"
+        );
+        // Not late yet: until its end, as before.
+        assert_eq!(
+            clash_sentence(&resource, &[loan], "2026-11-11T16:00"),
+            "O recurso “Sala de reuniões do 2º andar” já está em uso por Servidor B até 11/11/2026 17:00."
+        );
     }
 }

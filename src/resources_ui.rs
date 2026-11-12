@@ -694,6 +694,10 @@ pub struct ResourcesPanel {
     /// "Registrar devolução" was clicked: the time of the return is being
     /// confirmed.
     returning: bool,
+    /// A task made for the return of a use (its uid, the task) that could not
+    /// be linked nor taken back: the next "Criar tarefa de devolução" only
+    /// retries the link, so there are never two.
+    pending_task: Option<(String, i64)>,
     use_error: String,
     focus_end: bool,
     focus_first: bool,
@@ -729,7 +733,9 @@ impl ResourcesPanel {
 
     /// A use or a resource has changes that were not saved.
     pub fn dirty(&self) -> bool {
-        self.use_editor != self.use_saved || self.res_editor != self.res_saved
+        // A return being typed ("Registrar devolução") is unsaved work too:
+        // leaving would drop the time that was typed.
+        self.use_editor != self.use_saved || self.res_editor != self.res_saved || self.returning
     }
 
     /// Ctrl+F: the next frame puts the keyboard in the search box.
@@ -2684,7 +2690,7 @@ impl ResourcesPanel {
             }
             UseAction::Delete => {
                 self.confirm_delete_use = false;
-                match store.delete_resource_use(&ed.uid) {
+                match store.delete_resource_use(&ed.uid, self.use_version) {
                     Ok(()) => {
                         self.close_ficha();
                         self.changed = true;
@@ -2822,7 +2828,18 @@ impl ResourcesPanel {
         task.action = "acompanhar".to_owned();
         task.due_date = moment_date(&item.end);
         let title = task.title.clone();
-        match store.save_task(&task) {
+        // A task made by an earlier click whose link failed is reused.
+        let again = self.pending_task.take().and_then(|(uid, id)| {
+            let alive = store
+                .list_tasks()
+                .is_ok_and(|all| all.iter().any(|t| t.id == id));
+            (uid == item.uid && alive).then_some(id)
+        });
+        let made = match again {
+            Some(id) => Ok(id),
+            None => store.save_task(&task),
+        };
+        match made {
             Ok(id) => {
                 item.task_id = Some(id);
                 let version = self.use_version;
@@ -2840,6 +2857,19 @@ impl ResourcesPanel {
                         self.toast = Some(format!("Tarefa criada: {title}"));
                     }
                     Err(e) => {
+                        // Not linked: the task made a moment ago is taken
+                        // back, so a second click does not make a second
+                        // one. If it cannot be taken back, it is kept for
+                        // the next click, which only retries the link.
+                        let target = crate::trash::Target {
+                            kind: crate::trash::Kind::Task,
+                            id,
+                        };
+                        if store.trash_item(target.clone()).is_ok() {
+                            let _ = store.purge_trash_item(target);
+                        } else {
+                            self.pending_task = Some((item.uid.clone(), id));
+                        }
                         self.use_error = error_sentence(&e.to_string(), "ligar a tarefa ao uso");
                     }
                 }
@@ -3073,7 +3103,7 @@ impl ResourcesPanel {
             }
             ResourceAction::ConfirmDelete => {
                 self.confirm_delete_res = false;
-                match store.delete_resource(&ed.uid) {
+                match store.delete_resource(&ed.uid, self.res_version) {
                     Ok(()) => {
                         let name = ed.name.trim().to_owned();
                         self.close_ficha();
@@ -4117,5 +4147,74 @@ mod tests {
         assert_eq!(task.document_id, Some(document.id));
         assert!(panel.take_message().is_some() && panel.take_changed());
         assert_eq!(panel.link_names.task.as_deref(), Some(task.title.as_str()));
+    }
+
+    fn panel_with_a_saved_use(store: &mut Store) -> (ResourcesPanel, Data) {
+        let mut panel = ResourcesPanel::default();
+        panel.new_use(store, None, None, None).unwrap();
+        let room = store
+            .list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.name == "Auditório")
+            .unwrap();
+        {
+            let editor = panel.use_editor.as_mut().unwrap();
+            editor.resource_uid = room.uid.clone();
+            editor.who = "Servidor C".into();
+            editor.start = "2031-02-10T09:00".into();
+            editor.end = "2031-02-10T11:00".into();
+        }
+        panel.form.start_date = "2031-02-10".into();
+        let now = now_moment();
+        assert!(panel.save_use_as(store, &now, None), "{}", panel.use_error);
+        let data = Data {
+            now,
+            today: chrono::Local::now().date_naive(),
+            resources: store.list_resources().unwrap(),
+            uses: store.list_resource_uses().unwrap(),
+        };
+        (panel, data)
+    }
+
+    #[test]
+    fn a_return_task_that_cannot_be_linked_is_taken_back_and_never_duplicated() {
+        let (_dir, mut store) = seeded_store();
+        let (mut panel, data) = panel_with_a_saved_use(&mut store);
+        let tasks_before = store.list_tasks().unwrap().len();
+        // The use changed elsewhere meanwhile: linking the task is refused.
+        let good_version = panel.use_version;
+        panel.use_version = Some(9999);
+        panel.create_return_task(&mut store, &data);
+        assert!(!panel.use_error.is_empty(), "the error is shown");
+        assert_eq!(
+            store.list_tasks().unwrap().len(),
+            tasks_before,
+            "the task made a moment ago was taken back"
+        );
+        assert!(panel.pending_task.is_none());
+        // Trying again once the version is right makes exactly one.
+        panel.use_version = good_version;
+        panel.use_error.clear();
+        panel.create_return_task(&mut store, &data);
+        assert!(panel.use_error.is_empty(), "{}", panel.use_error);
+        assert_eq!(store.list_tasks().unwrap().len(), tasks_before + 1);
+        panel.create_return_task(&mut store, &data);
+        assert_eq!(
+            store.list_tasks().unwrap().len(),
+            tasks_before + 1,
+            "a linked use does not make another"
+        );
+    }
+
+    #[test]
+    fn a_return_being_typed_counts_as_unsaved_work() {
+        let (_dir, mut store) = seeded_store();
+        let (mut panel, _data) = panel_with_a_saved_use(&mut store);
+        assert!(!panel.dirty());
+        panel.returning = true;
+        assert!(panel.dirty(), "leaving would drop the typed time");
+        panel.returning = false;
+        assert!(!panel.dirty());
     }
 }

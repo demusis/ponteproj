@@ -223,14 +223,14 @@ Só o nome é obrigatório. A **quantidade** diz quantos podem ser usados ao mes
 
 **Situações.** Um uso é *Reservado*, depois *Em uso* e, por fim, *Devolvido*; ou *Cancelado*. Quando o fim previsto passa e o recurso não foi devolvido, o uso aparece como **Atrasado** (não é uma situação a escolher: é um aviso que some quando a devolução é registrada). Uma reserva cujo dia passou sem ser usada vai para os encerrados.
 
-**Quando o horário está ocupado.** O Ponte não guarda duas reservas que passem da quantidade do recurso no mesmo horário. Ele recusa e diz quem está com o recurso e até quando, por exemplo: *O recurso “Sala de reuniões do 2º andar” já está reservado por Servidor B até 12/11/2026 17:00.* Troque o horário (ou o recurso) e salve de novo. Um uso que termina às 10:00 não impede outro que começa às 10:00. Um recurso *em uso* e não devolvido continua ocupado, mesmo depois do fim previsto.
+**Quando o horário está ocupado.** O Ponte não guarda duas reservas que passem da quantidade do recurso no mesmo horário. Ele recusa e diz quem está com o recurso e até quando, por exemplo: *O recurso “Sala de reuniões do 2º andar” já está reservado por Servidor B até 12/11/2026 17:00.* Troque o horário (ou o recurso) e salve de novo. Um uso que termina às 10:00 não impede outro que começa às 10:00. Um recurso *em uso* e não devolvido continua ocupado até ser devolvido: enquanto isso, o Ponte recusa um uso para agora e diz que a devolução está atrasada, e desde quando. Reservas para mais adiante continuam sendo aceitas.
 
 **Durante e depois do uso**, na ficha:
 
 - **Registrar devolução:** mostra **Devolvido em** com a data e a hora de agora; corrija, se preciso, e clique em **Confirmar devolução** (ou em **Voltar**, para desistir).
 - **Prorrogar:** leva ao campo **Fim previsto**; informe a nova data e hora e clique em **Salvar**. Se o novo horário já estiver ocupado, o Ponte avisa.
 - **Cancelar a reserva:** a reserva deixa de ocupar o recurso e vai para os encerrados.
-- **Reabrir** (em usos devolvidos ou cancelados): um uso devolvido volta a *Em uso*; um cancelado volta a *Reservado*.
+- **Reabrir** (em usos devolvidos ou cancelados): um uso devolvido volta a *Em uso*; um cancelado volta a *Reservado*. O horário é conferido de novo: se nesse meio-tempo ele foi ocupado, ou o recurso ficou fora de uso, o Ponte recusa e diz por quê.
 - **Apagar de vez…** apaga o uso, com confirmação. Não há Lixeira para usos, como nos atendimentos. O recurso, o documento e a tarefa ligados permanecem.
 
 Em usos devolvidos ou cancelados, os campos ficam só para leitura.
@@ -268,7 +268,7 @@ Em **Agora e próximos**, o botão **⋯** (Mais ações) tem **Exportar esta li
 
 As observações não saem. **Exportar esta lista…** (em **⋯**, na aba **Agora e próximos**) grava só os usos que a lista mostra naquele momento, com os filtros escolhidos, num arquivo que você escolhe (o nome sugerido é `usos-de-recursos.csv`).
 
-**Em equipe.** Recursos e usos acompanham a equipe ou a pasta compartilhada como o resto do acervo (seção 9). Se duas pessoas reservam o mesmo horário do mesmo recurso, cada uma num computador sem conexão, a primeira reserva a chegar vale. A outra vira um **conflito de edição**, com a explicação de quem ocupou o horário e até quando: para mantê-la, mude o horário ou a quantidade e salve de novo; ou use **Dispensar o aviso**. Os horários são os do relógio de cada computador: todos devem estar no mesmo fuso. **Esta versão muda o formato do acervo: na equipe e com o celular, atualize todos os aparelhos juntos.**
+**Em equipe.** Recursos e usos acompanham a equipe ou a pasta compartilhada como o resto do acervo (seção 9). Se duas pessoas reservam o mesmo horário do mesmo recurso, cada uma num computador sem conexão, vale a que chegar primeiro à sincronização. A outra vira um **conflito de edição**, com a explicação de quem ocupou o horário e até quando: para mantê-la, mude o horário ou a quantidade e salve de novo; ou use **Dispensar o aviso**. O mesmo acontece ao **apagar de vez** um uso ou um recurso que outra pessoa alterou nesse meio-tempo: em vez de apagar por cima, o Ponte mostra o conflito para você decidir. Os horários são os do relógio de cada computador: todos devem estar no mesmo fuso. **Esta versão muda o formato do acervo: na equipe e com o celular, atualize todos os aparelhos juntos.**
 
 **No celular.** No Ponte de bolso (0.7.0), **Recursos** é o terceiro item do seletor, ao lado de Tarefas e Atendimentos, só para consulta: **Usos** (nos mesmos grupos de Agora e próximos) e **Recursos** (o cadastro, com a ocupação de hoje). **Hoje** e o aviso diário do celular contam reservas de hoje e devoluções atrasadas. Reservar e registrar devolução pelo celular vêm numa versão futura; por ora, use o Ponte no computador.
 
@@ -294,7 +294,7 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 
 - **Cópia de segurança:** **Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora** cria uma cópia do acervo na pasta de backups. A página mostra onde as cópias ficam (**Abrir pasta**) e a data da última cópia feita nesta sessão. Ela só abre na mesma conta do Windows.
 - **Lixeira:** excluir documento, tarefa, anexo ou versão importada manda para a **Lixeira** (Ajustes), de onde se restaura. Logo após excluir, o aviso do canto traz **Desfazer** por alguns segundos. Cada item da Lixeira mostra o número e o título do documento, ou o título da tarefa e o documento dela, e a caixa de busca encontra por número, título ou nome do arquivo. Por padrão nada é apagado de vez. Na seção Lixeira você pode definir um prazo, de 7 dias a 1 ano, para a limpeza automática, que o Ponte faz sozinho ao abrir e uma vez por dia. Para apagar antes disso, use **Apagar de vez…** em um item ou **Esvaziar a lixeira…** para todos. O Ponte pergunta antes, e o que for apagado de vez não volta.
-- **Exportar:** **Ajustes ▸ Cópia de segurança e exportação ▸ Exportar dados para CSV…** grava documentos, tarefas, atendimentos, recursos e usos de recursos em cinco arquivos para o Excel, sem textos, observações nem anexos. Os dois últimos são descritos na seção 8.
+- **Exportar:** **Ajustes ▸ Cópia de segurança e exportação ▸ Exportar dados para CSV…** grava documentos, tarefas, atendimentos, recursos e usos de recursos em cinco arquivos para o Excel, sem textos, observações nem anexos. Uma célula que começaria com `=`, `+`, `-` ou `@` sai com um apóstrofo (`'`) na frente, para que o Excel não a trate como fórmula; datas e números não mudam. Os dois últimos são descritos na seção 8.
 - **Ao fechar** com algo não salvo, o Ponte lista o que está pendente, com um botão **Ir para** em cada item.
 
 ## 11. Se algo der errado

@@ -387,7 +387,7 @@ mod tests {
         assert!(page.contains("<h1>Ponte — Guia do usuário</h1>"));
         // Every section is listed and anchored.
         let (_, sections) = render(GUIDE);
-        assert_eq!(sections.len(), 10, "{sections:?}");
+        assert_eq!(sections.len(), 11, "{sections:?}");
         for (id, _) in &sections {
             assert!(
                 page.contains(&format!("href=\"#{id}\"")) && page.contains(&format!("id=\"{id}\""))

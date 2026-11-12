@@ -570,7 +570,19 @@ pub struct CabinetSnapshot {
     /// Recursos and their uses. A copy written before them loads without.
     #[serde(default)]
     pub resources: crate::resources::ResourcesSnapshot,
+    /// The library schema of the computer that wrote this copy (0 when it
+    /// did not say: a Ponte before the recursos). A copy below
+    /// [`RESOURCES_SCHEMA`] knows nothing of recursos, so applying it keeps
+    /// the ones this library has.
+    #[serde(default)]
+    pub schema_version: i64,
 }
+
+/// The first library schema that stores recursos.
+pub(crate) const RESOURCES_SCHEMA: i64 = 15;
+
+/// What a person is told when the main computer cannot store recursos.
+pub(crate) const HOST_WITHOUT_RESOURCES: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda recursos. Atualize o Ponte no computador principal e tente de novo.";
 
 // Captures and file bundles make some variants large. A change is built,
 // sent and stored once, so boxing them would only add noise at every call.
@@ -754,6 +766,11 @@ pub enum IntranetMutation {
     },
     DeleteResource {
         uid: String,
+        /// The version the person saw; a newer one makes the delete a
+        /// conflict instead of removing someone else's change. Absent from
+        /// older computers.
+        #[serde(default)]
+        expected_version: Option<i64>,
     },
     SaveResourceUse {
         item: crate::resources::ResourceUse,
@@ -761,6 +778,8 @@ pub enum IntranetMutation {
     },
     DeleteResourceUse {
         uid: String,
+        #[serde(default)]
+        expected_version: Option<i64>,
     },
 }
 
@@ -874,6 +893,9 @@ pub enum RpcResponse {
         host_member: String,
         documents: usize,
         tasks: usize,
+        /// The host's library schema; absent from a Ponte before the recursos.
+        #[serde(default)]
+        schema_version: i64,
     },
     UpToDate {
         revision: i64,
@@ -911,11 +933,41 @@ struct StoredDraftPayload {
 /// message that a current main computer cannot read is a plain refusal.
 const HOST_TOO_OLD: &str = "Formato de mensagem incompatível com o anfitrião.";
 
+const HOST_CANNOT_READ_START: &str = "O computador principal não entendeu esta mensagem";
+
 fn host_cannot_read() -> String {
     format!(
-        "O computador principal não entendeu esta mensagem (Ponte {}). Atualize o Ponte nos dois computadores.",
+        "{HOST_CANNOT_READ_START} (Ponte {}). Atualize o Ponte nos dois computadores.",
         env!("CARGO_PKG_VERSION")
     )
+}
+
+fn is_resource_mutation(mutation: &IntranetMutation) -> bool {
+    matches!(
+        mutation,
+        IntranetMutation::SaveResource { .. }
+            | IntranetMutation::DeleteResource { .. }
+            | IntranetMutation::SaveResourceUse { .. }
+            | IntranetMutation::DeleteResourceUse { .. }
+    )
+}
+
+impl Store {
+    /// Before a recurso is written through the main computer: refuses, with
+    /// nothing queued, when that computer answers and is a Ponte that does
+    /// not store recursos. When it cannot be reached the change is queued as
+    /// usual (and waits if it turns out to be too old).
+    pub(crate) fn ensure_host_stores_resources(&self, cfg: &IntranetConfig) -> Result<()> {
+        if cfg.mode != IntranetMode::Client || self.host_known_unreachable() {
+            return Ok(());
+        }
+        if let Ok(RpcResponse::Pong { schema_version, .. }) =
+            send_rpc_classified(cfg, &RpcRequest::Ping)
+        {
+            ensure!(schema_version >= RESOURCES_SCHEMA, HOST_WITHOUT_RESOURCES);
+        }
+        Ok(())
+    }
 }
 
 const QUEUE_GREW: &str =
@@ -1563,6 +1615,7 @@ impl Store {
             attachments,
             templates: self.export_templates()?,
             resources: self.export_resources()?,
+            schema_version: crate::storage::SCHEMA_VERSION,
         })
     }
 
@@ -1682,11 +1735,22 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // A copy from a Ponte before the recursos says nothing about them:
+        // this library keeps its own (and their links to documents, which
+        // the deletion of the documents below would otherwise clear).
+        let keep_resources = snapshot.schema_version < RESOURCES_SCHEMA;
+        let mut kept_links: Vec<(String, i64)> = Vec::new();
+        if keep_resources {
+            kept_links = tx
+                .prepare("SELECT uid,document_id FROM resource_uses WHERE document_id IS NOT NULL")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        } else {
+            tx.execute_batch("DELETE FROM resource_uses; DELETE FROM resources;")?;
+        }
         // Clear `trash` first so active-record triggers never block re-inserting archived items.
         tx.execute_batch(
-            "DELETE FROM resource_uses;
-             DELETE FROM resources;
-             DELETE FROM attachment_texts;
+            "DELETE FROM attachment_texts;
              DELETE FROM draft_generations;
              DELETE FROM template_examples;
              DELETE FROM work_template_versions;
@@ -1735,6 +1799,12 @@ impl Store {
             tx.execute(
                 "UPDATE documents SET latest_capture_id=?1 WHERE id=?2",
                 params![doc.latest_capture_id, doc.id],
+            )?;
+        }
+        for (uid, document_id) in &kept_links {
+            tx.execute(
+                "UPDATE resource_uses SET document_id=?1 WHERE uid=?2 AND EXISTS(SELECT 1 FROM documents WHERE id=?1)",
+                params![document_id, uid],
             )?;
         }
         for req in &snapshot.requests {
@@ -1909,7 +1979,9 @@ impl Store {
         }
         // Populate `trash` last so active-item triggers remain satisfied throughout the batch.
         crate::work_templates::apply_templates(&tx, &snapshot.templates)?;
-        crate::resources::apply_resources(&tx, &snapshot.resources)?;
+        if !keep_resources {
+            crate::resources::apply_resources(&tx, &snapshot.resources)?;
+        }
         for t in &snapshot.trash {
             tx.execute(
                 "INSERT INTO trash(kind,item_id,document_id,deleted_at) VALUES(?1,?2,?3,?4)",
@@ -2031,18 +2103,24 @@ impl Store {
             } => self
                 .save_resource(&resource, expected_version)
                 .map(|_| MutationReply::Unit),
-            IntranetMutation::DeleteResource { uid } => {
-                self.delete_resource(&uid).map(|()| MutationReply::Unit)
-            }
+            IntranetMutation::DeleteResource {
+                uid,
+                expected_version,
+            } => self
+                .delete_resource(&uid, expected_version)
+                .map(|()| MutationReply::Unit),
             IntranetMutation::SaveResourceUse {
                 item,
                 expected_version,
             } => self
                 .save_resource_use(&item, expected_version)
                 .map(|_| MutationReply::Unit),
-            IntranetMutation::DeleteResourceUse { uid } => {
-                self.delete_resource_use(&uid).map(|()| MutationReply::Unit)
-            }
+            IntranetMutation::DeleteResourceUse {
+                uid,
+                expected_version,
+            } => self
+                .delete_resource_use(&uid, expected_version)
+                .map(|()| MutationReply::Unit),
             IntranetMutation::RecordGeneration { record } => self
                 .record_generation(&record)
                 .map(|()| MutationReply::Unit),
@@ -3253,6 +3331,26 @@ impl Store {
                     expected_version: ver,
                 }
             }
+            IntranetMutation::DeleteResource {
+                uid,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("resource", &uid));
+                IntranetMutation::DeleteResource {
+                    uid,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::DeleteResourceUse {
+                uid,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("resource_use", &uid));
+                IntranetMutation::DeleteResourceUse {
+                    uid,
+                    expected_version: ver,
+                }
+            }
             other => other,
         }
     }
@@ -3664,6 +3762,20 @@ impl Store {
                 let ver = self.uid_version("resource_use", &item.uid);
                 IntranetMutation::SaveResourceUse {
                     item,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::DeleteResource { uid, .. } => {
+                let ver = self.uid_version("resource", &uid);
+                IntranetMutation::DeleteResource {
+                    uid,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::DeleteResourceUse { uid, .. } => {
+                let ver = self.uid_version("resource_use", &uid);
+                IntranetMutation::DeleteResourceUse {
+                    uid,
                     expected_version: ver,
                 }
             }
@@ -4147,6 +4259,28 @@ impl Store {
                             .clone()
                             .or_else(|| h.returned_at.clone())
                             .or_else(|| Some(crate::resources::now_moment()));
+                    }
+                    // A return before the start cannot be saved: when the two
+                    // sides' times and return do not fit, everything about the
+                    // time comes from the side that gave it back.
+                    if m.status == crate::resources::UseStatus::Returned
+                        && m.returned_at
+                            .as_deref()
+                            .is_some_and(|at| at < m.start.as_str())
+                    {
+                        let side = if local.status == crate::resources::UseStatus::Returned {
+                            &local
+                        } else {
+                            &h
+                        };
+                        m.start = side.start.clone();
+                        m.end = side.end.clone();
+                        m.returned_at = side.returned_at.clone();
+                        m.status = side.status;
+                        kept.push(
+                            "Horário e devolução: os dois lados não combinavam; ficaram os do lado que registrou a devolução"
+                                .to_owned(),
+                        );
                     }
                     if !kept.is_empty() {
                         m.notes.push_str(&format!(
@@ -4745,6 +4879,11 @@ pub fn explain_resolve_error(
         } else {
             format!("{head} O item desta alteração não existe mais no acervo. Para encerrar este aviso, use Dispensar o aviso.")
         };
+    }
+    if error.contains("A devolução não pode ser antes do início")
+        || error.contains("O fim previsto precisa ser depois do início")
+    {
+        return format!("{head} O horário e a devolução deste uso não combinam (a devolução ficaria antes do início, ou o fim antes do começo). Abra o uso, acerte o horário e salve de novo; para encerrar este aviso, use Dispensar o aviso.");
     }
     if error.starts_with("A alteração se refere a um item criado sem conexão") {
         return format!("{head} Esta alteração depende de um item criado sem conexão que não chegou ao acervo. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e use Dispensar o aviso.");
@@ -5497,6 +5636,10 @@ fn mutation_target_key(mutation: &IntranetMutation) -> Option<String> {
         IntranetMutation::SaveResourceUse { item, .. } if !item.uid.is_empty() => {
             Some(format!("resource_use:{}", item.uid))
         }
+        // A delete takes the place of the offline edits of the same item and
+        // keeps the version the first of them saw.
+        IntranetMutation::DeleteResource { uid, .. } => Some(format!("resource:{uid}")),
+        IntranetMutation::DeleteResourceUse { uid, .. } => Some(format!("resource_use:{uid}")),
         _ => None,
     }
 }
@@ -5570,6 +5713,34 @@ fn preserve_original_base_version(
             IntranetMutation::SaveResourceUse { item, .. },
         ) => IntranetMutation::SaveResourceUse {
             item,
+            expected_version: *orig,
+        },
+        (
+            IntranetMutation::SaveResource {
+                expected_version: orig,
+                ..
+            }
+            | IntranetMutation::DeleteResource {
+                expected_version: orig,
+                ..
+            },
+            IntranetMutation::DeleteResource { uid, .. },
+        ) => IntranetMutation::DeleteResource {
+            uid,
+            expected_version: *orig,
+        },
+        (
+            IntranetMutation::SaveResourceUse {
+                expected_version: orig,
+                ..
+            }
+            | IntranetMutation::DeleteResourceUse {
+                expected_version: orig,
+                ..
+            },
+            IntranetMutation::DeleteResourceUse { uid, .. },
+        ) => IntranetMutation::DeleteResourceUse {
+            uid,
             expected_version: *orig,
         },
         (_, other) => other,
@@ -5983,6 +6154,7 @@ pub fn ping_host(cfg: &IntranetConfig) -> Result<(i64, String, usize, usize)> {
             host_member,
             documents,
             tasks,
+            ..
         } => Ok((revision, host_member, documents, tasks)),
         RpcResponse::Error { message } => bail!("{message}"),
         _ => bail!("Resposta inesperada ao verificar o computador principal."),
@@ -6081,6 +6253,13 @@ fn send_rpc_classified(
             return Err(RpcError::Unreachable(
                 "O computador principal está numa versão anterior do Ponte e ainda não reconhece esta alteração; atualize-o. A alteração continua guardada aqui.".into(),
             ));
+        }
+    }
+    if let (RpcResponse::Error { message }, RpcRequest::Mutate { mutation, .. }) = (&rpc, request) {
+        // A main computer before the recursos cannot read these changes: they
+        // wait queued, as for `HOST_TOO_OLD`, instead of becoming conflicts.
+        if message.starts_with(HOST_CANNOT_READ_START) && is_resource_mutation(mutation) {
+            return Err(RpcError::Unreachable(HOST_WITHOUT_RESOURCES.into()));
         }
     }
     if !status.is_success() {
@@ -6481,6 +6660,7 @@ fn process_rpc(
                 host_member: host_cfg.member_name.clone(),
                 documents,
                 tasks,
+                schema_version: crate::storage::SCHEMA_VERSION,
             })
         }
         RpcRequest::Sync { since_revision } => {
@@ -11467,9 +11647,13 @@ mod resources_sync_tests {
         // Deletions are named too, and the labels of the queue say what they are.
         let info = store.conflict_info(&conflict(IntranetMutation::DeleteResource {
             uid: room.uid.clone(),
+            expected_version: None,
         }));
         assert_eq!(info.title, "Exclusão de um recurso");
-        let delete_use = IntranetMutation::DeleteResourceUse { uid: uid.clone() };
+        let delete_use = IntranetMutation::DeleteResourceUse {
+            uid: uid.clone(),
+            expected_version: None,
+        };
         assert_eq!(
             store.conflict_info(&conflict(delete_use.clone())).title,
             "Exclusão de um uso de recurso"
@@ -11609,8 +11793,362 @@ mod resources_sync_tests {
             client.resource_use_version(&first).unwrap(),
             host.resource_use_version(&first).unwrap()
         );
-        client.delete_resource_use(&first).unwrap();
+        client.delete_resource_use(&first, None).unwrap();
         assert!(host.list_resource_uses().unwrap().is_empty());
         server.stop();
+    }
+
+    fn use_status(store: &Store, uid: &str) -> ResourceUse {
+        uses_of(store)
+            .into_iter()
+            .find(|u| u.uid == uid)
+            .expect("the use is there")
+    }
+
+    #[test]
+    fn a_delete_made_on_an_older_copy_is_a_conflict_not_a_silent_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, _) = pair(dir.path());
+        let room = resource(&mut a, "Auditório", 1);
+        let uid = a
+            .save_resource_use(&booking(&room, "Servidor A", "09:00", "10:00"), None)
+            .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        // A hands it back; B, still on the older copy, deletes the use.
+        let mut back = use_status(&a, &uid);
+        back.status = UseStatus::Returned;
+        back.returned_at = Some(format!("{DAY}T09:40"));
+        a.save_resource_use(&back, None).unwrap();
+        b.delete_resource_use(&uid, None).unwrap();
+        assert!(uses_of(&b).is_empty());
+        sync(&mut a);
+        let report = sync(&mut b);
+        assert_eq!(report.conflicts, 1, "{}", report.summary());
+        // A's return survives on both, and B's delete waits for a decision.
+        sync(&mut a);
+        for store in [&a, &b] {
+            assert_eq!(use_status(store, &uid).status, UseStatus::Returned);
+        }
+        let conflicts = b.list_sync_conflicts().unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert!(conflicts[0]
+            .reason
+            .contains("Conflito de edição simultânea"));
+        assert_eq!(
+            b.conflict_views().unwrap()[0].info.title,
+            "Exclusão de um uso de recurso"
+        );
+        // "Usar só a minha versão" deletes anyway.
+        b.resolve_sync_conflict(conflicts[0].id, ConflictResolution::KeepLocal)
+            .unwrap();
+        assert!(uses_of(&b).is_empty());
+        sync(&mut b);
+        sync(&mut a);
+        assert!(uses_of(&a).is_empty());
+
+        // The same for a resource that was changed meanwhile.
+        let spare = resource(&mut a, "Projetor", 1);
+        sync(&mut a);
+        sync(&mut b);
+        let mut renamed = a
+            .list_resources()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.uid == spare.uid)
+            .unwrap();
+        renamed.location = "Almoxarifado".into();
+        a.save_resource(&renamed, None).unwrap();
+        b.delete_resource(&spare.uid, None).unwrap();
+        sync(&mut a);
+        assert_eq!(sync(&mut b).conflicts, 1);
+        assert!(b
+            .list_resources()
+            .unwrap()
+            .iter()
+            .any(|r| r.uid == spare.uid));
+    }
+
+    #[test]
+    fn deletes_keep_the_version_of_the_first_offline_edit_and_old_queues_still_load() {
+        let first = IntranetMutation::SaveResourceUse {
+            item: ResourceUse {
+                uid: "a".repeat(32),
+                ..ResourceUse::default()
+            },
+            expected_version: Some(4),
+        };
+        let delete = IntranetMutation::DeleteResourceUse {
+            uid: "a".repeat(32),
+            expected_version: Some(5),
+        };
+        assert_eq!(mutation_target_key(&first), mutation_target_key(&delete));
+        let IntranetMutation::DeleteResourceUse {
+            expected_version, ..
+        } = preserve_original_base_version(&first, delete)
+        else {
+            panic!("a delete");
+        };
+        assert_eq!(expected_version, Some(4));
+        let delete_resource = IntranetMutation::DeleteResource {
+            uid: "b".repeat(32),
+            expected_version: Some(9),
+        };
+        let save_resource = IntranetMutation::SaveResource {
+            resource: Resource::default(),
+            expected_version: Some(2),
+        };
+        let IntranetMutation::DeleteResource {
+            expected_version, ..
+        } = preserve_original_base_version(&save_resource, delete_resource)
+        else {
+            panic!("a delete");
+        };
+        assert_eq!(expected_version, Some(2));
+        // A delete queued by 0.33.0 (no version) still reads.
+        let old: IntranetMutation =
+            serde_json::from_str(r#"{"DeleteResourceUse":{"uid":"abc"}}"#).unwrap();
+        assert!(matches!(
+            old,
+            IntranetMutation::DeleteResourceUse {
+                expected_version: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn merging_a_return_with_a_changed_time_never_ends_before_it_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, _) = pair(dir.path());
+        let room = resource(&mut a, "Auditório", 1);
+        let uid = a
+            .save_resource_use(&booking(&room, "Servidor A", "09:00", "10:00"), None)
+            .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        // A moves the booking to the afternoon; B gives it back at 09:30.
+        let mut moved = use_status(&a, &uid);
+        moved.start = format!("{DAY}T14:00");
+        moved.end = format!("{DAY}T15:00");
+        a.save_resource_use(&moved, None).unwrap();
+        let mut back = use_status(&b, &uid);
+        back.status = UseStatus::Returned;
+        back.returned_at = Some(format!("{DAY}T09:30"));
+        b.save_resource_use(&back, None).unwrap();
+        sync(&mut a);
+        assert_eq!(sync(&mut b).conflicts, 1);
+        let id = b.list_sync_conflicts().unwrap()[0].id;
+        b.resolve_sync_conflict(id, ConflictResolution::Merge)
+            .expect("the merge is always a valid use");
+        let merged = use_status(&b, &uid);
+        assert_eq!(merged.status, UseStatus::Returned);
+        assert_eq!(
+            merged.returned_at.as_deref(),
+            Some(&*format!("{DAY}T09:30"))
+        );
+        assert_eq!(
+            merged.start,
+            format!("{DAY}T09:00"),
+            "the time of the side that gave it back"
+        );
+        assert!(
+            merged.notes.contains("Horário e devolução"),
+            "{}",
+            merged.notes
+        );
+        // And the card of an error says what to do.
+        let said = explain_resolve_error(
+            IntranetMode::SharedFolder,
+            None,
+            "A devolução não pode ser antes do início.",
+        );
+        assert!(
+            said.contains("não combinam") && said.contains("Dispensar o aviso"),
+            "{said}"
+        );
+    }
+
+    /// A main computer of the version before the recursos: it knows nothing
+    /// of schema 15 and cannot read their changes.
+    fn old_host(snapshot: CabinetSnapshot) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let snapshot_json =
+            serde_json::to_string(&RpcResponse::Snapshot(Box::new(snapshot))).unwrap();
+        let refusal = serde_json::to_string(&RpcResponse::Error {
+            message: host_cannot_read(),
+        })
+        .unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(head_end) = text.find("\r\n\r\n") {
+                        let length = text[..head_end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= head_end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).to_string();
+                let (status, body) = if text.contains("\"Mutate\"") {
+                    ("400 Bad Request", refusal.clone())
+                } else if text.contains("\"Sync\"") {
+                    ("200 OK", snapshot_json.clone())
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"Pong":{"revision":1,"host_member":"Servidor A","documents":0,"tasks":0}}"#
+                            .to_owned(),
+                    )
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        url
+    }
+
+    fn client_of(dir: &std::path::Path, file: &str, url: &str) -> (Store, IntranetConfig) {
+        let mut client = Store::open(&dir.join(file)).unwrap();
+        let cfg = IntranetConfig {
+            mode: IntranetMode::Client,
+            member_name: "Servidor B".into(),
+            host_url: url.into(),
+            cabinet_token: generate_token(),
+            ..IntranetConfig::default()
+        };
+        client.save_intranet_config(&cfg).unwrap();
+        (client, cfg)
+    }
+
+    #[test]
+    fn a_main_computer_without_recursos_is_told_plainly_and_nothing_is_queued_or_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = old_host(CabinetSnapshot::default());
+        let (mut client, cfg) = client_of(dir.path(), "client.sqlite3", &url);
+        // Early: the host answers and is too old, so nothing is written.
+        let error = client
+            .save_resource(
+                &Resource {
+                    name: "Auditório".into(),
+                    ..Resource::default()
+                },
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, HOST_WITHOUT_RESOURCES);
+        assert!(client.list_resources().unwrap().is_empty());
+        assert!(client.list_offline_outbox().unwrap().is_empty());
+        assert_eq!(
+            client
+                .delete_resource_use(&"a".repeat(32), None)
+                .unwrap_err()
+                .to_string(),
+            HOST_WITHOUT_RESOURCES
+        );
+        // The refusal of a change that was queued while the host could not
+        // be reached waits in the queue: it is not a refusal of the change.
+        let mutation = IntranetMutation::SaveResource {
+            resource: Resource {
+                uid: "a".repeat(32),
+                name: "Auditório".into(),
+                ..Resource::default()
+            },
+            expected_version: None,
+        };
+        let sent = send_rpc_classified(
+            &cfg,
+            &RpcRequest::Mutate {
+                actor: "Servidor B".into(),
+                mutation,
+            },
+        );
+        assert!(
+            matches!(&sent, Err(RpcError::Unreachable(m)) if m == HOST_WITHOUT_RESOURCES),
+            "queued, with the plain sentence"
+        );
+        // Any other change keeps being a plain refusal.
+        let other = send_rpc_classified(
+            &cfg,
+            &RpcRequest::Mutate {
+                actor: "Servidor B".into(),
+                mutation: IntranetMutation::SaveNote {
+                    document_id: 1,
+                    note: "x".into(),
+                    expected_version: None,
+                },
+            },
+        );
+        assert!(matches!(other, Err(RpcError::Rejected(_))));
+        // End to end: queued while the host was away, then the host answers
+        // with that refusal: the change stays queued, no conflict.
+        let (mut away, mut away_cfg) = client_of(dir.path(), "away.sqlite3", "http://127.0.0.1:9");
+        away.save_resource(
+            &Resource {
+                name: "Auditório".into(),
+                ..Resource::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(away.list_offline_outbox().unwrap().len(), 1);
+        away_cfg.host_url = url.clone();
+        away.save_intranet_config(&away_cfg).unwrap();
+        let error = away.sync_from_host(false).unwrap_err().to_string();
+        assert_eq!(error, HOST_WITHOUT_RESOURCES);
+        assert_eq!(away.list_offline_outbox().unwrap().len(), 1, "still queued");
+        assert!(away.list_sync_conflicts().unwrap().is_empty());
+        assert_eq!(away.list_resources().unwrap().len(), 1, "and kept here");
+    }
+
+    #[test]
+    fn applying_a_copy_from_a_ponte_before_the_recursos_keeps_the_ones_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut here = Store::open(&dir.path().join("here.sqlite3")).unwrap();
+        let receipt = here
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let room = resource(&mut here, "Auditório", 1);
+        let mut item = booking(&room, "Servidor A", "09:00", "10:00");
+        item.document_id = Some(receipt.document_id);
+        let uid = here.save_resource_use(&item, None).unwrap();
+        // What an older main computer sends: the same library, no recursos,
+        // no schema.
+        let mut copy = here.export_snapshot().unwrap();
+        copy.resources = Default::default();
+        copy.schema_version = 0;
+        here.apply_snapshot(&copy, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        assert_eq!(here.list_resources().unwrap().len(), 1);
+        let kept = use_status(&here, &uid);
+        assert_eq!(kept.document_id, Some(receipt.document_id), "link survives");
+        // A copy from a current computer is the truth, empty or not.
+        copy.schema_version = RESOURCES_SCHEMA;
+        here.apply_snapshot(&copy, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        assert!(here.list_resources().unwrap().is_empty());
+        assert!(here.list_resource_uses().unwrap().is_empty());
     }
 }

@@ -2,6 +2,12 @@
 //! (the gabinete's CERES panels import `.csv` directly: one row per record,
 //! first row with the column titles). Only administrative fields go out:
 //! no document text, notes, drafts, observations or attachments.
+//!
+//! A cell that begins with `=`, `+`, `-` or `@` (after the spaces and tabs
+//! that are dropped) would be run as a formula by Excel and LibreOffice, so
+//! it goes out with an apostrophe in front (`'=1+1`). No column of the five
+//! files legitimately begins with those characters: numbers, hours and ISO
+//! dates begin with a digit, and none is negative.
 use crate::storage::Store;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -247,6 +253,13 @@ fn field(value: &str) -> String {
         .filter(|c| !c.is_control() || *c == '\n')
         .collect();
     let clean = clean.trim();
+    let guarded;
+    let clean = if clean.starts_with(['=', '+', '-', '@']) {
+        guarded = format!("'{clean}");
+        guarded.as_str()
+    } else {
+        clean
+    };
     if clean.contains(SEPARATOR) || clean.contains('"') || clean.contains('\n') {
         format!("\"{}\"", clean.replace('"', "\"\""))
     } else {
@@ -556,6 +569,10 @@ mod tests {
             rows: vec![
                 vec!["com; separador".into(), "diz \"olá\"\ne linha".into()],
                 vec!["x\u{7}y".into(), " espaço ".into()],
+                vec!["=1+1".into(), "\t  +55 65 99999-0000".into()],
+                vec!["-2+3".into(), "@SOMA(A1)".into()],
+                vec!["=HYPERLINK(\"http://x\";\"a\")".into(), "2026-11-13".into()],
+                vec!["1.5".into(), "0".into()],
             ],
         };
         let text = render_csv(&table);
@@ -563,6 +580,12 @@ mod tests {
         let rows = parse(&text);
         assert_eq!(rows[1], ["com; separador", "diz \"olá\"\ne linha"]);
         assert_eq!(rows[2], ["xy", "espaço"]);
+        // Formulas are neutralised, also behind spaces and tabs; what the
+        // files emit on purpose (ISO dates, numbers) is left as it is.
+        assert_eq!(rows[3], ["'=1+1", "'+55 65 99999-0000"]);
+        assert_eq!(rows[4], ["'-2+3", "'@SOMA(A1)"]);
+        assert_eq!(rows[5], ["'=HYPERLINK(\"http://x\";\"a\")", "2026-11-13"]);
+        assert_eq!(rows[6], ["1.5", "0"]);
         assert_eq!(iso_date("2026-11-04T15:38:12.345Z").len(), 10);
         assert_eq!(iso_date("13/11/2026"), "2026-11-13");
         assert_eq!(iso_date("2026-11-13"), "2026-11-13");
