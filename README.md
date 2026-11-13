@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.34.1 (extensão 0.4.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.35.0 (extensão 0.4.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.34.1.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.35.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -766,9 +766,9 @@ Se o Ollama deste computador não responder, a página mostra esses mesmos passo
 
 **Envio ao provedor externo.** O que sai e o que não sai está em [9.1](#91-onde-a-ia-roda). A pergunta *Enviar este documento a …?* aparece uma vez por documento e destino, com **Enviar** e **Cancelar**.
 
-**Fila, progresso e erros passageiros.** Enquanto a IA trabalha, a barra inferior mostra a etapa (*Etapa 1 de 2…*, *Conferindo os trechos…*, *Conferindo as propostas…*) e o botão **Cancelar**, que funciona também durante a espera da resposta. Pedir uma análise ou minuta com outro trabalho em andamento põe o pedido na fila (*Na fila: …*; cabe um; **Tirar da fila** desiste), e ele não roda se o documento, o contexto ou as notas mudarem enquanto espera. Falha passageira do servidor é repetida até duas vezes, com espera (*Nova tentativa em N s (2 de 3)*); resposta cortada por tamanho pede uma versão mais curta; o limite de espera de cada chamada (120 s no Ollama, 180 s no ChatGPT) é dito como tal: *A IA demorou mais que o limite de espera*. A minuta continua com uma chamada e a conferência de antes (citação existente, exemplo sem cópia, texto preservado).
+**Fila, progresso e erros passageiros.** Enquanto a IA trabalha, a barra inferior mostra a etapa (*Etapa 1 de 2…*, *Conferindo os trechos…*, *Conferindo as propostas…*) e o botão **Cancelar**, que funciona também durante a espera da resposta. Pedir uma análise ou minuta com outro trabalho em andamento põe o pedido na fila (*Na fila: …*; cabe um; **Tirar da fila** desiste), e ele não roda se o documento, o contexto ou as notas mudarem enquanto espera. Falha passageira do servidor é repetida até duas vezes, com espera (*Nova tentativa em N s (2 de 3)*); resposta cortada por tamanho pede uma versão mais curta; o limite de espera de cada chamada (120 s no Ollama, 180 s no ChatGPT) é dito como tal: *A IA demorou mais que o limite de espera*. A minuta continua com uma chamada para gerar e a conferência de antes (citação existente, exemplo sem cópia, texto preservado), mais a **Conferência da minuta** ([abaixo](#95-modelos-de-trabalho)).
 
-**Testar a IA com casos fictícios.** Em **Ajustes ▸ Inteligência artificial**, **Testar a IA** envia à IA configurada os documentos fictícios que acompanham o programa (`src/ai_casos.json`: ofício com prazo, pedido de sala por WhatsApp, e-mail com dois pedidos, documento só para ciência, instrução embutida no documento…) e confere o que ela leu e propôs. Não envia nada do acervo, não salva nada nele e, com provedor externo, pergunta antes (uma vez por sessão e destino). O resultado (conferências que passaram por caso, chamadas, tempo e motivos das falhas) pode ser salvo ou copiado e só traz nomes de casos e contagens. Mede aquele modelo com aquelas instruções, varia entre modelos e não garante o acerto nos seus documentos.
+**Testar a IA com casos fictícios.** Em **Ajustes ▸ Inteligência artificial**, **Testar a IA** envia à IA configurada os documentos fictícios que acompanham o programa, em dois grupos, **Análises** (`src/ai_casos.json`: ofício com prazo, pedido de sala por WhatsApp, e-mail com dois pedidos, documento só para ciência, instrução embutida no documento…) e **Minutas** (`src/ai_minutas.json`, em que a IA gera e confere algumas minutas fictícias: o teste leva mais tempo), e confere o que ela leu e propôs. Não envia nada do acervo, não salva nada nele e, com provedor externo, pergunta antes (uma vez por sessão e destino). O resultado (conferências que passaram por caso, chamadas, tempo e motivos das falhas) pode ser salvo ou copiado e só traz nomes de casos e contagens. Mede aquele modelo com aquelas instruções, varia entre modelos e não garante o acerto nos seus documentos.
 
 ### 9.5 Modelos de trabalho
 
@@ -801,7 +801,7 @@ Pessoal é apenas um filtro de exibição. Não protege o conteúdo: quem tem ac
 | **Instruções** | Biblioteca de blocos; anexar ao modelo como obrigatória, opcional ou condicional; editar e publicar versões do bloco. |
 | **Exemplos** | Cadastrar, **Aprovar** ou **Rejeitar** exemplos; anexar arquivos (PDF com texto, .txt, .docx), **Extrair texto** e **Conferir texto…**. |
 | **Referências** | Fontes que o modelo manda conferir. |
-| **Testar** | Usa o documento selecionado em Documentos (a aba diz qual está sendo usado) e mostra o que seria enviado à IA: instruções incluídas, tamanhos e conflitos. **Nada é enviado.** |
+| **Testar** | Mostra o pedido que seria enviado à IA: instruções incluídas, tamanhos e conflitos. É o mesmo pedido de uma geração real, com um documento e uma fonte fictícios no lugar dos seus. **Nada é enviado.** |
 
 **Arquivos de exemplo**
 
@@ -821,6 +821,17 @@ Em **Notas e minutas**, no passo **1. Partir de**, escolha o **Modelo de trabalh
 **Registro de geração e Material utilizado**
 
 Cada geração é registrada, aceita ou recusada. Na lista de versões, **Material utilizado** mostra: modelo e versão; instruções incluídas, com o texto da época; pedido; exemplos; fontes e arquivos; modelo de IA e provedor; e os conflitos avisados. A conferência dos trechos citados mostra que a citação existe na fonte ("trecho encontrado na fonte"). Ela não comprova que a conclusão esteja certa: a revisão é sua.
+
+**Conferência da minuta**
+
+Toda minuta gerada (e a sugestão em revisão) traz o painel **Conferência da minuta**, aberto na janela *Revisar sugestão de minuta* e numa faixa recolhida no editor, com o resumo (*N pontos para conferir*). Nunca impede de salvar nem altera o texto. Tem duas partes de natureza diferente:
+
+- **Conferido pelo Ponte** (sem IA, sempre presente, refeito a cada edição): cabeçalho *MINUTA PARA REVISÃO*; número do documento citado; **Campos a preencher** (`[preencher…]` restantes, com o contexto); **Seções do modelo** (*encontrada* ou *não encontrada*, reconhecidas pelas palavras do título: um título reescrito pode aparecer como *não encontrada*); e **Dados que não constam nas fontes**, isto é, datas, horas, números de documento ou processo e valores em R$ que a minuta escreve e que o Ponte não achou no documento, no contexto, nas fontes selecionadas, nas orientações do modelo nem no texto anterior (em Completar e Revisar). Exemplos aprovados não contam como fonte; a data da própria carta não é apontada. É um aviso para conferir, não prova de erro: valor por extenso no documento e em algarismos na minuta é apontado, e uma lei citada de memória pela IA também (é o esperado).
+- **Critérios do modelo de trabalho (opinião da IA)**, só quando o modelo tem *Confira antes de concluir*: uma chamada a mais depois de gerar, ou sob demanda em **Conferir a minuta**. Os vereditos *Atende*, *Não atende*, *Não se aplica* e *Não conferido* são opinião da IA; o programa só confirma que o trecho citado está escrito na minuta (*trecho encontrado na minuta*), e um *Atende* sem trecho verdadeiro vira *Não conferido*. Depois de uma edição, o painel diz *A minuta mudou depois da conferência.* e permite conferir de novo. Na IA vão só o texto da minuta, os critérios e o número, título e tipo do documento (não o texto do documento); com destino externo há a pergunta *Enviar a minuta a …?*. O resultado fica só no computador onde foi feito (`draft_conferences`, tabela local, fora da sincronização e sem mudar o formato); em outro aparelho, **Conferir a minuta** de novo. **Material utilizado** traz o card *Conferência dos critérios*.
+
+A geração faz no máximo 5 chamadas de IA, contando a conferência, que é pulada com um aviso se o limite acaba. O painel aponta pontos; não declara a minuta pronta, certa ou conforme.
+
+A geração recebe também os trechos que a **análise** achou no documento (datas, horas, quantidades): rode **Analisar** antes de **Gerar com IA**; com a análise desatualizada, eles não são usados. Anexos com texto (PDF com texto, texto simples, Word) podem ser fontes: **Preparar páginas e anexos** os lista com a etiqueta *anexo*, e os sem texto legível ficam em **Cobertura: o que ficou de fora**; a IA os vê só como *Anexo n, página p*.
 
 **Modelos pessoais de versões anteriores**
 
@@ -887,6 +898,7 @@ Por padrão, nada. O que pode sair, e só por escolha sua:
 | O quê | Quando | Para onde |
 |---|---|---|
 | Texto do documento (com número, título, tipo, datas, remetente, destinatário e interessado), notas, contexto e fontes; nunca endereços da internet, números internos, nomes de arquivos, cadastro de recursos, tarefas, atendimentos nem nomes da equipe | A cada clique em **Analisar** ou **Gerar com IA**, nas opções de IA em nuvem, depois da sua confirmação, uma vez por documento ([9.1](#91-onde-a-ia-roda), [9.4](#94-propostas-conferidas-fila-e-envio)) | Ollama Cloud, o servidor informado, a OpenAI ou, com modelo de nuvem (*-cloud*), ollama.com |
+| Texto de uma minuta (que leva trechos do documento) e os critérios do modelo de trabalho, com número, título e tipo do documento; não o texto do documento | Ao clicar em **Conferir a minuta**, ou logo depois de gerar quando o modelo tem critérios (coberta pela confirmação da geração), com destino externo, depois da confirmação (*Enviar a minuta a …?*) | Ollama Cloud, o servidor informado, a OpenAI ou, com modelo de nuvem (*-cloud*), ollama.com |
 | Documentos fictícios de teste | Ao clicar em **Testar a IA**, com provedor externo, depois da confirmação | Ollama Cloud, o servidor informado ou a OpenAI; nada do acervo |
 | O acervo, cifrado com a sua senha | Na pasta compartilhada, ao sincronizar ([8.2](#82-uma-pessoa-dois-computadores-pasta-compartilhada)) | A pasta que você indicou |
 | A página da ficha ([5.7](#57-imprimir-ou-salvar-a-ficha)) | Ao escolher **Imprimir ou salvar a ficha…** | O arquivo `.html` na pasta que você escolheu, **fora do acervo protegido** |
@@ -1044,7 +1056,8 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/ai.rs`, `src/chatgpt.rs` | Cliente Ollama, login e Responses API da OpenAI; execução de uma etapa (formato da resposta, repetição de falhas passageiras, correção por item, orçamento de chamadas, cancelamento); o que é enviado (`capture_for_ai`) |
 | `src/ai_roles.rs` | As duas etapas da análise (Extrator: fatos com trecho literal; Propositor: tarefas, atendimento e reservas que citam fatos) e o programa que as encadeia, sempre conferido contra os fatos |
 | `src/evidence.rs` | Fontes para a IA, conferência literal de trechos e, por fato, de data, hora e quantidade dentro do trecho |
-| `src/ai_eval.rs`, `src/ai_casos.json` | Régua: documentos fictícios com o resultado esperado, rodada nos testes com respostas simuladas e, por **Testar a IA**, ao vivo |
+| `src/draft_check.rs`, `src/app/conference.rs` | Conferência automática da minuta (cabeçalho, número, `[preencher]`, seções do modelo, dados que não constam nas fontes; código puro, sem IA, nada guardado) e o painel **Conferência da minuta**, com a opinião da IA sobre os critérios (papel `conferente`, em `src/ai_roles.rs`; resultado em cache local por hash do texto) |
+| `src/ai_eval.rs`, `src/ai_casos.json`, `src/ai_minutas.json` | Régua: documentos fictícios com o resultado esperado, rodada nos testes com respostas simuladas e, por **Testar a IA**, ao vivo |
 | `src/app/proposals.rs`, `src/app/queue.rs` | Cartão **Propostas** e janela **Material utilizado** da análise; confirmação de envio, fila de trabalhos de IA e avisos de documento que saiu do acervo |
 | `src/work_context.rs`, `src/draft_tools.rs` | Contexto de trabalho; texto-base e comparação de minutas |
 | `src/work_templates.rs` | Modelos de trabalho: dados e versões, instruções, exemplos, registro de geração, migração dos modelos pessoais antigos |
@@ -1079,6 +1092,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 - **Mutações de equipe** (`IntranetMutation`) são a única forma de alterar o acervo em rede; a fila offline e a pasta compartilhada reaplicam as mesmas mutações.
 - **Modelos de trabalho** usam as tabelas `work_templates`, `work_template_versions`, `instruction_blocks`, `instruction_block_versions`, `template_examples` e `draft_generations`. Os itens são endereçados por `uid` (UUID), não pelo número da linha, o que dispensa tradução de números na sincronização; só o registro de geração, que aponta para documento e captura, passa por `idmap`. A camada confiável do prompt só recebe texto de modelo, instruções e pedido; documentos e exemplos vão como dados.
 - **`SCHEMA_VERSION` 12 (11 na 0.20.0):** o acervo muda de formato. Quem está em equipe atualiza todos os computadores juntos, o principal primeiro.
+- **Sem mudança de formato na 0.35.0:** a conferência dos critérios é um cache local (`draft_conferences`), recalculável, fora da sincronização; continuam o formato 16 e o arquivo de sincronização 4.
 - **Formato 16 (arquivo de sincronização 4), na 0.34.0:** a análise passa a guardar `facts` e `proposals`, que uma versão antiga apagaria em silêncio ao regravar. Todos os computadores e o celular (Ponte de bolso 0.7.2) atualizam juntos; um leitor antigo recusa o acervo e o arquivo novos, e um principal antigo recusa a análise com propostas com uma mensagem clara.
 - **Limites:** 500 KiB de texto e 1 MiB por pacote de captura, até 10 PDFs, 8 MiB por PDF e 16 MiB de PDFs por importação, 8 MiB por anexo, 100 MiB por planilha `.xlsx` (256 MiB descompactada).
 - **A extensão só atua em `https://www.sigadoc.mt.gov.br`** e remove segredos de URL. A única exceção é o recurso opcional do WhatsApp Web (`https://web.whatsapp.com`), que fica desligado até a pessoa ligá-lo e só então pede a permissão ao navegador.

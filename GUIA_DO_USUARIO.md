@@ -140,7 +140,7 @@ Se o painel não reconhecer a página (*O Ponte não reconheceu esta página do 
 
 - **Notas:** escreva e clique em **Salvar notas** (ou Ctrl+S). O ponto laranja na aba indica algo não salvo. Com a janela larga, as notas ficam à esquerda e a minuta à direita; com a janela estreita, a nota mostra as primeiras linhas, com **Editar nota** e **Recolher**. **Editar nota**, no card Nota do Resumo, leva às Notas e minutas com a nota aberta e o cursor nela, pronta para digitar. Notas vindas da extensão (seção 3) aparecem ali, ao fim do texto, com a data.
 - **Minuta** (em Notas e minutas), em três passos. **1. Partir de:** escolha o **Tipo** (*Resposta*, *Encaminhamento*, *Pedido de complementação*) e, se quiser, o **Modelo de trabalho**; **Começar por um modelo** preenche o texto-base, sem IA. **2. Pedir à IA (opcional).** **3. Texto:** escreva ou edite; **Salvar nova versão** guarda o texto (Ctrl+S também, com a nota já salva), **Copiar** copia, **Exportar (RTF)** cria um arquivo para o Word, **Comparar com versão ▾** mostra as diferenças e **Guardar como modelo** leva o texto para a área Modelos. O texto final você cola no SIGADOC.
-- **IA (opcional):** **Analisar** (depois, **Analisar de novo**), no card Análise do Resumo, ou, no passo 2 da minuta, **Gerar com IA**, **Completar** ou **Revisar**, com o que você quer em **Pedido desta minuta**. A análise traz o resumo, a prioridade e as **Propostas** de tarefas, atendimento e reservas (veja **Propostas da IA**, abaixo). A sugestão de minuta abre para revisão e só é salva quando você salvar.
+- **IA (opcional):** **Analisar** (depois, **Analisar de novo**), no card Análise do Resumo, ou, no passo 2 da minuta, **Gerar com IA**, **Completar** ou **Revisar**, com o que você quer em **Pedido desta minuta**. A análise traz o resumo, a prioridade e as **Propostas** de tarefas, atendimento e reservas (veja **Propostas da IA**, abaixo). A sugestão de minuta abre para revisão e só é salva quando você salvar; junto dela vem a **Conferência da minuta** (veja abaixo).
 
 **Ajustes ▸ Inteligência artificial** define onde a IA roda. São quatro cartões, e cada um diz se os textos saem do computador (clique em **Salvar** ou saia da seção):
 
@@ -188,11 +188,34 @@ O resultado aparece no card **Análise**, em **Propostas (revise antes de usar)*
 
 ### Testar a IA
 
-Em **Ajustes ▸ Inteligência artificial**, o card **Testar a IA com casos fictícios** envia à IA configurada uma série de documentos fictícios, que acompanham o Ponte (um ofício com prazo, um pedido de sala por WhatsApp, um e-mail com dois pedidos, um comunicado só para ciência, um documento sem nada a propor, entre outros), e confere se ela leu e propôs o que se esperava. **Nada do seu acervo, das suas notas nem do cadastro de recursos é enviado, e nada é salvo nele.** Com um provedor externo, o Ponte pergunta antes (*Enviar os casos fictícios a …?*), uma vez por sessão e destino.
+Em **Ajustes ▸ Inteligência artificial**, o card **Testar a IA com casos fictícios** envia à IA configurada uma série de documentos fictícios, que acompanham o Ponte (um ofício com prazo, um pedido de sala por WhatsApp, um e-mail com dois pedidos, um comunicado só para ciência, um documento sem nada a propor, entre outros), e confere se ela leu e propôs o que se esperava. O card tem dois grupos de casos, **Análises** e **Minutas**: nas minutas, a IA gera e confere algumas minutas fictícias, o que deixa o teste mais demorado. **Nada do seu acervo, das suas notas nem do cadastro de recursos é enviado, e nada é salvo nele.** Com um provedor externo, o Ponte pergunta antes (*Enviar os casos fictícios a …?*), uma vez por sessão e destino.
 
 Clique em **Testar a IA** (ele fica desligado enquanto outro trabalho roda, se a configuração tem alterações sem salvar ou se não há modelo escolhido); pode levar alguns minutos, e **Cancelar** interrompe. O resultado traz, para cada caso, quantas conferências passaram, quantas chamadas e quantos segundos foram gastos, com o motivo de cada falha, e o total. **Salvar o resultado…** e **Copiar** guardam o texto, que só tem os nomes dos casos e as contagens, sem o conteúdo de documento nenhum.
 
 O resultado mede **este modelo, com estas instruções, nestes casos**. Ele varia de um modelo para outro e pode variar de uma rodada para outra. Serve para comparar modelos e para saber se uma troca piorou algo; não garante que a IA acertará nos seus documentos, que continuam exigindo a sua revisão.
+
+### Conferência da minuta
+
+Depois de **Gerar com IA**, **Completar** ou **Revisar**, a minuta traz a **Conferência da minuta**. Ela aparece na janela *Revisar sugestão de minuta* e, depois, no editor, em uma faixa fechada que já diz quantos pontos há para conferir (por exemplo, *Conferência da minuta — 2 pontos para conferir*); clique para abrir. A conferência **nunca impede de salvar e nunca muda o texto**: ela só aponta. Tem duas partes, de natureza bem diferente.
+
+**Conferido pelo Ponte** (sem IA). Está sempre lá, e é refeito a cada alteração do texto:
+
+- **Cabeçalho “MINUTA PARA REVISÃO”:** presente ou ausente.
+- **Número do documento citado:** sim ou não.
+- **Campos a preencher:** quantos `[preencher…]` restam, cada um com um pedaço do texto em volta.
+- **Seções do modelo:** cada seção do modelo de trabalho aparece como *encontrada* ou *não encontrada* (as obrigatórias vêm primeiro). O Ponte reconhece a seção pelas palavras do título; uma seção cujo título foi reescrito com outras palavras pode aparecer como *não encontrada* mesmo estando no texto.
+- **Dados que não constam nas fontes:** datas, horas, números de documento ou processo e valores em R$ que a minuta escreve e que o Ponte não achou no documento, no contexto, nas fontes selecionadas, nas orientações do modelo nem no texto anterior (em *Completar* e *Revisar*). A data da própria carta não é apontada. **É um aviso para conferir, não prova de erro:** um valor escrito por extenso no documento e em algarismos na minuta é apontado; uma lei que a IA citou de memória também é apontada, e é isso mesmo que se quer.
+
+**Critérios do modelo de trabalho (opinião da IA).** Só aparece quando o modelo de trabalho tem critérios em *Confira antes de concluir*. A IA recebe uma chamada a mais, logo depois de gerar, ou quando você clica em **Conferir a minuta**, e dá a sua opinião sobre cada critério: **Atende**, **Não atende**, **Não se aplica** ou **Não conferido**. O veredito é opinião da IA. A única coisa que o Ponte confirma é que o trecho que a IA citou está escrito na minuta (*trecho encontrado na minuta*); um *Atende* sem trecho verdadeiro vira *Não conferido*. Se você edita a minuta depois, o painel avisa *A minuta mudou depois da conferência.* e você pode conferir de novo. Se as chamadas de IA da geração acabaram antes, a minuta sai sem essa parte, com um aviso, e **Conferir a minuta** a faz depois. O resultado fica só no computador em que foi feito: em outro aparelho, clique em **Conferir a minuta** de novo. A parte automática é refeita em qualquer aparelho. Em **Material utilizado**, o card **Conferência dos critérios** resume o resultado.
+
+**O que vai à IA nesta conferência:** o texto da minuta (que leva trechos do documento), os critérios do modelo de trabalho e o número, o título e o tipo do documento. O texto do documento em si não vai. Com um provedor externo, o Ponte pergunta antes, como nos outros trabalhos de IA: *Enviar a minuta a …?*. Cada geração, contando a conferência, faz no máximo 5 chamadas de IA; se o limite acaba, a conferência é pulada, com um aviso.
+
+**O que a conferência garante, e o que não garante.** Ela aponta pontos para você olhar: não diz que a minuta está pronta, certa ou de acordo com o modelo. Um painel sem pontos (*Nada a apontar na conferência automática*) só quer dizer que o Ponte não achou nada a apontar. O conteúdo, a redação e a conclusão continuam sendo revisados por você.
+
+**Minutas melhores.** Duas coisas ajudam a IA a escrever:
+
+- **Rode Analisar antes de Gerar com IA.** A geração passa a receber também os trechos que a análise achou no documento (datas, horas e quantidades), e prefere esses dados. Se a análise está desatualizada (o documento, o contexto ou as notas mudaram), esses trechos não são usados.
+- **Anexos como fontes.** No bloco **Outros documentos e páginas para a IA**, **Preparar páginas e anexos** lê, no seu computador, os PDFs e também os anexos com texto (PDF com texto, texto simples e Word) do documento e dos marcados. Os anexos aparecem com a etiqueta *anexo* e podem ser marcados como fontes, como as páginas. Os que não têm texto legível (uma foto, um PDF escaneado) aparecem em **Cobertura: o que ficou de fora**. A IA os vê como *Anexo n, página p*, sem o nome do arquivo.
 
 ### Modelos de trabalho
 
@@ -204,10 +227,10 @@ O caminho do dia a dia:
 2. **Estrutura:** ajuste as seções, as variáveis e os critérios de conferência. **Salvar rascunho**.
 3. **Instruções:** cadastre as regras de redação e clique em **Publicar versão** em cada uma (só instrução publicada pode ser adicionada a um modelo). Depois, na aba **Instruções** do modelo, escolha **Adicionar instrução ao modelo** e defina cada uma como *obrigatória*, *opcional* ou *condicional*.
 4. **Exemplos:** cadastre respostas boas e clique em **Aprovar**. Pode anexar o arquivo da resposta real (PDF com texto, .txt ou .docx) e clicar em **Extrair texto**; se quiser, leia e corrija em **Conferir texto…**. Só exemplo aprovado, com texto extraído ou conferido, é usado. Eles ensinam organização e tom, nunca os fatos do caso.
-5. **Testar:** com o documento desejado selecionado em Documentos (a aba diz qual está sendo usado), veja o que seria enviado à IA. Nada é enviado.
+5. **Testar:** veja o pedido que seria enviado à IA. É o mesmo pedido de uma geração real, com um documento e uma fonte fictícios no lugar dos seus. Nada é enviado.
 6. **Publicar:** **Publicar versão N**. Para mudar depois, revise: o Ponte cria a versão seguinte, e as minutas antigas continuam ligadas à versão que usaram.
 7. **Usar:** em **Notas e minutas**, escolha o **Modelo de trabalho** (o Ponte pode sugerir um pelas palavras do documento; a escolha é sua), marque as **Instruções opcionais** que valem para o caso e escreva o **Pedido desta minuta**. Depois clique em **Gerar com IA**, **Completar** (preserva o que já está escrito) ou **Revisar** (abre a comparação antes de substituir).
-8. **Conferir:** na lista de versões, **Material utilizado** mostra o modelo, as instruções, os exemplos e as fontes que a geração usou. Um trecho "encontrado na fonte" prova só que a citação existe, não que a conclusão está certa.
+8. **Conferir:** na lista de versões, **Material utilizado** mostra o modelo, as instruções, os exemplos e as fontes que a geração usou. Um trecho "encontrado na fonte" prova só que a citação existe, não que a conclusão está certa. A **Conferência da minuta** aparece junto do texto (veja abaixo).
 
 Se duas instruções se contradisserem, o Ponte avisa antes de gerar. É só um aviso: decida você.
 
@@ -326,6 +349,8 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 
 **Atualizar em equipe.** A versão 0.34.0 (as propostas da IA) muda o formato do acervo (16) e o do arquivo de sincronização (4): **atualize todos os computadores e o celular juntos** (Ponte 0.34.0 e Ponte de bolso 0.7.2). Um aparelho que ficar na versão anterior recusa o acervo e o arquivo novos e diz para atualizar; nada se perde. Com um computador principal, atualize primeiro o principal: um principal na versão anterior recusa, com uma mensagem clara, a análise que traz propostas.
 
+A versão 0.35.0 (conferência da minuta) não muda o formato: os mesmos 16 e 4. Não é preciso atualizar todos os aparelhos no mesmo dia.
+
 **Nunca** instale o Ponte nem copie o acervo para dentro do Google Drive ou do OneDrive: o acervo só abre na conta do Windows que o gravou.
 
 ## 10. Cópia de segurança, lixeira e exportação
@@ -351,6 +376,9 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 | "Atualize o Ponte para guardar conversas do WhatsApp" | O Ponte instalado é anterior à 0.32. Instale a versão mais recente e reinicie o navegador. |
 | O Ponte diz que o recurso já está reservado ou em uso | Não é erro: o horário escolhido está ocupado. A frase diz por quem e até quando. Escolha outro horário, ou outro recurso, ou espere a devolução. Em **Ocupação do dia**, na ficha da reserva, aparecem os horários já tomados. |
 | O Ponte diz que o arquivo ou o acervo é de uma versão mais nova | Outro computador ou o celular já está na versão nova. Instale a versão mais recente do Ponte neste computador (e a do Ponte de bolso, no celular). Nada se perdeu. |
+| A conferência da minuta diz que um dado não consta nas fontes, mas ele está certo | É um aviso, não um erro provado. O Ponte só procura o dado, escrito do mesmo jeito, no documento, no contexto, nas fontes marcadas, nas orientações do modelo e no texto anterior. Valores por extenso no documento e em algarismos na minuta, ou dados de um anexo ou página não marcados como fonte, aparecem assim. Marque a fonte e gere de novo, ou confira o dado e siga em frente. |
+| A seção do modelo aparece como *não encontrada* | O Ponte reconhece a seção pelas palavras do título. Se a IA reescreveu o título, ou a seção ficou sem ele, o aviso aparece mesmo com o conteúdo no texto. Confira o texto; se a seção está lá, ignore o aviso. |
+| *A minuta mudou depois da conferência.* | Você editou o texto depois que a IA deu a opinião sobre os critérios, então ela já não vale para este texto. Clique em **Conferir a minuta** para pedir de novo. |
 | "A IA demorou mais que o limite de espera" | O modelo levou mais tempo que o limite de uma chamada (120 segundos no Ollama, 180 no ChatGPT). Tente de novo, use um modelo menor ou verifique o servidor de IA. A análise faz mais de uma chamada, então documentos longos pedem modelos mais rápidos. |
 | Cliquei em **Analisar** e apareceu "Na fila" | Não é erro: outro trabalho de IA está em andamento, e o seu começa quando ele terminar. **Tirar da fila**, na barra inferior, desiste. |
 | "Este documento não está mais no acervo" | O documento foi apagado de vez ou saiu numa sincronização (outro computador o apagou). A lista foi atualizada. Se o aviso for "Este documento está na Lixeira", use **Abrir a Lixeira** e restaure-o. |
