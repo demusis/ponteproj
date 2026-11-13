@@ -265,13 +265,31 @@ impl Login {
     /// (`invalid_grant`), and the documented recovery is to authorize again
     /// with the client id just issued.
     pub fn wait(
-        mut self,
+        self,
         cancel: &AtomicBool,
         timeout: Duration,
         open_browser: fn(&str) -> Result<()>,
     ) -> Result<ChatGptSession> {
+        self.wait_keeping(cancel, timeout, open_browser, &mut None)
+    }
+
+    /// `wait`, telling in `issued` the client id OpenAI issued on the way,
+    /// even when the sign-in then fails. The caller must keep it: OpenAI
+    /// binds the registration of this computer to that id, and a new
+    /// registration for the same computer is refused in the browser
+    /// ("Agent registration session changed; restart sign-in").
+    pub fn wait_keeping(
+        mut self,
+        cancel: &AtomicBool,
+        timeout: Duration,
+        open_browser: fn(&str) -> Result<()>,
+        issued: &mut Option<String>,
+    ) -> Result<ChatGptSession> {
         self.listener.set_nonblocking(true)?;
         let mut callback = self.receive_callback(cancel, timeout)?;
+        if self.expected_client.is_none() && !callback.client_id.trim().is_empty() {
+            *issued = Some(callback.client_id.clone());
+        }
         let client = http(Duration::from_secs(30))?;
         let mut tokens = exchange_code(
             &client,
@@ -313,7 +331,7 @@ impl Login {
             }
         }
         let tokens = tokens.map_err(|error| {
-            anyhow::anyhow!("{error} Clique em “Entrar com o ChatGPT…” para tentar de novo; o registro deste computador na OpenAI foi mantido.")
+            anyhow::anyhow!("{error} Clique em “Entrar com o ChatGPT…” para tentar de novo.")
         })?;
         self.finish(callback, tokens, &client)
     }
@@ -550,18 +568,33 @@ struct TokenResponse {
 }
 
 fn token_request(client: &Client, form: &[(&str, &str)]) -> Result<TokenResponse> {
-    let response = client
-        .post(TOKEN_URL)
-        .header("Accept", "application/json")
-        .form(form)
-        .send()
-        .map_err(|error| {
-            if error.is_timeout() {
-                anyhow::anyhow!("A OpenAI demorou demais para responder ao login.")
-            } else {
-                anyhow::anyhow!("Não foi possível falar com a OpenAI para concluir o login. Verifique a conexão com a internet.")
+    // A connection that could not even be opened never delivered the code,
+    // so trying again is safe; anything later is not repeated (the code is
+    // good for one use).
+    let mut tries = 0;
+    let response = loop {
+        tries += 1;
+        match client
+            .post(TOKEN_URL)
+            .header("Accept", "application/json")
+            .form(form)
+            .send()
+        {
+            Ok(response) => break response,
+            Err(error) if error.is_connect() && tries < 3 => {
+                std::thread::sleep(Duration::from_secs(2 * tries));
             }
-        })?;
+            Err(error) => {
+                bail!(if error.is_timeout() {
+                    "A OpenAI demorou demais para responder ao login."
+                } else if error.is_connect() {
+                    "O Ponte não conseguiu abrir a conexão com a OpenAI (auth.openai.com) para concluir o login, em três tentativas. Verifique a internet e se um antivírus, firewall ou proxy está bloqueando o Ponte."
+                } else {
+                    "A conexão com a OpenAI caiu durante o login. Verifique a internet."
+                });
+            }
+        }
+    };
     let status = response.status();
     let body = read_limited(response, MAX_ERROR_BYTES)?;
     if !status.is_success() {

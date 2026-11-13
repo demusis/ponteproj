@@ -1100,7 +1100,9 @@ struct Consult {
 /// "Entrar com o ChatGPT" in progress: the browser is open and a thread
 /// waits for the callback.
 struct ChatGptLogin {
-    receiver: Receiver<std::result::Result<ChatGptSession, String>>,
+    /// The outcome and, when OpenAI issued one on the way, the client id of
+    /// this computer's registration (kept even if the sign-in failed).
+    receiver: Receiver<(std::result::Result<ChatGptSession, String>, Option<String>)>,
     cancel: Arc<AtomicBool>,
     authorize_url: String,
 }
@@ -2059,7 +2061,7 @@ impl PonteApp {
             .as_ref()
             .map(|login| login.receiver.try_recv());
         match received {
-            Some(Ok(Ok(session))) => {
+            Some(Ok((Ok(session), _))) => {
                 self.chatgpt_login = None;
                 let label = session.account_label.clone();
                 let sharing = session.sharing();
@@ -2077,9 +2079,25 @@ impl PonteApp {
                 self.models_for = None;
                 self.fetch_models(ctx);
             }
-            Some(Ok(Err(error))) => {
+            Some(Ok((Err(error), issued))) => {
                 self.chatgpt_login = None;
-                self.chatgpt_login_error = Some(error);
+                // The registration of this computer was made even though the
+                // sign-in did not finish: keep its client id, or the next try
+                // would register again and OpenAI would refuse it.
+                let kept = match issued {
+                    Some(client_id) if self.ai.chatgpt.client_id.trim().is_empty() => {
+                        let mut session = self.ai.chatgpt.clone();
+                        session.client_id = client_id;
+                        self.set_chatgpt_session(session);
+                        self.save_ai_config()
+                    }
+                    _ => false,
+                };
+                self.chatgpt_login_error = Some(if kept {
+                    format!("{error} O registro deste computador foi guardado: a próxima tentativa continua dele.")
+                } else {
+                    error
+                });
             }
             Some(Err(TryRecvError::Disconnected)) => {
                 self.chatgpt_login = None;

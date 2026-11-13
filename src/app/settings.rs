@@ -652,6 +652,20 @@ impl PonteApp {
                             );
                         });
                     }
+                    if self.chatgpt_login_error.is_some() && !in_progress && !signed_in {
+                        // The way out when the OpenAI page itself refuses the
+                        // sign-in of this computer ("Agent registration session
+                        // changed; restart sign-in"): close its tabs and, if it
+                        // persists, register this computer afresh.
+                        widgets::small_muted(ui, "Se a página da OpenAI mostrar “Agent registration session changed; restart sign-in”, feche as abas da OpenAI abertas no navegador e clique de novo em “Entrar com o ChatGPT…”. Se continuar, recomece o registro:");
+                        if ui
+                            .add(widgets::quiet("Recomeçar o registro deste computador"))
+                            .on_hover_text("Esquece o registro anterior deste computador na OpenAI e faz um novo na próxima entrada. Não apaga nada do acervo.")
+                            .clicked()
+                        {
+                            self.restart_chatgpt_registration();
+                        }
+                    }
                     widgets::small_muted(ui, "Requer assinatura ChatGPT Plus ou Pro (conta gratuita entra, mas não libera o uso do plano). O login é feito no navegador, em auth.openai.com, e retorna ao Ponte neste computador.");
                 }
                 AiProvider::Local => {
@@ -1153,10 +1167,16 @@ impl PonteApp {
         match std::thread::Builder::new()
             .name("ponte-chatgpt-login".into())
             .spawn(move || {
+                let mut issued = None;
                 let result = login
-                    .wait(&flag, chatgpt::LOGIN_TIMEOUT, crate::windows_ui::open_url)
+                    .wait_keeping(
+                        &flag,
+                        chatgpt::LOGIN_TIMEOUT,
+                        crate::windows_ui::open_url,
+                        &mut issued,
+                    )
                     .map_err(|e| e.to_string());
-                let _ = sender.send(result);
+                let _ = sender.send((result, issued));
                 repaint.request_repaint();
             }) {
             Ok(_) => {
@@ -1170,6 +1190,23 @@ impl PonteApp {
                 self.chatgpt_login_error =
                     Some(format!("Não foi possível iniciar o login: {error}"));
             }
+        }
+    }
+
+    /// A fresh registration of this computer at OpenAI on the next sign-in:
+    /// a new host identification and no issued client id. For a sign-in the
+    /// OpenAI page refuses because of a registration left half-way.
+    fn restart_chatgpt_registration(&mut self) {
+        if self.chatgpt_login.is_some() || self.ai.chatgpt.signed_in() {
+            return;
+        }
+        self.ai.chatgpt_host_id = chatgpt::new_host_id();
+        let mut session = self.ai.chatgpt.without_tokens();
+        session.client_id.clear();
+        self.set_chatgpt_session(session);
+        self.chatgpt_login_error = None;
+        if self.save_ai_config() {
+            self.message("Registro recomeçado. Clique em “Entrar com o ChatGPT…”.".to_owned());
         }
     }
 
