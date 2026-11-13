@@ -646,13 +646,14 @@ pub fn list_models(settings: &AiSettings) -> Result<Vec<ModelInfo>> {
         return crate::chatgpt::list_models(shared);
     }
     let (url, local) = endpoint(settings, "/api/tags")?;
-    let mut builder = Client::builder()
-        .connect_timeout(MODELS_CONNECT_TIMEOUT)
-        .timeout(MODELS_REQUEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none());
-    if local {
-        builder = builder.no_proxy();
+    let builder = if local {
+        Client::builder().no_proxy()
+    } else {
+        crate::netdiag::client_builder()
     }
+    .connect_timeout(MODELS_CONNECT_TIMEOUT)
+    .timeout(MODELS_REQUEST_TIMEOUT)
+    .redirect(reqwest::redirect::Policy::none());
     let client = builder
         .build()
         .context("Não foi possível preparar a conexão de IA.")?;
@@ -664,8 +665,13 @@ pub fn list_models(settings: &AiSettings) -> Result<Vec<ModelInfo>> {
     let response = request.send().map_err(|error| {
         if error.is_timeout() {
             anyhow::anyhow!("O servidor de IA demorou demais para listar os modelos.")
-        } else if error.is_connect() {
+        } else if error.is_connect() && local {
             anyhow::anyhow!("Não foi possível conectar ao servidor de IA. Verifique o endereço e se o Ollama está em execução.")
+        } else if error.is_connect() {
+            anyhow::anyhow!(crate::netdiag::explain(
+                &error,
+                &crate::netdiag::host_of(&error, "o servidor de IA")
+            ))
         } else {
             anyhow::anyhow!("Falha na comunicação com o servidor de IA.")
         }
@@ -2533,13 +2539,20 @@ fn send_failure(error: &reqwest::Error, local: bool, limit: Duration) -> anyhow:
     if error.is_timeout() {
         Transient::error(timeout_message(limit), None)
     } else if error.is_connect() {
-        let message = "Não foi possível conectar à IA. Verifique o endereço do servidor e se o Ollama está em execução.";
         // A server on this computer that is not there will not be there in a
-        // few seconds; a remote one may be a hiccup of the network.
+        // few seconds; a remote one may be a hiccup of the network (or a
+        // proxy, a firewall, an inspection of secure connections: said as such).
         if local {
-            anyhow::anyhow!(message)
+            anyhow::anyhow!("Não foi possível conectar à IA. Verifique o endereço do servidor e se o Ollama está em execução.")
         } else {
-            Transient::error(message, None)
+            let failure = crate::netdiag::classify(error);
+            let message =
+                crate::netdiag::explain(error, &crate::netdiag::host_of(error, "o servidor de IA"));
+            if crate::netdiag::worth_retrying(failure) {
+                Transient::error(message, None)
+            } else {
+                anyhow::anyhow!(message)
+            }
         }
     } else if error.is_builder() {
         anyhow::anyhow!("Não foi possível preparar a conexão de IA.")
@@ -2594,7 +2607,7 @@ pub(crate) fn with_retries<T>(
             .unwrap_or(timing.waits[failures]);
         reporter.step(format!(
             "A IA não respondeu: {} Nova tentativa em {} s ({} de {})…",
-            transient.message,
+            transient.message.lines().next().unwrap_or(""),
             wait.as_secs().max(1),
             failures + 2,
             TRANSIENT_RETRIES + 1
@@ -2895,13 +2908,14 @@ fn chat_once(
         );
     }
     let (url, local) = endpoint(settings, "/api/chat")?;
-    let mut builder = Client::builder()
-        .connect_timeout(OLLAMA_CONNECT_TIMEOUT)
-        .timeout(timing.ollama_timeout)
-        .redirect(reqwest::redirect::Policy::none());
-    if local {
-        builder = builder.no_proxy();
+    let builder = if local {
+        Client::builder().no_proxy()
+    } else {
+        crate::netdiag::client_builder()
     }
+    .connect_timeout(OLLAMA_CONNECT_TIMEOUT)
+    .timeout(timing.ollama_timeout)
+    .redirect(reqwest::redirect::Policy::none());
     let client = builder
         .build()
         .context("Não foi possível preparar a conexão de IA.")?;
@@ -3108,6 +3122,8 @@ fn ollama_failure(status: u16, body: &[u8], model: &str, local: bool) -> OllamaF
         format!("O nome de modelo “{model}” não é aceito pelo Ollama. Em Ajustes ▸ Inteligência artificial, clique em “Listar modelos do servidor” e escolha um da lista.")
     } else if lower.contains("memory") {
         "O computador não tem memória livre para este modelo com um documento deste tamanho. Feche outros programas, use um modelo menor ou escolha outro provedor em Ajustes ▸ Inteligência artificial.".to_owned()
+    } else if status == 407 {
+        crate::netdiag::proxy_auth_status_message("o servidor de IA")
     } else if matches!(status, 401 | 403) {
         format!("O servidor de IA recusou a chave (código {status}). Confira a chave em Ajustes ▸ Inteligência artificial.")
     } else {

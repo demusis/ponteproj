@@ -374,6 +374,9 @@ impl Session {
         tcp.set_write_timeout(Some(IO_TIMEOUT))?;
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        // And what Windows trusts (a network that inspects secure connections
+        // installs its root there); unreadable ones are skipped.
+        roots.add_parsable_certificates(crate::netdiag::native_roots());
         // The provider is named, so a future dependency enabling another
         // one cannot make the default ambiguous.
         let config = rustls::ClientConfig::builder_with_provider(Arc::new(

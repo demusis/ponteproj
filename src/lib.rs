@@ -27,6 +27,8 @@ pub mod mail_ui;
 pub mod manual;
 pub mod model;
 pub mod native;
+/// How the program reaches the internet: certificates, proxy, failures, the connection test.
+pub mod netdiag;
 pub mod paths;
 pub mod prompting;
 pub mod protection;

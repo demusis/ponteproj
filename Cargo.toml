@@ -1,6 +1,6 @@
 [package]
 name = "ponteproj"
-version = "0.35.1"
+version = "0.35.2"
 edition = "2021"
 description = "Assistente local SIGADOC com captura pelo navegador"
 authors = ["Carlo Ralph De Musis", "João Gabriel Bezerra Estrela"]
@@ -17,9 +17,11 @@ rusqlite = { version = "0.41", features = ["bundled", "backup", "functions"] }
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "rustls-tls-native-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
+# The certificates Windows trusts (already pulled in by reqwest: same version).
+rustls-native-certs = "0.8"
 # RS256 check of the ChatGPT ID token and random values for the login (already built for rustls).
 ring = "0.17"
 url = "2"
@@ -31,7 +33,7 @@ eframe = { version = "0.37", default-features = false, features = ["default_font
 image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Foundation", "Data_Pdf", "Storage_Streams", "Win32_System_WinRT", "Graphics_Imaging", "Media_Ocr", "Globalization", "Win32_Foundation", "Win32_System_Registry", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi"] }
+windows = { version = "0.62.2", features = ["Foundation", "Data_Pdf", "Storage_Streams", "Win32_System_WinRT", "Graphics_Imaging", "Media_Ocr", "Globalization", "Win32_Foundation", "Win32_System_Registry", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_Networking_WinHttp"] }
 
 [features]
 default = ["desktop"]

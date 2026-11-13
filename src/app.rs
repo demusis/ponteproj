@@ -1107,6 +1107,12 @@ struct ChatGptLogin {
     authorize_url: String,
 }
 
+/// "Testar a conexão com a OpenAI": running on its own thread, or done.
+enum NetTest {
+    Running(Receiver<crate::netdiag::NetReport>),
+    Done(crate::netdiag::NetReport),
+}
+
 struct PonteApp {
     draft_tools: crate::draft_tools::DraftTools,
     /// The "Modelos" screen.
@@ -1218,6 +1224,7 @@ struct PonteApp {
     chatgpt_shared: SharedSession,
     chatgpt_login: Option<ChatGptLogin>,
     chatgpt_login_error: Option<String>,
+    net_test: Option<NetTest>,
     /// A worker used the ChatGPT session: copy it back and save when done.
     chatgpt_sync_pending: bool,
     worker: Option<Worker>,
@@ -1315,6 +1322,7 @@ impl PonteApp {
             chatgpt_shared: Arc::new(Mutex::new(ChatGptSession::default())),
             chatgpt_login: None,
             chatgpt_login_error: None,
+            net_test: None,
             chatgpt_sync_pending: false,
             worker: None,
             suggestion: None,

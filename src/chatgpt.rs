@@ -146,7 +146,7 @@ pub fn new_host_id() -> String {
 }
 
 fn http(timeout: Duration) -> Result<Client> {
-    Client::builder()
+    crate::netdiag::client_builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
@@ -581,17 +581,20 @@ fn token_request(client: &Client, form: &[(&str, &str)]) -> Result<TokenResponse
             .send()
         {
             Ok(response) => break response,
-            Err(error) if error.is_connect() && tries < 3 => {
+            Err(error)
+                if error.is_connect()
+                    && tries < 3
+                    && crate::netdiag::worth_retrying(crate::netdiag::classify(&error)) =>
+            {
                 std::thread::sleep(Duration::from_secs(2 * tries));
             }
             Err(error) => {
-                bail!(if error.is_timeout() {
-                    "A OpenAI demorou demais para responder ao login."
-                } else if error.is_connect() {
-                    "O Ponte não conseguiu abrir a conexão com a OpenAI (auth.openai.com) para concluir o login, em três tentativas. Verifique a internet e se um antivírus, firewall ou proxy está bloqueando o Ponte."
-                } else {
-                    "A conexão com a OpenAI caiu durante o login. Verifique a internet."
-                });
+                if error.is_timeout() && !error.is_connect() {
+                    bail!("A OpenAI demorou demais para responder ao login.");
+                }
+                // A connection that could not be made, said for what it was
+                // (name, firewall, inspected connection, proxy…).
+                bail!(net_text(&error));
             }
         }
     };
@@ -768,7 +771,7 @@ pub fn sign_out(session: &ChatGptSession) -> Result<()> {
             ("client_id", session.client_id.as_str()),
         ])
         .send()
-        .context("Não foi possível falar com a OpenAI para encerrar a sessão.")?;
+        .map_err(|error| anyhow::anyhow!(net_text(&error)))?;
     ensure!(
         response.status().is_success(),
         "A OpenAI respondeu com erro (código {}) ao encerrar a sessão. Desconecte o Ponte nas configurações do ChatGPT.",
@@ -781,7 +784,7 @@ fn discovery(client: &Client) -> Result<Value> {
     let response = client
         .get(DISCOVERY_URL)
         .send()
-        .context("Não foi possível obter a configuração de identidade da OpenAI.")?;
+        .map_err(|error| anyhow::anyhow!(net_text(&error)))?;
     ensure!(
         response.status().is_success(),
         "A OpenAI respondeu com erro (código {}) ao consultar a configuração de identidade.",
@@ -834,7 +837,7 @@ fn verify_id_token(client: &Client, token: &str, client_id: &str, nonce: &str) -
     let response = client
         .get(&jwks_uri)
         .send()
-        .context("Não foi possível obter as chaves de assinatura da OpenAI.")?;
+        .map_err(|error| anyhow::anyhow!(net_text(&error)))?;
     ensure!(
         response.status().is_success(),
         "A OpenAI respondeu com erro (código {}) ao consultar as chaves de assinatura.",
@@ -950,11 +953,17 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<crate::ai::ModelInfo>> {
     Ok(models)
 }
 
+/// A failed connection to OpenAI: the sentence for what it was, and the
+/// technical cause on a second line.
+fn net_text(error: &reqwest::Error) -> String {
+    crate::netdiag::explain(error, &crate::netdiag::host_of(error, "a OpenAI"))
+}
+
 fn network_error(error: &reqwest::Error, action: &str) -> anyhow::Error {
-    if error.is_timeout() {
+    if error.is_timeout() && !error.is_connect() {
         anyhow::anyhow!("O ChatGPT demorou demais para {action}. Tente de novo.")
     } else if error.is_connect() {
-        anyhow::anyhow!("Não foi possível conectar ao ChatGPT para {action}. Verifique a conexão com a internet.")
+        anyhow::anyhow!(net_text(error))
     } else {
         anyhow::anyhow!("A comunicação com o ChatGPT falhou ao {action}.")
     }
@@ -1013,6 +1022,7 @@ fn explain(status: u16, code: &str, _message: &str, param: &str) -> String {
         ("subscription_sharing_invalid_user", _) | (_, 401) => {
             "A sessão do ChatGPT não foi aceita. Entre de novo em Ajustes ▸ Inteligência artificial.".into()
         }
+        (_, 407) => crate::netdiag::proxy_auth_status_message("api.openai.com"),
         (_, 403) => "O ChatGPT bloqueou o pedido (política ou região da conta).".into(),
         (_, 0) => format!(
             "O ChatGPT interrompeu a resposta{}.",
@@ -1304,10 +1314,14 @@ fn network_failure(error: &reqwest::Error, limit: Duration) -> anyhow::Error {
     if error.is_timeout() {
         crate::ai::Transient::error(crate::ai::timeout_message(limit), None)
     } else if error.is_connect() {
-        crate::ai::Transient::error(
-            "Não foi possível conectar ao ChatGPT. Verifique a conexão com a internet.",
-            None,
-        )
+        // Said for what it was; a refused certificate or a proxy that wants a
+        // sign-in will not pass by waiting.
+        let message = net_text(error);
+        if crate::netdiag::worth_retrying(crate::netdiag::classify(error)) {
+            crate::ai::Transient::error(message, None)
+        } else {
+            anyhow::anyhow!(message)
+        }
     } else if error.is_builder() {
         anyhow::anyhow!("Não foi possível preparar a conexão com a OpenAI.")
     } else {
@@ -1355,7 +1369,7 @@ fn refusal(
 fn exchange(call: Exchange, reporter: &crate::ai::Reporter) -> Result<String> {
     reporter.check()?;
     call.ledger.take()?;
-    let client = Client::builder()
+    let client = crate::netdiag::client_builder()
         .connect_timeout(crate::ai::CHATGPT_CONNECT_TIMEOUT)
         .timeout(call.limit)
         .redirect(reqwest::redirect::Policy::none())
@@ -2329,5 +2343,15 @@ mod transport_tests {
         let error = call(&base, None, &silent, &quick()).unwrap_err();
         server.join().unwrap();
         assert!(error.downcast_ref::<Truncated>().is_some(), "{error}");
+    }
+
+    #[test]
+    fn a_proxy_that_wants_a_sign_in_is_told_so() {
+        let said = explain(407, "", "texto do proxy", "");
+        assert!(
+            said.contains("proxy da rede exige identificação que o Ponte não sabe fornecer"),
+            "{said}"
+        );
+        assert!(!said.contains("texto do proxy"));
     }
 }

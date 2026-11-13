@@ -6,7 +6,6 @@
 //! `Accept` header, nothing else: no cookies, no credentials, no machine name.
 
 use anyhow::{anyhow, Result};
-use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::io::Read;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -94,7 +93,7 @@ fn check_remote(installed: &str) -> Outcome {
 /// The one request. The error is already plain Portuguese.
 fn fetch(installed: &str) -> std::result::Result<Vec<u8>, String> {
     const NO_CONNECTION: &str = "Sem conexão com a internet ou o GitHub não respondeu.";
-    let client = Client::builder()
+    let client = crate::netdiag::client_builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
@@ -105,7 +104,15 @@ fn fetch(installed: &str) -> std::result::Result<Vec<u8>, String> {
         .get(LATEST_API)
         .header("Accept", "application/vnd.github+json")
         .send()
-        .map_err(|_| NO_CONNECTION.to_owned())?;
+        .map_err(|error| {
+            // A network that inspects or blocks says so, instead of "no connection".
+            match crate::netdiag::classify(&error) {
+                crate::netdiag::NetFailure::Other | crate::netdiag::NetFailure::Timeout => {
+                    NO_CONNECTION.to_owned()
+                }
+                failure => crate::netdiag::describe(failure, "api.github.com"),
+            }
+        })?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!(

@@ -1,5 +1,5 @@
 //! The settings area: sections, AI configuration and the ChatGPT sign-in.
-use super::{pill, save_appearance, Area, ChatGptLogin, Leave, PonteApp, SettingsSection};
+use super::{pill, save_appearance, Area, ChatGptLogin, Leave, NetTest, PonteApp, SettingsSection};
 use crate::ai::{self, AiProvider, ModelInfo};
 use crate::chatgpt;
 use crate::theme::{self, icon, S1, S2, S3};
@@ -8,6 +8,7 @@ use eframe::egui::{self, RichText};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Duration;
 
 impl PonteApp {
     /// One block of the Ajustes area: what it is for, and its buttons.
@@ -641,17 +642,27 @@ impl PonteApp {
                             }
                         });
                     }
+                    let login_failed = self.chatgpt_login_error.is_some();
                     if let Some(error) = &self.chatgpt_login_error {
+                        // The sentence in red; the technical cause (a second
+                        // line, when there is one) muted.
+                        let (sentence, detail) = error
+                            .split_once(char::from(10))
+                            .unwrap_or((error.as_str(), ""));
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(icon::ERROR).color(theme::c().danger));
                             ui.add(
-                                egui::Label::new(
-                                    RichText::new(error.as_str()).color(theme::c().danger),
-                                )
-                                .wrap(),
+                                egui::Label::new(RichText::new(sentence).color(theme::c().danger))
+                                    .wrap(),
                             );
                         });
+                        if !detail.is_empty() {
+                            widgets::small_muted(ui, detail);
+                        }
                     }
+                    // The test of the way to OpenAI, quiet; next to the error
+                    // when the sign-in failed.
+                    self.net_test_ui(ui, ctx, login_failed && !signed_in);
                     if self.chatgpt_login_error.is_some() && !in_progress && !signed_in {
                         // The way out when the OpenAI page itself refuses the
                         // sign-in of this computer ("Agent registration session
@@ -1141,6 +1152,83 @@ impl PonteApp {
 
     /// Opens the browser on OpenAI's sign-in page and waits, in the
     /// background, for the authorization to come back to the local port.
+    /// Button, progress and result of "Testar a conexão com a OpenAI".
+    fn net_test_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, after_error: bool) {
+        if let Some(NetTest::Running(receiver)) = &self.net_test {
+            match receiver.try_recv() {
+                Ok(report) => self.net_test = Some(NetTest::Done(report)),
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(250));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.net_test = Some(NetTest::Done(crate::netdiag::NetReport {
+                        lines: Vec::new(),
+                        verdict: "O teste da conexão foi interrompido. Tente de novo.".into(),
+                    }));
+                }
+            }
+        }
+        let running = matches!(self.net_test, Some(NetTest::Running(_)));
+        ui.horizontal_wrapped(|ui| {
+            if running {
+                ui.spinner();
+                widgets::muted(ui, "Testando a conexão com a OpenAI…");
+            } else if ui
+                .add(widgets::quiet("Testar a conexão com a OpenAI"))
+                .on_hover_text(if after_error {
+                    "Confere o caminho até a OpenAI (nome, firewall, proxy, certificados) e diz o que fazer. Não envia sua conta nem seus documentos."
+                } else {
+                    "Confere o caminho até a OpenAI e diz o que fazer se algo bloquear. Não envia sua conta nem seus documentos."
+                })
+                .clicked()
+            {
+                self.start_net_test(ctx);
+            }
+        });
+        let mut close = false;
+        if let Some(NetTest::Done(report)) = &self.net_test {
+            widgets::card(ui, |ui| {
+                for line in &report.lines {
+                    widgets::small_muted(ui, line.as_str());
+                }
+                ui.add_space(S2);
+                ui.add(egui::Label::new(RichText::new(report.verdict.as_str())).wrap());
+                ui.add_space(S2);
+                ui.horizontal(|ui| {
+                    if ui.add(widgets::quiet("Copiar")).on_hover_text("Copia o relatório para enviar a quem cuida do Ponte. Não contém chaves nem dados da conta.").clicked() {
+                        ui.ctx().copy_text(report.text());
+                    }
+                    if ui.add(widgets::quiet("Fechar")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        }
+        if close {
+            self.net_test = None;
+        }
+    }
+
+    /// Runs the test on a thread of its own: it waits on the network.
+    fn start_net_test(&mut self, ctx: &egui::Context) {
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        match std::thread::Builder::new()
+            .name("ponte-net-test".into())
+            .spawn(move || {
+                let _ = sender.send(crate::netdiag::diagnose(&crate::netdiag::OPENAI_HOSTS));
+                repaint.request_repaint();
+            }) {
+            Ok(_) => self.net_test = Some(NetTest::Running(receiver)),
+            Err(error) => {
+                self.net_test = Some(NetTest::Done(crate::netdiag::NetReport {
+                    lines: Vec::new(),
+                    verdict: format!("Não foi possível iniciar o teste: {error}"),
+                }));
+            }
+        }
+    }
+
     fn start_chatgpt_login(&mut self, ctx: &egui::Context) {
         if self.chatgpt_login.is_some() {
             return;
