@@ -1530,6 +1530,41 @@ fn read_stream_within(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Diagnostic, run by hand: does this build reach OpenAI's token endpoint?
+    /// It sends a made-up code (no account, no secret) and expects OpenAI to
+    /// REFUSE it; a connection failure here is the fault to look for.
+    #[test]
+    #[ignore = "Fala com auth.openai.com; só para diagnóstico manual"]
+    fn live_token_endpoint_answers() {
+        let client = http(Duration::from_secs(30)).unwrap();
+        let raw = client
+            .post(TOKEN_URL)
+            .header("Accept", "application/json")
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", "diagnostico"),
+            ])
+            .send();
+        match &raw {
+            Ok(response) => println!("resposta HTTP {}", response.status()),
+            Err(error) => {
+                println!(
+                    "falha: connect={} timeout={} request={} body={}",
+                    error.is_connect(),
+                    error.is_timeout(),
+                    error.is_request(),
+                    error.is_body()
+                );
+                let mut source = std::error::Error::source(error);
+                while let Some(cause) = source {
+                    println!("  causa: {cause}");
+                    source = cause.source();
+                }
+            }
+        }
+        assert!(raw.is_ok(), "o pedido não chegou à OpenAI");
+    }
     use std::io::Cursor;
     use std::net::TcpListener;
 
