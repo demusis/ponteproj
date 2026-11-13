@@ -324,9 +324,10 @@ fn proposal_texts(analysis: &Analysis) -> Vec<String> {
             out.extend([task.title.clone(), task.reason.clone(), task.remark.clone()]);
         }
         if let Some(a) = &proposals.attendance {
+            // Not `received_from`: naming who sent the document is what that
+            // field is for, and it never says who should do the work.
             out.extend([
                 a.subject.clone(),
-                a.received_from.clone(),
                 a.priority_reason.clone(),
                 a.remark.clone(),
             ]);

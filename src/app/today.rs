@@ -528,19 +528,49 @@ impl PonteApp {
                         asked,
                     );
                 };
-                let right = |ui: &mut egui::Ui, asked: &mut Option<Asked>| {
+                let attendances = |ui: &mut egui::Ui, asked: &mut Option<Asked>| {
                     attendance_group(ui, &self.today.attendances, &now.to_string(), asked);
+                };
+                let resources = |ui: &mut egui::Ui, asked: &mut Option<Asked>| {
                     resources_group(ui, &self.today, asked);
+                };
+                let recent = |ui: &mut egui::Ui, asked: &mut Option<Asked>| {
                     recent_group(ui, &self.today.recent, asked);
                 };
                 if wide {
+                    // Tasks open the left column and attendances the right one; the
+                    // cards that follow go to whichever column is shorter, so a day
+                    // without tasks does not leave the left half empty.
+                    let (mut left_rows, mut right_rows) =
+                        (task_rows(&self.today), attendance_rows(&self.today));
+                    let mut to_left = [false; 2];
+                    for (slot, rows) in [resources_rows(&self.today), recent_rows(&self.today)]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        if rows == 0 {
+                            continue;
+                        }
+                        if left_rows <= right_rows {
+                            to_left[slot] = true;
+                            left_rows += rows;
+                        } else {
+                            right_rows += rows;
+                        }
+                    }
                     ui.columns(2, |columns| {
-                        left(&mut columns[0], &mut asked);
-                        right(&mut columns[1], &mut asked);
+                        let (l, r) = columns.split_at_mut(1);
+                        let (l, r) = (&mut l[0], &mut r[0]);
+                        left(&mut *l, &mut asked);
+                        attendances(&mut *r, &mut asked);
+                        resources(if to_left[0] { &mut *l } else { &mut *r }, &mut asked);
+                        recent(if to_left[1] { &mut *l } else { &mut *r }, &mut asked);
                     });
                 } else {
                     left(ui, &mut asked);
-                    right(ui, &mut asked);
+                    attendances(ui, &mut asked);
+                    resources(ui, &mut asked);
+                    recent(ui, &mut asked);
                 }
                 ui.add_space(S4);
             });
@@ -1075,6 +1105,47 @@ fn attendance_group(
         }
     });
     ui.add_space(S3);
+}
+
+// Rough height of each block of the list, in rows (a title or a list row is one;
+// an empty-state card, two), used only to balance the two columns of the wide
+// layout. They mirror what the groups draw: a group with nothing to show is 0.
+
+fn task_rows(data: &TodayData) -> usize {
+    fn group(tasks: &[Task]) -> usize {
+        if tasks.is_empty() {
+            0
+        } else {
+            1 + tasks.len()
+        }
+    }
+    let empty_card = if data.late.is_empty() && data.today.is_empty() && data.error.is_none() {
+        3
+    } else {
+        0
+    };
+    group(&data.late) + group(&data.today) + empty_card + group(&data.upcoming)
+}
+
+fn attendance_rows(data: &TodayData) -> usize {
+    1 + data.attendances.len().max(2)
+}
+
+fn resources_rows(data: &TodayData) -> usize {
+    let uses = data.overdue_uses.len() + data.today_uses.len();
+    match (uses, data.has_resources) {
+        (0, false) => 0,
+        (0, true) => 4,
+        (n, _) => 1 + n,
+    }
+}
+
+fn recent_rows(data: &TodayData) -> usize {
+    if data.recent.is_empty() {
+        0
+    } else {
+        1 + data.recent.len()
+    }
 }
 
 /// The resources of the day in one standing card: late returns first, then
