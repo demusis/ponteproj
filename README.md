@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.35.2 (extensão 0.4.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.35.3 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.35.2.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.35.3.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -390,7 +390,7 @@ Uma conversa do WhatsApp pode ficar guardada no Ponte, junto dos documentos, com
 4. Se quiser, ajuste **Conversa com** (nome da pessoa ou do grupo) e o **Título** (sugerido como "Conversa com <nome> — data da última mensagem"; pelo menos 3 caracteres).
 5. **Criar registro**.
 
-**Segunda forma: pela extensão (0.4.0), no WhatsApp Web.** O recurso vem desligado. Para ligar, uma única vez: clique no ícone da extensão ▸ **Usar no WhatsApp Web**, aceite a pergunta do Chrome (acesso a web.whatsapp.com) e recarregue a página do WhatsApp Web. A página ganha um botão pequeno escrito **Ponte**, no canto inferior esquerdo, que abre o painel **Guardar no Ponte**. Então:
+**Segunda forma: pela extensão (0.4.0), no WhatsApp Web.** O recurso vem desligado. Para ligar, uma única vez: clique no ícone da extensão ▸ **Usar no WhatsApp Web**, aceite a pergunta do Chrome (acesso a web.whatsapp.com). Com a extensão 0.4.1 o painel abre sozinho na página já aberta; com a 0.4.0, recarregue a página do WhatsApp Web. A página ganha o botão **Guardar no Ponte** (na 0.4.0, menor, escrito **Ponte**), no canto inferior esquerdo, que abre o painel **Guardar no Ponte**. Então:
 
 1. Arraste o mouse sobre as mensagens e clique em **Trecho selecionado**; ou clique em **Mensagens visíveis na tela**.
 2. Confira a prévia (quantidade de mensagens, período, fotos, primeira e última mensagem) e ajuste **Título** e **Conversa com**. **Nota ou prioridade** permite juntar uma nota ([5.4](#54-importar-de-novo-o-mesmo-documento)).
@@ -932,7 +932,7 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | Tela inicial diz *✗ O navegador ainda não foi ligado ao Ponte* | O registro não existe para esta conta do Windows. Rode o instalador. |
 | O link **Adicionar nota ou prioridade** não aparece no painel | O Ponte instalado é anterior à 0.31 ou a extensão é anterior à 0.3.0. Atualize o Ponte (e a extensão, se veio da pasta) e reinicie o navegador. |
 | *"A importação foi feita, mas a nota não foi salva…"* | O documento foi importado; só a nota falhou. Escreva-a na ficha, em **Notas e minutas**. A prioridade, se também falhou, se escolhe na ficha. |
-| O botão **Ponte** não aparece no WhatsApp Web | O recurso não foi ligado (ícone da extensão ▸ **Usar no WhatsApp Web**) ou a página não foi recarregada depois de ligar. Recarregue a página (F5). Exige a extensão 0.4.0. |
+| O botão **Guardar no Ponte** não aparece no WhatsApp Web | Ele fica no canto inferior esquerdo da página, por cima do rodapé da lista de conversas (na extensão 0.4.0 é menor e diz só **Ponte**). Se não estiver lá, o recurso não foi ligado (ícone da extensão ▸ **Usar no WhatsApp Web**) ou a página precisa ser recarregada (F5). Exige a extensão 0.4.0 ou mais nova. |
 | *"O Ponte não reconheceu esta página do WhatsApp Web"* | O WhatsApp pode ter mudado a página. Use **Colar mensagens copiadas**, no painel, ou **Novo ▸ Registro manual… ▸ Colar conversa do WhatsApp**, no Ponte. |
 | *"Atualize o Ponte para guardar conversas do WhatsApp"* | O Ponte instalado é anterior à 0.32. Instale a versão mais recente e reinicie o navegador. |
 | *"Esta conversa já foi guardada antes e está na Lixeira…"* | Restaure-a em Ajustes ▸ Lixeira. |

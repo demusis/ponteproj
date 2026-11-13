@@ -32,14 +32,16 @@ const waOff = document.getElementById("wa-off");
 const WA_ORIGINS = ["https://web.whatsapp.com/*"];
 let waGranted = false;
 let waReload = false;
+let waPlaced = false;
 let waError = "";
 // WhatsApp Web is optional: it is on only while the person has granted its permission.
 function renderWhatsApp() {
   const old = Array.isArray(ponteActions) && !ponteActions.includes("import_record");
   const lines = [];
-  if (waGranted) lines.push("Ligado.");
+  if (waGranted) lines.push("Ligado. No WhatsApp Web, o botão “Guardar no Ponte” fica no canto inferior esquerdo da página.");
+  if (waGranted && waPlaced) lines.push("O painel já foi aberto na página do WhatsApp Web.");
   if (old) lines.push("Atualize o Ponte para guardar conversas do WhatsApp.");
-  if (waGranted && waReload) lines.push("Recarregue a página do WhatsApp Web.");
+  if (waGranted && waReload) lines.push("Recarregue a página do WhatsApp Web (F5) para ele aparecer.");
   if (waError) lines.push(waError);
   waState.textContent = lines.join(" ");
   waOn.hidden = waGranted;
@@ -53,7 +55,7 @@ function loadWhatsApp() {
   } catch { waSection.hidden = true; }
 }
 waOn.addEventListener("click", () => {
-  waError = ""; waReload = false;
+  waError = ""; waReload = false; waPlaced = false;
   // The permission is asked here, straight from the click.
   chrome.permissions.request({ origins: WA_ORIGINS }, granted => {
     if (chrome.runtime.lastError || granted !== true) { waGranted = false; waError = "O acesso ao WhatsApp Web não foi concedido."; renderWhatsApp(); return; }
@@ -61,13 +63,18 @@ waOn.addEventListener("click", () => {
       if (chrome.runtime.lastError || response?.ok !== true) {
         chrome.permissions.remove({ origins: WA_ORIGINS }, () => { void chrome.runtime.lastError; });
         waGranted = false; waError = typeof response?.error?.message === "string" && response.error.message ? response.error.message : "Não foi possível ligar agora. Tente de novo.";
-      } else { waGranted = true; waReload = true; }
+      } else {
+        // The worker places the panel in the tabs already open; a reload is only needed for a tab it could not reach.
+        const open = Number.isInteger(response.open_tabs) ? response.open_tabs : 0;
+        const placed = Number.isInteger(response.placed_tabs) ? response.placed_tabs : 0;
+        waGranted = true; waPlaced = open > 0 && placed === open; waReload = placed < open;
+      }
       renderWhatsApp();
     });
   });
 });
 waOff.addEventListener("click", () => {
-  waError = ""; waReload = false;
+  waError = ""; waReload = false; waPlaced = false;
   chrome.runtime.sendMessage({ action: "ponte.whatsapp_off" }, response => {
     if (chrome.runtime.lastError || response?.ok !== true) waError = "Não foi possível desligar agora. Tente de novo.";
     loadWhatsApp();

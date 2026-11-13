@@ -156,10 +156,10 @@ test("photo types: only what the Ponte accepts, webp recognised to be left out; 
 });
 
 // ------------------------------------------------------------------ manifest and sources
-test("manifest 0.4.0: optional WhatsApp host, scripting, nothing else changed", () => {
+test("manifest 0.4.1: optional WhatsApp host, scripting, nothing else changed", () => {
   const manifest = JSON.parse(read("manifest.json"));
-  assert.equal(manifest.version, "0.4.0");
-  assert.equal(JSON.parse(read("package.json")).version, "0.4.0");
+  assert.equal(manifest.version, "0.4.1");
+  assert.equal(JSON.parse(read("package.json")).version, "0.4.1");
   assert.deepEqual([...manifest.permissions].sort(), ["nativeMessaging", "scripting", "storage"]);
   assert.deepEqual(manifest.optional_host_permissions, ["https://web.whatsapp.com/*"]);
   assert.deepEqual(manifest.host_permissions, ["https://www.sigadoc.mt.gov.br/*"]);
@@ -196,7 +196,7 @@ const UUID_OK = "3b2f6b1c-0d9e-4a7b-8f3a-1c2d3e4f5a6b";
 function worker(options = {}) {
   const handlers = {};
   const calls = [];
-  const state = { granted: options.granted !== false, registered: options.registered ? [{ id: "ponte-whatsapp" }] : [], registerCalls: [], removeCalls: [], store: options.store || {} };
+  const state = { granted: options.granted !== false, registered: options.registered ? [{ id: "ponte-whatsapp" }] : [], registerCalls: [], removeCalls: [], store: options.store || {}, tabs: options.tabs || [], started: options.started || {}, scriptCalls: [] };
   const ACTIONS = options.actions || ["lookup", "open_document", "import_extras", "import_record"];
   const defaultReply = request => {
     if (request.action === "ping") return { protocol_version: 1, ok: true, app_version: "0.32.0", actions: ACTIONS };
@@ -223,7 +223,7 @@ function worker(options = {}) {
       set: async value => { Object.assign(state.store, plainOf(value)); }
     } },
     commands: { onCommand: { addListener: value => { handlers.command = value; } } },
-    tabs: { query: (_, callback) => callback([]), sendMessage: () => {} },
+    tabs: { query: (query, callback) => callback(query && query.url ? state.tabs.slice() : []), sendMessage: () => {} },
     permissions: {
       contains: async query => { assert.equal(JSON.stringify(query), JSON.stringify({ origins: ["https://web.whatsapp.com/*"] })); return state.granted; },
       remove: async query => { state.removeCalls.push(plainOf(query)); state.granted = false; return true; },
@@ -233,7 +233,20 @@ function worker(options = {}) {
     scripting: {
       getRegisteredContentScripts: async () => state.registered.slice(),
       unregisterContentScripts: async filter => { assert.equal(JSON.stringify(filter), JSON.stringify({ ids: ["ponte-whatsapp"] })); state.registered = []; },
-      registerContentScripts: async list => { state.registerCalls.push(plainOf(list)); state.registered = plainOf(list); }
+      registerContentScripts: async list => { state.registerCalls.push(plainOf(list)); state.registered = plainOf(list); },
+      executeScript: async call => {
+        const tabId = call.target.tabId;
+        if (state.started[tabId] === "refuses") throw new Error("cannot access the tab");
+        if (typeof call.func === "function") {
+          // The first function call per tab is the probe; the one after the files asks the panel to open.
+          const opened = state.scriptCalls.some(seen => seen.tabId === tabId && seen.probe);
+          state.scriptCalls.push(opened ? { tabId, open: true } : { tabId, probe: true });
+          return [{ result: opened ? null : state.started[tabId] === true }];
+        }
+        state.scriptCalls.push({ tabId, files: plainOf(call.files), world: call.world, allFrames: call.target.allFrames });
+        state.started[tabId] = true;
+        return [{ result: null }];
+      }
     }
   };
   const context = { chrome, importScripts: () => {}, PonteCapture: Core, PonteFiles: { prepare: async () => { throw new Error("no files here"); } }, PonteWhatsApp: WA, setTimeout, clearTimeout, JSON, Promise };
@@ -367,6 +380,28 @@ test("native answers about records are checked: unknown outcome or missing id is
   }
   const w = worker({ native: request => request.action === "import_record" ? { protocol_version: 1, ok: false, error: { code: "invalid_attachment", message: "O arquivo x.pdf não é aceito." } } : undefined });
   assert.equal((await w.invoke(recordMessage())).error.message, "O arquivo x.pdf não é aceito.");
+});
+test("turning WhatsApp Web on places the panel in the tabs already open, once each", async () => {
+  // Three tabs: a fresh one, one that already has the panel, one the browser does not let the worker reach.
+  const w = worker({ granted: true, tabs: [{ id: 11 }, { id: 12 }, { id: 13 }, { url: "no id" }], started: { 12: true, 13: "refuses" } });
+  const reply = await w.invoke({ action: "ponte.whatsapp_on" }, w.senders.popup);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.open_tabs, 3);
+  assert.equal(reply.placed_tabs, 2);
+  const files = w.state.scriptCalls.filter(call => call.files);
+  assert.deepEqual(files, [{ tabId: 11, files: ["capture-core.js", "whatsapp-core.js", "whatsapp.js"], world: "ISOLATED", allFrames: false }]);
+  assert.deepEqual(w.state.scriptCalls.filter(call => call.probe).map(call => call.tabId), [11, 12]);
+  assert.deepEqual(w.state.scriptCalls.filter(call => call.open).map(call => call.tabId), [11, 12]);
+  // No WhatsApp Web tab open: nothing to place, and it still turns on.
+  const none = worker({ granted: true });
+  const quiet = await none.invoke({ action: "ponte.whatsapp_on" }, none.senders.popup);
+  assert.equal(quiet.ok, true);
+  assert.equal(quiet.open_tabs, 0);
+  assert.equal(none.state.scriptCalls.length, 0);
+  // Without the permission nothing is placed anywhere.
+  const denied = worker({ granted: false, tabs: [{ id: 11 }] });
+  assert.equal((await denied.invoke({ action: "ponte.whatsapp_on" }, denied.senders.popup)).error.code, "PERMISSION_DENIED");
+  assert.equal(denied.state.scriptCalls.length, 0);
 });
 test("turning WhatsApp Web on and off: scripts registered only with the permission, persistent, isolated", async () => {
   const w = worker({ granted: false });
@@ -605,13 +640,13 @@ const settle = page => page.waitForTimeout(150);
 test("on load nothing is shown, read or sent; opening the panel asks the Ponte once and still reads nothing", options, async () => {
   const page = await panelPage();
   await page.waitForTimeout(400);
-  const state = await page.evaluate(() => ({ host: document.querySelectorAll("#ponteproj-whatsapp-assistente").length, panelHidden: window.__shadow.querySelector("section").hidden, pillShown: !window.__btn("Ponte").hidden, sent: window.__sent.length, reads: window.__reads }));
+  const state = await page.evaluate(() => ({ host: document.querySelectorAll("#ponteproj-whatsapp-assistente").length, panelHidden: window.__shadow.querySelector("section").hidden, pillShown: !window.__btn("Guardar no Ponte").hidden, sent: window.__sent.length, reads: window.__reads }));
   assert.deepEqual(state, { host: 1, panelHidden: true, pillShown: true, sent: 0, reads: 0 });
-  await page.evaluate(() => window.__click("Ponte"));
+  await page.evaluate(() => window.__click("Guardar no Ponte"));
   await settle(page);
   assert.deepEqual(await page.evaluate(() => window.__sent.map(message => message.action)), ["ponte.ping"]);
   // Typing, pasting text and collapsing read nothing from the page.
-  await page.evaluate(() => { const area = window.__shadow.querySelector("textarea"); area.value = "abc"; area.dispatchEvent(new Event("input")); window.__click("Recolher"); window.__click("Ponte"); });
+  await page.evaluate(() => { const area = window.__shadow.querySelector("textarea"); area.value = "abc"; area.dispatchEvent(new Event("input")); window.__click("Recolher"); window.__click("Guardar no Ponte"); });
   await settle(page);
   assert.equal(await page.evaluate(() => window.__reads), 0);
   assert.deepEqual(await page.evaluate(() => window.__sent.map(message => message.action)), ["ponte.ping"]);
@@ -635,7 +670,7 @@ test("the panel is injected once and only on this origin and top frame", options
 });
 test("selected passage: preview first, nothing sent before the button, then the message of the contract", options, async () => {
   const page = await panelPage();
-  await page.evaluate(() => window.__click("Ponte"));
+  await page.evaluate(() => window.__click("Guardar no Ponte"));
   await settle(page);
   await page.evaluate(() => window.__select("m2", "m5"));
   await page.evaluate(() => window.__click("Trecho selecionado"));
@@ -678,7 +713,7 @@ test("selected passage: preview first, nothing sent before the button, then the 
 });
 test("visible messages: the same preview, only what is on the screen", options, async () => {
   const page = await panelPage();
-  await page.evaluate(() => window.__click("Ponte"));
+  await page.evaluate(() => window.__click("Guardar no Ponte"));
   await page.evaluate(() => window.__click("Mensagens visíveis na tela"));
   await settle(page);
   assert.equal(await page.evaluate(() => window.__shadow.querySelector(".identity").textContent), "8 mensagens de 10/11/2026 14:02 a 10/11/2026 14:09 · 2 fotos");
@@ -690,7 +725,7 @@ test("visible messages: the same preview, only what is on the screen", options, 
 });
 test("nothing selected: says so and reads nothing else", options, async () => {
   const page = await panelPage();
-  await page.evaluate(() => { getSelection().removeAllRanges(); window.__click("Ponte"); window.__click("Trecho selecionado"); });
+  await page.evaluate(() => { getSelection().removeAllRanges(); window.__click("Guardar no Ponte"); window.__click("Trecho selecionado"); });
   await settle(page);
   assert.equal(await page.evaluate(() => window.__status()), "Não encontrei mensagens nesse trecho. Arraste o mouse sobre as mensagens e tente de novo.");
   assert.equal(await page.evaluate(() => window.__imports().length), 0);
@@ -698,7 +733,7 @@ test("nothing selected: says so and reads nothing else", options, async () => {
 });
 test("a page that is not recognised offers the paste box first; pasted text goes through the same preview", options, async () => {
   const page = await panelPage("<!doctype html><html><body><div id=\"main\"><p>Outra estrutura</p></div></body></html>");
-  await page.evaluate(() => { window.__click("Ponte"); window.__click("Mensagens visíveis na tela"); });
+  await page.evaluate(() => { window.__click("Guardar no Ponte"); window.__click("Mensagens visíveis na tela"); });
   await settle(page);
   assert.equal(await page.evaluate(() => window.__status()), "O Ponte não reconheceu esta página do WhatsApp Web. Selecione as mensagens no WhatsApp, copie (Ctrl+C) e cole aqui.");
   assert.equal(await page.evaluate(() => window.__shadow.querySelector("details").open), true);
@@ -720,14 +755,14 @@ test("a page that is not recognised offers the paste box first; pasted text goes
 test("limits of the chosen messages: 501 refused with a plain sentence", options, async () => {
   const page = await panelPage("<!doctype html><html><body><div id=\"main\"></div></body></html>");
   const lines = Array.from({ length: 501 }, (_, n) => `[14:02, 10/11/2026] Servidor A: m${n}`).join("\n");
-  await page.evaluate(text => { window.__click("Ponte"); window.__shadow.querySelector("textarea").value = text; window.__click("Usar o texto colado"); }, lines);
+  await page.evaluate(text => { window.__click("Guardar no Ponte"); window.__shadow.querySelector("textarea").value = text; window.__click("Usar o texto colado"); }, lines);
   assert.equal(await page.evaluate(() => window.__status()), "Há 501 mensagens; o limite é 500. Escolha um trecho menor.".replace("Escolha", "Cole"));
   assert.equal(await page.evaluate(() => window.__shadow.querySelector(".identity").parentElement.hidden), true);
   await page.close();
 });
 test("files: dropped on the panel or chosen, size and number limits, removable; WhatsApp never sees the drop", options, async () => {
   const page = await panelPage();
-  await page.evaluate(() => { window.__click("Ponte"); window.__dropSeen = 0; document.addEventListener("drop", () => { window.__dropSeen++; }); document.addEventListener("dragover", () => { window.__dropSeen++; }); });
+  await page.evaluate(() => { window.__click("Guardar no Ponte"); window.__dropSeen = 0; document.addEventListener("drop", () => { window.__dropSeen++; }); document.addEventListener("dragover", () => { window.__dropSeen++; }); });
   const drop = (names, size = 10) => page.evaluate(([names, size]) => {
     const transfer = new DataTransfer();
     for (const name of names) transfer.items.add(new File([new Uint8Array(size).fill(7)], name, { type: "application/pdf" }));
@@ -769,12 +804,12 @@ test("files: dropped on the panel or chosen, size and number limits, removable; 
 });
 test("extras: the controls exist only for a Ponte that takes them and go only when opened", options, async () => {
   const page = await panelPage(fixture, { ping: { protocol_version: 1, ok: true, actions: ["import_record"] } });
-  await page.evaluate(() => { window.__click("Ponte"); });
+  await page.evaluate(() => { window.__click("Guardar no Ponte"); });
   await settle(page);
   assert.equal(await page.evaluate(() => { window.__shadow.querySelector("textarea").value = "[14:02, 10/11/2026] Servidor A: Oi"; window.__click("Usar o texto colado"); return window.__shadow.querySelectorAll("details")[1].hidden; }), true);
   await page.close();
   const page2 = await panelPage();
-  await page2.evaluate(() => { window.__click("Ponte"); });
+  await page2.evaluate(() => { window.__click("Guardar no Ponte"); });
   await settle(page2);
   await page2.evaluate(() => { window.__shadow.querySelector("textarea").value = "[14:02, 10/11/2026] Servidor A: Oi"; window.__click("Usar o texto colado"); const area = window.__shadow.querySelectorAll("textarea")[1]; area.value = "Responder até sexta"; window.__shadow.querySelector("select").value = "alta"; });
   // Closed area: what is not visible is not sent.
@@ -788,7 +823,7 @@ test("extras: the controls exist only for a Ponte that takes them and go only wh
 });
 test("results: already in the Ponte, errors with a retry of exactly the same request, an old Ponte", options, async () => {
   const page = await panelPage(fixture, { imports: [{ protocol_version: 1, ok: false, error: { code: "import_failed", message: "O Ponte não conseguiu guardar a conversa. Abra o Ponte e tente de novo." } }, { protocol_version: 1, ok: true, outcome: "already", document_id: 7, document_number: "MANUAL-2026/0007", attachments_added: 0, ui_opened: true }] });
-  await page.evaluate(() => { window.__click("Ponte"); });
+  await page.evaluate(() => { window.__click("Guardar no Ponte"); });
   await settle(page);
   await page.evaluate(() => { window.__shadow.querySelector("textarea").value = "[14:02, 10/11/2026] Servidor A: Oi\n[14:03, 10/11/2026] Servidor B: Olá"; window.__click("Usar o texto colado"); window.__click("Enviar ao Ponte"); });
   await settle(page);
@@ -806,21 +841,21 @@ test("results: already in the Ponte, errors with a retry of exactly the same req
   assert.ok(await page.evaluate(() => Boolean(window.__btn("Abrir no Ponte"))));
   await page.close();
   const old = await panelPage(fixture, { ping: { protocol_version: 1, ok: true, actions: ["lookup"] } });
-  await old.evaluate(() => { window.__click("Ponte"); });
+  await old.evaluate(() => { window.__click("Guardar no Ponte"); });
   await settle(old);
   assert.match(await old.evaluate(() => window.__shadow.textContent), /Atualize o Ponte para guardar conversas do WhatsApp\./);
   await old.evaluate(() => { window.__shadow.querySelector("textarea").value = "[14:02, 10/11/2026] Servidor A: Oi"; window.__click("Usar o texto colado"); });
   assert.equal(await old.evaluate(() => window.__btn("Enviar ao Ponte").disabled), true);
   await old.close();
   const down = await panelPage(fixture, { ping: { protocol_version: 1, ok: false, error: { code: "HOST_CONNECTION", message: "O Ponte não respondeu. Abra o Ponte e tente de novo." } } });
-  await down.evaluate(() => { window.__click("Ponte"); });
+  await down.evaluate(() => { window.__click("Guardar no Ponte"); });
   await settle(down);
   assert.match(await down.evaluate(() => window.__shadow.textContent), /O Ponte não respondeu\. Abra o Ponte e tente de novo\./);
   await down.close();
 });
 test("photos: a blob of this page is read in the click, others are never fetched", options, async () => {
   const page = await panelPage();
-  await page.evaluate(() => { window.__fetched = []; const original = window.fetch; window.fetch = (...args) => { window.__fetched.push(String(args[0])); return original.apply(window, args); }; window.__click("Ponte"); window.__select("m3", "m3"); window.__click("Trecho selecionado"); });
+  await page.evaluate(() => { window.__fetched = []; const original = window.fetch; window.fetch = (...args) => { window.__fetched.push(String(args[0])); return original.apply(window, args); }; window.__click("Guardar no Ponte"); window.__select("m3", "m3"); window.__click("Trecho selecionado"); });
   await settle(page);
   const fetched = await page.evaluate(() => window.__fetched);
   assert.equal(fetched.length, 1);
@@ -870,7 +905,7 @@ test("popup: WhatsApp Web section explains itself, asks the permission from the 
   await page.waitForTimeout(150);
   assert.deepEqual(await page.evaluate(() => window.__perm.filter(item => item[0] === "request")), [["request", { origins: ["https://web.whatsapp.com/*"] }, true]]);
   assert.deepEqual(await page.evaluate(() => window.__sent.filter(message => message.action.startsWith("ponte.whatsapp"))), [{ action: "ponte.whatsapp_on" }]);
-  assert.deepEqual(await waText(page), { state: "Ligado. Recarregue a página do WhatsApp Web.", on: false, onDisabled: false, off: true });
+  assert.deepEqual(await waText(page), { state: "Ligado. No WhatsApp Web, o botão “Guardar no Ponte” fica no canto inferior esquerdo da página.", on: false, onDisabled: false, off: true });
   await page.locator("#wa-off").click();
   await page.waitForTimeout(150);
   assert.deepEqual(await page.evaluate(() => window.__sent.filter(message => message.action.startsWith("ponte.whatsapp")).map(message => message.action)), ["ponte.whatsapp_on", "ponte.whatsapp_off"]);
@@ -879,7 +914,7 @@ test("popup: WhatsApp Web section explains itself, asks the permission from the 
 });
 test("popup: already on shows Ligado; a refused permission or a failure says so and leaves it off; an old Ponte disables the button", options, async () => {
   const on = await popupPage({ granted: true, ping: NEW_PING });
-  assert.deepEqual(await waText(on), { state: "Ligado.", on: false, onDisabled: false, off: true });
+  assert.deepEqual(await waText(on), { state: "Ligado. No WhatsApp Web, o botão “Guardar no Ponte” fica no canto inferior esquerdo da página.", on: false, onDisabled: false, off: true });
   await on.close();
   const refused = await popupPage({ ping: NEW_PING, requestGranted: false });
   await refused.locator("#wa-on").click();
@@ -897,7 +932,7 @@ test("popup: already on shows Ligado; a refused permission or a failure says so 
   assert.deepEqual(await waText(old), { state: "Atualize o Ponte para guardar conversas do WhatsApp.", on: true, onDisabled: true, off: false });
   await old.close();
   const oldOn = await popupPage({ granted: true, ping: { protocol_version: 1, ok: true, actions: ["lookup"] } });
-  assert.deepEqual(await waText(oldOn), { state: "Ligado. Atualize o Ponte para guardar conversas do WhatsApp.", on: false, onDisabled: true, off: true });
+  assert.deepEqual(await waText(oldOn), { state: "Ligado. No WhatsApp Web, o botão “Guardar no Ponte” fica no canto inferior esquerdo da página. Atualize o Ponte para guardar conversas do WhatsApp.", on: false, onDisabled: true, off: true });
   await oldOn.close();
 });
 test("popup without the permissions API still works: the section is hidden", options, async () => {
@@ -993,7 +1028,7 @@ test("hostile bubble: a message that imitates another one stays one message, its
 });
 test("panel: a file of a type the Ponte never accepts stays out; names collide safely with photos; photos without a certain date are announced", options, async () => {
   const page = await panelPage();
-  await page.evaluate(() => window.__click("Ponte"));
+  await page.evaluate(() => window.__click("Guardar no Ponte"));
   await settle(page);
   const input = await page.evaluateHandle(() => window.__shadow.querySelector("input[type=file]"));
   await input.asElement().setInputFiles([{ name: "programa.exe", mimeType: "application/octet-stream", buffer: Buffer.from("x") }, { name: "semextensao", mimeType: "text/plain", buffer: Buffer.from("x") }, { name: "foto-1.png", mimeType: "image/png", buffer: Buffer.from("x") }]);
@@ -1007,14 +1042,14 @@ test("panel: a file of a type the Ponte never accepts stays out; names collide s
   assert.deepEqual((await page.evaluate(() => window.__imports()[0].attachments)).map(item => item.name), ["foto-1.png", "foto-1 (2).png"]);
   await page.close();
   const visible = await panelPage();
-  await visible.evaluate(() => { window.__click("Ponte"); window.__click("Mensagens visíveis na tela"); });
+  await visible.evaluate(() => { window.__click("Guardar no Ponte"); window.__click("Mensagens visíveis na tela"); });
   await settle(visible);
   assert.deepEqual(await visible.evaluate(() => [...window.__shadow.querySelectorAll("ul.notes li")].map(li => li.textContent)), ["1 foto em formato não aceito ficou de fora.", "1 mensagem de outro tipo ficou de fora.", "1 foto entrou sem data.", "Fotos e arquivos sem legenda entram sem autor."]);
   await visible.close();
 });
 test("panel: already in the Ponte with files says they were not added again; a refused file does not lock the person in", options, async () => {
   const page = await panelPage(fixture, { imports: [{ protocol_version: 1, ok: true, outcome: "already", document_id: 7, document_number: "MANUAL-2026/0007", attachments_added: 0, ui_opened: true }, { protocol_version: 1, ok: false, error: { code: "invalid_attachment", message: "O arquivo ata.pdf não pôde ser guardado: está danificado." } }, { protocol_version: 1, ok: true, outcome: "imported", document_id: 8, document_number: "MANUAL-2026/0008", attachments_added: 0, ui_opened: true }] });
-  await page.evaluate(() => window.__click("Ponte"));
+  await page.evaluate(() => window.__click("Guardar no Ponte"));
   await settle(page);
   const input = await page.evaluateHandle(() => window.__shadow.querySelector("input[type=file]"));
   await input.asElement().setInputFiles({ name: "ata.pdf", mimeType: "application/pdf", buffer: Buffer.from("conteudo") });

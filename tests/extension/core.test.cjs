@@ -198,11 +198,11 @@ test("history metadata cannot nominate a different document or destination",()=>
 
 const plainOf = value => JSON.parse(JSON.stringify(value));
 const NUMBER = "ORG-OFI-2026/00431";
-test("manifest 0.4.0: nativeMessaging, storage and scripting, same key and hosts, WhatsApp Web only as an optional host, one shortcut command", () => {
+test("manifest 0.4.1: nativeMessaging, storage and scripting, same key and hosts, WhatsApp Web only as an optional host, one shortcut command", () => {
   const read = name => JSON.parse(fs.readFileSync(path.join(__dirname, "../../extension/" + name), "utf8"));
   const manifest = read("manifest.json");
-  assert.equal(manifest.version, "0.4.0");
-  assert.equal(read("package.json").version, "0.4.0");
+  assert.equal(manifest.version, "0.4.1");
+  assert.equal(read("package.json").version, "0.4.1");
   assert.equal(manifest.key, fs.readFileSync(path.join(__dirname, "../../extension-key.txt"), "utf8").trim());
   assert.deepEqual([...manifest.permissions].sort(), ["nativeMessaging", "scripting", "storage"]);
   assert.deepEqual(manifest.host_permissions, [Core.ORIGIN + "/*"]);

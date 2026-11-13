@@ -97,9 +97,9 @@ Uma conversa do WhatsApp pode ficar guardada no Ponte, junto dos documentos, com
 **Segunda forma: pela extensão, no WhatsApp Web (extensão 0.4.0).** Ela vem desligada. Para ligar, uma única vez:
 
 1. Clique no ícone da extensão, na barra do navegador, e em **Usar no WhatsApp Web**. O navegador pergunta se permite o acesso a web.whatsapp.com: aceite.
-2. Recarregue a página do WhatsApp Web (F5).
+2. Com a extensão 0.4.1, o painel abre sozinho na página do WhatsApp Web que já estiver aberta. Com a 0.4.0, recarregue a página (F5).
 
-Depois disso, a página do WhatsApp Web ganha um botão pequeno escrito **Ponte**, no canto inferior esquerdo, que abre o painel, uma caixa com o título **Guardar no Ponte**. Para guardar uma conversa:
+Depois disso, a página do WhatsApp Web ganha o botão **Guardar no Ponte**, no canto inferior esquerdo (na extensão 0.4.0 ele é menor e diz só **Ponte**), que abre o painel de mesmo nome. Para guardar uma conversa:
 
 1. Abra a conversa. Arraste o mouse sobre as mensagens que quer guardar e, no painel, clique em **Trecho selecionado**. Ou clique em **Mensagens visíveis na tela**, para guardar o que está aparecendo.
 2. Confira a prévia: quantas mensagens, o período, as fotos e a primeira e a última mensagem. Ajuste o **Título** e **Conversa com**, se quiser. Em **Nota ou prioridade** dá para juntar uma nota (veja a seção 3).
@@ -371,7 +371,7 @@ A versão 0.35.0 (conferência da minuta) não muda o formato: os mesmos 16 e 4.
 | O colega não conecta ao computador principal | O principal precisa estar com o Ponte aberto, na mesma rede, com a porta 7878 liberada. |
 | "Não foi possível proteger/abrir os dados deste perfil Windows" | O acervo é de outra conta do Windows. Entre com a conta que fez a instalação. |
 | Excluí algo sem querer | Ajustes ▸ Lixeira ▸ **Restaurar**. |
-| O botão **Ponte** não aparece no WhatsApp Web | O recurso não foi ligado (ícone da extensão ▸ **Usar no WhatsApp Web**) ou a página não foi recarregada depois de ligar. Recarregue a página (F5). Exige a extensão 0.4.0. |
+| O botão **Guardar no Ponte** não aparece no WhatsApp Web | Ele fica no canto inferior esquerdo da página, por cima do rodapé da lista de conversas (na extensão 0.4.0 é menor e diz só **Ponte**). Se não estiver lá, o recurso não foi ligado (ícone da extensão ▸ **Usar no WhatsApp Web**) ou a página precisa ser recarregada (F5). Exige a extensão 0.4.0 ou mais nova. |
 | "O Ponte não reconheceu esta página do WhatsApp Web" | O WhatsApp pode ter mudado a página. Abra **Colar mensagens copiadas** no painel e cole o que copiou no WhatsApp, ou use **Novo ▸ Registro manual… ▸ Colar conversa do WhatsApp** no Ponte. |
 | "Atualize o Ponte para guardar conversas do WhatsApp" | O Ponte instalado é anterior à 0.32. Instale a versão mais recente e reinicie o navegador. |
 | O Ponte diz que o recurso já está reservado ou em uso | Não é erro: o horário escolhido está ocupado. A frase diz por quem e até quando. Escolha outro horário, ou outro recurso, ou espere a devolução. Em **Ocupação do dia**, na ficha da reserva, aparecem os horários já tomados. |

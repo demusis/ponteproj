@@ -245,6 +245,32 @@ async function registerNow() {
   await chrome.scripting.registerContentScripts([{ id: WA_SCRIPT_ID, js: WA_SCRIPT_FILES, matches: [WA_PATTERN], runAt: "document_idle", allFrames: false, world: "ISOLATED", persistAcrossSessions: true }]);
 }
 function whatsappRegister() { return waSerial(registerNow); }
+// Registered scripts only reach pages loaded afterwards. When the person turns the feature on, the
+// panel is also placed in the WhatsApp Web tabs already open, so no reload is needed. A tab that
+// already has the panel is left alone; one that refuses is left for a reload (the popup says so).
+async function whatsappPlaceInOpenTabs() {
+  let tabs = [];
+  try {
+    tabs = await new Promise(resolve => {
+      try { chrome.tabs.query({ url: WA_PATTERN }, list => resolve(chrome.runtime.lastError || !Array.isArray(list) ? [] : list)); }
+      catch { resolve([]); }
+    });
+  } catch { tabs = []; }
+  let open = 0, placed = 0;
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab?.id)) continue;
+    open += 1;
+    try {
+      const target = { tabId: tab.id, allFrames: false };
+      const probe = await chrome.scripting.executeScript({ target, world: "ISOLATED", func: () => globalThis.__ponteprojWhatsAppStarted === true });
+      if (probe?.[0]?.result !== true) await chrome.scripting.executeScript({ target, world: "ISOLATED", files: WA_SCRIPT_FILES });
+      placed += 1;
+      // Show where it is: the person has just asked for it.
+      try { await chrome.scripting.executeScript({ target, world: "ISOLATED", func: () => { if (typeof globalThis.__ponteprojWhatsAppOpen === "function") globalThis.__ponteprojWhatsAppOpen(); } }); } catch { /* the button is there anyway */ }
+    } catch { /* this tab needs a reload */ }
+  }
+  return { open, placed };
+}
 // Registered scripts normally persist; this only repairs them, and only while the permission is still granted.
 function syncWhatsApp(refresh) {
   return waSerial(async () => {
@@ -314,6 +340,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.action === "ponte.whatsapp_on") {
           if (!(await whatsappGranted())) return Core.errorResult("PERMISSION_DENIED", "A permissão para o WhatsApp Web não foi concedida.");
           await whatsappRegister();
+          const tabs = await whatsappPlaceInOpenTabs();
+          return { protocol_version: 1, ok: true, open_tabs: tabs.open, placed_tabs: tabs.placed };
         } else {
           await whatsappUnregister();
           await chrome.permissions.remove({ origins: [WA_PATTERN] });
