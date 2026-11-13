@@ -60,6 +60,9 @@ pub(super) struct QueuedJob {
     /// The documents that leave with it and the destination, when it
     /// leaves this computer: checked again when it starts.
     pub consent: Option<(Vec<i64>, String)>,
+    /// For the conference of a draft: where the text is and its hash when the
+    /// person asked; the job does not run if the text is not that one any more.
+    pub draft_guard: Option<(DraftSlot, String)>,
     pub task: Box<dyn FnOnce(Reporter) -> WorkResult + Send>,
     pub ctx: eframe::egui::Context,
 }
@@ -113,10 +116,20 @@ pub(super) fn load_failure_text(failure: LoadFailure) -> (&'static str, Option<&
     }
 }
 
+/// Where the text of a draft is: the editor of a document, or the suggestion
+/// being reviewed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DraftSlot {
+    Editor(i64),
+    Suggestion,
+}
+
 /// What the question "Enviar … a …?" is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PendingSend {
     Analysis,
+    /// "Conferir a minuta": the text of the draft is sent.
+    Conference(DraftSlot),
     Draft(crate::work_templates::Intent),
     /// "Testar a IA com casos fictícios".
     Test,
@@ -134,6 +147,8 @@ pub(super) struct SentSummary<'a> {
     pub examples: usize,
     pub example_files: usize,
     pub draft: bool,
+    /// "Conferir a minuta": only the text of the draft and the criteria.
+    pub conference: bool,
 }
 
 fn count_of(n: usize, one: &str, many: &str) -> String {
@@ -146,6 +161,15 @@ fn count_of(n: usize, one: &str, many: &str) -> String {
 
 /// The lines under "O que sai deste computador".
 pub(super) fn sent_lines(sent: &SentSummary) -> Vec<String> {
+    if sent.conference {
+        return vec![
+            format!(
+                "• O texto da minuta, que leva trechos do documento {}.",
+                sent.number
+            ),
+            "• Os critérios do modelo de trabalho.".to_owned(),
+        ];
+    }
     let mut lines = vec![
         format!(
             "• O texto do documento {}, com número, título, tipo, datas, remetente, destinatário e interessado, quando constam.",
@@ -278,11 +302,16 @@ impl PonteApp {
             return SendPlan::Go;
         }
         let id = detail.summary.id;
-        let sources = match self.sources.selected(id, &self.store) {
-            Ok(found) => found,
-            Err(error) => {
-                self.error(error.to_string());
-                return SendPlan::Stop;
+        // The conference sends the draft only: no source is chosen for it.
+        let sources = if matches!(what, PendingSend::Conference(_)) {
+            Vec::new()
+        } else {
+            match self.sources.selected(id, &self.store) {
+                Ok(found) => found,
+                Err(error) => {
+                    self.error(error.to_string());
+                    return SendPlan::Stop;
+                }
             }
         };
         let source_documents: Vec<i64> = sources.iter().map(|s| s.document_id).collect();
@@ -366,6 +395,7 @@ impl PonteApp {
         };
         let title = match question.what {
             PendingSend::Test => format!("Enviar os casos fictícios a {}?", question.provider),
+            PendingSend::Conference(_) => format!("Enviar a minuta a {}?", question.provider),
             _ => format!("Enviar este documento a {}?", question.provider),
         };
         let mut send = false;
@@ -392,6 +422,7 @@ impl PonteApp {
                             examples: question.examples,
                             example_files: question.example_files,
                             draft: matches!(what, PendingSend::Draft(_)),
+                            conference: matches!(what, PendingSend::Conference(_)),
                         }) {
                             ui.add(egui::Label::new(line).wrap());
                         }
@@ -460,6 +491,7 @@ impl PonteApp {
         match question.what {
             PendingSend::Analysis => self.analyze_now(&detail, ctx),
             PendingSend::Draft(intent) => self.generate_now(&detail, intent, ctx),
+            PendingSend::Conference(slot) => self.confer_now(slot, ctx),
             PendingSend::Test => {}
         }
     }
@@ -525,6 +557,16 @@ impl PonteApp {
             if !consent_holds(&self.store, ids, destination) {
                 self.message(format!(
                     "Não foi feito: {}. O envio deste documento não está mais confirmado. Peça de novo.",
+                    job.waiting
+                ));
+                return;
+            }
+        }
+        if let Some((slot, sha)) = &job.draft_guard {
+            let current = self.slot_text(*slot);
+            if !super::conference::conference_still_current(sha, current.as_deref()) {
+                self.message(format!(
+                    "Não foi feito: {}. A minuta mudou enquanto o trabalho esperava. Peça de novo.",
                     job.waiting
                 ));
                 return;
@@ -652,6 +694,7 @@ mod tests {
             examples: 3,
             example_files: 1,
             draft: true,
+            conference: false,
         });
         let text = lines.join("\n");
         assert!(text.contains("O texto do documento ORG-OFI-2026/00431, com número, título, tipo, datas, remetente, destinatário e interessado, quando constam."));
@@ -669,6 +712,7 @@ mod tests {
             examples: 0,
             example_files: 0,
             draft: false,
+            conference: false,
         })
         .join("\n");
         assert!(plain.contains("Nenhuma fonte selecionada."));

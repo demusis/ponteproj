@@ -6,7 +6,7 @@ use crate::{
     storage::Store,
     work_templates::{
         detect_variables, owner_key, version_key, BlockMode, BlockRef, Example, ExampleStatus,
-        InstructionBlock, Intent, Reference, Scope, Section, Status, TemplateVersion, Variable,
+        InstructionBlock, Reference, Scope, Section, Status, TemplateVersion, Variable,
         WorkTemplate, MAX_BLOCKS_PER_TEMPLATE,
     },
 };
@@ -2470,6 +2470,10 @@ impl TemplatesPanel {
             Some(Ok(p)) => {
                 widgets::card(ui, |ui| {
                     widgets::section(ui, "O que seria enviado");
+                    widgets::small_muted(
+                        ui,
+                        "É o mesmo pedido de uma geração real, com um documento e uma fonte fictícios no lugar dos seus.",
+                    );
                     ui.add_space(theme::S1);
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(theme::S2, theme::S2);
@@ -2537,8 +2541,6 @@ impl TemplatesPanel {
                 .versions
                 .last()
                 .ok_or_else(|| anyhow::anyhow!("O modelo não tem versão."))?;
-            let resolved = crate::prompting::resolve_blocks(v, &self.blocks, &self.test_selected)?;
-            let blocks = resolved.len();
             let examples: Vec<Example> = if t.uid.is_empty() {
                 Vec::new()
             } else {
@@ -2549,31 +2551,26 @@ impl TemplatesPanel {
             for example in &examples {
                 example_files.extend(store.example_files(example)?);
             }
-            let request = crate::prompting::DraftRequest {
-                capture: &doc.2,
-                kind: &t.kind,
-                intent: Intent::New,
-                local_context: "",
-                request_guidance: &self.test_guidance,
-                template: Some((t, v)),
-                blocks: resolved,
-                examples: &examples,
-                example_files: &example_files,
-                sources: &[],
-                current_text: "",
-                model: "",
-                provider: "",
-            };
-            // The same base the generation uses, so the preview is faithful.
-            let base = crate::ai::draft_base_system(&t.kind, &doc.2);
-            let assembled = crate::prompting::assemble(&base, &request)?;
+            // The same function a real generation uses, with a fictitious
+            // document and source in place of the person's.
+            let job = crate::ai::DraftJob::preview(
+                (t.clone(), v.clone()),
+                &t.kind,
+                self.blocks.clone(),
+                self.test_selected.clone(),
+                &self.test_guidance,
+                examples,
+                example_files,
+                &doc.2,
+            );
+            let preview = crate::ai::preview_draft(&job)?;
             Ok(Preview {
-                trusted: assembled.trusted_bytes,
-                blocks,
-                examples: examples.len(),
-                files: example_files.len(),
-                conflicts: assembled.conflicts.iter().map(|c| c.describe()).collect(),
-                system: assembled.system,
+                trusted: preview.trusted_bytes,
+                blocks: preview.blocks,
+                examples: preview.examples,
+                files: preview.example_files,
+                conflicts: preview.conflicts,
+                system: preview.system,
             })
         })();
         self.test_result = Some(result.map_err(|e| format!("{e:#}")));
@@ -2611,6 +2608,11 @@ pub const SHOTS: &[&str] = &[
 
 #[cfg(feature = "shots")]
 impl TemplatesPanel {
+    /// Builds the preview of "Testar" as the button would, for this document.
+    pub fn shots_preview(&mut self, store: &crate::storage::Store, doc: &(i64, String, Capture)) {
+        self.run_preview(store, doc);
+    }
+
     /// Puts the panel in the state called `view` (see `SHOTS`).
     pub fn shots_open(&mut self, store: &mut crate::storage::Store, view: &str) {
         self.refresh(store);

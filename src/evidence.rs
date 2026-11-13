@@ -1743,6 +1743,10 @@ struct Draft {
     selected: BTreeSet<String>,
     message: String,
 }
+/// Development only: show the sources panel open in the pictures.
+#[cfg(all(feature = "desktop", feature = "shots"))]
+pub static SHOTS_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(feature = "desktop")]
 #[derive(Default)]
 pub struct SourcesPanel {
@@ -1796,21 +1800,149 @@ impl SourcesPanel {
         id: i64,
         busy: bool,
     ) -> Option<Vec<i64>> {
+        use eframe::egui::{self, RichText};
         let draft = self.drafts.entry(id).or_default();
         draft.documents.insert(id);
         let mut request = None;
-        eframe::egui::CollapsingHeader::new(eframe::egui::RichText::new("Outros documentos e páginas para a IA").font(crate::theme::font_strong(crate::theme::SIZE_SECTION))).show(ui,|ui|{
-            crate::widgets::small_muted(ui,"Opcional: marque documentos já importados e, depois de preparar, as páginas que a IA deve considerar.").on_hover_text("A seleção vale para a próxima análise ou minuta; análises anteriores guardam as fontes que usaram. O documento atual e o contexto são sempre incluídos. Texto obtido por OCR exige conferência.");
-            match store.list_documents(""){Ok(documents)=>{for document in documents{if document.id!=id{let mut checked=draft.documents.contains(&document.id);if ui.add_enabled(!busy,eframe::egui::Checkbox::new(&mut checked,format!("{} — {}",document.document_number,document.title))).changed(){if checked{draft.documents.insert(document.id);}else{draft.documents.remove(&document.id);}draft.prepared=None;draft.selected.clear();}}}},Err(e)=>{ui.label(format!("Não foi possível ler os documentos: {e}"));}}
-            if ui.add_enabled(!busy,eframe::egui::Button::new(if busy {"Preparando…"} else {"Preparar páginas"})).on_hover_text("Lê os PDFs dos documentos marcados neste computador para você escolher as páginas.").clicked(){request=Some(draft.documents.iter().copied().collect());}
-            if !draft.message.is_empty(){ui.label(&draft.message);}
-            if let Some(prepared)=&draft.prepared {
-                for pending in &prepared.pending{ui.small(format!("Cobertura: {pending}"));}
-                eframe::egui::ScrollArea::vertical().id_salt(("sources",id)).max_height(260.0).show(ui,|ui|{for source in &prepared.sources{
-                    let mut selected=draft.selected.contains(&source.id);if ui.add_enabled(!busy,eframe::egui::Checkbox::new(&mut selected,format!("{} • {} bytes",source.label,source.text.len()))).changed(){if selected{draft.selected.insert(source.id.clone());}else{draft.selected.remove(&source.id);}}
-                    ui.push_id(&source.id,|ui|{ui.collapsing("Conferir texto antes de selecionar",|ui|{let mut text=source.text.as_str();ui.add(eframe::egui::TextEdit::multiline(&mut text).desired_rows(5).desired_width(f32::INFINITY));});});
-                }});
-                let size:usize=prepared.sources.iter().filter(|s|draft.selected.contains(&s.id)).map(|s|s.text.len()).sum();ui.label(format!("{} • {} KB adicionais",if draft.selected.len()==1{"1 fonte selecionada".to_owned()}else{format!("{} fontes selecionadas",draft.selected.len())},size.div_ceil(1024)));
+        let header = egui::CollapsingHeader::new(
+            RichText::new("Outros documentos e páginas para a IA")
+                .font(crate::theme::font_strong(crate::theme::SIZE_SECTION)),
+        );
+        // Development only: the pictures show the panel open.
+        #[cfg(feature = "shots")]
+        let header = if SHOTS_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
+            header.open(Some(true))
+        } else {
+            header
+        };
+        header.show(ui, |ui| {
+            // Long labels (a document title, an attachment name) wrap.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            crate::widgets::small_muted(
+                ui,
+                "Opcional: marque documentos já importados e, depois de preparar, as páginas e os anexos que a IA deve considerar.",
+            )
+            .on_hover_text("A seleção vale para a próxima análise ou minuta; análises anteriores guardam as fontes que usaram. O documento atual e o contexto são sempre incluídos. Texto obtido por OCR exige conferência.");
+            match store.list_documents("") {
+                Ok(documents) => {
+                    for document in documents {
+                        if document.id == id {
+                            continue;
+                        }
+                        let mut checked = draft.documents.contains(&document.id);
+                        let label = format!("{} — {}", document.document_number, document.title);
+                        if ui
+                            .add_enabled(!busy, egui::Checkbox::new(&mut checked, label))
+                            .changed()
+                        {
+                            if checked {
+                                draft.documents.insert(document.id);
+                            } else {
+                                draft.documents.remove(&document.id);
+                            }
+                            draft.prepared = None;
+                            draft.selected.clear();
+                        }
+                    }
+                }
+                Err(e) => {
+                    ui.label(format!("Não foi possível ler os documentos: {e}"));
+                }
+            }
+            if ui
+                .add_enabled(
+                    !busy,
+                    crate::widgets::secondary(if busy {
+                        "Preparando…"
+                    } else {
+                        "Preparar páginas e anexos"
+                    }),
+                )
+                .on_hover_text("Lê, neste computador, os PDFs e os anexos (PDF, texto e Word) deste documento e dos marcados, para você escolher o que a IA deve considerar.")
+                .clicked()
+            {
+                request = Some(draft.documents.iter().copied().collect());
+            }
+            if !draft.message.is_empty() {
+                crate::widgets::small_muted(ui, draft.message.clone());
+            }
+            if let Some(prepared) = &draft.prepared {
+                if !prepared.pending.is_empty() {
+                    crate::widgets::field_label(ui, "Cobertura: o que ficou de fora");
+                    let warn = crate::widgets::Tone::Warn.colors().0;
+                    for pending in &prepared.pending {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("{} {pending}", crate::theme::icon::WARNING))
+                                    .size(crate::theme::SIZE_SMALL)
+                                    .color(warn),
+                            )
+                            .wrap(),
+                        );
+                    }
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt(("sources", id))
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        for source in &prepared.sources {
+                            ui.horizontal_wrapped(|ui| {
+                                let mut selected = draft.selected.contains(&source.id);
+                                if ui
+                                    .add_enabled(
+                                        !busy,
+                                        egui::Checkbox::new(&mut selected, source.label.as_str()),
+                                    )
+                                    .changed()
+                                {
+                                    if selected {
+                                        draft.selected.insert(source.id.clone());
+                                    } else {
+                                        draft.selected.remove(&source.id);
+                                    }
+                                }
+                                if is_attachment_source(source) {
+                                    crate::widgets::pill(
+                                        ui,
+                                        "anexo",
+                                        crate::widgets::Tone::Neutral,
+                                    );
+                                }
+                                crate::widgets::small_muted(
+                                    ui,
+                                    crate::labels::file_size(source.text.len() as u64),
+                                );
+                            });
+                            ui.push_id(&source.id, |ui| {
+                                ui.collapsing("Conferir texto antes de selecionar", |ui| {
+                                    let mut text = source.text.as_str();
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut text)
+                                            .desired_rows(5)
+                                            .desired_width(f32::INFINITY),
+                                    );
+                                });
+                            });
+                        }
+                    });
+                let size: usize = prepared
+                    .sources
+                    .iter()
+                    .filter(|s| draft.selected.contains(&s.id))
+                    .map(|s| s.text.len())
+                    .sum();
+                crate::widgets::small_muted(
+                    ui,
+                    format!(
+                        "{} • {} KB adicionais",
+                        if draft.selected.len() == 1 {
+                            "1 fonte selecionada".to_owned()
+                        } else {
+                            format!("{} fontes selecionadas", draft.selected.len())
+                        },
+                        size.div_ceil(1024)
+                    ),
+                );
             }
         });
         request

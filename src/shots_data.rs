@@ -67,6 +67,7 @@ fn seed_all(store: &mut Store) -> Result<()> {
     attendances(store, &ids).context("atendimentos de exemplo")?;
     analysis(store, &ids).context("análise de exemplo")?;
     templates(store).context("modelos de exemplo")?;
+    draft(store, &ids).context("minuta de exemplo")?;
     resources(store, &ids).context("recursos de exemplo")?;
     Ok(())
 }
@@ -1355,7 +1356,13 @@ fn templates(store: &mut Store) -> Result<()> {
             locator: "Pasta Normas / Redação".into(),
             note: String::new(),
         }];
-        version.criteria = vec!["A resposta traz todas as informações pedidas.".into()];
+        version.criteria = vec![
+            "A resposta traz todas as informações pedidas.".into(),
+            "O texto cita o documento recebido.".into(),
+            "O tom é formal e impessoal.".into(),
+            "A resposta indica o prazo de retorno, quando há.".into(),
+            "Os dados citados conferem com o documento original.".into(),
+        ];
     }
     let reply = store.save_template(&reply, None)?;
     store.set_template_status(&reply.uid, Status::Published, None)?;
@@ -1376,6 +1383,111 @@ fn templates(store: &mut Store) -> Result<()> {
         }];
     }
     store.save_template(&forward, None)?;
+    Ok(())
+}
+
+/// The name of the sample work template the sample draft was made from.
+pub const SAMPLE_TEMPLATE: &str = "Resposta a pedido de informações";
+
+/// The text of the sample draft of `ORG-OFI-2026/00431`: one `[preencher…]`
+/// left, one date no material writes, and no "Informações" section.
+pub fn sample_draft_text() -> String {
+    format!(
+        "MINUTA PARA REVISÃO\n\n\
+         Referência: ORG-OFI-2026/00431\n\
+         Assunto: Solicitação de apoio logístico para evento\n\n\
+         À/Ao [preencher destinatário],\n\n\
+         Em atenção ao ORG-OFI-2026/00431, o apoio solicitado será analisado pela Diretoria \
+         e a confirmação dos veículos será enviada ao Protocolo até {}.\n\n\
+         Colocamo-nos à disposição para esclarecimentos.",
+        br(SAMPLE_VEHICLES_DAY + 3)
+    )
+}
+
+/// How the sample draft was made: from the sample template, as generated.
+pub fn sample_provenance(store: &Store) -> Result<crate::model::DraftProvenance> {
+    let template = store
+        .list_templates()?
+        .into_iter()
+        .find(|t| t.name == SAMPLE_TEMPLATE)
+        .context("modelo de exemplo da minuta")?;
+    Ok(crate::model::DraftProvenance {
+        generation_uid: None,
+        template_uid: Some(template.uid.clone()),
+        template_version: Some(template.current_version),
+        template_name: template.name.clone(),
+        model: "amostra".into(),
+        provider: "Ollama local".into(),
+        request_guidance: String::new(),
+    })
+}
+
+/// The conference of the sample draft: one result of each verdict, one of
+/// them with a quote the program found in the text.
+pub fn sample_conference(text: &str) -> crate::ai::DraftConference {
+    let result =
+        |criterion: &str, verdict: &str, quote: &str, note: &str| crate::ai::CriterionResult {
+            criterion: criterion.into(),
+            verdict: verdict.into(),
+            quote: quote.into(),
+            note: note.into(),
+            quote_found: !quote.is_empty() && text.contains(quote),
+        };
+    crate::ai::DraftConference {
+        results: vec![
+            result(
+                "A resposta traz todas as informações pedidas.",
+                "nao_atende",
+                "",
+                "Não há resposta sobre as 20 cadeiras nem sobre o equipamento de som.",
+            ),
+            result(
+                "O texto cita o documento recebido.",
+                "atende",
+                "Em atenção ao ORG-OFI-2026/00431",
+                "O documento é citado logo na abertura.",
+            ),
+            result(
+                "O tom é formal e impessoal.",
+                "atende",
+                "o apoio solicitado será analisado pela Diretoria",
+                "A redação é formal e não usa a primeira pessoa.",
+            ),
+            result(
+                "A resposta indica o prazo de retorno, quando há.",
+                "nao_se_aplica",
+                "",
+                "O documento não pede prazo de retorno.",
+            ),
+            result(
+                "Os dados citados conferem com o documento original.",
+                "nao_conferido",
+                "",
+                "A IA não respondeu a este critério de forma aceitável.",
+            ),
+        ],
+        model: "amostra".into(),
+        provider: "Ollama local".into(),
+        at: Utc::now().to_rfc3339(),
+        text_sha256: crate::ai::conference_text_sha256(text),
+        calls: 1,
+    }
+}
+
+/// A saved draft made from the sample template, and the conference of its
+/// exact text.
+fn draft(store: &mut Store, ids: &Ids) -> Result<()> {
+    let text = sample_draft_text();
+    let provenance = sample_provenance(store)?;
+    store.save_draft_full(
+        ids.logistics,
+        ids.logistics_capture,
+        "resposta",
+        &text,
+        &[],
+        Some(&provenance),
+    )?;
+    store.save_draft_conference(ids.logistics, &sample_conference(&text))?;
     Ok(())
 }
 
@@ -1594,5 +1706,62 @@ mod tests {
         assert!(uses.iter().any(|u| u.document_id.is_some()));
         assert!(uses.iter().any(|u| u.saiop_id.is_some()));
         assert!(store.auto_attendance_enabled().unwrap());
+    }
+    #[test]
+    fn the_sample_draft_has_the_three_points_and_a_conference_of_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        seed(&mut store).unwrap();
+        let document = store
+            .list_documents("")
+            .unwrap()
+            .into_iter()
+            .find(|d| d.document_number == "ORG-OFI-2026/00431")
+            .unwrap();
+        let detail = store.load_document(document.id).unwrap();
+        let saved = detail.drafts.first().expect("the sample draft is saved");
+        let provenance = saved.provenance.clone().unwrap();
+        let template = store
+            .template_by_uid(provenance.template_uid.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
+        let version = template
+            .version(provenance.template_version.unwrap())
+            .unwrap();
+        let input = crate::draft_check::DraftCheckInput::for_draft(
+            &store,
+            document.id,
+            &saved.body,
+            crate::work_templates::Intent::New,
+            None,
+            Some(version),
+            &[],
+            &[],
+            &Local::now().format("%Y-%m-%d").to_string(),
+        )
+        .unwrap();
+        let check = crate::draft_check::check_draft(&input);
+        assert!(check.header && check.cites_number);
+        assert_eq!(check.placeholders.len(), 1, "one [preencher] left");
+        assert!(
+            check.unsupported.iter().any(|u| u.kind == "data"),
+            "one date that the document does not write: {:?}",
+            check.unsupported
+        );
+        assert!(
+            check.sections.iter().any(|s| s.required && !s.found),
+            "a required section is missing: {:?}",
+            check.sections
+        );
+        let conference = store
+            .draft_conference(&crate::ai::conference_text_sha256(&saved.body))
+            .expect("the conference of the exact text");
+        let verdicts: std::collections::BTreeSet<&str> = conference
+            .results
+            .iter()
+            .map(|r| r.verdict.as_str())
+            .collect();
+        assert_eq!(verdicts.len(), 4, "one of each verdict");
+        assert!(conference.results.iter().any(|r| r.quote_found));
     }
 }

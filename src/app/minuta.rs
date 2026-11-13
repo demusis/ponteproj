@@ -344,6 +344,48 @@ impl PonteApp {
                         widgets::small_muted(ui, editor.origin.as_str());
                     });
                 }
+                // The conference of a saved draft: collapsed, recomputed only
+                // when the text changes.
+                let mut confer = false;
+                if !detail.drafts.is_empty() && !self.editors[&id].body.trim().is_empty() {
+                    {
+                        let editor = &self.editors[&id];
+                        super::conference::refresh_review(
+                            &mut self.review_editor,
+                            &self.store,
+                            id,
+                            &editor.body,
+                            crate::work_templates::Intent::New,
+                            None,
+                            editor.provenance.as_ref(),
+                            &editor.materials,
+                        );
+                    }
+                    let busy = self.conference_busy();
+                    if let Some(review) = &self.review_editor {
+                        let (summary, _) = super::conference::check_summary(&review.check);
+                        let header = egui::CollapsingHeader::new(format!(
+                            "{} — {summary}",
+                            super::conference::TITLE
+                        ))
+                        .id_salt(("draft-conference", id))
+                        .default_open(false);
+                        // Development only: the pictures show it open.
+                        #[cfg(feature = "shots")]
+                        let header = if self.shots_conference_open {
+                            header.open(Some(true))
+                        } else {
+                            header
+                        };
+                        header.show(ui, |ui| {
+                            confer = super::conference::draw_panel(ui, review, None, busy).confer;
+                        });
+                    }
+                }
+                if confer {
+                    let ctx = ui.ctx().clone();
+                    self.confer_request(super::queue::DraftSlot::Editor(id), &ctx);
+                }
                 ui.collapsing(format!("Versões salvas ({})", detail.drafts.len()), |ui| {
                     for (index, draft) in detail.drafts.iter().enumerate() {
                         if index > 0 {
@@ -489,53 +531,91 @@ impl PonteApp {
         let mut open = true;
         let mut use_text = false;
         let mut discard = false;
+        let mut confer = false;
+        let previous = (suggestion.intent != crate::work_templates::Intent::New)
+            .then_some(suggestion.previous_text.as_str());
+        super::conference::refresh_review(
+            &mut self.review_suggestion,
+            &self.store,
+            suggestion.document_id,
+            &suggestion.body,
+            suggestion.intent,
+            previous,
+            suggestion.provenance.as_ref(),
+            &suggestion.materials,
+        );
+        let busy = self.conference_busy();
+        let review = &self.review_suggestion;
         egui::Window::new("Revisar sugestão de minuta")
             .open(&mut open)
-            .default_size([720.0, 570.0])
+            .default_size([760.0, 720.0])
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = S2;
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(&suggestion.number)
-                            .font(theme::font_strong(theme::SIZE_SECTION)),
-                    );
-                    pill(ui, kind_label(&suggestion.kind), Tone::Neutral);
-                    pill(ui, "ainda não salva", Tone::Warn);
-                });
-                widgets::small_muted(
-                    ui,
-                    format!("Baseada na importação nº {}", suggestion.capture_id),
-                );
-                ui.label("Leia o texto e leve ao editor para corrigir e salvar uma versão.");
-                widgets::card(ui, |ui| {
+                #[cfg(feature = "shots")]
+                let scroll = if self.shots_ficha_scroll > 0.0 {
+                    egui::ScrollArea::vertical().vertical_scroll_offset(self.shots_ficha_scroll)
+                } else {
                     egui::ScrollArea::vertical()
-                        .max_height(380.0)
-                        .show(ui, |ui| {
-                            let mut text = suggestion.body.as_str();
-                            ui.add(
-                                egui::TextEdit::multiline(&mut text)
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(20),
-                            );
-                        });
-                });
-                ui.horizontal(|ui| {
-                    use_text = ui.add(widgets::primary("Levar ao editor")).clicked();
-                    if ui
-                        .add(widgets::secondary(format!(
-                            "{} Copiar sugestão",
-                            icon::COPY
-                        )))
-                        .clicked()
-                    {
-                        ui.ctx().copy_text(suggestion.body.clone());
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        discard = ui.add(widgets::danger("Descartar sugestão")).clicked();
+                };
+                #[cfg(not(feature = "shots"))]
+                let scroll = egui::ScrollArea::vertical();
+                scroll.show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = S2;
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(&suggestion.number)
+                                .font(theme::font_strong(theme::SIZE_SECTION)),
+                        );
+                        pill(ui, kind_label(&suggestion.kind), Tone::Neutral);
+                        pill(ui, "ainda não salva", Tone::Warn);
                     });
+                    widgets::small_muted(
+                        ui,
+                        format!("Baseada na importação nº {}", suggestion.capture_id),
+                    );
+                    ui.label("Leia o texto e leve ao editor para corrigir e salvar uma versão.");
+                    widgets::card(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                let mut text = suggestion.body.as_str();
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut text)
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(12),
+                                );
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        use_text = ui.add(widgets::primary("Levar ao editor")).clicked();
+                        if ui
+                            .add(widgets::secondary(format!(
+                                "{} Copiar sugestão",
+                                icon::COPY
+                            )))
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(suggestion.body.clone());
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            discard = ui.add(widgets::danger("Descartar sugestão")).clicked();
+                        });
+                    });
+                    if let Some(review) = review {
+                        ui.separator();
+                        confer = super::conference::draw_panel(
+                            ui,
+                            review,
+                            suggestion.conference_skipped.as_deref(),
+                            busy,
+                        )
+                        .confer;
+                    }
                 });
             });
         self.suggestion_open = open;
+        if confer {
+            self.confer_request(super::queue::DraftSlot::Suggestion, ctx);
+        }
         if discard {
             self.suggestion = None;
             self.suggestion_open = false;
@@ -593,6 +673,19 @@ impl PonteApp {
                 return;
             }
         };
+        // The conference of the exact text of the version saved from it.
+        let conference = record
+            .draft_id
+            .and_then(|draft_id| {
+                self.detail
+                    .as_ref()
+                    .filter(|d| d.summary.id == document_id)
+                    .and_then(|d| d.drafts.iter().find(|draft| draft.id == draft_id))
+            })
+            .and_then(|draft| {
+                self.store
+                    .draft_conference(&crate::ai::conference_text_sha256(&draft.body))
+            });
         let mut open = true;
         egui::Window::new("Material utilizado na geração")
             .open(&mut open)
@@ -639,6 +732,20 @@ impl PonteApp {
                             }
                         }
                     });
+                    if let Some(conference) = &conference {
+                        widgets::card(ui, |ui| {
+                            widgets::section(ui, "Conferência dos critérios");
+                            ui.add(
+                                egui::Label::new(format!(
+                                    "{}. Opinião da IA ({}), em {}.",
+                                    super::conference::counts_text(conference),
+                                    conference.model,
+                                    display_date(&conference.at)
+                                ))
+                                .wrap(),
+                            );
+                        });
+                    }
                     if !record.request_guidance.trim().is_empty() {
                         widgets::card(ui, |ui| {
                             widgets::section(ui, "Pedido desta minuta");

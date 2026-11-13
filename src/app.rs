@@ -8,6 +8,7 @@ use crate::widgets::{self, Tone};
 use anyhow::{Context, Result};
 
 pub(crate) mod calendar;
+mod conference;
 mod ficha;
 mod library;
 mod minuta;
@@ -867,6 +868,8 @@ struct Suggestion {
     /// for a revision).
     previous_text: String,
     provenance: Option<crate::model::DraftProvenance>,
+    /// Why the conference of the criteria was not made with the generation.
+    conference_skipped: Option<String>,
 }
 
 // A draft result carries the generation record and the text; the other
@@ -893,6 +896,14 @@ enum WorkResult {
         /// What was sent, kept whether or not the text was accepted.
         record: crate::work_templates::GenerationRecord,
         result: std::result::Result<String, String>,
+        /// The conference of the criteria made with the generation.
+        conference: Option<crate::ai::DraftConference>,
+        conference_skipped: Option<String>,
+    },
+    /// "Conferir a minuta".
+    Conference {
+        document_id: i64,
+        result: std::result::Result<crate::ai::DraftConference, String>,
     },
     Backup(std::result::Result<PathBuf, String>),
     Export(std::result::Result<crate::export::ExportReport, String>),
@@ -919,6 +930,8 @@ enum WorkKind {
     Mail,
     /// "Testar a IA com casos fictícios".
     AiTest,
+    /// "Conferir a minuta".
+    Conference,
 }
 
 struct Worker {
@@ -1091,6 +1104,10 @@ struct PonteApp {
     material: Option<(i64, String)>,
     /// The document whose analysis shows its "Material utilizado".
     analysis_material: Option<i64>,
+    /// The conference panel of the draft in the editor and of the suggestion
+    /// being reviewed (the check runs again only when the text changes).
+    review_editor: Option<conference::DraftReview>,
+    review_suggestion: Option<conference::DraftReview>,
     /// The document whose reading failed (told once, not at each refresh).
     load_error_for: Option<i64>,
     /// What the Propostas block reads from the library, once per load.
@@ -1144,6 +1161,9 @@ struct PonteApp {
     /// Development only: how far the ficha is scrolled in the pictures.
     #[cfg(feature = "shots")]
     shots_ficha_scroll: f32,
+    /// Development only: the conference panel of the saved draft is shown open.
+    #[cfg(feature = "shots")]
+    shots_conference_open: bool,
     /// Navigation waiting for a decision about the unsaved task.
     leave: Option<Leave>,
     /// Why "Salvar e continuar" failed, shown inside the question.
@@ -1214,6 +1234,8 @@ impl PonteApp {
             templates: Default::default(),
             material: None,
             analysis_material: None,
+            review_editor: None,
+            review_suggestion: None,
             load_error_for: None,
             proposal_view: None,
             queued: None,
@@ -1248,6 +1270,8 @@ impl PonteApp {
             tour: crate::shots::Tour::start(),
             #[cfg(feature = "shots")]
             shots_ficha_scroll: 0.0,
+            #[cfg(feature = "shots")]
+            shots_conference_open: false,
             leave: None,
             leave_error: None,
             consult: None,
@@ -2290,6 +2314,7 @@ impl PonteApp {
             capture_id,
             context,
             consent,
+            draft_guard: None,
             task: Box::new(move |reporter| WorkResult::Analysis {
                 document_id,
                 result: ai::analyze_document(
@@ -2503,9 +2528,12 @@ impl PonteApp {
             capture_id,
             context: context.unwrap_or_default(),
             consent,
+            draft_guard: None,
             task: Box::new(move |reporter| {
                 let outcome = ai::generate_draft(&settings, &job, &reporter);
                 WorkResult::Draft {
+                    conference: outcome.conference,
+                    conference_skipped: outcome.conference_skipped,
                     materials: sources,
                     document_id,
                     number,
@@ -2588,6 +2616,7 @@ impl PonteApp {
                 WorkResult::Analysis { .. } => "Análise cancelada; nada foi salvo.",
                 WorkResult::Draft { .. } => "Geração da minuta cancelada; nada foi alterado.",
                 WorkResult::AiTest(_) => "Teste da IA cancelado.",
+                WorkResult::Conference { .. } => "Conferência da minuta cancelada.",
                 _ => "Operação cancelada.",
             };
             let finished_anyway = match &result {
@@ -2633,7 +2662,18 @@ impl PonteApp {
                 previous_text,
                 record,
                 result,
+                conference,
+                conference_skipped,
             } => {
+                // The conference made with the generation is kept for this
+                // exact text (a cache of the AI's opinion, local only).
+                if let Some(conference) = &conference {
+                    if let Err(error) = self.store.save_draft_conference(document_id, conference) {
+                        self.error(format!("Não foi possível guardar a conferência: {error}"));
+                    }
+                    self.review_editor = None;
+                    self.review_suggestion = None;
+                }
                 // Every generation is recorded, accepted or refused.
                 if let Err(error) = self.store.record_generation(&record) {
                     self.error(format!(
@@ -2661,6 +2701,7 @@ impl PonteApp {
                             intent,
                             previous_text,
                             provenance: Some(provenance),
+                            conference_skipped,
                         });
                         self.suggestion_open = true;
                         self.message("Sugestão pronta para revisão. Salve uma versão quando o texto estiver adequado.");
@@ -2718,6 +2759,26 @@ impl PonteApp {
                     }
                 }
                 Err(error) => self.mail.accept_fetch_error(error),
+            },
+            WorkResult::Conference {
+                document_id,
+                result,
+            } => match result {
+                Ok(conference) => {
+                    match self.store.save_draft_conference(document_id, &conference) {
+                        Ok(()) => {
+                            self.review_editor = None;
+                            self.review_suggestion = None;
+                            self.message(
+                                "Conferência pronta. É a opinião da IA: confira os trechos.",
+                            );
+                        }
+                        Err(error) => {
+                            self.error(format!("Não foi possível guardar a conferência: {error}"));
+                        }
+                    }
+                }
+                Err(error) => self.error(format!("Não foi possível conferir a minuta: {error}")),
             },
             WorkResult::AiTest(result) => {
                 match &result {
@@ -3506,7 +3567,10 @@ impl eframe::App for PonteApp {
                     ));
                     if matches!(
                         worker.kind,
-                        WorkKind::Analysis | WorkKind::Draft | WorkKind::AiTest
+                        WorkKind::Analysis
+                            | WorkKind::Draft
+                            | WorkKind::AiTest
+                            | WorkKind::Conference
                     ) {
                         cancel = ui
                             .add_enabled(

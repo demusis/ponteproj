@@ -38,6 +38,12 @@ impl PonteApp {
         "envio-confirmacao",
         "envio-confirmacao-minuta",
         "ficha-propostas-limpa",
+        "minuta-revisao",
+        "minuta-revisao-sem-conferencia",
+        "minuta-salva-fechada",
+        "minuta-salva-aberta",
+        "minuta-mudou",
+        "fontes-anexos",
         "fila-trabalhos",
         "analise-material",
         "analise-material-fatos",
@@ -223,6 +229,12 @@ impl PonteApp {
         self.queued = None;
         self.send_confirm = None;
         self.analysis_material = None;
+        self.suggestion = None;
+        self.suggestion_open = false;
+        self.review_editor = None;
+        self.review_suggestion = None;
+        self.shots_conference_open = false;
+        crate::evidence::SHOTS_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
         self.ai_test_report = None;
         self.tasks = Default::default();
         self.saiop = Default::default();
@@ -370,6 +382,7 @@ impl PonteApp {
                     waiting: "analisar ORG-OFI-2026/00431".to_owned(),
                     capture_id: 0,
                     consent: None,
+                    draft_guard: None,
                     context: String::new(),
                     task: Box::new(|_| super::WorkResult::AiTest(Err(String::new()))),
                     ctx: ctx.clone(),
@@ -391,6 +404,132 @@ impl PonteApp {
                 }
                 self.tab = Tab::Overview;
                 self.shots_ficha_scroll = 330.0;
+            }
+            "minuta-revisao" | "minuta-revisao-sem-conferencia" => {
+                if let Some(id) = document {
+                    self.select(id);
+                }
+                self.tab = Tab::Notes;
+                let skipped = name.ends_with("sem-conferencia");
+                let mut body = crate::shots_data::sample_draft_text();
+                if skipped {
+                    // Another text: no conference was made for it.
+                    body.push_str("\n\nSem outras observações.");
+                }
+                if let Some(detail) = self.detail.clone() {
+                    self.suggestion = Some(super::Suggestion {
+                        materials: Vec::new(),
+                        document_id: detail.summary.id,
+                        number: detail.summary.document_number.clone(),
+                        capture_id: detail.summary.latest_capture_id,
+                        kind: "resposta".to_owned(),
+                        body,
+                        intent: crate::work_templates::Intent::New,
+                        previous_text: String::new(),
+                        provenance: crate::shots_data::sample_provenance(&self.store).ok(),
+                        conference_skipped: skipped.then(|| {
+                            "A conferência dos critérios não foi feita: as chamadas à IA desta minuta acabaram antes.".to_owned()
+                        }),
+                    });
+                    self.suggestion_open = true;
+                }
+                self.shots_ficha_scroll = 520.0;
+            }
+            "minuta-salva-fechada" | "minuta-salva-aberta" | "minuta-mudou" => {
+                if let Some(id) = document {
+                    self.select(id);
+                    let draft = self.detail.as_ref().and_then(|d| d.drafts.first().cloned());
+                    if let (Some(editor), Some(draft)) = (self.editors.get_mut(&id), draft) {
+                        editor.body = draft.body.clone();
+                        editor.saved_body = draft.body.clone();
+                        editor.kind = draft.kind.clone();
+                        editor.saved_kind = draft.kind.clone();
+                        editor.capture_id = draft.capture_id;
+                        editor.saved_capture_id = draft.capture_id;
+                        editor.provenance = draft.provenance.clone();
+                        editor.origin = format!("Versão salva #{}", draft.id);
+                    }
+                    if name == "minuta-mudou" {
+                        // The panel first sees the saved text (and its
+                        // conference); then the text changes.
+                        if let Some(editor) = self.editors.get(&id) {
+                            super::conference::refresh_review(
+                                &mut self.review_editor,
+                                &self.store,
+                                id,
+                                &editor.body,
+                                crate::work_templates::Intent::New,
+                                None,
+                                editor.provenance.as_ref(),
+                                &editor.materials,
+                            );
+                        }
+                        if let Some(editor) = self.editors.get_mut(&id) {
+                            editor
+                                .body
+                                .push_str("\n\nAcrescentei um parágrafo de despedida.");
+                        }
+                    }
+                }
+                self.tab = Tab::Notes;
+                self.shots_conference_open = name != "minuta-salva-fechada";
+                self.shots_ficha_scroll = if name == "minuta-mudou" {
+                    1000.0
+                } else {
+                    520.0
+                };
+            }
+            "fontes-anexos" => {
+                if let Some(id) = document {
+                    self.select(id);
+                    let source = |id_text: &str, label: &str, method: &str, text: &str| {
+                        crate::evidence::Source {
+                            id: id_text.to_owned(),
+                            document_id: id,
+                            capture_id: 1,
+                            label: label.to_owned(),
+                            file_id: None,
+                            page: None,
+                            method: method.to_owned(),
+                            text: text.to_owned(),
+                        }
+                    };
+                    let mut page = source(
+                        "C1F3P1",
+                        "ORG-OFI-2026/00431 — Ofício assinado.pdf, página 1",
+                        "pdf",
+                        "Texto da primeira página do ofício assinado.",
+                    );
+                    page.file_id = Some(3);
+                    page.page = Some(1);
+                    self.sources.accept(
+                        id,
+                        Ok(crate::evidence::Prepared {
+                            sources: vec![
+                                source(
+                                    "A12H0a1b2c3d",
+                                    "ORG-OFI-2026/00431 — Anexo 1: relacao-de-convidados-do-seminario-de-integracao.docx",
+                                    "captura",
+                                    "Relação dos convidados do seminário, com nome e unidade.",
+                                ),
+                                page,
+                                source(
+                                    "C1",
+                                    "ORG-OFI-2026/00431 — texto do documento",
+                                    "captura",
+                                    "Senhor Diretor, solicitamos o apoio logístico desta Diretoria.",
+                                ),
+                            ],
+                            pending: vec![
+                                "ORG-OFI-2026/00431 — Anexo 2: foto-do-despacho.pdf: sem texto legível (parece uma imagem); abra o arquivo para ler.".to_owned(),
+                                "ORG-OFI-2026/00431 — Anexo 3: planilha.xlsx: este tipo de arquivo ainda não é lido pelo Ponte.".to_owned(),
+                            ],
+                        }),
+                    );
+                }
+                self.tab = Tab::Overview;
+                crate::evidence::SHOTS_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.shots_ficha_scroll = 2950.0;
             }
             "ajustes-ia-teste" => {
                 self.area = Area::Settings;
@@ -421,6 +560,22 @@ impl PonteApp {
                     ),
                     case("Documento sem nada a propor", 5, 5, &[], 2, 2.9),
                 ])));
+                if let Some(Ok(report)) = self.ai_test_report.as_mut() {
+                    report.drafts = vec![
+                        case("Resposta a pedido de informações", 9, 9, &[], 5, 14.2),
+                        case(
+                            "Minuta com data inventada",
+                            6,
+                            8,
+                            &[
+                                "A data que não consta no documento não foi apontada pelo Ponte.",
+                                "O critério sobre o prazo recebeu a opinião errada da IA.",
+                            ],
+                            5,
+                            12.6,
+                        ),
+                    ];
+                }
             }
             "ficha-texto-largo" => {
                 let manual = self.tour_find(|d| d.manual && !d.email && !d.whatsapp);
@@ -672,6 +827,20 @@ Se mudar o horário, me avise.
                     self.templates = Default::default();
                     self.area = Area::Templates;
                     self.templates.shots_open(&mut self.store, view);
+                    if view == "testar" {
+                        if let Some(id) = document {
+                            self.select(id);
+                            self.area = Area::Templates;
+                            if let Some(d) = &self.detail {
+                                let doc = (
+                                    d.summary.id,
+                                    d.summary.document_number.clone(),
+                                    d.capture.clone(),
+                                );
+                                self.templates.shots_preview(&self.store, &doc);
+                            }
+                        }
+                    }
                 } else if let Some(view) = other.strip_prefix("recursos-") {
                     self.resources = Default::default();
                     self.refresh();

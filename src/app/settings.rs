@@ -895,7 +895,7 @@ impl PonteApp {
             widgets::section(ui, "Testar a IA com casos fictícios");
             ui.add(
                 egui::Label::new(
-                    RichText::new("Envia à IA configurada alguns documentos fictícios, que acompanham o Ponte, e confere se ela leu e propôs o que se esperava. Nada do seu acervo é enviado e nada é salvo nele.")
+                    RichText::new("Envia à IA configurada alguns documentos fictícios, que acompanham o Ponte, e confere se ela leu e propôs o que se esperava. Além das análises, o teste gera minutas fictícias e confere os critérios delas: por isso leva mais tempo. Nada do seu acervo é enviado e nada é salvo nele.")
                         .color(theme::c().muted),
                 )
                 .wrap(),
@@ -948,40 +948,52 @@ impl PonteApp {
                 }
                 Some(Ok(report)) => {
                     ui.separator();
-                    let (passed, total) = ai_test_totals(report);
-                    for case in &report.cases {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new(&case.name)
-                                    .font(theme::font_strong(theme::SIZE_BODY)),
-                            );
-                            pill(
-                                ui,
-                                ai_test_summary(case.passed, case.total),
-                                ai_test_tone(case.passed, case.total),
-                            );
-                            widgets::small_muted(
-                                ui,
-                                format!(
-                                    "{} • {:.1} s",
-                                    crate::labels::count(
-                                        case.calls as usize,
-                                        "chamada",
-                                        "chamadas"
+                    let (passed, total) = (report.passed(), report.total());
+                    for (title, cases, (group_passed, group_total)) in ai_test_groups(report) {
+                        if let Some(title) = title {
+                            ui.horizontal_wrapped(|ui| {
+                                widgets::section(ui, title);
+                                pill(
+                                    ui,
+                                    ai_test_summary(group_passed, group_total),
+                                    ai_test_tone(group_passed, group_total),
+                                );
+                            });
+                        }
+                        for case in cases {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new(&case.name)
+                                        .font(theme::font_strong(theme::SIZE_BODY)),
+                                );
+                                pill(
+                                    ui,
+                                    ai_test_summary(case.passed, case.total),
+                                    ai_test_tone(case.passed, case.total),
+                                );
+                                widgets::small_muted(
+                                    ui,
+                                    format!(
+                                        "{} • {:.1} s",
+                                        crate::labels::count(
+                                            case.calls as usize,
+                                            "chamada",
+                                            "chamadas"
+                                        ),
+                                        case.seconds
                                     ),
-                                    case.seconds
-                                ),
-                            );
-                        });
-                        for failure in &case.failures {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(format!("• {failure}"))
-                                        .size(theme::SIZE_SMALL)
-                                        .color(theme::c().muted),
-                                )
-                                .wrap(),
-                            );
+                                );
+                            });
+                            for failure in &case.failures {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!("• {failure}"))
+                                            .size(theme::SIZE_SMALL)
+                                            .color(theme::c().muted),
+                                    )
+                                    .wrap(),
+                                );
+                            }
                         }
                     }
                     ui.separator();
@@ -1281,11 +1293,37 @@ fn ai_test_tone(passed: u32, total: u32) -> Tone {
     }
 }
 
-/// Checks passed and checks made, over every case.
-fn ai_test_totals(report: &crate::ai_eval::Report) -> (u32, u32) {
-    report.cases.iter().fold((0, 0), |(passed, total), case| {
+/// Checks passed and checks made, over some cases.
+fn ai_test_subtotal(cases: &[crate::ai_eval::CaseResult]) -> (u32, u32) {
+    cases.iter().fold((0, 0), |(passed, total), case| {
         (passed + case.passed, total + case.total)
     })
+}
+
+/// The groups the card shows: without drafts one list with no title;
+/// with them "Análises" and "Minutas", each with its subtotal.
+type TestGroup<'a> = (
+    Option<&'static str>,
+    &'a [crate::ai_eval::CaseResult],
+    (u32, u32),
+);
+
+fn ai_test_groups(report: &crate::ai_eval::Report) -> Vec<TestGroup<'_>> {
+    if report.drafts.is_empty() {
+        return vec![(None, &report.cases, ai_test_subtotal(&report.cases))];
+    }
+    vec![
+        (
+            Some("Análises"),
+            &report.cases,
+            ai_test_subtotal(&report.cases),
+        ),
+        (
+            Some("Minutas"),
+            &report.drafts,
+            ai_test_subtotal(&report.drafts),
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -1314,6 +1352,31 @@ mod ai_test_tests {
             seconds: 1.5,
         };
         let report = score(vec![case("A", 12, 14), case("B", 5, 5)]);
-        assert_eq!(ai_test_totals(&report), (17, 19));
+        assert_eq!((report.passed(), report.total()), (17, 19));
+        let groups = ai_test_groups(&report);
+        assert_eq!(groups.len(), 1, "no drafts: one list, no title");
+        assert_eq!(groups[0].0, None);
+        assert_eq!(groups[0].2, (17, 19));
+    }
+
+    #[test]
+    fn analyses_and_drafts_are_two_groups_with_their_own_subtotals() {
+        let case = |name: &str, passed, total| CaseResult {
+            name: name.into(),
+            passed,
+            total,
+            failures: Vec::new(),
+            calls: 2,
+            seconds: 1.5,
+        };
+        let mut report = score(vec![case("A", 12, 14), case("B", 5, 5)]);
+        report.drafts = vec![case("M1", 8, 9), case("M2", 3, 6)];
+        let groups = ai_test_groups(&report);
+        assert_eq!(groups.len(), 2);
+        assert_eq!((groups[0].0, groups[0].2), (Some("Análises"), (17, 19)));
+        assert_eq!((groups[1].0, groups[1].2), (Some("Minutas"), (11, 15)));
+        assert_eq!(groups[1].1.len(), 2);
+        // The grand total is the sum of the two.
+        assert_eq!((report.passed(), report.total()), (28, 34));
     }
 }
