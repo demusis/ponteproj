@@ -400,6 +400,16 @@ pub fn dates_in(text: &str) -> Vec<String> {
     unique(scan_dates(&chars).into_iter().map(|hit| hit.value))
 }
 
+/// The dates a text writes with where each one is, in characters:
+/// `(ISO, start, end)`. As [`dates_in`], with every occurrence.
+pub fn date_spans(text: &str) -> Vec<(String, usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    scan_dates(&chars)
+        .into_iter()
+        .map(|hit| (hit.value, hit.start, hit.end))
+        .collect()
+}
+
 const HOUR_WORDS: [&str; 6] = ["h", "hs", "hrs", "hr", "hora", "horas"];
 /// A number of hours after these words is a length, not a time of day.
 const LENGTH_BEFORE: [&str; 15] = [
@@ -587,6 +597,16 @@ fn scan_times(chars: &[char]) -> Vec<Hit<String>> {
 pub fn times_in(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     unique(scan_times(&chars).into_iter().map(|hit| hit.value))
+}
+
+/// The times a text writes with where each one is, in characters:
+/// `(HH:MM, start, end)`. As [`times_in`], with every occurrence.
+pub fn time_spans(text: &str) -> Vec<(String, usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    scan_times(&chars)
+        .into_iter()
+        .map(|hit| (hit.value, hit.start, hit.end))
+        .collect()
 }
 
 const NUMBER_WORDS: [(&str, u32); 24] = [
@@ -1486,6 +1506,33 @@ pub fn recheck_analysis(
     cleared
 }
 
+/// The id of the source made of an attachment: `A<attachment>H<8 hex of its
+/// hash>`, so that a replaced or removed file is known to have changed.
+pub fn attachment_source_id(attachment_id: i64, sha256: &str) -> String {
+    format!("A{attachment_id}H{}", &sha256[..sha256.len().min(8)])
+}
+
+/// The attachment and hash prefix a source id of [`attachment_source_id`]
+/// names; `None` for any other source.
+fn parse_attachment_source_id(source: &Source) -> Option<(i64, String)> {
+    if source.method != "captura" || source.file_id.is_some() {
+        return None;
+    }
+    let rest = source.id.strip_prefix('A')?;
+    let (id, sha) = rest.split_once('H')?;
+    let sha_ok = !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit());
+    sha_ok
+        .then(|| id.parse::<i64>().ok())
+        .flatten()
+        .map(|id| (id, sha.to_owned()))
+}
+
+/// Whether a source is an attachment of the document (not the text of a
+/// capture nor a page of a PDF of the SIGADOC).
+pub fn is_attachment_source(source: &Source) -> bool {
+    parse_attachment_source_id(source).is_some()
+}
+
 impl Store {
     pub fn prepare_sources(&self, documents: &[i64]) -> Result<Prepared> {
         ensure!(
@@ -1593,6 +1640,55 @@ impl Store {
                     }
                 }
             }
+            // The files the person attached to the document, whose text is read
+            // here, in memory, and only when asked: nothing is stored.
+            for (number, meta) in self
+                .list_attachments(crate::attachments::Owner::Document(id))?
+                .into_iter()
+                .enumerate()
+            {
+                let (stored, bytes) = self.attachment_bytes(meta.id)?;
+                let extracted = crate::extraction::extract(&stored.name, &bytes);
+                if !extracted.status.usable() || extracted.text.trim().is_empty() {
+                    prepared.pending.push(format!(
+                        "Anexo {}: {}: {}.",
+                        number + 1,
+                        stored.name,
+                        extracted.status.label()
+                    ));
+                    continue;
+                }
+                if prepared.sources.len() >= 512
+                    || extracted.text.len() > 400 * 1024
+                    || total + extracted.text.len() > 2 * 1024 * 1024
+                {
+                    prepared.pending.push(format!(
+                        "Anexo {}: {}: não foi preparado (limite de tamanho).",
+                        number + 1,
+                        stored.name
+                    ));
+                    continue;
+                }
+                total += extracted.text.len();
+                prepared.sources.push(Source {
+                    id: attachment_source_id(meta.id, &stored.sha256),
+                    document_id: id,
+                    capture_id: capture,
+                    label: format!(
+                        "{} — Anexo {}: {}",
+                        detail.capture.document_number,
+                        number + 1,
+                        stored.name
+                    ),
+                    file_id: None,
+                    page: None,
+                    // An older Ponte accepts only "captura", "pdf" and "ocr" in
+                    // what is synced: an attachment is kept as a "captura"
+                    // source whose id says what it is.
+                    method: "captura".into(),
+                    text: extracted.text,
+                });
+            }
             for pending in detail.capture.coverage.pending {
                 prepared
                     .pending
@@ -1614,6 +1710,16 @@ impl Store {
             );
             if current.ok() != Some(source.capture_id) {
                 return true;
+            }
+            if let Some((attachment, sha)) = parse_attachment_source_id(source) {
+                // An attachment source is current while the file is still an
+                // active attachment of the document with the same content.
+                let active = self
+                    .list_attachments(crate::attachments::Owner::Document(source.document_id))
+                    .unwrap_or_default();
+                return !active
+                    .iter()
+                    .any(|a| a.id == attachment && a.sha256.starts_with(&sha));
             }
             if source.method == "ocr" {
                 return match (source.file_id, source.page) {

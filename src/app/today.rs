@@ -1484,7 +1484,11 @@ mod tests {
                 None,
             )
             .unwrap();
-        let start = chrono::Local::now().naive_local() + chrono::Duration::days(3);
+        // At ten in the morning, three days ahead: a use starting late in the
+        // evening would cross midnight and land on two days of the calendar.
+        let start = (chrono::Local::now().date_naive() + chrono::Duration::days(3))
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
         let item = crate::resources::ResourceUse {
             resource_uid: uid,
             quantity: 1,

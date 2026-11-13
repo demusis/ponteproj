@@ -705,6 +705,10 @@ impl Store {
         let (_, text) = label(&tx, target.kind, target.id)?;
         match target.kind {
             Kind::Document => {
+                tx.execute(
+                    "DELETE FROM draft_conferences WHERE document_identity IN (SELECT hex(identity_hash) FROM documents WHERE id=?1)",
+                    [target.id],
+                )?;
                 tx.execute("DELETE FROM documents WHERE id=?1", [target.id])?;
             }
             Kind::Capture => {

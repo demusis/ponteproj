@@ -224,6 +224,7 @@ impl Store {
         store.ensure_saiop()?;
         store.ensure_ai_config()?;
         store.ensure_ai_consent()?;
+        store.ensure_draft_conferences()?;
         store.ensure_attachments()?;
         store.ensure_work_templates()?;
         store.ensure_mail_accounts()?;
@@ -860,6 +861,77 @@ impl Store {
         Ok(draft_id)
     }
 
+    /// What the checks of a draft read of a document, in one pass (the capture
+    /// is decrypted once): the latest capture, what the person wrote and the
+    /// verified facts of the latest analysis when it is not stale (made on the
+    /// latest capture, with sources and context unchanged).
+    pub fn draft_materials(&self, document_id: i64) -> Result<DraftMaterials> {
+        crate::trash::require_active_document(&self.conn, document_id)?;
+        let (capture_id, blob): (i64, Vec<u8>) = self
+            .conn
+            .query_row(
+                "SELECT d.latest_capture_id,c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id AND c.document_id=d.id WHERE d.id=?1",
+                [document_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("Documento não encontrado.")?;
+        let capture: Capture = decode(&blob)?;
+        let note: String = self
+            .conn
+            .query_row(
+                "SELECT payload FROM notes WHERE document_id=?1 ORDER BY id DESC LIMIT 1",
+                [document_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .map(|bytes| decode(&bytes))
+            .transpose()?
+            .unwrap_or_default();
+        let work_context = self.load_work_context(document_id)?;
+        let context = work_context.analysis_text(&note);
+        let analysis: Option<Analysis> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM analyses WHERE document_id=?1 ORDER BY id DESC LIMIT 1",
+                [document_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .map(|bytes| decode(&bytes))
+            .transpose()?;
+        let facts = analysis
+            .filter(|a| {
+                a.capture_id == capture_id
+                    && a.human_context == context
+                    && !self.sources_stale(&a.materials)
+            })
+            .map(|a| {
+                a.facts
+                    .into_iter()
+                    .filter(|f| f.checked.quote && f.checked.origin.is_written())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(DraftMaterials {
+            capture_id,
+            document_number: capture.document_number,
+            capture_text: capture.text,
+            context_values: crate::evidence::context_values(&context),
+            facts,
+        })
+    }
+
+    /// The verified facts the Redator is given: those of the latest analysis
+    /// of the document, when it is not stale and was made on `capture_id`;
+    /// none otherwise (or when the document cannot be read).
+    pub fn verified_facts_for(&self, document_id: i64, capture_id: i64) -> Vec<Fact> {
+        match self.draft_materials(document_id) {
+            Ok(materials) if materials.capture_id == capture_id => materials.facts,
+            _ => Vec::new(),
+        }
+    }
+
     /// The text of one capture of a document, when it is in this library.
     pub fn capture_text(&self, document_id: i64, capture_id: i64) -> Option<String> {
         let blob: Vec<u8> = self
@@ -950,6 +1022,11 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // What was kept of the conferences of its drafts goes with it.
+        tx.execute(
+            "DELETE FROM draft_conferences WHERE document_identity IN (SELECT hex(identity_hash) FROM documents WHERE id=?1)",
+            [id],
+        )?;
         ensure!(
             tx.execute("DELETE FROM documents WHERE id=?1", [id])? == 1,
             "Documento não encontrado."
@@ -1500,6 +1577,18 @@ pub(crate) fn validate_analysis(analysis: &Analysis) -> Result<()> {
 
 fn collapse(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// What the checks of a draft read of a document ([`Store::draft_materials`]).
+#[derive(Clone, Debug)]
+pub struct DraftMaterials {
+    pub capture_id: i64,
+    pub document_number: String,
+    pub capture_text: String,
+    /// What the person wrote (purpose, notes) as plain text.
+    pub context_values: String,
+    /// The verified facts of the latest analysis that is not stale.
+    pub facts: Vec<Fact>,
 }
 
 /// The facts, proposals and run of an analysis (schema 16). The program sets

@@ -12,6 +12,8 @@ pub mod ai_roles;
 pub mod app;
 pub mod attachments;
 pub mod chatgpt;
+/// Deterministic checks of a draft (Conferência da minuta).
+pub mod draft_check;
 pub mod export;
 pub mod files;
 pub mod guide;

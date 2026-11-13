@@ -1,0 +1,169 @@
+[
+  {
+    "name": "Resposta com três critérios",
+    "kind": "sigadoc",
+    "number": "ORG-OFI-2026/00431",
+    "title": "Envio do relatório",
+    "document_type": "Ofício",
+    "sender": "Setor Jurídico",
+    "text": "Ofício ORG-OFI-2026/00431. Assunto: relatório de execução do convênio. Solicitamos o envio do relatório de execução até 20/11/2026. Atenciosamente, Setor Jurídico.",
+    "today": "2026-11-10",
+    "template": {
+      "name": "Modelo de resposta de ofício",
+      "sections": [
+        {
+          "title": "Abertura",
+          "guidance": "Cite o ofício a que responde.",
+          "required": true
+        },
+        {
+          "title": "Providências",
+          "guidance": "Diga o que será feito e quando.",
+          "required": true
+        },
+        {
+          "title": "Fecho",
+          "guidance": "Despedida e assinatura.",
+          "required": false
+        }
+      ],
+      "criteria": [
+        "Cite o número do documento respondido",
+        "Informe o prazo de entrega do relatório",
+        "Não afirme providências já concluídas"
+      ]
+    },
+    "intent": "new",
+    "guidance": "",
+    "expect": {
+      "header": true,
+      "cites_number": true,
+      "sections_found": [
+        "Abertura",
+        "Providências",
+        "Fecho"
+      ],
+      "no_unsupported": true,
+      "max_placeholders": 2,
+      "no_notes": true,
+      "criteria": [
+        {
+          "verdicts": [
+            "atende"
+          ],
+          "quote_found": true
+        },
+        {
+          "verdicts": [
+            "atende"
+          ],
+          "quote_found": true
+        },
+        {
+          "verdicts": [
+            "atende",
+            "nao_se_aplica"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "Resposta sem dados inventados",
+    "kind": "sigadoc",
+    "number": "ORG-OFI-2026/00431",
+    "title": "Envio do relatório",
+    "document_type": "Ofício",
+    "sender": "Setor Jurídico",
+    "text": "Ofício ORG-OFI-2026/00431. Solicitamos o envio do relatório de execução até 20/11/2026.",
+    "today": "2026-11-10",
+    "template": {
+      "name": "Modelo simples",
+      "sections": [
+        {
+          "title": "Abertura",
+          "guidance": "Cite o ofício.",
+          "required": true
+        }
+      ],
+      "criteria": []
+    },
+    "intent": "new",
+    "guidance": "",
+    "expect": {
+      "header": true,
+      "cites_number": true,
+      "no_unsupported": true,
+      "sections_found": [
+        "Abertura"
+      ]
+    }
+  },
+  {
+    "name": "Resposta com seção obrigatória",
+    "kind": "email",
+    "number": "EMAIL-2026/31",
+    "title": "Pedido de informação",
+    "document_type": "E-mail",
+    "sender": "contato@exemplo.org",
+    "text": "Prezados, pedimos informação sobre o andamento do processo de adesão do Setor A. Atenciosamente.",
+    "today": "2026-11-10",
+    "template": {
+      "name": "Modelo de resposta a e-mail",
+      "sections": [
+        {
+          "title": "Situação do pedido",
+          "guidance": "Diga a situação.",
+          "required": true
+        },
+        {
+          "title": "Próximos passos",
+          "guidance": "Diga o que vem depois.",
+          "required": true
+        }
+      ],
+      "criteria": []
+    },
+    "intent": "new",
+    "guidance": "",
+    "expect": {
+      "header": true,
+      "sections_found": [
+        "Situação do pedido",
+        "Próximos passos"
+      ],
+      "no_unsupported": true
+    }
+  },
+  {
+    "name": "Completar sem alterar o que está pronto",
+    "kind": "sigadoc",
+    "number": "ORG-OFI-2026/00431",
+    "title": "Envio do relatório",
+    "document_type": "Ofício",
+    "sender": "Setor Jurídico",
+    "text": "Ofício ORG-OFI-2026/00431. Solicitamos o envio do relatório de execução até 20/11/2026.",
+    "today": "2026-11-10",
+    "template": {
+      "name": "Modelo simples",
+      "sections": [
+        {
+          "title": "Abertura",
+          "guidance": "Cite o ofício.",
+          "required": true
+        }
+      ],
+      "criteria": []
+    },
+    "intent": "complete",
+    "guidance": "",
+    "current_text": "MINUTA PARA REVISÃO\n\nEm atenção ao Ofício ORG-OFI-2026/00431, o setor agradece a solicitação e informa que o assunto está em análise.\n\nQuanto ao relatório de execução, [preencher providência e prazo].",
+    "expect": {
+      "header": true,
+      "cites_number": true,
+      "no_unsupported": true,
+      "no_notes": true,
+      "max_placeholders": 1
+    }
+  }
+]

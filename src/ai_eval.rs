@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 const CASES: &str = include_str!("ai_casos.json");
+const DRAFT_CASES: &str = include_str!("ai_minutas.json");
 
 /// One fictitious document and what is expected of its analysis.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -139,46 +140,84 @@ pub struct CaseResult {
 /// The outcome of all cases.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
+    /// The analyses ("Análises").
     pub cases: Vec<CaseResult>,
+    /// The drafts ("Minutas"): generation, the checks of the program and the
+    /// conference of the criteria.
+    pub drafts: Vec<CaseResult>,
 }
 
 /// The report of a set of results.
 pub fn score(cases: Vec<CaseResult>) -> Report {
-    Report { cases }
+    Report {
+        cases,
+        drafts: Vec::new(),
+    }
 }
 
 impl Report {
+    fn all(&self) -> impl Iterator<Item = &CaseResult> {
+        self.cases.iter().chain(&self.drafts)
+    }
+
     pub fn passed(&self) -> u32 {
-        self.cases.iter().map(|c| c.passed).sum()
+        self.all().map(|c| c.passed).sum()
     }
 
     pub fn total(&self) -> u32 {
-        self.cases.iter().map(|c| c.total).sum()
+        self.all().map(|c| c.total).sum()
     }
 
-    /// Plain Portuguese: the names of the cases, counts and what failed.
+    /// Plain Portuguese: the names of the cases, counts and what failed, in
+    /// two groups when there are drafts: "Análises" and "Minutas".
     pub fn text(&self) -> String {
         let seconds = |s: f32| format!("{s:.1}").replace('.', ",");
-        let mut out = format!(
-            "Teste da IA com casos fictícios: {} caso(s).\nResultado: {} de {} verificações.\nChamadas ao modelo: {}. Tempo: {} s.\n",
-            self.cases.len(),
+        let mut out = if self.drafts.is_empty() {
+            format!(
+                "Teste da IA com casos fictícios: {} caso(s).\n",
+                self.cases.len()
+            )
+        } else {
+            format!(
+                "Teste da IA com casos fictícios: {} caso(s) de análise e {} de minuta.\n",
+                self.cases.len(),
+                self.drafts.len()
+            )
+        };
+        out.push_str(&format!(
+            "Resultado: {} de {} verificações.\nChamadas ao modelo: {}. Tempo: {} s.\n",
             self.passed(),
             self.total(),
-            self.cases.iter().map(|c| c.calls).sum::<u32>(),
-            seconds(self.cases.iter().map(|c| c.seconds).sum()),
-        );
-        for case in &self.cases {
-            out.push_str(&format!(
-                "\n{}: {} de {} ({} chamada(s), {} s)\n",
-                case.name,
-                case.passed,
-                case.total,
-                case.calls,
-                seconds(case.seconds)
-            ));
-            for failure in &case.failures {
-                out.push_str(&format!("  - {failure}\n"));
+            self.all().map(|c| c.calls).sum::<u32>(),
+            seconds(self.all().map(|c| c.seconds).sum()),
+        ));
+        let mut write = |title: Option<&str>, cases: &[CaseResult]| {
+            if let Some(title) = title {
+                out.push_str(&format!(
+                    "\n{title}: {} de {}\n",
+                    cases.iter().map(|c| c.passed).sum::<u32>(),
+                    cases.iter().map(|c| c.total).sum::<u32>()
+                ));
             }
+            for case in cases {
+                out.push_str(&format!(
+                    "\n{}: {} de {} ({} chamada(s), {} s)\n",
+                    case.name,
+                    case.passed,
+                    case.total,
+                    case.calls,
+                    seconds(case.seconds)
+                ));
+                for failure in &case.failures {
+                    out.push_str(&format!("  - {failure}\n"));
+                }
+            }
+        };
+        if self.drafts.is_empty() {
+            write(None, &self.cases);
+        } else {
+            write(Some("Análises"), &self.cases);
+            write(Some("Minutas"), &self.drafts);
         }
         out
     }
@@ -581,24 +620,334 @@ pub fn run_case(settings: &AiSettings, case: &EvalCase, reporter: &Reporter) -> 
     }
 }
 
-/// Runs every fictitious case with the real provider. Stops, with an error,
-/// when `reporter` is cancelled. Nothing is saved in any library.
+/// Runs every fictitious case, analyses and drafts, with the real provider.
+/// Stops, with an error, when `reporter` is cancelled. Nothing is saved in
+/// any library.
 pub fn run_live(settings: &AiSettings, reporter: &Reporter) -> Result<Report> {
     let all = cases();
+    let drafts = draft_cases();
+    let total = all.len() + drafts.len();
     let mut report = Report::default();
     for (index, case) in all.iter().enumerate() {
         reporter.check()?;
-        reporter.step(format!(
-            "Caso {} de {}: {}…",
-            index + 1,
-            all.len(),
-            case.name
-        ));
+        reporter.step(format!("Caso {} de {total}: {}…", index + 1, case.name));
         let result = run_case(settings, case, reporter);
         reporter.check()?;
         report.cases.push(result);
     }
+    for (index, case) in drafts.iter().enumerate() {
+        reporter.check()?;
+        reporter.step(format!(
+            "Caso {} de {total}: minuta, {}…",
+            all.len() + index + 1,
+            case.name
+        ));
+        let result = run_draft_case(settings, case, reporter);
+        reporter.check()?;
+        report.drafts.push(result);
+    }
     Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// The drafts: a document, a template, and what a good draft is.
+
+/// A template in a case: sections and criteria.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DraftTemplate {
+    pub name: String,
+    pub sections: Vec<DraftSection>,
+    pub criteria: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DraftSection {
+    pub title: String,
+    pub guidance: String,
+    pub required: bool,
+}
+
+/// One fictitious draft: the document, the template and what is expected.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DraftCase {
+    pub name: String,
+    /// "sigadoc" | "whatsapp" | "email" | "manual".
+    pub kind: String,
+    pub number: String,
+    pub title: String,
+    pub document_type: String,
+    pub sender: String,
+    pub text: String,
+    pub today: String,
+    pub template: DraftTemplate,
+    /// "new" | "complete".
+    pub intent: String,
+    /// The text to complete.
+    pub current_text: String,
+    pub guidance: String,
+    pub expect: DraftExpect,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DraftExpect {
+    /// The draft starts with "MINUTA PARA REVISÃO".
+    pub header: bool,
+    /// The number of the document is written.
+    pub cites_number: bool,
+    pub sections_found: Vec<String>,
+    pub sections_missing: Vec<String>,
+    /// The program finds no data the materials do not write.
+    pub no_unsupported: bool,
+    /// The program lists exactly these (kind and value as written).
+    pub unsupported: Vec<UnsupportedExpect>,
+    pub max_placeholders: Option<usize>,
+    /// No note about a paragraph that changed.
+    pub no_notes: bool,
+    /// One per criterion, in order.
+    pub criteria: Vec<CriterionExpect>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct UnsupportedExpect {
+    pub kind: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct CriterionExpect {
+    /// Any of these verdicts (empty: any the AI gave, not "nao_conferido").
+    pub verdicts: Vec<String>,
+    /// The quote it gave is written in the draft (found by the program).
+    pub quote_found: bool,
+}
+
+/// The fictitious draft cases (`ai_minutas.json`).
+pub fn draft_cases() -> Vec<DraftCase> {
+    serde_json::from_str(DRAFT_CASES)
+        .expect("ai_minutas.json is part of the program and must be valid")
+}
+
+impl DraftCase {
+    fn document(&self) -> EvalCase {
+        EvalCase {
+            name: self.name.clone(),
+            kind: self.kind.clone(),
+            number: self.number.clone(),
+            title: self.title.clone(),
+            document_type: self.document_type.clone(),
+            sender: self.sender.clone(),
+            text: self.text.clone(),
+            today: self.today.clone(),
+            ..Default::default()
+        }
+    }
+
+    fn intent(&self) -> crate::work_templates::Intent {
+        if self.intent == "complete" {
+            crate::work_templates::Intent::Complete
+        } else {
+            crate::work_templates::Intent::New
+        }
+    }
+
+    fn template(
+        &self,
+    ) -> (
+        crate::work_templates::WorkTemplate,
+        crate::work_templates::TemplateVersion,
+    ) {
+        (
+            crate::work_templates::WorkTemplate {
+                uid: "caso-modelo".into(),
+                name: self.template.name.clone(),
+                kind: "resposta".into(),
+                ..Default::default()
+            },
+            crate::work_templates::TemplateVersion {
+                version: 1,
+                published: true,
+                sections: self
+                    .template
+                    .sections
+                    .iter()
+                    .map(|s| crate::work_templates::Section {
+                        title: s.title.clone(),
+                        guidance: s.guidance.clone(),
+                        required: s.required,
+                    })
+                    .collect(),
+                criteria: self.template.criteria.clone(),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn job(&self) -> crate::ai::DraftJob {
+        crate::ai::DraftJob {
+            document_id: 0,
+            capture_id: 0,
+            capture: capture_of(&self.document()),
+            kind: "resposta".into(),
+            intent: self.intent(),
+            local_context: String::new(),
+            request_guidance: self.guidance.clone(),
+            template: Some(self.template()),
+            blocks: Vec::new(),
+            selected_blocks: Default::default(),
+            examples: Vec::new(),
+            example_files: Vec::new(),
+            sources: Vec::new(),
+            current_text: self.current_text.clone(),
+            verified_facts: Vec::new(),
+        }
+    }
+
+    fn check_input(&self, draft: &str) -> crate::draft_check::DraftCheckInput {
+        let (_, version) = self.template();
+        crate::draft_check::DraftCheckInput {
+            draft_text: draft.to_owned(),
+            document_number: self.number.clone(),
+            capture_text: self.text.clone(),
+            sections: version
+                .sections
+                .iter()
+                .map(|s| crate::draft_check::SectionSpec {
+                    name: s.title.clone(),
+                    guidance: s.guidance.clone(),
+                    required: s.required,
+                })
+                .collect(),
+            trusted_texts: vec![self.guidance.clone()],
+            intent: self.intent(),
+            previous_text: self.current_text.clone(),
+            today: self.today.clone(),
+            ..Default::default()
+        }
+    }
+}
+
+/// What a finished draft scores against the expectations of its case.
+fn evaluate_draft(case: &DraftCase, outcome: &crate::ai::DraftOutcome, tally: &mut Tally) {
+    let Ok(text) = &outcome.result else {
+        return;
+    };
+    let check = crate::draft_check::check_draft(&case.check_input(text));
+    let expect = &case.expect;
+    if expect.header {
+        tally.check(check.header, || {
+            "a minuta não começa com MINUTA PARA REVISÃO".into()
+        });
+    }
+    if expect.cites_number {
+        tally.check(check.cites_number, || {
+            "a minuta não cita o número do documento".into()
+        });
+    }
+    for name in &expect.sections_found {
+        let found = check.sections.iter().any(|s| s.name == *name && s.found);
+        tally.check(found, || format!("faltou a seção \"{name}\" do modelo"));
+    }
+    for name in &expect.sections_missing {
+        let found = check.sections.iter().any(|s| s.name == *name && s.found);
+        tally.check(!found, || format!("a seção \"{name}\" não devia constar"));
+    }
+    if expect.no_unsupported {
+        tally.check(check.unsupported.is_empty(), || {
+            let kinds: std::collections::BTreeSet<&str> =
+                check.unsupported.iter().map(|u| u.kind.as_str()).collect();
+            format!(
+                "a minuta traz dados que nenhuma fonte escreve ({})",
+                kinds.into_iter().collect::<Vec<_>>().join(", ")
+            )
+        });
+    }
+    for want in &expect.unsupported {
+        let found = check
+            .unsupported
+            .iter()
+            .any(|u| u.kind == want.kind && u.value == want.value);
+        tally.check(found, || {
+            format!(
+                "o programa não apontou o dado ({}) que a minuta inventou",
+                want.kind
+            )
+        });
+    }
+    if let Some(max) = expect.max_placeholders {
+        tally.check(check.placeholders.len() <= max, || {
+            format!("mais de {max} campo(s) [preencher] na minuta")
+        });
+    }
+    if expect.no_notes {
+        tally.check(check.notes.is_empty(), || {
+            "o texto original foi alterado".into()
+        });
+    }
+    if !expect.criteria.is_empty() {
+        let results = outcome.conference.as_ref().map(|c| c.results.as_slice());
+        for (index, want) in expect.criteria.iter().enumerate() {
+            let got = results.and_then(|r| r.get(index));
+            let verdict_ok = got.is_some_and(|r| {
+                if want.verdicts.is_empty() {
+                    r.verdict != "nao_conferido"
+                } else {
+                    want.verdicts.contains(&r.verdict)
+                }
+            });
+            tally.check(verdict_ok, || {
+                format!("o critério {} não foi conferido como esperado", index + 1)
+            });
+            if want.quote_found {
+                tally.check(got.is_some_and(|r| r.quote_found), || {
+                    format!(
+                        "o critério {} ficou sem trecho encontrado na minuta",
+                        index + 1
+                    )
+                });
+            }
+        }
+    }
+}
+
+/// Runs one draft case: the generation, the checks of the program and the
+/// conference of the criteria, through the functions the program uses.
+/// Nothing is saved.
+pub fn run_draft_case(settings: &AiSettings, case: &DraftCase, reporter: &Reporter) -> CaseResult {
+    let started = Instant::now();
+    let mut tally = Tally::default();
+    let outcome = crate::ai::generate_draft(settings, &case.job(), reporter);
+    let calls = 1 + outcome.conference.as_ref().map_or(0, |c| c.calls);
+    match &outcome.result {
+        Ok(_) => {
+            tally.check(true, String::new);
+            evaluate_draft(case, &outcome, &mut tally);
+        }
+        Err(reason) => {
+            let reason = if reporter.cancelled() {
+                "a geração foi cancelada".to_owned()
+            } else {
+                format!(
+                    "a minuta não foi aceita: {}",
+                    crate::ai::clip_chars(reason, 200)
+                )
+            };
+            tally.check(false, || reason);
+        }
+    }
+    CaseResult {
+        name: case.name.clone(),
+        passed: tally.passed,
+        total: tally.total,
+        failures: tally.failures,
+        calls,
+        seconds: started.elapsed().as_secs_f32(),
+    }
 }
 
 #[cfg(test)]
@@ -1486,6 +1835,7 @@ mod tests {
     #[test]
     fn the_report_reads_in_plain_words() {
         let report = Report {
+            drafts: Vec::new(),
             cases: vec![
                 CaseResult {
                     name: "Ofício com prazo escrito".into(),
@@ -2333,6 +2683,269 @@ mod tests {
         let mut tally = Tally::default();
         evaluate(&case(name), &analysis, &mut tally);
         assert!(tally.failures.is_empty(), "{:?}", tally.failures);
+    }
+
+    // -- the drafts -----------------------------------------------------------
+
+    const DRAFT_OK: &str = "MINUTA PARA REVISÃO\n\nAbertura\nEm atenção ao Ofício ORG-OFI-2026/00431, informo que o relatório de execução será enviado até 20/11/2026.\n\nProvidências\nO setor preparará o relatório.\n\nFecho\nAtenciosamente, [preencher assinatura]";
+
+    fn conference(items: &[(&str, &str, Option<&str>, &str)]) -> String {
+        json!({"results": items.iter().map(|(id, verdict, quote, note)| json!({
+            "id": id, "verdict": verdict, "quote": quote, "note": note,
+        })).collect::<Vec<_>>()})
+        .to_string()
+    }
+
+    fn good_conference() -> String {
+        conference(&[
+            (
+                "c1",
+                "atende",
+                Some("Em atenção ao Ofício ORG-OFI-2026/00431"),
+                "Cita o número.",
+            ),
+            (
+                "c2",
+                "atende",
+                Some("será enviado até 20/11/2026"),
+                "Diz o prazo.",
+            ),
+            (
+                "c3",
+                "atende",
+                Some("O setor preparará o relatório"),
+                "Não afirma que já foi feito.",
+            ),
+        ])
+    }
+
+    fn draft_case(name: &str) -> DraftCase {
+        draft_cases()
+            .into_iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("no draft case {name}"))
+    }
+
+    /// The answers of the Redator (and of the Conferente, when the template
+    /// has criteria) that make each draft case pass.
+    fn good_draft(name: &str) -> Vec<String> {
+        match name {
+            "Resposta com três critérios" => vec![DRAFT_OK.into(), good_conference()],
+            "Resposta sem dados inventados" => vec!["MINUTA PARA REVISÃO\n\nAbertura\nEm atenção ao Ofício ORG-OFI-2026/00431, o relatório de execução será enviado até 20/11/2026.".into()],
+            "Resposta com seção obrigatória" => vec!["MINUTA PARA REVISÃO\n\nSituação do pedido\nO pedido está em análise.\n\nPróximos passos\nO setor informará o resultado.".into()],
+            "Completar sem alterar o que está pronto" => vec!["MINUTA PARA REVISÃO\n\nEm atenção ao Ofício ORG-OFI-2026/00431, o setor agradece a solicitação e informa que o assunto está em análise.\n\nQuanto ao relatório de execução, o setor enviará a resposta até 20/11/2026.".into()],
+            other => panic!("no scripted answers for {other}"),
+        }
+    }
+
+    fn run_draft(name: &str, replies: Vec<String>) -> (CaseResult, usize) {
+        let count = replies.len();
+        let (base, received, _server) = mock_ollama(replies);
+        let result = run_draft_case(&settings(&base), &draft_case(name), &Reporter::silent());
+        let sent = received.try_iter().count();
+        assert!(sent <= count);
+        (result, sent)
+    }
+
+    #[test]
+    fn the_draft_cases_are_few_valid_and_fictitious() {
+        let all = draft_cases();
+        assert!((3..=6).contains(&all.len()), "{}", all.len());
+        let mut calls = 0;
+        for case in &all {
+            capture_of(&case.document())
+                .validate()
+                .unwrap_or_else(|e| panic!("{}: {e}", case.name));
+            assert!(!case.template.sections.is_empty());
+            calls += 1 + usize::from(!case.template.criteria.is_empty());
+            let text = format!("{} {}", case.text, case.current_text);
+            for real in [
+                "@gmail",
+                "@hotmail",
+                "@mt.gov",
+                "Secretaria de Estado",
+                "CPF",
+                "CNPJ",
+            ] {
+                assert!(!text.contains(real), "{}: {real}", case.name);
+            }
+            let (_, version) = case.template();
+            assert_eq!(version.criteria.len(), case.expect.criteria.len());
+        }
+        assert!(calls <= 8, "the live cost stays small: {calls} calls");
+        assert!(all.iter().any(|c| c.template.criteria.len() == 3));
+        assert!(all.iter().any(|c| c.intent == "complete"));
+    }
+
+    #[test]
+    fn every_draft_case_passes_against_the_scripted_good_answers() {
+        for case in draft_cases() {
+            let (result, sent) = run_draft(&case.name, good_draft(&case.name));
+            assert!(
+                result.failures.is_empty(),
+                "{}: {:?}",
+                case.name,
+                result.failures
+            );
+            assert_eq!(result.passed, result.total, "{}", case.name);
+            assert_eq!(
+                sent,
+                1 + usize::from(!case.template.criteria.is_empty()),
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_report_shows_analyses_and_drafts_in_two_groups() {
+        let mut report = Report::default();
+        report.cases.push(CaseResult {
+            name: "Ofício com prazo escrito".into(),
+            passed: 4,
+            total: 4,
+            calls: 2,
+            seconds: 1.0,
+            ..Default::default()
+        });
+        let only = report.text();
+        assert!(
+            only.contains("1 caso(s).") && !only.contains("Minutas"),
+            "{only}"
+        );
+        let (result, _) = run_draft(
+            "Resposta sem dados inventados",
+            good_draft("Resposta sem dados inventados"),
+        );
+        report.drafts.push(result);
+        let text = report.text();
+        assert!(
+            text.contains("1 caso(s) de análise e 1 de minuta."),
+            "{text}"
+        );
+        assert!(text.contains("\nAnálises: 4 de 4\n"), "{text}");
+        assert!(text.contains("\nMinutas: "), "{text}");
+        assert!(text.contains("Resposta sem dados inventados: "), "{text}");
+        assert!(
+            !text.contains("ORG-OFI-2026/00431"),
+            "no content of a document"
+        );
+        assert_eq!(report.passed(), report.total());
+    }
+
+    #[test]
+    fn a_verdict_the_draft_does_not_back_becomes_not_conferred_in_the_case() {
+        let name = "Resposta com três critérios";
+        // c1 "atende" with a quote the draft does not hold (dropped by the
+        // repair); c3 never answered.
+        let bad = conference(&[
+            (
+                "c1",
+                "atende",
+                Some("Em atenção ao Ofício ORG-OFI-2026/99999"),
+                "Cita.",
+            ),
+            (
+                "c2",
+                "atende",
+                Some("será enviado até 20/11/2026"),
+                "Diz o prazo.",
+            ),
+        ]);
+        let repair = json!({"items": [], "drop": ["c1"]}).to_string();
+        let (result, sent) = run_draft(name, vec![DRAFT_OK.into(), bad, repair]);
+        assert_eq!(sent, 3);
+        assert!(result.passed < result.total);
+        assert!(
+            result.failures.iter().any(|f| f.contains("critério 1")),
+            "{:?}",
+            result.failures
+        );
+        assert!(
+            result.failures.iter().any(|f| f.contains("critério 3")),
+            "{:?}",
+            result.failures
+        );
+        assert!(
+            !result.failures.iter().any(|f| f.contains("critério 2")),
+            "{:?}",
+            result.failures
+        );
+    }
+
+    #[test]
+    fn data_the_draft_invents_is_listed_by_the_program() {
+        let name = "Resposta sem dados inventados";
+        let invented = "MINUTA PARA REVISÃO\n\nAbertura\nEm atenção ao Ofício ORG-OFI-2026/00431 e ao processo SEFAZ-PRO-2026/00077, informo que o prazo é 25/12/2026, às 9h, e o custo é R$ 3.000,00.";
+        let (result, _) = run_draft(name, vec![invented.into()]);
+        assert!(
+            result
+                .failures
+                .iter()
+                .any(|f| f.contains("nenhuma fonte escreve")),
+            "{:?}",
+            result.failures
+        );
+        let case = draft_case(name);
+        let check = crate::draft_check::check_draft(&case.check_input(invented));
+        let listed: Vec<(&str, &str)> = check
+            .unsupported
+            .iter()
+            .map(|u| (u.kind.as_str(), u.value.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("data", "25/12/2026"),
+                ("hora", "9h"),
+                ("numero", "SEFAZ-PRO-2026/00077"),
+                ("valor", "R$ 3.000,00")
+            ]
+        );
+        // The number of the document itself and the date it writes are not.
+        assert!(check.cites_number);
+    }
+
+    #[test]
+    fn a_draft_without_a_required_section_is_told_so() {
+        let name = "Resposta com seção obrigatória";
+        let missing = "MINUTA PARA REVISÃO\n\nSituação do pedido\nO pedido está em análise.";
+        let (result, _) = run_draft(name, vec![missing.into()]);
+        assert!(
+            result
+                .failures
+                .iter()
+                .any(|f| f.contains("Próximos passos")),
+            "{:?}",
+            result.failures
+        );
+        let check = crate::draft_check::check_draft(&draft_case(name).check_input(missing));
+        assert!(check.sections[0].found && check.sections[0].required);
+        assert!(!check.sections[1].found && check.sections[1].required);
+    }
+
+    #[test]
+    fn a_completion_that_changes_a_finished_paragraph_is_refused_and_asked_again() {
+        let name = "Completar sem alterar o que está pronto";
+        let altered = "MINUTA PARA REVISÃO\n\nEm atenção ao Ofício ORG-OFI-2026/00431, o setor reescreveu tudo por conta própria.\n\nQuanto ao relatório de execução, o setor enviará a resposta até 20/11/2026.";
+        // Altered three times: no draft.
+        let (result, sent) = run_draft(name, vec![altered.into(), altered.into(), altered.into()]);
+        assert_eq!(sent, 3);
+        assert!(
+            result.failures.iter().any(|f| f.contains("não foi aceita")),
+            "{:?}",
+            result.failures
+        );
+        // Altered once, then right: accepted, with one more call.
+        let mut replies = vec![altered.to_owned()];
+        replies.extend(good_draft(name));
+        let (result, sent) = run_draft(name, replies);
+        assert_eq!(sent, 2);
+        assert!(result.failures.is_empty(), "{:?}", result.failures);
+        // The text the person types after the generation is noted by the check.
+        let case = draft_case(name);
+        let check = crate::draft_check::check_draft(&case.check_input(altered));
+        assert_eq!(check.notes.len(), 1, "{:?}", check.notes);
     }
 
     // -- the prompts ----------------------------------------------------------

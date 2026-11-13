@@ -2461,6 +2461,7 @@ impl PonteApp {
             example_files,
             sources: sources.clone(),
             current_text: current_text.clone(),
+            verified_facts: self.store.verified_facts_for(document_id, capture_id),
         })
     }
 

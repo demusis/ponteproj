@@ -1940,6 +1940,7 @@ impl Store {
              DELETE FROM requests;
              DELETE FROM captures;
              DELETE FROM ai_consent;
+             DELETE FROM draft_conferences;
              DELETE FROM documents;
              DELETE FROM item_versions;
              DELETE FROM team_events;",
