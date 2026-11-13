@@ -288,7 +288,7 @@ pub fn verified_facts_json(facts: &[crate::model::Fact]) -> serde_json::Value {
     serde_json::Value::Array(
         facts
             .iter()
-            .filter(|f| f.checked.quote && f.checked.origin.is_written())
+            .filter(|f| f.checked.quote && f.checked.origin == crate::model::Origin::Document)
             .map(|f| {
                 let mut value = json!({"kind": f.kind, "quote": f.quote});
                 if f.checked.date {

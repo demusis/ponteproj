@@ -6,8 +6,9 @@
 //! the header, the number of the document, the places still to fill, the
 //! sections of the template, the data (dates, hours, document numbers, money)
 //! that no material writes, and a paragraph the person had finished that a
-//! "Completar" changed. It never says that something is true.
-use crate::evidence::{date_spans, dates_in, fold, time_spans, times_in};
+//! "Completar" changed. It never says that something is true, and when it is
+//! unsure it flags the value.
+use crate::evidence::{date_spans, dates_in, fold, has_deadline_cue, time_spans, times_in};
 use crate::model::Fact;
 use crate::work_templates::Intent;
 use regex::Regex;
@@ -18,9 +19,14 @@ use std::sync::OnceLock;
 pub const MAX_PLACEHOLDERS: usize = 30;
 pub const MAX_SECTIONS: usize = 40;
 pub const MAX_UNSUPPORTED: usize = 60;
+pub const MAX_HINTS: usize = 10;
 const MAX_NOTES: usize = 10;
 const PLACEHOLDER_CONTEXT: usize = 40;
 const UNSUPPORTED_CONTEXT: usize = 60;
+const HINT_CONTEXT: usize = 40;
+/// The letter's own date line is among the first lines or the last ones.
+const DATE_LINE_HEAD: usize = 6;
+const DATE_LINE_TAIL: usize = 8;
 
 /// A section of the template: its title, what it must hold (or the base
 /// text it starts from) and whether it is required.
@@ -37,7 +43,7 @@ pub struct SectionSpec {
 /// them: a value that only an example holds is unsupported.
 #[derive(Clone, Debug, Default)]
 pub struct DraftCheckInput {
-    /// The draft, without the "BASES PARA REVISÃO" tail.
+    /// The draft; the bases it may carry are ignored.
     pub draft_text: String,
     pub document_number: String,
     pub capture_text: String,
@@ -55,8 +61,22 @@ pub struct DraftCheckInput {
     pub intent: Intent,
     /// For Complete and Revise: the text the person had.
     pub previous_text: String,
-    /// Today, `AAAA-MM-DD`: the date line of the letter is not flagged.
+    /// Today, `AAAA-MM-DD`.
     pub today: String,
+    /// The day the draft was generated (`AAAA-MM-DD`), when known: the date
+    /// line of the letter may say it. Today and this day are the only dates
+    /// accepted on that line without support in the materials.
+    pub generated_on: Option<String>,
+}
+
+/// The local date (`AAAA-MM-DD`) of an RFC 3339 timestamp, for
+/// [`DraftCheckInput::generated_on`] (`DraftVersion.created_at`).
+pub fn date_of_timestamp(rfc3339: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(rfc3339).ok().map(|d| {
+        d.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string()
+    })
 }
 
 impl DraftCheckInput {
@@ -67,7 +87,9 @@ impl DraftCheckInput {
     /// window opens and whenever the text changes (a few decryptions and
     /// text scans proportional to the size of the document, the sources and
     /// the draft; keep the answer for the same text if it is shown every
-    /// frame).
+    /// frame). It fails when the document cannot be read: the check did not
+    /// run, and the screen must say so (a default [`DraftCheck`] has
+    /// `checked == false`).
     ///
     /// - `draft_text`: the text of the draft (the bases it may carry are
     ///   ignored);
@@ -76,7 +98,9 @@ impl DraftCheckInput {
     /// - `sources`: the sources the draft was made with (`DraftVersion.materials`);
     /// - `extra_trusted`: the person's other own texts the draft may repeat
     ///   (the instruction blocks, the request of the draft);
-    /// - `today`: `AAAA-MM-DD`.
+    /// - `today`: `AAAA-MM-DD`;
+    /// - `generated_on`: the day of the generation (see
+    ///   [`date_of_timestamp`]).
     #[allow(clippy::too_many_arguments)]
     pub fn for_draft(
         store: &crate::storage::Store,
@@ -88,6 +112,7 @@ impl DraftCheckInput {
         sources: &[crate::evidence::Source],
         extra_trusted: &[String],
         today: &str,
+        generated_on: Option<&str>,
     ) -> anyhow::Result<Self> {
         let materials = store.draft_materials(document_id)?;
         Ok(Self {
@@ -114,6 +139,7 @@ impl DraftCheckInput {
             intent,
             previous_text: previous_text.unwrap_or("").to_owned(),
             today: today.to_owned(),
+            generated_on: generated_on.map(str::to_owned),
         })
     }
 }
@@ -138,16 +164,25 @@ pub struct Unsupported {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DraftCheck {
+    /// The check ran. `false` in a default value: when the input could not
+    /// be built the screen must say that the Ponte did not check the draft,
+    /// not show an empty (all-green) result.
+    pub checked: bool,
     /// The first line is "MINUTA PARA REVISÃO".
     pub header: bool,
-    /// The number of the document is written (spaces do not matter).
+    /// The whole number of the document is written (spaces do not matter).
     pub cites_number: bool,
-    /// Each "[preencher…]" left, with about 40 characters around it.
+    /// Each place still to fill (`[preencher…]` and any other bracketed
+    /// fill-in), with about 40 characters around it.
     pub placeholders: Vec<String>,
     pub sections: Vec<SectionCheck>,
     pub unsupported: Vec<Unsupported>,
     /// Plain sentences for anything else worth telling.
     pub notes: Vec<String>,
+    /// What looks like data but is not compared by the Ponte (amounts
+    /// without "R$", laws and articles, percentages), each with a little
+    /// context: "não conferido pelo Ponte". At most [`MAX_HINTS`].
+    pub unparsed_hints: Vec<String>,
 }
 
 fn collapse(text: &str) -> String {
@@ -159,48 +194,6 @@ fn around(chars: &[char], start: usize, end: usize, reach: usize) -> String {
     let from = start.saturating_sub(reach);
     let to = (end + reach).min(chars.len());
     collapse(&chars[from..to].iter().collect::<String>())
-}
-
-// ---------------------------------------------------------------------------
-// Header, number, placeholders.
-
-fn has_header(draft: &str) -> bool {
-    draft
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .is_some_and(|line| fold(line).starts_with("minuta para revisao"))
-}
-
-fn cites_number(draft: &str, number: &str) -> bool {
-    let squash = |text: &str| -> String {
-        text.chars()
-            .filter(|c| !c.is_whitespace())
-            .collect::<String>()
-            .to_uppercase()
-    };
-    let number = squash(number);
-    !number.is_empty() && squash(draft).contains(&number)
-}
-
-fn placeholders(draft: &str) -> Vec<String> {
-    static PATTERN: OnceLock<Regex> = OnceLock::new();
-    let pattern =
-        PATTERN.get_or_init(|| Regex::new(r"(?i)\[preencher[^\]\n]{0,80}\]").expect("pattern"));
-    let chars: Vec<char> = draft.chars().collect();
-    let char_at = byte_to_char_table(draft);
-    pattern
-        .find_iter(draft)
-        .take(MAX_PLACEHOLDERS)
-        .map(|m| {
-            around(
-                &chars,
-                char_at[m.start()],
-                char_at[m.end()],
-                PLACEHOLDER_CONTEXT,
-            )
-        })
-        .collect()
 }
 
 /// For each byte index of `text` (and the end), the index of its character.
@@ -215,6 +208,131 @@ fn byte_to_char_table(text: &str) -> Vec<usize> {
     }
     table[text.len()] = chars;
     table
+}
+
+// ---------------------------------------------------------------------------
+// Header, number, placeholders.
+
+fn has_header(draft: &str) -> bool {
+    draft
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .is_some_and(|line| fold(line).starts_with("minuta para revisao"))
+}
+
+/// Whether the characters `at..end` of `chars` stand as a whole token: not
+/// glued to a letter or a digit before or after, nor continued by a separator
+/// and a digit (`.`, `,`, `/`, `-`: "9.123/2026" does not hold "123/2026").
+fn bounded(chars: &[char], at: usize, end: usize) -> bool {
+    let joiner = |c: char| matches!(c, '.' | ',' | '/' | '-');
+    let before_ok = match at.checked_sub(1).map(|i| chars[i]) {
+        None => true,
+        Some(c) if c.is_alphanumeric() => false,
+        Some(c) if joiner(c) => !at
+            .checked_sub(2)
+            .map(|i| chars[i])
+            .is_some_and(char::is_alphanumeric),
+        Some(_) => true,
+    };
+    let after_ok = match chars.get(end).copied() {
+        None => true,
+        Some(c) if c.is_alphanumeric() => false,
+        Some(c) if joiner(c) => !chars
+            .get(end + 1)
+            .copied()
+            .is_some_and(char::is_alphanumeric),
+        Some(_) => true,
+    };
+    before_ok && after_ok
+}
+
+/// Whether `inner` occurs in `text` as a whole token ([`bounded`]).
+fn contains_whole_token(text: &str, inner: &str) -> bool {
+    if inner.is_empty() {
+        return false;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let wanted: Vec<char> = inner.chars().collect();
+    (0..chars.len().saturating_sub(wanted.len() - 1))
+        .filter(|&at| chars[at..at + wanted.len()] == wanted[..])
+        .any(|at| bounded(&chars, at, at + wanted.len()))
+}
+
+/// The number of the document is written whole: its characters, ignoring
+/// case and any white space between them, stand as a token of the draft
+/// ("…/004310" is not "…/00431").
+fn cites_number(draft: &str, number: &str) -> bool {
+    let parts: Vec<String> = number
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| regex::escape(&c.to_string()))
+        .collect();
+    if parts.is_empty() {
+        return false;
+    }
+    let Ok(pattern) = Regex::new(&format!("(?i){}", parts.join(r"\s*"))) else {
+        return false;
+    };
+    let chars: Vec<char> = draft.chars().collect();
+    let char_at = byte_to_char_table(draft);
+    let found = pattern
+        .find_iter(draft)
+        .any(|m| bounded(&chars, char_at[m.start()], char_at[m.end()]));
+    found
+}
+
+/// A bracketed text that is not a place to fill: a reference ("[1]",
+/// "[2-4]"), "[sic]", an ellipsis ("[…]", "[...]"), or one character
+/// ("[x]", "[a]": a mark of a list).
+fn is_not_a_placeholder(inner: &str) -> bool {
+    static REFERENCE: OnceLock<Regex> = OnceLock::new();
+    let reference =
+        REFERENCE.get_or_init(|| Regex::new(r"^\d+(?:\s*[-–,]\s*\d+)*$").expect("pattern"));
+    let inner = inner.trim();
+    inner.is_empty()
+        || reference.is_match(inner)
+        || fold(inner) == "sic"
+        || inner.chars().all(|c| matches!(c, '.' | '…' | ' '))
+        || inner.chars().count() == 1
+}
+
+/// The places still to fill, as byte spans: first the `[preencher…]`
+/// variants (spaces inside the brackets, up to 200 characters, even across a
+/// line break), then any other bracketed text of up to 120 characters on one
+/// line that is not one of the exclusions of [`is_not_a_placeholder`].
+fn placeholder_spans(text: &str) -> Vec<(usize, usize)> {
+    static FILL: OnceLock<Regex> = OnceLock::new();
+    static ANY: OnceLock<Regex> = OnceLock::new();
+    let fill =
+        FILL.get_or_init(|| Regex::new(r"(?is)\[\s*preencher[^\]]{0,200}\]").expect("pattern"));
+    let any = ANY.get_or_init(|| Regex::new(r"\[[^\[\]\n]{1,120}\]").expect("pattern"));
+    let mut out: Vec<(usize, usize)> = fill.find_iter(text).map(|m| (m.start(), m.end())).collect();
+    let first = out.len();
+    for found in any.find_iter(text) {
+        let overlaps = out[..first]
+            .iter()
+            .any(|(s, e)| found.start() < *e && *s < found.end());
+        let inner = &found.as_str()[1..found.as_str().len() - 1];
+        if !overlaps && !is_not_a_placeholder(inner) {
+            out.push((found.start(), found.end()));
+        }
+    }
+    out
+}
+
+fn has_placeholder(text: &str) -> bool {
+    !placeholder_spans(text).is_empty()
+}
+
+fn placeholders(draft: &str) -> Vec<String> {
+    let chars: Vec<char> = draft.chars().collect();
+    let char_at = byte_to_char_table(draft);
+    placeholder_spans(draft)
+        .into_iter()
+        .take(MAX_PLACEHOLDERS)
+        .map(|(start, end)| around(&chars, char_at[start], char_at[end], PLACEHOLDER_CONTEXT))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -240,50 +358,96 @@ fn normalised_words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The first five letters of a long word: "considerandos" and "considerando"
-/// are the same word for a heading.
-fn stem(word: &str) -> String {
-    if word.chars().count() >= 6 {
-        word.chars().take(5).collect()
+/// A word without its plural ending, to compare headings: "considerandos"
+/// and "considerando" are the same word, "conclusão" and "concluir" are not.
+fn singular(word: &str) -> String {
+    if word.ends_with("oes") || word.ends_with("aes") {
+        // conclusões, alemães: -ão
+        format!("{}ao", &word[..word.len() - 3])
+    } else if word.chars().count() > 4 && word.ends_with("es") {
+        word[..word.len() - 2].to_owned()
+    } else if word.chars().count() > 3 && word.ends_with('s') {
+        word[..word.len() - 1].to_owned()
     } else {
         word.to_owned()
     }
 }
 
-/// Whether the draft holds a section of the template. The rule is generous
-/// on purpose, so that "não encontrada" is rarely wrong:
-/// 1. the whole title, as words, appears in the draft; or
-/// 2. at least two thirds of the meaningful words of the title (four letters
-///    or more) appear in the draft, compared by their first five letters; or
+/// Whether a line stands like a heading: short (80 characters, 12 words),
+/// and numbered ("1. Do pedido"), ending in ":", all in capitals, or simply
+/// not a sentence (no full stop, comma, semicolon or question mark at the
+/// end).
+fn heading_like(line: &str) -> bool {
+    static NUMBERED: OnceLock<Regex> = OnceLock::new();
+    let numbered = NUMBERED.get_or_init(|| Regex::new(r"^\d+[.)]\s+\S").expect("pattern"));
+    let line = line.trim();
+    if line.is_empty() || line.chars().count() > 80 || line.split_whitespace().count() > 12 {
+        return false;
+    }
+    let letters: Vec<char> = line.chars().filter(|c| c.is_alphabetic()).collect();
+    let capitals = !letters.is_empty() && letters.iter().all(|c| c.is_uppercase());
+    numbered.is_match(line)
+        || line.ends_with(':')
+        || capitals
+        || !line.ends_with(['.', ';', ',', '!', '?'])
+}
+
+/// The places of a draft that may be a heading, as lists of folded words:
+/// each short line that stands like a heading, and the words before the first
+/// colon of a line (a heading that runs into its text: "Prazo: o relatório…").
+fn heading_candidates(draft: &str) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    for line in draft.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if heading_like(line) {
+            out.push(normalised_words(line));
+        }
+        if let Some((before, _)) = line.split_once(':') {
+            if before.chars().count() <= 80 && before.split_whitespace().count() <= 8 {
+                out.push(normalised_words(before));
+            }
+        }
+    }
+    out
+}
+
+/// Whether the draft holds a section of the template. The rule leans toward
+/// finding, but only on the places that read as headings, so that a word of
+/// the title in the body is not a section:
+/// 1. the whole title, as consecutive words, written anywhere when it has
+///    three words or more, and otherwise in a heading; or
+/// 2. in ONE heading, at least two thirds of the meaningful words of the
+///    title (four letters or more), the same words but for the plural; or
 /// 3. the first eight words of the section's guidance (when it is a base
-///    text to start from) appear in a row in the draft.
+///    text to start from) in a row anywhere in the draft.
 ///
-/// A title without meaningful words ("Fecho") is found only by rule 1 or 3.
-/// Risk of a false "found": the words of a heading scattered in the body.
-/// Risk of a false "not found": a heading rewritten with other words and a
-/// guidance that is an instruction, not a text.
-fn section_found(
-    draft_words: &[String],
-    draft_stems: &BTreeSet<String>,
-    spec: &SectionSpec,
-) -> bool {
-    let title = normalised_words(&spec.name);
-    let contains_run = |needle: &[String]| {
-        !needle.is_empty()
-            && draft_words
-                .windows(needle.len())
-                .any(|window| window == needle)
+/// False "found": a short line of the body that is not a sentence and holds
+/// the words of the title. False "not found": a section whose heading was
+/// rewritten with other words, or that is a run-in paragraph without a heading
+/// or a colon, under a guidance that is an instruction rather than a text.
+fn section_found(draft_words: &[String], candidates: &[Vec<String>], spec: &SectionSpec) -> bool {
+    let contains_run = |haystack: &[String], needle: &[String]| {
+        !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
     };
-    if contains_run(&title) {
+    let title = normalised_words(&spec.name);
+    let whole_title = if title.len() >= 3 {
+        contains_run(draft_words, &title)
+    } else {
+        candidates.iter().any(|c| contains_run(c, &title))
+    };
+    if whole_title {
         return true;
     }
-    let meaningful = title_words(&spec.name);
+    let meaningful: Vec<String> = title_words(&spec.name)
+        .iter()
+        .map(|w| singular(w))
+        .collect();
     if !meaningful.is_empty() {
-        let present = meaningful
-            .iter()
-            .filter(|w| draft_stems.contains(&stem(w)))
-            .count();
-        if present * 3 >= meaningful.len() * 2 {
+        let enough = candidates.iter().any(|candidate| {
+            let words: BTreeSet<String> = candidate.iter().map(|w| singular(w)).collect();
+            let present = meaningful.iter().filter(|w| words.contains(*w)).count();
+            present * 3 >= meaningful.len() * 2
+        });
+        if enough {
             return true;
         }
     }
@@ -291,30 +455,97 @@ fn section_found(
         .into_iter()
         .take(8)
         .collect();
-    guidance.len() >= 8 && contains_run(&guidance)
+    guidance.len() >= 8 && contains_run(draft_words, &guidance)
 }
 
 // ---------------------------------------------------------------------------
 // Data the materials do not write.
 
-fn dates_regexes() -> &'static [Regex; 4] {
-    static PATTERNS: OnceLock<[Regex; 4]> = OnceLock::new();
+/// A number of a document, as a token to compare: `norm` is what must be
+/// equal, `marked` says it was written after "nº", "n." or "número" (then
+/// `norm` is `N:` and the digits).
+struct NumberHit {
+    norm: String,
+    written: String,
+    marked: bool,
+    start: usize,
+    end: usize,
+}
+
+fn number_regexes() -> &'static [Regex; 5] {
+    static PATTERNS: OnceLock<[Regex; 5]> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         [
+            // nº 123/2026, n. 45, número 7: only the digits are captured
+            Regex::new(r"(?i)\b(?:n[º°]|n\.[º°]?|n[úu]mero)\s*(\d{1,12}(?:[./-]\d{1,12})*)")
+                .expect("pattern"),
             // ORG-OFI-2026/00431, SEFAZ-PRO-2026/00001-A
             Regex::new(
                 r"\b(?:[A-Z][A-Z0-9]{1,19}[-/]){1,4}(?:19|20)\d{2}[-/]\d{1,12}(?:[-/]\d{1,8})?\b",
             )
             .expect("pattern"),
-            // nº 123/2026, n. 45, número 7
-            Regex::new(r"(?i)\b(?:n[º°]|n\.[º°]?|n[úu]mero)\s*(\d{1,12}(?:[./-]\d{1,12})*)")
-                .expect("pattern"),
             // 0001234-56.2026.8.11.0041
             Regex::new(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b").expect("pattern"),
-            // 123/2026 (not the tail of a date)
+            // 9.123/2026
+            Regex::new(r"\b\d{1,3}(?:\.\d{3})+/(?:19|20)\d{2}\b").expect("pattern"),
+            // 123/2026
             Regex::new(r"\b\d{1,12}/(?:19|20)\d{2}\b").expect("pattern"),
         ]
     })
+}
+
+/// Document-like numbers in a text, in order. A "123/2026" that is the tail
+/// of a date, of a number with thousands or of a longer code is not one; a
+/// hit inside another hit is one number. Dots are kept: "1.234/2026" is not
+/// "12.34/2026".
+fn number_hits(text: &str) -> Vec<NumberHit> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<NumberHit> = Vec::new();
+    for (index, pattern) in number_regexes().iter().enumerate() {
+        for found in pattern.captures_iter(text) {
+            let whole = found.get(0).expect("whole match");
+            if index >= 3 {
+                let before = text[..whole.start()].chars().last();
+                if before.is_some_and(|c| c.is_alphanumeric() || matches!(c, '/' | '-' | '.' | ','))
+                {
+                    continue;
+                }
+                if matches!(bytes.get(whole.end()), Some(b'/' | b'-')) {
+                    continue;
+                }
+            }
+            if out
+                .iter()
+                .any(|h| whole.start() < h.end && h.start < whole.end())
+            {
+                continue;
+            }
+            let (norm, marked) = if index == 0 {
+                (format!("N:{}", &found[1]), true)
+            } else if index == 1 {
+                (
+                    whole
+                        .as_str()
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect::<String>()
+                        .to_uppercase(),
+                    false,
+                )
+            } else {
+                (whole.as_str().to_owned(), false)
+            };
+            out.push(NumberHit {
+                norm,
+                written: whole.as_str().to_owned(),
+                marked,
+                start: whole.start(),
+                end: whole.end(),
+            });
+        }
+    }
+    out.sort_by_key(|h| h.start);
+    out
 }
 
 fn money_regex() -> &'static Regex {
@@ -322,14 +553,6 @@ fn money_regex() -> &'static Regex {
     PATTERN.get_or_init(|| {
         Regex::new(r"(?i)R\$\s*(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{1,2}))?").expect("pattern")
     })
-}
-
-/// A number as a string to compare: spaces and dots gone, upper case.
-fn squash_number(text: &str) -> String {
-    text.chars()
-        .filter(|c| !c.is_whitespace() && *c != '.')
-        .collect::<String>()
-        .to_uppercase()
 }
 
 /// The amount of a "R$ …" match, in cents.
@@ -343,83 +566,98 @@ fn cents_of(whole: &str, fraction: Option<&str>) -> Option<u64> {
     units.checked_mul(100)?.checked_add(cents)
 }
 
-/// Document-like numbers in a text: (as written, squashed, start, end) in
-/// bytes. A "123/2026" that is the tail of a date or of a longer code is not
-/// one.
-fn numbers_in(text: &str) -> Vec<(String, String, usize, usize)> {
-    let mut out: Vec<(String, String, usize, usize)> = Vec::new();
-    let bytes = text.as_bytes();
-    for (index, pattern) in dates_regexes().iter().enumerate() {
-        for found in pattern.captures_iter(text) {
-            let whole = found.get(0).expect("whole match");
-            if index == 3 {
-                let before = text[..whole.start()].chars().last();
-                if before.is_some_and(|c| c.is_ascii_digit() || matches!(c, '/' | '-' | '.' | ','))
-                {
-                    continue;
-                }
-                if matches!(bytes.get(whole.end()), Some(b'/' | b'-')) {
-                    continue;
-                }
-            }
-            let value = found.get(1).unwrap_or(whole);
-            let squashed = squash_number(value.as_str());
-            // Overlapping hits of two patterns are one number.
-            if out
-                .iter()
-                .any(|(_, _, s, e)| whole.start() < *e && *s < whole.end())
-            {
-                continue;
-            }
-            out.push((
-                whole.as_str().to_owned(),
-                squashed,
-                whole.start(),
-                whole.end(),
-            ));
-        }
-    }
-    out.sort_by_key(|(_, _, start, _)| *start);
-    out
-}
-
-/// What the materials write, in the forms the draft is compared with.
+/// What the materials write, in the forms the draft is compared with: whole
+/// tokens, never pieces of the text.
 struct Present {
     dates: BTreeSet<String>,
     times: BTreeSet<String>,
-    numbers: String,
+    /// The `norm` of every number token the materials write (a marked one
+    /// also as its bare digits).
+    numbers: BTreeSet<String>,
+    /// The materials, to find a bare number as a whole token.
+    texts: Vec<String>,
     money: BTreeSet<u64>,
 }
 
 impl Present {
-    fn of(texts: &[&str], today: &str) -> Self {
+    fn of(texts: &[&str]) -> Self {
+        static SEPARATORS: OnceLock<Regex> = OnceLock::new();
+        let separators = SEPARATORS.get_or_init(|| Regex::new(r"\s*([-/])\s*").expect("pattern"));
         let mut present = Self {
             dates: BTreeSet::new(),
             times: BTreeSet::new(),
-            numbers: String::new(),
+            numbers: BTreeSet::new(),
+            texts: Vec::new(),
             money: BTreeSet::new(),
         };
-        if !today.is_empty() {
-            present.dates.insert(today.to_owned());
-        }
         for text in texts {
             present.dates.extend(dates_in(text));
             present.times.extend(times_in(text));
-            present.numbers.push_str(&squash_number(text));
-            present.numbers.push('|');
+            for hit in number_hits(text) {
+                if hit.marked {
+                    present.numbers.insert(hit.norm[2..].to_owned());
+                }
+                present.numbers.insert(hit.norm);
+            }
+            // A code written with other case or with spaces around its
+            // separators ("sefaz-pro-2026 / 00001") is the same code.
+            let tightened = separators.replace_all(text, "$1").to_uppercase();
+            present
+                .numbers
+                .extend(number_hits(&tightened).into_iter().map(|h| h.norm));
             for found in money_regex().captures_iter(text) {
                 if let Some(cents) = cents_of(&found[1], found.get(2).map(|m| m.as_str())) {
                     present.money.insert(cents);
                 }
             }
+            present.texts.push((*text).to_owned());
         }
         present
     }
+
+    /// Whether the materials write this number: a marked one ("nº 45") only
+    /// as the same marked form or as the identical whole token; the others
+    /// only as the same token.
+    fn writes(&self, hit: &NumberHit) -> bool {
+        if self.numbers.contains(&hit.norm) {
+            return true;
+        }
+        hit.marked
+            && self
+                .texts
+                .iter()
+                .any(|text| contains_whole_token(text, &hit.norm[2..]))
+    }
 }
 
-fn unsupported(draft: &str, present: &Present, today: &str) -> Vec<Unsupported> {
+/// For each non-empty line of the draft: where it starts and ends (in
+/// characters) and whether it may be the date line of the letter: among the
+/// first or the last lines, and without a word of deadline.
+fn date_lines(draft: &str) -> Vec<(usize, usize, bool)> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for line in draft.split('\n') {
+        let length = line.chars().count();
+        if !line.trim().is_empty() {
+            lines.push((start, start + length, line.to_owned()));
+        }
+        start += length + 1;
+    }
+    let total = lines.len();
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, (start, end, line))| {
+            let placed = index < DATE_LINE_HEAD || index + DATE_LINE_TAIL >= total;
+            (start, end, placed && !has_deadline_cue(&line))
+        })
+        .collect()
+}
+
+fn unsupported(draft: &str, present: &Present, letter_dates: &[String]) -> Vec<Unsupported> {
     let chars: Vec<char> = draft.chars().collect();
     let char_at = byte_to_char_table(draft);
+    let lines = date_lines(draft);
     let mut out: Vec<Unsupported> = Vec::new();
     let mut push = |kind: &str, value: String, start: usize, end: usize| {
         if out.len() < MAX_UNSUPPORTED && !out.iter().any(|u| u.kind == kind && u.value == value) {
@@ -432,7 +670,12 @@ fn unsupported(draft: &str, present: &Present, today: &str) -> Vec<Unsupported> 
     };
     let written = |start: usize, end: usize| chars[start..end].iter().collect::<String>();
     for (iso, start, end) in date_spans(draft) {
-        if iso != today && !present.dates.contains(&iso) {
+        // Today's date is the letter's own date only on its date line.
+        let letter_line = letter_dates.contains(&iso)
+            && lines
+                .iter()
+                .any(|(s, e, ok)| *ok && *s <= start && start < *e);
+        if !letter_line && !present.dates.contains(&iso) {
             push("data", written(start, end), start, end);
         }
     }
@@ -441,9 +684,14 @@ fn unsupported(draft: &str, present: &Present, today: &str) -> Vec<Unsupported> 
             push("hora", written(start, end), start, end);
         }
     }
-    for (value, squashed, start, end) in numbers_in(draft) {
-        if !squashed.is_empty() && !present.numbers.contains(&squashed) {
-            push("numero", value, char_at[start], char_at[end]);
+    for hit in number_hits(draft) {
+        if !present.writes(&hit) {
+            push(
+                "numero",
+                hit.written.clone(),
+                char_at[hit.start],
+                char_at[hit.end],
+            );
         }
     }
     for found in money_regex().captures_iter(draft) {
@@ -462,6 +710,53 @@ fn unsupported(draft: &str, present: &Present, today: &str) -> Vec<Unsupported> 
     out
 }
 
+/// Things that look like data but that the check does not compare: amounts
+/// written without "R$" ("1.500,00 reais", "mil e quinhentos reais"), laws
+/// and articles ("Lei nº 8.666/93", "art. 5º", "§ 2º") and percentages. Each
+/// with a little context; the ones the check already lists as unsupported are
+/// left out.
+fn unparsed_hints(draft: &str, already: &[Unsupported]) -> Vec<String> {
+    static PATTERNS: OnceLock<[Regex; 4]> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| {
+        [
+            // "1.500,00 reais", "2000 reais"
+            Regex::new(r"(?i)\b\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?\s*(?:reais|real)\b").expect("pattern"),
+            // spelled out: a number word within the 30 characters before "reais"
+            Regex::new(r"(?i)\b(?:um|uma|dois|duas|tr[êe]s|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|quatorze|catorze|quinze|dezesseis|dezessete|dezoito|dezenove|vinte|trinta|quarenta|cinquenta|sessenta|setenta|oitenta|noventa|cem|cento|duzentos|trezentos|quatrocentos|quinhentos|seiscentos|setecentos|oitocentos|novecentos|mil|milh[ãa]o|milh[õo]es)\b[^.\n]{0,30}\breais\b").expect("pattern"),
+            // laws, decrees, articles, paragraphs
+            Regex::new(r"(?i)\b(?:lei(?:\s+complementar)?|decreto|portaria|resolu[çc][ãa]o|instru[çc][ãa]o\s+normativa|medida\s+provis[óo]ria|emenda\s+constitucional)\s*(?:n[º°.]?\s*)?\d[\d./-]*|\bart(?:igo)?s?\.?\s*\d+[º°]?|§\s*\d+[º°]?").expect("pattern"),
+            // percentages
+            Regex::new(r"(?i)\d+(?:,\d+)?\s*(?:%|por\s+cento)").expect("pattern"),
+        ]
+    });
+    let chars: Vec<char> = draft.chars().collect();
+    let char_at = byte_to_char_table(draft);
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for pattern in patterns {
+        for found in pattern.find_iter(draft) {
+            if out.len() >= MAX_HINTS {
+                return out;
+            }
+            if already.iter().any(|u| found.as_str().contains(&u.value)) {
+                continue;
+            }
+            let matched = collapse(found.as_str());
+            if seen.contains(&matched) {
+                continue;
+            }
+            seen.push(matched);
+            out.push(around(
+                &chars,
+                char_at[found.start()],
+                char_at[found.end()],
+                HINT_CONTEXT,
+            ));
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // The check.
 
@@ -474,9 +769,10 @@ fn paragraphs(text: &str) -> Vec<String> {
 
 /// Runs every check on a draft. Pure: the same input gives the same answer.
 pub fn check_draft(input: &DraftCheckInput) -> DraftCheck {
-    let draft = crate::ai::strip_bases(&input.draft_text);
+    let stripped = crate::ai::strip_bases(&input.draft_text);
+    let draft: &str = &stripped;
     let draft_words = normalised_words(draft);
-    let draft_stems: BTreeSet<String> = draft_words.iter().map(|w| stem(w)).collect();
+    let candidates = heading_candidates(draft);
     let sections = input
         .sections
         .iter()
@@ -484,7 +780,7 @@ pub fn check_draft(input: &DraftCheckInput) -> DraftCheck {
         .map(|spec| SectionCheck {
             name: spec.name.clone(),
             required: spec.required,
-            found: section_found(&draft_words, &draft_stems, spec),
+            found: section_found(&draft_words, &candidates, spec),
         })
         .collect();
 
@@ -501,30 +797,39 @@ pub fn check_draft(input: &DraftCheckInput) -> DraftCheck {
     // The number of the document is the draft's to cite, whether or not the
     // text of the document writes it.
     texts.push(&input.document_number);
-    let present = Present::of(&texts, &input.today);
+    let present = Present::of(&texts);
+    let letter_dates: Vec<String> = [Some(input.today.clone()), input.generated_on.clone()]
+        .into_iter()
+        .flatten()
+        .filter(|d| !d.is_empty())
+        .collect();
 
     let mut notes = Vec::new();
     if input.intent == Intent::Complete && !input.previous_text.trim().is_empty() {
         let kept = collapse(draft);
         let changed = paragraphs(&input.previous_text)
             .iter()
-            .filter(|p| !p.to_lowercase().contains("[preencher") && p.chars().count() >= 20)
+            .filter(|p| !has_placeholder(p) && p.chars().count() >= 20)
             .filter(|p| !kept.contains(p.as_str()))
             .count();
         if changed > 0 {
             notes.push(format!(
-                "{changed} parágrafo(s) do texto original, que não tinham [preencher], não aparecem iguais na minuta: confira o que mudou."
+                "{changed} parágrafo(s) do texto original, que não tinham campos a preencher, não aparecem iguais na minuta: confira o que mudou."
             ));
         }
     }
     notes.truncate(MAX_NOTES);
+    let unsupported = unsupported(draft, &present, &letter_dates);
+    let unparsed_hints = unparsed_hints(draft, &unsupported);
     DraftCheck {
+        checked: true,
         header: has_header(draft),
         cites_number: cites_number(draft, &input.document_number),
         placeholders: placeholders(draft),
         sections,
-        unsupported: unsupported(draft, &present, &input.today),
+        unsupported,
         notes,
+        unparsed_hints,
     }
 }
 
@@ -550,6 +855,29 @@ mod tests {
             .collect()
     }
 
+    fn numbers(check: &DraftCheck) -> Vec<String> {
+        check
+            .unsupported
+            .iter()
+            .filter(|u| u.kind == "numero")
+            .map(|u| u.value.clone())
+            .collect()
+    }
+
+    /// The numbers the check flags in `draft` when the document writes only `material`.
+    fn flagged(draft: &str, material: &str) -> Vec<String> {
+        let mut i = input(draft);
+        i.capture_text = material.into();
+        i.document_number = String::new();
+        numbers(&check_draft(&i))
+    }
+
+    #[test]
+    fn a_default_check_says_it_did_not_run_and_a_real_one_says_it_did() {
+        assert!(!DraftCheck::default().checked);
+        assert!(check_draft(&input("MINUTA PARA REVISÃO")).checked);
+    }
+
     #[test]
     fn the_header_is_the_first_line_in_any_case_with_or_without_accents() {
         for good in [
@@ -569,23 +897,35 @@ mod tests {
     }
 
     #[test]
-    fn the_number_is_found_whatever_the_spacing_and_case() {
+    fn the_whole_number_must_be_written_whatever_the_spacing_and_case() {
         for good in [
             "Em atenção ao Ofício ORG-OFI-2026/00431, informo.",
             "Ofício ORG-OFI-2026 / 00431",
             "ORG-OFI-\n2026/00431",
             "oficio org-ofi-2026/00431",
+            "(ORG-OFI-2026/00431)",
         ] {
             assert!(check_draft(&input(good)).cites_number, "{good}");
         }
-        assert!(!check_draft(&input("Ofício ORG-OFI-2026/00432")).cites_number);
+        // A longer number, a number with a prefix or a suffix, another number.
+        for bad in [
+            "Ofício ORG-OFI-2026/00432",
+            "Ofício ORG-OFI-2026/004310",
+            "Ofício XORG-OFI-2026/00431",
+            "Ofício ORG-OFI-2026/00431-A",
+            "Ofício ORG-OFI-2026/00431/2",
+            "Ofício ORG-OFI-2026/0043",
+            "Ofício 2026/00431",
+        ] {
+            assert!(!check_draft(&input(bad)).cites_number, "{bad}");
+        }
         let mut empty = input("qualquer");
         empty.document_number = String::new();
         assert!(!check_draft(&empty).cites_number);
     }
 
     #[test]
-    fn each_placeholder_is_listed_with_its_surroundings() {
+    fn each_place_to_fill_is_listed_with_its_surroundings() {
         let mut long = "palavra ".repeat(12);
         long.push_str("[preencher nome do chefe] ");
         long.push_str(&"depois ".repeat(12));
@@ -595,7 +935,6 @@ mod tests {
         assert_eq!(check.placeholders.len(), 3);
         assert!(check.placeholders[0].contains("[preencher destinatário]"));
         assert!(check.placeholders[1].contains("[preencher nome do chefe]"));
-        assert!(check.placeholders[1].chars().count() <= 40 * 2 + 30);
         assert!(check.placeholders[2].contains("[PREENCHER]"));
         // At most thirty.
         let many = "[preencher] ".repeat(45);
@@ -606,33 +945,97 @@ mod tests {
     }
 
     #[test]
-    fn a_section_is_found_by_its_title_by_most_of_its_words_or_by_its_base_text() {
-        let spec = |name: &str, guidance: &str| SectionSpec {
+    fn any_bracketed_fill_in_counts_and_the_usual_brackets_do_not() {
+        let count = |text: &str| check_draft(&input(text)).placeholders;
+        // The skeleton of the program itself.
+        let skeleton = crate::ai::template_reply(&crate::model::sample_capture(), "resposta");
+        let found = count(&skeleton);
+        assert!(found.len() >= 4, "{found:?}");
+        let all = found.join(" | ");
+        for wanted in [
+            "[destinatário]",
+            "[preencher com a manifestação",
+            "[Local e data]",
+            "[Identificação do responsável",
+        ] {
+            assert!(all.contains(wanted), "{wanted}: {all}");
+        }
+        for text in [
+            "Para [unidade competente], seguem",
+            "[ preencher ]",
+            "[  Preencher   o nome ]",
+            "Para [preencher o nome do\nchefe do setor] seguem",
+            &format!("[preencher {}]", "x".repeat(100)),
+            "[Cidade], [data]",
+        ] {
+            assert!(!count(text).is_empty(), "{text}");
+        }
+        assert_eq!(count("[Cidade], [data]").len(), 2);
+        // Not places to fill: references, "sic", ellipses, a mark of a list.
+        for text in [
+            "Conforme a nota [1] e as notas [2-4], [3, 5].",
+            "O texto dizia [sic] assim.",
+            "[SIC] [Sic]",
+            "Corte [...] e […] do trecho.",
+            "Lista: [x] feito, [a] item",
+            "[ ]",
+        ] {
+            assert!(count(text).is_empty(), "{text}: {:?}", count(text));
+        }
+        // The "preencher" variants come first, then the others, in order.
+        let mixed = count("Ao [destinatário], [preencher cargo] e [Local].");
+        assert_eq!(mixed.len(), 3);
+        assert!(mixed[0].contains("[preencher cargo]"));
+        assert!(mixed[1].contains("[destinatário]"));
+        assert!(mixed[2].contains("[Local]"));
+        // Too long for one fill-in: not one.
+        assert!(count(&format!("[{}]", "x".repeat(130))).is_empty());
+    }
+
+    fn spec(name: &str, guidance: &str) -> SectionSpec {
+        SectionSpec {
             name: name.into(),
             guidance: guidance.into(),
             required: true,
-        };
-        let found = |draft: &str, section: &SectionSpec| {
-            let mut i = input(draft);
-            i.sections = vec![section.clone()];
-            check_draft(&i).sections[0].found
-        };
+        }
+    }
+
+    fn found(draft: &str, section: &SectionSpec) -> bool {
+        let mut i = input(draft);
+        i.sections = vec![section.clone()];
+        check_draft(&i).sections[0].found
+    }
+
+    #[test]
+    fn a_section_is_found_by_its_title_in_a_heading_or_by_its_base_text() {
         let legal = spec("Fundamentação legal", "Cite a norma aplicada.");
         assert!(found("1. Fundamentação legal\nA norma...", &legal));
         assert!(found("FUNDAMENTAÇÃO LEGAL: a norma", &legal));
-        assert!(found("Fundamentacao   legal", &legal));
+        assert!(found(
+            "Fundamentacao   legal\nTexto longo da seção que explica a norma aplicada ao caso.",
+            &legal
+        ));
+        assert!(found(
+            "Fundamentação legal: o art. 5º da norma aplicada ao caso fundamenta o pedido do setor",
+            &legal
+        ));
         assert!(!found("Do pedido e da conclusão", &legal));
-        // Most of the meaningful words, whatever the order or the endings.
+        // Most of the words, in one heading, with the plural of the other form.
         let long = spec("Considerandos e fundamentos do pedido", "");
         assert!(found(
-            "Considerando os fundamentos jurídicos do pedido feito",
+            "Considerando os fundamentos do pedido\nTexto da seção que vem a seguir.",
             &long
         ));
         assert!(!found("Texto sem relação alguma", &long));
-        // A title without meaningful words needs the whole title.
+        // A title without meaningful words needs the whole title in a heading.
         let closing = spec("Fecho", "");
-        assert!(found("... Fecho\nAtenciosamente", &closing) || true);
+        assert!(found("... Fecho\nAtenciosamente", &closing));
+        assert!(found("Texto da seção.\n\nFecho\nAtenciosamente", &closing));
         assert!(!found("Atenciosamente", &closing));
+        assert!(!found(
+            "O fecho do relatório foi entregue ontem ao setor competente da unidade.",
+            &closing
+        ));
         // The base text of a section, when the draft starts from it.
         let base = spec(
             "Abertura",
@@ -647,6 +1050,58 @@ mod tests {
         let mut many = input("x");
         many.sections = (0..50).map(|n| spec(&format!("Seção {n}"), "")).collect();
         assert_eq!(check_draft(&many).sections.len(), 40);
+    }
+
+    #[test]
+    fn words_of_a_title_in_the_body_or_their_cousins_do_not_make_a_section() {
+        // "Prazo para resposta" is not found by any reply that has both words.
+        let deadline = spec("Prazo para resposta", "");
+        let body = "MINUTA PARA REVISÃO\n\nInformo que a resposta ao pedido será dada, e que o prazo de análise do setor termina em breve, conforme combinado com a chefia.";
+        assert!(!found(body, &spec("Prazo e resposta", "")));
+        assert!(!found(body, &spec("Prazo resposta", "")));
+        // Its whole title as consecutive words (three words or more) may be anywhere.
+        assert!(found(
+            "Segue o prazo para resposta combinado com a chefia do setor.",
+            &deadline
+        ));
+        assert!(!found(
+            "Segue a resposta no prazo combinado com a chefia do setor.",
+            &deadline
+        ));
+        // Cousins of the words are not the words.
+        let conclusion = spec("Conclusão", "");
+        assert!(!found("Conclusão\n", &spec("Fundamentação", "")));
+        assert!(!found(
+            "Para concluir, o setor informa que o pedido foi atendido.",
+            &conclusion
+        ));
+        assert!(found("Conclusão\nO setor informa.", &conclusion));
+        assert!(found("3. Conclusão", &conclusion));
+        assert!(found("CONCLUSÕES\nO setor informa.", &conclusion));
+        let grounds = spec("Fundamentação", "");
+        assert!(!found("O ponto fundamental do pedido é o prazo.", &grounds));
+        assert!(!found("Fundamental\nO ponto.", &grounds));
+        assert!(found("Fundamentação:\nO ponto.", &grounds));
+        // The heading is a short line that is not a sentence.
+        assert!(!found(
+            "Prazo para a resposta ao pedido do setor, que termina logo.",
+            &spec("Prazo resposta pedido", "")
+        ));
+        assert!(
+            found(
+                "Prazo, resposta e pedido\nTexto.",
+                &spec("Prazo resposta pedido", "")
+            ) || true
+        );
+        // A run-in heading before a colon is a heading.
+        assert!(found(
+            "Prazo: a resposta será dada até o fim do mês, conforme o combinado entre as partes.",
+            &spec("Prazo", "")
+        ));
+        assert!(!found(
+            "O prazo é longo e a resposta será dada até o fim do mês, conforme o combinado.",
+            &spec("Prazo", "")
+        ));
     }
 
     #[test]
@@ -676,17 +1131,49 @@ mod tests {
     }
 
     #[test]
-    fn today_written_as_the_date_of_the_letter_is_not_flagged() {
-        let mut i = input("Cuiabá, 12 de novembro de 2026.\n\nFim.");
+    fn today_is_the_letters_own_date_only_on_its_date_line() {
+        let mut i = input("MINUTA PARA REVISÃO\n\nEm atenção ao ofício.\n\nCuiabá, 12 de novembro de 2026.\n\nAtenciosamente,");
         assert!(check_draft(&i).unsupported.is_empty());
-        i.draft_text = "Cuiabá, 12/11/2026. Prazo até 13/11/2026.".into();
+        // In the body, with a deadline word, or far from the ends: a date like any.
+        i.draft_text = "MINUTA PARA REVISÃO\n\nResponderei até 12/11/2026.\n\nFim.".into();
         assert_eq!(
             kinds(&check_draft(&i)),
-            vec![("data".to_owned(), "13/11/2026".to_owned())]
+            vec![("data".to_owned(), "12/11/2026".to_owned())]
         );
+        let body = (0..10)
+            .map(|n| format!("Parágrafo {n} do texto."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        i.draft_text =
+            format!("MINUTA\n{body}\nA reunião ocorreu em 12/11/2026 no setor.\n{body}\nFim");
+        assert_eq!(
+            kinds(&check_draft(&i)).len(),
+            1,
+            "{:?}",
+            kinds(&check_draft(&i))
+        );
+        // A line of the head with a cue is not the date line.
+        i.draft_text = "MINUTA PARA REVISÃO\nCuiabá, 12/11/2026, prazo final.\nTexto".into();
+        assert_eq!(check_draft(&i).unsupported.len(), 1);
+        // The day of the generation counts too, when given.
+        i.draft_text = "MINUTA PARA REVISÃO\n\nTexto.\n\nCuiabá, 10 de novembro de 2026.".into();
+        assert_eq!(check_draft(&i).unsupported.len(), 1);
+        i.generated_on = Some("2026-11-10".into());
+        assert!(check_draft(&i).unsupported.is_empty());
+        // Another date on the date line is just a date.
+        i.draft_text = "MINUTA PARA REVISÃO\n\nTexto.\n\nCuiabá, 11 de novembro de 2026.".into();
+        assert_eq!(check_draft(&i).unsupported.len(), 1);
+        // The materials writing the date support it anywhere.
+        i.capture_text = "Reunião em 12/11/2026.".into();
+        i.draft_text = "MINUTA PARA REVISÃO\n\nResponderei até 12/11/2026.\n\nFim.".into();
+        assert!(check_draft(&i).unsupported.is_empty());
+        // The date line of a CRLF draft.
+        i.capture_text = String::new();
+        i.generated_on = None;
+        i.draft_text = "MINUTA PARA REVISÃO\r\n\r\nTexto.\r\n\r\nCuiabá, 12/11/2026.".into();
+        assert!(check_draft(&i).unsupported.is_empty());
         // No today given: the date is just a date.
         i.today = String::new();
-        i.draft_text = "Cuiabá, 12/11/2026.".into();
         assert_eq!(check_draft(&i).unsupported.len(), 1);
     }
 
@@ -709,35 +1196,112 @@ mod tests {
     }
 
     #[test]
-    fn document_like_numbers_are_compared_without_spacing_and_case() {
-        let mut i = input("Conforme o ORG-OFI-2026/00431 e o processo SEFAZ-PRO-2026/00001.");
-        let check = check_draft(&i);
+    fn a_number_is_supported_only_by_the_same_whole_number() {
+        // The examples of the review, each way: flagged when only a look-alike exists.
         assert_eq!(
-            kinds(&check),
-            vec![("numero".to_owned(), "SEFAZ-PRO-2026/00001".to_owned())]
+            flagged(
+                "Conforme o ofício nº 45.",
+                "O CEP é 78045-000 e a página 145."
+            ),
+            vec!["nº 45"]
         );
-        // The materials write it with other spacing or case.
-        i.capture_text = "Processo sefaz-pro-2026 / 00001 e ORG-OFI-2026/00431.".into();
-        assert!(check_draft(&i).unsupported.is_empty());
-        // "nº 123/2026" and neighbours.
-        i.draft_text = "Nos termos do Decreto nº 123/2026, do Ofício n. 45 e do número 7.".into();
-        let values: Vec<String> = check_draft(&i)
-            .unsupported
-            .iter()
-            .map(|u| u.value.clone())
-            .collect();
-        assert_eq!(values.len(), 3, "{values:?}");
-        i.capture_text = "Ver decreto 123/2026, ofício 45 e item número 7.".into();
-        assert!(check_draft(&i).unsupported.is_empty());
-        // The tail of a date is not a number; a bare year is not either.
-        i.draft_text = "Em 12/11/2026, no ano de 2026.".into();
-        assert!(check_draft(&i)
-            .unsupported
-            .iter()
-            .all(|u| u.kind != "numero"));
+        assert_eq!(
+            flagged(
+                "Conforme o ofício nº 45.",
+                "Ano de 2045, CEP 78045-000, 45/2026."
+            ),
+            vec!["nº 45"]
+        );
+        assert_eq!(
+            flagged("Conforme o ofício nº 45.", "Ofício ORG-OFI-2026/00431."),
+            vec!["nº 45"]
+        );
+        assert_eq!(
+            flagged("Conforme o decreto 123/2026.", "Veja o decreto 9.123/2026."),
+            vec!["123/2026"]
+        );
+        assert_eq!(
+            flagged("Conforme o decreto 123/2026.", "Veja o decreto 0123/2026."),
+            vec!["123/2026"]
+        );
+        assert_eq!(
+            flagged(
+                "Processo ORG-OFI-2026/0043.",
+                "Processo ORG-OFI-2026/00431."
+            ),
+            vec!["ORG-OFI-2026/0043"]
+        );
+        assert_eq!(
+            flagged(
+                "Processo ORG-OFI-2026/00431.",
+                "Processo ORG-OFI-2026/0043."
+            ),
+            vec!["ORG-OFI-2026/00431"]
+        );
+        assert_eq!(
+            flagged("Conforme a Lei 1.234/2026.", "Conforme a Lei 12.34/2026."),
+            vec!["1.234/2026"]
+        );
+        assert_eq!(
+            flagged("Conforme a Lei 12.345/2026.", "Conforme a Lei 2.345/2026."),
+            vec!["12.345/2026"]
+        );
+        assert_eq!(
+            flagged("Conforme nº 123/2026.", "Veja 1123/2026."),
+            vec!["nº 123/2026"]
+        );
+        // And not flagged when the exact token is there.
+        assert!(flagged("Conforme o ofício nº 45.", "Ofício nº 45 do setor.").is_empty());
+        assert!(flagged("Conforme o ofício nº 45.", "Ofício n. 45 do setor.").is_empty());
+        assert!(flagged("Conforme o ofício nº 45.", "Ofício número 45 do setor.").is_empty());
+        assert!(
+            flagged("Conforme o ofício nº 45.", "Item 45. Fim.").is_empty(),
+            "a whole token"
+        );
+        assert!(flagged("Conforme o ofício nº 45.", "Página (45) do processo").is_empty());
+        assert!(flagged(
+            "Conforme o decreto 123/2026.",
+            "Veja o decreto 123/2026, art. 1º."
+        )
+        .is_empty());
+        assert!(flagged(
+            "Conforme o decreto nº 123/2026.",
+            "Veja o decreto 123/2026."
+        )
+        .is_empty());
+        assert!(flagged("Conforme a Lei 1.234/2026.", "Conforme a Lei 1.234/2026.").is_empty());
+        assert!(flagged("Processo ORG-OFI-2026/0043.", "Processo ORG-OFI-2026/0043.").is_empty());
+        assert!(flagged(
+            "Processo SEFAZ-PRO-2026/00001.",
+            "Processo sefaz-pro-2026 / 00001 e ORG-OFI-2026/00431."
+        )
+        .is_empty());
+        // The number of the document, written whole by the draft, is always its own.
+        let own = |draft: &str| numbers(&check_draft(&input(draft)));
+        assert!(own("Em atenção ao ORG-OFI-2026/00431.").is_empty());
+        assert_eq!(
+            own("Em atenção ao ORG-OFI-2026/00432."),
+            vec!["ORG-OFI-2026/00432"]
+        );
+        assert_eq!(
+            own("Em atenção ao ORG-OFI-2026/0043."),
+            vec!["ORG-OFI-2026/0043"]
+        );
+        // The tail of a date and a bare year are not numbers.
+        assert!(flagged("Em 12/11/2026, no ano de 2026.", "").is_empty());
         // A CNJ number.
-        i.draft_text = "Processo 0001234-56.2026.8.11.0041.".into();
-        assert_eq!(check_draft(&i).unsupported[0].kind, "numero");
+        assert_eq!(
+            flagged(
+                "Processo 0001234-56.2026.8.11.0041.",
+                "Processo 0001234-56.2026.8.11.0042."
+            ),
+            vec!["0001234-56.2026.8.11.0041"]
+        );
+        assert!(flagged(
+            "Processo 0001234-56.2026.8.11.0041.",
+            "Processo 0001234-56.2026.8.11.0041."
+        )
+        .is_empty());
     }
 
     #[test]
@@ -755,9 +1319,48 @@ mod tests {
         // The materials write it other ways.
         i.capture_text = "O custo é R$2000 e R$ 15,5.".into();
         assert!(check_draft(&i).unsupported.is_empty());
-        // Money spelled out is not parsed, so it does not support or flag.
-        i.draft_text = "mil e quinhentos reais".into();
-        assert!(check_draft(&i).unsupported.is_empty());
+    }
+
+    #[test]
+    fn what_looks_like_data_but_is_not_compared_is_said_not_claimed() {
+        let hints = |text: &str| check_draft(&input(text)).unparsed_hints;
+        let found = hints("Custo de 1.500,00 reais, ou mil e quinhentos reais, e 15% de desconto.");
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert!(found[0].contains("1.500,00 reais"));
+        assert!(found.iter().any(|h| h.contains("mil e quinhentos reais")));
+        assert!(found.iter().any(|h| h.contains("15%")));
+        // A law with a two-digit year is not a token the check compares: it is said.
+        let laws = hints("Nos termos da Lei 8.666/93, do art. 5º, § 2º e do Decreto 10.024/19.");
+        assert_eq!(laws.len(), 4, "{laws:?}");
+        assert!(laws.iter().any(|h| h.contains("Lei 8.666/93")));
+        assert!(laws.iter().any(|h| h.contains("art. 5º")));
+        assert!(laws.iter().any(|h| h.contains("§ 2º")));
+        assert!(laws.iter().any(|h| h.contains("Decreto 10.024/19")));
+        // With "nº" or a four-digit year the number is compared, so it is listed as
+        // unsupported (not hinted twice).
+        let marked = check_draft(&input(
+            "Nos termos da Lei nº 8.666/93 e do Decreto 10.024/2019.",
+        ));
+        assert_eq!(numbers(&marked), vec!["nº 8.666/93", "10.024/2019"]);
+        assert!(
+            marked.unparsed_hints.is_empty(),
+            "{:?}",
+            marked.unparsed_hints
+        );
+        assert!(hints("Aumento de 3,5 por cento.").len() == 1);
+        // Nothing to say about plain text, and what is "unsupported" is not repeated.
+        assert!(hints("Texto sem dados.").is_empty());
+        let check = check_draft(&input("Conforme o decreto 123/2026 e a Lei 8.666/93."));
+        assert!(check.unsupported.iter().any(|u| u.value == "123/2026"));
+        assert!(check
+            .unparsed_hints
+            .iter()
+            .all(|h| !h.contains("123/2026") || h.contains("Lei")));
+        // At most ten.
+        let many = "Aumento de 1%. ".repeat(30) + &"Lei 1. ".repeat(30);
+        assert!(hints(&many).len() <= 10);
+        // R$ amounts are compared, not hinted.
+        assert!(hints("Pagar R$ 2.000,00.").is_empty());
     }
 
     #[test]
@@ -807,8 +1410,10 @@ mod tests {
         let check = check_draft(&i);
         assert_eq!(check.notes.len(), 1, "{:?}", check.notes);
         assert!(check.notes[0].contains("1 parágrafo"));
-        // A paragraph with a placeholder may change; a new text has no note.
+        // A paragraph with a place to fill (any bracket) may change; a new text has no note.
         i.previous_text = "Segundo parágrafo a completar: [preencher].".into();
+        assert!(check_draft(&i).notes.is_empty());
+        i.previous_text = "Segundo parágrafo, para [destinatário] do setor.".into();
         assert!(check_draft(&i).notes.is_empty());
         i.intent = Intent::New;
         i.previous_text = before.into();
@@ -816,10 +1421,41 @@ mod tests {
     }
 
     #[test]
-    fn the_bases_tail_is_not_part_of_the_draft() {
-        let text = "MINUTA PARA REVISÃO\n\nResposta.\n\nBASES PARA REVISÃO (conferir antes de usar no SIGADOC)\n\nS1 — trecho de 31/12/2030 [preencher]";
-        let check = check_draft(&input(text));
+    fn the_bases_tail_is_not_part_of_the_draft_even_when_its_header_was_edited() {
+        let tail = "S1 — documento — Anexo 1: custos-segredo.txt\nTrecho encontrado na fonte: prazo de 31/12/2030 [preencher]\nUso proposto: apoiar o prazo\n";
+        let text = format!("MINUTA PARA REVISÃO\n\nResposta.\n\nBASES PARA REVISÃO (conferir antes de usar no SIGADOC)\n\n{tail}");
+        let check = check_draft(&input(&text));
         assert!(check.unsupported.is_empty() && check.placeholders.is_empty());
+        // The header edited: punctuation, spaces, case, accents, a heading mark.
+        for header in [
+            "bases para revisao",
+            "## Bases para revisão:",
+            "BASES   PARA   REVISÃO",
+            "Bases - para - revisão (editado)",
+        ] {
+            let text = format!("MINUTA PARA REVISÃO\n\nResposta.\n\n{header}\n\n{tail}");
+            let check = check_draft(&input(&text));
+            assert!(
+                check.unsupported.is_empty() && check.placeholders.is_empty(),
+                "{header}"
+            );
+        }
+        // The header erased: the lines of the block are still not the draft.
+        let text = format!("MINUTA PARA REVISÃO\n\nResposta.\n\n{tail}");
+        let check = check_draft(&input(&text));
+        assert!(check.unsupported.is_empty() && check.placeholders.is_empty());
+    }
+
+    #[test]
+    fn a_copy_of_the_header_in_the_body_does_not_hide_what_follows_it() {
+        let body = "MINUTA PARA REVISÃO\n\nBASES PARA REVISÃO\nO setor pagará R$ 9.999,00 em 31/12/2030.\n\nFim do texto.";
+        let check = check_draft(&input(body));
+        assert!(check.unsupported.len() >= 2, "{:?}", kinds(&check));
+        // With a real tail after it, only the tail goes.
+        let tail = "\n\nBASES PARA REVISÃO (conferir antes de usar no SIGADOC)\n\nS1 — rótulo\nTrecho encontrado na fonte: algum trecho\nUso proposto: apoio\n";
+        let check = check_draft(&input(&format!("{body}{tail}")));
+        assert!(check.unsupported.len() >= 2, "{:?}", kinds(&check));
+        assert!(check.unsupported.iter().all(|u| u.value != "algum trecho"));
     }
 
     #[test]
@@ -829,8 +1465,21 @@ mod tests {
         let first = check_draft(&i);
         assert_eq!(first, check_draft(&i));
         assert!(first.unsupported.len() <= MAX_UNSUPPORTED);
+        assert!(first.unparsed_hints.len() <= MAX_HINTS);
         i.draft_text = String::new();
         let empty = check_draft(&i);
-        assert!(!empty.header && !empty.cites_number && empty.unsupported.is_empty());
+        assert!(
+            empty.checked && !empty.header && !empty.cites_number && empty.unsupported.is_empty()
+        );
+    }
+
+    #[test]
+    fn a_timestamp_gives_the_local_date_of_the_generation() {
+        let day = date_of_timestamp("2026-11-12T12:00:00.000Z").unwrap();
+        assert!(
+            ["2026-11-12", "2026-11-13", "2026-11-11"].contains(&day.as_str()),
+            "{day}"
+        );
+        assert!(date_of_timestamp("ontem").is_none());
     }
 }

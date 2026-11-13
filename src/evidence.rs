@@ -947,6 +947,15 @@ const DOCUMENT_WORDS: [&str; 16] = [
     "datado",
 ];
 
+/// Whether a text has a word of deadline ("até", "prazo", "limite",
+/// "vence", "vencimento", "impreterivelmente"…): a line that has one is not
+/// the date line of a letter.
+pub fn has_deadline_cue(text: &str) -> bool {
+    folded_words(text)
+        .iter()
+        .any(|w| DEADLINE_CUES.contains(&w.as_str()))
+}
+
 /// The words (folded) of `text`, split at anything that is not a letter.
 fn folded_words(text: &str) -> Vec<String> {
     fold(text)

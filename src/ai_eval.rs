@@ -2733,6 +2733,14 @@ mod tests {
             "Resposta com três critérios" => vec![DRAFT_OK.into(), good_conference()],
             "Resposta sem dados inventados" => vec!["MINUTA PARA REVISÃO\n\nAbertura\nEm atenção ao Ofício ORG-OFI-2026/00431, o relatório de execução será enviado até 20/11/2026.".into()],
             "Resposta com seção obrigatória" => vec!["MINUTA PARA REVISÃO\n\nSituação do pedido\nO pedido está em análise.\n\nPróximos passos\nO setor informará o resultado.".into()],
+            "Resposta sem números inventados" => vec!["MINUTA PARA REVISÃO
+
+Abertura
+Em atenção ao Ofício ORG-OFI-2026/00431, a resposta será dada até 20/11/2026.".into()],
+            "Seção só em palavras soltas" => vec!["MINUTA PARA REVISÃO
+
+Prazo e resposta
+A resposta será dada no prazo combinado.".into()],
             "Completar sem alterar o que está pronto" => vec!["MINUTA PARA REVISÃO\n\nEm atenção ao Ofício ORG-OFI-2026/00431, o setor agradece a solicitação e informa que o assunto está em análise.\n\nQuanto ao relatório de execução, o setor enviará a resposta até 20/11/2026.".into()],
             other => panic!("no scripted answers for {other}"),
         }
@@ -2904,6 +2912,57 @@ mod tests {
         );
         // The number of the document itself and the date it writes are not.
         assert!(check.cites_number);
+    }
+
+    #[test]
+    fn numbers_that_only_look_like_the_ones_of_the_document_are_flagged() {
+        let name = "Resposta sem números inventados";
+        // "nº 45" (the document has a CEP with 45 and no such number) and
+        // "123/2026" (the document has 9.123/2026) are not the document's.
+        let invented = "MINUTA PARA REVISÃO
+
+Abertura
+Em atenção ao Ofício ORG-OFI-2026/00431, conforme o ofício nº 45 e o decreto 123/2026, a resposta será dada até 20/11/2026.";
+        let (result, _) = run_draft(name, vec![invented.into()]);
+        assert!(
+            result
+                .failures
+                .iter()
+                .any(|f| f.contains("nenhuma fonte escreve")),
+            "{:?}",
+            result.failures
+        );
+        let case = draft_case(name);
+        let check = crate::draft_check::check_draft(&case.check_input(invented));
+        let listed: Vec<&str> = check.unsupported.iter().map(|u| u.value.as_str()).collect();
+        assert_eq!(listed, vec!["nº 45", "123/2026"]);
+        // The ones the document writes, whole, are fine.
+        let honest = "MINUTA PARA REVISÃO
+
+Abertura
+Em atenção ao Ofício ORG-OFI-2026/00431 e ao decreto 9.123/2026, a resposta será dada até 20/11/2026.";
+        assert!(crate::draft_check::check_draft(&case.check_input(honest))
+            .unsupported
+            .is_empty());
+    }
+
+    #[test]
+    fn the_words_of_a_section_title_scattered_in_the_body_are_not_the_section() {
+        let name = "Seção só em palavras soltas";
+        let scattered = "MINUTA PARA REVISÃO
+
+Informo que a resposta será dada, e que o prazo de análise termina logo, conforme combinado com a chefia do setor.";
+        let (result, _) = run_draft(name, vec![scattered.into()]);
+        assert!(
+            result
+                .failures
+                .iter()
+                .any(|f| f.contains("Prazo e resposta")),
+            "{:?}",
+            result.failures
+        );
+        let check = crate::draft_check::check_draft(&draft_case(name).check_input(scattered));
+        assert!(!check.sections[0].found);
     }
 
     #[test]

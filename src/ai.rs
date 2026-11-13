@@ -513,37 +513,66 @@ impl crate::storage::Store {
 /// exact text it judged (its hash).
 impl crate::storage::Store {
     pub(crate) fn ensure_draft_conferences(&mut self) -> Result<()> {
+        // The first form was keyed by the text alone, so that two documents
+        // (or two templates) with the same text shared a row: it is dropped,
+        // it is only a cache.
+        let keyed_by_text: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('draft_conferences') WHERE pk>0 AND name='text_sha256')
+             AND NOT EXISTS(SELECT 1 FROM pragma_table_info('draft_conferences') WHERE pk>0 AND name='document_identity')",
+            [],
+            |r| r.get(0),
+        )?;
+        if keyed_by_text {
+            self.conn.execute_batch("DROP TABLE draft_conferences;")?;
+        }
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS draft_conferences(
-                text_sha256 TEXT PRIMARY KEY,
+                text_sha256 TEXT NOT NULL,
                 document_identity TEXT NOT NULL,
                 payload BLOB NOT NULL,
-                at TEXT NOT NULL
+                at TEXT NOT NULL,
+                PRIMARY KEY(text_sha256, document_identity)
             );",
         )?;
         Ok(())
     }
 
     /// The conference of the draft text with this hash
-    /// ([`conference_text_sha256`]), when this computer made one. A record
-    /// that cannot be read is no record.
-    pub fn draft_conference(&self, text_sha256: &str) -> Option<DraftConference> {
+    /// ([`conference_text_sha256`]) for this document, when this computer made
+    /// one with these very criteria (their texts, in order): a conference of
+    /// another document, or of the same text under another template, is not it.
+    /// A record that cannot be read is no record.
+    pub fn draft_conference(
+        &self,
+        document_id: i64,
+        text_sha256: &str,
+        criteria: &[String],
+    ) -> Option<DraftConference> {
+        let identity = self.consent_identity(document_id)?;
         let blob: Vec<u8> = self
             .conn
             .query_row(
-                "SELECT payload FROM draft_conferences WHERE text_sha256=?1",
-                [text_sha256],
+                "SELECT payload FROM draft_conferences WHERE text_sha256=?1 AND document_identity=?2",
+                rusqlite::params![text_sha256, identity],
                 |row| row.get(0),
             )
             .optional()
             .ok()??;
         let conference: DraftConference =
             serde_json::from_slice(&crate::protection::unseal(&blob).ok()?).ok()?;
-        (conference.text_sha256 == text_sha256).then_some(conference)
+        let asked = normalise_criteria(criteria);
+        let same = conference.text_sha256 == text_sha256
+            && conference.results.len() == asked.len()
+            && conference
+                .results
+                .iter()
+                .zip(&asked)
+                .all(|(result, criterion)| &result.criterion == criterion);
+        same.then_some(conference)
     }
 
-    /// Keeps a conference (the newest for the same text wins), and drops the
-    /// oldest ones above [`MAX_CONFERENCES`].
+    /// Keeps a conference (the newest for the same text and document wins),
+    /// and drops the oldest ones above [`MAX_CONFERENCES`].
     pub fn save_draft_conference(
         &mut self,
         document_id: i64,
@@ -1649,12 +1678,81 @@ pub fn draft_base_system(kind: &str, capture: &Capture) -> String {
 
 const BASES_HEADER: &str = "\n\nBASES PARA REVISÃO (conferir antes de usar no SIGADOC)\n";
 
-/// The editor text without the bases a previous generation appended.
-pub(crate) fn strip_bases(text: &str) -> &str {
-    match text.find(BASES_HEADER.trim_start_matches('\n')) {
-        Some(index) => text[..index].trim_end(),
-        None => text,
+/// The first words of the line that opens the bases block, squashed (no
+/// spaces, no punctuation, no accents, lower case).
+const BASES_HEADER_SQUASHED: &str = "basespararevisao";
+/// The line that every source of the bases block starts with.
+const BASES_SHAPE: &str = "trechoencontradonafonte";
+
+/// A line squashed for comparison: letters and digits only, folded.
+fn squash_line(line: &str) -> String {
+    crate::evidence::fold(line)
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
+/// The text of a draft without the bases a generation appended (and what
+/// looks like them). The block is the line "BASES PARA REVISÃO…" followed by
+/// sources ("<id> — <label>", "Trecho encontrado na fonte: …", "Uso
+/// proposto: …"). The header is recognised whatever its punctuation, spaces,
+/// case and accents, at the start of a line, and only the LAST such line that
+/// is followed by a "Trecho encontrado na fonte:" line is the cut (a copy of
+/// the header written in the body does not hide what follows it). Whatever the
+/// cut leaves, every group of lines in the shape of a source of the bases is
+/// dropped as well, so that the names of attachments and the ids they carry
+/// never go to the model even when the person edited or erased the header.
+pub(crate) fn strip_bases(text: &str) -> std::borrow::Cow<'_, str> {
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        lines.push((offset, line));
+        offset += line.len();
     }
+    let has_shape = |from: usize| {
+        lines[from..]
+            .iter()
+            .any(|(_, l)| squash_line(l).starts_with(BASES_SHAPE))
+    };
+    let cut = (0..lines.len())
+        .rev()
+        .find(|&i| squash_line(lines[i].1).starts_with(BASES_HEADER_SQUASHED) && has_shape(i + 1));
+    let body = match cut {
+        Some(i) => text[..lines[i].0].trim_end(),
+        None => text,
+    };
+    // Groups in the shape of a source of the bases.
+    let kept: Vec<&str> = body.split_inclusive('\n').collect();
+    let mut drop = vec![false; kept.len()];
+    for i in 0..kept.len() {
+        if squash_line(kept[i]).starts_with(BASES_SHAPE) {
+            drop[i] = true;
+            if i > 0 && kept[i - 1].contains(" — ") && !kept[i - 1].trim().is_empty() {
+                drop[i - 1] = true;
+            }
+            if kept.get(i + 1).is_some_and(|l| {
+                squash_line(l).starts_with("usopropostoo")
+                    || squash_line(l).starts_with("usoproposto")
+            }) {
+                drop[i + 1] = true;
+            }
+        }
+    }
+    if cut.is_none() && !drop.iter().any(|d| *d) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    if !drop.iter().any(|d| *d) {
+        return std::borrow::Cow::Borrowed(body);
+    }
+    std::borrow::Cow::Owned(
+        kept.iter()
+            .zip(&drop)
+            .filter(|(_, d)| !**d)
+            .map(|(l, _)| *l)
+            .collect::<String>()
+            .trim_end()
+            .to_owned(),
+    )
 }
 
 /// A model name that the Ollama server of this computer hands to the
@@ -1762,7 +1860,7 @@ pub fn generate_draft(settings: &AiSettings, job: &DraftJob, reporter: &Reporter
         // The bases appended to an earlier generation are not the person's
         // text: they are not preserved nor duplicated when completing or
         // revising.
-        let current_text = strip_bases(&job.current_text).to_owned();
+        let current_text = strip_bases(&job.current_text).into_owned();
         let assembled = assemble_for_job(job, &settings.model, &record.provider)?;
         // The assembled record knows what was sent; the identity stays ours.
         record = GenerationRecord {
@@ -1935,7 +2033,7 @@ fn assemble_for_job(
 ) -> Result<crate::prompting::Assembled> {
     use crate::prompting;
     let base_system = draft_base_system(&job.kind, &job.capture);
-    let current_text = strip_bases(&job.current_text).to_owned();
+    let current_text = strip_bases(&job.current_text).into_owned();
     let blocks = match &job.template {
         Some((_, version)) => {
             prompting::resolve_blocks(version, &job.blocks, &job.selected_blocks)?
@@ -2110,6 +2208,28 @@ pub fn conference_text_sha256(draft_text: &str) -> String {
     crate::prompting::sha256_hex(strip_bases(draft_text).trim())
 }
 
+/// The criteria as the conference judges and keeps them: white space
+/// collapsed, empty ones left out, at most `MAX_CRITERIA`.
+pub fn normalise_criteria(criteria: &[String]) -> Vec<String> {
+    criteria
+        .iter()
+        .map(|c| c.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|c| !c.is_empty())
+        .take(crate::work_templates::MAX_CRITERIA)
+        .collect()
+}
+
+/// Every document whose text may be inside a draft: the document of the
+/// draft and the documents of the sources (and attachments) it recorded. A
+/// conference sends the draft text, so the consent for it must cover them all
+/// (`Store::ai_consents_missing`). Sorted, each once.
+pub fn conference_documents(materials: &[crate::evidence::Source], document_id: i64) -> Vec<i64> {
+    let mut ids: std::collections::BTreeSet<i64> =
+        materials.iter().map(|s| s.document_id).collect();
+    ids.insert(document_id);
+    ids.into_iter().collect()
+}
+
 /// What the Conferente is given: the text of the draft, the criteria and the
 /// header of the document. Not the document, not the examples.
 #[derive(Clone, Debug, Default)]
@@ -2134,12 +2254,7 @@ impl ConferJob {
     /// The conference of `criteria` for `draft_text` of a document; `None`
     /// when there are no criteria.
     pub fn new(capture: &Capture, draft_text: &str, criteria: &[String]) -> Option<Self> {
-        let criteria: Vec<String> = criteria
-            .iter()
-            .map(|c| c.split_whitespace().collect::<Vec<_>>().join(" "))
-            .filter(|c| !c.is_empty())
-            .take(crate::work_templates::MAX_CRITERIA)
-            .collect();
+        let criteria = normalise_criteria(criteria);
         if criteria.is_empty() {
             return None;
         }
@@ -5548,19 +5663,25 @@ mod conference_tests {
             text_sha256: conference_text_sha256(text),
             calls: 1,
         };
+        let crit = vec!["Cite o número".to_owned()];
         assert!(store
-            .draft_conference(&conference_text_sha256(DRAFT))
+            .draft_conference(document, &conference_text_sha256(DRAFT), &crit)
             .is_none());
         let saved = conference(DRAFT);
         store.save_draft_conference(document, &saved).unwrap();
         assert_eq!(
-            store.draft_conference(&saved.text_sha256),
+            store.draft_conference(document, &saved.text_sha256, &crit),
             Some(saved.clone())
         );
         // The hash ignores the bases and the white space around the text, and
         // changes with any edit of the text itself.
         assert_eq!(
-            conference_text_sha256(&format!("{DRAFT}{BASES_HEADER}S1 — trecho\n")),
+            conference_text_sha256(&format!(
+                "{DRAFT}{BASES_HEADER}S1 — rótulo
+Trecho encontrado na fonte: trecho
+Uso proposto: uso
+"
+            )),
             saved.text_sha256
         );
         assert_eq!(
@@ -5572,7 +5693,11 @@ mod conference_tests {
             saved.text_sha256
         );
         assert!(store
-            .draft_conference(&conference_text_sha256(&format!("{DRAFT}.")))
+            .draft_conference(
+                document,
+                &conference_text_sha256(&format!("{DRAFT}.")),
+                &crit
+            )
             .is_none());
         // Invalid conferences are refused; a document that is not here too.
         let mut bad = saved.clone();
@@ -5596,7 +5721,7 @@ mod conference_tests {
         store.backup(&backup).unwrap();
         let restored = crate::storage::Store::open(&backup).unwrap();
         assert_eq!(
-            restored.draft_conference(&saved.text_sha256),
+            restored.draft_conference(document, &saved.text_sha256, &crit),
             Some(saved.clone())
         );
 
@@ -5607,7 +5732,9 @@ mod conference_tests {
         store
             .apply_snapshot(&copy, |_, _| unreachable!(), |_| unreachable!())
             .unwrap();
-        assert!(store.draft_conference(&saved.text_sha256).is_none());
+        assert!(store
+            .draft_conference(document, &saved.text_sha256, &crit)
+            .is_none());
     }
 
     #[test]
@@ -5632,6 +5759,7 @@ mod conference_tests {
             ..Default::default()
         };
         let (a, b, c) = (make("texto A"), make("texto B"), make("texto C"));
+        let crit = vec!["c".to_owned()];
         store.save_draft_conference(first, &a).unwrap();
         store.save_draft_conference(first, &b).unwrap();
         store.save_draft_conference(second, &c).unwrap();
@@ -5642,7 +5770,9 @@ mod conference_tests {
         };
         store.trash_item(target).unwrap();
         assert!(
-            store.draft_conference(&a.text_sha256).is_some(),
+            store
+                .draft_conference(first, &a.text_sha256, &crit)
+                .is_some(),
             "still recoverable"
         );
         store
@@ -5651,12 +5781,20 @@ mod conference_tests {
                 id: first,
             })
             .unwrap();
-        assert!(store.draft_conference(&a.text_sha256).is_none());
-        assert!(store.draft_conference(&b.text_sha256).is_none());
-        assert!(store.draft_conference(&c.text_sha256).is_some());
+        assert!(store
+            .draft_conference(first, &a.text_sha256, &crit)
+            .is_none());
+        assert!(store
+            .draft_conference(first, &b.text_sha256, &crit)
+            .is_none());
+        assert!(store
+            .draft_conference(second, &c.text_sha256, &crit)
+            .is_some());
         // And by deleting a document for good.
         store.delete_document(second).unwrap();
-        assert!(store.draft_conference(&c.text_sha256).is_none());
+        assert!(store
+            .draft_conference(second, &c.text_sha256, &crit)
+            .is_none());
     }
 
     #[test]
@@ -5674,6 +5812,7 @@ mod conference_tests {
             text_sha256: conference_text_sha256(&format!("texto {n}")),
             ..Default::default()
         };
+        let crit = vec!["c".to_owned()];
         for n in 0..MAX_CONFERENCES + 5 {
             store.save_draft_conference(document, &make(n)).unwrap();
         }
@@ -5683,13 +5822,19 @@ mod conference_tests {
             .unwrap();
         assert_eq!(count as usize, MAX_CONFERENCES);
         assert!(
-            store.draft_conference(&make(0).text_sha256).is_none(),
+            store
+                .draft_conference(document, &make(0).text_sha256, &crit)
+                .is_none(),
             "the oldest went"
         );
-        assert!(store.draft_conference(&make(4).text_sha256).is_none());
-        assert!(store.draft_conference(&make(5).text_sha256).is_some());
         assert!(store
-            .draft_conference(&make(MAX_CONFERENCES + 4).text_sha256)
+            .draft_conference(document, &make(4).text_sha256, &crit)
+            .is_none());
+        assert!(store
+            .draft_conference(document, &make(5).text_sha256, &crit)
+            .is_some());
+        assert!(store
+            .draft_conference(document, &make(MAX_CONFERENCES + 4).text_sha256, &crit)
             .is_some());
     }
 
@@ -5757,6 +5902,7 @@ mod conference_tests {
             &[],
             &["Pedido da pessoa.".to_owned()],
             "2026-11-12",
+            None,
         )
         .unwrap();
         let check = check_draft(&input);
@@ -5776,7 +5922,8 @@ mod conference_tests {
             None,
             &[],
             &[],
-            "2026-11-12"
+            "2026-11-12",
+            None
         )
         .is_err());
     }
@@ -5860,5 +6007,421 @@ mod attachment_source_tests {
         );
         // Extraction here is in memory: nothing about it is stored.
         assert!(store.attachment_text(attachment).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod fix_tests {
+    use super::tests::{mock_ollama, settings};
+    use super::*;
+    use crate::model::{sample_capture, Fact, FactCheck, Origin};
+    use crate::work_templates::{Intent, Section, TemplateVersion, WorkTemplate};
+
+    const TAIL: &str = "S1 — ORG-OFI-2026/00431 — Anexo 1: custos-segredo.txt\nTrecho encontrado na fonte: texto do anexo A9H1234abcd\nUso proposto: apoiar o prazo\n";
+
+    #[test]
+    fn the_bases_are_cut_at_the_last_header_that_is_followed_by_the_shape_of_a_source() {
+        let body = "MINUTA PARA REVISÃO\n\nResposta.";
+        // The header as the program writes it.
+        let text = format!("{body}{BASES_HEADER}\n{TAIL}");
+        assert_eq!(&*strip_bases(&text), body);
+        // Edited: punctuation, spaces, case, accents, heading marks.
+        for header in [
+            "bases para revisao",
+            "## Bases para revisão:",
+            "BASES   PARA   REVISÃO",
+            "Bases - para - revisão (editado)",
+            "  **BASES PARA REVISÃO**",
+        ] {
+            let text = format!("{body}\n\n{header}\n\n{TAIL}");
+            assert_eq!(&*strip_bases(&text), body, "{header}");
+        }
+        // Erased: the lines of a source are dropped anyway.
+        let text = format!("{body}\n\n{TAIL}");
+        assert_eq!(&*strip_bases(&text), body);
+        // A header with nothing of a source after it is text of the draft.
+        let alone = format!("{body}\n\nBASES PARA REVISÃO\nO setor pagará mais tarde.");
+        assert_eq!(&*strip_bases(&alone), alone);
+        // A copy of the header in the body does not hide what follows it.
+        let copy =
+            format!("{body}\n\nBASES PARA REVISÃO\nMais texto do corpo.\n\n{BASES_HEADER}\n{TAIL}");
+        assert_eq!(
+            &*strip_bases(&copy),
+            format!("{body}\n\nBASES PARA REVISÃO\nMais texto do corpo.")
+        );
+        // Nothing to cut: the same text, not copied.
+        assert!(matches!(strip_bases(body), std::borrow::Cow::Borrowed(_)));
+        // The hash ignores all of it.
+        assert_eq!(
+            conference_text_sha256(&format!("{body}\n\nBASES PARA REVISÃO (editada)\n{TAIL}")),
+            conference_text_sha256(&format!("{body}\n\n{TAIL}"))
+        );
+        // Windows line ends.
+        let crlf = format!(
+            "{body}\r\n\r\nBASES PARA REVISÃO\r\n\r\n{}",
+            TAIL.replace('\n', "\r\n")
+        );
+        assert_eq!(strip_bases(&crlf).trim_end(), body);
+    }
+
+    fn job_with_tail() -> DraftJob {
+        let text = format!("MINUTA PARA REVISÃO\n\nParágrafo pronto que fica como está.\n\nSegundo: [preencher].\n\nbases revisao (editado)\n\n{TAIL}");
+        DraftJob {
+            document_id: 0,
+            capture_id: 0,
+            capture: sample_capture(),
+            kind: "resposta".into(),
+            intent: Intent::Complete,
+            local_context: String::new(),
+            request_guidance: String::new(),
+            template: Some((
+                WorkTemplate {
+                    uid: "t".into(),
+                    name: "Modelo".into(),
+                    kind: "resposta".into(),
+                    ..Default::default()
+                },
+                TemplateVersion {
+                    version: 1,
+                    published: true,
+                    sections: vec![Section {
+                        title: "Abertura".into(),
+                        guidance: "x".into(),
+                        required: false,
+                    }],
+                    criteria: vec!["Cite o número".into()],
+                    ..Default::default()
+                },
+            )),
+            blocks: Vec::new(),
+            selected_blocks: Default::default(),
+            examples: Vec::new(),
+            example_files: Vec::new(),
+            sources: Vec::new(),
+            current_text: text,
+            verified_facts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_requests_never_carry_the_lines_of_the_bases_even_when_the_header_was_edited() {
+        let finished =
+            "MINUTA PARA REVISÃO\n\nParágrafo pronto que fica como está.\n\nSegundo completado.";
+        let (base, received, _server) = mock_ollama(vec![
+            finished.into(),
+            json!({"results":[{"id":"c1","verdict":"nao_atende","quote":null,"note":"Falta."}]})
+                .to_string(),
+        ]);
+        let outcome = generate_draft(&settings(&base), &job_with_tail(), &Reporter::silent());
+        let requests: Vec<Value> = received.try_iter().collect();
+        assert_eq!(requests.len(), 2, "{:?}", outcome.result);
+        for request in &requests {
+            let sent = request.to_string();
+            for never in [
+                "custos-segredo",
+                "A9H1234abcd",
+                "Trecho encontrado na fonte",
+                "Uso proposto",
+            ] {
+                assert!(!sent.contains(never), "{never}");
+            }
+        }
+        let data: Value =
+            serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+        assert!(data["current_text"]
+            .as_str()
+            .unwrap()
+            .contains("Parágrafo pronto"));
+        // The conference of the draft with a tail judges the text without it.
+        let judged = ConferJob::new(
+            &sample_capture(),
+            &format!("{finished}\n\n{TAIL}"),
+            &["Um".into()],
+        )
+        .unwrap();
+        assert_eq!(judged.draft_text, finished);
+    }
+
+    fn doc(number: &str) -> Capture {
+        let mut capture = sample_capture();
+        capture.document_number = number.into();
+        capture.source_url = format!(
+            "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla={}",
+            number.replace('/', "%2F")
+        );
+        capture
+    }
+
+    fn conference_of(text: &str, criteria: &[&str], verdict: &str) -> DraftConference {
+        DraftConference {
+            results: criteria
+                .iter()
+                .map(|c| CriterionResult {
+                    criterion: (*c).into(),
+                    verdict: verdict.into(),
+                    ..Default::default()
+                })
+                .collect(),
+            at: "2026-11-13T10:00:00.000Z".into(),
+            text_sha256: conference_text_sha256(text),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_conference_belongs_to_the_document_and_to_the_criteria_it_judged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::storage::Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        let first = store
+            .import_capture(&doc("SEFAZ-PRO-2026/00001"))
+            .unwrap()
+            .document_id;
+        let second = store
+            .import_capture(&doc("SEFAZ-PRO-2026/00002"))
+            .unwrap()
+            .document_id;
+        let text = "MINUTA PARA REVISÃO\n\nO mesmo texto nos dois documentos.";
+        let sha = conference_text_sha256(text);
+        let crit = |list: &[&str]| list.iter().map(|c| (*c).to_owned()).collect::<Vec<_>>();
+        let one = conference_of(text, &["Cite o número", "Informe o prazo"], "atende");
+        let other = conference_of(text, &["Cite o número", "Informe o prazo"], "nao_atende");
+        store.save_draft_conference(first, &one).unwrap();
+        // The other document has nothing yet.
+        assert!(store
+            .draft_conference(second, &sha, &crit(&["Cite o número", "Informe o prazo"]))
+            .is_none());
+        // Saving for the other document does not replace the first one's.
+        store.save_draft_conference(second, &other).unwrap();
+        let of_first = store
+            .draft_conference(first, &sha, &crit(&["Cite o número", "Informe o prazo"]))
+            .unwrap();
+        let of_second = store
+            .draft_conference(second, &sha, &crit(&["Cite o número", "Informe o prazo"]))
+            .unwrap();
+        assert_eq!(of_first.results[0].verdict, "atende");
+        assert_eq!(of_second.results[0].verdict, "nao_atende");
+        // The same text under another template: other criteria, no conference.
+        assert!(store
+            .draft_conference(first, &sha, &crit(&["Cite o número"]))
+            .is_none());
+        assert!(store
+            .draft_conference(first, &sha, &crit(&["Informe o prazo", "Cite o número"]))
+            .is_none());
+        assert!(store
+            .draft_conference(first, &sha, &crit(&["Cite o número", "Seja breve"]))
+            .is_none());
+        assert!(store.draft_conference(first, &sha, &[]).is_none());
+        // White space in a criterion does not make it another one.
+        assert!(store
+            .draft_conference(
+                first,
+                &sha,
+                &crit(&["  Cite   o número ", "Informe o prazo"])
+            )
+            .is_some());
+        // A document that is not here has none.
+        assert!(store
+            .draft_conference(4242, &sha, &crit(&["Cite o número", "Informe o prazo"]))
+            .is_none());
+        // The newest for the same document and text wins.
+        let newer = DraftConference {
+            at: "2026-11-13T11:00:00.000Z".into(),
+            ..conference_of(text, &["Cite o número", "Informe o prazo"], "nao_se_aplica")
+        };
+        store.save_draft_conference(first, &newer).unwrap();
+        assert_eq!(
+            store
+                .draft_conference(first, &sha, &crit(&["Cite o número", "Informe o prazo"]))
+                .unwrap()
+                .results[0]
+                .verdict,
+            "nao_se_aplica"
+        );
+    }
+
+    #[test]
+    fn the_first_form_of_the_conference_cache_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.sqlite3");
+        let mut store = crate::storage::Store::open(&path).unwrap();
+        let id = store.import_capture(&sample_capture()).unwrap().document_id;
+        store
+            .conn
+            .execute_batch(
+                "DROP TABLE draft_conferences;
+                 CREATE TABLE draft_conferences(text_sha256 TEXT PRIMARY KEY, document_identity TEXT NOT NULL, payload BLOB NOT NULL, at TEXT NOT NULL);
+                 INSERT INTO draft_conferences VALUES('aa','bb',x'00','2026-11-01T00:00:00Z');",
+            )
+            .unwrap();
+        drop(store);
+        let mut store = crate::storage::Store::open(&path).unwrap();
+        let rows: i64 = store
+            .conn
+            .query_row("SELECT count(*) FROM draft_conferences", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "a cache: dropped and made again");
+        let text = "MINUTA PARA REVISÃO\n\nTexto.";
+        store
+            .save_draft_conference(id, &conference_of(text, &["c"], "atende"))
+            .unwrap();
+        assert!(store
+            .draft_conference(id, &conference_text_sha256(text), &["c".to_owned()])
+            .is_some());
+        // Open again: the new form is kept.
+        drop(store);
+        let store = crate::storage::Store::open(&path).unwrap();
+        assert!(store
+            .draft_conference(id, &conference_text_sha256(text), &["c".to_owned()])
+            .is_some());
+    }
+
+    #[test]
+    fn only_what_the_document_itself_writes_goes_to_the_redator() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::storage::Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        let receipt = store
+            .import_capture(&crate::model::sample_proposed_capture())
+            .unwrap();
+        // A fact whose quote is written in a selected source (an attachment).
+        let source = crate::evidence::Source {
+            id: format!("C{}", receipt.capture_id),
+            document_id: receipt.document_id,
+            capture_id: receipt.capture_id,
+            label: "Anexo".into(),
+            file_id: None,
+            page: None,
+            method: "captura".into(),
+            text: "Anexo: o pagamento será feito até 15/12/2026, sem falta.".into(),
+        };
+        let mut analysis = crate::model::sample_proposed_analysis(receipt.capture_id);
+        analysis.materials = vec![source.clone()];
+        analysis.facts.push(Fact {
+            id: "f4".into(),
+            kind: "prazo".into(),
+            statement: "Pagamento até 15/12/2026.".into(),
+            quote: "pagamento será feito até 15/12/2026".into(),
+            source_id: source.id.clone(),
+            date: Some("2026-12-15".into()),
+            checked: FactCheck {
+                quote: true,
+                date: true,
+                origin: Origin::Source,
+                ..Default::default()
+            },
+            ..Fact::default()
+        });
+        store.save_analysis(receipt.document_id, &analysis).unwrap();
+        let saved = store
+            .load_document(receipt.document_id)
+            .unwrap()
+            .analysis
+            .unwrap();
+        assert!(saved
+            .facts
+            .iter()
+            .any(|f| f.id == "f4" && f.checked.origin == Origin::Source));
+        let facts = store.verified_facts_for(receipt.document_id, receipt.capture_id);
+        assert_eq!(
+            facts.len(),
+            3,
+            "{:?}",
+            facts.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+        assert!(facts.iter().all(|f| f.checked.origin == Origin::Document));
+        // The checks may still read the facts of the document only as well.
+        assert!(store
+            .draft_materials(receipt.document_id)
+            .unwrap()
+            .facts
+            .iter()
+            .all(|f| f.checked.origin == Origin::Document));
+        // And the data object of the request drops a source fact handed to it.
+        let all = &saved.facts;
+        let sent = crate::prompting::verified_facts_json(all);
+        assert_eq!(sent.as_array().unwrap().len(), 3);
+        assert!(!sent.to_string().contains("pagamento"));
+    }
+
+    #[test]
+    fn a_conference_covers_the_documents_whose_text_may_be_in_the_draft() {
+        let source = |document_id| crate::evidence::Source {
+            id: format!("C{document_id}"),
+            document_id,
+            capture_id: 1,
+            label: "x".into(),
+            file_id: None,
+            page: None,
+            method: "captura".into(),
+            text: "t".into(),
+        };
+        assert_eq!(conference_documents(&[], 5), vec![5]);
+        assert_eq!(
+            conference_documents(&[source(9), source(5), source(9), source(2)], 5),
+            vec![2, 5, 9]
+        );
+    }
+
+    fn sourced_job() -> DraftJob {
+        let mut job = job_with_tail();
+        job.intent = Intent::New;
+        job.current_text = String::new();
+        job.sources = vec![crate::evidence::Source {
+            id: "C1".into(),
+            document_id: 1,
+            capture_id: 1,
+            label: "Fonte".into(),
+            file_id: None,
+            page: None,
+            method: "captura".into(),
+            text: "Texto da fonte com o prazo de entrega até 30/11/2026.".into(),
+        }];
+        job
+    }
+
+    fn grounded(quote: &str) -> String {
+        json!({"body":"MINUTA PARA REVISÃO\n\nTexto.","citations":[{"source_id":"S1","quote":quote,"claim":"prazo"}]})
+            .to_string()
+    }
+
+    #[test]
+    fn the_draft_may_use_all_its_calls_and_then_the_conference_is_skipped() {
+        // Rule: the draft has five calls in all; the generation takes what it
+        // needs (an answer cut by length is asked again once, shorter, while
+        // calls are left) and the conference of the criteria is made only if a
+        // call and a send are left.
+        let cut = "LENGTH:{\"body\":\"MINUTA PARA REVISÃO\\n\\nTex";
+        let bad = grounded("um trecho que a fonte não tem de jeito nenhum");
+        let good = grounded("prazo de entrega até 30/11/2026");
+        let (base, received, _server) = mock_ollama(vec![
+            cut.into(),
+            bad.clone(),
+            cut.into(),
+            bad,
+            good,
+            json!({"results":[{"id":"c1","verdict":"nao_atende","quote":null,"note":"x"}]})
+                .to_string(),
+        ]);
+        let outcome = generate_draft(&settings(&base), &sourced_job(), &Reporter::silent());
+        assert_eq!(
+            received.try_iter().count(),
+            5,
+            "five calls, none for the conference"
+        );
+        assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+        assert!(outcome.conference.is_none());
+        assert_eq!(
+            outcome.conference_skipped.as_deref(),
+            Some(CONFERENCE_SKIPPED_BUDGET)
+        );
+        // With a call left, the conference runs.
+        let good = grounded("prazo de entrega até 30/11/2026");
+        let (base, received, _server) = mock_ollama(vec![
+            good,
+            json!({"results":[{"id":"c1","verdict":"nao_atende","quote":null,"note":"x"}]})
+                .to_string(),
+        ]);
+        let outcome = generate_draft(&settings(&base), &sourced_job(), &Reporter::silent());
+        assert_eq!(received.try_iter().count(), 2);
+        assert!(outcome.conference.is_some() && outcome.conference_skipped.is_none());
     }
 }

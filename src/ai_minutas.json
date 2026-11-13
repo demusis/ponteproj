@@ -165,5 +165,66 @@
       "no_notes": true,
       "max_placeholders": 1
     }
+  },
+  {
+    "name": "Resposta sem números inventados",
+    "kind": "sigadoc",
+    "number": "ORG-OFI-2026/00431",
+    "title": "Resposta ao ofício",
+    "document_type": "Ofício",
+    "sender": "Setor Jurídico",
+    "text": "Ofício ORG-OFI-2026/00431. Referência: decreto 9.123/2026, CEP 78045-000. Solicitamos a resposta até 20/11/2026.",
+    "today": "2026-11-10",
+    "template": {
+      "name": "Modelo simples",
+      "sections": [
+        {
+          "title": "Abertura",
+          "guidance": "Cite o ofício.",
+          "required": true
+        }
+      ],
+      "criteria": []
+    },
+    "intent": "new",
+    "guidance": "",
+    "expect": {
+      "header": true,
+      "cites_number": true,
+      "no_unsupported": true,
+      "sections_found": [
+        "Abertura"
+      ]
+    }
+  },
+  {
+    "name": "Seção só em palavras soltas",
+    "kind": "email",
+    "number": "EMAIL-2026/32",
+    "title": "Pedido de resposta",
+    "document_type": "E-mail",
+    "sender": "contato@exemplo.org",
+    "text": "Prezados, solicitamos resposta sobre o pedido do Setor A. Atenciosamente.",
+    "today": "2026-11-10",
+    "template": {
+      "name": "Modelo de resposta a e-mail",
+      "sections": [
+        {
+          "title": "Prazo e resposta",
+          "guidance": "Diga o prazo da resposta.",
+          "required": true
+        }
+      ],
+      "criteria": []
+    },
+    "intent": "new",
+    "guidance": "",
+    "expect": {
+      "header": true,
+      "sections_found": [
+        "Prazo e resposta"
+      ],
+      "no_unsupported": true
+    }
   }
 ]

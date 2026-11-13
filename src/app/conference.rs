@@ -199,6 +199,7 @@ pub(super) fn refresh_review(
         sources,
         &extra,
         &today,
+        None,
     ) {
         Ok(input) => check_draft(&input),
         Err(_) => DraftCheck::default(),
@@ -207,8 +208,9 @@ pub(super) fn refresh_review(
         .take()
         .filter(|old| old.document_id == document_id)
         .and_then(|old| old.conference);
+    let criteria: Vec<String> = version.map(|v| v.criteria.clone()).unwrap_or_default();
     let conference = store
-        .draft_conference(&conference_text_sha256(text))
+        .draft_conference(document_id, &conference_text_sha256(text), &criteria)
         .or(older);
     *slot = Some(DraftReview {
         document_id,
@@ -218,7 +220,7 @@ pub(super) fn refresh_review(
             .as_ref()
             .map(|(name, _)| name.clone())
             .unwrap_or_default(),
-        criteria: version.map(|v| v.criteria.clone()).unwrap_or_default(),
+        criteria,
         check,
         conference,
     });

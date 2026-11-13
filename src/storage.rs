@@ -863,7 +863,7 @@ impl Store {
 
     /// What the checks of a draft read of a document, in one pass (the capture
     /// is decrypted once): the latest capture, what the person wrote and the
-    /// verified facts of the latest analysis when it is not stale (made on the
+    /// verified facts (those the document itself writes) of the latest analysis when it is not stale (made on the
     /// latest capture, with sources and context unchanged).
     pub fn draft_materials(&self, document_id: i64) -> Result<DraftMaterials> {
         crate::trash::require_active_document(&self.conn, document_id)?;
@@ -907,9 +907,14 @@ impl Store {
                     && !self.sources_stale(&a.materials)
             })
             .map(|a| {
+                // Only what the document of this very draft writes: a fact
+                // whose quote is in a source (another document, an attachment)
+                // would leave under the consent given for this document.
                 a.facts
                     .into_iter()
-                    .filter(|f| f.checked.quote && f.checked.origin.is_written())
+                    .filter(|f| {
+                        f.checked.quote && f.checked.origin == crate::model::Origin::Document
+                    })
                     .collect()
             })
             .unwrap_or_default();

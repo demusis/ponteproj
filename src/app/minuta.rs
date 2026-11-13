@@ -683,8 +683,22 @@ impl PonteApp {
                     .and_then(|d| d.drafts.iter().find(|draft| draft.id == draft_id))
             })
             .and_then(|draft| {
-                self.store
-                    .draft_conference(&crate::ai::conference_text_sha256(&draft.body))
+                // The criteria of the template version the generation used.
+                let criteria = record
+                    .template_uid
+                    .as_deref()
+                    .and_then(|uid| self.store.template_by_uid(uid).ok().flatten())
+                    .and_then(|template| {
+                        record
+                            .template_version
+                            .and_then(|v| template.version(v).map(|v| v.criteria.clone()))
+                    })
+                    .unwrap_or_default();
+                self.store.draft_conference(
+                    document_id,
+                    &crate::ai::conference_text_sha256(&draft.body),
+                    &criteria,
+                )
             });
         let mut open = true;
         egui::Window::new("Material utilizado na geração")

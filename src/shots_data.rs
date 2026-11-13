@@ -1738,6 +1738,7 @@ mod tests {
             &[],
             &[],
             &Local::now().format("%Y-%m-%d").to_string(),
+            None,
         )
         .unwrap();
         let check = crate::draft_check::check_draft(&input);
@@ -1754,7 +1755,11 @@ mod tests {
             check.sections
         );
         let conference = store
-            .draft_conference(&crate::ai::conference_text_sha256(&saved.body))
+            .draft_conference(
+                document.id,
+                &crate::ai::conference_text_sha256(&saved.body),
+                &version.criteria,
+            )
             .expect("the conference of the exact text");
         let verdicts: std::collections::BTreeSet<&str> = conference
             .results
