@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.33.1 (extensão 0.4.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.34.0 (extensão 0.4.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.33.1.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.34.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -171,7 +171,7 @@ Na área **Modelos**, **Ctrl+F** (buscar modelo), **Ctrl+N** (**Novo modelo**), 
 - **Atendimentos com prazo vencido ou para hoje:** um clique abre o atendimento em Atendimentos.
 - **Documentos recentes:** os últimos documentos trabalhados; um clique abre a ficha.
 
-Com recursos cadastrados, a tela também mostra as **Reservas de hoje** e as **Devoluções atrasadas**.
+Com recursos cadastrados, a tela mostra também um card fixo, **Recursos em uso e reservados para hoje**, numa lista só: primeiro as devoluções atrasadas, depois os recursos em uso e, por fim, as reservas de hoje; um clique abre o uso. Sem nada em uso nem reservado, o card continua na tela, com *Nenhum recurso em uso nem reservado para hoje* e o botão **Abrir Recursos**. Só some num acervo sem recursos cadastrados.
 
 Quando nada está atrasado nem para hoje, a tela diz *Nenhuma tarefa atrasada ou para hoje*. Ao concluir uma tarefa por aqui, o aviso do canto inferior direito traz **Desfazer**, por alguns segundos.
 
@@ -295,7 +295,7 @@ Outras marcas do cartão: **Manual** (registro manual), `📎 N juntado(s)` (o d
 
 | Aba | O que tem |
 |---|---|
-| **Resumo** | Cartões **Análise** (botão **Analisar**, depois **Analisar de novo**; quando a análise é anterior às últimas alterações do documento, do contexto ou das notas, uma faixa avisa e também oferece **Analisar de novo**; as providências sugeridas têm **Criar tarefa**), **Dados do documento** (**Ler o PDF**, **Completar contexto**), **Tarefas** (**Nova tarefa**, **Ver todas**), **Atendimento** e **Nota**; documentos parecidos. |
+| **Resumo** | Cartões **Análise** (botão **Analisar**, depois **Analisar de novo**; quando a análise é anterior às últimas alterações do documento, do contexto ou das notas, uma faixa avisa e também oferece **Analisar de novo**; as **Propostas (revise antes de usar)** de tarefa, atendimento e reserva abrem formulários já preenchidos, [seção 9.4](#94-propostas-conferidas-fila-e-envio); numa análise antiga, as providências sugeridas têm **Criar tarefa**), **Dados do documento** (**Ler o PDF**, **Completar contexto**), **Tarefas** (**Nova tarefa**, **Ver todas**), **Atendimento** e **Nota**; documentos parecidos. |
 | **Documento** | **Arquivos (PDF)** com **Ler no Ponte** e exportação (primeiro, quando o documento tem arquivos); **Texto importado**; **Anexos** (arquivos seus); dados do SIGADOC; histórico de tramitação. |
 | **Notas e minutas** | **Notas** e **Minuta**. Com a janela larga, as notas ficam à esquerda e a minuta à direita; com a janela estreita, a nota mostra as primeiras linhas, com **Editar nota** (e **Recolher**). O **Editar nota** do card Nota, no Resumo, abre esta aba com a nota aberta e o cursor nela, pronta para digitar. A minuta tem três passos. **1. Partir de:** **Tipo**, **Modelo de trabalho** e **Começar por um modelo**. **2. Pedir à IA (opcional):** **Pedido desta minuta** e os botões **Gerar com IA**, **Completar** e **Revisar**. **3. Texto:** o editor, **Salvar nova versão**, **Copiar**, **Exportar (RTF)**, **Comparar com versão ▾** e **Guardar como modelo**. Abaixo ficam as versões salvas, cada uma com **Material utilizado** quando foi gerada com IA. |
 | **Mais** | Vínculos entre documentos (automáticos ou feitos por você); versões importadas, com comparação; o que foi importado e os links encontrados na página; dados técnicos, com as datas escritas como dd/mm/aaaa hh:mm. |
@@ -709,7 +709,7 @@ Passe o mouse para a frase completa e clique para abrir Ajustes ▸ Equipe e sin
 
 O Ponte funciona inteiro sem IA. Ela serve para duas coisas:
 
-- **Resumo ▸ Análise ▸ Analisar…** (depois, **Analisar de novo**): resume o documento, sugere prioridade, aponta o prazo mencionado e propõe providências, que viram tarefas com um clique. Os trechos citados são conferidos, palavra por palavra, contra as fontes.
+- **Resumo ▸ Análise ▸ Analisar…** (depois, **Analisar de novo**): resume o documento, sugere prioridade e **propõe tarefas, um atendimento e reservas já preenchidos**, cada dado com o trecho do documento que o sustenta. O programa confere os trechos, palavra por palavra, e lê deles as datas, as horas e as quantidades; nada é criado antes do seu **Salvar** em cada formulário ([seção 9.4](#94-propostas-conferidas-fila-e-envio)).
 - **Notas e minutas ▸ Gerar com IA, Completar e Revisar:** escrevem uma minuta do tipo escolhido, completam o texto que está no editor ou o revisam. O campo **Pedido desta minuta** recebe o que você quer, como *"solicitar a informação que falta, com tom objetivo"*; com um **Modelo de trabalho** escolhido, a IA segue também as instruções dele ([seção 9.5](#95-modelos-de-trabalho)). A sugestão abre para revisão (**Levar ao editor**, **Copiar sugestão**, **Descartar sugestão**) e só vira versão quando você salvar.
 
 Ao lado de cada botão, uma linha diz para onde os dados vão.
@@ -725,9 +725,9 @@ Em **Ajustes ▸ Inteligência artificial**, escolha uma das quatro opções, ap
 | **Outro servidor** | Sim, para esse servidor | o do servidor | endereço e chave opcional. Serve para um servidor do órgão compatível com a API do Ollama |
 | **ChatGPT (assinatura)** | Sim, para a OpenAI, nos EUA | usa a cota do seu plano Plus ou Pro | clique em **Entrar com o ChatGPT…** e autorize no navegador |
 
-Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na lista. Depois, **Salvar** (ou saia da seção: ela é salva ao sair).
+Em qualquer opção, clique em **Listar modelos do servidor** e escolha o modelo na lista. Depois, **Salvar** (ou saia da seção: ela é salva ao sair). Na mesma página, o card **Testar a IA com casos fictícios** confere como a IA escolhida se sai ([seção 9.4](#94-propostas-conferidas-fila-e-envio)).
 
-**Sigilo e LGPD.** Nas três opções em que os dados saem do computador, o texto do documento, as notas, o contexto e as fontes selecionadas são enviados a cada clique em Analisar ou Gerar. Nada é enviado ao importar. Use essas opções só com documentos que podem sair do órgão.
+**Sigilo e LGPD.** Nas três opções em que os dados saem do computador, são enviados a cada clique em Analisar ou Gerar, e nunca ao importar: o texto do documento, com número, título, datas e campos descritivos (tipo, origem, remetente…), os nomes dos arquivos e referências, as notas e o contexto salvos e as fontes selecionadas. **Não saem** os endereços (da página do SIGADOC e dos links), os números de controle internos do Ponte, o cadastro de recursos nem os nomes das pessoas da equipe; o casamento de uma reserva proposta com o seu cadastro acontece neste computador. Antes do primeiro envio de cada documento a um provedor externo, o Ponte mostra o que sai, para onde e com qual modelo, e pede a sua confirmação, uma vez por documento e destino; com **Ollama neste computador**, nada sai e não há pergunta. Use as opções em nuvem só com documentos que podem sair do órgão.
 
 A configuração fica no acervo, cifrada pela sua conta do Windows. Desmarque **Guardar a chave neste computador** para manter a chave, ou a sessão do ChatGPT, só até fechar o Ponte.
 
@@ -750,13 +750,25 @@ Se o Ollama deste computador não responder, a página mostra esses mesmos passo
 - **Cota:** as chamadas são descontadas da cota do plano, a mesma do Codex e de outros aplicativos, com uma janela de 5 horas e uma semanal. Em **ChatGPT ▸ Configurações ▸ Uso** você vê o saldo, ajusta o limite do Ponte, usa uma redefinição ou compra créditos. Quando a cota acaba, o Ponte avisa e **não** usa outro provedor por conta própria.
 - **Sair:** apaga a sessão deste computador e pede à OpenAI que a encerre. Confira em ChatGPT ▸ Configurações ▸ Aplicativos conectados.
 
-### 9.4 Conferência, correção e progresso
+### 9.4 Propostas conferidas, fila e envio
 
-Toda resposta da IA passa por uma conferência do próprio programa: formato completo, prioridade e providências válidas, trechos citados existentes literalmente nas fontes, prazo transcrito. Se a resposta é recusada, o Ponte devolve ao modelo a resposta anterior e o motivo exato e pede a versão corrigida, até três respostas no total. Nada é salvo sem passar pela conferência.
+**A análise em duas etapas.** A IA lê o documento primeiro (*Etapa 1 de 2: lendo o documento…*): lista o que ele diz (pedidos, prazos, datas e horas, quantidades, coisas pedidas, remetente, assunto), cada fato com o trecho literal. O programa confere cada trecho contra o texto do documento, o contexto e as fontes, e lê do trecho a data, a hora ou a quantidade. Depois (*Etapa 2 de 2: preparando as propostas…*), a IA propõe tarefas, um atendimento e reservas usando só os fatos conferidos, e o programa confere cada proposta contra esses fatos. O que não passa na conferência é devolvido ao modelo, item por item e com o motivo, para uma correção; o que continua errado é descartado ou fica em branco, sem derrubar o resto da análise. Há um limite de chamadas por análise. Por serem duas etapas ou mais, a análise leva mais tempo que a de uma chamada só.
 
-Enquanto a IA trabalha, a barra inferior mostra a etapa (*Preparando os dados*, *Recebendo a resposta… (N caracteres)*, *Conferindo*, *Tentativa 2 de 3*) e o botão **Cancelar**, que interrompe na próxima etapa sem salvar nada.
+**O que aparece em Resumo ▸ Análise ▸ Propostas (revise antes de usar).** Cada proposta vem preenchida, com os trechos que a sustentam (**Trechos do documento**) e o selo **conferido no texto** nos dados conferidos:
 
-O texto do documento é tratado como dado, nunca como instrução: não há agentes autônomos nem ferramentas que a IA possa acionar.
+- **Tarefa:** título claro, providência, prioridade e, quando o documento escreve uma data, **Prazo** e **Origem do prazo** (o trecho). **Criar tarefa** abre o formulário preenchido, com o responsável em branco. Prazo relativo (*até o fim da próxima semana*) não vira data: fica como observação.
+- **Atendimento:** com atendimento já existente (o Ponte cria um ao importar do SIGADOC), **Completar o atendimento**, mostrando o que mudaria (*Prazo: 12/11/2026 → 22/11/2026*); sem ele (registro manual, e-mail, WhatsApp), **Nova entrada** preenchida.
+- **Reserva:** o que foi pedido, quantidade, início, fim e finalidade. O programa casa o pedido com o seu cadastro de recursos e confere o horário: **Livre neste horário**, **Ocupado** (por quem e até quando), **Mais de um recurso combina**, **Nenhum recurso cadastrado combina** (com **Cadastrar recurso…**), **Quantidade acima do cadastro** ou **Sem horário certo**. **Reservar** abre o uso preenchido e ligado ao documento; sem hora de término, o formulário propõe 1 hora e avisa *confira o fim*.
+- Uma proposta já usada mostra **Tarefa criada**, **Atendimento atualizado** ou **Reserva criada**, com **Abrir**; o vínculo é por identificador da proposta, não pela providência. Se o documento, o contexto ou as notas mudaram depois da análise, os botões ficam desligados até **Analisar de novo**. Análises feitas antes da 0.34.0 continuam com as **Providências sugeridas**.
+- **Material utilizado**, no rodapé do card, mostra provedor, modelo, chamadas, etapas (tentativas e itens descartados com o motivo, sem o texto do documento) e os fatos lidos, com o que o programa conferiu.
+
+**O que a conferência garante, e o que não garante.** *Conferido no texto* quer dizer que o **programa** achou o trecho, palavra por palavra, no documento e leu dele a data, a hora ou a quantidade. Não quer dizer que a proposta está certa nem que aquela data é o prazo que vale: a revisão é da pessoa. Nada é criado nem alterado antes do **Salvar** de cada formulário (que abre com *não salvo* e pergunta ao sair), a IA nunca escolhe o responsável e não há agentes autônomos: a análise tem duas etapas verificadas, e nada age sozinho. O texto do documento é tratado como dado, nunca como instrução.
+
+**Envio ao provedor externo.** Veja o que sai e o que não sai em [9.1](#91-onde-a-ia-roda). A pergunta *Enviar este documento a …?* aparece uma vez por documento e destino, com **Enviar** e **Cancelar**. Na segunda etapa vão só os fatos já conferidos.
+
+**Fila, progresso e erros passageiros.** Enquanto a IA trabalha, a barra inferior mostra a etapa (*Etapa 1 de 2…*, *Conferindo os trechos…*, *Conferindo as propostas…*) e o botão **Cancelar**, que funciona também durante a espera da resposta. Pedir uma análise ou minuta com outro trabalho em andamento põe o pedido na fila (*Na fila: …*; cabe um; **Tirar da fila** desiste), e ele não roda se o documento, o contexto ou as notas mudarem enquanto espera. Falha passageira do servidor é repetida até duas vezes, com espera (*Nova tentativa em N s (2 de 3)*); resposta cortada por tamanho pede uma versão mais curta; o limite de espera de cada chamada (120 s no Ollama, 180 s no ChatGPT) é dito como tal: *A IA demorou mais que o limite de espera*. A minuta continua com uma chamada e a conferência de antes (citação existente, exemplo sem cópia, texto preservado).
+
+**Testar a IA com casos fictícios.** Em **Ajustes ▸ Inteligência artificial**, **Testar a IA** envia à IA configurada os documentos fictícios que acompanham o programa (`src/ai_casos.json`: ofício com prazo, pedido de sala por WhatsApp, e-mail com dois pedidos, documento só para ciência, instrução embutida no documento…) e confere o que ela leu e propôs. Não envia nada do acervo, não salva nada nele e, com provedor externo, pergunta antes (uma vez por sessão e destino). O resultado (conferências que passaram por caso, chamadas, tempo e motivos das falhas) pode ser salvo ou copiado e só traz nomes de casos e contagens. Mede aquele modelo com aquelas instruções, varia entre modelos e não garante o acerto nos seus documentos.
 
 ### 9.5 Modelos de trabalho
 
@@ -874,7 +886,8 @@ Por padrão, nada. O que pode sair, e só por escolha sua:
 
 | O quê | Quando | Para onde |
 |---|---|---|
-| Texto do documento, notas e fontes | A cada clique em **Analisar** ou **Gerar com IA**, nas opções de IA em nuvem ([9.1](#91-onde-a-ia-roda)) | Ollama Cloud, o servidor informado ou a OpenAI |
+| Texto do documento (com número, título, datas e campos descritivos), notas, contexto e fontes; nunca endereços, números internos, cadastro de recursos nem nomes da equipe | A cada clique em **Analisar** ou **Gerar com IA**, nas opções de IA em nuvem, depois da sua confirmação, uma vez por documento ([9.1](#91-onde-a-ia-roda), [9.4](#94-propostas-conferidas-fila-e-envio)) | Ollama Cloud, o servidor informado ou a OpenAI |
+| Documentos fictícios de teste | Ao clicar em **Testar a IA**, com provedor externo, depois da confirmação | Ollama Cloud, o servidor informado ou a OpenAI; nada do acervo |
 | O acervo, cifrado com a sua senha | Na pasta compartilhada, ao sincronizar ([8.2](#82-uma-pessoa-dois-computadores-pasta-compartilhada)) | A pasta que você indicou |
 | A página da ficha ([5.7](#57-imprimir-ou-salvar-a-ficha)) | Ao escolher **Imprimir ou salvar a ficha…** | O arquivo `.html` na pasta que você escolheu, **fora do acervo protegido** |
 | A nota escrita no painel da extensão ([5.4](#54-importar-de-novo-o-mesmo-documento)) | Ao clicar em **Importar para o assistente** | Só ao Ponte deste computador, pela ligação entre o navegador e o programa. Depois é uma nota comum do documento: segue para a equipe ou a pasta compartilhada se você usa uma delas |
@@ -924,7 +937,10 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | *"O nome de modelo “X” não é aceito pelo Ollama"* | Escolha o modelo pela lista, em vez de digitar. |
 | *"O documento, com as notas e as fontes, não coube na janela do modelo"* | Analise sem as fontes extras, use um modelo com janela maior ou escolha outro provedor. |
 | *"O computador não tem memória livre para este modelo"* | Feche outros programas, use um modelo menor ou outro provedor. |
-| *"A IA excedeu o tempo limite de 120 segundos"* | O modelo é lento para este computador. Tente um modelo menor. |
+| *"A IA excedeu o tempo limite de 120 segundos"* / *"A IA demorou mais que o limite de espera (N segundos)"* | O modelo é lento para este computador ou o servidor está sobrecarregado. A análise faz mais de uma chamada. Tente de novo, use um modelo menor ou verifique o servidor de IA. |
+| *"Na fila: …"* depois de clicar em **Analisar** | Não é erro: outro trabalho de IA está em andamento, e o seu começa quando ele terminar. **Tirar da fila**, na barra inferior, desiste. |
+| *"Este documento não está mais no acervo"* | O documento foi apagado de vez ou saiu numa sincronização. A lista foi atualizada. Se disser que está na Lixeira, **Abrir a Lixeira** e restaure-o. |
+| *"O computador principal está numa versão anterior do Ponte, que ainda não guarda as propostas da IA"* | Atualize o Ponte no computador principal e tente de novo. |
 | *"A cota do seu plano ChatGPT para o Ponte acabou por enquanto"* | Veja o saldo em ChatGPT ▸ Configurações ▸ Uso. Use uma redefinição, espere a renovação ou troque de provedor. |
 | *"Entre com a sua conta do ChatGPT em Ajustes ▸ Inteligência artificial"* | A sessão expirou ou foi encerrada. Entre de novo. |
 
@@ -967,7 +983,10 @@ Não. O acervo é cifrado pela conta do Windows de cada máquina, e um banco de 
 Se nada mudou, nada é gravado e a extensão avisa. Se mudou, o Ponte guarda uma nova versão e mantém as anteriores.
 
 **A IA lê meus documentos sem eu pedir?**
-Não. Nada é enviado à IA ao importar. O envio acontece só quando você clica em **Analisar** (ou **Analisar de novo**) ou em **Gerar com IA**, **Completar** ou **Revisar**.
+Não. Nada é enviado à IA ao importar. O envio acontece só quando você clica em **Analisar** (ou **Analisar de novo**) ou em **Gerar com IA**, **Completar** ou **Revisar**, e, com um provedor externo, depois de você confirmar o que sai.
+
+**A IA cria tarefas, atendimentos e reservas sozinha?**
+Não. Ela propõe, o programa confere os trechos, e cada formulário abre preenchido e **não salvo**: nada é criado antes do seu **Salvar**. A IA nunca escolhe o responsável.
 
 **Qual a diferença entre a extensão da loja e a da pasta?**
 São a mesma extensão. A da loja se atualiza sozinha e não exige o modo do desenvolvedor; a da pasta vem junto com o instalador, para quem não tem acesso à loja. Use só uma das duas.
@@ -1022,7 +1041,11 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/intranet.rs` | Modos de rede, sincronização em thread própria, fila offline, mesclagem em três vias; o computador principal atende cada conexão numa thread, com limite por computador |
 | `src/idmap.rs` | Tradução dos números de itens criados sem conexão para os que receberam no acervo da equipe |
 | `src/sharedfolder.rs` | Arquivo de transporte da pasta compartilhada (PBKDF2 + AES-256-GCM) |
-| `src/ai.rs`, `src/chatgpt.rs`, `src/evidence.rs` | Cliente Ollama, login e Responses API da OpenAI, fontes para a IA |
+| `src/ai.rs`, `src/chatgpt.rs` | Cliente Ollama, login e Responses API da OpenAI; execução de uma etapa (formato da resposta, repetição de falhas passageiras, correção por item, orçamento de chamadas, cancelamento); o que é enviado (`capture_for_ai`) |
+| `src/ai_roles.rs` | As duas etapas da análise (Extrator: fatos com trecho literal; Propositor: tarefas, atendimento e reservas que citam fatos) e o programa que as encadeia, sempre conferido contra os fatos |
+| `src/evidence.rs` | Fontes para a IA, conferência literal de trechos e, por fato, de data, hora e quantidade dentro do trecho |
+| `src/ai_eval.rs`, `src/ai_casos.json` | Régua: documentos fictícios com o resultado esperado, rodada nos testes com respostas simuladas e, por **Testar a IA**, ao vivo |
+| `src/app/proposals.rs`, `src/app/queue.rs` | Cartão **Propostas** e janela **Material utilizado** da análise; confirmação de envio, fila de trabalhos de IA e avisos de documento que saiu do acervo |
 | `src/work_context.rs`, `src/draft_tools.rs` | Contexto de trabalho; texto-base e comparação de minutas |
 | `src/work_templates.rs` | Modelos de trabalho: dados e versões, instruções, exemplos, registro de geração, migração dos modelos pessoais antigos |
 | `src/prompting.rs` | Montagem do prompt em camadas, detecção de conflitos e conferências (cópia de exemplo, texto preservado ao completar) |
@@ -1056,6 +1079,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 - **Mutações de equipe** (`IntranetMutation`) são a única forma de alterar o acervo em rede; a fila offline e a pasta compartilhada reaplicam as mesmas mutações.
 - **Modelos de trabalho** usam as tabelas `work_templates`, `work_template_versions`, `instruction_blocks`, `instruction_block_versions`, `template_examples` e `draft_generations`. Os itens são endereçados por `uid` (UUID), não pelo número da linha, o que dispensa tradução de números na sincronização; só o registro de geração, que aponta para documento e captura, passa por `idmap`. A camada confiável do prompt só recebe texto de modelo, instruções e pedido; documentos e exemplos vão como dados.
 - **`SCHEMA_VERSION` 12 (11 na 0.20.0):** o acervo muda de formato. Quem está em equipe atualiza todos os computadores juntos, o principal primeiro.
+- **Formato 16 (arquivo de sincronização 4), na 0.34.0:** a análise passa a guardar `facts` e `proposals`, que uma versão antiga apagaria em silêncio ao regravar. Todos os computadores e o celular (Ponte de bolso 0.7.2) atualizam juntos; um leitor antigo recusa o acervo e o arquivo novos, e um principal antigo recusa a análise com propostas com uma mensagem clara.
 - **Limites:** 500 KiB de texto e 1 MiB por pacote de captura, até 10 PDFs, 8 MiB por PDF e 16 MiB de PDFs por importação, 8 MiB por anexo, 100 MiB por planilha `.xlsx` (256 MiB descompactada).
 - **A extensão só atua em `https://www.sigadoc.mt.gov.br`** e remove segredos de URL. A única exceção é o recurso opcional do WhatsApp Web (`https://web.whatsapp.com`), que fica desligado até a pessoa ligá-lo e só então pede a permissão ao navegador.
 - **Leituras caras ficam em memória até o acervo mudar.** Cada linha é decifrada pela DPAPI, e a interface redesenha várias vezes por segundo. `Store::cached` guarda o resultado de listas como tarefas, documentos e atendimentos e o descarta a cada gravação, desta conexão ou de outra. Uma leitura nova que seja cara e sem efeitos colaterais deve passar por ele.

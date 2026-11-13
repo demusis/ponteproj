@@ -123,7 +123,7 @@ Se o painel não reconhecer a página (*O Ponte não reconheceu esta página do 
 
 ## 5. Tarefas e prazos
 
-- **Começar o dia por Hoje:** a área reúne as **Atrasadas** e as **Para hoje** (com o círculo para concluir e um clique para abrir), os **Próximos dias**, os **Atendimentos com prazo vencido ou para hoje** e os **Documentos recentes**. Ao concluir uma tarefa, o aviso do canto traz **Desfazer** por alguns segundos.
+- **Começar o dia por Hoje:** a área reúne as **Atrasadas** e as **Para hoje** (com o círculo para concluir e um clique para abrir), os **Próximos dias**, os **Atendimentos com prazo vencido ou para hoje**, o card **Recursos em uso e reservados para hoje** (seção 8) e os **Documentos recentes**. Ao concluir uma tarefa, o aviso do canto traz **Desfazer** por alguns segundos.
 - **Calendário de prazos:** em Hoje, os botões **Lista** e **Calendário** trocam a visão. O calendário mostra o mês com as tarefas e os atendimentos que têm prazo: vermelho é atraso, âmbar é para hoje, azul está no prazo, e os atendimentos levam um ícone. As setas trocam de mês e **Hoje** volta ao mês atual. Clique num item para abri-lo; clique em "+N" (ou num dia com itens) para listar os desse dia sob o calendário. Tarefas concluídas e atendimentos encerrados não aparecem.
 - **Criar:** em Resumo ▸ **Nova tarefa**, ou na área **Tarefas**. Informe título, responsável (botão **Eu**), ação, prioridade e prazo.
 - **Tarefa sem documento.** Na área **Tarefas**, **Nova tarefa** (ou **Ctrl+N**) cria uma tarefa que não pertence a nenhum documento; na lista ela aparece como **Sem documento**. Com a lista filtrada por um documento (faixa "Mostrando só as tarefas de…"), a tarefa nova é dele. No painel da tarefa, **Vincular a um documento…** abre uma busca por número, assunto ou texto; depois, **Trocar de documento…** e **Desvincular do documento** mudam ou desfazem o vínculo. A tarefa é a mesma o tempo todo: anexos, lista de providências e histórico ficam com ela.
@@ -140,7 +140,7 @@ Se o painel não reconhecer a página (*O Ponte não reconheceu esta página do 
 
 - **Notas:** escreva e clique em **Salvar notas** (ou Ctrl+S). O ponto laranja na aba indica algo não salvo. Com a janela larga, as notas ficam à esquerda e a minuta à direita; com a janela estreita, a nota mostra as primeiras linhas, com **Editar nota** e **Recolher**. **Editar nota**, no card Nota do Resumo, leva às Notas e minutas com a nota aberta e o cursor nela, pronta para digitar. Notas vindas da extensão (seção 3) aparecem ali, ao fim do texto, com a data.
 - **Minuta** (em Notas e minutas), em três passos. **1. Partir de:** escolha o **Tipo** (*Resposta*, *Encaminhamento*, *Pedido de complementação*) e, se quiser, o **Modelo de trabalho**; **Começar por um modelo** preenche o texto-base, sem IA. **2. Pedir à IA (opcional).** **3. Texto:** escreva ou edite; **Salvar nova versão** guarda o texto (Ctrl+S também, com a nota já salva), **Copiar** copia, **Exportar (RTF)** cria um arquivo para o Word, **Comparar com versão ▾** mostra as diferenças e **Guardar como modelo** leva o texto para a área Modelos. O texto final você cola no SIGADOC.
-- **IA (opcional):** **Analisar** (depois, **Analisar de novo**), no card Análise do Resumo, ou, no passo 2 da minuta, **Gerar com IA**, **Completar** ou **Revisar**, com o que você quer em **Pedido desta minuta**. A sugestão abre para revisão e só é salva quando você salvar.
+- **IA (opcional):** **Analisar** (depois, **Analisar de novo**), no card Análise do Resumo, ou, no passo 2 da minuta, **Gerar com IA**, **Completar** ou **Revisar**, com o que você quer em **Pedido desta minuta**. A análise traz o resumo, a prioridade e as **Propostas** de tarefas, atendimento e reservas (veja **Propostas da IA**, abaixo). A sugestão de minuta abre para revisão e só é salva quando você salvar.
 
 **Ajustes ▸ Inteligência artificial** define onde a IA roda. São quatro cartões, e cada um diz se os textos saem do computador (clique em **Salvar** ou saia da seção):
 
@@ -153,9 +153,46 @@ Se o painel não reconhecer a página (*O Ponte não reconheceu esta página do 
 
 Depois de escolher, clique em **Listar modelos do servidor**, selecione o modelo e salve.
 
-**Atenção com a nuvem:** nas opções em que os dados saem do computador, o texto do documento, as notas e as fontes são enviados a cada clique em Analisar ou Gerar com IA, nunca ao importar. Use só com documentos que podem sair do órgão.
+Na mesma página, o card **Testar a IA com casos fictícios** confere como a IA escolhida se sai (veja **Testar a IA**, abaixo).
 
-Enquanto a IA trabalha, a barra inferior mostra a etapa e o botão **Cancelar**. Documentos longos no Ollama local demoram um pouco mais na primeira vez, porque o Ponte pede ao modelo uma janela maior.
+**Atenção com a nuvem:** nas opções em que os dados saem do computador, o texto do documento, as notas e as fontes são enviados a cada clique em Analisar ou Gerar com IA, nunca ao importar, e o Ponte pergunta antes, uma vez por documento (veja **O que sai do computador**, abaixo). Use só com documentos que podem sair do órgão.
+
+Enquanto a IA trabalha, a barra inferior mostra a etapa e o botão **Cancelar**, que funciona também enquanto o Ponte espera a resposta. Documentos longos no Ollama local demoram um pouco mais na primeira vez, porque o Ponte pede ao modelo uma janela maior.
+
+### Propostas da IA
+
+Ao analisar, a IA lê o documento **em duas etapas**, e a barra inferior diz em qual está (*Etapa 1 de 2: lendo o documento…*, *Etapa 2 de 2: preparando as propostas…*). Na primeira, ela lista o que o documento diz: pedidos, prazos, datas e horas, quantidades, coisas pedidas (uma sala, cadeiras), remetente e assunto, cada item com o trecho do documento que o sustenta. O programa confere esses trechos. Na segunda, a IA propõe tarefas, um atendimento e reservas usando só esses fatos. Por serem duas etapas (e, às vezes, uma terceira chamada para corrigir um item), a análise pode levar mais tempo que antes.
+
+O resultado aparece no card **Análise**, em **Propostas (revise antes de usar)**. Cada proposta vem preenchida, com **Trechos do documento** (clique para ver o que sustenta cada dado) e, nos dados que o programa conseguiu conferir, o selo **conferido no texto**.
+
+- **Tarefa:** título em linguagem clara, **Providência**, **Prioridade** e, quando o documento escreve uma data, o **Prazo** e a **Origem do prazo** (o trecho em que a data está). **Criar tarefa** abre o formulário da tarefa já preenchido; o responsável fica em branco. Um prazo relativo, como *até o fim da próxima semana*, não vira data: aparece como observação (*Prazo citado sem data*), e você preenche o prazo se quiser. Depois que a tarefa é criada, a proposta mostra **Tarefa criada** e **Abrir tarefa**; **Preparar outra** cria mais uma com a mesma proposta.
+- **Atendimento:** se o documento já tem um atendimento (o Ponte cria um ao importar do SIGADOC), a proposta é **Completar o atendimento** e mostra o que mudaria, por exemplo *Prazo: 12/11/2026 → 22/11/2026*. O botão abre o atendimento com essas alterações no formulário. Se não há atendimento (registro manual, e-mail, WhatsApp), a proposta é **Nova entrada**, com assunto, recebido de, prazo e tipo de prazo, prioridade e motivo, e entrega prevista preenchidos. Se o atendimento já tem esses dados, a proposta diz *nada a completar*. A IA não escolhe o responsável.
+- **Reserva:** mostra **O que foi pedido**, **Quantidade**, **Início**, **Fim** e **Finalidade**. O Ponte procura, no seu cadastro de recursos, o recurso de nome parecido e confere o horário, e uma linha diz o resultado: **Livre neste horário**, **Ocupado** (com quem está com o recurso e até quando), **Mais de um recurso combina** (você escolhe no formulário), **Nenhum recurso cadastrado combina** (com **Cadastrar recurso…**), **Quantidade acima do cadastro** ou **Sem horário certo** (o documento não traz data e hora certas). **Reservar** abre a reserva já preenchida e ligada ao documento. Se o documento não diz até que horas, o Ponte propõe 1 hora depois do início, e o formulário avisa *confira o fim*. Depois de reservada, a proposta mostra **Reserva criada** e **Abrir**.
+
+**Nada é criado nem alterado antes do seu Salvar**, em cada formulário. Os formulários abrem com a etiqueta *não salvo*, e sair deles sem salvar pergunta antes. Se o documento, o contexto ou as notas mudaram depois da análise, os botões ficam desligados até você clicar em **Analisar de novo**. Se a IA não encontra nada a propor, o card diz *A IA não propôs nada* e o motivo.
+
+**O que "conferido no texto" quer dizer.** O programa achou aquele trecho, palavra por palavra, no documento, e leu dele a data, a hora ou a quantidade. Isso **não** quer dizer que a proposta está certa: a data conferida pode não ser o prazo que vale, e a IA pode ter entendido mal o pedido. O que não foi conferido fica em branco para você preencher. A revisão é sempre sua.
+
+**Material utilizado.** No rodapé do card Análise, **Material utilizado** mostra qual IA e qual modelo fizeram a análise, quantas chamadas foram necessárias, o que aconteceu em cada etapa (tentativas e itens descartados por não passarem na conferência) e os fatos lidos no documento, cada um com o trecho e o que o programa conferiu.
+
+**Análises antigas.** Uma análise feita antes desta versão continua mostrando as **Providências sugeridas**, como era. **Analisar de novo** a converte em propostas.
+
+**Fila.** Se você pede uma análise ou uma minuta enquanto outro trabalho de IA está em andamento, o Ponte avisa *Na fila: …* e começa quando o atual terminar. Cabe um pedido na fila, e a barra inferior tem **Tirar da fila**. Pedir o mesmo de novo substitui o que esperava; pedir outra coisa diz que já há um trabalho esperando. Se o documento, o contexto ou as notas mudarem enquanto o pedido espera, ele não é feito, e o Ponte avisa para pedir de novo.
+
+**O que sai do computador.** Com **Ollama neste computador**, nada sai. Com qualquer outra opção, antes do primeiro envio de cada documento aparece a pergunta *Enviar este documento a …?*, que diz o que sai, para onde e com qual modelo. **Enviar** segue; **Cancelar** não envia nada. A pergunta aparece uma vez por documento e destino: ela só volta se você trocar o provedor ou o servidor.
+
+- **Sai:** o texto do documento, com número, título, datas e os campos descritivos (tipo, origem, remetente…); os nomes dos arquivos e referências do documento; as notas e o contexto de trabalho salvos; as fontes selecionadas. Na minuta, também o pedido e as instruções do modelo de trabalho. Na segunda etapa da análise, vão só os fatos já conferidos.
+- **Não sai:** endereços (da página do SIGADOC e dos links), números de controle internos do Ponte, o **cadastro de recursos** e os nomes das pessoas da equipe. O casamento do pedido com o seu cadastro de recursos, e a conferência de horário, acontecem no seu computador.
+
+**Erros passageiros.** Se o provedor não responde por um instante (sobrecarga, falha de rede), o Ponte tenta de novo até duas vezes, com uma espera curta, e a barra diz *A IA não respondeu: … Nova tentativa em N s (2 de 3)…*. Se a resposta vier cortada por tamanho, ele pede uma versão mais curta. Quando a IA passa do limite de espera de uma chamada (120 segundos no Ollama e 180 no ChatGPT), a mensagem diz isso mesmo: *A IA demorou mais que o limite de espera*.
+
+### Testar a IA
+
+Em **Ajustes ▸ Inteligência artificial**, o card **Testar a IA com casos fictícios** envia à IA configurada uma série de documentos fictícios, que acompanham o Ponte (um ofício com prazo, um pedido de sala por WhatsApp, um e-mail com dois pedidos, um comunicado só para ciência, um documento sem nada a propor, entre outros), e confere se ela leu e propôs o que se esperava. **Nada do seu acervo, das suas notas nem do cadastro de recursos é enviado, e nada é salvo nele.** Com um provedor externo, o Ponte pergunta antes (*Enviar os casos fictícios a …?*), uma vez por sessão e destino.
+
+Clique em **Testar a IA** (ele fica desligado enquanto outro trabalho roda, se a configuração tem alterações sem salvar ou se não há modelo escolhido); pode levar alguns minutos, e **Cancelar** interrompe. O resultado traz, para cada caso, quantas conferências passaram, quantas chamadas e quantos segundos foram gastos, com o motivo de cada falha, e o total. **Salvar o resultado…** e **Copiar** guardam o texto, que só tem os nomes dos casos e as contagens, sem o conteúdo de documento nenhum.
+
+O resultado mede **este modelo, com estas instruções, nestes casos**. Ele varia de um modelo para outro e pode variar de uma rodada para outra. Serve para comparar modelos e para saber se uma troca piorou algo; não garante que a IA acertará nos seus documentos, que continuam exigindo a sua revisão.
 
 ### Modelos de trabalho
 
@@ -253,7 +290,7 @@ Em **Agora e próximos**, o botão **⋯** (Mais ações) tem **Exportar esta li
 **Onde mais os recursos aparecem.**
 
 - **Ficha do documento, atendimento e tarefa:** mostram os usos ligados a eles, e **Reservar recurso…** abre uma reserva nova já ligada ao item.
-- **Hoje:** as **Reservas de hoje** e as **Devoluções atrasadas** aparecem junto do que pede atenção no dia, e as reservas entram no calendário de prazos.
+- **Hoje:** um card fixo, **Recursos em uso e reservados para hoje**, reúne em uma lista só os recursos que pedem atenção no dia: primeiro as devoluções atrasadas, depois os recursos em uso e, por fim, as reservas de hoje. Clicar numa linha abre o uso. Quando não há nada em uso nem reservado, o card continua na tela e diz *Nenhum recurso em uso nem reservado para hoje*, com o botão **Abrir Recursos**. Ele só some num acervo que ainda não tem nenhum recurso cadastrado. As reservas também entram no calendário de prazos.
 - **Lembrete diário** (seção 5): conta as reservas de hoje e as devoluções atrasadas, só como números e sem alarme na hora da reserva.
 - **Busca em todo o acervo** (Ctrl+K): encontra recursos e usos.
 - **Ficha impressa do documento:** lista os recursos que ele usou.
@@ -269,7 +306,7 @@ As observações não saem. **Exportar esta lista…** (em **⋯**, na aba **Ago
 
 **Em equipe.** Recursos e usos acompanham a equipe ou a pasta compartilhada como o resto do acervo (seção 9). Se duas pessoas reservam o mesmo horário do mesmo recurso, cada uma num computador sem conexão, vale a que chegar primeiro à sincronização. A outra vira um **conflito de edição**, com a explicação de quem ocupou o horário e até quando: para mantê-la, mude o horário ou a quantidade e salve de novo; ou use **Dispensar o aviso**. O mesmo acontece ao **apagar de vez** um uso ou um recurso que outra pessoa alterou nesse meio-tempo: em vez de apagar por cima, o Ponte mostra o conflito para você decidir. Os horários são os do relógio de cada computador: todos devem estar no mesmo fuso. **Esta versão muda o formato do acervo: na equipe e com o celular, atualize todos os aparelhos juntos.**
 
-**No celular.** No Ponte de bolso (0.7.0), **Recursos** é o terceiro item do seletor, ao lado de Tarefas e Atendimentos, só para consulta: **Usos** (nos mesmos grupos de Agora e próximos) e **Recursos** (o cadastro, com a ocupação de hoje). **Hoje** e o aviso diário do celular contam reservas de hoje e devoluções atrasadas. Reservar e registrar devolução pelo celular vêm numa versão futura; por ora, use o Ponte no computador.
+**No celular.** No Ponte de bolso (0.7.2), **Recursos** é o terceiro item do seletor, ao lado de Tarefas e Atendimentos, só para consulta: **Usos** (nos mesmos grupos de Agora e próximos) e **Recursos** (o cadastro, com a ocupação de hoje). **Hoje** e o aviso diário do celular contam reservas de hoje e devoluções atrasadas. Reservar e registrar devolução pelo celular vêm numa versão futura; por ora, use o Ponte no computador.
 
 ## 9. Mais de um computador
 
@@ -286,6 +323,8 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 - Se o mesmo item foi alterado nos dois lados, aparece um **conflito de edição**, no card *Edições em conflito* da mesma seção. Cada conflito diz de que item se trata (por exemplo *Tarefa: Triar documento*) e a que documento ele pertence, mostra os dois valores, campo a campo, e você escolhe **Combinar as duas versões**, **Usar só a minha versão** ou **Usar só a do computador principal** (com a pasta compartilhada, **Usar só a versão da pasta**). Quando as duas alterações são iguais, basta **Encerrar o aviso**. Se o item ou o documento dele está na Lixeira, o conflito avisa e oferece **Abrir a Lixeira**, para restaurar e voltar, ou **Dispensar o aviso**, que descarta a alteração sem mudar nada no acervo. Várias alterações do mesmo item aparecem juntas: a última é a que vale, e **Dispensar as anteriores** encerra as demais de uma vez.
 - Se o principal recusou algo criado sem conexão (uma tarefa de um documento que foi para a lixeira, por exemplo), as alterações seguintes desse item aparecem como aviso (card *Alterações a enviar*), só com **Dispensar o aviso**. Refaça à mão o que ainda for necessário.
 - Se os colegas não conseguirem conectar, peça à TI para liberar a porta 7878 (TCP) no firewall do computador principal. A própria página, no modo principal, traz esse aviso. **Testar conexão**, nos outros computadores, mostra o resultado logo abaixo do botão.
+
+**Atualizar em equipe.** A versão 0.34.0 (as propostas da IA) muda o formato do acervo (16) e o do arquivo de sincronização (4): **atualize todos os computadores e o celular juntos** (Ponte 0.34.0 e Ponte de bolso 0.7.2). Um aparelho que ficar na versão anterior recusa o acervo e o arquivo novos e diz para atualizar; nada se perde. Com um computador principal, atualize primeiro o principal: um principal na versão anterior recusa, com uma mensagem clara, a análise que traz propostas.
 
 **Nunca** instale o Ponte nem copie o acervo para dentro do Google Drive ou do OneDrive: o acervo só abre na conta do Windows que o gravou.
 
@@ -312,6 +351,10 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 | "Atualize o Ponte para guardar conversas do WhatsApp" | O Ponte instalado é anterior à 0.32. Instale a versão mais recente e reinicie o navegador. |
 | O Ponte diz que o recurso já está reservado ou em uso | Não é erro: o horário escolhido está ocupado. A frase diz por quem e até quando. Escolha outro horário, ou outro recurso, ou espere a devolução. Em **Ocupação do dia**, na ficha da reserva, aparecem os horários já tomados. |
 | O Ponte diz que o arquivo ou o acervo é de uma versão mais nova | Outro computador ou o celular já está na versão nova. Instale a versão mais recente do Ponte neste computador (e a do Ponte de bolso, no celular). Nada se perdeu. |
+| "A IA demorou mais que o limite de espera" | O modelo levou mais tempo que o limite de uma chamada (120 segundos no Ollama, 180 no ChatGPT). Tente de novo, use um modelo menor ou verifique o servidor de IA. A análise faz mais de uma chamada, então documentos longos pedem modelos mais rápidos. |
+| Cliquei em **Analisar** e apareceu "Na fila" | Não é erro: outro trabalho de IA está em andamento, e o seu começa quando ele terminar. **Tirar da fila**, na barra inferior, desiste. |
+| "Este documento não está mais no acervo" | O documento foi apagado de vez ou saiu numa sincronização (outro computador o apagou). A lista foi atualizada. Se o aviso for "Este documento está na Lixeira", use **Abrir a Lixeira** e restaure-o. |
+| "O computador principal está numa versão anterior do Ponte, que ainda não guarda as propostas da IA" | Atualize o Ponte no computador principal (seção 9) e tente de novo. Enquanto isso, as análises com propostas não são aceitas por ele. |
 
 A lista completa de mensagens e soluções está na seção "Solução de problemas" de <https://github.com/demusis/ponteproj>. A versão instalada aparece em **Ajustes ▸ Sobre o Ponte**.
 
