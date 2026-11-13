@@ -1398,7 +1398,8 @@ pub fn sample_draft_text() -> String {
          Assunto: Solicitação de apoio logístico para evento\n\n\
          À/Ao [preencher destinatário],\n\n\
          Em atenção ao ORG-OFI-2026/00431, o apoio solicitado será analisado pela Diretoria \
-         e a confirmação dos veículos será enviada ao Protocolo até {}.\n\n\
+         e a confirmação dos veículos será enviada ao Protocolo até {}. \
+         A retenção prevista é de 15% do valor do contrato.\n\n\
          Colocamo-nos à disposição para esclarecimentos.",
         br(SAMPLE_VEHICLES_DAY + 3)
     )
@@ -1742,7 +1743,11 @@ mod tests {
         )
         .unwrap();
         let check = crate::draft_check::check_draft(&input);
-        assert!(check.header && check.cites_number);
+        assert!(check.checked && check.header && check.cites_number);
+        assert!(
+            !check.unparsed_hints.is_empty(),
+            "the percentage is a hint the Ponte does not compare"
+        );
         assert_eq!(check.placeholders.len(), 1, "one [preencher] left");
         assert!(
             check.unsupported.iter().any(|u| u.kind == "data"),

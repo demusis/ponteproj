@@ -138,6 +138,10 @@ pub(super) enum PendingSend {
 /// What does not leave this computer, as the dialog and the hover say it.
 pub(super) const NOT_SENT_LINE: &str = "Endereços da internet e identificadores internos, nomes de arquivo, outros destinatários e cópias de e-mail, quem assinou ou movimentou o documento, o cadastro de recursos, as tarefas, os atendimentos e os nomes da equipe.";
 
+/// What does not leave with a conference of a draft.
+pub(super) const NOT_SENT_CONFERENCE: &str =
+    "O texto do documento, as fontes, os exemplos e o seu contexto.";
+
 /// What a job sends, for the lines of the dialog.
 pub(super) struct SentSummary<'a> {
     pub number: &'a str,
@@ -162,13 +166,21 @@ fn count_of(n: usize, one: &str, many: &str) -> String {
 /// The lines under "O que sai deste computador".
 pub(super) fn sent_lines(sent: &SentSummary) -> Vec<String> {
     if sent.conference {
-        return vec![
+        let mut lines = vec![
+            "• O texto da minuta (sem as bases para revisão).".to_owned(),
+            "• Os critérios do modelo de trabalho.".to_owned(),
             format!(
-                "• O texto da minuta, que leva trechos do documento {}.",
+                "• O número, o título e o tipo do documento {}.",
                 sent.number
             ),
-            "• Os critérios do modelo de trabalho.".to_owned(),
         ];
+        if !sent.others.is_empty() {
+            lines.push("• Também podem sair trechos de:".to_owned());
+            for number in &sent.others {
+                lines.push(format!("      {number}"));
+            }
+        }
+        return lines;
     }
     let mut lines = vec![
         format!(
@@ -302,7 +314,9 @@ impl PonteApp {
             return SendPlan::Go;
         }
         let id = detail.summary.id;
-        // The conference sends the draft only: no source is chosen for it.
+        // The conference sends the draft only: no source is chosen for it,
+        // but the draft may quote the sources it recorded, which may belong to
+        // other documents.
         let sources = if matches!(what, PendingSend::Conference(_)) {
             Vec::new()
         } else {
@@ -314,7 +328,12 @@ impl PonteApp {
                 }
             }
         };
-        let source_documents: Vec<i64> = sources.iter().map(|s| s.document_id).collect();
+        let source_documents: Vec<i64> = match what {
+            PendingSend::Conference(slot) => {
+                crate::ai::conference_documents(&self.slot_materials(slot), id)
+            }
+            _ => sources.iter().map(|s| s.document_id).collect(),
+        };
         let ids = consent_scope(id, &source_documents);
         let (_, destination) = self.ai_destination_text();
         let missing = self.store.ai_consents_missing(&ids, &destination);
@@ -428,7 +447,14 @@ impl PonteApp {
                         }
                         ui.add_space(theme::S1);
                         widgets::field_label(ui, "O que não sai");
-                        ui.add(egui::Label::new(NOT_SENT_LINE).wrap());
+                        ui.add(
+                            egui::Label::new(if matches!(what, PendingSend::Conference(_)) {
+                                NOT_SENT_CONFERENCE
+                            } else {
+                                NOT_SENT_LINE
+                            })
+                            .wrap(),
+                        );
                     }
                 }
                 ui.add_space(theme::S1);
@@ -676,6 +702,61 @@ mod tests {
         assert!(consent_holds(&store, &scope, destination));
         // Another destination is another question.
         assert!(!consent_holds(&store, &scope, "https://api.openai.com"));
+    }
+
+    #[test]
+    fn a_conference_covers_the_documents_the_draft_quotes() {
+        let (_dir, mut store, ids) = seeded();
+        let destination = "https://ollama.com";
+        let source = |document_id: i64| crate::evidence::Source {
+            id: format!("C{document_id}"),
+            document_id,
+            capture_id: 1,
+            label: "fonte".into(),
+            file_id: None,
+            page: None,
+            method: "captura".into(),
+            text: "texto".into(),
+        };
+        // The draft recorded a source of another document.
+        let materials = vec![source(ids[1])];
+        let documents = crate::ai::conference_documents(&materials, ids[0]);
+        let scope = consent_scope(ids[0], &documents);
+        assert_eq!(scope, [ids[0], ids[1]]);
+        store.record_ai_consents(&[ids[0]], destination).unwrap();
+        assert_eq!(
+            store.ai_consents_missing(&scope, destination),
+            [ids[1]],
+            "the main document alone is not enough"
+        );
+        store.record_ai_consents(&scope, destination).unwrap();
+        assert!(consent_holds(&store, &scope, destination));
+        // A draft that quotes nothing of another document needs only its own.
+        let alone = consent_scope(ids[0], &crate::ai::conference_documents(&[], ids[0]));
+        assert_eq!(alone, [ids[0]]);
+    }
+
+    #[test]
+    fn the_conference_dialog_says_everything_that_leaves() {
+        let lines = sent_lines(&SentSummary {
+            number: "ORG-OFI-2026/00431",
+            others: vec!["ORG-MEM-2026/01207"],
+            sources: 0,
+            examples: 0,
+            example_files: 0,
+            draft: false,
+            conference: true,
+        })
+        .join("\n");
+        assert!(lines.contains("O texto da minuta (sem as bases para revisão)."));
+        assert!(lines.contains("Os critérios do modelo de trabalho."));
+        assert!(lines.contains("O número, o título e o tipo do documento ORG-OFI-2026/00431."));
+        assert!(lines.contains("Também podem sair trechos de:"));
+        assert!(lines.contains("ORG-MEM-2026/01207"));
+        assert_eq!(
+            NOT_SENT_CONFERENCE,
+            "O texto do documento, as fontes, os exemplos e o seu contexto."
+        );
     }
 
     #[test]

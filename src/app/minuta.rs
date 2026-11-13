@@ -344,43 +344,72 @@ impl PonteApp {
                         widgets::small_muted(ui, editor.origin.as_str());
                     });
                 }
-                // The conference of a saved draft: collapsed, recomputed only
-                // when the text changes.
+                // The conference of a saved draft: collapsed; nothing is
+                // computed until it is opened, and then the check runs again
+                // once the text has rested.
                 let mut confer = false;
                 if !detail.drafts.is_empty() && !self.editors[&id].body.trim().is_empty() {
-                    {
+                    let ctx = ui.ctx().clone();
+                    let panel_id = ui.make_persistent_id(("draft-conference", id));
+                    #[allow(unused_mut)]
+                    let mut state =
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            &ctx, panel_id, false,
+                        );
+                    // Development only: the pictures show it open.
+                    #[cfg(feature = "shots")]
+                    if self.shots_conference_open {
+                        state.set_open(true);
+                    }
+                    let visible = state.is_open();
+                    if visible {
                         let editor = &self.editors[&id];
-                        super::conference::refresh_review(
+                        let generated_on = detail
+                            .drafts
+                            .iter()
+                            .find(|draft| draft.body == editor.saved_body)
+                            .and_then(|draft| {
+                                crate::draft_check::date_of_timestamp(&draft.created_at)
+                            });
+                        let wait = super::conference::refresh_review(
                             &mut self.review_editor,
                             &self.store,
-                            id,
-                            &editor.body,
-                            crate::work_templates::Intent::New,
-                            None,
-                            editor.provenance.as_ref(),
-                            &editor.materials,
+                            &super::conference::ReviewArgs {
+                                document_id: id,
+                                text: &editor.body,
+                                intent: crate::work_templates::Intent::New,
+                                previous_text: None,
+                                provenance: editor.provenance.as_ref(),
+                                sources: &editor.materials,
+                                generated_on,
+                            },
+                            true,
+                            true,
+                            ctx.input(|input| input.time),
                         );
+                        if let Some(seconds) = wait {
+                            ctx.request_repaint_after(std::time::Duration::from_secs_f64(seconds));
+                        }
                     }
                     let busy = self.conference_busy();
-                    if let Some(review) = &self.review_editor {
-                        let (summary, _) = super::conference::check_summary(&review.check);
-                        let header = egui::CollapsingHeader::new(format!(
-                            "{} — {summary}",
-                            super::conference::TITLE
-                        ))
-                        .id_salt(("draft-conference", id))
-                        .default_open(false);
-                        // Development only: the pictures show it open.
-                        #[cfg(feature = "shots")]
-                        let header = if self.shots_conference_open {
-                            header.open(Some(true))
-                        } else {
-                            header
-                        };
-                        header.show(ui, |ui| {
-                            confer = super::conference::draw_panel(ui, review, None, busy).confer;
+                    let summary = match (&self.review_editor, visible) {
+                        (Some(review), _) if review.document_id == id => {
+                            super::conference::check_summary(&review.check).0
+                        }
+                        _ => super::conference::CLOSED_SUMMARY.to_owned(),
+                    };
+                    state
+                        .show_header(ui, |ui| {
+                            ui.label(format!("{} — {summary}", super::conference::TITLE));
+                        })
+                        .body(|ui| {
+                            if let Some(review) =
+                                self.review_editor.as_ref().filter(|r| r.document_id == id)
+                            {
+                                confer =
+                                    super::conference::draw_panel(ui, review, None, busy).confer;
+                            }
                         });
-                    }
                 }
                 if confer {
                     let ctx = ui.ctx().clone();
@@ -534,15 +563,24 @@ impl PonteApp {
         let mut confer = false;
         let previous = (suggestion.intent != crate::work_templates::Intent::New)
             .then_some(suggestion.previous_text.as_str());
+        // Just generated: the date of the letter is today's.
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let now = ctx.input(|input| input.time);
         super::conference::refresh_review(
             &mut self.review_suggestion,
             &self.store,
-            suggestion.document_id,
-            &suggestion.body,
-            suggestion.intent,
-            previous,
-            suggestion.provenance.as_ref(),
-            &suggestion.materials,
+            &super::conference::ReviewArgs {
+                document_id: suggestion.document_id,
+                text: &suggestion.body,
+                intent: suggestion.intent,
+                previous_text: previous,
+                provenance: suggestion.provenance.as_ref(),
+                sources: &suggestion.materials,
+                generated_on: Some(today),
+            },
+            true,
+            false,
+            now,
         );
         let busy = self.conference_busy();
         let review = &self.review_suggestion;
@@ -660,46 +698,67 @@ impl PonteApp {
         let Some((document_id, uid)) = self.material.clone() else {
             return;
         };
-        let record = match self.store.generation_by_uid(document_id, &uid) {
-            Ok(Some(record)) => record,
-            Ok(None) => {
-                self.material = None;
-                self.error("O registro desta geração não está neste acervo.");
-                return;
-            }
-            Err(error) => {
-                self.material = None;
-                self.error(format!("Não foi possível ler o registro: {error}"));
-                return;
-            }
-        };
-        // The conference of the exact text of the version saved from it.
-        let conference = record
-            .draft_id
-            .and_then(|draft_id| {
-                self.detail
-                    .as_ref()
-                    .filter(|d| d.summary.id == document_id)
-                    .and_then(|d| d.drafts.iter().find(|draft| draft.id == draft_id))
-            })
-            .and_then(|draft| {
-                // The criteria of the template version the generation used.
-                let criteria = record
-                    .template_uid
-                    .as_deref()
-                    .and_then(|uid| self.store.template_by_uid(uid).ok().flatten())
-                    .and_then(|template| {
-                        record
-                            .template_version
-                            .and_then(|v| template.version(v).map(|v| v.criteria.clone()))
-                    })
-                    .unwrap_or_default();
-                self.store.draft_conference(
-                    document_id,
-                    &crate::ai::conference_text_sha256(&draft.body),
-                    &criteria,
-                )
+        // The record and the conference are read once per opened window (the
+        // record is unsealed from the library: never per frame).
+        let cached = self
+            .material_cache
+            .as_ref()
+            .is_some_and(|c| c.document_id == document_id && c.uid == uid);
+        if !cached {
+            let record = match self.store.generation_by_uid(document_id, &uid) {
+                Ok(Some(record)) => record,
+                Ok(None) => {
+                    self.material = None;
+                    self.error("O registro desta geração não está neste acervo.");
+                    return;
+                }
+                Err(error) => {
+                    self.material = None;
+                    self.error(format!("Não foi possível ler o registro: {error}"));
+                    return;
+                }
+            };
+            // The conference of the exact text of the version saved from it.
+            let conference = record
+                .draft_id
+                .and_then(|draft_id| {
+                    self.detail
+                        .as_ref()
+                        .filter(|d| d.summary.id == document_id)
+                        .and_then(|d| d.drafts.iter().find(|draft| draft.id == draft_id))
+                })
+                .and_then(|draft| {
+                    // The criteria of the template version the generation used.
+                    let criteria = record
+                        .template_uid
+                        .as_deref()
+                        .and_then(|uid| self.store.template_by_uid(uid).ok().flatten())
+                        .and_then(|template| {
+                            record
+                                .template_version
+                                .and_then(|v| template.version(v).map(|v| v.criteria.clone()))
+                        })
+                        .unwrap_or_default();
+                    self.store.draft_conference(
+                        document_id,
+                        &crate::ai::conference_text_sha256(&draft.body),
+                        &criteria,
+                    )
+                });
+            self.material_cache = Some(super::MaterialCache {
+                document_id,
+                uid: uid.clone(),
+                record,
+                conference,
             });
+        }
+        let Some((record, conference)) = self
+            .material_cache
+            .as_ref()
+            .map(|c| (c.record.clone(), c.conference.clone()))
+        else {
+            return;
+        };
         let mut open = true;
         egui::Window::new("Material utilizado na geração")
             .open(&mut open)
@@ -824,6 +883,7 @@ impl PonteApp {
             });
         if !open {
             self.material = None;
+            self.material_cache = None;
         }
     }
 }

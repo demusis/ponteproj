@@ -43,6 +43,8 @@ impl PonteApp {
         "minuta-salva-fechada",
         "minuta-salva-aberta",
         "minuta-mudou",
+        "minuta-nao-conferiu",
+        "envio-confirmacao-conferencia",
         "fontes-anexos",
         "fila-trabalhos",
         "analise-material",
@@ -456,12 +458,18 @@ impl PonteApp {
                             super::conference::refresh_review(
                                 &mut self.review_editor,
                                 &self.store,
-                                id,
-                                &editor.body,
-                                crate::work_templates::Intent::New,
-                                None,
-                                editor.provenance.as_ref(),
-                                &editor.materials,
+                                &super::conference::ReviewArgs {
+                                    document_id: id,
+                                    text: &editor.body,
+                                    intent: crate::work_templates::Intent::New,
+                                    previous_text: None,
+                                    provenance: editor.provenance.as_ref(),
+                                    sources: &editor.materials,
+                                    generated_on: None,
+                                },
+                                true,
+                                false,
+                                0.0,
                             );
                         }
                         if let Some(editor) = self.editors.get_mut(&id) {
@@ -478,6 +486,70 @@ impl PonteApp {
                 } else {
                     520.0
                 };
+            }
+            "minuta-nao-conferiu" => {
+                // The input of the check could not be built: the panel says
+                // so instead of showing an empty, all-green result.
+                if let Some(id) = document {
+                    self.select(id);
+                    let draft = self.detail.as_ref().and_then(|d| d.drafts.first().cloned());
+                    if let (Some(editor), Some(draft)) = (self.editors.get_mut(&id), draft) {
+                        editor.body = draft.body.clone();
+                        editor.saved_body = draft.body.clone();
+                        editor.kind = draft.kind.clone();
+                        editor.saved_kind = draft.kind.clone();
+                        editor.capture_id = draft.capture_id;
+                        editor.saved_capture_id = draft.capture_id;
+                        editor.provenance = draft.provenance.clone();
+                        editor.origin = format!("Versão salva #{}", draft.id);
+                    }
+                    if let Some(editor) = self.editors.get(&id) {
+                        super::conference::refresh_review(
+                            &mut self.review_editor,
+                            &self.store,
+                            &super::conference::ReviewArgs {
+                                document_id: id,
+                                text: &editor.body,
+                                intent: crate::work_templates::Intent::New,
+                                previous_text: None,
+                                provenance: editor.provenance.as_ref(),
+                                sources: &editor.materials,
+                                generated_on: None,
+                            },
+                            true,
+                            false,
+                            0.0,
+                        );
+                    }
+                    if let Some(review) = self.review_editor.as_mut() {
+                        review.check = crate::draft_check::DraftCheck::default();
+                    }
+                }
+                self.tab = Tab::Notes;
+                self.shots_conference_open = true;
+                self.shots_ficha_scroll = 520.0;
+            }
+            "envio-confirmacao-conferencia" => {
+                if let Some(id) = document {
+                    self.select(id);
+                }
+                self.tab = Tab::Notes;
+                self.send_confirm = Some(super::queue::SendConfirm {
+                    what: super::queue::PendingSend::Conference(
+                        super::queue::DraftSlot::Suggestion,
+                    ),
+                    document_id: document.unwrap_or_default(),
+                    number: "ORG-OFI-2026/00431".to_owned(),
+                    ids: vec![document.unwrap_or_default(), 0],
+                    others: vec![(0, "ORG-MEM-2026/01207".to_owned())],
+                    provider: "Ollama Cloud".to_owned(),
+                    destination: "https://ollama.com".to_owned(),
+                    model: "gpt-oss:120b".to_owned(),
+                    sources: 0,
+                    examples: 0,
+                    example_files: 0,
+                    cloud_on_local: false,
+                });
             }
             "fontes-anexos" => {
                 if let Some(id) = document {

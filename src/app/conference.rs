@@ -21,24 +21,109 @@ pub(super) const AUTOMATIC_TITLE: &str = "Conferido pelo Ponte";
 pub(super) const OPINION_TITLE: &str = "Critérios do modelo de trabalho (opinião da IA)";
 pub(super) const UNSUPPORTED_NOTE: &str = "O Ponte não achou este dado no documento, no contexto, nas fontes nem no texto anterior. Confira antes de usar.";
 pub(super) const UNSUPPORTED_NONE: &str =
-    "Todas as datas, horas, números e valores da minuta constam nas fontes.";
+    "Nenhum dado reconhecido ficou sem correspondência nas fontes.";
+pub(super) const UNSUPPORTED_SCOPE: &str = "O Ponte compara datas, horas, números de documento ou processo e valores em R$. Outros dados não são comparados.";
+pub(super) const NOT_CHECKED: &str = "O Ponte não conseguiu conferir esta minuta agora.";
+pub(super) const HINTS_TITLE: &str = "Não conferido pelo Ponte";
+pub(super) const HINTS_NOTE: &str =
+    "O Ponte reconheceu estes dados, mas não sabe compará-los. Confira você.";
+pub(super) const PREVIOUS: &str = "Conferência anterior (de outro texto)";
+pub(super) const CLOSED_SUMMARY: &str = "abrir para conferir";
+/// How long the text must rest before the check runs again.
+pub(super) const DEBOUNCE: f64 = 0.4;
 pub(super) const CHANGED: &str = "A minuta mudou depois da conferência.";
 pub(super) const NO_TEMPLATE: &str = "Sem modelo de trabalho: só a conferência automática.";
 pub(super) const QUOTE_PILL: &str = "trecho encontrado na minuta";
 
-/// What the panel knows about one draft text.
+/// What the panel knows about one draft: the input of the check is built once
+/// (it reads the library), and only the pure check runs again when the text
+/// has rested.
 pub(super) struct DraftReview {
     pub document_id: i64,
-    /// The text the check ran on.
-    pub text: String,
     /// The template version the draft was made with (uid, version).
     pub template_key: Option<(String, u32)>,
     pub template_name: String,
     pub criteria: Vec<String>,
+    materials_key: Vec<String>,
+    input: Option<DraftCheckInput>,
+    /// The text the check ran on, and its hash.
+    pub text: String,
+    pub text_sha: String,
+    /// The text last seen in the editor and when it changed (frame time).
+    seen_text: String,
+    changed_at: f64,
+    /// The editor text is not the one the check ran on yet.
+    pub pending: bool,
     pub check: DraftCheck,
     /// The conference of this text, or the last one known for the document
     /// (then it is shown as outdated).
     pub conference: Option<DraftConference>,
+}
+
+/// What the panel is asked to show.
+pub(super) struct ReviewArgs<'a> {
+    pub document_id: i64,
+    pub text: &'a str,
+    pub intent: Intent,
+    pub previous_text: Option<&'a str>,
+    pub provenance: Option<&'a DraftProvenance>,
+    pub sources: &'a [crate::evidence::Source],
+    /// `AAAA-MM-DD` of the day the draft was generated, when known.
+    pub generated_on: Option<String>,
+}
+
+/// What to do with the check of a draft this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ReviewStep {
+    /// Nothing: collapsed, or the check already ran on this text.
+    Skip,
+    /// Build the input again and check (first time, or another document,
+    /// template or set of sources).
+    Rebuild,
+    /// Check the new text now.
+    Check,
+    /// Check after this many seconds (the person is still typing).
+    Wait(f64),
+}
+
+/// The decision of the debounce, pure: nothing runs while the panel is
+/// collapsed; a text that changed is checked once it has rested.
+pub(super) fn review_step(
+    visible: bool,
+    same_key: bool,
+    text_same: bool,
+    debounce: bool,
+    since_change: f64,
+) -> ReviewStep {
+    if !visible {
+        return ReviewStep::Skip;
+    }
+    if !same_key {
+        return ReviewStep::Rebuild;
+    }
+    if text_same {
+        return ReviewStep::Skip;
+    }
+    if !debounce || since_change >= DEBOUNCE {
+        ReviewStep::Check
+    } else {
+        ReviewStep::Wait(DEBOUNCE - since_change)
+    }
+}
+
+/// How the verdicts of a conference are shown given the state: only the
+/// conference of the current text keeps its colours and its found-pill.
+pub(super) fn verdict_tone_for(state: ConferenceState, verdict: &str) -> Tone {
+    if state == ConferenceState::Current {
+        verdict_label(verdict).1
+    } else {
+        Tone::Neutral
+    }
+}
+
+/// Whether the pill "trecho encontrado na minuta" may show.
+pub(super) fn shows_found_pill(state: ConferenceState, quote_found: bool) -> bool {
+    state == ConferenceState::Current && quote_found
 }
 
 /// The conference of the criteria against the current text.
@@ -120,8 +205,13 @@ pub(super) fn counts_text(conference: &DraftConference) -> String {
 }
 
 /// The one line on top of the automatic part: how many points the person
-/// should look at, never a word like "aprovada".
+/// should look at, never a word like "aprovada". A check that did not run
+/// says so; what the Ponte recognises but cannot compare keeps the line from
+/// being the plain green one.
 pub(super) fn check_summary(check: &DraftCheck) -> (String, Tone) {
+    if !check.checked {
+        return (NOT_CHECKED.to_owned(), Tone::Neutral);
+    }
     let points = usize::from(!check.header)
         + usize::from(!check.cites_number)
         + check.placeholders.len()
@@ -132,13 +222,22 @@ pub(super) fn check_summary(check: &DraftCheck) -> (String, Tone) {
             .count()
         + check.unsupported.len()
         + check.notes.len();
-    match points {
-        0 => (
+    let hints = check.unparsed_hints.len();
+    match (points, hints) {
+        (0, 0) => (
             "Nada a apontar na conferência automática".to_owned(),
             Tone::Ok,
         ),
-        1 => ("1 ponto para conferir".to_owned(), Tone::Warn),
-        n => (format!("{n} pontos para conferir"), Tone::Warn),
+        (0, 1) => (
+            "Nada a apontar no que o Ponte confere; há 1 dado que ele não compara".to_owned(),
+            Tone::Neutral,
+        ),
+        (0, n) => (
+            format!("Nada a apontar no que o Ponte confere; há {n} dados que ele não compara"),
+            Tone::Neutral,
+        ),
+        (1, _) => ("1 ponto para conferir".to_owned(), Tone::Warn),
+        (n, _) => (format!("{n} pontos para conferir"), Tone::Warn),
     }
 }
 
@@ -153,77 +252,129 @@ fn unsupported_kind(kind: &str) -> &str {
     }
 }
 
-/// Brings `slot` up to date with `text`: the check runs again only when the
-/// text, the document or the template changed (never per frame). A conference
-/// of the same text is read from the library; otherwise the last one known
-/// for the document stays, marked as outdated by [`conference_state`].
-#[allow(clippy::too_many_arguments)]
+/// Brings `slot` up to date with the text of the draft. The input of the
+/// check (it reads and decrypts the library) is built once per draft,
+/// template version and set of sources; afterwards only the pure check runs
+/// again, once the text has rested (`debounce`), and nothing runs while the
+/// panel is not `visible`. Returns the seconds after which to look again when
+/// the person is still typing. A conference of the same text is read from the
+/// library; otherwise the last one known for the document stays, marked as
+/// outdated.
 pub(super) fn refresh_review(
     slot: &mut Option<DraftReview>,
     store: &crate::storage::Store,
-    document_id: i64,
-    text: &str,
-    intent: Intent,
-    previous_text: Option<&str>,
-    provenance: Option<&DraftProvenance>,
-    sources: &[crate::evidence::Source],
-) {
-    let template_key = provenance.and_then(|p| p.template_uid.clone().zip(p.template_version));
-    if let Some(current) = slot {
-        if current.document_id == document_id
-            && current.text == text
-            && current.template_key == template_key
-        {
-            return;
+    args: &ReviewArgs,
+    visible: bool,
+    debounce: bool,
+    now: f64,
+) -> Option<f64> {
+    let template_key = args
+        .provenance
+        .and_then(|p| p.template_uid.clone().zip(p.template_version));
+    let materials_key: Vec<String> = args.sources.iter().map(|s| s.id.clone()).collect();
+    let same_key = slot.as_ref().is_some_and(|r| {
+        r.document_id == args.document_id
+            && r.template_key == template_key
+            && r.materials_key == materials_key
+    });
+    if !visible {
+        if !same_key {
+            *slot = None;
+        }
+        return None;
+    }
+    let text_same = slot.as_ref().is_some_and(|r| r.text == args.text);
+    if same_key {
+        if let Some(review) = slot.as_mut() {
+            if review.seen_text != args.text {
+                args.text.clone_into(&mut review.seen_text);
+                review.changed_at = now;
+            }
+            review.pending = !text_same;
         }
     }
-    let template = template_key.as_ref().and_then(|(uid, version)| {
-        store
-            .template_by_uid(uid)
-            .ok()
-            .flatten()
-            .and_then(|found| found.version(*version).cloned().map(|v| (found.name, v)))
-    });
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let extra: Vec<String> = provenance
-        .map(|p| vec![p.request_guidance.clone()])
-        .unwrap_or_default();
-    let version = template.as_ref().map(|(_, v)| v);
-    let check = match DraftCheckInput::for_draft(
-        store,
-        document_id,
-        text,
-        intent,
-        previous_text,
-        version,
-        sources,
-        &extra,
-        &today,
-        None,
-    ) {
-        Ok(input) => check_draft(&input),
-        Err(_) => DraftCheck::default(),
-    };
-    let older = slot
-        .take()
-        .filter(|old| old.document_id == document_id)
-        .and_then(|old| old.conference);
-    let criteria: Vec<String> = version.map(|v| v.criteria.clone()).unwrap_or_default();
-    let conference = store
-        .draft_conference(document_id, &conference_text_sha256(text), &criteria)
-        .or(older);
-    *slot = Some(DraftReview {
-        document_id,
-        text: text.to_owned(),
-        template_key,
-        template_name: template
-            .as_ref()
-            .map(|(name, _)| name.clone())
-            .unwrap_or_default(),
-        criteria,
-        check,
-        conference,
-    });
+    let since = slot.as_ref().map_or(0.0, |r| now - r.changed_at);
+    let mut step = review_step(visible, same_key, text_same, debounce, since);
+    if step == ReviewStep::Check && slot.as_ref().is_some_and(|r| r.input.is_none()) {
+        step = ReviewStep::Rebuild;
+    }
+    match step {
+        ReviewStep::Skip => None,
+        ReviewStep::Wait(left) => Some(left),
+        ReviewStep::Check => {
+            if let Some(review) = slot.as_mut() {
+                if let Some(input) = review.input.as_mut() {
+                    args.text.clone_into(&mut input.draft_text);
+                    review.check = check_draft(input);
+                }
+                args.text.clone_into(&mut review.text);
+                review.text_sha = conference_text_sha256(args.text);
+                review.pending = false;
+                let older = review.conference.take();
+                review.conference = store
+                    .draft_conference(args.document_id, &review.text_sha, &review.criteria)
+                    .or(older);
+            }
+            None
+        }
+        ReviewStep::Rebuild => {
+            let template = template_key.as_ref().and_then(|(uid, version)| {
+                store
+                    .template_by_uid(uid)
+                    .ok()
+                    .flatten()
+                    .and_then(|found| found.version(*version).cloned().map(|v| (found.name, v)))
+            });
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let extra: Vec<String> = args
+                .provenance
+                .map(|p| vec![p.request_guidance.clone()])
+                .unwrap_or_default();
+            let version = template.as_ref().map(|(_, v)| v);
+            let input = DraftCheckInput::for_draft(
+                store,
+                args.document_id,
+                args.text,
+                args.intent,
+                args.previous_text,
+                version,
+                args.sources,
+                &extra,
+                &today,
+                args.generated_on.as_deref(),
+            )
+            .ok();
+            let check = input.as_ref().map(check_draft).unwrap_or_default();
+            let older = slot
+                .take()
+                .filter(|old| old.document_id == args.document_id)
+                .and_then(|old| old.conference);
+            let criteria: Vec<String> = version.map(|v| v.criteria.clone()).unwrap_or_default();
+            let text_sha = conference_text_sha256(args.text);
+            let conference = store
+                .draft_conference(args.document_id, &text_sha, &criteria)
+                .or(older);
+            *slot = Some(DraftReview {
+                document_id: args.document_id,
+                template_key,
+                template_name: template
+                    .as_ref()
+                    .map(|(name, _)| name.clone())
+                    .unwrap_or_default(),
+                criteria,
+                materials_key,
+                input,
+                text: args.text.to_owned(),
+                text_sha,
+                seen_text: args.text.to_owned(),
+                changed_at: now,
+                pending: false,
+                check,
+                conference,
+            });
+            None
+        }
+    }
 }
 
 fn bullet(ui: &mut egui::Ui, text: &str) {
@@ -245,29 +396,8 @@ fn status_row(ui: &mut egui::Ui, label: &str, text: &str, tone: Tone) {
     });
 }
 
-/// What the panel asked.
-pub(super) struct PanelAnswer {
-    /// "Conferir a minuta" was pressed.
-    pub confer: bool,
-}
-
-/// Draws the panel for `review`. `skipped` is the sentence the generation
-/// left when it did not make the conference; `busy` says the conference is
-/// running or waiting.
-pub(super) fn draw_panel(
-    ui: &mut egui::Ui,
-    review: &DraftReview,
-    skipped: Option<&str>,
-    busy: bool,
-) -> PanelAnswer {
-    let mut answer = PanelAnswer { confer: false };
-    ui.spacing_mut().item_spacing.y = S2;
-    let check = &review.check;
-    let (summary, tone) = check_summary(check);
-    ui.horizontal_wrapped(|ui| {
-        widgets::section(ui, AUTOMATIC_TITLE);
-        pill(ui, summary, tone);
-    });
+/// The rows of the automatic part (only when the check ran).
+fn automatic_rows(ui: &mut egui::Ui, check: &DraftCheck) {
     widgets::card(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 3.0;
         status_row(
@@ -331,6 +461,7 @@ pub(super) fn draw_panel(
         widgets::field_label(ui, "Dados que não constam nas fontes");
         if check.unsupported.is_empty() {
             bullet(ui, UNSUPPORTED_NONE);
+            bullet(ui, UNSUPPORTED_SCOPE);
         } else {
             for item in &check.unsupported {
                 ui.add(
@@ -345,10 +476,51 @@ pub(super) fn draw_panel(
             }
             bullet(ui, UNSUPPORTED_NOTE);
         }
+        if !check.unparsed_hints.is_empty() {
+            ui.add_space(S1);
+            widgets::field_label(ui, HINTS_TITLE);
+            for hint in &check.unparsed_hints {
+                bullet(ui, &format!("• “…{}…”", hint.trim()));
+            }
+            bullet(ui, HINTS_NOTE);
+        }
         for note in &check.notes {
             bullet(ui, note);
         }
     });
+}
+
+/// What the panel asked.
+pub(super) struct PanelAnswer {
+    /// "Conferir a minuta" was pressed.
+    pub confer: bool,
+}
+
+/// Draws the panel for `review`. `skipped` is the sentence the generation
+/// left when it did not make the conference; `busy` says the conference is
+/// running or waiting.
+pub(super) fn draw_panel(
+    ui: &mut egui::Ui,
+    review: &DraftReview,
+    skipped: Option<&str>,
+    busy: bool,
+) -> PanelAnswer {
+    let mut answer = PanelAnswer { confer: false };
+    ui.spacing_mut().item_spacing.y = S2;
+    let check = &review.check;
+    let (summary, tone) = check_summary(check);
+    ui.horizontal_wrapped(|ui| {
+        widgets::section(ui, AUTOMATIC_TITLE);
+        // A check that did not run says so once, below.
+        if check.checked {
+            pill(ui, summary, tone);
+        }
+    });
+    if !check.checked {
+        super::notice_line(ui, Tone::Neutral, NOT_CHECKED);
+    } else {
+        automatic_rows(ui, check);
+    }
 
     // The opinion of the AI, only when the template has criteria.
     if review.template_key.is_none() {
@@ -363,10 +535,20 @@ pub(super) fn draw_panel(
     if !review.template_name.is_empty() {
         widgets::small_muted(ui, format!("Modelo de trabalho: {}", review.template_name));
     }
-    let state = conference_state(
-        &conference_text_sha256(&review.text),
-        review.conference.as_ref(),
-    );
+    // While the text has not rested yet, any conference is of another text.
+    let state = if review.pending {
+        if review.conference.is_some() {
+            ConferenceState::Changed
+        } else {
+            ConferenceState::None
+        }
+    } else {
+        conference_state(&review.text_sha, review.conference.as_ref())
+    };
+    if state == ConferenceState::Changed {
+        super::notice_line(ui, Tone::Warn, CHANGED);
+        widgets::small_muted(ui, PREVIOUS);
+    }
     if let Some(conference) = &review.conference {
         widgets::small_muted(
             ui,
@@ -376,9 +558,6 @@ pub(super) fn draw_panel(
                 display_date(&conference.at)
             ),
         );
-    }
-    if state == ConferenceState::Changed {
-        super::notice_line(ui, Tone::Warn, CHANGED);
     }
     if let Some(sentence) = skipped.filter(|_| state != ConferenceState::Current) {
         widgets::small_muted(ui, sentence);
@@ -391,7 +570,8 @@ pub(super) fn draw_panel(
                     if index > 0 {
                         ui.separator();
                     }
-                    let (label, tone) = verdict_label(&result.verdict);
+                    let label = verdict_label(&result.verdict).0;
+                    let tone = verdict_tone_for(state, &result.verdict);
                     ui.horizontal_wrapped(|ui| {
                         pill(ui, label, tone);
                         ui.add(egui::Label::new(&result.criterion).wrap());
@@ -408,7 +588,7 @@ pub(super) fn draw_panel(
                                 ))
                                 .size(theme::SIZE_SMALL),
                             );
-                            if result.quote_found {
+                            if shows_found_pill(state, result.quote_found) {
                                 pill(ui, QUOTE_PILL, Tone::Ok);
                             }
                         });
@@ -446,6 +626,22 @@ impl PonteApp {
         match slot {
             DraftSlot::Editor(id) => self.editors.get(&id).map(|e| e.body.clone()),
             DraftSlot::Suggestion => self.suggestion.as_ref().map(|s| s.body.clone()),
+        }
+    }
+
+    /// The sources the draft in this slot recorded.
+    pub(super) fn slot_materials(&self, slot: DraftSlot) -> Vec<crate::evidence::Source> {
+        match slot {
+            DraftSlot::Editor(id) => self
+                .editors
+                .get(&id)
+                .map(|e| e.materials.clone())
+                .unwrap_or_default(),
+            DraftSlot::Suggestion => self
+                .suggestion
+                .as_ref()
+                .map(|s| s.materials.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -507,7 +703,9 @@ impl PonteApp {
         let number = detail.summary.document_number.clone();
         let sha = conference_text_sha256(&text);
         let context = super::queue::note_and_context(&self.store, &self.editors, document_id);
-        let consent = self.consent_of(&settings, document_id, &[]);
+        // The draft may quote sources and attachments of other documents.
+        let materials = self.slot_materials(slot);
+        let consent = self.consent_of(&settings, document_id, &materials);
         self.run_ai_job(QueuedJob {
             key: QueueKey {
                 kind: WorkKind::Conference,
@@ -548,6 +746,7 @@ mod tests {
 
     fn clean() -> DraftCheck {
         DraftCheck {
+            checked: true,
             header: true,
             cites_number: true,
             ..Default::default()
@@ -576,6 +775,72 @@ mod tests {
         assert_eq!(text, "2 pontos para conferir");
         assert_eq!(tone, Tone::Warn);
         assert!(!text.to_lowercase().contains("aprovad"));
+    }
+
+    #[test]
+    fn a_check_that_did_not_run_never_reads_as_green() {
+        let (text, tone) = check_summary(&DraftCheck::default());
+        assert_eq!(text, "O Ponte não conseguiu conferir esta minuta agora.");
+        assert_eq!(tone, Tone::Neutral);
+    }
+
+    #[test]
+    fn what_the_ponte_cannot_compare_keeps_the_line_from_being_the_green_one() {
+        let mut check = clean();
+        check.unparsed_hints = vec!["15% do valor".into()];
+        assert_eq!(
+            check_summary(&check),
+            (
+                "Nada a apontar no que o Ponte confere; há 1 dado que ele não compara".into(),
+                Tone::Neutral
+            )
+        );
+        check.unparsed_hints.push("art. 5º".into());
+        assert_eq!(
+            check_summary(&check).0,
+            "Nada a apontar no que o Ponte confere; há 2 dados que ele não compara"
+        );
+        // The hints are not points: with a real point the line counts only it.
+        check.placeholders = vec!["[preencher]".into()];
+        assert_eq!(check_summary(&check).0, "1 ponto para conferir");
+    }
+
+    #[test]
+    fn the_conference_of_another_text_keeps_no_colour_and_no_found_pill() {
+        use ConferenceState::*;
+        assert!(shows_found_pill(Current, true));
+        assert!(!shows_found_pill(Current, false));
+        assert!(
+            !shows_found_pill(Changed, true),
+            "nothing green for another text"
+        );
+        assert!(!shows_found_pill(None, true));
+        assert_eq!(verdict_tone_for(Current, "atende"), Tone::Ok);
+        assert_eq!(verdict_tone_for(Current, "nao_atende"), Tone::Warn);
+        for verdict in ["atende", "nao_atende", "nao_se_aplica", "nao_conferido"] {
+            assert_eq!(verdict_tone_for(Changed, verdict), Tone::Neutral);
+        }
+    }
+
+    #[test]
+    fn the_check_waits_for_the_text_to_rest_and_never_runs_collapsed() {
+        use ReviewStep::*;
+        // Collapsed: nothing, whatever happens to the text.
+        assert_eq!(review_step(false, false, false, true, 5.0), Skip);
+        assert_eq!(review_step(false, true, false, true, 5.0), Skip);
+        // Opened the first time, or for another document or template.
+        assert_eq!(review_step(true, false, false, true, 0.0), Rebuild);
+        // Same text: nothing to do.
+        assert_eq!(review_step(true, true, true, true, 9.0), Skip);
+        // Typing: wait the rest of the pause.
+        match review_step(true, true, false, true, 0.1) {
+            Wait(left) => assert!((left - (DEBOUNCE - 0.1)).abs() < 1e-9),
+            other => panic!("{other:?}"),
+        }
+        // Rested: check.
+        assert_eq!(review_step(true, true, false, true, DEBOUNCE), Check);
+        // A window that is not typed into checks at once.
+        assert_eq!(review_step(true, true, false, false, 0.0), Check);
     }
 
     #[test]

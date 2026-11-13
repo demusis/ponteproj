@@ -978,6 +978,15 @@ impl Worker {
     }
 }
 
+/// The record of a generation and the conference of its text, read once for
+/// the window "Material utilizado".
+struct MaterialCache {
+    document_id: i64,
+    uid: String,
+    record: crate::work_templates::GenerationRecord,
+    conference: Option<crate::ai::DraftConference>,
+}
+
 struct Notice {
     text: String,
     error: bool,
@@ -1102,6 +1111,8 @@ struct PonteApp {
     templates: crate::templates_ui::TemplatesPanel,
     /// The generation record being shown in "Material utilizado".
     material: Option<(i64, String)>,
+    /// What that window read from the library, once.
+    material_cache: Option<MaterialCache>,
     /// The document whose analysis shows its "Material utilizado".
     analysis_material: Option<i64>,
     /// The conference panel of the draft in the editor and of the suggestion
@@ -1233,6 +1244,7 @@ impl PonteApp {
             draft_tools: Default::default(),
             templates: Default::default(),
             material: None,
+            material_cache: None,
             analysis_material: None,
             review_editor: None,
             review_suggestion: None,
