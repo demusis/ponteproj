@@ -247,18 +247,6 @@ fn bounded(chars: &[char], at: usize, end: usize) -> bool {
     before_ok && after_ok
 }
 
-/// Whether `inner` occurs in `text` as a whole token ([`bounded`]).
-fn contains_whole_token(text: &str, inner: &str) -> bool {
-    if inner.is_empty() {
-        return false;
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let wanted: Vec<char> = inner.chars().collect();
-    (0..chars.len().saturating_sub(wanted.len() - 1))
-        .filter(|&at| chars[at..at + wanted.len()] == wanted[..])
-        .any(|at| bounded(&chars, at, at + wanted.len()))
-}
-
 /// The number of the document is written whole: its characters, ignoring
 /// case and any white space between them, stand as a token of the draft
 /// ("…/004310" is not "…/00431").
@@ -574,8 +562,6 @@ struct Present {
     /// The `norm` of every number token the materials write (a marked one
     /// also as its bare digits).
     numbers: BTreeSet<String>,
-    /// The materials, to find a bare number as a whole token.
-    texts: Vec<String>,
     money: BTreeSet<u64>,
 }
 
@@ -587,7 +573,6 @@ impl Present {
             dates: BTreeSet::new(),
             times: BTreeSet::new(),
             numbers: BTreeSet::new(),
-            texts: Vec::new(),
             money: BTreeSet::new(),
         };
         for text in texts {
@@ -610,23 +595,16 @@ impl Present {
                     present.money.insert(cents);
                 }
             }
-            present.texts.push((*text).to_owned());
         }
         present
     }
 
-    /// Whether the materials write this number: a marked one ("nº 45") only
-    /// as the same marked form or as the identical whole token; the others
-    /// only as the same token.
+    /// Whether the materials write this number: a marked one ("nº 45")
+    /// only as the same marked form ("nº", "n.", "n.º" or "número" and the
+    /// same digits, the same "/ano"), never as a bare "45" ("prazo de 45
+    /// dias"); the others only as the same token.
     fn writes(&self, hit: &NumberHit) -> bool {
-        if self.numbers.contains(&hit.norm) {
-            return true;
-        }
-        hit.marked
-            && self
-                .texts
-                .iter()
-                .any(|text| contains_whole_token(text, &hit.norm[2..]))
+        self.numbers.contains(&hit.norm)
     }
 }
 
@@ -1254,19 +1232,52 @@ mod tests {
         assert!(flagged("Conforme o ofício nº 45.", "Ofício nº 45 do setor.").is_empty());
         assert!(flagged("Conforme o ofício nº 45.", "Ofício n. 45 do setor.").is_empty());
         assert!(flagged("Conforme o ofício nº 45.", "Ofício número 45 do setor.").is_empty());
-        assert!(
-            flagged("Conforme o ofício nº 45.", "Item 45. Fim.").is_empty(),
-            "a whole token"
+        assert!(flagged("Conforme a Portaria n.º 45.", "Portaria n.º 45 do setor.").is_empty());
+        // A bare 45 never supports a marked "nº 45": prazo, item, page, "(45)".
+        for material in [
+            "Prazo de 45 dias.",
+            "Item 45. Fim.",
+            "Página (45) do processo",
+            "45",
+            "Faltam 45 dias para o fim do prazo de 45 dias.",
+        ] {
+            assert_eq!(
+                flagged("Conforme a Portaria nº 45.", material),
+                vec!["nº 45"],
+                "{material}"
+            );
+        }
+        // And a marked number is not supported by a bare year-number either.
+        assert_eq!(
+            flagged("Conforme a Portaria nº 45/2026.", "Veja o decreto 45/2026."),
+            vec!["nº 45/2026"]
         );
-        assert!(flagged("Conforme o ofício nº 45.", "Página (45) do processo").is_empty());
+        // The same digits with another "/ano" are another number.
+        assert_eq!(
+            flagged("Conforme a Portaria nº 45/2026.", "Portaria nº 45/2025."),
+            vec!["nº 45/2026"]
+        );
+        assert!(flagged(
+            "Conforme a Portaria nº 45/2026.",
+            "Portaria número 45/2026."
+        )
+        .is_empty());
         assert!(flagged(
             "Conforme o decreto 123/2026.",
             "Veja o decreto 123/2026, art. 1º."
         )
         .is_empty());
+        assert_eq!(
+            flagged(
+                "Conforme o decreto nº 123/2026.",
+                "Veja o decreto 123/2026."
+            ),
+            vec!["nº 123/2026"],
+            "the unmarked form does not support the marked one"
+        );
         assert!(flagged(
-            "Conforme o decreto nº 123/2026.",
-            "Veja o decreto 123/2026."
+            "Conforme o decreto 123/2026.",
+            "Veja o decreto nº 123/2026."
         )
         .is_empty());
         assert!(flagged("Conforme a Lei 1.234/2026.", "Conforme a Lei 1.234/2026.").is_empty());
