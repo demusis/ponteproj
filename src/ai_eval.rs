@@ -360,7 +360,10 @@ fn evaluate_facts(expect: &Expect, analysis: &Analysis, tally: &mut Tally) {
                     .is_none_or(|q| f.checked.quantity && f.quantity == Some(q))
         });
         tally.check(found, || {
-            let mut text = format!("faltou o fato \"{}\" conferido no texto", want.kind);
+            let mut text = format!(
+                "faltou o fato \"{}\" com o dado que consta no trecho",
+                want.kind
+            );
             for (label, value) in [
                 ("data", want.date.clone()),
                 ("hora", want.time.clone()),

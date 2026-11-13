@@ -36,8 +36,11 @@ impl PonteApp {
         "proposta-reserva-fim",
         "proposta-cadastrar-recurso",
         "envio-confirmacao",
+        "envio-confirmacao-minuta",
+        "ficha-propostas-limpa",
         "fila-trabalhos",
         "analise-material",
+        "analise-material-fatos",
         "ajustes-ia-teste",
         "ficha-texto-largo",
         "aviso-documento-sumiu",
@@ -289,11 +292,54 @@ impl PonteApp {
                     what: super::queue::PendingSend::Analysis,
                     document_id: document.unwrap_or_default(),
                     number: "ORG-OFI-2026/00431".to_owned(),
+                    ids: vec![document.unwrap_or_default(), 0],
+                    others: vec![(0, "ORG-MEM-2026/01207".to_owned())],
                     provider: "Ollama Cloud".to_owned(),
                     destination: "https://ollama.com".to_owned(),
                     model: "gpt-oss:120b".to_owned(),
                     sources: 2,
+                    examples: 0,
+                    example_files: 0,
+                    cloud_on_local: false,
                 });
+            }
+            "envio-confirmacao-minuta" => {
+                if let Some(id) = document {
+                    self.select(id);
+                }
+                self.tab = Tab::Notes;
+                self.send_confirm = Some(super::queue::SendConfirm {
+                    what: super::queue::PendingSend::Draft(crate::work_templates::Intent::New),
+                    document_id: document.unwrap_or_default(),
+                    number: "ORG-OFI-2026/00431".to_owned(),
+                    ids: vec![document.unwrap_or_default()],
+                    others: Vec::new(),
+                    provider: "Ollama em nuvem".to_owned(),
+                    destination: "https://ollama.com".to_owned(),
+                    model: "gpt-oss:120b-cloud".to_owned(),
+                    sources: 0,
+                    examples: 3,
+                    example_files: 1,
+                    cloud_on_local: true,
+                });
+            }
+            "ficha-propostas-limpa" => {
+                // The document, as it is now, no longer says what the
+                // analysis recorded about the deadline of the vehicles (only
+                // the copy in memory changes; nothing is saved).
+                if let Some(id) = document {
+                    self.select(id);
+                    if let Some(detail) = self.detail.as_mut() {
+                        detail.capture.text = detail
+                            .capture
+                            .text
+                            .replace("deve chegar ao Protocolo até", "chegará depois de");
+                    }
+                    self.refresh_proposal_view();
+                    self.last_refresh = std::time::Instant::now();
+                }
+                self.tab = Tab::Overview;
+                self.shots_ficha_scroll = 0.0;
             }
             "fila-trabalhos" => {
                 if let Some(id) = document {
@@ -323,10 +369,20 @@ impl PonteApp {
                     label: "Analisando ORG-OFI-2026/00431…".to_owned(),
                     waiting: "analisar ORG-OFI-2026/00431".to_owned(),
                     capture_id: 0,
+                    consent: None,
                     context: String::new(),
                     task: Box::new(|_| super::WorkResult::AiTest(Err(String::new()))),
                     ctx: ctx.clone(),
                 });
+            }
+            "analise-material-fatos" => {
+                if let Some(id) = document {
+                    self.select(id);
+                    self.analysis_material = Some(id);
+                }
+                self.tab = Tab::Overview;
+                // Scrolled to the facts: the last one is only in the context.
+                self.shots_ficha_scroll = 1400.0;
             }
             "analise-material" => {
                 if let Some(id) = document {

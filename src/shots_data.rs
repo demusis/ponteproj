@@ -896,6 +896,7 @@ fn attendances(store: &mut Store, ids: &Ids) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn sample_fact(
     text: &str,
+    context: &str,
     id: &str,
     kind: &str,
     statement: &str,
@@ -915,7 +916,7 @@ fn sample_fact(
         quantity,
         ..Default::default()
     };
-    fact.checked = crate::evidence::check_fact(&mut fact, text, "", &[]);
+    fact.checked = crate::evidence::check_fact(&mut fact, text, context, &[]);
     anyhow::ensure!(
         fact.checked.quote,
         "o trecho de {id} não está escrito no texto da amostra"
@@ -968,6 +969,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
     let facts = vec![
         sample_fact(
             &text,
+            &human_context,
             "f1",
             "prazo",
             "A resposta deve ser enviada ao Protocolo até o fim da próxima semana.",
@@ -978,6 +980,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
         )?,
         sample_fact(
             &text,
+            &human_context,
             "f2",
             "prazo",
             &format!("A confirmação dos veículos deve chegar ao Protocolo até {vehicles_br}."),
@@ -988,6 +991,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
         )?,
         sample_fact(
             &text,
+            &human_context,
             "f3",
             "recurso",
             "O ofício pede o empréstimo de 20 cadeiras.",
@@ -998,6 +1002,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
         )?,
         sample_fact(
             &text,
+            &human_context,
             "f4",
             "recurso",
             "O ofício pede a reserva da sala de reuniões do 2º andar.",
@@ -1008,6 +1013,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
         )?,
         sample_fact(
             &text,
+            &human_context,
             "f5",
             "data_hora",
             &format!("A sala é pedida no dia {room_br}, das 14h às 17h."),
@@ -1018,6 +1024,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
         )?,
         sample_fact(
             &text,
+            &human_context,
             "f6",
             "recurso",
             "O ofício pede 2 veículos com motorista.",
@@ -1025,6 +1032,18 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
             None,
             None,
             Some(2),
+        )?,
+        // Written only in the person's own note, not in the document.
+        sample_fact(
+            &text,
+            &human_context,
+            "f7",
+            "outro",
+            "Você anotou que é preciso aguardar o retorno de Servidor B.",
+            "Aguardar retorno do Servidor B sobre o auditório",
+            None,
+            None,
+            None,
         )?,
     ];
     let proposals = Proposals {
@@ -1067,7 +1086,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
             priority: "alta".into(),
             priority_reason: "Evento com data marcada e prazo para confirmar os veículos".into(),
             planned_doc_type: "Ofício".into(),
-            facts: vec!["f2".into()],
+            facts: vec!["f2".into(), "f7".into()],
             remark: String::new(),
             received_from_checked: false,
         }),
@@ -1146,9 +1165,11 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
     let detail = store.load_document(chat.id)?;
     let text = detail.capture.text.clone();
     let today_br = br(0);
+    let chat_context = detail.work_context.analysis_text(&detail.note);
     let facts = vec![
         sample_fact(
             &text,
+            &chat_context,
             "g1",
             "recurso",
             "Servidor B precisa da sala de reuniões do 2º andar.",
@@ -1159,6 +1180,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
         )?,
         sample_fact(
             &text,
+            &chat_context,
             "g2",
             "data_hora",
             &format!("A sala é pedida no dia {today_br}, das 14h às 17h."),
@@ -1169,6 +1191,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
         )?,
         sample_fact(
             &text,
+            &chat_context,
             "g3",
             "remetente",
             "A conversa é com Servidor B.",
@@ -1186,6 +1209,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
             due_kind: "a_confirmar".into(),
             priority: "normal".into(),
             facts: vec!["g3".into()],
+            received_from_checked: true,
             ..Default::default()
         }),
         reservations: vec![ReservationProposal {

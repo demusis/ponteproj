@@ -2224,11 +2224,15 @@ impl PonteApp {
     /// "Analisar": asks first when the document would leave this computer for
     /// the first time (once per document and destination), then starts.
     fn analyze(&mut self, detail: &DocumentDetail, ctx: &egui::Context) {
-        if self.consent_needed(detail.summary.id) {
-            self.ask_to_send(queue::PendingSend::Analysis, detail);
-            return;
+        match self.send_plan(
+            queue::PendingSend::Analysis,
+            detail,
+            ai::DraftSends::default(),
+        ) {
+            queue::SendPlan::Go => self.analyze_now(detail, ctx),
+            queue::SendPlan::Ask(question) => self.send_confirm = Some(*question),
+            queue::SendPlan::Stop => {}
         }
-        self.analyze_now(detail, ctx);
     }
 
     fn analyze_now(&mut self, detail: &DocumentDetail, ctx: &egui::Context) {
@@ -2265,6 +2269,7 @@ impl PonteApp {
         let capture = detail.capture.clone();
         let number = detail.summary.document_number.clone();
         let context = human_context.clone();
+        let consent = self.consent_of(&settings, document_id, &sources);
         // The model is only told WHETHER the document already has an
         // atendimento, never what is in it.
         let extras = ai::AnalyzeExtras {
@@ -2284,6 +2289,7 @@ impl PonteApp {
             waiting: format!("analisar {number}"),
             capture_id,
             context,
+            consent,
             task: Box::new(move |reporter| WorkResult::Analysis {
                 document_id,
                 result: ai::analyze_document(
@@ -2340,35 +2346,35 @@ impl PonteApp {
         intent: crate::work_templates::Intent,
         ctx: &egui::Context,
     ) {
-        if self.consent_needed(detail.summary.id) {
-            self.ask_to_send(queue::PendingSend::Draft(intent), detail);
-            return;
+        if self.ai_leaves() {
+            let Some(job) = self.draft_job(detail, intent) else {
+                return;
+            };
+            match self.send_plan(queue::PendingSend::Draft(intent), detail, job.sends()) {
+                queue::SendPlan::Go => {}
+                queue::SendPlan::Ask(question) => {
+                    self.send_confirm = Some(*question);
+                    return;
+                }
+                queue::SendPlan::Stop => return,
+            }
         }
         self.generate_now(detail, intent, ctx);
     }
 
-    fn generate_now(
+    /// What a draft would send: the job as `generate_now` would build it
+    /// (without saving anything first), `None` with the reason told when it
+    /// cannot be built.
+    fn draft_job(
         &mut self,
         detail: &DocumentDetail,
         intent: crate::work_templates::Intent,
-        ctx: &egui::Context,
-    ) {
-        if !self.save_pending_inputs(detail.summary.id) {
-            return;
-        }
+    ) -> Option<ai::DraftJob> {
         let sources = match self.sources.selected(detail.summary.id, &self.store) {
             Ok(value) => value,
             Err(e) => {
                 self.error(e.to_string());
-                return;
-            }
-        };
-        let settings = match self.settings() {
-            Ok(settings) => settings,
-            Err(error) => {
-                self.error(error.to_string());
-                self.open_ai_settings(ctx);
-                return;
+                return None;
             }
         };
         let document_id = detail.summary.id;
@@ -2387,7 +2393,7 @@ impl PonteApp {
             Ok(value) => value.analysis_text(&note),
             Err(e) => {
                 self.error(format!("Não foi possível ler o contexto: {e}"));
-                return;
+                return None;
             }
         };
         let member = self
@@ -2406,15 +2412,15 @@ impl PonteApp {
                 }
                 Ok(Some(_)) => {
                     self.error("O modelo escolhido não está publicado para este tipo de minuta. Escolha outro ou publique-o na área Modelos.");
-                    return;
+                    return None;
                 }
                 Ok(None) => {
                     self.error("O modelo escolhido não existe mais.");
-                    return;
+                    return None;
                 }
                 Err(error) => {
                     self.error(format!("Não foi possível ler o modelo: {error}"));
-                    return;
+                    return None;
                 }
             },
             None => None,
@@ -2438,7 +2444,7 @@ impl PonteApp {
         for example in &examples {
             example_files.extend(self.store.example_files(example).unwrap_or_default());
         }
-        let job = ai::DraftJob {
+        Some(ai::DraftJob {
             document_id,
             capture_id,
             capture: detail.capture.clone(),
@@ -2455,7 +2461,35 @@ impl PonteApp {
             example_files,
             sources: sources.clone(),
             current_text: current_text.clone(),
+        })
+    }
+
+    fn generate_now(
+        &mut self,
+        detail: &DocumentDetail,
+        intent: crate::work_templates::Intent,
+        ctx: &egui::Context,
+    ) {
+        if !self.save_pending_inputs(detail.summary.id) {
+            return;
+        }
+        let settings = match self.settings() {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.error(error.to_string());
+                self.open_ai_settings(ctx);
+                return;
+            }
         };
+        let Some(job) = self.draft_job(detail, intent) else {
+            return;
+        };
+        let document_id = job.document_id;
+        let capture_id = job.capture_id;
+        let kind = job.kind.clone();
+        let current_text = job.current_text.clone();
+        let sources = job.sources.clone();
+        let consent = self.consent_of(&settings, document_id, &sources);
         let number = detail.summary.document_number.clone();
         let context = queue::note_and_context(&self.store, &self.editors, document_id);
         self.run_ai_job(queue::QueuedJob {
@@ -2467,6 +2501,7 @@ impl PonteApp {
             waiting: format!("gerar minuta de {number}"),
             capture_id,
             context: context.unwrap_or_default(),
+            consent,
             task: Box::new(move |reporter| {
                 let outcome = ai::generate_draft(&settings, &job, &reporter);
                 WorkResult::Draft {
@@ -3114,15 +3149,23 @@ impl PonteApp {
     }
 
     fn ai_destination_text(&self) -> (String, String) {
+        // A cloud model asked of the server on this computer is answered by
+        // ollama.com: that is where the data goes.
+        let cloud_on_local = self.ai.provider == AiProvider::Local && self.ai_leaves();
         let provider = match self.ai.provider {
+            AiProvider::Local if cloud_on_local => "Ollama em nuvem",
             AiProvider::Local => "Ollama neste computador",
             AiProvider::Cloud => "Ollama Cloud",
             AiProvider::Remote => "servidor remoto",
             AiProvider::ChatGpt => "ChatGPT (OpenAI)",
         };
-        let destination = url::Url::parse(self.ai.base_url().trim())
-            .map(|url| url.origin().ascii_serialization())
-            .unwrap_or_else(|_| "endereço ainda não configurado".into());
+        let destination = if cloud_on_local {
+            "https://ollama.com".to_owned()
+        } else {
+            url::Url::parse(self.ai.base_url().trim())
+                .map(|url| url.origin().ascii_serialization())
+                .unwrap_or_else(|_| "endereço ainda não configurado".into())
+        };
         (provider.to_owned(), destination)
     }
 
@@ -3136,21 +3179,34 @@ impl PonteApp {
             self.ai.model().trim()
         };
         let sent = if with_instructions {
-            "o documento importado, o contexto, suas notas, a orientação e as fontes selecionadas"
+            "o texto do documento (com número, título, tipo, datas, remetente, destinatário e interessado, quando constam), as notas e o contexto salvos, a orientação desta minuta, os exemplos aprovados do modelo de trabalho e as fontes selecionadas"
         } else {
-            "o documento importado, o contexto, as notas salvas e as fontes selecionadas"
+            "o texto do documento (com número, título, tipo, datas, remetente, destinatário e interessado, quando constam), as notas e o contexto salvos e as fontes selecionadas"
         };
-        format!("Ao clicar, envia {sent} ao {provider} ({destination}). Modelo de IA: {model}. O resultado é uma sugestão para a sua revisão.")
+        let leaves = if self.ai_leaves() {
+            ""
+        } else {
+            " Nada sai deste computador."
+        };
+        format!(
+            "Ao clicar, envia ao {provider} ({destination}): {sent}. Não envia: {} Modelo de IA: {model}.{leaves} O resultado é uma sugestão para a sua revisão.",
+            queue::NOT_SENT_LINE
+        )
+    }
+
+    /// The short line that says where the AI runs.
+    fn ai_line_text(&self) -> String {
+        let (provider, destination) = self.ai_destination_text();
+        if self.ai_leaves() {
+            format!("envia dados ao {provider}: {destination}")
+        } else {
+            format!("{provider}, sem envio externo")
+        }
     }
 
     /// One short, always-visible line saying where the AI runs.
     fn ai_destination(&self, ui: &mut egui::Ui) {
-        let (provider, destination) = self.ai_destination_text();
-        let text = match self.ai.provider {
-            AiProvider::Local => format!("{provider}, sem envio externo"),
-            _ => format!("envia dados ao {provider}: {destination}"),
-        };
-        widgets::small_muted(ui, text).on_hover_text(self.ai_disclosure_text(false));
+        widgets::small_muted(ui, self.ai_line_text()).on_hover_text(self.ai_disclosure_text(false));
     }
 
     /// Opens "Configurar IA" and asks the server for its models.

@@ -1129,6 +1129,16 @@ impl PonteApp {
                             });
                         });
                 }
+                // The analysis checked again against the document as it is now:
+                // what no longer holds was left out of the proposals below.
+                let cleared = self
+                    .proposal_view
+                    .as_ref()
+                    .filter(|view| view.created_at == analysis.created_at)
+                    .map_or(0, |view| view.cleared);
+                if cleared > 0 {
+                    notice_line(ui, Tone::Warn, super::proposals::cleared_text(cleared));
+                }
                 ui.add(egui::Label::new(&analysis.summary).wrap());
                 if let Some(deadline) = &analysis.deadline_candidate {
                     ui.horizontal_wrapped(|ui| {

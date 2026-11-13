@@ -7,8 +7,10 @@
 //! made from each proposal, whether a reservation is free) is read once per
 //! analysis load or refresh into a [`ProposalView`], never per frame.
 use super::{display_date, facts, pill, PonteApp};
+use crate::evidence::recheck_analysis;
 use crate::model::{
-    Analysis, AttendanceProposal, DocumentDetail, Fact, ReservationProposal, TaskProposal,
+    Analysis, AttendanceProposal, DocumentDetail, Fact, FactCheck, Origin, ReservationProposal,
+    TaskProposal,
 };
 use crate::resources::now_moment;
 use crate::resources_ui::{check_reservation, Availability, ReservationCheck};
@@ -32,6 +34,12 @@ pub(super) enum Used {
 pub(super) struct ProposalView {
     /// The analysis it was read for (its date), so another one rebuilds it.
     pub created_at: String,
+    /// The analysis as the card shows it: checked again against the document
+    /// now (nothing is written to the library), with what no longer holds
+    /// cleared.
+    pub analysis: Analysis,
+    /// How many facts or filled-in values the new check cleared or removed.
+    pub cleared: u32,
     /// Tasks of the document (the old block looks for its suggestions here).
     pub document_tasks: Vec<Task>,
     /// The document's atendimento, when it has one.
@@ -47,7 +55,8 @@ pub(super) struct ProposalView {
 impl ProposalView {
     /// Reads the library for the analysis of `detail`; `None` without one.
     pub(super) fn build(store: &Store, detail: &DocumentDetail) -> Option<Self> {
-        let analysis = detail.analysis.as_ref()?;
+        let (cleaned, cleared) = cleaned_analysis(detail.analysis.as_ref()?, &detail.capture.text);
+        let analysis = &cleaned;
         let document_id = detail.summary.id;
         let tasks = store.list_tasks().unwrap_or_default();
         let attendances = store.list_saiop_attendances().unwrap_or_default();
@@ -88,12 +97,33 @@ impl ProposalView {
         }
         Some(Self {
             created_at: analysis.created_at.clone(),
+            analysis: cleaned.clone(),
+            cleared,
             document_tasks,
             attendance,
             attendance_changes,
             used,
             reservations,
         })
+    }
+}
+
+/// The analysis checked again against the text of the document as it is now,
+/// and how many things that check cleared or removed. The stored analysis is
+/// never touched: this works on a copy.
+pub(super) fn cleaned_analysis(analysis: &Analysis, capture_text: &str) -> (Analysis, u32) {
+    let mut copy = analysis.clone();
+    let context = copy.human_context.clone();
+    let cleared = recheck_analysis(&mut copy, capture_text, &context);
+    (copy, cleared)
+}
+
+/// The words that say a proposal's data no longer match the document.
+pub(super) fn cleared_text(cleared: u32) -> String {
+    if cleared == 1 {
+        "1 dado desta análise não confere mais com o documento e foi retirado. Analise de novo para atualizar.".to_owned()
+    } else {
+        format!("{cleared} dados desta análise não conferem mais com o documento e foram retirados. Analise de novo para atualizar.")
     }
 }
 
@@ -169,34 +199,83 @@ fn fact_of<'a>(analysis: &'a Analysis, id: &str) -> Option<&'a Fact> {
     analysis.facts.iter().find(|fact| fact.id == id)
 }
 
-/// The fact among `ids` whose quote contains `text` (the sender of an
-/// atendimento is "conferido" when a cited fact writes it).
-fn fact_writing<'a>(analysis: &'a Analysis, ids: &[String], text: &str) -> Option<&'a Fact> {
-    let wanted = text.trim().to_lowercase();
-    if wanted.is_empty() {
-        return None;
-    }
-    ids.iter()
-        .filter_map(|id| fact_of(analysis, id))
-        .find(|fact| fact.quote.to_lowercase().contains(&wanted))
+/// What the hover of the pill "consta no trecho" says.
+pub(super) const PILL_HOVER: &str = "O programa encontrou este dado escrito no trecho citado. Confira se é mesmo o prazo, o horário ou a quantidade que o documento quer dizer.";
+
+/// The pill's words.
+pub(super) const PILL_TEXT: &str = "consta no trecho";
+
+/// The line under the title of the block.
+pub(super) const INTRO_TEXT: &str =
+    "A IA propõe; o Ponte só marca o que encontrou escrito no documento. Revise antes de salvar.";
+
+/// The note of a "Recebido de" the program could not find written.
+pub(super) const UNCHECKED_SENDER: &str = "(citado no documento; confira)";
+
+/// What follows a "Recebido de" the program did not find written (`None`:
+/// found, the pill shows instead).
+pub(super) fn sender_note(checked: bool) -> Option<&'static str> {
+    (!checked).then_some(UNCHECKED_SENDER)
 }
 
-/// "Trecho: “…”" for a hover.
+/// Whether a value may carry the pill: its fact's quote was found written in
+/// the document or in a source (never only in the person's own context), and
+/// that very value was found in the quote.
+fn backs(fact: Option<&Fact>, found: impl Fn(&FactCheck) -> bool) -> bool {
+    fact.is_some_and(|f| f.checked.quote && f.checked.origin.is_written() && found(&f.checked))
+}
+
+/// "Trecho: “…”".
 fn quote_text(fact: &Fact) -> String {
     format!("Trecho: “{}”", fact.quote.trim())
 }
 
-/// A label–value line; with a fact, the pill "conferido no texto" whose hover
-/// shows the quote.
-fn field_line(ui: &mut egui::Ui, label: &str, value: &str, source: Option<&Fact>) {
+/// A label–value line; `checked` adds the pill "consta no trecho".
+fn field_line(ui: &mut egui::Ui, label: &str, value: &str, checked: bool) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = S1 + 2.0;
         ui.label(RichText::new(format!("{label}:")).color(theme::c().muted));
         ui.label(value);
-        if let Some(fact) = source {
-            pill(ui, "conferido no texto", Tone::Ok).on_hover_text(quote_text(fact));
+        if checked {
+            pill(ui, PILL_TEXT, Tone::Ok).on_hover_text(PILL_HOVER);
         }
     });
+}
+
+/// Where the program found the excerpt of a fact.
+pub(super) fn origin_text(fact: &Fact, analysis: &Analysis) -> String {
+    match fact.checked.origin {
+        Origin::Document => "no documento".to_owned(),
+        Origin::Source => {
+            let label = analysis
+                .materials
+                .iter()
+                .find(|s| s.id == fact.source_id)
+                .map(|s| s.label.as_str())
+                .unwrap_or(fact.source_id.as_str());
+            format!("na fonte: {label}")
+        }
+        Origin::Context => "só no seu contexto (informado por você)".to_owned(),
+        Origin::Nowhere => "não encontrado no documento".to_owned(),
+    }
+}
+
+/// The line "Encontrado: …" of a fact; what is only in the person's context
+/// is told apart.
+fn origin_line(ui: &mut egui::Ui, fact: &Fact, analysis: &Analysis) {
+    let color = if fact.checked.origin == Origin::Context || !fact.checked.quote {
+        Tone::Warn.colors().0
+    } else {
+        theme::c().muted
+    };
+    ui.add(
+        egui::Label::new(
+            RichText::new(format!("Encontrado: {}", origin_text(fact, analysis)))
+                .size(theme::SIZE_SMALL)
+                .color(color),
+        )
+        .wrap(),
+    );
 }
 
 fn muted_line(ui: &mut egui::Ui, text: &str) {
@@ -225,11 +304,16 @@ fn quotes_fold(ui: &mut egui::Ui, id: &str, analysis: &Analysis, ids: &[&str]) {
             for fact in found {
                 ui.add(
                     egui::Label::new(
-                        RichText::new(format!("• {}", fact.statement)).size(theme::SIZE_SMALL),
+                        RichText::new(format!(
+                            "• Resumo da IA (não conferido): {}",
+                            fact.statement
+                        ))
+                        .size(theme::SIZE_SMALL),
                     )
                     .wrap(),
                 );
                 muted_line(ui, &quote_text(fact));
+                origin_line(ui, fact, analysis);
             }
         });
 }
@@ -273,10 +357,13 @@ pub(super) fn proposals_block(
     view: Option<&ProposalView>,
     stale: bool,
 ) -> Option<ProposalAction> {
+    // What is shown is the analysis checked again against the document now.
+    let analysis = view.map(|v| &v.analysis).unwrap_or(analysis);
     let proposals = analysis.proposals.as_ref()?;
     let mut action = None;
     ui.separator();
     widgets::field_label(ui, "Propostas (revise antes de usar)");
+    widgets::small_muted(ui, INTRO_TEXT);
     if stale {
         widgets::small_muted(
             ui,
@@ -288,6 +375,15 @@ pub(super) fn proposals_block(
             ui,
             &format!("A IA não propôs nada: {}", proposals.nothing_reason.trim()),
         );
+        if !proposals.nothing_reason_ai.trim().is_empty() {
+            muted_line(
+                ui,
+                &format!(
+                    "Motivo dado pela IA: “{}”",
+                    proposals.nothing_reason_ai.trim()
+                ),
+            );
+        }
         return None;
     }
     ui.spacing_mut().item_spacing.y = S2;
@@ -355,20 +451,25 @@ fn task_row(
                 ui,
                 "Providência",
                 crate::labels::task_action(&proposal.action),
-                None,
+                false,
             );
             field_line(
                 ui,
                 "Prioridade",
                 crate::labels::priority(&proposal.priority),
-                None,
+                false,
             );
             if let Some(date) = &proposal.due_date {
                 let source = proposal
                     .due_fact
                     .as_deref()
                     .and_then(|id| fact_of(analysis, id));
-                field_line(ui, "Prazo", &crate::labels::date(date), source);
+                field_line(
+                    ui,
+                    "Prazo",
+                    &crate::labels::date(date),
+                    backs(source, |c| c.date),
+                );
                 if !proposal.due_source.trim().is_empty() {
                     muted_line(
                         ui,
@@ -486,11 +587,10 @@ fn attendance_row(
 /// The fields a new entry would be born with.
 fn new_entry_lines(ui: &mut egui::Ui, analysis: &Analysis, proposal: &AttendanceProposal) {
     if !proposal.subject.trim().is_empty() {
-        field_line(ui, "Assunto", proposal.subject.trim(), None);
+        field_line(ui, "Assunto", proposal.subject.trim(), false);
     }
     if !proposal.received_from.trim().is_empty() {
-        let source = fact_writing(analysis, &proposal.facts, &proposal.received_from);
-        field_line(ui, "Recebido de", proposal.received_from.trim(), source);
+        received_from_line(ui, proposal);
     }
     if let Some(date) = &proposal.due_date {
         let source = proposal
@@ -505,7 +605,7 @@ fn new_entry_lines(ui: &mut egui::Ui, analysis: &Analysis, proposal: &Attendance
                 crate::labels::date(date),
                 crate::saiop::due_kind_label(&proposal.due_kind).to_lowercase()
             ),
-            source,
+            backs(source, |c| c.date),
         );
     }
     if !proposal.priority.is_empty() {
@@ -513,11 +613,29 @@ fn new_entry_lines(ui: &mut egui::Ui, analysis: &Analysis, proposal: &Attendance
         if !proposal.priority_reason.trim().is_empty() {
             text.push_str(&format!(" — {}", proposal.priority_reason.trim()));
         }
-        field_line(ui, "Prioridade", &text, None);
+        field_line(ui, "Prioridade", &text, false);
     }
     if !proposal.planned_doc_type.is_empty() {
-        field_line(ui, "Entrega prevista", &proposal.planned_doc_type, None);
+        field_line(ui, "Entrega prevista", &proposal.planned_doc_type, false);
     }
+}
+
+/// "Recebido de": the pill only when the program found the name written;
+/// otherwise the value with the note to check it.
+fn received_from_line(ui: &mut egui::Ui, proposal: &AttendanceProposal) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = S1 + 2.0;
+        ui.label(RichText::new("Recebido de:").color(theme::c().muted));
+        ui.label(proposal.received_from.trim());
+        match sender_note(proposal.received_from_checked) {
+            None => {
+                pill(ui, PILL_TEXT, Tone::Ok).on_hover_text(PILL_HOVER);
+            }
+            Some(note) => {
+                widgets::small_muted(ui, note);
+            }
+        }
+    });
 }
 
 fn reservation_row(
@@ -559,7 +677,12 @@ fn reservation_row(
                 pill(ui, "Reserva criada", Tone::Ok);
             }
             let what_fact = fact_of(analysis, &proposal.what_fact);
-            field_line(ui, "O que foi pedido", proposal.what.trim(), what_fact);
+            field_line(
+                ui,
+                "O que foi pedido",
+                proposal.what.trim(),
+                backs(what_fact, |c| c.quote),
+            );
             let quantity_fact = std::iter::once(proposal.what_fact.as_str())
                 .chain(proposal.facts.iter().map(String::as_str))
                 .filter_map(|id| fact_of(analysis, id))
@@ -568,25 +691,33 @@ fn reservation_row(
                 ui,
                 "Quantidade",
                 &proposal.quantity.to_string(),
-                quantity_fact,
+                backs(quantity_fact, |c| c.quantity),
             );
             let when = proposal
                 .when_fact
                 .as_deref()
                 .and_then(|id| fact_of(analysis, id));
             match &proposal.start {
-                Some(start) => {
-                    field_line(ui, "Início", &crate::resources::moment_label(start), when)
-                }
+                Some(start) => field_line(
+                    ui,
+                    "Início",
+                    &crate::resources::moment_label(start),
+                    backs(when, |c| c.date && c.time),
+                ),
                 None => muted_line(ui, "Início: o documento não traz data e hora certas."),
             }
             match (&proposal.start, &proposal.end) {
-                (_, Some(end)) => field_line(ui, "Fim", &crate::resources::moment_label(end), when),
+                (_, Some(end)) => field_line(
+                    ui,
+                    "Fim",
+                    &crate::resources::moment_label(end),
+                    backs(when, |c| c.date && c.end_time),
+                ),
                 (Some(_), None) => muted_line(ui, "Fim não informado"),
                 _ => {}
             }
             if !proposal.purpose.trim().is_empty() {
-                field_line(ui, "Finalidade", proposal.purpose.trim(), None);
+                field_line(ui, "Finalidade", proposal.purpose.trim(), false);
             }
             if let Some(check) = check {
                 if used.is_none() {
@@ -731,11 +862,20 @@ impl PonteApp {
         let Some(document_id) = self.analysis_material else {
             return;
         };
+        // The analysis as the card shows it: checked again against the
+        // document (see `cleaned_analysis`).
         let analysis = self
             .detail
             .as_ref()
             .filter(|d| d.summary.id == document_id)
-            .and_then(|d| d.analysis.clone());
+            .and_then(|d| d.analysis.as_ref())
+            .map(|stored| {
+                self.proposal_view
+                    .as_ref()
+                    .filter(|view| view.created_at == stored.created_at)
+                    .map(|view| view.analysis.clone())
+                    .unwrap_or_else(|| stored.clone())
+            });
         let Some(analysis) = analysis else {
             self.analysis_material = None;
             return;
@@ -745,7 +885,15 @@ impl PonteApp {
             .open(&mut open)
             .default_size([660.0, 700.0])
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                #[cfg(feature = "shots")]
+                let scroll = if self.shots_ficha_scroll > 0.0 {
+                    egui::ScrollArea::vertical().vertical_scroll_offset(self.shots_ficha_scroll)
+                } else {
+                    egui::ScrollArea::vertical()
+                };
+                #[cfg(not(feature = "shots"))]
+                let scroll = egui::ScrollArea::vertical();
+                scroll.show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = S3;
                     widgets::card(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = S2;
@@ -808,7 +956,7 @@ impl PonteApp {
                         });
                     }
                     widgets::card(ui, |ui| {
-                        widgets::section(ui, format!("Fatos lidos no documento: {}", analysis.facts.len()));
+                        widgets::section(ui, format!("Fatos citados pela IA: {}", analysis.facts.len()));
                         if analysis.facts.is_empty() {
                             widgets::small_muted(ui, "Esta análise não registrou fatos.");
                         }
@@ -816,7 +964,7 @@ impl PonteApp {
                             if index > 0 {
                                 ui.separator();
                             }
-                            fact_block(ui, fact);
+                            fact_block(ui, fact, &analysis);
                         }
                     });
                     widgets::small_muted(
@@ -831,85 +979,52 @@ impl PonteApp {
     }
 }
 
-/// One fact: kind, statement, quote and what the program checked.
-fn fact_block(ui: &mut egui::Ui, fact: &Fact) {
+/// One fact: the AI's own summary (not checked), the excerpt, where the
+/// program found it and which values it found written in it.
+fn fact_block(ui: &mut egui::Ui, fact: &Fact, analysis: &Analysis) {
     ui.horizontal_wrapped(|ui| {
         pill(ui, fact_kind_label(&fact.kind), Tone::Neutral);
-        ui.add(egui::Label::new(&fact.statement).wrap());
+        ui.add(
+            egui::Label::new(format!("Resumo da IA (não conferido): {}", fact.statement)).wrap(),
+        );
     });
-    ui.horizontal_wrapped(|ui| {
-        if fact.checked.quote {
-            pill(ui, "trecho conferido", Tone::Ok);
+    muted_line(ui, &quote_text(fact));
+    origin_line(ui, fact, analysis);
+    let written = fact.checked.quote && fact.checked.origin.is_written();
+    let value = |ui: &mut egui::Ui, text: String, found: bool| {
+        if found && written {
+            pill(ui, format!("{text} {PILL_TEXT}"), Tone::Ok).on_hover_text(PILL_HOVER);
         } else {
-            pill(ui, "trecho não conferido", Tone::Danger);
+            pill(ui, format!("{text} não conferido"), Tone::Warn);
+        }
+    };
+    ui.horizontal_wrapped(|ui| {
+        if !fact.checked.quote {
+            pill(ui, "trecho não encontrado", Tone::Danger);
         }
         if let Some(date) = &fact.date {
-            let (text, tone) = if fact.checked.date {
-                (
-                    format!("data {} conferida", crate::labels::date(date)),
-                    Tone::Ok,
-                )
-            } else {
-                (
-                    format!("data {} não conferida", crate::labels::date(date)),
-                    Tone::Warn,
-                )
-            };
-            pill(ui, text, tone);
+            value(
+                ui,
+                format!("data {}", crate::labels::date(date)),
+                fact.checked.date,
+            );
         }
         if let Some(time) = &fact.time {
-            let tone = if fact.checked.time {
-                Tone::Ok
-            } else {
-                Tone::Warn
-            };
             let end = fact
                 .end_time
                 .as_ref()
                 .map(|end| format!(" às {end}"))
                 .unwrap_or_default();
-            pill(
+            value(
                 ui,
-                format!(
-                    "hora {time}{end} {}",
-                    if fact.checked.time
-                        && fact.end_time.as_ref().is_none_or(|_| fact.checked.end_time)
-                    {
-                        "conferida"
-                    } else {
-                        "não conferida"
-                    }
-                ),
-                tone,
+                format!("hora {time}{end}"),
+                fact.checked.time && fact.end_time.as_ref().is_none_or(|_| fact.checked.end_time),
             );
         }
         if let Some(quantity) = fact.quantity {
-            pill(
-                ui,
-                format!(
-                    "quantidade {quantity} {}",
-                    if fact.checked.quantity {
-                        "conferida"
-                    } else {
-                        "não conferida"
-                    }
-                ),
-                if fact.checked.quantity {
-                    Tone::Ok
-                } else {
-                    Tone::Warn
-                },
-            );
+            value(ui, format!("quantidade {quantity}"), fact.checked.quantity);
         }
     });
-    ui.add(
-        egui::Label::new(
-            RichText::new(quote_text(fact))
-                .size(theme::SIZE_SMALL)
-                .color(theme::c().muted),
-        )
-        .wrap(),
-    );
 }
 
 #[cfg(test)]
@@ -979,6 +1094,140 @@ mod tests {
         ];
         assert_eq!(pick_attendance(&closed).map(|a| a.id), Some(7));
         assert!(pick_attendance(&[]).is_none());
+    }
+
+    fn fact(origin: Origin, date: bool) -> Fact {
+        Fact {
+            id: "f1".into(),
+            quote: "prazo até 20/02/2031".into(),
+            date: Some("2031-02-20".into()),
+            checked: FactCheck {
+                quote: true,
+                date,
+                origin,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_pill_needs_a_fact_written_in_the_document_or_a_source() {
+        let document = fact(Origin::Document, true);
+        assert!(backs(Some(&document), |c| c.date));
+        assert!(backs(Some(&fact(Origin::Source, true)), |c| c.date));
+        assert!(
+            !backs(Some(&fact(Origin::Context, true)), |c| c.date),
+            "what only the person's own note says never gets the pill"
+        );
+        assert!(!backs(Some(&fact(Origin::Nowhere, true)), |c| c.date));
+        assert!(
+            !backs(Some(&fact(Origin::Document, false)), |c| c.date),
+            "that value was not found"
+        );
+        assert!(!backs(None, |c| c.date));
+    }
+
+    #[test]
+    fn where_the_excerpt_was_found_is_said_in_words() {
+        let mut analysis = Analysis::default();
+        analysis.materials.push(crate::evidence::Source {
+            id: "s1".into(),
+            document_id: 1,
+            capture_id: 1,
+            label: "Ofício anexo, página 2".into(),
+            file_id: None,
+            page: Some(2),
+            method: "texto".into(),
+            text: String::new(),
+        });
+        assert_eq!(
+            origin_text(&fact(Origin::Document, true), &analysis),
+            "no documento"
+        );
+        let mut source = fact(Origin::Source, true);
+        source.source_id = "s1".into();
+        assert_eq!(
+            origin_text(&source, &analysis),
+            "na fonte: Ofício anexo, página 2"
+        );
+        assert_eq!(
+            origin_text(&fact(Origin::Context, true), &analysis),
+            "só no seu contexto (informado por você)"
+        );
+    }
+
+    #[test]
+    fn a_sender_not_found_written_shows_the_note_and_a_found_one_the_pill() {
+        assert_eq!(sender_note(false), Some("(citado no documento; confira)"));
+        assert_eq!(sender_note(true), None);
+    }
+
+    #[test]
+    fn the_pill_words_are_the_decided_ones() {
+        assert_eq!(PILL_TEXT, "consta no trecho");
+        assert_eq!(
+            PILL_HOVER,
+            "O programa encontrou este dado escrito no trecho citado. Confira se é mesmo o prazo, o horário ou a quantidade que o documento quer dizer."
+        );
+    }
+
+    fn seeded() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        crate::shots_data::seed(&mut store).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn the_card_checks_the_analysis_again_and_writes_nothing() {
+        let (_dir, store) = seeded();
+        let id = store
+            .list_documents("")
+            .unwrap()
+            .into_iter()
+            .find(|d| d.document_number == "ORG-OFI-2026/00431")
+            .unwrap()
+            .id;
+        let detail = store.load_document(id).unwrap();
+        let stored = detail.analysis.clone().unwrap();
+        // Today the document says what the analysis recorded: nothing is cleared.
+        let view = ProposalView::build(&store, &detail).unwrap();
+        assert_eq!(view.cleared, 0);
+        // The document as it is now no longer carries the deadline.
+        let mut changed = detail.clone();
+        changed.capture.text = changed
+            .capture
+            .text
+            .replace("deve chegar ao Protocolo até", "chegará depois de");
+        let view = ProposalView::build(&store, &changed).unwrap();
+        assert!(view.cleared > 0, "the lost excerpt is counted");
+        assert!(
+            view.analysis
+                .proposals
+                .as_ref()
+                .unwrap()
+                .tasks
+                .iter()
+                .all(|task| task.due_date.is_none()),
+            "no deadline stands on it"
+        );
+        assert!(
+            cleared_text(view.cleared).contains("não conferem mais com o documento")
+                || cleared_text(1).contains("não confere mais")
+        );
+        // Nothing was written: the stored analysis is as it was.
+        let again = store.load_document(id).unwrap().analysis.unwrap();
+        assert_eq!(
+            serde_json::to_string(&again).unwrap(),
+            serde_json::to_string(&stored).unwrap()
+        );
+    }
+
+    #[test]
+    fn the_warning_counts_in_plain_words() {
+        assert_eq!(cleared_text(1), "1 dado desta análise não confere mais com o documento e foi retirado. Analise de novo para atualizar.");
+        assert_eq!(cleared_text(3), "3 dados desta análise não conferem mais com o documento e foram retirados. Analise de novo para atualizar.");
     }
 
     #[test]

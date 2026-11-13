@@ -666,6 +666,13 @@ impl PonteApp {
                     } else {
                         widgets::small_muted(ui, "Padrão: http://127.0.0.1:11434. Instale o Ollama em ollama.com/download e baixe um modelo (ex.: ollama pull qwen3:4b-instruct).");
                     }
+                    if self.ai_leaves() {
+                        super::notice_line(
+                            ui,
+                            Tone::Warn,
+                            "O modelo escolhido roda na nuvem (ollama.com): o que você enviar à IA sai deste computador, mesmo com o Ollama instalado aqui.",
+                        );
+                    }
                 }
                 AiProvider::Cloud => {
                     widgets::small_muted(ui, format!("Endereço: {} (fixo)", ai::CLOUD_URL));
@@ -1047,8 +1054,8 @@ impl PonteApp {
         }
         let (_, destination) = self.ai_destination_text();
         let asked = super::queue::needs_consent(
-            self.ai.provider,
-            self.ai_test_consented.contains(&destination),
+            self.ai_leaves(),
+            !self.ai_test_consented.contains(&destination),
         );
         if asked {
             self.send_confirm = Some(self.send_question(

@@ -78,13 +78,7 @@ impl PonteApp {
             .map(|w| format!("Gerando… {}", w.short_step()));
         let disclosure = self.ai_disclosure_text(true);
         // Where the AI runs, the same line as under the analysis.
-        let ai_note = {
-            let (provider, destination) = self.ai_destination_text();
-            match self.ai.provider {
-                super::AiProvider::Local => format!("{provider}, sem envio externo"),
-                _ => format!("envia dados ao {provider}: {destination}"),
-            }
-        };
+        let ai_note = self.ai_line_text();
         let suggestion_pending = self.suggestion.is_some();
         titled_card(
             ui,

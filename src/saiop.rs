@@ -3054,6 +3054,7 @@ enum ProposedField {
 fn plan_changes(
     current: &SaiopAttendance,
     proposal: &crate::model::AttendanceProposal,
+    fresh: bool,
 ) -> Vec<(ProposedField, AttendanceChange)> {
     let mut out = Vec::new();
     let mut push = |field, label, current: String, proposed: String| {
@@ -3090,7 +3091,12 @@ fn plan_changes(
                 crate::labels::date(due),
             );
         }
+        // A kind already chosen is never replaced by "a confirmar" just
+        // because the proposal came without certainty.
+        let downgrade =
+            !fresh && proposal.due_kind == "a_confirmar" && current.due_kind != "a_confirmar";
         if proposal.due_kind != current.due_kind
+            && !downgrade
             && DUE_KIND_OPTIONS
                 .iter()
                 .any(|(key, _)| *key == proposal.due_kind)
@@ -3103,8 +3109,12 @@ fn plan_changes(
             );
         }
     }
+    // What the model judged (priority, reason, kind of document, subject)
+    // only fills what is still empty or at its usual value: a field the
+    // person filled stays, whatever the proposal says.
     if !proposal.priority.is_empty()
         && proposal.priority != current.priority
+        && (fresh || current.priority == "normal")
         && PRIORITY_OPTIONS
             .iter()
             .any(|(key, _)| *key == proposal.priority)
@@ -3117,7 +3127,10 @@ fn plan_changes(
         );
     }
     let reason = proposal.priority_reason.trim();
-    if !reason.is_empty() && reason != current.priority_reason.trim() {
+    if !reason.is_empty()
+        && reason != current.priority_reason.trim()
+        && current.priority_reason.trim().is_empty()
+    {
         push(
             ProposedField::PriorityReason,
             "Motivo da prioridade",
@@ -3126,7 +3139,11 @@ fn plan_changes(
         );
     }
     let from = proposal.received_from.trim();
-    if !from.is_empty() && from != current.received_from.trim() {
+    // A name already there is replaced only by one the program found written.
+    if !from.is_empty()
+        && from != current.received_from.trim()
+        && (current.received_from.trim().is_empty() || proposal.received_from_checked)
+    {
         push(
             ProposedField::ReceivedFrom,
             "Recebido de",
@@ -3136,6 +3153,7 @@ fn plan_changes(
     }
     if !proposal.planned_doc_type.is_empty()
         && proposal.planned_doc_type != current.planned_doc_type
+        && current.planned_doc_type.is_empty()
         && DOC_TYPE_OPTIONS.contains(&proposal.planned_doc_type.as_str())
     {
         push(
@@ -3164,7 +3182,7 @@ pub fn attendance_changes(
     current: &SaiopAttendance,
     proposal: &crate::model::AttendanceProposal,
 ) -> Vec<AttendanceChange> {
-    plan_changes(current, proposal)
+    plan_changes(current, proposal, false)
         .into_iter()
         .map(|(_, change)| change)
         .collect()
@@ -3178,7 +3196,26 @@ pub fn apply_attendance_proposal(
     attendance: &mut SaiopAttendance,
     proposal: &crate::model::AttendanceProposal,
 ) {
-    for (field, _) in plan_changes(attendance, proposal) {
+    apply_proposal(attendance, proposal, false);
+}
+
+/// The same for an entry that is being born (its usual values are not the
+/// person's choices yet, so the proposal's deadline kind may replace them).
+#[cfg(feature = "desktop")]
+pub fn fill_new_entry(
+    attendance: &mut SaiopAttendance,
+    proposal: &crate::model::AttendanceProposal,
+) {
+    apply_proposal(attendance, proposal, true);
+}
+
+#[cfg(feature = "desktop")]
+fn apply_proposal(
+    attendance: &mut SaiopAttendance,
+    proposal: &crate::model::AttendanceProposal,
+    fresh: bool,
+) {
+    for (field, _) in plan_changes(attendance, proposal, fresh) {
         match field {
             ProposedField::Due => {
                 attendance.due_date = proposal.due_date.clone().unwrap_or_default();
@@ -3330,7 +3367,7 @@ impl SaiopPanel {
         }
         let blank = Self::blank_entry(store, document);
         let mut filled = blank.clone();
-        apply_attendance_proposal(&mut filled, proposal);
+        fill_new_entry(&mut filled, proposal);
         self.load_into_editor(store, blank);
         // The saved state stays the blank entry: the proposal is a change.
         self.editor = Some(filled);
@@ -5960,7 +5997,9 @@ mod proposal_tests {
         current.due_date = "2031-03-01".into();
         current.received_from = "Outra unidade".into();
         current.subject = "Assunto que a pessoa escreveu".into();
-        let changes = attendance_changes(&current, &proposal());
+        let mut given = proposal();
+        given.received_from_checked = true;
+        let changes = attendance_changes(&current, &given);
         assert!(labels(&changes).contains(&"Recebido de"));
         assert_eq!(
             changes
@@ -5971,7 +6010,7 @@ mod proposal_tests {
         );
         assert!(!labels(&changes).contains(&"Assunto"), "never overwritten");
         let mut changed = current.clone();
-        apply_attendance_proposal(&mut changed, &proposal());
+        apply_attendance_proposal(&mut changed, &given);
         assert_eq!(changed.subject, current.subject);
         assert_eq!(changed.received_from, "Protocolo Geral");
         assert_eq!(changed.due_date, "2031-02-20");
@@ -5992,9 +6031,48 @@ mod proposal_tests {
         assert_eq!(changed, expected);
         // Applying it again changes nothing and does not repeat the id.
         let mut twice = changed.clone();
-        apply_attendance_proposal(&mut twice, &proposal());
+        apply_attendance_proposal(&mut twice, &given);
         assert_eq!(twice, changed);
-        assert!(attendance_changes(&changed, &proposal()).is_empty());
+        assert!(attendance_changes(&changed, &given).is_empty());
+    }
+
+    #[test]
+    fn a_proposal_without_certainty_never_downgrades_what_is_there() {
+        let mut current = existing();
+        current.due_kind = "oficial".into();
+        current.due_date = "2031-03-01".into();
+        current.priority = "alta".into();
+        current.priority_reason = "Motivo da pessoa".into();
+        current.planned_doc_type = "Parecer".into();
+        current.received_from = "Outra unidade".into();
+        let mut given = proposal();
+        given.due_kind = "a_confirmar".into();
+        given.priority = "baixa".into();
+        given.received_from_checked = false;
+        let changes = attendance_changes(&current, &given);
+        assert_eq!(
+            labels(&changes),
+            ["Prazo"],
+            "only the written deadline moves: not the kind (a_confirmar), the priority, the reason, the delivery or the unchecked sender"
+        );
+        let mut changed = current.clone();
+        apply_attendance_proposal(&mut changed, &given);
+        assert_eq!(changed.due_kind, "oficial");
+        assert_eq!(changed.priority, "alta");
+        assert_eq!(changed.priority_reason, "Motivo da pessoa");
+        assert_eq!(changed.planned_doc_type, "Parecer");
+        assert_eq!(changed.received_from, "Outra unidade");
+        assert_eq!(changed.due_date, "2031-02-20");
+        // A sender found written may replace the name that is there, and the
+        // list says so.
+        given.received_from_checked = true;
+        let changes = attendance_changes(&current, &given);
+        assert!(labels(&changes).contains(&"Recebido de"));
+        // A new entry has no choices of the person yet: its kind follows.
+        let mut fresh = SaiopAttendance::new_manual();
+        fill_new_entry(&mut fresh, &given);
+        assert_eq!(fresh.due_kind, "a_confirmar");
+        assert_eq!(fresh.priority, "baixa");
     }
 
     #[test]
