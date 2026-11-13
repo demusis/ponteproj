@@ -335,6 +335,43 @@ pub struct Fact {
     pub checked: FactCheck,
 }
 
+/// Where the program found the quote of a fact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Origin {
+    /// Not found (or not checked).
+    #[default]
+    #[serde(rename = "")]
+    Nowhere,
+    /// The text of the document.
+    #[serde(rename = "documento")]
+    Document,
+    /// A selected source (an attachment page).
+    #[serde(rename = "fonte")]
+    Source,
+    /// Only in what the person wrote (purpose, notes): it may support a
+    /// proposal but never fills a checked date, time or quantity.
+    #[serde(rename = "contexto")]
+    Context,
+}
+
+impl Origin {
+    /// The word the card shows and the file stores.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nowhere => "",
+            Self::Document => "documento",
+            Self::Source => "fonte",
+            Self::Context => "contexto",
+        }
+    }
+
+    /// The quote is written in the document or in a source: values read from
+    /// it may fill a form.
+    pub fn is_written(self) -> bool {
+        matches!(self, Self::Document | Self::Source)
+    }
+}
+
 /// What the program verified about a fact.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -344,6 +381,8 @@ pub struct FactCheck {
     pub time: bool,
     pub end_time: bool,
     pub quantity: bool,
+    /// Where the quote was found; set with `quote`.
+    pub origin: Origin,
 }
 
 /// What the Propositor suggests. The person reviews and saves each one.
@@ -355,8 +394,12 @@ pub struct Proposals {
     pub attendance: Option<AttendanceProposal>,
     /// At most [`MAX_RESERVATION_PROPOSALS`].
     pub reservations: Vec<ReservationProposal>,
-    /// Required, not empty, when all three above are empty.
+    /// Required, not empty, when all three above are empty. Written by the
+    /// program.
     pub nothing_reason: String,
+    /// What the model said about it (one line, at most 300 characters): to
+    /// be shown as the model's own words, never as the program's.
+    pub nothing_reason_ai: String,
 }
 
 impl Proposals {
@@ -410,6 +453,9 @@ pub struct AttendanceProposal {
     pub planned_doc_type: String,
     pub facts: Vec<String>,
     pub remark: String,
+    /// Set by the program: `received_from` equals the sender the import read
+    /// (not only written somewhere in a quote).
+    pub received_from_checked: bool,
 }
 
 impl Default for AttendanceProposal {
@@ -427,6 +473,7 @@ impl Default for AttendanceProposal {
             planned_doc_type: String::new(),
             facts: Vec::new(),
             remark: String::new(),
+            received_from_checked: false,
         }
     }
 }
@@ -793,6 +840,15 @@ pub(crate) fn sample_manual_capture() -> Capture {
     }
 }
 
+/// A document whose text writes the quotes of [`sample_proposed_analysis`]:
+/// what a store that checks an analysis against the capture needs.
+#[cfg(test)]
+pub(crate) fn sample_proposed_capture() -> Capture {
+    let mut capture = sample_capture();
+    capture.text = "Solicitamos a reserva de 20 (vinte) cadeiras no dia 12 de novembro de 2026, das 14h às 17h, e pedimos responder até 30/11/2026.".into();
+    capture
+}
+
 /// An analysis with checked facts and one proposal of each kind, built the
 /// way the roles will build them (generic sample data only).
 #[cfg(test)]
@@ -804,6 +860,7 @@ pub(crate) fn sample_proposed_analysis(capture_id: i64) -> Analysis {
         time: true,
         end_time: true,
         quantity: true,
+        origin: Origin::Document,
     };
     Analysis {
         capture_id,
@@ -824,6 +881,7 @@ pub(crate) fn sample_proposed_analysis(capture_id: i64) -> Analysis {
                 checked: FactCheck {
                     quote: true,
                     date: true,
+                    origin: Origin::Document,
                     ..FactCheck::default()
                 },
                 ..Fact::default()
@@ -837,6 +895,7 @@ pub(crate) fn sample_proposed_analysis(capture_id: i64) -> Analysis {
                 checked: FactCheck {
                     quote: true,
                     quantity: true,
+                    origin: Origin::Document,
                     ..FactCheck::default()
                 },
                 ..Fact::default()
@@ -889,6 +948,7 @@ pub(crate) fn sample_proposed_analysis(capture_id: i64) -> Analysis {
                 remark: String::new(),
             }],
             nothing_reason: String::new(),
+            nothing_reason_ai: String::new(),
         }),
         run: Some(AnalysisRun {
             provider: "Ollama local".into(),

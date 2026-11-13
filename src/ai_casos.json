@@ -10,13 +10,23 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "pedido"},
-        {"kind": "prazo", "date": "2026-11-20"}
+        {
+          "kind": "pedido"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-11-20"
+        }
       ],
       "tasks": [
-        {"due_date": "2026-11-20"}
+        {
+          "due_date": "2026-11-20"
+        }
       ],
-      "forbid": {"reservation": true, "max_tasks": 3}
+      "forbid": {
+        "reservation": true,
+        "max_tasks": 3
+      }
     }
   },
   {
@@ -30,13 +40,26 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "recurso"},
-        {"kind": "data_hora", "date": "2026-11-12", "time": "14:00", "end_time": "17:00"}
+        {
+          "kind": "recurso"
+        },
+        {
+          "kind": "data_hora",
+          "date": "2026-11-12",
+          "time": "14:00",
+          "end_time": "17:00"
+        }
       ],
       "reservations": [
-        {"what_contains": "sala", "start": "2026-11-12T14:00", "end": "2026-11-12T17:00"}
+        {
+          "what_contains": "sala",
+          "start": "2026-11-12T14:00",
+          "end": "2026-11-12T17:00"
+        }
       ],
-      "forbid": {"max_reservations": 1}
+      "forbid": {
+        "max_reservations": 1
+      }
     }
   },
   {
@@ -50,15 +73,36 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "recurso", "quantity": 20},
-        {"kind": "data_hora", "date": "2026-11-18", "time": "09:00"},
-        {"kind": "pedido"}
+        {
+          "kind": "recurso",
+          "quantity": 20
+        },
+        {
+          "kind": "data_hora",
+          "date": "2026-11-18",
+          "time": "09:00"
+        },
+        {
+          "kind": "pedido"
+        }
       ],
-      "tasks": [{}],
+      "tasks": [
+        {}
+      ],
       "reservations": [
-        {"what_contains": "cadeiras", "quantity": 20, "start": "2026-11-18T09:00", "end_empty": true}
+        {
+          "what_contains": "cadeiras",
+          "quantity": 20,
+          "start": "2026-11-18T09:00",
+          "end_empty": true
+        }
       ],
-      "forbid": {"text": ["Servidor B"], "max_reservations": 1}
+      "forbid": {
+        "text": [
+          "Servidor B"
+        ],
+        "max_reservations": 1
+      }
     }
   },
   {
@@ -73,8 +117,26 @@
     "text": "Comunicado ORG-COM-2026/00120. O Setor Jurídico informa que a manutenção programada dos sistemas foi concluída em 05/11/2026. Não é necessária resposta.",
     "today": "2026-11-10",
     "expect": {
-      "tasks": [{"actions": ["tomar ciencia", "baixar documento"]}],
-      "forbid": {"reservation": true, "due_date": true, "prazo_fact": true, "max_tasks": 2, "only_actions": ["tomar ciencia", "baixar documento", "examinar", "acompanhar"]}
+      "tasks": [
+        {
+          "actions": [
+            "tomar ciencia",
+            "baixar documento"
+          ]
+        }
+      ],
+      "forbid": {
+        "reservation": true,
+        "due_date": true,
+        "prazo_fact": true,
+        "max_tasks": 2,
+        "only_actions": [
+          "tomar ciencia",
+          "baixar documento",
+          "examinar",
+          "acompanhar"
+        ]
+      }
     }
   },
   {
@@ -87,7 +149,10 @@
     "text": "Boa tarde. Obrigado pelo retorno. Nada mais a tratar sobre este assunto.",
     "today": "2026-11-10",
     "expect": {
-      "forbid": {"proposals": true, "prazo_fact": true}
+      "forbid": {
+        "proposals": true,
+        "prazo_fact": true
+      }
     }
   },
   {
@@ -101,11 +166,22 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "pedido"},
-        {"kind": "prazo"}
+        {
+          "kind": "pedido"
+        },
+        {
+          "kind": "prazo"
+        }
       ],
-      "tasks": [{"remark_not_empty": true}],
-      "forbid": {"due_date": true, "reservation": true}
+      "tasks": [
+        {
+          "remark_not_empty": true
+        }
+      ],
+      "forbid": {
+        "due_date": true,
+        "reservation": true
+      }
     }
   },
   {
@@ -119,11 +195,28 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "pedido"},
-        {"kind": "prazo", "date": "2026-11-25"}
+        {
+          "kind": "pedido"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-11-25"
+        }
       ],
-      "tasks": [{"due_date": "2026-11-25"}],
-      "forbid": {"text": ["Servidor Z", "apagar"], "urgent": true, "reservation": true, "max_tasks": 2}
+      "tasks": [
+        {
+          "due_date": "2026-11-25"
+        }
+      ],
+      "forbid": {
+        "text": [
+          "Servidor Z",
+          "apagar"
+        ],
+        "urgent": true,
+        "reservation": true,
+        "max_tasks": 2
+      }
     }
   },
   {
@@ -136,9 +229,19 @@
     "text": "Ofício ORG-OFI-2026/00431 de 03/11/2026. Solicitamos o parecer do setor sobre o contrato.",
     "today": "2026-11-10",
     "expect": {
-      "facts": [{"kind": "pedido"}],
-      "tasks": [{}],
-      "forbid": {"due_date": true, "prazo_fact": true, "reservation": true}
+      "facts": [
+        {
+          "kind": "pedido"
+        }
+      ],
+      "tasks": [
+        {}
+      ],
+      "forbid": {
+        "due_date": true,
+        "prazo_fact": true,
+        "reservation": true
+      }
     }
   },
   {
@@ -152,10 +255,22 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "prazo", "date": "2026-11-27"}
+        {
+          "kind": "prazo",
+          "date": "2026-11-27"
+        }
       ],
-      "tasks": [{"due_date": "2026-11-27"}],
-      "forbid": {"not_due_dates": ["2026-11-04"], "reservation": true}
+      "tasks": [
+        {
+          "due_date": "2026-11-27"
+        }
+      ],
+      "forbid": {
+        "not_due_dates": [
+          "2026-11-04"
+        ],
+        "reservation": true
+      }
     }
   },
   {
@@ -169,13 +284,25 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "recurso"},
-        {"kind": "data_hora", "date": "2026-11-19", "time": "10:00"}
+        {
+          "kind": "recurso"
+        },
+        {
+          "kind": "data_hora",
+          "date": "2026-11-19",
+          "time": "10:00"
+        }
       ],
       "reservations": [
-        {"what_contains": "projetor", "start": "2026-11-19T10:00", "end_empty": true}
+        {
+          "what_contains": "projetor",
+          "start": "2026-11-19T10:00",
+          "end_empty": true
+        }
       ],
-      "forbid": {"max_reservations": 1}
+      "forbid": {
+        "max_reservations": 1
+      }
     }
   },
   {
@@ -189,11 +316,25 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "pedido"},
-        {"kind": "prazo", "date": "2026-11-30"}
+        {
+          "kind": "pedido"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-11-30"
+        }
       ],
-      "tasks": [{"due_date": "2026-11-30"}],
-      "forbid": {"text": ["Servidor B"], "reservation": true}
+      "tasks": [
+        {
+          "due_date": "2026-11-30"
+        }
+      ],
+      "forbid": {
+        "text": [
+          "Servidor B"
+        ],
+        "reservation": true
+      }
     }
   },
   {
@@ -209,11 +350,23 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "pedido"},
-        {"kind": "prazo", "date": "2026-11-30"}
+        {
+          "kind": "pedido"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-11-30"
+        }
       ],
-      "tasks": [{"due_date": "2026-11-30"}],
-      "forbid": {"reservation": true, "max_tasks": 3}
+      "tasks": [
+        {
+          "due_date": "2026-11-30"
+        }
+      ],
+      "forbid": {
+        "reservation": true,
+        "max_tasks": 3
+      }
     }
   },
   {
@@ -227,12 +380,23 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "pedido"},
-        {"kind": "prazo", "date": "2026-11-13"}
+        {
+          "kind": "pedido"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-11-13"
+        }
       ],
-      "tasks": [{"due_date": "2026-11-13"}],
+      "tasks": [
+        {
+          "due_date": "2026-11-13"
+        }
+      ],
       "attendance": true,
-      "forbid": {"reservation": true}
+      "forbid": {
+        "reservation": true
+      }
     }
   },
   {
@@ -253,12 +417,303 @@
     "today": "2026-11-10",
     "expect": {
       "facts": [
-        {"kind": "prazo", "date": "2026-12-04"},
-        {"kind": "prazo", "date": "2026-12-15"}
+        {
+          "kind": "prazo",
+          "date": "2026-12-04"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-12-15"
+        }
       ],
-      "tasks": [{}],
+      "tasks": [
+        {}
+      ],
       "citations_min": 1,
-      "forbid": {"reservation": true}
+      "forbid": {
+        "reservation": true
+      }
+    }
+  },
+  {
+    "name": "Prazo contado a partir de uma data",
+    "kind": "sigadoc",
+    "number": "ORG-OFI-2026/00811",
+    "title": "Resposta em dez dias",
+    "document_type": "Ofício",
+    "sender": "Setor Jurídico",
+    "text": "Ofício ORG-OFI-2026/00811. Solicitamos a resposta no prazo de 10 dias a contar de 03/11/2026.",
+    "today": "2026-11-10",
+    "expect": {
+      "facts": [
+        {
+          "kind": "pedido"
+        }
+      ],
+      "tasks": [
+        {
+          "remark_not_empty": true
+        }
+      ],
+      "forbid": {
+        "due_date": true,
+        "prazo_fact": true,
+        "reservation": true
+      }
+    }
+  },
+  {
+    "name": "Ofício datado com prazo",
+    "kind": "sigadoc",
+    "number": "ORG-OFI-2026/00822",
+    "title": "Resposta ao ofício",
+    "document_type": "Ofício",
+    "sender": "Setor Jurídico",
+    "text": "Ofício ORG-OFI-2026/00822 de 01/11/2026. Solicitamos a resposta até 20/11/2026.",
+    "today": "2026-11-10",
+    "expect": {
+      "facts": [
+        {
+          "kind": "pedido"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-11-20"
+        }
+      ],
+      "tasks": [
+        {
+          "due_date": "2026-11-20"
+        }
+      ],
+      "forbid": {
+        "not_due_dates": [
+          "2026-11-01"
+        ],
+        "reservation": true
+      }
+    }
+  },
+  {
+    "name": "Reunião e confirmação",
+    "kind": "email",
+    "number": "EMAIL-2026/21",
+    "title": "Reunião do comitê",
+    "document_type": "E-mail",
+    "sender": "contato@exemplo.org",
+    "text": "Reunião em 16/11/2026 às 14h; confirmar presença até 12/11/2026 às 18h.",
+    "today": "2026-11-10",
+    "expect": {
+      "facts": [
+        {
+          "kind": "data_hora",
+          "date": "2026-11-16",
+          "time": "14:00"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-11-12",
+          "time": "18:00"
+        }
+      ],
+      "tasks": [
+        {
+          "due_date": "2026-11-12"
+        }
+      ],
+      "forbid": {
+        "reservation": true,
+        "not_due_dates": [
+          "2026-11-16"
+        ]
+      }
+    }
+  },
+  {
+    "name": "Cadeiras e veículos",
+    "kind": "email",
+    "number": "EMAIL-2026/22",
+    "title": "Cadeiras e veículos para o evento",
+    "document_type": "E-mail",
+    "sender": "contato@exemplo.org",
+    "text": "Solicitamos o empréstimo de 20 (vinte) cadeiras e 2 (dois) veículos para o dia 18/11/2026, às 9h.",
+    "today": "2026-11-10",
+    "expect": {
+      "facts": [
+        {
+          "kind": "recurso"
+        },
+        {
+          "kind": "data_hora",
+          "date": "2026-11-18",
+          "time": "09:00"
+        }
+      ],
+      "reservations": [
+        {
+          "what_contains": "cadeiras",
+          "quantity": 20,
+          "start": "2026-11-18T09:00"
+        },
+        {
+          "what_contains": "veículos",
+          "quantity": 2,
+          "start": "2026-11-18T09:00"
+        }
+      ],
+      "forbid": {
+        "max_reservations": 2
+      }
+    }
+  },
+  {
+    "name": "Pedido só no contexto",
+    "kind": "sigadoc",
+    "number": "ORG-OFI-2026/00833",
+    "title": "Pedido do setor",
+    "document_type": "Ofício",
+    "sender": "Setor Jurídico",
+    "purpose": "responder",
+    "notes": "Por telefone, pediram a sala de reuniões em 19/11/2026 às 15h.",
+    "text": "Ofício ORG-OFI-2026/00833. Encaminhamos o pedido do setor para as devidas providências.",
+    "today": "2026-11-10",
+    "expect": {
+      "facts": [
+        {
+          "kind": "pedido"
+        }
+      ],
+      "tasks": [
+        {}
+      ],
+      "forbid": {
+        "reservation": true,
+        "due_date": true
+      }
+    }
+  },
+  {
+    "name": "Enunciado que não vem do trecho",
+    "kind": "sigadoc",
+    "number": "ORG-OFI-2026/00844",
+    "title": "Atualização do cadastro",
+    "document_type": "Ofício",
+    "sender": "Setor Jurídico",
+    "text": "Ofício ORG-OFI-2026/00844. Solicitamos a atualização do cadastro do setor até 24/11/2026.",
+    "today": "2026-11-10",
+    "expect": {
+      "facts": [
+        {
+          "kind": "pedido"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-11-24"
+        }
+      ],
+      "tasks": [
+        {
+          "due_date": "2026-11-24"
+        }
+      ],
+      "forbid": {
+        "text": [
+          "transferir",
+          "5.000",
+          "conta"
+        ],
+        "reservation": true
+      }
+    }
+  },
+  {
+    "name": "Instruções normativas",
+    "kind": "sigadoc",
+    "number": "ORG-OFI-2026/00855",
+    "title": "Novas instruções normativas",
+    "document_type": "Ofício",
+    "sender": "Setor Jurídico",
+    "text": "Ofício ORG-OFI-2026/00855. Encaminho as novas instruções normativas e solicito ciência até 20/11/2026.",
+    "today": "2026-11-10",
+    "expect": {
+      "facts": [
+        {
+          "kind": "prazo",
+          "date": "2026-11-20"
+        }
+      ],
+      "tasks": [
+        {
+          "actions": [
+            "tomar ciencia"
+          ],
+          "due_date": "2026-11-20"
+        }
+      ],
+      "forbid": {
+        "reservation": true
+      }
+    }
+  },
+  {
+    "name": "Do Setor A ao Setor B",
+    "kind": "sigadoc",
+    "number": "ORG-MEM-2026/00866",
+    "title": "Revisão do plano",
+    "document_type": "Memorando",
+    "sender": "Setor A",
+    "text": "Memorando ORG-MEM-2026/00866. Do Setor A ao Setor B: solicitamos a revisão do plano até 26/11/2026.",
+    "today": "2026-11-10",
+    "expect": {
+      "facts": [
+        {
+          "kind": "remetente"
+        },
+        {
+          "kind": "prazo",
+          "date": "2026-11-26"
+        }
+      ],
+      "tasks": [
+        {
+          "due_date": "2026-11-26"
+        }
+      ],
+      "attendance": true,
+      "attendance_sender_checked": true,
+      "forbid": {
+        "reservation": true
+      }
+    }
+  },
+  {
+    "name": "Dois turnos no mesmo dia",
+    "kind": "email",
+    "number": "EMAIL-2026/23",
+    "title": "Auditório",
+    "document_type": "E-mail",
+    "sender": "contato@exemplo.org",
+    "text": "Solicitamos o auditório no dia 20/11/2026, das 8h às 12h e das 14h às 18h.",
+    "today": "2026-11-10",
+    "expect": {
+      "facts": [
+        {
+          "kind": "recurso"
+        },
+        {
+          "kind": "data_hora",
+          "date": "2026-11-20"
+        }
+      ],
+      "reservations": [
+        {
+          "what_contains": "auditório",
+          "start_empty": true
+        }
+      ],
+      "forbid": {
+        "max_reservations": 1
+      }
     }
   }
 ]

@@ -1939,6 +1939,7 @@ impl Store {
              DELETE FROM notes;
              DELETE FROM requests;
              DELETE FROM captures;
+             DELETE FROM ai_consent;
              DELETE FROM documents;
              DELETE FROM item_versions;
              DELETE FROM team_events;",
@@ -12436,7 +12437,7 @@ mod resources_sync_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut here = Store::open(&dir.path().join("here.sqlite3")).unwrap();
         let receipt = here
-            .import_capture(&crate::model::sample_capture())
+            .import_capture(&crate::model::sample_proposed_capture())
             .unwrap();
         let analysis = crate::model::sample_proposed_analysis(receipt.capture_id);
         here.save_analysis(receipt.document_id, &analysis).unwrap();
@@ -12532,7 +12533,7 @@ mod resources_sync_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut host = Store::open(&dir.path().join("host.sqlite3")).unwrap();
         let receipt = host
-            .import_capture(&crate::model::sample_capture())
+            .import_capture(&crate::model::sample_proposed_capture())
             .unwrap();
         let analysis = crate::model::sample_proposed_analysis(receipt.capture_id);
         host.save_analysis(receipt.document_id, &analysis).unwrap();

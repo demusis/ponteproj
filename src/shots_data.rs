@@ -1069,6 +1069,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
             planned_doc_type: "Ofício".into(),
             facts: vec!["f2".into()],
             remark: String::new(),
+            received_from_checked: false,
         }),
         reservations: vec![
             ReservationProposal {
@@ -1101,6 +1102,7 @@ fn analysis(store: &mut Store, ids: &Ids) -> Result<()> {
             },
         ],
         nothing_reason: String::new(),
+        nothing_reason_ai: String::new(),
     };
     let analysis = Analysis {
         capture_id: ids.logistics_capture,

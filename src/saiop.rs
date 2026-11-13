@@ -5912,6 +5912,7 @@ mod proposal_tests {
             planned_doc_type: "Ofício".into(),
             facts: vec!["f1".into()],
             remark: String::new(),
+            received_from_checked: false,
         }
     }
 

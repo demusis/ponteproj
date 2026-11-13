@@ -1001,6 +1001,7 @@ pub fn respond(
     input: &str,
     schema: Option<Value>,
     reporter: &crate::ai::Reporter,
+    ledger: &crate::ai::Ledger,
 ) -> Result<String> {
     reporter.check()?;
     let token = access_token(shared)?;
@@ -1012,9 +1013,11 @@ pub fn respond(
         input,
         schema,
         reporter,
+        ledger,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn respond_at(
     base: &str,
     token: &str,
@@ -1023,6 +1026,7 @@ fn respond_at(
     input: &str,
     schema: Option<Value>,
     reporter: &crate::ai::Reporter,
+    ledger: &crate::ai::Ledger,
 ) -> Result<String> {
     respond_at_with(
         base,
@@ -1032,6 +1036,7 @@ fn respond_at(
         input,
         schema,
         reporter,
+        ledger,
         &crate::ai::Timing::standard(),
     )
 }
@@ -1184,6 +1189,7 @@ fn respond_at_with(
     input: &str,
     schema: Option<Value>,
     reporter: &crate::ai::Reporter,
+    ledger: &crate::ai::Ledger,
     timing: &crate::ai::Timing,
 ) -> Result<String> {
     ensure!(
@@ -1191,7 +1197,8 @@ fn respond_at_with(
         "Escolha o modelo do ChatGPT em Ajustes ▸ Inteligência artificial."
     );
     reporter.check()?;
-    let mut strict = schema.as_ref().is_some_and(strict_ok) && !strict_refused(base);
+    let mut strict =
+        schema.as_ref().is_some_and(strict_ok) && !strict_refused(base) && !ledger.strict_dropped();
     let mut was_strict = false;
     loop {
         let call = Exchange {
@@ -1200,6 +1207,7 @@ fn respond_at_with(
             body: request_body(model, instructions, input, schema.as_ref(), strict),
             strict,
             limit: timing.chatgpt_timeout,
+            ledger: ledger.clone(),
         };
         let result = crate::ai::with_retries(reporter, timing, || {
             let call = call.clone();
@@ -1209,6 +1217,7 @@ fn respond_at_with(
             Err(error) if strict && error.downcast_ref::<SchemaRefused>().is_some() => {
                 strict = false;
                 was_strict = true;
+                ledger.drop_strict();
                 reporter.check()?;
             }
             other => {
@@ -1255,6 +1264,7 @@ struct Exchange {
     body: Value,
     strict: bool,
     limit: Duration,
+    ledger: crate::ai::Ledger,
 }
 
 fn network_failure(error: &reqwest::Error, limit: Duration) -> anyhow::Error {
@@ -1311,6 +1321,7 @@ fn refusal(
 /// One request and its streamed answer, on the helper thread.
 fn exchange(call: Exchange, reporter: &crate::ai::Reporter) -> Result<String> {
     reporter.check()?;
+    call.ledger.take()?;
     let client = Client::builder()
         .connect_timeout(crate::ai::CHATGPT_CONNECT_TIMEOUT)
         .timeout(call.limit)
@@ -1786,10 +1797,21 @@ mod tests {
             "{\"dado\":1}",
             Some(json!({"type":"object"})),
             &silent,
+            &crate::ai::Ledger::analysis(),
         )
         .unwrap();
         assert_eq!(text, "ol\u{e1}");
-        let error = respond_at(&base, "tok", "limited", "i", "d", None, &silent).unwrap_err();
+        let error = respond_at(
+            &base,
+            "tok",
+            "limited",
+            "i",
+            "d",
+            None,
+            &silent,
+            &crate::ai::Ledger::analysis(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("cota"), "{error}");
         server.join().unwrap();
         let (head, body) = received.recv().unwrap();
@@ -1905,6 +1927,7 @@ mod transport_tests {
             "{\"dado\":1}",
             schema,
             reporter,
+            &crate::ai::Ledger::analysis(),
             timing,
         )
     }
@@ -2014,6 +2037,56 @@ mod transport_tests {
         assert_eq!(bodies[0]["text"]["format"]["strict"], true);
         assert_eq!(bodies[1]["text"]["format"]["strict"], false);
         assert_eq!(bodies[2]["text"]["format"]["strict"], true);
+    }
+
+    #[test]
+    fn the_sends_of_a_job_are_capped_and_the_plain_fallback_is_kept_across_its_attempts() {
+        let refusal = r#"HTTP 400|{"error":{"message":"Bad request."}}"#;
+        // The cap of one send leaves no room for the plain repeat.
+        let (base, received, _server) =
+            mock_responses(vec![refusal.into(), "OK {\"a\":\"x\",\"b\":null}".into()]);
+        let silent = Reporter::silent();
+        let one = crate::ai::Ledger::new(1);
+        let error = respond_at_with(
+            &base,
+            "tok",
+            "gpt-x",
+            "i",
+            "{}",
+            Some(strict_schema()),
+            &silent,
+            &one,
+            &quick(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("muitas vezes"), "{error}");
+        assert_eq!(received.try_iter().count(), 1);
+        // With room: strict, then plain, and the job remembers it, so a
+        // transient failure afterwards is retried plain.
+        let (base, received, _server) = mock_responses(vec![
+            refusal.into(),
+            "HTTP 503|{}".into(),
+            "OK {\"a\":\"x\",\"b\":null}".into(),
+        ]);
+        let ledger = crate::ai::Ledger::analysis();
+        respond_at_with(
+            &base,
+            "tok",
+            "gpt-x",
+            "i",
+            "{}",
+            Some(strict_schema()),
+            &silent,
+            &ledger,
+            &quick(),
+        )
+        .unwrap();
+        let bodies: Vec<Value> = received.try_iter().collect();
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies[0]["text"]["format"]["strict"], true);
+        assert_eq!(bodies[1]["text"]["format"]["strict"], false);
+        assert_eq!(bodies[2]["text"]["format"]["strict"], false);
+        assert!(ledger.strict_dropped());
     }
 
     #[test]

@@ -860,9 +860,34 @@ impl Store {
         Ok(draft_id)
     }
 
+    /// The text of one capture of a document, when it is in this library.
+    pub fn capture_text(&self, document_id: i64, capture_id: i64) -> Option<String> {
+        let blob: Vec<u8> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM captures WHERE id=?1 AND document_id=?2",
+                params![capture_id, document_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()??;
+        decode::<Capture>(&blob).ok().map(|capture| capture.text)
+    }
+
+    /// Saves an analysis. The program checks it again against the document
+    /// first ([`crate::evidence::recheck_analysis`]) when the capture is at
+    /// hand: a fact whose quote the document does not write, or a value its
+    /// quote does not say, is saved cleared, never as "conferido".
     pub fn save_analysis(&mut self, id: i64, analysis: &Analysis) -> Result<()> {
         validate_analysis(analysis)?;
         crate::evidence::validate(&analysis.materials, &analysis.citations)?;
+        let mut rechecked = analysis.clone();
+        if let Some(text) = self.capture_text(id, analysis.capture_id) {
+            let context = rechecked.human_context.clone();
+            crate::evidence::recheck_analysis(&mut rechecked, &text, &context);
+            validate_analysis(&rechecked)?;
+        }
+        let analysis = &rechecked;
         if let Some(cfg) = self.client_config()? {
             if !analysis.facts.is_empty() || analysis.proposals.is_some() || analysis.run.is_some()
             {
@@ -1483,7 +1508,7 @@ fn collapse(value: &str) -> String {
 /// not write, a deadline without its fact, a quantity above 1 without a fact
 /// that says it) is refused, whatever wrote it.
 fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
-    use crate::evidence::{dates_in, quantities_in, times_in};
+    use crate::evidence::{date_of_quote, fact_times, quantity_before, quantity_of_quote};
     ensure!(
         analysis.facts.len() <= MAX_FACTS,
         "A análise tem fatos demais."
@@ -1525,6 +1550,18 @@ fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
                 "Um fato marcado como conferido não tem o trecho na fonte."
             );
         }
+        ensure!(
+            !fact.checked.quote || fact.checked.origin != crate::model::Origin::Nowhere,
+            "Um fato marcado como conferido não diz onde o trecho foi encontrado."
+        );
+        ensure!(
+            fact.checked.origin.is_written()
+                || !(fact.checked.date
+                    || fact.checked.time
+                    || fact.checked.end_time
+                    || fact.checked.quantity),
+            "Um valor conferido não pode vir só do que a pessoa escreveu."
+        );
         let claims = [
             ("data", fact.date.is_some(), fact.checked.date),
             ("hora", fact.time.is_some(), fact.checked.time),
@@ -1543,13 +1580,15 @@ fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
                 "Data de fato inválida."
             );
             ensure!(
-                !fact.checked.date || dates_in(&fact.quote).contains(date),
+                !fact.checked.date
+                    || date_of_quote(&fact.quote, &fact.kind).as_deref() == Some(date.as_str()),
                 "Uma data conferida não está escrita no trecho do fato."
             );
         }
-        for (value, checked) in [
-            (&fact.time, fact.checked.time),
-            (&fact.end_time, fact.checked.end_time),
+        let read_times = fact_times(&fact.quote, &fact.kind);
+        for (value, checked, read) in [
+            (&fact.time, fact.checked.time, &read_times.start),
+            (&fact.end_time, fact.checked.end_time, &read_times.end),
         ] {
             if let Some(time) = value {
                 ensure!(
@@ -1557,7 +1596,7 @@ fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
                     "Hora de fato inválida."
                 );
                 ensure!(
-                    !checked || times_in(&fact.quote).contains(time),
+                    !checked || read.as_deref() == Some(time.as_str()),
                     "Uma hora conferida não está escrita no trecho do fato."
                 );
             }
@@ -1568,7 +1607,7 @@ fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
                 "Quantidade de fato inválida."
             );
             ensure!(
-                !fact.checked.quantity || quantities_in(&fact.quote).contains(&quantity),
+                !fact.checked.quantity || quantity_of_quote(&fact.quote) == Some(quantity),
                 "Uma quantidade conferida não está escrita no trecho do fato."
             );
         }
@@ -1602,6 +1641,7 @@ fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
                     fact_of(id).context("O prazo de uma proposta cita um fato que não existe.")?;
                 ensure!(
                     matches!(fact.kind.as_str(), "prazo" | "data_hora")
+                        && fact.checked.origin.is_written()
                         && fact.checked.date
                         && fact.date.as_deref() == Some(date.as_str())
                         && collapse(due_source) == collapse(&fact.quote),
@@ -1626,6 +1666,8 @@ fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
         );
         ensure!(
             proposals.nothing_reason.chars().count() <= 600
+                && proposals.nothing_reason_ai.chars().count() <= 300
+                && !proposals.nothing_reason_ai.chars().any(char::is_control)
                 && (!proposals.is_empty() || !proposals.nothing_reason.trim().is_empty()),
             "Sem propostas, a análise precisa dizer por quê."
         );
@@ -1667,6 +1709,10 @@ fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
                     && attendance.remark.chars().count() <= 600,
                 "Proposta de atendimento inválida."
             );
+            ensure!(
+                !attendance.received_from_checked || !attendance.received_from.trim().is_empty(),
+                "Recebido de conferido sem o nome."
+            );
             cited(&attendance.facts, false)?;
             deadline(
                 &attendance.due_fact,
@@ -1698,14 +1744,15 @@ fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
                         .contains(&collapse(&reservation.what).to_lowercase()),
                 "O que a reserva pede não está escrito no trecho do fato citado."
             );
+            ensure!(
+                what_fact.checked.origin.is_written(),
+                "O que a reserva pede vem só do que a pessoa escreveu."
+            );
             if reservation.quantity > 1 {
-                let said = std::iter::once(reservation.what_fact.as_str())
-                    .chain(reservation.facts.iter().map(String::as_str))
-                    .filter_map(fact_of)
-                    .any(|f| f.checked.quantity && f.quantity == Some(reservation.quantity));
                 ensure!(
-                    said,
-                    "Uma reserva de mais de uma unidade não tem fato que diga a quantidade."
+                    quantity_before(&what_fact.quote, &reservation.what)
+                        == Some(reservation.quantity),
+                    "Uma reserva de mais de uma unidade não tem a quantidade escrita antes do nome do que pede."
                 );
             }
             let moment = |date: &str, time: &str| format!("{date}T{time}");
@@ -1715,7 +1762,9 @@ fn validate_ai_parts(analysis: &Analysis) -> Result<()> {
                     let when =
                         fact_of(id).context("Uma reserva cita um horário que não existe.")?;
                     ensure!(
-                        when.kind == "data_hora" && when.checked.quote,
+                        when.kind == "data_hora"
+                            && when.checked.quote
+                            && when.checked.origin.is_written(),
                         "O horário de uma reserva não vem de um fato de data e hora."
                     );
                     if let Some(start) = start {
@@ -2392,7 +2441,10 @@ mod ai_parts_tests {
     fn refused(mutate: impl FnOnce(&mut Analysis), why: &str) {
         let mut analysis = good();
         mutate(&mut analysis);
-        let error = validate_analysis(&analysis).unwrap_err().to_string();
+        let error = validate_analysis(&analysis)
+            .err()
+            .unwrap_or_else(|| panic!("not refused: {why}"))
+            .to_string();
         assert!(!error.is_empty(), "{why}");
     }
 
@@ -2662,8 +2714,28 @@ mod ai_parts_tests {
             "quantity not said by a fact",
         );
         refused(
-            |a| a.facts[1].checked.quantity = false,
-            "quantity fact unchecked",
+            |a| {
+                a.facts[1].quote = "reserva de cadeiras brancas".into();
+                a.facts[1].quantity = None;
+                a.facts[1].checked.quantity = false;
+            },
+            "quantity not written before the name in the quote of its own fact",
+        );
+        refused(
+            |a| {
+                // The number stands in another fact, not in the quote of the
+                // resource: it does not count.
+                a.facts[1].quote = "reserva de cadeiras brancas".into();
+                a.facts[1].quantity = None;
+                a.facts[1].checked.quantity = false;
+                a.facts[0].quantity = Some(20);
+                a.facts[0].checked.quantity = false;
+            },
+            "quantity from another fact",
+        );
+        refused(
+            |a| a.facts[1].checked.origin = crate::model::Origin::Context,
+            "what asked only in the context",
         );
         refused(
             |a| a.proposals.as_mut().unwrap().reservations[0].when_fact = None,
@@ -2746,7 +2818,7 @@ mod ai_parts_tests {
     fn the_store_saves_and_reads_back_an_analysis_with_proposals() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("a.sqlite3")).unwrap();
-        let receipt = store.import_capture(&sample_capture()).unwrap();
+        let receipt = store.import_capture(&sample_proposed_capture()).unwrap();
         let analysis = sample_proposed_analysis(receipt.capture_id);
         store.save_analysis(receipt.document_id, &analysis).unwrap();
         let loaded = store
@@ -2757,6 +2829,31 @@ mod ai_parts_tests {
         assert_eq!(loaded.facts, analysis.facts);
         assert_eq!(loaded.proposals, analysis.proposals);
         assert_eq!(loaded.run, analysis.run);
+        // The document is checked again at the door: a library whose document
+        // does not write the quotes keeps the facts unchecked and the
+        // proposals that stood on them are gone.
+        let other = store
+            .import_capture(&{
+                let mut other = sample_capture();
+                other.document_number = "SEFAZ-PRO-2026/00002".into();
+                other.source_url = "https://www.sigadoc.mt.gov.br/sigaex/app/expediente/doc?sigla=SEFAZ-PRO-2026%2F00002".into();
+                other
+            })
+            .unwrap();
+        let tampered = sample_proposed_analysis(other.capture_id);
+        store.save_analysis(other.document_id, &tampered).unwrap();
+        let kept = store
+            .load_document(other.document_id)
+            .unwrap()
+            .analysis
+            .unwrap();
+        assert!(kept
+            .facts
+            .iter()
+            .all(|f| !f.checked.quote && f.date.is_none()));
+        let proposals = kept.proposals.unwrap();
+        assert!(proposals.tasks.is_empty() && proposals.reservations.is_empty());
+        assert!(kept.deadline_candidate.is_none());
         // A claim that cannot be re-derived is refused at the door.
         let mut forged = analysis;
         forged.facts[0].date = Some("2026-01-01".into());

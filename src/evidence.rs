@@ -100,18 +100,8 @@ pub fn find_quote(
     sources: &[Source],
     source_id: &str,
 ) -> bool {
-    let quote = normalized(quote);
-    if quote.is_empty() {
-        return false;
-    }
-    if source_id.is_empty() {
-        return normalized(capture_text).contains(&quote)
-            || normalized(human_context).contains(&quote);
-    }
-    sources
-        .iter()
-        .find(|source| source.id == source_id)
-        .is_some_and(|source| normalized(&source.text).contains(&quote))
+    quote_origin(quote, capture_text, human_context, sources, source_id)
+        != crate::model::Origin::Nowhere
 }
 
 /// Lowercase without accents, for comparing words.
@@ -882,39 +872,403 @@ pub fn quantities_in(text: &str) -> Vec<u32> {
     unique(found.into_iter().map(|(_, value)| value))
 }
 
+// ---------------------------------------------------------------------------
+// Which value a quote says. A value is "conferido" only when the quote says
+// exactly that value and nothing that could be taken for it: one date, one
+// time or one adjacent range, one quantity. Anything ambiguous is not
+// checked (the fact is kept; the person fills the field).
+
+const DEADLINE_CUES: [&str; 7] = [
+    "ate",
+    "prazo",
+    "limite",
+    "vence",
+    "vencem",
+    "vencimento",
+    "impreterivelmente",
+];
+/// Words that, right before a date, say it is where a count starts or the
+/// date of a paper: never a deadline.
+const START_OF_COUNT: [&[&str]; 17] = [
+    &["contar", "de"],
+    &["contar", "do"],
+    &["contar", "da"],
+    &["contados", "de"],
+    &["contados", "do"],
+    &["contado", "de"],
+    &["contado", "do"],
+    &["partir", "de"],
+    &["partir", "do"],
+    &["partir", "da"],
+    &["desde"],
+    &["desde", "o"],
+    &["datado", "de"],
+    &["datado", "em"],
+    &["datada", "de"],
+    &["datada", "em"],
+    &["datado", "do"],
+];
+const DOCUMENT_WORDS: [&str; 16] = [
+    "oficio",
+    "memorando",
+    "despacho",
+    "mail",
+    "email",
+    "documento",
+    "circular",
+    "comunicado",
+    "portaria",
+    "ata",
+    "carta",
+    "nota",
+    "mensagem",
+    "protocolo",
+    "processo",
+    "datado",
+];
+
+/// The words (folded) of `text`, split at anything that is not a letter.
+fn folded_words(text: &str) -> Vec<String> {
+    fold(text)
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether the text before a date (at most its last 40 characters count for
+/// a cue) introduces it as a deadline.
+fn introduced_as_deadline(before: &str) -> bool {
+    let collapsed = before.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut words = folded_words(&collapsed);
+    if words.last().is_some_and(|w| w == "dia") {
+        words.pop();
+    }
+    if START_OF_COUNT.iter().any(|pattern| {
+        words.len() >= pattern.len()
+            && words[words.len() - pattern.len()..]
+                .iter()
+                .zip(pattern.iter())
+                .all(|(a, b)| a == b)
+    }) {
+        return false;
+    }
+    // "Ofício nº 12/2026 de 01/11/2026": the date of the paper.
+    if words
+        .last()
+        .is_some_and(|w| matches!(w.as_str(), "de" | "em" | "do"))
+    {
+        let near = &words[words.len().saturating_sub(4)..words.len() - 1];
+        if near.iter().any(|w| DOCUMENT_WORDS.contains(&w.as_str()))
+            && !near.iter().any(|w| DEADLINE_CUES.contains(&w.as_str()))
+        {
+            return false;
+        }
+    }
+    let tail: String = collapsed
+        .chars()
+        .rev()
+        .take(40)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    folded_words(&tail)
+        .iter()
+        .any(|w| DEADLINE_CUES.contains(&w.as_str()))
+}
+
+/// The one date a quote writes, as ISO; nothing when it writes none or more
+/// than one. For a "prazo" the date must also be introduced as a deadline
+/// ("até", "prazo de", "limite"…) and not as where a count starts ("a contar
+/// de") or as the date of the paper ("Ofício de 01/11/2026").
+pub fn date_of_quote(quote: &str, kind: &str) -> Option<String> {
+    let chars: Vec<char> = quote.chars().collect();
+    let hits = scan_dates(&chars);
+    let [hit] = hits.as_slice() else {
+        return None;
+    };
+    if kind == "prazo" && !introduced_as_deadline(&text_of(&chars, 0, hit.start)) {
+        return None;
+    }
+    Some(hit.value.clone())
+}
+
+/// The time of day a quote writes and, when written as one adjacent pair
+/// ("das 14h às 17h", "de 14h a 17h", "14h às 17h", "14h–17h", "entre 14h e
+/// 17h"), the end. One time alone is a start. Two ranges, a stray extra
+/// time, or a pair that does not end after it starts give nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TimeRead {
+    pub start: Option<String>,
+    pub end: Option<String>,
+}
+
+pub fn times_of_quote(quote: &str) -> TimeRead {
+    let chars: Vec<char> = quote.chars().collect();
+    let hits = scan_times(&chars);
+    match hits.as_slice() {
+        [one] => TimeRead {
+            start: Some(one.value.clone()),
+            end: None,
+        },
+        [first, second] => {
+            let between = fold(&text_of(&chars, first.end, second.start));
+            let joiner = between
+                .trim_matches(|c: char| c.is_whitespace() || c == ',')
+                .to_owned();
+            let adjacent = matches!(
+                joiner.as_str(),
+                "as" | "a" | "ate" | "e" | "-" | "–" | "—" | "ate as" | "as ate"
+            );
+            if adjacent && second.value > first.value {
+                TimeRead {
+                    start: Some(first.value.clone()),
+                    end: Some(second.value.clone()),
+                }
+            } else {
+                TimeRead::default()
+            }
+        }
+        _ => TimeRead::default(),
+    }
+}
+
+/// The times a fact's quote may check: [`times_of_quote`], and none for a
+/// "data_hora" fact whose quote does not write exactly one date.
+pub fn fact_times(quote: &str, kind: &str) -> TimeRead {
+    if kind == "data_hora" && scan_dates(&quote.chars().collect::<Vec<_>>()).len() != 1 {
+        return TimeRead::default();
+    }
+    times_of_quote(quote)
+}
+
+/// The one quantity a quote writes.
+pub fn quantity_of_quote(quote: &str) -> Option<u32> {
+    match quantities_in(quote).as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    }
+}
+
+/// The quantity written right before the name of a resource: the number
+/// (digits or words, with an optional "(vinte)"), up to two words between
+/// ("20 novas cadeiras", "duas de cadeiras") and then the name. Nothing when
+/// the name is not there or no number stands before it.
+pub fn quantity_before(quote: &str, what: &str) -> Option<u32> {
+    let chars: Vec<char> = quote.chars().collect();
+    let folded: Vec<char> = chars
+        .iter()
+        .flat_map(|c| fold(&c.to_string()).chars().collect::<Vec<_>>())
+        .collect();
+    if folded.len() != chars.len() {
+        return None;
+    }
+    let wanted: Vec<char> = fold(&what.split_whitespace().collect::<Vec<_>>().join(" "))
+        .chars()
+        .collect();
+    if wanted.is_empty() || wanted.len() > folded.len() {
+        return None;
+    }
+    let position = (0..=folded.len() - wanted.len()).find(|&i| {
+        folded[i..i + wanted.len()] == wanted[..] && (i == 0 || !folded[i - 1].is_alphanumeric())
+    })?;
+    let mut end = position;
+    let mut between = 0;
+    loop {
+        while end > 0 && chars[end - 1].is_whitespace() {
+            end -= 1;
+        }
+        if end == 0 {
+            return None;
+        }
+        let last = chars[end - 1];
+        if last == ')' {
+            let open = (0..end).rev().find(|&i| chars[i] == '(')?;
+            let inner: Vec<char> = chars[open + 1..end - 1].to_vec();
+            let digits: String = inner.iter().collect::<String>().trim().to_owned();
+            let inner_value = if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                digits.parse::<u32>().ok()
+            } else {
+                spelled_number(&inner)
+            }?;
+            // The number before the parenthesis, when there is one.
+            let outer = number_ending_at(&chars, open);
+            return match outer {
+                Some(value) if value != inner_value => None,
+                _ => (inner_value > 0).then_some(inner_value),
+            };
+        }
+        if last.is_ascii_digit() || last.is_alphabetic() {
+            if let Some(value) = number_ending_at(&chars, end) {
+                return (value > 0).then_some(value);
+            }
+            if last.is_ascii_digit() {
+                return None;
+            }
+            // A word between the number and the name: not a conjunction or a
+            // preposition that starts another phrase ("30 pessoas e cadeiras").
+            between += 1;
+            if between > 2 {
+                return None;
+            }
+            let word_end = end;
+            while end > 0 && chars[end - 1].is_alphabetic() {
+                end -= 1;
+            }
+            let word = fold(&text_of(&chars, end, word_end));
+            if FUNCTION_WORDS.contains(&word.as_str())
+                && !matches!(word.as_str(), "de" | "do" | "da")
+            {
+                return None;
+            }
+            continue;
+        }
+        return None;
+    }
+}
+
+/// The number (digits, or number words) whose last character is just before
+/// `end` (spaces skipped).
+fn number_ending_at(chars: &[char], mut end: usize) -> Option<u32> {
+    while end > 0 && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    if chars[end - 1].is_ascii_digit() {
+        let mut start = end;
+        while start > 0 && chars[start - 1].is_ascii_digit() {
+            start -= 1;
+        }
+        if end - start > 4 || !starts_alone(chars, start) {
+            return None;
+        }
+        if QUANTITY_BLOCK_BEFORE.contains(&prev_token(chars, start).as_str()) {
+            return None;
+        }
+        let value: u32 = text_of(chars, start, end).parse().ok()?;
+        if (end - start == 4 && (1900..=2100).contains(&value))
+            || matches!(
+                chars.get(start.wrapping_sub(1)),
+                Some('/' | ':' | '.' | ',')
+            )
+        {
+            return None;
+        }
+        return Some(value);
+    }
+    if chars[end - 1].is_alphabetic() {
+        let words = words_of(&chars[..end]);
+        for used in [3_usize, 1] {
+            if words.len() < used {
+                continue;
+            }
+            let at = words.len() - used;
+            if let Some((value, taken)) = number_words(&words, at) {
+                if taken == used && words[at + used - 1].1 == end {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The values of what the person wrote (purpose, notes: the text of the
+/// work context, which arrives as JSON), as plain lines. Text that is not
+/// JSON is returned as it is. Quotes are searched here, never in the
+/// punctuation of the JSON.
+pub fn context_values(human_context: &str) -> String {
+    fn walk(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) => out.push(text.clone()),
+            serde_json::Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    match serde_json::from_str::<serde_json::Value>(human_context) {
+        Ok(value @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) => {
+            let mut lines = Vec::new();
+            walk(&value, &mut lines);
+            lines.join("\n")
+        }
+        _ => human_context.to_owned(),
+    }
+}
+
+/// Where a quote is written: the document text first, then the selected
+/// source the fact names, and only then what the person wrote.
+pub fn quote_origin(
+    quote: &str,
+    capture_text: &str,
+    human_context: &str,
+    sources: &[Source],
+    source_id: &str,
+) -> crate::model::Origin {
+    use crate::model::Origin;
+    let quote = normalized(quote);
+    if quote.is_empty() {
+        return Origin::Nowhere;
+    }
+    if source_id.is_empty() {
+        if normalized(capture_text).contains(&quote) {
+            Origin::Document
+        } else if normalized(&context_values(human_context)).contains(&quote) {
+            Origin::Context
+        } else {
+            Origin::Nowhere
+        }
+    } else if sources
+        .iter()
+        .find(|source| source.id == source_id)
+        .is_some_and(|source| normalized(&source.text).contains(&quote))
+    {
+        Origin::Source
+    } else {
+        Origin::Nowhere
+    }
+}
+
 /// Checks the claims of a fact against its quote and sets `fact.checked`
 /// (also returned). The quote must be written where `source_id` says
-/// ([`find_quote`]) and measure 8 to 600 characters once the white space is
-/// collapsed. Each claimed value (`date`, `time`, `end_time`, `quantity`) is
-/// "conferido" only when it is among what the quote itself says
-/// ([`dates_in`], [`times_in`], [`quantities_in`]); a claim that is not
-/// there is cleared (set to `None`) and the fact is kept with that check
-/// false. A date or time is first read the way a person types it, so
-/// `"9:30"` becomes `"09:30"`. When the quote is not found nothing about
-/// the fact is checked and all its claims are cleared. `end_time` must be
-/// after `time` when both are claimed (a reservation does not cross
-/// midnight), else it is cleared.
+/// ([`quote_origin`]; what the person wrote counts only as origin
+/// "contexto") and measure 8 to 600 characters once the white space is
+/// collapsed. A claimed value is "conferido" only when the quote says
+/// exactly it, by the rules above ([`date_of_quote`], [`times_of_quote`],
+/// [`quantity_of_quote`]); otherwise it is cleared (set to `None`) and the
+/// fact is kept with that check false. A fact found only in the context
+/// never has a checked value. A date or time is first read the way a person
+/// types it, so `"9:30"` becomes `"09:30"`. When the quote is not found
+/// nothing about the fact is checked and all its claims are cleared. A
+/// "data_hora" fact with two dates has no checked time either.
 pub fn check_fact(
     fact: &mut crate::model::Fact,
     capture_text: &str,
     human_context: &str,
     sources: &[Source],
 ) -> crate::model::FactCheck {
-    use crate::model::{FactCheck, FACT_QUOTE_MAX, FACT_QUOTE_MIN};
+    use crate::model::{FactCheck, Origin, FACT_QUOTE_MAX, FACT_QUOTE_MIN};
     let length = normalized(&fact.quote).chars().count();
-    let quote = (FACT_QUOTE_MIN..=FACT_QUOTE_MAX).contains(&length)
-        && find_quote(
+    let origin = if (FACT_QUOTE_MIN..=FACT_QUOTE_MAX).contains(&length) {
+        quote_origin(
             &fact.quote,
             capture_text,
             human_context,
             sources,
             &fact.source_id,
-        );
+        )
+    } else {
+        Origin::Nowhere
+    };
     let mut checked = FactCheck {
-        quote,
+        quote: origin != Origin::Nowhere,
+        origin,
         ..FactCheck::default()
     };
-    if !quote {
+    if !origin.is_written() {
         fact.date = None;
         fact.time = None;
         fact.end_time = None;
@@ -922,33 +1276,214 @@ pub fn check_fact(
         fact.checked = checked;
         return checked;
     }
-    let dates = dates_in(&fact.quote);
-    let times = times_in(&fact.quote);
+    let read_date = date_of_quote(&fact.quote, &fact.kind);
     fact.date = fact
         .date
         .take()
         .and_then(|d| crate::labels::parse_typed_date(&d))
-        .filter(|d| dates.contains(d));
+        .filter(|d| Some(d) == read_date.as_ref());
     checked.date = fact.date.is_some();
-    let read_time = |value: Option<String>| {
+    let times = fact_times(&fact.quote, &fact.kind);
+    let read_time = |value: Option<String>, wanted: &Option<String>| {
         value
             .and_then(|t| crate::labels::parse_typed_time(&t))
-            .filter(|t| times.contains(t))
+            .filter(|t| Some(t) == wanted.as_ref())
     };
-    fact.time = read_time(fact.time.take());
-    fact.end_time = read_time(fact.end_time.take());
-    if let (Some(start), Some(end)) = (&fact.time, &fact.end_time) {
-        if end <= start {
-            fact.end_time = None;
-        }
-    }
+    fact.time = read_time(fact.time.take(), &times.start);
+    fact.end_time = read_time(fact.end_time.take(), &times.end);
     checked.time = fact.time.is_some();
     checked.end_time = fact.end_time.is_some();
-    let quantities = quantities_in(&fact.quote);
-    fact.quantity = fact.quantity.take().filter(|q| quantities.contains(q));
+    let quantity = quantity_of_quote(&fact.quote);
+    fact.quantity = fact.quantity.take().filter(|q| Some(*q) == quantity);
     checked.quantity = fact.quantity.is_some();
     fact.checked = checked;
     checked
+}
+
+/// Checks an analysis that came from storage or from another computer again
+/// against the document: every fact is run through [`check_fact`] with the
+/// text of the capture, the stored materials and what the person wrote
+/// (`human_context_values`, plain text or the work context as stored), and
+/// whatever no longer holds is cleared, in the facts and in what the program
+/// filled in the proposals (deadlines, starts, ends, quantities, citations of
+/// facts). A proposal left with nothing to stand on is removed. Returns how
+/// many things were cleared or removed (0: nothing changed).
+pub fn recheck_analysis(
+    analysis: &mut crate::model::Analysis,
+    capture_text: &str,
+    human_context_values: &str,
+) -> u32 {
+    let collapse = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let sources = analysis.materials.clone();
+    let mut cleared = 0u32;
+    for fact in &mut analysis.facts {
+        let before = (
+            fact.checked,
+            fact.date.clone(),
+            fact.time.clone(),
+            fact.end_time.clone(),
+            fact.quantity,
+        );
+        let after = check_fact(fact, capture_text, human_context_values, &sources);
+        let lost = |was: bool, is: bool| u32::from(was && !is);
+        cleared += lost(before.0.quote, after.quote)
+            + lost(before.0.date || before.1.is_some(), fact.date.is_some())
+            + lost(before.0.time || before.2.is_some(), fact.time.is_some())
+            + lost(
+                before.0.end_time || before.3.is_some(),
+                fact.end_time.is_some(),
+            )
+            + lost(
+                before.0.quantity || before.4.is_some(),
+                fact.quantity.is_some(),
+            )
+            + u32::from(before.0.origin.is_written() && !after.origin.is_written() && after.quote);
+    }
+    let facts = analysis.facts.clone();
+    let fact_of = |id: &str| facts.iter().find(|f| f.id == id);
+    let written = |f: &crate::model::Fact| f.checked.quote && f.checked.origin.is_written();
+    let due = |due_fact: &mut Option<String>,
+               due_date: &mut Option<String>,
+               due_source: &mut String,
+               cleared: &mut u32| {
+        let Some(id) = due_fact.clone() else {
+            if due_date.is_some() || !due_source.is_empty() {
+                *due_date = None;
+                due_source.clear();
+                *cleared += 1;
+            }
+            return;
+        };
+        let holds = fact_of(&id).is_some_and(|f| {
+            matches!(f.kind.as_str(), "prazo" | "data_hora")
+                && written(f)
+                && f.checked.date
+                && f.date == *due_date
+                && collapse(&f.quote) == collapse(due_source)
+        });
+        if !holds {
+            *due_fact = None;
+            *due_date = None;
+            due_source.clear();
+            *cleared += 1;
+        }
+    };
+    let keep_cited = |list: &mut Vec<String>, cleared: &mut u32| {
+        let before = list.len();
+        list.retain(|id| fact_of(id).is_some_and(|f| f.checked.quote));
+        *cleared += (before - list.len()) as u32;
+    };
+    if let Some(proposals) = &mut analysis.proposals {
+        let mut tasks = Vec::new();
+        for mut task in std::mem::take(&mut proposals.tasks) {
+            keep_cited(&mut task.facts, &mut cleared);
+            due(
+                &mut task.due_fact,
+                &mut task.due_date,
+                &mut task.due_source,
+                &mut cleared,
+            );
+            if task.facts.is_empty() {
+                cleared += 1;
+            } else {
+                tasks.push(task);
+            }
+        }
+        proposals.tasks = tasks;
+        if let Some(a) = &mut proposals.attendance {
+            keep_cited(&mut a.facts, &mut cleared);
+            due(
+                &mut a.due_fact,
+                &mut a.due_date,
+                &mut a.due_source,
+                &mut cleared,
+            );
+        }
+        let mut reservations = Vec::new();
+        for mut r in std::mem::take(&mut proposals.reservations) {
+            keep_cited(&mut r.facts, &mut cleared);
+            let what_ok = fact_of(&r.what_fact).is_some_and(|f| {
+                f.kind == "recurso"
+                    && written(f)
+                    && collapse(&f.quote)
+                        .to_lowercase()
+                        .contains(&collapse(&r.what).to_lowercase())
+            });
+            if !what_ok {
+                cleared += 1;
+                continue;
+            }
+            if r.quantity > 1 {
+                let quote = fact_of(&r.what_fact)
+                    .map(|f| f.quote.clone())
+                    .unwrap_or_default();
+                if quantity_before(&quote, &r.what) != Some(r.quantity) {
+                    r.quantity = 1;
+                    cleared += 1;
+                }
+            }
+            let when = r.when_fact.as_deref().and_then(fact_of);
+            let (start, end) = match when {
+                Some(f) if f.kind == "data_hora" && written(f) => {
+                    let start = match (&f.date, &f.time) {
+                        (Some(d), Some(t)) if f.checked.date && f.checked.time => {
+                            Some(format!("{d}T{t}"))
+                        }
+                        _ => None,
+                    };
+                    let end = match (&start, &f.date, &f.end_time) {
+                        (Some(_), Some(d), Some(e)) if f.checked.end_time => {
+                            Some(format!("{d}T{e}"))
+                        }
+                        _ => None,
+                    };
+                    (start, end)
+                }
+                _ => (None, None),
+            };
+            if r.when_fact.is_some()
+                && when.is_none_or(|f| f.kind != "data_hora" || !f.checked.quote)
+            {
+                r.when_fact = None;
+                cleared += 1;
+            }
+            if r.start.is_some() && r.start != start {
+                cleared += 1;
+            }
+            if r.end.is_some() && r.end != end {
+                cleared += 1;
+            }
+            r.start = start;
+            r.end = end;
+            reservations.push(r);
+        }
+        proposals.reservations = reservations;
+        if proposals.is_empty() && proposals.nothing_reason.trim().is_empty() {
+            proposals.nothing_reason = "As propostas foram retiradas porque o documento não confirma mais os fatos em que se apoiavam.".into();
+        }
+    }
+    // The candidate deadline is the quote of a prazo fact with a checked date.
+    if let Some(candidate) = analysis.deadline_candidate.clone() {
+        let holds = analysis.facts.iter().any(|f| {
+            f.kind == "prazo"
+                && written(f)
+                && f.checked.date
+                && collapse(&f.quote) == collapse(&candidate)
+        });
+        if !holds {
+            analysis.deadline_candidate = None;
+            cleared += 1;
+        }
+    }
+    let before = analysis.citations.len();
+    analysis.citations.retain(|c| {
+        sources
+            .iter()
+            .find(|s| s.id == c.source_id)
+            .is_some_and(|s| normalized(&s.text).contains(&normalized(&c.quote)))
+    });
+    cleared += (before - analysis.citations.len()) as u32;
+    cleared
 }
 
 impl Store {
@@ -1707,11 +2242,269 @@ mod field_tests {
     }
 
     #[test]
-    fn an_end_time_must_come_after_the_start() {
-        let mut f = fact("das 14h às 17h na sala principal");
+    fn a_pair_that_does_not_end_after_it_starts_checks_neither_time() {
+        let mut f = fact("das 17h às 14h na sala principal");
         f.time = Some("17:00".into());
         f.end_time = Some("14:00".into());
-        let checked = check_fact(&mut f, "das 14h às 17h na sala principal", "", &[]);
-        assert!(checked.time && !checked.end_time && f.end_time.is_none());
+        let checked = check_fact(&mut f, "das 17h às 14h na sala principal", "", &[]);
+        assert!(!checked.time && !checked.end_time);
+        assert!(f.time.is_none() && f.end_time.is_none());
+    }
+
+    // -- which value a quote says ------------------------------------------
+
+    #[test]
+    fn a_date_counts_only_when_it_is_the_one_date_and_a_prazo_is_introduced_as_one() {
+        let deadline = |q: &str| date_of_quote(q, "prazo");
+        let any = |q: &str| date_of_quote(q, "data_hora");
+        let some = |d: &str| Some(d.to_owned());
+        // Introduced as a deadline.
+        for quote in [
+            "responder até 20/11/2026",
+            "entregar o relatório até o dia 20/11/2026",
+            "prazo final: 20/11/2026",
+            "prazo para resposta: 20 de novembro de 2026",
+            "prazo de 20/11/2026",
+            "limite 20/11/2026",
+            "o pagamento vence em 20/11/2026",
+            "vencimento 20/11/2026",
+            "impreterivelmente em 20/11/2026",
+            "no máximo até 20/11/2026",
+            "CONFIRMAR ATÉ 20/11/2026",
+        ] {
+            assert_eq!(deadline(quote), some("2026-11-20"), "{quote}");
+        }
+        // Where a count starts, the date of the paper, no cue: not a deadline.
+        for quote in [
+            "responder no prazo de 10 dias a contar de 03/11/2026",
+            "prazo de 10 dias contados de 03/11/2026",
+            "prazo de 10 dias contados a partir de 03/11/2026",
+            "a partir de 20/11/2026",
+            "desde 20/11/2026",
+            "datado de 20/11/2026",
+            "Ofício nº 12/2026 de 20/11/2026",
+            "Memorando de 20/11/2026",
+            "o e-mail de 20/11/2026",
+            "reunião em 20/11/2026",
+            "Prazo encerrado há semanas; vamos nos reunir novamente em 20/11/2026",
+        ] {
+            assert_eq!(deadline(quote), None, "{quote}");
+        }
+        // The same words without the deadline rule for other kinds.
+        assert_eq!(any("reunião em 20/11/2026"), some("2026-11-20"));
+        assert_eq!(
+            date_of_quote("Ofício de 01/11/2026", "outro"),
+            some("2026-11-01")
+        );
+        // Two dates in one quote: none is checked, whatever the kind.
+        for quote in [
+            "Ofício de 01/11/2026 … responder até 20/11/2026",
+            "Reunião em 16/11/2026 às 14h; confirmar até 12/11/2026 às 18h",
+            "de 10/11/2026 a 12/11/2026",
+        ] {
+            assert_eq!(deadline(quote), None, "{quote}");
+            assert_eq!(any(quote), None, "{quote}");
+        }
+        // No date at all, or a relative one.
+        assert_eq!(deadline("responder até o fim da próxima semana"), None);
+        assert_eq!(any("ORG-OFI-2026/00431"), None);
+    }
+
+    #[test]
+    fn a_time_counts_alone_or_as_one_adjacent_pair() {
+        let read = |q: &str| times_of_quote(q);
+        let pair = |a: &str, b: &str| TimeRead {
+            start: Some(a.to_owned()),
+            end: Some(b.to_owned()),
+        };
+        let one = |a: &str| TimeRead {
+            start: Some(a.to_owned()),
+            end: None,
+        };
+        for quote in [
+            "das 14h às 17h",
+            "de 14h a 17h",
+            "14h às 17h",
+            "14h–17h",
+            "14h - 17h",
+            "entre 14h e 17h",
+            "das 14 às 17h",
+            "sala 3, das 14:00 às 17:00",
+        ] {
+            assert_eq!(read(quote), pair("14:00", "17:00"), "{quote}");
+        }
+        assert_eq!(read("às 14h"), one("14:00"));
+        assert_eq!(read("no dia 16/11/2026 às 9h30"), one("09:30"));
+        // Two ranges, stray extra times, a pair that goes backwards: neither.
+        for quote in [
+            "das 8h às 12h e das 14h às 18h",
+            "Reunião em 16/11/2026 às 14h; confirmar até 12/11/2026 às 18h",
+            "às 14h e às 16h",
+            "das 17h às 14h",
+            "às 9h, 10h e 11h",
+            "reunião às 14h, café às 16h, fim às 17h",
+        ] {
+            assert_eq!(read(quote), TimeRead::default(), "{quote}");
+        }
+        // A data_hora fact with two dates has no checked time at all.
+        assert_eq!(
+            fact_times("dia 16/11/2026 e dia 17/11/2026, às 14h", "data_hora"),
+            TimeRead::default()
+        );
+        assert_eq!(
+            fact_times("dia 16/11/2026, às 14h", "data_hora"),
+            one("14:00")
+        );
+    }
+
+    #[test]
+    fn a_quantity_is_the_only_one_or_the_number_written_before_the_resource() {
+        assert_eq!(quantity_of_quote("20 (vinte) cadeiras"), Some(20));
+        assert_eq!(quantity_of_quote("20 (vinte) cadeiras e 2 veículos"), None);
+        assert_eq!(quantity_of_quote("empréstimo de cadeiras"), None);
+        let before = |q: &str, what: &str| quantity_before(q, what);
+        assert_eq!(
+            before("20 (vinte) cadeiras e 2 veículos", "cadeiras"),
+            Some(20)
+        );
+        assert_eq!(
+            before("20 (vinte) cadeiras e 2 veículos", "veículos"),
+            Some(2)
+        );
+        assert_eq!(
+            before("empréstimo de 20 (vinte) cadeiras", "cadeiras"),
+            Some(20)
+        );
+        assert_eq!(before("vinte (20) cadeiras", "cadeiras"), Some(20));
+        assert_eq!(before("duas salas", "salas"), Some(2));
+        assert_eq!(before("20 novas cadeiras", "cadeiras"), Some(20));
+        assert_eq!(before("20 de cadeiras", "cadeiras"), Some(20));
+        assert_eq!(before("30 pessoas e cadeiras", "cadeiras"), None);
+        assert_eq!(before("cadeiras 20", "cadeiras"), None);
+        assert_eq!(before("a cadeira", "cadeira"), None);
+        assert_eq!(
+            before("20 (trinta) cadeiras", "cadeiras"),
+            None,
+            "they disagree"
+        );
+        assert_eq!(before("sala 3 de reuniões", "reuniões"), None);
+        assert_eq!(before("o ano de 2026 cadeiras", "cadeiras"), None);
+        assert_eq!(before("20 cadeiras", "mesas"), None);
+        assert_eq!(before("20 CADEIRAS", "cadeiras"), Some(20));
+    }
+
+    #[test]
+    fn what_the_person_wrote_is_searched_by_its_values_and_is_never_a_checked_value() {
+        use crate::model::Origin;
+        let context = r#"{"informado_pelo_usuario":{"purpose":"responder","received_date":"2026-11-10","notes":"Por telefone, pediram a sala 3 em 19/11/2026 às 15h."},"notas_salvas":""}"#;
+        // The punctuation of the JSON is not text.
+        assert_eq!(
+            quote_origin(
+                r#"received_date":"2026-11-10"#,
+                "texto do documento",
+                context,
+                &[],
+                ""
+            ),
+            Origin::Nowhere
+        );
+        assert_eq!(
+            quote_origin(
+                "pediram a sala 3 em 19/11/2026",
+                "texto do documento",
+                context,
+                &[],
+                ""
+            ),
+            Origin::Context
+        );
+        assert_eq!(
+            quote_origin("texto do documento", "texto do documento", context, &[], ""),
+            Origin::Document
+        );
+        assert!(context_values("Nota simples sobre a sala").contains("sala"));
+        // A fact found only there keeps its quote but no value.
+        let mut f = fact("pediram a sala 3 em 19/11/2026 às 15h");
+        f.date = Some("2026-11-19".into());
+        f.time = Some("15:00".into());
+        let checked = check_fact(&mut f, "texto do documento", context, &[]);
+        assert!(checked.quote && checked.origin == Origin::Context);
+        assert!(!checked.date && !checked.time && f.date.is_none() && f.time.is_none());
+        // The same words in the document are checked.
+        let mut f = fact("pediram a sala 3 em 19/11/2026 às 15h");
+        f.date = Some("2026-11-19".into());
+        f.time = Some("15:00".into());
+        let checked = check_fact(
+            &mut f,
+            "Por telefone, pediram a sala 3 em 19/11/2026 às 15h.",
+            context,
+            &[],
+        );
+        assert!(checked.date && checked.time && checked.origin == Origin::Document);
+        // A selected source says "fonte".
+        let sources = [source("C1F2P1", "Anexo: reunião em 30/11/2026, às 9h30.")];
+        let mut f = fact("reunião em 30/11/2026, às 9h30");
+        f.source_id = "C1F2P1".into();
+        assert_eq!(check_fact(&mut f, "", "", &sources).origin, Origin::Source);
+    }
+
+    #[test]
+    fn an_analysis_is_checked_again_against_the_document() {
+        use crate::model::{sample_proposed_analysis, sample_proposed_capture};
+        let capture = sample_proposed_capture();
+        // The document still says what the analysis says: nothing changes.
+        let mut analysis = sample_proposed_analysis(1);
+        let before = analysis.clone();
+        assert_eq!(recheck_analysis(&mut analysis, &capture.text, ""), 0);
+        assert_eq!(analysis.facts, before.facts);
+        assert_eq!(analysis.proposals, before.proposals);
+        assert_eq!(analysis.deadline_candidate, before.deadline_candidate);
+        // Another document (a tampered or replaced one): nothing holds.
+        let mut analysis = sample_proposed_analysis(1);
+        let cleared = recheck_analysis(&mut analysis, "Outro texto, sem nenhum dos trechos.", "");
+        assert!(cleared >= 5, "{cleared}");
+        assert!(analysis.facts.iter().all(|f| !f.checked.quote));
+        assert!(analysis
+            .facts
+            .iter()
+            .all(|f| f.date.is_none() && f.quantity.is_none()));
+        let proposals = analysis.proposals.as_ref().unwrap();
+        assert!(proposals.tasks.is_empty() && proposals.reservations.is_empty());
+        assert!(!proposals.nothing_reason.is_empty() || proposals.attendance.is_some());
+        assert_eq!(analysis.deadline_candidate, None);
+        crate::storage::validate_analysis(&analysis).unwrap();
+        // Only the deadline fact is gone: the task keeps standing on its other
+        // facts but loses the date, the reservation keeps its resource.
+        let mut analysis = sample_proposed_analysis(1);
+        analysis.proposals.as_mut().unwrap().tasks[0]
+            .facts
+            .push("f2".into());
+        let text = "Solicitamos a reserva de 20 (vinte) cadeiras no dia 12 de novembro de 2026, das 14h às 17h.";
+        recheck_analysis(&mut analysis, text, "");
+        let proposals = analysis.proposals.as_ref().unwrap();
+        assert_eq!(proposals.tasks.len(), 1);
+        assert!(proposals.tasks[0].due_date.is_none() && proposals.tasks[0].due_fact.is_none());
+        assert_eq!(proposals.tasks[0].facts, vec!["f2".to_owned()]);
+        assert_eq!(proposals.reservations[0].quantity, 20);
+        assert_eq!(
+            proposals.reservations[0].start.as_deref(),
+            Some("2026-11-12T14:00")
+        );
+        crate::storage::validate_analysis(&analysis).unwrap();
+        // A forged date, time or quantity that the document does not support.
+        let mut analysis = sample_proposed_analysis(1);
+        let text = "Solicitamos a reserva de 20 (vinte) cadeiras no dia 12 de novembro de 2026, das 14h às 17h, responder até 30/11/2026.";
+        analysis.facts[2].quote = "no dia 12 de novembro de 2026, das 14h às 17h".into();
+        assert_eq!(recheck_analysis(&mut analysis, text, ""), 0);
+        analysis.facts[1].quote = "reserva de 20 (vinte) cadeiras e 2 veículos".into();
+        let text = "Solicitamos a reserva de 20 (vinte) cadeiras e 2 veículos no dia 12 de novembro de 2026, das 14h às 17h, responder até 30/11/2026.";
+        let cleared = recheck_analysis(&mut analysis, text, "");
+        assert!(cleared >= 1);
+        assert_eq!(analysis.facts[1].quantity, None);
+        assert_eq!(
+            analysis.proposals.as_ref().unwrap().reservations[0].quantity,
+            20,
+            "still the number written before the name"
+        );
     }
 }
