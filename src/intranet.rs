@@ -3279,8 +3279,12 @@ impl Store {
         let actor = cfg.member_name.trim().to_owned();
         if cfg.mode == IntranetMode::SharedFolder {
             // There is no host to ask: every change is applied here and
-            // queued for the next exchange through the folders.
-            return self.queue_locally(&actor, mutation);
+            // queued for the next exchange through the folders. This is the
+            // normal way of working, so nothing is announced: there is no
+            // main computer to be out of reach.
+            let reply = self.queue_locally(&actor, mutation)?;
+            self.offline_queued = self.offline_queued.saturating_sub(1);
+            return Ok(reply);
         }
         if !self.list_offline_outbox()?.is_empty() || crate::idmap::has_pending(&self.conn)? {
             // Older changes still wait (or this library still uses its own
@@ -9402,6 +9406,33 @@ mod tests {
             folder_key: "senha-de-teste-123".into(),
             ..IntranetConfig::default()
         }
+    }
+
+    #[test]
+    fn a_save_in_folder_mode_is_queued_without_blaming_a_main_computer() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Drive").join("ponte-sync.ponte");
+        let mut store = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        store
+            .save_intranet_config(&folder_config("Casa", vec![file.display().to_string()]))
+            .unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let before = store.list_offline_outbox().unwrap().len();
+        store.take_offline_queued();
+
+        store
+            .save_note(document, "Nota em pasta compartilhada")
+            .unwrap();
+
+        assert!(store.list_offline_outbox().unwrap().len() > before);
+        assert_eq!(
+            store.take_offline_queued(),
+            0,
+            "o aviso de computador principal fora de alcance não vale para a pasta compartilhada"
+        );
     }
 
     #[test]

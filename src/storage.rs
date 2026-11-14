@@ -27,7 +27,8 @@ pub struct Store {
     pub(crate) suppress_remote: bool,
     pub(crate) actor_override: String,
     /// Mutations applied locally and queued because the host was unreachable,
-    /// not yet reported to the person. The UI drains it with
+    /// not yet reported to the person. Saves in shared-folder mode are never
+    /// counted: queueing is how that mode works. The UI drains it with
     /// `take_offline_queued` so every such save is announced once.
     pub(crate) offline_queued: usize,
     /// Set by the background synchronization when the host did not answer.

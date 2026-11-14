@@ -427,6 +427,9 @@ fn calendar_popup(
     let mut chosen = None;
     egui::Popup::from_toggle_button_response(button)
         .id(field_id.with("calendar"))
+        // The default closes on any click, including the month arrows; here
+        // only choosing a day, "Hoje", "Limpar" or a click outside closes it.
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             let base = selected.unwrap_or(today);
             let (mut year, mut month) = ui
@@ -550,6 +553,67 @@ mod tests {
         );
         assert_eq!(february.iter().flatten().flatten().count(), 29);
         assert!(month_grid(2026, 13).is_empty());
+    }
+
+    /// Opens the calendar with a synthetic click and clicks "Mês anterior":
+    /// the month changes and the calendar stays open.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn the_month_arrows_keep_the_calendar_open() {
+        use eframe::egui;
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let value = std::cell::RefCell::new("2026-11-14".to_owned());
+        let field = std::cell::Cell::new(egui::Id::NULL);
+        let button = std::cell::Cell::new(egui::Pos2::ZERO);
+        let run = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                field.set(ui.make_persistent_id(("ponte-date-field", "teste")));
+                let text = date_field(ui, "teste", &mut value.borrow_mut());
+                // The calendar button sits right after the text box.
+                button.set(text.rect.right_center() + egui::vec2(14.0, 0.0));
+            });
+            // Nothing is painted here.
+            output.textures_delta.clear();
+        };
+        let click = |pos: egui::Pos2| {
+            run(vec![egui::Event::PointerMoved(pos)]);
+            run(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            run(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            run(Vec::new());
+        };
+        run(Vec::new());
+        click(button.get());
+        let popup = field.get().with("calendar");
+        assert!(egui::Popup::is_id_open(&ctx, popup), "o calendário abre");
+        let view = field.get().with("calendar-view");
+        let shown = || ctx.data(|d| d.get_temp::<(i32, u32)>(view));
+        assert_eq!(shown(), Some((2026, 11)));
+
+        let area = ctx.memory(|m| m.area_rect(popup)).expect("calendar area");
+        click(area.left_top() + egui::vec2(14.0, 14.0));
+
+        assert_eq!(shown(), Some((2026, 10)), "a seta muda o mês");
+        assert!(
+            egui::Popup::is_id_open(&ctx, popup),
+            "o calendário continua aberto depois da seta"
+        );
+        assert_eq!(*value.borrow(), "2026-11-14");
     }
 
     #[test]
