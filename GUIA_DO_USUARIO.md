@@ -236,6 +236,30 @@ Se duas instruções se contradisserem, o Ponte avisa antes de gerar. É só um 
 
 **Em equipe:** ao publicar com o escopo **Compartilhado com a equipe**, o modelo chega a todos na próxima sincronização. Qualquer integrante pode revisar, e o histórico guarda quem fez cada versão. **Pessoal** apenas esconde o modelo dos outros na tela; não é uma proteção. Os modelos pessoais também vão na sincronização, mas só aparecem para o nome que os criou: se você usa dois computadores, deixe o mesmo nome nos dois, em **Ajustes ▸ Equipe e sincronização ▸ Seu nome na equipe** (o nome inicial é o do usuário do Windows, que costuma ser diferente em cada computador). Quando há modelos pessoais de outro nome no acervo, a lista de Modelos avisa. Os modelos pessoais antigos viram modelos pessoais publicados, sem perda de texto. Esta atualização muda o formato do acervo: na equipe, atualize todos os computadores juntos.
 
+### Passar modelos a um colega
+
+Você pode levar modelos e instruções para outro computador ou entregar a um colega num arquivo, sem passar pela equipe.
+
+**Para exportar:**
+
+1. Abra a área **Modelos**.
+2. Clique em **Exportar…**, junto do botão **Novo modelo**.
+3. Marque os modelos e as instruções que quer levar. Se um modelo usa uma instrução, ela vai junto sozinha.
+4. Deixe **Incluir os exemplos** desmarcado, a não ser que você realmente queira levá-los.
+5. Clique em **Exportar N itens…**, escolha onde salvar e confira o nome sugerido, `modelos-ponte-AAAA-MM-DD.json`.
+
+**Para importar:**
+
+1. No outro computador, abra a área **Modelos**.
+2. Clique em **Importar…** e escolha o arquivo.
+3. Leia a lista do que será acrescentado e do que já existia. Nada é gravado antes de você confirmar.
+4. Os itens chegam como rascunhos seus. Revise e publique quando quiser.
+5. Os exemplos do arquivo só entram em modelos novos ou em modelos pessoais seus. Se o modelo já existe e é compartilhado com a equipe, o exemplo não entra e aparece na lista como *não importado*.
+
+Nada é substituído. O que já existe com o mesmo nome fica como está e aparece como *já existia*. Importar o mesmo arquivo duas vezes não duplica nada. Se a área tiver alterações não salvas, o Ponte pede para você salvar ou descartar antes de exportar ou importar.
+
+**Cuidado com os exemplos.** O arquivo é um texto comum, sem senha nem proteção. Exemplos podem conter trechos de casos reais, por isso eles não saem por padrão, e os anexos de exemplos nunca saem. Antes de mandar um arquivo com exemplos a alguém, confira o conteúdo. Os exemplos que chegam sempre aparecem como *não conferido* e só são usados depois de aprovados.
+
 ## 7. Atendimentos
 
 Um atendimento é uma **passagem** de um documento ou de uma demanda pelo gabinete: quando entrou, com quem está, em que situação, quando saiu. É o controle que muitos gabinetes fazem em planilha.

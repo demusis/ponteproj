@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.35.4 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.36.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.35.4.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.36.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -837,6 +837,15 @@ A geração recebe também os trechos que a **análise** achou no documento (dat
 
 Na primeira abertura depois da atualização, cada modelo pessoal antigo vira um modelo pessoal já publicado, com uma versão para cada texto antigo e uma seção **Texto**. Nada se perde. Para compartilhar, mude o escopo e publique uma nova versão.
 
+**Exportar e importar**
+
+Para levar modelos e instruções a outro computador ou a um colega, sem passar pela equipe, use **Exportar…** e **Importar…**, junto do botão **Novo modelo** na área **Modelos**.
+
+- **Exportar…** abre a lista de modelos e instruções, com caixas de marcar, **Marcar todos** e **Desmarcar todos**. Uma instrução citada por um modelo marcado vai junto, marcada e com a nota *vai junto com o modelo X*. A caixa **Incluir os exemplos** começa desmarcada: o arquivo é texto comum, sem proteção, e exemplos podem trazer trechos de casos reais. Anexos de exemplos nunca vão. **Exportar N itens…** pede onde salvar, com o nome sugerido `modelos-ponte-AAAA-MM-DD.json` (limite de 4 MB). O arquivo não traz autor, dono nem datas. As referências dos modelos, com seus endereços ou caminhos de pasta, vão junto. O texto da instrução que vai com um modelo publicado é a versão que esse modelo usa; se dois modelos escolhidos usam versões diferentes da mesma instrução, a exportação é recusada, com o pedido de publicar os modelos de novo ou exportá-los em arquivos separados.
+- **Importar…** pede o arquivo e mostra, antes de gravar qualquer coisa, o que será acrescentado e o que já existe. Tudo entra como **rascunho pessoal** de quem importou: a pessoa revisa e publica quando quiser. Nada é substituído: um modelo com o mesmo nome e tipo, ou uma instrução com o mesmo nome, fica como está e aparece como *já existia*. Importar o mesmo arquivo duas vezes não duplica nada. Um modelo novo que cita uma instrução de mesmo nome usa a instrução desse nome que a pessoa já tem ou enxerga (inclusive uma compartilhada pela equipe), e o texto dela pode ser diferente do que está no arquivo. Exemplos sempre chegam como *não conferido* e só entram em modelos novos ou em modelos pessoais da própria pessoa: se o modelo já existe e é compartilhado, o exemplo não é importado e aparece entre os itens que ficaram como estavam. Se a gravação falhar no meio, a mensagem diz o que já foi adicionado; importar o mesmo arquivo de novo completa o resto sem duplicar.
+- Com alterações não salvas na área, os dois botões pedem para salvar ou descartar antes. Um arquivo feito por um Ponte mais novo é recusado, com o pedido de atualizar o programa.
+- Em modo de equipe, os itens importados seguem pela sincronização comum, como qualquer item criado à mão.
+
 ---
 
 ## 10. Dados, segurança, backup e lixeira
@@ -1063,7 +1072,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/work_templates.rs` | Modelos de trabalho: dados e versões, instruções, exemplos, registro de geração, migração dos modelos pessoais antigos |
 | `src/prompting.rs` | Montagem do prompt em camadas, detecção de conflitos e conferências (cópia de exemplo, texto preservado ao completar) |
 | `src/templates_ui.rs` | Área **Modelos**: lista, abas Estrutura, Instruções, Exemplos, Referências e Testar |
-| `src/template_bundle.rs` | Importação de modelos e instruções de um arquivo JSON (`--import-templates`): confere o arquivo inteiro antes de gravar, não duplica, traz como rascunho ou publicado |
+| `src/template_bundle.rs` | Exportação e importação de modelos e instruções em arquivo JSON versionado (`--export-templates`, `--import-templates`): exporta o que a pessoa vê; na importação confere o arquivo inteiro antes de gravar, não duplica e traz como rascunho ou publicado |
 | `src/extraction.rs` | Texto dos arquivos de exemplo (PDF, .txt, .docx), com versão do extrator, situação e conferência por pessoa |
 | `src/suggestion.rs` | Sugestão lexical (TF-IDF) de modelo para o documento aberto e ordem dos exemplos enviados |
 | `src/mail.rs` | Importação de e-mails `.eml`: decodificador MIME próprio (cabeçalhos, base64, quoted-printable, multipart, HTML → texto), registro manual idempotente pelo Message-ID, anexos |
@@ -1155,6 +1164,7 @@ ponteproj.exe --open-document 12               # abre a ficha do documento local
 ponteproj.exe --import-json .\tests\fixtures\capture.json   # importa uma captura em JSON
 ponteproj.exe --list "treinamento"             # lista documentos (JSON) que casam com o termo
 ponteproj.exe --import-templates modelos.json  # traz instruções, modelos (rascunho; --publicar publica) e exemplos (sempre "não conferido")
+ponteproj.exe --export-templates modelos.json  # grava modelos e instruções num JSON versionado (--com-exemplos inclui os exemplos)
 ponteproj.exe --serve 0.0.0.0:7878             # computador principal sem janela (imprime a chave)
 ponteproj.exe --guide                          # abre o guia do usuário no navegador
 ponteproj.exe --guide .\guia.html              # grava o guia como página, sem abrir

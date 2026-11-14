@@ -4,6 +4,7 @@
 use crate::{
     model::Capture,
     storage::Store,
+    template_bundle::{Bundle, BundlePreview, BundleReport, BundleSelection},
     work_templates::{
         detect_variables, owner_key, version_key, BlockMode, BlockRef, Example, ExampleStatus,
         InstructionBlock, Reference, Scope, Section, Status, TemplateVersion, Variable,
@@ -60,8 +61,225 @@ struct Preview {
     system: String,
 }
 
+/// What the right column shows instead of the editor: choosing what to
+/// export, or the preview of a file to import. Neither holds unsaved work.
+enum Transfer {
+    Export(ExportView),
+    Import(Box<ImportView>),
+}
+
+#[derive(Default)]
+struct ExportView {
+    templates: BTreeSet<String>,
+    blocks: BTreeSet<String>,
+    examples: bool,
+    /// Instructions the chosen templates cite, with the name of the first
+    /// template that does; read again only when the chosen templates change.
+    along: Vec<(String, String)>,
+    along_key: Option<Vec<String>>,
+    /// Why the chosen templates cannot be exported, while they cannot.
+    along_error: Option<String>,
+}
+
+impl ExportView {
+    /// Reads the instructions that go along when the chosen templates
+    /// changed since the last time.
+    fn sync_along(&mut self, store: &Store) {
+        let key: Vec<String> = self.templates.iter().cloned().collect();
+        if self.along_key.as_ref() == Some(&key) {
+            return;
+        }
+        match store.blocks_required_by(&key) {
+            Ok(along) => {
+                self.along = along;
+                self.along_error = None;
+            }
+            Err(error) => {
+                self.along.clear();
+                self.along_error = Some(format!("{error:#}"));
+            }
+        }
+        self.along_key = Some(key);
+    }
+
+    /// The instructions that go along but are not in the list shown (an
+    /// archived one while archived items are hidden), so the count of the
+    /// button agrees with the list.
+    fn along_hidden(
+        &self,
+        shown: &[(String, String)],
+        blocks: &[InstructionBlock],
+    ) -> Vec<(String, String)> {
+        self.along
+            .iter()
+            .filter(|(uid, _)| !shown.iter().any(|(x, _)| x == uid))
+            .filter_map(|(uid, _)| {
+                blocks
+                    .iter()
+                    .find(|b| &b.uid == uid)
+                    .map(|b| (b.uid.clone(), b.name.clone()))
+            })
+            .collect()
+    }
+
+    /// Name of the template that takes the instruction along, if any.
+    fn goes_with(&self, block_uid: &str) -> Option<&str> {
+        self.along
+            .iter()
+            .find(|(uid, _)| uid == block_uid)
+            .map(|(_, name)| name.as_str())
+    }
+
+    /// Templates and instructions in the file, the ones that go along included.
+    fn count(&self) -> usize {
+        let mut blocks = self.blocks.clone();
+        blocks.extend(self.along.iter().map(|(uid, _)| uid.clone()));
+        self.templates.len() + blocks.len()
+    }
+
+    fn selection(&self) -> BundleSelection {
+        BundleSelection {
+            template_uids: self.templates.iter().cloned().collect(),
+            block_uids: self.blocks.iter().cloned().collect(),
+            include_examples: self.examples,
+        }
+    }
+}
+
+struct ImportView {
+    file: String,
+    bundle: Bundle,
+    preview: BundlePreview,
+}
+
+/// "2 modelos e 1 instrução exportados para ...".
+fn export_message(templates: usize, blocks: usize, examples: usize, path: &str) -> String {
+    let t = crate::labels::count(templates, "modelo", "modelos");
+    let b = crate::labels::count(blocks, "instrução", "instruções");
+    let (what, verb) = match (templates, blocks) {
+        (0, 0) => (String::from("Nada"), "foi exportado"),
+        (_, 0) => (
+            t,
+            if templates == 1 {
+                "exportado"
+            } else {
+                "exportados"
+            },
+        ),
+        (0, _) => (
+            b,
+            if blocks == 1 {
+                "exportada"
+            } else {
+                "exportadas"
+            },
+        ),
+        _ => (format!("{t} e {b}"), "exportados"),
+    };
+    let mut text = format!("{what} {verb} para {path}.");
+    if examples > 0 {
+        text.push_str(&format!(
+            " Inclui {}; o arquivo não é protegido.",
+            crate::labels::count(examples, "exemplo", "exemplos")
+        ));
+    }
+    text
+}
+
+/// What an import adds: the sentence about modelos and instruções (they
+/// arrive as drafts, without the closing period), and the one about
+/// exemplos, which are not drafts but arrive as "não conferidos". `done`
+/// tells a finished import from a preview.
+fn added_parts(
+    templates: usize,
+    blocks: usize,
+    examples: usize,
+    done: bool,
+) -> (Option<String>, Option<String>) {
+    let mut parts = Vec::new();
+    if templates > 0 {
+        parts.push(crate::labels::count(templates, "modelo", "modelos"));
+    }
+    if blocks > 0 {
+        parts.push(crate::labels::count(blocks, "instrução", "instruções"));
+    }
+    let drafts = (!parts.is_empty()).then(|| {
+        format!(
+            "{}: {}",
+            if done {
+                "Adicionados como rascunhos seus"
+            } else {
+                "Serão adicionados, como rascunhos seus"
+            },
+            parts.join(", ")
+        )
+    });
+    let examples = (examples > 0).then(|| {
+        let verb = match (done, examples == 1) {
+            (false, true) => "entra",
+            (false, false) => "entram",
+            (true, true) => "entrou",
+            (true, false) => "entraram",
+        };
+        let what = crate::labels::count(examples, "exemplo", "exemplos");
+        let unchecked = if examples == 1 {
+            "não conferido"
+        } else {
+            "não conferidos"
+        };
+        if drafts.is_some() {
+            format!("Também {verb} {what}, como {unchecked}.")
+        } else {
+            let mut verb = verb.to_owned();
+            verb[..1].make_ascii_uppercase();
+            format!("{verb} {what}, como {unchecked}.")
+        }
+    });
+    (drafts, examples)
+}
+
+/// What was added by an import, and what was left as it was.
+fn import_message(report: &BundleReport) -> String {
+    let (drafts, examples) = added_parts(
+        report.templates_created,
+        report.blocks_created,
+        report.examples_created,
+        true,
+    );
+    let sentences: Vec<String> = drafts
+        .map(|d| format!("{d}."))
+        .into_iter()
+        .chain(examples)
+        .collect();
+    let mut text = if sentences.is_empty() {
+        "Nada foi adicionado: tudo o que está no arquivo já existia.".to_owned()
+    } else {
+        sentences.join(" ")
+    };
+    match report.kept.len() {
+        0 => {}
+        1 => text.push_str(" 1 item já existia e ficou como estava."),
+        n => text.push_str(&format!(" {n} itens já existiam e ficaram como estavam.")),
+    }
+    text
+}
+
+/// The file the export writes: `.json` is forced when the name has another
+/// ending (or none); true when it had to be added.
+fn with_json_ending(mut path: std::path::PathBuf) -> (std::path::PathBuf, bool) {
+    let is_json = path
+        .extension()
+        .is_some_and(|ending| ending.eq_ignore_ascii_case("json"));
+    if !is_json {
+        path.as_mut_os_string().push(".json");
+    }
+    (path, !is_json)
+}
+
 #[derive(Default)]
 pub struct TemplatesPanel {
+    /// Exporting or importing, in place of the editor.
+    transfer: Option<Transfer>,
     templates: Vec<WorkTemplate>,
     blocks: Vec<InstructionBlock>,
     loaded: Option<Instant>,
@@ -386,7 +604,9 @@ impl TemplatesPanel {
             || self.confirm_discard_template
             || self.confirm_discard_block
             || self.confirm_discard_example
-            || self.confirm_reextract.is_some();
+            || self.confirm_reextract.is_some()
+            || self.transfer.is_some();
+        self.transfer = None;
         self.dup_name = None;
         self.confirm = None;
         self.confirm_discard_template = false;
@@ -486,6 +706,9 @@ impl TemplatesPanel {
             json(&template)
         };
         self.edit = Some(template);
+        // Opening a template leaves the export or import view; it holds
+        // nothing to lose.
+        self.transfer = None;
         self.template_version_seen = seen;
         self.confirm_discard_template = false;
         if !keep_editors {
@@ -529,6 +752,7 @@ impl TemplatesPanel {
         }
         self.block_base = if unsaved { String::new() } else { json(&block) };
         self.block_edit = Some(block);
+        self.transfer = None;
         self.confirm = None;
     }
 
@@ -750,6 +974,436 @@ impl TemplatesPanel {
         }
     }
 
+    /// Exporting and importing change nothing in the editors, but they
+    /// replace what is on screen: refused while there is unsaved work.
+    fn refuse_transfer_when_dirty(&mut self) -> bool {
+        if self.dirty() {
+            self.notice(
+                "Salve ou descarte as alterações antes de exportar ou importar.",
+                true,
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// "Exportar…": opens the choice of what goes in the file.
+    fn start_export(&mut self) {
+        if !self.refuse_transfer_when_dirty() {
+            self.transfer = Some(Transfer::Export(ExportView::default()));
+        }
+    }
+
+    /// "Importar…": asks for the file and opens the preview of what it adds.
+    fn start_import(&mut self, store: &Store) {
+        if self.refuse_transfer_when_dirty() {
+            return;
+        }
+        let Some(path) = crate::windows_ui::pick_file(
+            "Importar modelos e instruções",
+            &[
+                ("Modelos do Ponte (.json)", "*.json"),
+                ("Todos os arquivos", "*.*"),
+            ],
+        ) else {
+            return;
+        };
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let opened = crate::template_bundle::read_bundle(&path).and_then(|bundle| {
+            let preview = store.preview_template_bundle(&bundle)?;
+            Ok((bundle, preview))
+        });
+        match opened {
+            Ok((bundle, preview)) => {
+                self.transfer = Some(Transfer::Import(Box::new(ImportView {
+                    file,
+                    bundle,
+                    preview,
+                })));
+            }
+            Err(e) => self.notice(format!("{e:#}"), true),
+        }
+    }
+
+    /// Builds the file of the chosen items and writes it where the person
+    /// says. True when it was written; a cancelled dialog is not an error.
+    fn export_now(&mut self, store: &Store, selection: &BundleSelection) -> bool {
+        let bundle = match store.export_template_bundle(selection) {
+            Ok(b) => b,
+            Err(e) => {
+                self.notice(format!("{e:#}"), true);
+                return false;
+            }
+        };
+        let suggested = format!(
+            "modelos-ponte-{}.json",
+            chrono::Local::now().format("%Y-%m-%d")
+        );
+        let Some(path) = crate::windows_ui::save_file(
+            "Exportar modelos e instruções",
+            &suggested,
+            &[("Modelos do Ponte (.json)", "*.json")],
+        ) else {
+            return false;
+        };
+        // The dialog asked about overwriting the name as typed, not this one.
+        let (path, appended) = with_json_ending(path);
+        if appended && path.exists() {
+            self.notice(
+                format!(
+                    "Já existe um arquivo chamado {}. Escolha outro nome.",
+                    path.display()
+                ),
+                true,
+            );
+            return false;
+        }
+        match crate::template_bundle::write_bundle(&path, &bundle) {
+            Ok(()) => {
+                self.notice(
+                    export_message(
+                        bundle.templates.len(),
+                        bundle.blocks.len(),
+                        bundle.examples.len(),
+                        &path.display().to_string(),
+                    ),
+                    false,
+                );
+                true
+            }
+            Err(e) => {
+                self.notice(format!("{e:#}"), true);
+                false
+            }
+        }
+    }
+
+    /// Imports the parsed file as drafts of the active person. Part of it
+    /// may be in even when it fails, so the lists are read again either way.
+    fn import_now(&mut self, store: &mut Store, bundle: &Bundle) {
+        let result = store.import_template_bundle(bundle, false);
+        self.stale = true;
+        match result {
+            Ok(report) => self.notice(import_message(&report), false),
+            Err(e) => self.notice(format!("{e:#}"), true),
+        }
+    }
+
+    /// The right column while exporting or importing.
+    fn transfer_view(&mut self, ui: &mut egui::Ui, store: &mut Store, member: &str) {
+        let Some(mut transfer) = self.transfer.take() else {
+            return;
+        };
+        let keep = match &mut transfer {
+            Transfer::Export(view) => self.export_view(ui, store, member, view),
+            Transfer::Import(view) => self.import_view(ui, store, view),
+        };
+        // A click on the list while drawing may have opened something else.
+        if keep && self.transfer.is_none() {
+            self.transfer = Some(transfer);
+        }
+    }
+
+    fn export_view(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &Store,
+        member: &str,
+        view: &mut ExportView,
+    ) -> bool {
+        let shown_templates: Vec<(String, String)> = self
+            .templates
+            .iter()
+            .filter(|t| {
+                t.visible_to(member) && (self.show_archived || t.status != Status::Archived)
+            })
+            .map(|t| {
+                (
+                    t.uid.clone(),
+                    format!("{} · {}", t.name, crate::labels::draft_kind(&t.kind)),
+                )
+            })
+            .collect();
+        let shown_blocks: Vec<(String, String)> = self
+            .blocks
+            .iter()
+            .filter(|b| {
+                b.visible_to(member) && (self.show_archived || b.status != Status::Archived)
+            })
+            .map(|b| (b.uid.clone(), b.name.clone()))
+            .collect();
+        // Choices the list no longer shows (archived ones hidden meanwhile).
+        view.templates
+            .retain(|u| shown_templates.iter().any(|(x, _)| x == u));
+        view.blocks
+            .retain(|u| shown_blocks.iter().any(|(x, _)| x == u));
+        view.sync_along(store);
+        // The list the person sees: what goes along stays in it even when
+        // it is archived and archived items are hidden.
+        let mut block_rows = shown_blocks.clone();
+        block_rows.extend(view.along_hidden(&shown_blocks, &self.blocks));
+
+        let mut keep = true;
+        let mut go = false;
+        egui::ScrollArea::vertical()
+            .id_salt("tpl_transfer")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 2,
+                        right: 14,
+                        top: 2,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_max_width((ui.available_width() - 14.0).max(240.0));
+                        ui.spacing_mut().item_spacing.y = theme::S3;
+                        widgets::title(ui, "Exportar modelos e instruções");
+                        widgets::muted(
+                            ui,
+                            "Grava em um arquivo os modelos e as instruções que você escolher, \
+                             para outra pessoa importar e acrescentar aos dela. Nada do que ela \
+                             já tem é trocado. As referências dos modelos, com seus endereços ou \
+                             caminhos de pasta, vão junto no arquivo.",
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.add(widgets::quiet("Marcar todos")).clicked() {
+                                view.templates =
+                                    shown_templates.iter().map(|(u, _)| u.clone()).collect();
+                                view.blocks = shown_blocks.iter().map(|(u, _)| u.clone()).collect();
+                            }
+                            if ui.add(widgets::quiet("Desmarcar todos")).clicked() {
+                                view.templates.clear();
+                                view.blocks.clear();
+                            }
+                        });
+                        widgets::card(ui, |ui| {
+                            widgets::overline(
+                                ui,
+                                &format!("Modelos ({})", shown_templates.len()),
+                                None,
+                            );
+                            if shown_templates.is_empty() {
+                                widgets::small_muted(ui, "Nenhum modelo para exportar.");
+                            }
+                            egui::ScrollArea::vertical()
+                                .id_salt("tpl_export_templates")
+                                .max_height(220.0)
+                                .min_scrolled_height(220.0)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    for (uid, label) in &shown_templates {
+                                        let mut on = view.templates.contains(uid);
+                                        if ui.checkbox(&mut on, label.as_str()).changed() {
+                                            if on {
+                                                view.templates.insert(uid.clone());
+                                            } else {
+                                                view.templates.remove(uid);
+                                            }
+                                        }
+                                    }
+                                });
+                        });
+                        widgets::card(ui, |ui| {
+                            widgets::overline(
+                                ui,
+                                &format!("Instruções ({})", block_rows.len()),
+                                None,
+                            );
+                            if block_rows.is_empty() {
+                                widgets::small_muted(ui, "Nenhuma instrução para exportar.");
+                            }
+                            egui::ScrollArea::vertical()
+                                .id_salt("tpl_export_blocks")
+                                .max_height(220.0)
+                                .min_scrolled_height(220.0)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    for (uid, label) in &block_rows {
+                                        if let Some(by) = view.goes_with(uid).map(str::to_owned) {
+                                            ui.horizontal_wrapped(|ui| {
+                                                let mut on = true;
+                                                ui.add_enabled(
+                                                    false,
+                                                    egui::Checkbox::new(&mut on, label.as_str()),
+                                                );
+                                                widgets::small_muted(
+                                                    ui,
+                                                    format!("vai junto com o modelo {by}"),
+                                                );
+                                            });
+                                        } else {
+                                            let mut on = view.blocks.contains(uid);
+                                            if ui.checkbox(&mut on, label.as_str()).changed() {
+                                                if on {
+                                                    view.blocks.insert(uid.clone());
+                                                } else {
+                                                    view.blocks.remove(uid);
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                        });
+                        widgets::card(ui, |ui| {
+                            ui.checkbox(&mut view.examples, "Incluir os exemplos");
+                            let (fg, _) = Tone::Warn.colors();
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(
+                                        "Atenção: o arquivo é um texto comum, sem proteção, e \
+                                         quem o abrir lê tudo. Os exemplos podem trazer trechos \
+                                         de casos reais. Os anexos dos exemplos nunca vão.",
+                                    )
+                                    .size(theme::SIZE_SMALL)
+                                    .color(fg),
+                                )
+                                .wrap(),
+                            );
+                        });
+                        let count = view.count();
+                        if let Some(problem) = &view.along_error {
+                            let (fg, _) = Tone::Warn.colors();
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(problem.as_str())
+                                        .size(theme::SIZE_SMALL)
+                                        .color(fg),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        let can_export = count > 0 && view.along_error.is_none();
+                        ui.horizontal(|ui| {
+                            let label = if count == 0 {
+                                "Exportar…".to_owned()
+                            } else {
+                                format!(
+                                    "Exportar {}…",
+                                    crate::labels::count(count, "item", "itens")
+                                )
+                            };
+                            if ui
+                                .add_enabled(can_export, widgets::primary(label))
+                                .clicked()
+                            {
+                                go = true;
+                            }
+                            if ui.add(widgets::secondary("Cancelar")).clicked() {
+                                keep = false;
+                            }
+                        });
+                        ui.add_space(theme::S4);
+                    });
+            });
+        if go && self.export_now(store, &view.selection()) {
+            keep = false;
+        }
+        keep
+    }
+
+    fn import_view(&mut self, ui: &mut egui::Ui, store: &mut Store, view: &mut ImportView) -> bool {
+        let mut keep = true;
+        let mut go = false;
+        let preview = &view.preview;
+        let nothing = preview.new_blocks.is_empty()
+            && preview.new_templates.is_empty()
+            && preview.new_examples == 0;
+        egui::ScrollArea::vertical()
+            .id_salt("tpl_transfer")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 2,
+                        right: 14,
+                        top: 2,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_max_width((ui.available_width() - 14.0).max(240.0));
+                        ui.spacing_mut().item_spacing.y = theme::S3;
+                        widgets::title(ui, "Importar modelos e instruções");
+                        widgets::muted(ui, format!("Arquivo: {}", view.file));
+                        if nothing {
+                            widgets::muted(
+                                ui,
+                                "Não há nada a adicionar: tudo o que está neste arquivo já \
+                                 existe aqui.",
+                            );
+                        } else {
+                            let (drafts, examples) = added_parts(
+                                preview.new_templates.len(),
+                                preview.new_blocks.len(),
+                                preview.new_examples,
+                                false,
+                            );
+                            widgets::card(ui, |ui| {
+                                if let Some(drafts) = drafts {
+                                    widgets::section(ui, drafts);
+                                }
+                                if let Some(examples) = examples {
+                                    ui.label(examples);
+                                }
+                                if !preview.new_templates.is_empty() {
+                                    widgets::overline(ui, "Modelos", None);
+                                    for name in &preview.new_templates {
+                                        ui.label(format!("• {name}"));
+                                    }
+                                }
+                                if !preview.new_blocks.is_empty() {
+                                    widgets::overline(ui, "Instruções", None);
+                                    for name in &preview.new_blocks {
+                                        ui.label(format!("• {name}"));
+                                    }
+                                }
+                            });
+                        }
+                        if !preview.kept.is_empty() {
+                            widgets::card(ui, |ui| {
+                                widgets::section(ui, "Já existem e ficam como estão:");
+                                for line in &preview.kept {
+                                    ui.label(format!("• {line}"));
+                                }
+                            });
+                        }
+                        widgets::muted(
+                            ui,
+                            "Nada do que você já tem é substituído. O que for adicionado chega \
+                             como rascunho pessoal: só você vê. Para a equipe usar, em Quem vê \
+                             escolha Compartilhado com a equipe (modelo) ou Compartilhada \
+                             (instrução) e publique.",
+                        );
+                        ui.horizontal(|ui| {
+                            if nothing {
+                                if ui.add(widgets::primary("Fechar")).clicked() {
+                                    keep = false;
+                                }
+                            } else {
+                                if ui.add(widgets::primary("Importar")).clicked() {
+                                    go = true;
+                                }
+                                if ui.add(widgets::secondary("Cancelar")).clicked() {
+                                    keep = false;
+                                }
+                            }
+                        });
+                        ui.add_space(theme::S4);
+                    });
+            });
+        // The preview is no longer true after an attempt, whatever came of it.
+        if go {
+            self.import_now(store, &view.bundle);
+            keep = false;
+        }
+        keep
+    }
+
     fn left_column(&mut self, ui: &mut egui::Ui, store: &mut Store, member: &str) {
         egui::ScrollArea::vertical()
             .id_salt("tpl_left")
@@ -777,6 +1431,28 @@ impl TemplatesPanel {
                         {
                             self.start_new(store);
                         }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(widgets::quiet("Exportar…"))
+                                .on_hover_text(
+                                    "Grava modelos e instruções escolhidos em um arquivo, \
+                                     para outra pessoa importar.",
+                                )
+                                .clicked()
+                            {
+                                self.start_export();
+                            }
+                            if ui
+                                .add(widgets::quiet("Importar…"))
+                                .on_hover_text(
+                                    "Lê um arquivo de modelos e instruções e os acrescenta aos \
+                                     seus, como rascunhos.",
+                                )
+                                .clicked()
+                            {
+                                self.start_import(store);
+                            }
+                        });
                         let width = ui.available_width();
                         let found = widgets::search(ui, &mut self.search, "Buscar modelo", width);
                         if std::mem::take(&mut self.focus_search) {
@@ -861,7 +1537,7 @@ impl TemplatesPanel {
                         });
                     })
                     .on_hover_text(t.scope.label());
-                    if response.clicked() && !is_sel {
+                    if response.clicked() && (!is_sel || self.transfer.is_some()) {
                         pick = Some(t.clone());
                     }
                 }
@@ -979,7 +1655,7 @@ impl TemplatesPanel {
                 });
             })
             .on_hover_text(scope_label_f(b.scope));
-            if response.clicked() && !is_sel {
+            if response.clicked() && (!is_sel || self.transfer.is_some()) {
                 pick = Some(b.clone());
             }
         }
@@ -1056,6 +1732,10 @@ impl TemplatesPanel {
         doc: Option<&(i64, String, Capture)>,
     ) -> Option<TemplatesAction> {
         self.message_line(ui);
+        if self.transfer.is_some() {
+            self.transfer_view(ui, store, member);
+            return None;
+        }
         if self.edit.is_none() {
             self.empty_state(ui, store);
             return None;
@@ -2604,6 +3284,8 @@ pub const SHOTS: &[&str] = &[
     "instrucao",
     "busca",
     "busca-vazia",
+    "exportar",
+    "importar",
 ];
 
 #[cfg(feature = "shots")]
@@ -2629,6 +3311,72 @@ impl TemplatesPanel {
             "lista" => {}
             "busca" => self.search = "informacoes".into(),
             "busca-vazia" => self.search = "parecer jurídico".into(),
+            "exportar" => {
+                let mut export = ExportView::default();
+                if let Some(t) = find(self, "Resposta a pedido de informações") {
+                    export.templates.insert(t.uid);
+                }
+                if let Some(b) = self.blocks.iter().find(|b| b.name == "Conferências finais") {
+                    export.blocks.insert(b.uid.clone());
+                }
+                self.transfer = Some(Transfer::Export(export));
+            }
+            "importar" => {
+                use crate::template_bundle::{BundleBlock, BundleRef, BundleTemplate};
+                let bundle = Bundle {
+                    format: crate::template_bundle::BUNDLE_FORMAT.to_owned(),
+                    version: crate::template_bundle::BUNDLE_VERSION,
+                    blocks: vec![
+                        BundleBlock {
+                            key: "linguagem".into(),
+                            name: "Linguagem formal".into(),
+                            topic: "Linguagem e estilo".into(),
+                            text: "Use linguagem formal e objetiva.".into(),
+                        },
+                        BundleBlock {
+                            key: "cordial".into(),
+                            name: "Tom cordial".into(),
+                            topic: "Linguagem e estilo".into(),
+                            text: "Abra e feche o texto com cortesia, sem excessos.".into(),
+                        },
+                    ],
+                    templates: vec![BundleTemplate {
+                        name: "Convite a reunião".into(),
+                        kind: "resposta".into(),
+                        purpose: "Convidar representantes de outros órgãos para uma reunião."
+                            .into(),
+                        usage_criteria: String::new(),
+                        sections: vec![Section {
+                            title: "Convite".into(),
+                            guidance: "Diga data, hora e local da reunião.".into(),
+                            required: true,
+                        }],
+                        variables: Vec::new(),
+                        criteria: Vec::new(),
+                        references: Vec::new(),
+                        blocks: vec![
+                            BundleRef {
+                                key: "linguagem".into(),
+                                mode: "obrigatoria".into(),
+                                condition: String::new(),
+                            },
+                            BundleRef {
+                                key: "cordial".into(),
+                                mode: "opcional".into(),
+                                condition: String::new(),
+                            },
+                        ],
+                    }],
+                    examples: Vec::new(),
+                };
+                if let Ok(preview) = store.preview_template_bundle(&bundle) {
+                    self.transfer = Some(Transfer::Import(Box::new(ImportView {
+                        file: "modelos-ponte-2026-11-14.json".into(),
+                        bundle,
+                        preview,
+                    })));
+                }
+            }
             "rascunho" => {
                 if let Some(t) = find(self, "Encaminhamento a setor") {
                     self.load_template(store, t, false);
@@ -2813,6 +3561,278 @@ mod tests {
         assert!(!panel.pending_new);
         assert!(panel.error);
         assert!(panel.message.contains("Salve ou descarte"));
+    }
+
+    fn unsaved_panel() -> TemplatesPanel {
+        let mut panel = TemplatesPanel::default();
+        let mut t = WorkTemplate::new("Modelo A", "resposta", "Texto");
+        t.scope = Scope::Personal;
+        panel.edit = Some(t);
+        assert!(panel.dirty());
+        panel
+    }
+
+    #[test]
+    fn export_and_import_are_refused_with_unsaved_changes() {
+        let mut panel = unsaved_panel();
+        panel.start_export();
+        assert!(panel.transfer.is_none());
+        assert!(panel.error);
+        assert!(panel.message.contains("Salve ou descarte"));
+
+        // Import refuses before any file dialog opens.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut panel = unsaved_panel();
+        panel.start_import(&store);
+        assert!(panel.transfer.is_none());
+        assert!(panel.error && panel.message.contains("Salve ou descarte"));
+
+        // An open view is not unsaved work.
+        let mut panel = TemplatesPanel::default();
+        panel.start_export();
+        assert!(matches!(panel.transfer, Some(Transfer::Export(_))));
+        assert!(!panel.dirty());
+        assert!(!panel.error);
+    }
+
+    #[test]
+    fn escape_closes_export_and_import_views() {
+        let mut panel = TemplatesPanel {
+            transfer: Some(Transfer::Export(ExportView::default())),
+            ..Default::default()
+        };
+        assert!(panel.key_escape());
+        assert!(panel.transfer.is_none());
+        panel.transfer = Some(Transfer::Import(Box::new(ImportView {
+            file: "modelos.json".into(),
+            bundle: Bundle {
+                format: String::new(),
+                version: 1,
+                blocks: Vec::new(),
+                templates: Vec::new(),
+                examples: Vec::new(),
+            },
+            preview: BundlePreview::default(),
+        })));
+        assert!(panel.key_escape());
+        assert!(panel.transfer.is_none());
+        assert!(!panel.key_escape());
+    }
+
+    /// A library with two published instructions, one of them archived
+    /// afterwards, and two templates citing them.
+    fn export_fixture(dir: &std::path::Path) -> (Store, String, String) {
+        use crate::work_templates::{BlockMode, BlockRef};
+        let mut store = Store::open(&dir.join("acervo.sqlite3")).unwrap();
+        let mut uids = Vec::new();
+        for (name, text) in [
+            ("Tom institucional", "Use linguagem formal."),
+            ("Sem prazos", "Não prometa prazos."),
+        ] {
+            let block = store
+                .save_block(&InstructionBlock::new(name, "estilo", text), None)
+                .unwrap();
+            store
+                .set_block_status(&block.uid, Status::Published, None)
+                .unwrap();
+            uids.push(block.uid);
+        }
+        let mut uid_of_template = Vec::new();
+        for (name, cited) in [
+            ("Resposta ao ORG-1", vec![0, 1]),
+            ("Encaminhamento ao Servidor B", vec![1]),
+        ] {
+            let mut template = WorkTemplate::new(name, "resposta", "Texto");
+            template.versions[0].block_refs = cited
+                .into_iter()
+                .map(|i| BlockRef {
+                    block_uid: uids[i].clone(),
+                    version: None,
+                    mode: BlockMode::Mandatory,
+                })
+                .collect();
+            uid_of_template.push(store.save_template(&template, None).unwrap().uid);
+        }
+        store
+            .set_block_status(&uids[1], Status::Archived, None)
+            .unwrap();
+        (store, uid_of_template.remove(0), uid_of_template.remove(0))
+    }
+
+    #[test]
+    fn instruction_cited_by_a_chosen_template_goes_along_and_is_counted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, first, second) = export_fixture(dir.path());
+        let blocks = store.list_blocks().unwrap();
+        let uid = |name: &str| blocks.iter().find(|b| b.name == name).unwrap().uid.clone();
+        let (tom, prazos) = (uid("Tom institucional"), uid("Sem prazos"));
+
+        let mut view = ExportView::default();
+        view.sync_along(&store);
+        assert!(view.along.is_empty() && view.along_error.is_none());
+        view.templates.insert(first.clone());
+        view.templates.insert(second.clone());
+        view.blocks.insert(prazos.clone());
+        view.sync_along(&store);
+        assert_eq!(view.goes_with(&tom), Some("Resposta ao ORG-1"));
+        assert_eq!(view.goes_with(&prazos), Some("Resposta ao ORG-1"));
+        assert_eq!(view.goes_with("outra"), None);
+        // 2 templates + 2 instructions (the one chosen and cited counts once).
+        assert_eq!(view.count(), 4);
+        view.blocks.insert("avulsa".into());
+        assert_eq!(view.count(), 5);
+        let selection = view.selection();
+        assert_eq!(selection.template_uids.len(), 2);
+        assert!(!selection.include_examples);
+        view.examples = true;
+        assert!(view.selection().include_examples);
+        assert_eq!(ExportView::default().count(), 0);
+
+        // The archived instruction is not in the list shown, but goes along
+        // and so stays in the rows, locked, to match the count.
+        let shown = vec![(tom.clone(), "Tom institucional".to_owned())];
+        let hidden = view.along_hidden(&shown, &blocks);
+        assert_eq!(hidden, vec![(prazos.clone(), "Sem prazos".to_owned())]);
+        let everything = vec![
+            (tom.clone(), "Tom institucional".to_owned()),
+            (prazos, "Sem prazos".to_owned()),
+        ];
+        assert!(view.along_hidden(&everything, &blocks).is_empty());
+    }
+
+    #[test]
+    fn a_selection_that_cannot_be_exported_keeps_the_reason_in_the_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, first, _) = export_fixture(dir.path());
+        let mut theirs = InstructionBlock::new("Instrução do Servidor C", "x", "Texto.");
+        theirs.owner = "Outra pessoa".into();
+        let theirs = store.save_block(&theirs, None).unwrap();
+        let mut template = WorkTemplate::new("Modelo com instrução alheia", "resposta", "Texto");
+        template.versions[0].block_refs = vec![crate::work_templates::BlockRef {
+            block_uid: theirs.uid,
+            version: None,
+            mode: crate::work_templates::BlockMode::Mandatory,
+        }];
+        let template = store.save_template(&template, None).unwrap();
+        let mut view = ExportView::default();
+        view.templates.insert(template.uid);
+        view.sync_along(&store);
+        let problem = view.along_error.clone().unwrap();
+        assert!(problem.contains("Instrução do Servidor C"), "{problem}");
+        assert!(view.along.is_empty());
+        // A valid selection clears it.
+        view.templates.clear();
+        view.templates.insert(first);
+        view.sync_along(&store);
+        assert!(view.along_error.is_none() && !view.along.is_empty());
+    }
+
+    #[test]
+    fn a_failed_import_closes_the_preview_and_reads_the_lists_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let bundle: Bundle = serde_json::from_str(
+            r#"{"templates":[{"name":"Modelo A","kind":"resposta",
+              "sections":[{"title":"T","guidance":"G","required":true}],
+              "blocks":[{"key":"nao-existe","mode":"obrigatoria"}]}]}"#,
+        )
+        .unwrap();
+        let mut panel = TemplatesPanel::default();
+        panel.import_now(&mut store, &bundle);
+        assert!(panel.error && panel.stale);
+        assert!(panel.message.contains("não está no arquivo"));
+    }
+
+    #[test]
+    fn export_adds_json_when_the_name_ends_otherwise() {
+        let json = |name: &str| with_json_ending(std::path::PathBuf::from(name));
+        assert_eq!(json("modelos.json"), ("modelos.json".into(), false));
+        assert_eq!(json("MODELOS.JSON"), ("MODELOS.JSON".into(), false));
+        assert_eq!(json("modelos"), ("modelos.json".into(), true));
+        assert_eq!(json("modelos.v2"), ("modelos.v2.json".into(), true));
+    }
+
+    #[test]
+    fn the_preview_header_lists_only_what_is_added() {
+        let (drafts, examples) = added_parts(0, 2, 0, false);
+        assert_eq!(
+            drafts.as_deref(),
+            Some("Serão adicionados, como rascunhos seus: 2 instruções")
+        );
+        assert!(examples.is_none());
+        let (drafts, examples) = added_parts(1, 0, 3, false);
+        assert_eq!(
+            drafts.as_deref(),
+            Some("Serão adicionados, como rascunhos seus: 1 modelo")
+        );
+        assert_eq!(
+            examples.as_deref(),
+            Some("Também entram 3 exemplos, como não conferidos.")
+        );
+        let (drafts, examples) = added_parts(0, 0, 1, false);
+        assert!(drafts.is_none());
+        assert_eq!(
+            examples.as_deref(),
+            Some("Entra 1 exemplo, como não conferido.")
+        );
+        assert_eq!(added_parts(0, 0, 0, true), (None, None));
+    }
+
+    #[test]
+    fn export_message_agrees_in_number_and_gender() {
+        assert_eq!(
+            export_message(1, 1, 0, "a.json"),
+            "1 modelo e 1 instrução exportados para a.json."
+        );
+        assert_eq!(
+            export_message(3, 2, 0, "a.json"),
+            "3 modelos e 2 instruções exportados para a.json."
+        );
+        assert_eq!(
+            export_message(1, 0, 0, "a.json"),
+            "1 modelo exportado para a.json."
+        );
+        assert_eq!(
+            export_message(0, 1, 0, "a.json"),
+            "1 instrução exportada para a.json."
+        );
+        assert_eq!(
+            export_message(0, 4, 0, "a.json"),
+            "4 instruções exportadas para a.json."
+        );
+        let with = export_message(2, 0, 1, "a.json");
+        assert!(with.contains("Inclui 1 exemplo;"));
+        assert!(export_message(2, 0, 5, "a.json").contains("Inclui 5 exemplos;"));
+    }
+
+    #[test]
+    fn import_message_counts_what_was_added_and_kept() {
+        let report = BundleReport {
+            templates_created: 1,
+            blocks_created: 2,
+            examples_created: 0,
+            kept: vec!["Instrução \"X\" (já existia)".into()],
+            published: Vec::new(),
+        };
+        let text = import_message(&report);
+        assert!(text.contains("1 modelo, 2 instruções."));
+        assert!(text.contains("1 item já existia e ficou como estava."));
+        let none = import_message(&BundleReport {
+            kept: vec!["a".into(), "b".into()],
+            ..Default::default()
+        });
+        assert!(none.starts_with("Nada foi adicionado"));
+        assert!(none.contains("2 itens já existiam"));
+        let with_examples = import_message(&BundleReport {
+            blocks_created: 1,
+            examples_created: 2,
+            ..Default::default()
+        });
+        assert_eq!(
+            with_examples,
+            "Adicionados como rascunhos seus: 1 instrução. Também entraram 2 exemplos, como não conferidos."
+        );
     }
 
     #[test]

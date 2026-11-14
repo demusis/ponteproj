@@ -16,6 +16,15 @@ fn main() {
     }
 }
 
+/// The file name after a command, refused when missing or when it is
+/// really the next option.
+fn file_argument<'a>(args: &'a [String], usage: &str) -> Result<&'a String> {
+    match args.get(1) {
+        Some(file) if !file.starts_with("--") => Ok(file),
+        _ => bail!("Informe o nome do arquivo. Uso: {usage}"),
+    }
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     if n == 1 {
         format!("1 {one}")
@@ -62,9 +71,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("--import-templates") => {
-            let file = args
-                .get(1)
-                .context("Informe o caminho do arquivo de modelos (.json)")?;
+            let file = file_argument(&args, "--import-templates ARQUIVO.json [--publicar]")?;
             let publish = args.iter().skip(2).any(|a| a == "--publicar");
             let bundle = ponteproj::template_bundle::read_bundle(std::path::Path::new(file))?;
             let report =
@@ -96,6 +103,26 @@ fn run() -> Result<()> {
             }
             for kept in &report.kept {
                 println!("Mantido como estava: {kept}");
+            }
+            Ok(())
+        }
+        Some("--export-templates") => {
+            let file = file_argument(&args, "--export-templates ARQUIVO.json [--com-exemplos]")?;
+            let with_examples = args.iter().skip(2).any(|a| a == "--com-exemplos");
+            let store = Store::open(&paths::db_path()?)?;
+            let (selection, skipped) = store.selection_of_everything(with_examples)?;
+            for line in &skipped {
+                println!("{line}");
+            }
+            let bundle = store.export_template_bundle(&selection)?;
+            ponteproj::template_bundle::write_bundle(std::path::Path::new(file), &bundle)?;
+            let blocks = plural(bundle.blocks.len(), "instrução", "instruções");
+            let templates = plural(bundle.templates.len(), "modelo", "modelos");
+            if with_examples {
+                let examples = plural(bundle.examples.len(), "exemplo", "exemplos");
+                println!("{blocks}, {templates} e {examples} gravados em {file}.");
+            } else {
+                println!("{blocks} e {templates} gravados em {file}.");
             }
             Ok(())
         }
@@ -162,7 +189,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("--help") => {
-            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --import-templates ARQUIVO.json [--publicar]\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
+            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --import-templates ARQUIVO.json [--publicar]\n  --export-templates ARQUIVO.json [--com-exemplos]\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
             Ok(())
         }
         Some(_) => bail!("Argumento desconhecido. Use --help."),
