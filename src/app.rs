@@ -4003,6 +4003,7 @@ mod tests {
             priority: "normal".into(),
             analysis_stale: false,
             manual: false,
+            categories: vec![],
             email: false,
             email_from: String::new(),
             whatsapp: false,

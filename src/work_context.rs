@@ -28,6 +28,11 @@ pub struct WorkContext {
     pub received_date: String,
     pub process_number: String,
     pub notes: String,
+    /// Uids of the categories of the document (schema 17). They live here
+    /// because the context is already what a document keeps per person and
+    /// what the team sync carries, with its versions and conflicts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
 }
 impl Default for WorkContext {
     fn default() -> Self {
@@ -41,11 +46,13 @@ impl Default for WorkContext {
             received_date: String::new(),
             process_number: String::new(),
             notes: String::new(),
+            categories: Vec::new(),
         }
     }
 }
 impl WorkContext {
     fn validate(&self) -> Result<()> {
+        crate::categories::check_item_categories(&self.categories)?;
         ensure!(
             PURPOSES.contains(&self.purpose.as_str()),
             "Finalidade inválida."
@@ -122,6 +129,9 @@ impl Store {
     ) -> Result<()> {
         value.validate()?;
         if let Some(cfg) = self.client_config()? {
+            if !value.categories.is_empty() {
+                self.ensure_host_stores_categories(&cfg)?;
+            }
             self.remote_mutate(
                 &cfg,
                 crate::intranet::IntranetMutation::SaveWorkContext {
@@ -136,7 +146,9 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("INSERT INTO work_context(document_id,payload) VALUES(?1,?2) ON CONFLICT(document_id) DO UPDATE SET payload=excluded.payload",params![document_id,protection::seal(&serde_json::to_vec(value)?)?])?;
+        let mut value = value.clone();
+        value.categories = crate::categories::retain_known(&tx, &value.categories)?;
+        tx.execute("INSERT INTO work_context(document_id,payload) VALUES(?1,?2) ON CONFLICT(document_id) DO UPDATE SET payload=excluded.payload",params![document_id,protection::seal(&serde_json::to_vec(&value)?)?])?;
         crate::intranet::record_mutation(
             &tx,
             &actor,

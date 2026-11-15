@@ -168,6 +168,9 @@ pub struct DocumentSummary {
     /// Created by hand in the Ponte, not imported from the SIGADOC.
     #[serde(default)]
     pub manual: bool,
+    /// Uids of the categories of the document (existing ones only).
+    #[serde(default)]
+    pub categories: Vec<String>,
     /// An e-mail brought into the Ponte (a manual record of kind e-mail,
     /// whatever its number).
     #[serde(default)]

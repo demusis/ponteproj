@@ -570,6 +570,10 @@ pub struct CabinetSnapshot {
     /// Recursos and their uses. A copy written before them loads without.
     #[serde(default)]
     pub resources: crate::resources::ResourcesSnapshot,
+    /// The categories (tasks and documents carry their uids). A copy written
+    /// before them loads without.
+    #[serde(default)]
+    pub categories: Vec<crate::categories::Category>,
     /// The library schema of the computer that wrote this copy (0 when it
     /// did not say: a Ponte before the recursos). A copy below
     /// [`RESOURCES_SCHEMA`] knows nothing of recursos, so applying it keeps
@@ -585,6 +589,12 @@ pub(crate) const RESOURCES_SCHEMA: i64 = 15;
 /// proposals and run of an analysis, and the proposal ids kept by tasks, uses
 /// and atendimentos made from them.
 pub(crate) const PROPOSALS_SCHEMA: i64 = 16;
+
+/// The first library schema that stores the categories.
+pub(crate) const CATEGORIES_SCHEMA: i64 = 17;
+
+/// What a person is told when the main computer does not store categories.
+pub(crate) const HOST_WITHOUT_CATEGORIES: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda categorias. Atualize o Ponte no computador principal e tente de novo.";
 
 /// What a person is told when the main computer does not store the
 /// proposals of the AI.
@@ -790,6 +800,20 @@ pub enum IntranetMutation {
         #[serde(default)]
         expected_version: Option<i64>,
     },
+    /// Categories are addressed by uid. Archiving is a save with the flag
+    /// changed; the categories of a document travel in `SaveWorkContext`, and
+    /// those of a task in `SaveTask`.
+    SaveCategory {
+        category: crate::categories::Category,
+        #[serde(default)]
+        expected_version: Option<i64>,
+    },
+    /// Takes the category off every task and document that has it too.
+    DeleteCategory {
+        uid: String,
+        #[serde(default)]
+        expected_version: Option<i64>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -961,6 +985,24 @@ fn is_resource_mutation(mutation: &IntranetMutation) -> bool {
     )
 }
 
+fn is_category_mutation(mutation: &IntranetMutation) -> bool {
+    matches!(
+        mutation,
+        IntranetMutation::SaveCategory { .. } | IntranetMutation::DeleteCategory { .. }
+    )
+}
+
+/// Whether a change carries something only a schema 17 library keeps: a
+/// category, or a task or document context that has categories.
+fn mutation_carries_categories(mutation: &IntranetMutation) -> bool {
+    match mutation {
+        IntranetMutation::SaveCategory { .. } | IntranetMutation::DeleteCategory { .. } => true,
+        IntranetMutation::SaveTask { task, .. } => !task.categories.is_empty(),
+        IntranetMutation::SaveWorkContext { value, .. } => !value.categories.is_empty(),
+        _ => false,
+    }
+}
+
 /// Whether a change carries something only a schema 16 library keeps.
 fn mutation_carries_proposals(mutation: &IntranetMutation) -> bool {
     match mutation {
@@ -983,6 +1025,11 @@ impl Store {
     /// usual (and waits if it turns out to be too old).
     pub(crate) fn ensure_host_stores_resources(&self, cfg: &IntranetConfig) -> Result<()> {
         self.ensure_host_schema(cfg, RESOURCES_SCHEMA, HOST_WITHOUT_RESOURCES)
+    }
+
+    /// The same for the categories.
+    pub(crate) fn ensure_host_stores_categories(&self, cfg: &IntranetConfig) -> Result<()> {
+        self.ensure_host_schema(cfg, CATEGORIES_SCHEMA, HOST_WITHOUT_CATEGORIES)
     }
 
     /// The same for what carries the proposals of the AI (an analysis with
@@ -1772,6 +1819,7 @@ impl Store {
             attachments,
             templates: self.export_templates()?,
             resources: self.export_resources()?,
+            categories: self.export_categories()?,
             schema_version: crate::storage::SCHEMA_VERSION,
         })
     }
@@ -1906,6 +1954,12 @@ impl Store {
         } else {
             KeptProposals::default()
         };
+        // The same for the categories: a copy from a Ponte before them says
+        // nothing about them, so this library keeps its own.
+        let keep_categories = snapshot.schema_version < CATEGORIES_SCHEMA;
+        if !keep_categories {
+            tx.execute_batch("DELETE FROM categories;")?;
+        }
         let mut kept_links: Vec<(String, i64)> = Vec::new();
         if keep_resources {
             kept_links = tx
@@ -2159,6 +2213,9 @@ impl Store {
         }
         // Populate `trash` last so active-item triggers remain satisfied throughout the batch.
         crate::work_templates::apply_templates(&tx, &snapshot.templates)?;
+        if !keep_categories {
+            crate::categories::apply_categories(&tx, &snapshot.categories)?;
+        }
         if !keep_resources {
             let mut resources = snapshot.resources.clone();
             for row in &mut resources.uses {
@@ -2304,6 +2361,18 @@ impl Store {
                 expected_version,
             } => self
                 .delete_resource_use(&uid, expected_version)
+                .map(|()| MutationReply::Unit),
+            IntranetMutation::SaveCategory {
+                category,
+                expected_version,
+            } => self
+                .save_category_checked(&category, expected_version)
+                .map(|_| MutationReply::Unit),
+            IntranetMutation::DeleteCategory {
+                uid,
+                expected_version,
+            } => self
+                .delete_category_checked(&uid, expected_version)
                 .map(|()| MutationReply::Unit),
             IntranetMutation::RecordGeneration { record } => self
                 .record_generation(&record)
@@ -3539,6 +3608,26 @@ impl Store {
                     expected_version: ver,
                 }
             }
+            IntranetMutation::SaveCategory {
+                category,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("category", &category.uid));
+                IntranetMutation::SaveCategory {
+                    category,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::DeleteCategory {
+                uid,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("category", &uid));
+                IntranetMutation::DeleteCategory {
+                    uid,
+                    expected_version: ver,
+                }
+            }
             other => other,
         }
     }
@@ -3555,6 +3644,7 @@ impl Store {
             "block" => self.block_by_uid(uid).ok().flatten().is_some(),
             "resource" => self.resource_exists(uid),
             "resource_use" => self.resource_use_exists(uid),
+            "category" => self.category_exists(uid),
             _ => self
                 .list_examples()
                 .ok()
@@ -3618,6 +3708,17 @@ impl Store {
                     .find(|r| r.uid == resource.uid)?;
                 Some(IntranetMutation::SaveResource {
                     resource: current,
+                    expected_version: None,
+                })
+            }
+            IntranetMutation::SaveCategory { category, .. } if !category.uid.is_empty() => {
+                let current = self
+                    .list_categories()
+                    .ok()?
+                    .into_iter()
+                    .find(|c| c.uid == category.uid)?;
+                Some(IntranetMutation::SaveCategory {
+                    category: current,
                     expected_version: None,
                 })
             }
@@ -3967,6 +4068,20 @@ impl Store {
                     expected_version: ver,
                 }
             }
+            IntranetMutation::SaveCategory { category, .. } => {
+                let ver = self.uid_version("category", &category.uid);
+                IntranetMutation::SaveCategory {
+                    category,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::DeleteCategory { uid, .. } => {
+                let ver = self.uid_version("category", &uid);
+                IntranetMutation::DeleteCategory {
+                    uid,
+                    expected_version: ver,
+                }
+            }
             other => other,
         })
     }
@@ -4056,6 +4171,11 @@ impl Store {
                         v
                     ));
                     scalar!(assignee, "Responsável", plain);
+                    m.categories = crate::categories::merge_uids(
+                        base_task.map(|b| b.categories.as_slice()),
+                        &ht.categories,
+                        &local_task.categories,
+                    );
                     m.notes = pick_text(
                         base_task.map(|b| b.notes.as_str()),
                         &ht.notes,
@@ -4144,6 +4264,11 @@ impl Store {
                     crate::labels::date(v)
                 });
                 scalar!(process_number, "Processo vinculado", plain);
+                m.categories = crate::categories::merge_uids(
+                    base_ctx.map(|b| b.categories.as_slice()),
+                    &host_ctx.categories,
+                    &local_ctx.categories,
+                );
                 m.subjects = pick_text(
                     base_ctx.map(|b| b.subjects.as_str()),
                     &host_ctx.subjects,
@@ -4360,6 +4485,34 @@ impl Store {
                 };
                 Ok(IntranetMutation::SaveResource {
                     resource: merged,
+                    expected_version: ver,
+                })
+            }
+            IntranetMutation::SaveCategory {
+                category: local, ..
+            } => {
+                let ver = self.uid_version("category", &local.uid);
+                let host = self
+                    .list_categories()?
+                    .into_iter()
+                    .find(|c| c.uid == local.uid);
+                let base_item = match base {
+                    Some(IntranetMutation::SaveCategory { category, .. }) => Some(category),
+                    _ => None,
+                };
+                let merged = if let Some(h) = host {
+                    let mut m = h.clone();
+                    // The local side prevails where both changed a field.
+                    m.name = pick(base_item.map(|b| &b.name), &h.name, &local.name).0;
+                    m.color = pick(base_item.map(|b| &b.color), &h.color, &local.color).0;
+                    m.archived =
+                        pick(base_item.map(|b| &b.archived), &h.archived, &local.archived).0;
+                    m
+                } else {
+                    local
+                };
+                Ok(IntranetMutation::SaveCategory {
+                    category: merged,
                     expected_version: ver,
                 })
             }
@@ -4599,6 +4752,22 @@ impl Store {
                     _ => None,
                 };
                 diff(resource_fields(&host), resource_fields(resource), base)
+            }
+            IntranetMutation::SaveCategory { category, .. } => {
+                let Some(host) = self
+                    .list_categories()
+                    .ok()
+                    .and_then(|all| all.into_iter().find(|h| h.uid == category.uid))
+                else {
+                    return vec![];
+                };
+                let base = match &conflict.base {
+                    Some(IntranetMutation::SaveCategory { category, .. }) => {
+                        Some(category_fields(category))
+                    }
+                    _ => None,
+                };
+                diff(category_fields(&host), category_fields(category), base)
             }
             IntranetMutation::SaveResourceUse { item, .. } => {
                 let Some(host) = self
@@ -5101,6 +5270,10 @@ fn change_summary(store: &Store, conflict: &SyncConflict) -> Option<String> {
             Some(IntranetMutation::SaveResource { resource: base, .. }),
         ) => (resource_fields(resource), resource_fields(base)),
         (
+            IntranetMutation::SaveCategory { category, .. },
+            Some(IntranetMutation::SaveCategory { category: base, .. }),
+        ) => (category_fields(category), category_fields(base)),
+        (
             IntranetMutation::SaveResourceUse { item, .. },
             Some(IntranetMutation::SaveResourceUse { item: base, .. }),
         ) => (
@@ -5372,6 +5545,12 @@ impl Store {
                 s.key = Some(format!("resource:{}", resource.uid));
             }
             M::DeleteResource { .. } => s.title = "Exclusão de um recurso".into(),
+            M::SaveCategory { category, .. } => {
+                s.title = format!("Categoria: {}", category.name);
+                s.noun = "desta categoria";
+                s.key = Some(format!("category:{}", category.uid));
+            }
+            M::DeleteCategory { .. } => s.title = "Exclusão de uma categoria".into(),
             M::SaveResourceUse { item, .. } => {
                 s.title = format!(
                     "Uso: {} — {}",
@@ -5486,6 +5665,11 @@ impl Store {
                 .ok()
                 .and_then(|all| all.into_iter().find(|u| u.uid == item.uid))
                 .is_some_and(|host| host.same_content(item)),
+            IntranetMutation::SaveCategory { category, .. } => self
+                .list_categories()
+                .ok()
+                .and_then(|all| all.into_iter().find(|c| c.uid == category.uid))
+                .is_some_and(|host| host.same_content(category)),
             _ => false,
         }
     }
@@ -5779,6 +5963,17 @@ fn saiop_fields(a: &crate::saiop::SaiopAttendance) -> Vec<(&'static str, String)
     ]
 }
 
+fn category_fields(c: &crate::categories::Category) -> Vec<(&'static str, String)> {
+    vec![
+        ("Nome", c.name.clone()),
+        ("Cor", (u32::from(c.color) + 1).to_string()),
+        (
+            "Arquivada",
+            if c.archived { "Sim" } else { "Não" }.to_owned(),
+        ),
+    ]
+}
+
 fn resource_fields(r: &crate::resources::Resource) -> Vec<(&'static str, String)> {
     vec![
         ("Nome", r.name.clone()),
@@ -5822,6 +6017,10 @@ fn mutation_target_key(mutation: &IntranetMutation) -> Option<String> {
         IntranetMutation::SaveResourceUse { item, .. } if !item.uid.is_empty() => {
             Some(format!("resource_use:{}", item.uid))
         }
+        IntranetMutation::SaveCategory { category, .. } if !category.uid.is_empty() => {
+            Some(format!("category:{}", category.uid))
+        }
+        IntranetMutation::DeleteCategory { uid, .. } => Some(format!("category:{uid}")),
         // A delete takes the place of the offline edits of the same item and
         // keeps the version the first of them saw.
         IntranetMutation::DeleteResource { uid, .. } => Some(format!("resource:{uid}")),
@@ -5899,6 +6098,30 @@ fn preserve_original_base_version(
             IntranetMutation::SaveResourceUse { item, .. },
         ) => IntranetMutation::SaveResourceUse {
             item,
+            expected_version: *orig,
+        },
+        (
+            IntranetMutation::SaveCategory {
+                expected_version: orig,
+                ..
+            },
+            IntranetMutation::SaveCategory { category, .. },
+        ) => IntranetMutation::SaveCategory {
+            category,
+            expected_version: *orig,
+        },
+        (
+            IntranetMutation::SaveCategory {
+                expected_version: orig,
+                ..
+            }
+            | IntranetMutation::DeleteCategory {
+                expected_version: orig,
+                ..
+            },
+            IntranetMutation::DeleteCategory { uid, .. },
+        ) => IntranetMutation::DeleteCategory {
+            uid,
             expected_version: *orig,
         },
         (
@@ -5992,6 +6215,10 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
             format!("Recurso \"{}\"", resource.name)
         }
         IntranetMutation::DeleteResource { .. } => "Exclusão de recurso".to_owned(),
+        IntranetMutation::SaveCategory { category, .. } => {
+            format!("Categoria \"{}\"", category.name)
+        }
+        IntranetMutation::DeleteCategory { .. } => "Exclusão de categoria".to_owned(),
         IntranetMutation::SaveResourceUse { item, .. } => format!(
             "Uso de recurso: {} ({} a {})",
             item.who,
@@ -6399,6 +6626,18 @@ fn send_rpc_classified(
             }
         }
     }
+    // The same for what carries categories.
+    if let RpcRequest::Mutate { mutation, .. } = request {
+        if mutation_carries_categories(mutation) {
+            if let Ok(RpcResponse::Pong { schema_version, .. }) =
+                send_rpc_classified(cfg, &RpcRequest::Ping)
+            {
+                if schema_version < CATEGORIES_SCHEMA {
+                    return Err(RpcError::Unreachable(HOST_WITHOUT_CATEGORIES.into()));
+                }
+            }
+        }
+    }
     let endpoint = format!("{base}/api/v1/rpc");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(25))
@@ -6459,6 +6698,9 @@ fn send_rpc_classified(
         // wait queued, as for `HOST_TOO_OLD`, instead of becoming conflicts.
         if message.starts_with(HOST_CANNOT_READ_START) && is_resource_mutation(mutation) {
             return Err(RpcError::Unreachable(HOST_WITHOUT_RESOURCES.into()));
+        }
+        if message.starts_with(HOST_CANNOT_READ_START) && is_category_mutation(mutation) {
+            return Err(RpcError::Unreachable(HOST_WITHOUT_CATEGORIES.into()));
         }
     }
     if !status.is_success() {
@@ -8506,6 +8748,7 @@ fn comparable_conflict(mutation: &IntranetMutation) -> bool {
             | IntranetMutation::SaveSaiopAttendance { .. }
             | IntranetMutation::SaveResource { .. }
             | IntranetMutation::SaveResourceUse { .. }
+            | IntranetMutation::SaveCategory { .. }
     )
 }
 
@@ -11962,9 +12205,9 @@ mod resources_sync_tests {
             .unwrap();
         assert!(other.list_resources().unwrap().is_empty());
         assert!(other.list_resource_uses().unwrap().is_empty());
-        // Schema 16 and format 4 are the ones this build writes.
-        assert_eq!(crate::storage::SCHEMA_VERSION, 16);
-        assert_eq!(crate::sharedfolder::FORMAT, 4);
+        // Schema 17 and format 5 are the ones this build writes.
+        assert_eq!(crate::storage::SCHEMA_VERSION, 17);
+        assert_eq!(crate::sharedfolder::FORMAT, 5);
     }
     #[test]
     fn a_client_books_through_the_main_computer_which_refuses_a_clash() {

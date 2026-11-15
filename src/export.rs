@@ -312,6 +312,7 @@ fn documents_table(store: &Store) -> Result<Table> {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let tasks = store.list_tasks()?;
     let attachments = store.attachment_counts("document").unwrap_or_default();
+    let categories = category_name_map(store)?;
     let mut rows = Vec::new();
     for summary in store.list_documents("")? {
         let detail = store.load_document(summary.id)?;
@@ -382,6 +383,7 @@ fn documents_table(store: &Store) -> Result<Table> {
                 .copied()
                 .unwrap_or(0)
                 .to_string(),
+            category_names(&categories, &summary.categories),
         ]);
     }
     Ok(Table {
@@ -407,9 +409,27 @@ fn documents_table(store: &Store) -> Result<Table> {
             "Tarefas concluídas",
             "Próximo prazo",
             "Anexos",
+            "Categorias",
         ],
         rows,
     })
+}
+
+/// The name of every category by uid, for the "Categorias" column.
+fn category_name_map(store: &Store) -> Result<BTreeMap<String, String>> {
+    Ok(store
+        .list_categories()?
+        .into_iter()
+        .map(|c| (c.uid, c.name))
+        .collect())
+}
+
+/// The names of the categories of an item, joined by "; ".
+fn category_names(names: &BTreeMap<String, String>, uids: &[String]) -> String {
+    uids.iter()
+        .filter_map(|uid| names.get(uid).map(String::as_str))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn tasks_table(store: &Store) -> Result<Table> {
@@ -420,6 +440,7 @@ fn tasks_table(store: &Store) -> Result<Table> {
         .map(|d| (d.id, d.document_number))
         .collect();
     let attachments = store.attachment_counts("task").unwrap_or_default();
+    let categories = category_name_map(store)?;
     let mut rows = Vec::new();
     for task in store.list_tasks()? {
         let due = iso_date(&task.due_date);
@@ -448,6 +469,7 @@ fn tasks_table(store: &Store) -> Result<Table> {
             iso_date(task.completed_at.as_deref().unwrap_or("")),
             task.dependencies.len().to_string(),
             attachments.get(&task.id).copied().unwrap_or(0).to_string(),
+            category_names(&categories, &task.categories),
         ]);
     }
     Ok(Table {
@@ -466,6 +488,7 @@ fn tasks_table(store: &Store) -> Result<Table> {
             "Concluída em",
             "Dependências",
             "Anexos",
+            "Categorias",
         ],
         rows,
     })

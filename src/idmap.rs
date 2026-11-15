@@ -330,7 +330,10 @@ pub fn created_ids(
         // Recursos and their uses are addressed by uid: nothing is created
         // with a number of its own.
         (
-            IntranetMutation::SaveResource { .. } | IntranetMutation::SaveResourceUse { .. },
+            IntranetMutation::SaveResource { .. }
+            | IntranetMutation::SaveResourceUse { .. }
+            | IntranetMutation::SaveCategory { .. }
+            | IntranetMutation::DeleteCategory { .. },
             MutationReply::Unit,
         ) => {}
         (IntranetMutation::CreateTaskForSaiop { task: Some(_), .. }, MutationReply::Id(id))
@@ -675,6 +678,8 @@ impl IdMap {
             | M::DeleteExample { .. }
             | M::DeleteResource { .. }
             | M::SaveResource { .. }
+            | M::SaveCategory { .. }
+            | M::DeleteCategory { .. }
             | M::DeleteResourceUse { .. } => {}
             // Addressed by uid; only the links to numbered items change.
             M::SaveResourceUse { item, .. } => {

@@ -18,8 +18,10 @@ use std::time::Duration;
 /// facts, proposals and run of an analysis and the proposal ids of the tasks,
 /// uses and atendimentos made from them (all inside sealed payloads, so no
 /// table changes): the number is raised so that an older Ponte refuses to
-/// open the library instead of saving over fields it does not know.
-pub(crate) const SCHEMA_VERSION: i64 = 16;
+/// open the library instead of saving over fields it does not know. 17 adds
+/// the categories (a table, and the uids kept in the payloads of tasks and
+/// of the document context), a new synced entity.
+pub(crate) const SCHEMA_VERSION: i64 = 17;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -230,6 +232,7 @@ impl Store {
         store.ensure_work_templates()?;
         store.ensure_mail_accounts()?;
         store.ensure_resources()?;
+        store.ensure_categories()?;
         store.ensure_write_guards()?;
         crate::idmap::init_watermark(&store.conn)?;
         // Schema 15 (recursos) stamps the library, so an older Ponte refuses
@@ -287,6 +290,7 @@ impl Store {
             "mail_accounts",
             "resources",
             "resource_uses",
+            "categories",
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());
@@ -670,6 +674,7 @@ impl Store {
             // Requires the whole library; filled by list_documents/joined_children.
             joined_children_count: 0,
             manual: capture.is_manual(),
+            categories: self.known_categories_of(&work_context.categories)?,
             email: capture.is_manual()
                 && capture.metadata.get("manual_kind").map(String::as_str) == Some("email"),
             email_from: capture

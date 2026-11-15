@@ -19,6 +19,12 @@ use std::io::{Read, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
+/// Format 5 (schema 17) carries the categories and the category uids of tasks
+/// and documents. A Ponte that only knows format 4 refuses such a file with
+/// the "versão mais nova" message instead of rewriting it without them. A
+/// copy of an older format loads with no categories (the field has a
+/// default).
+///
 /// Format 4 (schema 16) carries the proposals of the AI: the facts, proposals
 /// and run of the analyses, and the proposal ids of tasks, uses and
 /// atendimentos. A Ponte that only knows format 3 refuses such a file with
@@ -28,7 +34,7 @@ use std::path::{Path, PathBuf};
 /// tasks without document, `document_id: null`; a copy of an older format
 /// loads with no facts, proposals or proposal ids (every new field has a
 /// default).
-pub const FORMAT: u32 = 4;
+pub const FORMAT: u32 = 5;
 const MAGIC: &[u8] = b"PONTE-SYNC1\n";
 pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 /// Journal retention: enough for a few weeks of one person's work.
@@ -461,26 +467,26 @@ mod tests {
         // Truncated or tampered copies are refused, never half-applied.
         std::fs::write(&path, &raw[..raw.len() - 5]).unwrap();
         assert!(read(&path, "senha-forte-123").is_err());
-        // The copy was written with format 4 (proposals of the AI).
-        assert_eq!(read_header(&path).unwrap().unwrap().format, 4);
+        // The copy was written with format 5 (categories).
+        assert_eq!(read_header(&path).unwrap().unwrap().format, 5);
         // Copies written by format 1 (before tasks without document), format
-        // 2 (before recursos) and format 3 (before the proposals) are still
-        // read.
-        for older_format in [1, 2, 3] {
+        // 2 (before recursos), format 3 (before the proposals) and format 4
+        // (before the categories) are still read.
+        for older_format in [1, 2, 3, 4] {
             let older = String::from_utf8_lossy(&raw)
-                .replace("\"format\":4", &format!("\"format\":{older_format}"));
+                .replace("\"format\":5", &format!("\"format\":{older_format}"));
             std::fs::write(&path, older.as_bytes()).unwrap();
             assert_eq!(read_header(&path).unwrap().unwrap().format, older_format);
         }
-        // One written for format 5 is refused by this reader (built for 4).
-        let newer = String::from_utf8_lossy(&raw).replace("\"format\":4", "\"format\":5");
+        // One written for format 6 is refused by this reader (built for 5).
+        let newer = String::from_utf8_lossy(&raw).replace("\"format\":5", "\"format\":6");
         std::fs::write(&path, newer.as_bytes()).unwrap();
         assert!(read_header(&path)
             .unwrap_err()
             .to_string()
             .contains("Atualize"));
         let mut future = raw.clone();
-        let text = String::from_utf8_lossy(&future).replace("\"format\":4", "\"format\":9");
+        let text = String::from_utf8_lossy(&future).replace("\"format\":5", "\"format\":9");
         future = text.into_bytes();
         std::fs::write(&path, &future).unwrap();
         assert!(read_header(&path)

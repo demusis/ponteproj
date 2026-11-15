@@ -46,6 +46,11 @@ pub struct Task {
     /// 16); empty for any other task. "Already used" is decided by it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub proposal_id: String,
+    /// Uids of the categories of the task (schema 17), at most
+    /// [`crate::categories::MAX_PER_ITEM`]. Only existing categories are
+    /// kept when the task is saved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
 }
 impl Task {
     pub fn new(document_id: i64) -> Self {
@@ -83,6 +88,7 @@ impl Task {
             outcome: String::new(),
             assignee: String::new(),
             proposal_id: String::new(),
+            categories: Vec::new(),
         }
     }
     pub fn overdue(&self) -> bool {
@@ -107,6 +113,7 @@ impl Task {
             self.proposal_id.is_empty() || crate::model::valid_proposal_id(&self.proposal_id),
             "A identificação da proposta da tarefa é inválida."
         );
+        crate::categories::check_item_categories(&self.categories)?;
         ensure!(
             ["pendente", "em analise", "aguardando", "concluida"].contains(&self.status.as_str()),
             "A situação da tarefa é inválida."
@@ -292,6 +299,7 @@ impl Store {
             let mut task: Task = serde_json::from_slice(&protection::unseal(&blob)?)?;
             task.id = id;
             task.document_id = document_id;
+            task.categories = self.known_categories_of(&task.categories)?;
             out.push(task);
         }
         out.sort_by_key(|t| {
@@ -440,6 +448,9 @@ impl Store {
             if !task.proposal_id.is_empty() {
                 self.ensure_host_stores_proposals(&cfg)?;
             }
+            if !task.categories.is_empty() {
+                self.ensure_host_stores_categories(&cfg)?;
+            }
             match self.remote_mutate(
                 &cfg,
                 crate::intranet::IntranetMutation::SaveTask {
@@ -496,6 +507,7 @@ pub(crate) fn write_task(
         );
     }
     let mut saved = task.clone();
+    saved.categories = crate::categories::retain_known(tx, &task.categories)?;
     saved.completed_at = if task.status == "concluida" {
         task.completed_at
             .clone()

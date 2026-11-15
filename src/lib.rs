@@ -63,6 +63,8 @@ pub mod intranet;
 
 pub mod saiop;
 
+/// Categories the person defines, for tasks and documents.
+pub mod categories;
 /// Rooms, books and equipment, and their bookings and loans.
 pub mod resources;
 
