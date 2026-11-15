@@ -237,7 +237,8 @@ where
 
 /// The rules between categories: at most [`MAX_CATEGORIES`], and no two with
 /// the same name ignoring case and accents.
-fn check_unique(all: &[Category], category: &Category) -> Result<()> {
+/// `enforce_max` is off when replaying changes made elsewhere.
+fn check_unique(all: &[Category], category: &Category, enforce_max: bool) -> Result<()> {
     let key = category.name_key();
     if all
         .iter()
@@ -245,7 +246,7 @@ fn check_unique(all: &[Category], category: &Category) -> Result<()> {
     {
         bail!("Já existe uma categoria com este nome.");
     }
-    if !all.iter().any(|c| c.uid == category.uid) && all.len() >= MAX_CATEGORIES {
+    if enforce_max && !all.iter().any(|c| c.uid == category.uid) && all.len() >= MAX_CATEGORIES {
         bail!("Já existem {MAX_CATEGORIES} categorias, o máximo permitido. Apague alguma antes de criar outra.");
     }
     Ok(())
@@ -338,6 +339,46 @@ impl Store {
 
     // -- writes ---------------------------------------------------------------
 
+    /// A client older than the library of this computer drops fields it does
+    /// not know when it reads a task or a work context, and sends them back
+    /// empty. For a saved item, the stored values of those fields are kept.
+    pub(crate) fn keep_unseen_fields(
+        &self,
+        mutation: IntranetMutation,
+        client_schema: i64,
+    ) -> Result<IntranetMutation> {
+        Ok(match mutation {
+            IntranetMutation::SaveTask {
+                mut task,
+                expected_version,
+            } if task.id > 0 && client_schema < crate::intranet::CATEGORIES_SCHEMA => {
+                if let Some(stored) = self.list_tasks()?.into_iter().find(|t| t.id == task.id) {
+                    task.categories = stored.categories;
+                    if client_schema < crate::intranet::PROPOSALS_SCHEMA {
+                        task.proposal_id = stored.proposal_id;
+                    }
+                }
+                IntranetMutation::SaveTask {
+                    task,
+                    expected_version,
+                }
+            }
+            IntranetMutation::SaveWorkContext {
+                document_id,
+                mut value,
+                expected_version,
+            } if client_schema < crate::intranet::CATEGORIES_SCHEMA => {
+                value.categories = self.load_work_context(document_id)?.categories;
+                IntranetMutation::SaveWorkContext {
+                    document_id,
+                    value,
+                    expected_version,
+                }
+            }
+            other => other,
+        })
+    }
+
     /// Creates (empty uid) or changes a category; returns it as stored.
     pub fn save_category(&mut self, category: &Category) -> Result<Category> {
         self.save_category_checked(category, None)
@@ -350,6 +391,48 @@ impl Store {
         category: &Category,
         expected_version: Option<i64>,
     ) -> Result<Category> {
+        self.save_category_inner(category, expected_version, true)
+    }
+
+    /// Applies a category change that came from another computer (main
+    /// computer, offline queue, shared folder). A new category whose name is
+    /// taken is stored as "Nome (2)", "Nome (3)"…, and the limit of
+    /// categories is not enforced, so nothing sent later is lost.
+    pub(crate) fn save_category_applied(
+        &mut self,
+        category: &Category,
+        expected_version: Option<i64>,
+    ) -> Result<Category> {
+        let mut category = category.normalized();
+        category.validate()?;
+        if !category.uid.is_empty() && !self.category_exists(&category.uid) {
+            let all = read_all(&self.conn)?;
+            let key = category.name_key();
+            if all.iter().any(|c| c.name_key() == key) {
+                let base: String = category.name.clone();
+                for n in 2.. {
+                    let suffix = format!(" ({n})");
+                    let room = MAX_NAME - suffix.chars().count();
+                    let head: String = base.chars().take(room).collect();
+                    let mut candidate = category.clone();
+                    candidate.name = format!("{}{suffix}", head.trim_end());
+                    let taken = candidate.name_key();
+                    if !all.iter().any(|c| c.name_key() == taken) {
+                        category = candidate;
+                        break;
+                    }
+                }
+            }
+        }
+        self.save_category_inner(&category, expected_version, false)
+    }
+
+    fn save_category_inner(
+        &mut self,
+        category: &Category,
+        expected_version: Option<i64>,
+        enforce_max: bool,
+    ) -> Result<Category> {
         let mut category = category.normalized();
         if category.uid.is_empty() {
             category.uid = new_uid();
@@ -359,7 +442,7 @@ impl Store {
             self.ensure_host_stores_categories(&cfg)?;
             // The rules are checked here first, so a refusal is told now and
             // not found in the queue of changes later.
-            check_unique(&read_all(&self.conn)?, &category)?;
+            check_unique(&read_all(&self.conn)?, &category, enforce_max)?;
             self.remote_mutate(
                 &cfg,
                 IntranetMutation::SaveCategory {
@@ -375,7 +458,7 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let all = read_all(&tx)?;
-        check_unique(&all, &category)?;
+        check_unique(&all, &category, enforce_max)?;
         let previous = all.iter().find(|c| c.uid == category.uid);
         let mut stored = category.clone();
         stored.updated_at = timestamp.clone();
@@ -973,5 +1056,226 @@ mod tests {
             merge_uids(None, &s(&["a"]), &s(&["b", "a"])),
             s(&["a", "b"])
         );
+    }
+
+    fn host_with_document() -> (tempfile::TempDir, Store, IntranetConfig, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Store::open(&dir.path().join("host.sqlite3")).unwrap();
+        let cfg = IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "Servidor A".into(),
+            cabinet_token: generate_token(),
+            ..IntranetConfig::default()
+        };
+        host.save_intranet_config(&cfg).unwrap();
+        let document = host
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        (dir, host, cfg, document)
+    }
+
+    /// A request as a Ponte before the categories sends it: no `client_schema`.
+    fn old_request(mutation: IntranetMutation) -> crate::intranet::RpcRequest {
+        let mut json = serde_json::to_value(crate::intranet::RpcRequest::Mutate {
+            actor: "Servidor B".into(),
+            mutation,
+            client_schema: 16,
+        })
+        .unwrap();
+        json["Mutate"]
+            .as_object_mut()
+            .unwrap()
+            .remove("client_schema")
+            .unwrap();
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn stored_task(store: &Store, id: i64) -> Task {
+        store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn an_older_client_saving_a_task_or_a_context_keeps_what_it_cannot_see() {
+        use crate::intranet::{process_rpc, RpcRequest, RpcResponse};
+        let (_dir, mut host, cfg, document) = host_with_document();
+        let urgent = make(&mut host, "Urgente");
+        let mut task = Task::standalone();
+        task.title = "Responder".into();
+        task.categories = vec![urgent.uid.clone()];
+        task.proposal_id = "p".repeat(32);
+        let id = host.save_task(&task).unwrap();
+        host.set_document_categories(document, std::slice::from_ref(&urgent.uid))
+            .unwrap();
+
+        // What an older Ponte sends back: the same task without the fields.
+        let mut seen = stored_task(&host, id);
+        seen.notes = "Nova observação".into();
+        seen.categories.clear();
+        seen.proposal_id.clear();
+        let reply = process_rpc(
+            &mut host,
+            &cfg,
+            old_request(IntranetMutation::SaveTask {
+                task: seen,
+                expected_version: None,
+            }),
+        )
+        .unwrap();
+        assert!(matches!(reply, RpcResponse::Mutated { .. }));
+        let stored = stored_task(&host, id);
+        assert_eq!(stored.notes, "Nova observação");
+        assert_eq!(stored.categories, vec![urgent.uid.clone()]);
+        assert_eq!(stored.proposal_id, "p".repeat(32));
+
+        let mut context = host.load_work_context(document).unwrap();
+        context.notes = "Orientação nova".into();
+        context.categories.clear();
+        process_rpc(
+            &mut host,
+            &cfg,
+            old_request(IntranetMutation::SaveWorkContext {
+                document_id: document,
+                value: context,
+                expected_version: None,
+            }),
+        )
+        .unwrap();
+        let stored = host.load_work_context(document).unwrap();
+        assert_eq!(stored.notes, "Orientação nova");
+        assert_eq!(stored.categories, vec![urgent.uid.clone()]);
+
+        // A current client can still take the categories off.
+        let mut task = stored_task(&host, id);
+        task.categories.clear();
+        process_rpc(
+            &mut host,
+            &cfg,
+            RpcRequest::Mutate {
+                actor: "Servidor B".into(),
+                mutation: IntranetMutation::SaveTask {
+                    task,
+                    expected_version: None,
+                },
+                client_schema: crate::storage::SCHEMA_VERSION,
+            },
+        )
+        .unwrap();
+        assert!(categories_of_task(&host, id).is_empty());
+    }
+
+    #[test]
+    fn the_same_name_created_offline_on_two_computers_keeps_both_assignments() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
+        let files = vec![folder.display().to_string()];
+        let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        a.save_intranet_config(&folder_config("Servidor A", &files))
+            .unwrap();
+        sync(&mut a);
+        let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+        b.save_intranet_config(&folder_config("Servidor B", &files))
+            .unwrap();
+        sync(&mut b);
+
+        let on_a = make(&mut a, "Urgente");
+        task_with(&mut a, "Tarefa de A", &[&on_a.uid]);
+        let on_b = make(&mut b, "Urgente");
+        task_with(&mut b, "Tarefa de B", &[&on_b.uid]);
+        sync(&mut a);
+        sync(&mut b);
+        sync(&mut a);
+        for store in [&a, &b] {
+            let mut names: Vec<_> = store
+                .list_categories()
+                .unwrap()
+                .into_iter()
+                .map(|c| c.name)
+                .collect();
+            names.sort();
+            assert_eq!(names, ["Urgente", "Urgente (2)"]);
+            assert!(store.list_sync_conflicts().unwrap().is_empty());
+            let name_of_task = |title: &str| {
+                let task = store
+                    .list_tasks()
+                    .unwrap()
+                    .into_iter()
+                    .find(|t| t.title == title)
+                    .unwrap();
+                assert_eq!(task.categories.len(), 1);
+                store
+                    .list_categories()
+                    .unwrap()
+                    .into_iter()
+                    .find(|c| c.uid == task.categories[0])
+                    .unwrap()
+                    .name
+            };
+            assert_eq!(name_of_task("Tarefa de A"), "Urgente");
+            assert_eq!(name_of_task("Tarefa de B"), "Urgente (2)");
+        }
+    }
+
+    #[test]
+    fn applying_a_category_with_a_taken_name_renames_it_and_ignores_the_limit() {
+        let (_dir, mut host, _cfg, _document) = host_with_document();
+        make(&mut host, &"x".repeat(40));
+        let mut clash = Category::new(&"x".repeat(40), 1);
+        clash.uid = "b".repeat(32);
+        host.execute_mutation(
+            "Servidor B",
+            IntranetMutation::SaveCategory {
+                category: clash,
+                expected_version: None,
+            },
+        )
+        .unwrap();
+        let names: Vec<_> = host
+            .list_categories()
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert!(names.contains(&format!("{} (2)", "x".repeat(36))));
+        assert!(names.iter().all(|n| n.chars().count() <= MAX_NAME));
+        // Past the limit: replayed changes are not refused.
+        for n in 0..MAX_CATEGORIES {
+            let mut c = Category::new(&format!("Extra {n}"), 0);
+            c.uid = format!("{n:032x}");
+            host.execute_mutation(
+                "Servidor B",
+                IntranetMutation::SaveCategory {
+                    category: c,
+                    expected_version: None,
+                },
+            )
+            .unwrap();
+        }
+        assert!(host.list_categories().unwrap().len() > MAX_CATEGORIES);
+        // The person in the interface is still refused.
+        assert!(host.save_category(&Category::new("Mais uma", 0)).is_err());
+    }
+
+    #[test]
+    fn deleting_a_category_already_deleted_is_not_a_conflict_when_applied() {
+        let (_dir, mut host, _cfg, _document) = host_with_document();
+        let made = make(&mut host, "Prazo");
+        host.delete_category(&made.uid).unwrap();
+        host.execute_mutation(
+            "Servidor B",
+            IntranetMutation::DeleteCategory {
+                uid: made.uid.clone(),
+                expected_version: None,
+            },
+        )
+        .unwrap();
+        // The interface keeps telling it.
+        assert!(host.delete_category(&made.uid).is_err());
     }
 }

@@ -916,6 +916,10 @@ pub enum RpcRequest {
     Mutate {
         actor: String,
         mutation: IntranetMutation,
+        /// The schema of the sender's library; 0 from a Ponte that does not
+        /// send it. The host uses it to keep what the sender cannot see.
+        #[serde(default)]
+        client_schema: i64,
     },
 }
 
@@ -2366,8 +2370,12 @@ impl Store {
                 category,
                 expected_version,
             } => self
-                .save_category_checked(&category, expected_version)
+                .save_category_applied(&category, expected_version)
                 .map(|_| MutationReply::Unit),
+            // Deleted already (two computers deleted it offline): nothing to do.
+            IntranetMutation::DeleteCategory { uid, .. } if !self.category_exists(&uid) => {
+                Ok(MutationReply::Unit)
+            }
             IntranetMutation::DeleteCategory {
                 uid,
                 expected_version,
@@ -2570,6 +2578,7 @@ impl Store {
                     &RpcRequest::Mutate {
                         actor: sent.actor.clone(),
                         mutation: sent.mutation.clone(),
+                        client_schema: crate::storage::SCHEMA_VERSION,
                     },
                 ) {
                     Ok(RpcResponse::Mutated {
@@ -3371,6 +3380,7 @@ impl Store {
                 &RpcRequest::Mutate {
                     actor: actor.clone(),
                     mutation: mutation.clone(),
+                    client_schema: crate::storage::SCHEMA_VERSION,
                 },
             )
         };
@@ -4696,6 +4706,7 @@ impl Store {
                 }
             }
             IntranetMutation::SaveTask { task, .. } => {
+                let cats = self.list_categories().unwrap_or_default();
                 let Some(host) = self
                     .list_tasks()
                     .ok()
@@ -4704,22 +4715,27 @@ impl Store {
                     return vec![];
                 };
                 let base = match &conflict.base {
-                    Some(IntranetMutation::SaveTask { task, .. }) => Some(task_fields(task)),
+                    Some(IntranetMutation::SaveTask { task, .. }) => Some(task_fields(task, &cats)),
                     _ => None,
                 };
-                diff(task_fields(&host), task_fields(task), base)
+                diff(task_fields(&host, &cats), task_fields(task, &cats), base)
             }
             IntranetMutation::SaveWorkContext {
                 document_id, value, ..
             } => {
+                let cats = self.list_categories().unwrap_or_default();
                 let host = self.load_work_context(*document_id).unwrap_or_default();
                 let base = match &conflict.base {
                     Some(IntranetMutation::SaveWorkContext { value, .. }) => {
-                        Some(context_fields(value))
+                        Some(context_fields(value, &cats))
                     }
                     _ => None,
                 };
-                diff(context_fields(&host), context_fields(value), base)
+                diff(
+                    context_fields(&host, &cats),
+                    context_fields(value, &cats),
+                    base,
+                )
             }
             IntranetMutation::SaveSaiopAttendance { attendance, .. } => {
                 let Some(host) = self
@@ -5250,15 +5266,16 @@ pub fn explain_resolve_error(
 /// What changed in one side's edit relative to its starting point, short:
 /// "Situação: Concluída | Prazo: 12/11/2026".
 fn change_summary(store: &Store, conflict: &SyncConflict) -> Option<String> {
+    let cats = store.list_categories().unwrap_or_default();
     let (now, before) = match (&conflict.mutation, &conflict.base) {
         (
             IntranetMutation::SaveTask { task, .. },
             Some(IntranetMutation::SaveTask { task: base, .. }),
-        ) => (task_fields(task), task_fields(base)),
+        ) => (task_fields(task, &cats), task_fields(base, &cats)),
         (
             IntranetMutation::SaveWorkContext { value, .. },
             Some(IntranetMutation::SaveWorkContext { value: base, .. }),
-        ) => (context_fields(value), context_fields(base)),
+        ) => (context_fields(value, &cats), context_fields(base, &cats)),
         (
             IntranetMutation::SaveSaiopAttendance { attendance, .. },
             Some(IntranetMutation::SaveSaiopAttendance {
@@ -5870,7 +5887,16 @@ fn pick_text(base: Option<&str>, host: &str, local: &str, actor: &str) -> String
     }
 }
 
-fn task_fields(t: &Task) -> Vec<(&'static str, String)> {
+/// The names of the categories with these uids, joined; unknown ones are left out.
+fn category_names(all: &[crate::categories::Category], uids: &[String]) -> String {
+    uids.iter()
+        .filter_map(|uid| all.iter().find(|c| &c.uid == uid))
+        .map(|c| c.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn task_fields(t: &Task, cats: &[crate::categories::Category]) -> Vec<(&'static str, String)> {
     vec![
         ("Título", t.title.clone()),
         ("Ação", crate::tasks::action_label(&t.action).to_owned()),
@@ -5893,10 +5919,14 @@ fn task_fields(t: &Task) -> Vec<(&'static str, String)> {
                 .collect::<Vec<_>>()
                 .join("; "),
         ),
+        ("Categorias", category_names(cats, &t.categories)),
     ]
 }
 
-fn context_fields(c: &WorkContext) -> Vec<(&'static str, String)> {
+fn context_fields(
+    c: &WorkContext,
+    cats: &[crate::categories::Category],
+) -> Vec<(&'static str, String)> {
     vec![
         (
             "Finalidade",
@@ -5913,6 +5943,7 @@ fn context_fields(c: &WorkContext) -> Vec<(&'static str, String)> {
         ("Recebido em", crate::labels::date(&c.received_date)),
         ("Processo vinculado", c.process_number.clone()),
         ("Orientação e contexto", c.notes.clone()),
+        ("Categorias", category_names(cats, &c.categories)),
     ]
 }
 
@@ -7086,7 +7117,7 @@ fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16,
     }
 }
 
-fn process_rpc(
+pub(crate) fn process_rpc(
     store: &mut Store,
     host_cfg: &IntranetConfig,
     request: RpcRequest,
@@ -7127,13 +7158,18 @@ fn process_rpc(
                 data_base64: STANDARD.encode(&bytes),
             })
         }
-        RpcRequest::Mutate { actor, mutation } => {
+        RpcRequest::Mutate {
+            actor,
+            mutation,
+            client_schema,
+        } => {
             ensure!(
                 !actor.trim().is_empty()
                     && actor.len() <= 120
                     && !actor.chars().any(char::is_control),
                 "Identificação do integrante inválida."
             );
+            let mutation = store.keep_unseen_fields(mutation, client_schema)?;
             let reply = store.execute_mutation(&actor, mutation)?;
             let snapshot = store.export_snapshot()?;
             Ok(RpcResponse::Mutated {
@@ -12551,6 +12587,7 @@ mod resources_sync_tests {
             &cfg,
             &RpcRequest::Mutate {
                 actor: "Servidor B".into(),
+                client_schema: crate::storage::SCHEMA_VERSION,
                 mutation,
             },
         );
@@ -12563,6 +12600,7 @@ mod resources_sync_tests {
             &cfg,
             &RpcRequest::Mutate {
                 actor: "Servidor B".into(),
+                client_schema: crate::storage::SCHEMA_VERSION,
                 mutation: IntranetMutation::SaveNote {
                     document_id: 1,
                     note: "x".into(),
@@ -12671,6 +12709,7 @@ mod resources_sync_tests {
                 &cfg,
                 &RpcRequest::Mutate {
                     actor: "Servidor B".into(),
+                    client_schema: crate::storage::SCHEMA_VERSION,
                     mutation,
                 },
             )
