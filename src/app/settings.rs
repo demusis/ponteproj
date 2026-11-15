@@ -146,6 +146,10 @@ impl PonteApp {
             self.trash.open = false;
             self.open_settings(SettingsSection::Trash);
         }
+        // "Gerenciar categorias…" in the picker of a task or a document.
+        if self.tasks.take_open_categories() | self.work_context.take_manage_categories() {
+            self.open_settings(SettingsSection::Categories);
+        }
         if self.settings_open {
             self.settings_open = false;
             self.open_settings(SettingsSection::Ai);
@@ -350,6 +354,17 @@ impl PonteApp {
                         ctx.copy_text(path.display().to_string());
                         self.message("Caminho copiado.");
                     }
+                }
+            }
+            SettingsSection::Categories => {
+                let shown = self.category_manager.ui(ui, &mut self.store);
+                if shown.changed {
+                    self.refresh();
+                }
+                match shown.notice {
+                    Some((text, true)) => self.error(text),
+                    Some((text, false)) => self.message(text),
+                    None => {}
                 }
             }
             SettingsSection::Trash => {

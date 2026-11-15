@@ -160,6 +160,7 @@ Na área **Modelos**, **Ctrl+F** (buscar modelo), **Ctrl+N** (**Novo modelo**), 
 | **Lembretes** | Aviso diário de prazos do Windows: ligar ou desligar, **Horário** e **Mostrar um aviso de teste** ([6.6](#66-lembretes-de-prazos)) |
 | **Inteligência artificial** | Escolher onde a IA roda ([seção 9](#9-ia-opcional)). Salva com **Salvar** ou ao sair da seção |
 | **Cópia de segurança e exportação** | **Fazer cópia agora**, onde as cópias ficam (**Abrir pasta**) e **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) |
+| **Categorias** | criar, renomear, colorir, arquivar e apagar as categorias de tarefas e documentos ([6.7](#67-categorias)) |
 | **Lixeira** | Restaurar itens excluídos e definir o prazo de limpeza |
 | **Aparência** | Tema: *Como o Windows*, *Claro* ou *Escuro*; **Tamanho do texto**: *Normal*, *Grande* ou *Maior* |
 | **Sobre o Ponte** | Versão, **Guia do usuário**, **Verificar se há versão nova** ([10.6](#106-o-que-sai-do-computador)), **Autores e licença…** e endereço do projeto |
@@ -267,6 +268,7 @@ A lista fica na área **Documentos**, à esquerda da ficha.
 | Situação das tarefas | *Todos*, *Com tarefa*, *No prazo*, *Atrasados*, *Concluídos* |
 | Prioridade | todas, urgente, alta, normal, baixa, não classificada |
 | Origem | *Todos*, *SIGADOC*, *Manuais* (aparece quando há registros manuais) |
+| Categorias | as que você marcar, mais *Sem categoria* (aparece quando já existe alguma categoria; veja [6.7](#67-categorias)) |
 | **Ordem** | *Mais recentes primeiro* (padrão), *Prazo mais próximo primeiro*, *Prioridade (urgente primeiro)*, *Número do documento*, *Assunto (A–Z)* |
 
 - **Novo** abre um menu: **Registro manual…** cria um documento que não está no SIGADOC ([5.5](#55-registros-manuais)); na janela dele, **Colar conversa do WhatsApp** cria o registro de uma conversa ([5.8](#58-conversas-do-whatsapp)); **Importar e-mail de um arquivo (.eml)…** e **Importar da conta de e-mail…** trazem e-mails.
@@ -443,6 +445,7 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 | Prioridade | *Baixa*, *Normal*, *Alta*, *Urgente* |
 | Prazo | `13/11/2026` |
 | Observações | texto livre |
+| **Categorias** | palavras suas para organizar, como *Urgente* ou *Jurídico*; até 10 por tarefa ([6.7](#67-categorias)) |
 | **Anexos** | arquivos seus ligados à tarefa ([5.6](#56-anexos)) |
 | **Mais detalhes** | origem do prazo (ex.: *art. 5º do ofício*), lembrete, resultado, lista de etapas, dependências |
 
@@ -521,6 +524,18 @@ Exemplo: *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Quando na
 - **Privacidade:** o aviso é montado no computador, com contagens; nada é enviado a lugar nenhum. A escolha de ligar, o horário e o último dia avisado ficam num arquivo pequeno da pasta de dados (`lembretes.txt`), sem nada do acervo.
 
 ---
+
+### 6.7 Categorias
+
+Uma **categoria** é uma palavra que você escolhe para organizar o trabalho, como *Urgente*, *Jurídico* ou *Aguardando resposta*. A lista é uma só, para as tarefas e para os documentos, e cada tarefa ou documento pode ter várias (no máximo 10).
+
+- **Criar e gerenciar:** **Ajustes ▸ Categorias** (ou **Gerenciar categorias…**, no seletor). **Nova categoria** pede o nome (1 a 40 letras, sem repetir outro, mesmo que mude só maiúsculas ou acentos) e deixa escolher entre dez cores; a lista pode ter até 100. Cada linha mostra quantas tarefas e quantos documentos usam a categoria e tem **Renomear**, **Cor**, **Arquivar** e **Apagar…**. **Arquivar** tira a categoria das ofertas para novos itens, mas quem já a tem continua com ela; as arquivadas ficam num grupo à parte, com **Desarquivar**. **Apagar…** pergunta antes e diz de quantas tarefas e documentos a categoria sai; as tarefas e os documentos continuam.
+- **Numa tarefa:** no painel da tarefa, **Categorias** mostra as escolhidas e **+ Categoria**, que abre a lista para marcar, com uma caixa de busca. Se o que você digitou não existe, aparece **Criar “texto”**, que cria e já marca. Clicar numa categoria escolhida a tira. Faz parte da tarefa: vale ao **Salvar** e some ao **Cancelar**.
+- **Num documento:** na ficha, aba **Resumo**, abra **Contexto de trabalho**: **Categorias** funciona do mesmo modo e é salva junto com o resto do contexto, em **Salvar contexto**. Pôr ou tirar uma categoria não deixa a análise da IA desatualizada, e as categorias não vão à IA.
+- **Filtrar:** em **Tarefas**, o botão **Categorias** ao lado das visões; em **Documentos**, **Filtros ▸ Categorias**. Mostra o que tem **qualquer uma** das marcadas; **Sem categoria** mostra o que não tem nenhuma.
+- **Nas listas:** cada tarefa mostra até 3 categorias e cada documento até 2, com **+N** para as demais (o mouse sobre o **+N** lista as outras).
+- **Em equipe:** com computador principal ou pasta compartilhada, a lista de categorias é a mesma para todos, e o que se cria, renomeia, arquiva ou apaga chega a todos na próxima sincronização.
+- **Formato:** as categorias mudam o formato do acervo (17) e o da pasta compartilhada (5). Um Ponte ou um Ponte de bolso mais antigo recusa o acervo e o arquivo novos e diz para atualizar: atualize todos os computadores e o celular juntos.
 
 ## 7. Atendimentos (controle do gabinete)
 
@@ -1102,6 +1117,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 - **Modelos de trabalho** usam as tabelas `work_templates`, `work_template_versions`, `instruction_blocks`, `instruction_block_versions`, `template_examples` e `draft_generations`. Os itens são endereçados por `uid` (UUID), não pelo número da linha, o que dispensa tradução de números na sincronização; só o registro de geração, que aponta para documento e captura, passa por `idmap`. A camada confiável do prompt só recebe texto de modelo, instruções e pedido; documentos e exemplos vão como dados.
 - **`SCHEMA_VERSION` 12 (11 na 0.20.0):** o acervo muda de formato. Quem está em equipe atualiza todos os computadores juntos, o principal primeiro.
 - **Sem mudança de formato na 0.35.0:** a conferência dos critérios é um cache local (`draft_conferences`), recalculável, fora da sincronização; continuam o formato 16 e o arquivo de sincronização 4.
+- **Formato 17 (pasta compartilhada 5), nas categorias:** a lista de categorias (`categories`, endereçadas por `uid`) e as categorias das tarefas e dos documentos passam a fazer parte do acervo e da sincronização; as dos documentos moram no `WorkContext`, que a equipe já sincroniza com versões e conflitos. Um Ponte ou um Ponte de bolso mais antigo recusa o acervo e o arquivo novos: atualizam todos juntos, o principal primeiro. `analysis_text` ignora as categorias, para que marcar um documento não deixe a análise desatualizada nem leve as marcas à IA.
 - **Formato 16 (arquivo de sincronização 4), na 0.34.0:** a análise passa a guardar `facts` e `proposals`, que uma versão antiga apagaria em silêncio ao regravar. Todos os computadores e o celular (Ponte de bolso 0.7.2) atualizam juntos; um leitor antigo recusa o acervo e o arquivo novos, e um principal antigo recusa a análise com propostas com uma mensagem clara.
 - **Limites:** 500 KiB de texto e 1 MiB por pacote de captura, até 10 PDFs, 8 MiB por PDF e 16 MiB de PDFs por importação, 8 MiB por anexo, 100 MiB por planilha `.xlsx` (256 MiB descompactada).
 - **A extensão só atua em `https://www.sigadoc.mt.gov.br`** e remove segredos de URL. A única exceção é o recurso opcional do WhatsApp Web (`https://web.whatsapp.com`), que fica desligado até a pessoa ligá-lo e só então pede a permissão ao navegador.

@@ -1,8 +1,9 @@
 //! The Tarefas panel: list views, the task form, dependency marks and
 //! attachments of a task.
+use crate::category_ui::CategoryFilter;
 use crate::theme::{self, c, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
-use crate::{model::TaskProposal, storage::Store, tasks::Task};
+use crate::{categories::Category, model::TaskProposal, storage::Store, tasks::Task};
 use eframe::egui::{self, RichText};
 use std::collections::BTreeSet;
 
@@ -186,6 +187,8 @@ struct Scope<'a> {
     show_done: bool,
     today: &'a str,
     week: &'a str,
+    /// Categories the list is narrowed to (none chosen: no narrowing).
+    categories: &'a CategoryFilter,
 }
 
 /// True when the task belongs to the document filter and the search text.
@@ -202,6 +205,9 @@ fn in_scope(
         return false;
     }
     if !scope.show_done && task.status == "concluida" {
+        return false;
+    }
+    if !scope.categories.matches(&task.categories) {
         return false;
     }
     if scope.query.is_empty() {
@@ -370,6 +376,7 @@ struct ListEnv<'a> {
     /// Selection mode: rows show a checkbox and a tap toggles them.
     selecting: bool,
     selected: &'a BTreeSet<i64>,
+    categories: &'a [Category],
 }
 
 /// What the person asked for in the list during this frame.
@@ -628,6 +635,7 @@ fn task_row(
                                 )
                                 .on_hover_text("Posição na cadeia de dependências. O recuo da linha para no 4º nível.");
                             }
+                            crate::category_ui::category_chips_compact(ui, &task.categories, env.categories, 3);
                             if let Some(count) = env.attachment_counts.get(&task.id) {
                                 ui.add(
                                     egui::Label::new(
@@ -1468,6 +1476,10 @@ struct BatchUndo {
 
 #[derive(Default)]
 pub struct TaskPanel {
+    /// Categories the list is narrowed to.
+    category_filter: CategoryFilter,
+    /// "Gerenciar categorias…" was clicked; the app opens Ajustes.
+    open_categories: bool,
     draft: Option<Task>,
     original: Option<Task>,
     base_version: Option<i64>,
@@ -1534,6 +1546,10 @@ pub struct TaskPanel {
     shots_scroll: f32,
 }
 impl TaskPanel {
+    /// The person asked to manage the categories (Ajustes, Categorias).
+    pub fn take_open_categories(&mut self) -> bool {
+        std::mem::take(&mut self.open_categories)
+    }
     pub fn take_trash_request(&mut self) -> Option<crate::trash::Target> {
         self.trash_requested
             .take()
@@ -2338,6 +2354,7 @@ impl TaskPanel {
             }
         }
         let actor = store.active_actor();
+        let categories = store.list_categories().unwrap_or_default();
         let data = std::mem::take(&mut self.data);
         let tasks = &data.tasks;
         let documents = &data.documents;
@@ -2362,6 +2379,7 @@ impl TaskPanel {
             show_done: self.show_done,
             today: &today_text,
             week: &week_text,
+            categories: &self.category_filter,
         };
         // The chips count what each view would list right now.
         let [all_count, today_count, week_count, overdue_count] =
@@ -2492,6 +2510,14 @@ impl TaskPanel {
                                     }
                                 }
                             });
+                            if !categories.is_empty() || self.category_filter.is_active() {
+                                crate::category_ui::category_filter_button(
+                                    ui,
+                                    "tasks",
+                                    &mut self.category_filter,
+                                    &categories,
+                                );
+                            }
                             // A discreet way to narrow the list to the document
                             // open in Documentos.
                             if let (None, Some(id)) = (self.document_filter, selected_document) {
@@ -2616,6 +2642,7 @@ impl TaskPanel {
                     editing_dirty: self.dirty(),
                     selecting: self.selecting,
                     selected: &self.selected,
+                    categories: &categories,
                 };
                 let mut groups: [Vec<&Task>; 5] = Default::default();
                 for task in &visible {
@@ -2652,13 +2679,17 @@ impl TaskPanel {
                 list_scroll.show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         if visible.is_empty() {
-                            let text = empty_text(
-                                &self.query,
-                                self.document_filter.is_some(),
-                                tasks.is_empty(),
-                                self.view,
-                                self.show_done,
-                            );
+                            let text = if self.category_filter.is_active() && !tasks.is_empty() {
+                                "Nenhuma tarefa com as categorias escolhidas nesta visão.".to_owned()
+                            } else {
+                                empty_text(
+                                    &self.query,
+                                    self.document_filter.is_some(),
+                                    tasks.is_empty(),
+                                    self.view,
+                                    self.show_done,
+                                )
+                            };
                             ui.add_space(S4 * 2.0);
                             ui.vertical_centered(|ui| {
                                 ui.spacing_mut().item_spacing.y = S2;
@@ -2666,6 +2697,10 @@ impl TaskPanel {
                                 if !self.query.trim().is_empty() {
                                     if ui.add(widgets::quiet("Limpar a busca")).clicked() {
                                         self.query.clear();
+                                    }
+                                } else if self.category_filter.is_active() && !tasks.is_empty() {
+                                    if ui.add(widgets::quiet("Limpar as categorias")).clicked() {
+                                        self.category_filter.clear();
                                     }
                                 } else {
                                     ui.horizontal(|ui| {
@@ -2829,6 +2864,9 @@ impl TaskPanel {
             }
         }
         let current_actor = store.active_actor();
+        let categories = store.list_categories().unwrap_or_default();
+        let mut category_error: Option<String> = None;
+        let mut manage_categories = false;
         let deps = crate::tasks::Dependencies::new(tasks);
         let mut save = false;
         let mut cancel = false;
@@ -3171,6 +3209,18 @@ impl TaskPanel {
                             },
                         );
                         ui.add_space(S2);
+                        widgets::field_label(ui, "Categorias");
+                        let mut picked = crate::category_ui::category_picker(
+                            ui,
+                            ("task-categories", task_id),
+                            &mut task.categories,
+                            &categories,
+                        );
+                        if let Err(error) = picked.finish(store, &mut task.categories, &categories) {
+                            category_error = Some(error);
+                        }
+                        manage_categories |= picked.manage;
+                        ui.add_space(S2);
                         widgets::field_label(ui, "Ação");
                         egui::ComboBox::from_id_salt("Ação")
                             .selected_text(crate::tasks::action_label(&task.action).to_owned())
@@ -3416,6 +3466,12 @@ impl TaskPanel {
                         });
                     });
             });
+        if let Some(error) = category_error {
+            self.notice(error, true);
+        }
+        if manage_categories {
+            self.open_categories = true;
+        }
         if let Some(link) = new_link {
             self.set_new_task_link(link);
         }
@@ -3592,6 +3648,7 @@ mod navigation_tests {
             show_done,
             today: "2026-11-10",
             week: "2026-11-17",
+            categories: &crate::category_ui::NO_CATEGORY_FILTER,
         }
     }
 
@@ -3969,6 +4026,7 @@ mod standalone_tests {
             show_done: false,
             today: "2026-11-10",
             week: "2026-11-17",
+            categories: &crate::category_ui::NO_CATEGORY_FILTER,
         }
     }
 

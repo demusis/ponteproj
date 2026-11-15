@@ -65,6 +65,9 @@ pub mod saiop;
 
 /// Categories the person defines, for tasks and documents.
 pub mod categories;
+/// Categories on the screens: chips, picker, filter and manager.
+#[cfg(feature = "desktop")]
+pub mod category_ui;
 /// Rooms, books and equipment, and their bookings and loans.
 pub mod resources;
 

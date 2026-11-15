@@ -4,6 +4,7 @@
 //! Everything goes through the public routes of the `Store`, so the data is
 //! exactly what the application would have stored. Dates are computed from
 //! today, so the pictures always look current.
+use crate::categories::Category;
 use crate::dossier::Movement;
 use crate::manual::ManualFields;
 use crate::model::{ActionSuggestion, Analysis, Capture, Coverage};
@@ -64,6 +65,7 @@ fn seed_all(store: &mut Store) -> Result<()> {
     ids.mail = mail(store).context("e-mail de exemplo")?;
     whatsapp(store).context("conversa do WhatsApp de exemplo")?;
     tasks(store, &ids).context("tarefas de exemplo")?;
+    categories(store, &ids).context("categorias de exemplo")?;
     attendances(store, &ids).context("atendimentos de exemplo")?;
     analysis(store, &ids).context("análise de exemplo")?;
     templates(store).context("modelos de exemplo")?;
@@ -757,6 +759,36 @@ fn tasks(store: &mut Store, ids: &Ids) -> Result<()> {
         "",
     );
     store.save_task(&room)?;
+    Ok(())
+}
+
+/// Three categories, put on a few of the tasks and documents.
+fn categories(store: &mut Store, ids: &Ids) -> Result<()> {
+    let mut make = |name: &str, color: u8| -> Result<String> {
+        Ok(store.save_category(&Category::new(name, color))?.uid)
+    };
+    let urgent = make("Urgente", 4)?;
+    let legal = make("Jurídico", 1)?;
+    let waiting = make("Aguardando resposta", 6)?;
+    for mut task in store.list_tasks()? {
+        let title = task.title.to_lowercase();
+        task.categories = if title.contains("auditório") {
+            vec![urgent.clone(), waiting.clone()]
+        } else if title.contains("veículos") {
+            vec![urgent.clone()]
+        } else if title.contains("certificado") {
+            vec![legal.clone()]
+        } else if title.contains("sala") {
+            vec![waiting.clone()]
+        } else {
+            continue;
+        };
+        store.save_task(&task)?;
+    }
+    store.set_document_categories(ids.logistics, &[urgent.clone(), legal.clone()])?;
+    store.set_document_categories(ids.vehicles, &[urgent])?;
+    store.set_document_categories(ids.staff, &[legal])?;
+    store.set_document_categories(ids.schedule, &[waiting])?;
     Ok(())
 }
 

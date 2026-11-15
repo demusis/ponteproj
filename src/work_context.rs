@@ -84,10 +84,16 @@ impl WorkContext {
         Ok(())
     }
     pub fn analysis_text(&self, document_notes: &str) -> String {
-        if self == &Self::default() && document_notes.is_empty() {
+        // The categories are the person's own filing: they are not part of
+        // what the analysis was made from, so tagging a document neither
+        // makes its analysis stale nor sends the tags to the model.
+        let mut plain = self.clone();
+        plain.categories.clear();
+        if plain == Self::default() && document_notes.is_empty() {
             return String::new();
         }
-        serde_json::json!({"informado_pelo_usuario":self,"notas_salvas":document_notes}).to_string()
+        serde_json::json!({"informado_pelo_usuario":plain,"notas_salvas":document_notes})
+            .to_string()
     }
 }
 impl Store {
@@ -170,9 +176,15 @@ pub struct ContextPanel {
     versions: std::collections::BTreeMap<i64, i64>,
     message: String,
     reveal: Option<i64>,
+    /// "Gerenciar categorias…" was clicked in the picker.
+    manage_categories: bool,
 }
 #[cfg(feature = "desktop")]
 impl ContextPanel {
+    /// The person asked to manage the categories (Ajustes, Categorias).
+    pub fn take_manage_categories(&mut self) -> bool {
+        std::mem::take(&mut self.manage_categories)
+    }
     pub fn reveal(&mut self, id: i64) {
         self.reveal = Some(id);
     }
@@ -237,6 +249,7 @@ impl ContextPanel {
                 self.drafts.insert(id, (value.clone(), value));
             }
         }
+        let all_categories = store.list_categories().unwrap_or_default();
         let force_open = self.reveal == Some(id);
         if force_open {
             self.reveal = None;
@@ -247,6 +260,12 @@ impl ContextPanel {
         let mut new_ver = None;
         egui::CollapsingHeader::new(eframe::egui::RichText::new(if draft!=saved {"Contexto de trabalho ●"} else {"Contexto de trabalho"}).font(crate::theme::font_strong(crate::theme::SIZE_SECTION))).id_salt(("work-context",id)).default_open(false).open(if force_open{Some(true)}else{None}).show(ui,|ui| {
             crate::widgets::small_muted(ui, "Finalidade, assuntos e orientações que só você sabe. Nada disto altera o SIGADOC.");
+            // The categories are part of the draft: the one "Salvar contexto"
+            // below saves them with the rest, and "Cancelar" takes them back.
+            crate::widgets::field_label(ui, "Categorias");
+            let mut picked = crate::category_ui::category_picker(ui, ("doc-categories", id), &mut draft.categories, &all_categories);
+            if let Err(e) = picked.finish(store, &mut draft.categories, &all_categories) { self.message = e; }
+            self.manage_categories |= picked.manage;
             egui::ComboBox::from_id_salt(("purpose",id)).selected_text(format!("Finalidade: {}",purpose_label(&draft.purpose))).show_ui(ui,|ui| {
                 for purpose in PURPOSES { ui.selectable_value(&mut draft.purpose, purpose.to_string(), purpose_label(purpose)); }
             });
@@ -457,6 +476,55 @@ pub fn provenance(ui: &mut eframe::egui::Ui, detail: &crate::model::DocumentDeta
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn categories_travel_with_the_context_draft_and_lose_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("cat.sqlite3")).unwrap();
+        let receipt = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let id = receipt.document_id;
+        let urgent = store
+            .save_category(&crate::categories::Category::new("Urgente", 0))
+            .unwrap();
+        // The panel keeps the whole context as a draft; the picker edits it.
+        let mut draft = store.load_work_context(id).unwrap();
+        draft.notes = "Orientação local".into();
+        draft.sender = "Servidor A".into();
+        let expected = store
+            .item_version("work_context", id)
+            .ok()
+            .map(|v| v.version);
+        draft.categories.push(urgent.uid.clone());
+        store
+            .save_work_context_checked(id, &draft, expected)
+            .unwrap();
+        let saved = store.load_work_context(id).unwrap();
+        assert_eq!(saved.categories, vec![urgent.uid.clone()]);
+        assert_eq!(saved.notes, "Orientação local");
+        assert_eq!(saved.sender, "Servidor A");
+        assert_eq!(
+            store.document_categories(id).unwrap(),
+            vec![urgent.uid.clone()]
+        );
+        assert!(
+            !saved.analysis_text("").contains(&urgent.uid),
+            "tags are not part of what the analysis reads"
+        );
+        let listed = store.list_documents("").unwrap();
+        assert_eq!(listed[0].categories, vec![urgent.uid]);
+        // Taking it off through the draft works the same way.
+        let expected = store
+            .item_version("work_context", id)
+            .ok()
+            .map(|v| v.version);
+        let mut again = saved.clone();
+        again.categories.clear();
+        store
+            .save_work_context_checked(id, &again, expected)
+            .unwrap();
+        assert!(store.load_work_context(id).unwrap().categories.is_empty());
+    }
     #[test]
     fn saved_context_marks_analysis_stale_and_survives_reimport() {
         let dir = tempfile::tempdir().unwrap();

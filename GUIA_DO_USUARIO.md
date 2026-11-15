@@ -30,7 +30,7 @@ Os dados ficam só na sua conta do Windows, cifrados. Outra conta no mesmo compu
 - **Voltar:** ao ir de uma tarefa, de um atendimento ou de Hoje para um documento, a ficha mostra no alto **Voltar à tarefa**, **Voltar ao atendimento** ou **Voltar a Hoje**.
 - **Barra inferior:** um ponto colorido mostra a situação da rede, e **Sincronizar** aparece no modo pasta compartilhada. Clicar na situação abre Ajustes ▸ Equipe e sincronização.
 - **Avisos:** aparecem numa caixa no canto inferior direito. Os de sucesso somem sozinhos; os de erro ficam até você fechar.
-- **Ajustes:** Equipe e sincronização, E-mail, Importação do SIGADOC, Lembretes (aviso diário de prazos, veja a seção 5), Inteligência artificial, Cópia de segurança e exportação, Lixeira, Aparência (tema Como o Windows, Claro ou Escuro, e **Tamanho do texto**: Normal, Grande ou Maior) e Sobre o Ponte. Ao aumentar o texto, o menor tamanho a que a janela pode ser reduzida acompanha o novo tamanho, sem nunca passar do tamanho da tela.
+- **Ajustes:** Equipe e sincronização, E-mail, Importação do SIGADOC, Lembretes (aviso diário de prazos, veja a seção 5), Inteligência artificial, Cópia de segurança e exportação, Categorias, Lixeira, Aparência (tema Como o Windows, Claro ou Escuro, e **Tamanho do texto**: Normal, Grande ou Maior) e Sobre o Ponte. Ao aumentar o texto, o menor tamanho a que a janela pode ser reduzida acompanha o novo tamanho, sem nunca passar do tamanho da tela.
 - **Datas:** digite `dd/mm/aaaa` ou clique no ícone de calendário; **Hoje** preenche a data de hoje.
 - **Nada se perde ao trocar de tela:** se há algo não salvo, o Ponte pergunta antes.
 
@@ -135,6 +135,17 @@ Se o painel não reconhecer a página (*O Ponte não reconheceu esta página do 
 - **Tarefa que depende de outra** aparece recuada, com o aviso `⛓ 1 de 2 anterior(es) em aberto` e a linha *depende de*, que lista as anteriores. A tarefa só pode ser concluída depois delas. A linha *libera* mostra quem espera por ela.
 - **Juntados seguem o principal:** concluir a última tarefa de um documento principal conclui as tarefas das peças juntadas a ele. A mensagem lista o que foi concluído.
 - **Lembretes de prazos:** uma vez por dia, no horário escolhido (9h, se você não mudou), o Windows mostra um aviso, *Prazos de hoje no Ponte*, só com as quantidades: tarefas atrasadas, tarefas para hoje, atendimentos com prazo vencido ou para hoje e tarefas cuja data de lembrete chegou, por exemplo *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Também entram, só como números, as reservas de recursos de hoje e as devoluções atrasadas. Os títulos nunca aparecem, porque o aviso pode ficar visível sobre outras janelas. Não há aviso quando nada vence. Ele só aparece enquanto o Ponte está aberto ou minimizado, e, se o Ponte abrir depois do horário, aparece pouco depois da abertura. Com o Ponte na frente, a mesma frase surge no aviso do canto da janela. Clicar no aviso do Windows traz o Ponte para a frente, em **Hoje**. Está ligado de fábrica. Em **Ajustes ▸ Lembretes**, desmarque **Lembrar dos prazos uma vez por dia** para desligar, ou escolha o **Horário**; **Mostrar um aviso de teste** mostra como o aviso fica (com números de exemplo). Se nada aparecer, veja *Configurações do Windows ▸ Sistema ▸ Notificações*.
+
+### Categorias
+
+Uma **categoria** é uma palavra que você escolhe para organizar o trabalho, como *Urgente*, *Jurídico* ou *Aguardando resposta*. A lista é uma só, para as tarefas e para os documentos, e cada tarefa ou documento pode ter várias (até 10).
+
+- **Criar:** em **Ajustes ▸ Categorias**, escreva o nome em **Nova categoria**, escolha uma cor e clique em **Criar**. Também dá para criar na hora, ao escolher a categoria de uma tarefa ou de um documento: digite o nome e clique em **Criar “nome”**.
+- **Numa tarefa:** no painel da tarefa, em **Categorias**, clique em **+ Categoria** e marque as que valem. Para tirar uma, clique nela. Salve a tarefa como de costume.
+- **Num documento:** na ficha, aba **Resumo**, abra **Contexto de trabalho** e use **Categorias** do mesmo jeito; clique em **Salvar contexto**.
+- **Filtrar:** em **Tarefas**, use o botão **Categorias** ao lado das visões; em **Documentos**, **Filtros ▸ Categorias**. A lista mostra o que tem qualquer uma das categorias marcadas; **Sem categoria** mostra o que não tem nenhuma.
+- **Gerenciar:** em **Ajustes ▸ Categorias** (ou **Gerenciar categorias…**, na lista de escolha) você vê quantas tarefas e documentos usam cada uma e pode **Renomear**, mudar a **Cor**, **Arquivar** (a categoria deixa de ser oferecida, mas continua em quem já a tem; **Desarquivar** desfaz) e **Apagar…**. Ao apagar, o Ponte diz de quantas tarefas e documentos a categoria vai sair; as tarefas e os documentos continuam.
+- **Em equipe:** a lista de categorias é a mesma para todos. O que alguém cria, renomeia, arquiva ou apaga chega aos outros na próxima sincronização.
 
 ## 6. Notas, minutas e IA
 
@@ -374,6 +385,8 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 **Atualizar em equipe.** A versão 0.34.0 (as propostas da IA) muda o formato do acervo (16) e o do arquivo de sincronização (4): **atualize todos os computadores e o celular juntos** (Ponte 0.34.0 e Ponte de bolso 0.7.2). Um aparelho que ficar na versão anterior recusa o acervo e o arquivo novos e diz para atualizar; nada se perde. Com um computador principal, atualize primeiro o principal: um principal na versão anterior recusa, com uma mensagem clara, a análise que traz propostas.
 
 A versão 0.35.0 (conferência da minuta) não muda o formato: os mesmos 16 e 4. Não é preciso atualizar todos os aparelhos no mesmo dia.
+
+As categorias mudam o formato do acervo (17) e o da pasta compartilhada (5): **atualize todos os computadores e o celular juntos**. Um Ponte ou um Ponte de bolso mais antigo recusa o acervo e o arquivo novos e diz para atualizar; nada se perde. Com um computador principal, atualize primeiro o principal.
 
 **Nunca** instale o Ponte nem copie o acervo para dentro do Google Drive ou do OneDrive: o acervo só abre na conta do Windows que o gravou.
 

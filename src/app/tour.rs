@@ -63,6 +63,9 @@ impl PonteApp {
         "ajustes-aparencia",
         "ajustes-importacao",
         "ajustes-lembretes",
+        "ajustes-categorias",
+        "ajustes-categorias-apagar",
+        "ficha-categorias",
         "ajustes-sobre",
         "ajustes-sobre-versao-nova",
         "janela-rede",
@@ -435,7 +438,7 @@ impl PonteApp {
                     });
                     self.suggestion_open = true;
                 }
-                self.shots_ficha_scroll = 520.0;
+                self.shots_ficha_scroll = 2480.0;
             }
             "minuta-salva-fechada" | "minuta-salva-aberta" | "minuta-mudou" => {
                 if let Some(id) = document {
@@ -527,7 +530,7 @@ impl PonteApp {
                 }
                 self.tab = Tab::Notes;
                 self.shots_conference_open = true;
-                self.shots_ficha_scroll = 520.0;
+                self.shots_ficha_scroll = 2480.0;
             }
             "envio-confirmacao-conferencia" => {
                 if let Some(id) = document {
@@ -831,6 +834,26 @@ impl PonteApp {
             "ajustes-importacao" => {
                 self.area = Area::Settings;
                 self.settings_section = super::SettingsSection::Import;
+            }
+            "ajustes-categorias" | "ajustes-categorias-apagar" => {
+                self.area = Area::Settings;
+                self.settings_section = super::SettingsSection::Categories;
+                self.category_manager.shots_open(
+                    &self.store,
+                    if name.ends_with("apagar") {
+                        "apagar"
+                    } else {
+                        ""
+                    },
+                );
+            }
+            "ficha-categorias" => {
+                if let Some(id) = document {
+                    self.select(id);
+                    self.work_context.reveal(id);
+                }
+                self.tab = Tab::Overview;
+                self.shots_ficha_scroll = 2480.0;
             }
             "ajustes-lembretes" => {
                 self.area = Area::Settings;

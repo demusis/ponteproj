@@ -3,6 +3,7 @@ use super::{
     notice_line, pill, plural, DocOriginFilter, DocPriorityFilter, DocSort, DocTaskFilter,
     DocTaskStatusSummary, Editor, Leave, PonteApp, WorkKind,
 };
+use crate::categories::Category;
 use crate::model::DocumentSummary;
 use crate::theme::{self, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
@@ -23,6 +24,8 @@ struct DocRow<'a> {
     selected: bool,
     editing: bool,
     joined: Option<String>,
+    /// Every category of the library, to draw the chips of the row.
+    categories: &'a [Category],
 }
 
 /// One document of the list: number and date, title, then its pills. The
@@ -130,6 +133,7 @@ fn document_row(ui: &mut egui::Ui, row: &DocRow) -> egui::Response {
             }
             _ => {}
         }
+        crate::category_ui::category_chips_compact(ui, &document.categories, row.categories, 2);
         if document.analysis_stale {
             pill(ui, "análise desatualizada", Tone::Warn).on_hover_text(
                 "O documento, o contexto ou as notas mudaram depois da última análise.",
@@ -350,17 +354,20 @@ impl PonteApp {
             summaries.insert(doc.id, s);
         }
         let attachment_counts = self.store.attachment_counts("document").unwrap_or_default();
+        let all_categories = self.store.list_categories().unwrap_or_default();
 
         let filters_active = self.doc_task_filter != DocTaskFilter::All
             || self.doc_priority_filter != DocPriorityFilter::All
-            || self.doc_origin_filter != DocOriginFilter::All;
+            || self.doc_origin_filter != DocOriginFilter::All
+            || self.doc_category_filter.is_active();
         // Filters that only the "Filtros" chip shows; the chip stays filled
         // while one of them (or the panel) is on.
         let hidden_filter_on = matches!(
             self.doc_task_filter,
             DocTaskFilter::OpenOnTime | DocTaskFilter::Completed
         ) || self.doc_priority_filter != DocPriorityFilter::All
-            || self.doc_origin_filter != DocOriginFilter::All;
+            || self.doc_origin_filter != DocOriginFilter::All
+            || self.doc_category_filter.is_active();
         ui.add_space(S1);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(S1 + 2.0, S1 + 2.0);
@@ -449,6 +456,16 @@ impl PonteApp {
                                 ui.selectable_value(&mut self.doc_priority_filter, pf, pf.label());
                             }
                         });
+                    if !all_categories.is_empty() || self.doc_category_filter.is_active() {
+                        ui.add_space(S1);
+                        widgets::field_label(ui, "Categorias");
+                        crate::category_ui::category_filter_button(
+                            ui,
+                            "documents",
+                            &mut self.doc_category_filter,
+                            &all_categories,
+                        );
+                    }
                     ui.add_space(S1);
                     widgets::field_label(ui, "Ordem");
                     egui::ComboBox::from_id_salt("doc_sort_combo")
@@ -493,7 +510,8 @@ impl PonteApp {
                     .is_none_or(|s| s.matches(self.doc_task_filter));
                 let prio_ok = self.doc_priority_filter.matches(&doc.priority);
                 let origin_ok = self.doc_origin_filter.matches(doc.manual);
-                task_ok && prio_ok && origin_ok
+                let category_ok = self.doc_category_filter.matches(&doc.categories);
+                task_ok && prio_ok && origin_ok && category_ok
             })
             .collect();
         self.doc_sort.apply(&mut filtered_docs, |id| {
@@ -525,6 +543,7 @@ impl PonteApp {
             self.doc_task_filter = DocTaskFilter::All;
             self.doc_priority_filter = DocPriorityFilter::All;
             self.doc_origin_filter = DocOriginFilter::All;
+            self.doc_category_filter.clear();
             if !self.query.is_empty() {
                 self.query.clear();
                 self.search_changed = Some(Instant::now());
@@ -570,6 +589,7 @@ impl PonteApp {
                         selected: self.selected_id == Some(document.id),
                         editing,
                         joined,
+                        categories: &all_categories,
                     };
                     let response = document_row(ui, &row);
                     let response = if document.email {
@@ -615,6 +635,7 @@ impl PonteApp {
                         self.doc_task_filter = DocTaskFilter::All;
                         self.doc_priority_filter = DocPriorityFilter::All;
                         self.doc_origin_filter = DocOriginFilter::All;
+                        self.doc_category_filter.clear();
                         if !self.query.is_empty() {
                             self.query.clear();
                             self.search_changed = Some(Instant::now());
