@@ -64,7 +64,8 @@ internal fun TaskScreen(
     onUnlink: () -> Unit,
     onReload: () -> Unit,
     assignees: List<String> = emptyList(),
-    myName: String = ""
+    myName: String = "",
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") }
 ) {
     // Only the task this screen was opened for: never the form of one with the data of another.
     val task = TaskRules.shown(routeId, state)
@@ -75,7 +76,7 @@ internal fun TaskScreen(
         }
         return
     }
-    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName)
+    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory)
 }
 
 private val DraftSaver = Saver<TaskDraft, List<Any>>(save = { it.toList() }, restore = { TaskDraft.fromList(it) })
@@ -94,7 +95,8 @@ private fun TaskLoaded(
     onUnlink: () -> Unit,
     onReload: () -> Unit,
     assignees: List<String>,
-    myName: String
+    myName: String,
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit
 ) {
     val c = Ponte.colors
     // The draft remembers the version it started from; a newer stored task resets it (nothing
@@ -161,6 +163,8 @@ private fun TaskLoaded(
             DateField("Prazo", form.dueDate, { v -> edit { it.copy(dueDate = v) } }, emptyText = "Sem prazo")
             // "Eu" and the suggestions only fill the typed form: the draft rules above stay as they are.
             AssigneeField(form.assignee, { v -> edit { it.copy(assignee = v) } }, assignees, myName)
+            // Part of the draft like the other fields: saved with Salvar, refused with the rest on a conflict.
+            CategoryField(form.categories, { v -> edit { it.copy(categories = v) } }, onCreateCategory, enabled = !state.busy)
             LabeledField(
                 "Observações", form.notes, { v -> edit { it.copy(notes = v) } },
                 singleLine = false, minLines = 4,

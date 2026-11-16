@@ -415,6 +415,7 @@ internal fun TaskRow(
             // Only what is not the usual: a normal priority says nothing.
             val flag = priorityFlag(task)
             if (flag != null) Pill(flag.first, flag.second, Modifier.padding(top = 4.dp))
+            CategoryChips(task.categories, Modifier.padding(top = 4.dp))
         }
         if (!task.done && task.dueChip.isNotEmpty()) {
             Spacer(Modifier.width(8.dp))

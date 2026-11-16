@@ -28,7 +28,9 @@ internal data class TaskItem(
     val priority: String = "normal",
     /** "Baixa", "Alta", "Urgente"… */
     val priorityLabel: String = "",
-    val notes: String = ""
+    val notes: String = "",
+    /** Uids of the categories (names and colours come from [Category]). */
+    val categories: List<String> = emptyList()
 ) {
     /** The second line of a row: the action and the document ("Sem documento" for none). */
     val secondLine: String
@@ -65,7 +67,8 @@ internal fun JSONObject.toTask(): TaskItem {
         dueToday = optBoolean("due_today"),
         priority = s("priority", "normal").ifEmpty { "normal" },
         priorityLabel = s("priority_label"),
-        notes = s("notes")
+        notes = s("notes"),
+        categories = optJSONArray("categories").strings()
     )
 }
 
@@ -214,7 +217,9 @@ internal data class TaskForm(
     /** ISO date or empty ("Sem prazo"). */
     val dueDate: String,
     val assignee: String,
-    val notes: String
+    val notes: String,
+    /** Uids of the categories, in the order they were chosen. */
+    val categories: List<String> = emptyList()
 ) {
     companion object
 
@@ -222,14 +227,15 @@ internal data class TaskForm(
     fun changedFrom(saved: TaskForm): Boolean = changes(saved).isNotEmpty()
 
     /** Field name (as the core's `saveTask` reads it) to new value, only for what differs. */
-    fun changes(saved: TaskForm): Map<String, String> {
-        val out = LinkedHashMap<String, String>()
+    fun changes(saved: TaskForm): Map<String, Any> {
+        val out = LinkedHashMap<String, Any>()
         if (title.trim() != saved.title.trim()) out["title"] = title.trim()
         if (action != saved.action) out["action"] = action
         if (priority != saved.priority) out["priority"] = priority
         if (dueDate != saved.dueDate) out["due_date"] = dueDate
         if (assignee.trim() != saved.assignee.trim()) out["assignee"] = assignee.trim()
         if (notes != saved.notes) out["notes"] = notes
+        if (categories.toSet() != saved.categories.toSet()) out["categories"] = categories
         return out
     }
 }
@@ -262,7 +268,8 @@ internal fun JSONObject.toTaskDetail() = TaskDetail(
     documentTitle = s("document_title"),
     form = TaskForm(
         title = s("title"), action = s("action"), priority = s("priority", "normal").ifEmpty { "normal" },
-        dueDate = s("due_date"), assignee = s("assignee"), notes = s("notes")
+        dueDate = s("due_date"), assignee = s("assignee"), notes = s("notes"),
+        categories = optJSONArray("categories").strings()
     ),
     done = s("status") == "concluida", version = optLong("version"),
     checklist = optJSONArray("checklist").objs().map { ChecklistItem(it.optBoolean("done"), it.s("text")) }
@@ -313,7 +320,11 @@ internal data class DocDetail(
     val analysis: Analysis?,
     val tasks: List<TaskItem>,
     val files: List<FileItem>,
-    val text: String
+    val text: String,
+    /** Uids of the categories of the document. */
+    val categories: List<String> = emptyList(),
+    /** The version a change of the categories must present back (the core refuses a stale one). */
+    val categoriesVersion: Long = 0
 )
 
 internal fun JSONObject.toDocDetail(): DocDetail {
@@ -341,7 +352,9 @@ internal fun JSONObject.toDocDetail(): DocDetail {
         },
         tasks = optJSONArray("tasks").objs().map { it.toTask() },
         files = files + atts,
-        text = s("text")
+        text = s("text"),
+        categories = optJSONArray("categories").strings(),
+        categoriesVersion = optLong("categories_version")
     )
 }
 

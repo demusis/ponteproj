@@ -46,6 +46,19 @@ class PonteCore {
 
     /** Links, moves (documentId > 0) or unlinks (0) a task; version as in saveTask. */
     external fun relinkTask(taskId: Long, documentId: Long, version: Long): String
+    /** Every category, archived ones too: {categories: [{uid, name, color (0 to 9), archived}]}. */
+    external fun listCategories(): String
+
+    /** Creates a category (color is a palette index, 0 to 9). Answer: {category: {uid, name, color, archived}}. */
+    external fun createCategory(name: String, color: Long): String
+
+    /**
+     * Replaces the categories of a document with [uidsJson] (a JSON array of uids, at most 10);
+     * [version] is "categories_version" of getDocument, and a stale one saves nothing.
+     * Answer: {categories, categories_version}.
+     */
+    external fun setDocumentCategories(documentId: Long, uidsJson: String, version: Long): String
+
     /** Names used as responsible person, most used first: {names: [String]}. */
     external fun assignees(): String
 

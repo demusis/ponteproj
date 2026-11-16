@@ -212,6 +212,7 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listDocuments<'loc
                     "manual": summary.manual,
                     "email": summary.email,
                     "email_from": summary.email_from,
+                    "categories": summary.categories,
                     "open_tasks": open_tasks,
                     "task_due_label": ponteproj::labels::date(&due),
                     "task_overdue": !due.is_empty() && due.as_str() < today.as_str(),
@@ -299,6 +300,8 @@ fn task_json_on(
         "overdue": open && !task.due_date.is_empty() && task.due_date.as_str() < today,
         "due_today": open && task.due_date == today,
         "notes": task.notes,
+        // Uids of the categories; names and colours come from `listCategories`.
+        "categories": task.categories,
     })
 }
 
@@ -368,6 +371,8 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_getDocument<'local
                 "files": files,
                 "attachments": attachments,
                 "tasks": tasks,
+                "categories": store.document_categories(document_id)?,
+                "categories_version": work_context_version(store, document_id),
             }))
         })
     })
@@ -508,6 +513,9 @@ fn create_task(store: &mut Store, input: &Value) -> Result<Value> {
     task.due_date = valid_due(input["due_date"].as_str().unwrap_or(""))?;
     // The responsible person, when the phone knows the person's name.
     task.assignee = input["assignee"].as_str().unwrap_or("").trim().chars().take(80).collect();
+    if let Some(uids) = uid_list(&input["categories"]) {
+        task.categories = uids;
+    }
     let id = store.save_task(&task)?;
     Ok(json!({ "id": id }))
 }
@@ -595,6 +603,9 @@ fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
     if let Some(notes) = text("notes") {
         task.notes = notes;
     }
+    if let Some(uids) = uid_list(&input["categories"]) {
+        task.categories = uids;
+    }
     anyhow::ensure!(!task.title.is_empty(), "Informe o título da tarefa.");
     anyhow::ensure!(
         ["baixa", "normal", "alta", "urgente"].contains(&task.priority.as_str()),
@@ -602,6 +613,102 @@ fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
     );
     store.save_task_checked(&task, Some(version)).map_err(task_conflict)?;
     Ok(json!({ "id": id, "version": store.item_version("task", id)?.version }))
+}
+
+/// The strings of a JSON array (`None` when the value is not an array).
+fn uid_list(value: &Value) -> Option<Vec<String>> {
+    value
+        .as_array()
+        .map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+}
+
+fn category_json(c: &ponteproj::categories::Category) -> Value {
+    json!({"uid": c.uid, "name": c.name, "color": c.color, "archived": c.archived})
+}
+
+/// Every category, archived ones too (an item may still carry one).
+fn list_categories(store: &Store) -> Result<Value> {
+    let list = store.list_categories()?.iter().map(category_json).collect::<Vec<_>>();
+    Ok(json!({ "categories": list }))
+}
+
+/// Creates a category (the colour is a palette index, 0 to 9); the core
+/// refuses an empty or long name, a repeated one and a full list.
+fn create_category(store: &mut Store, name: &str, color: i64) -> Result<Value> {
+    anyhow::ensure!(
+        (0..i64::from(ponteproj::categories::PALETTE_SIZE)).contains(&color),
+        "A cor da categoria é inválida."
+    );
+    let saved = store.save_category(&ponteproj::categories::Category::new(name, color as u8))?;
+    Ok(json!({ "category": category_json(&saved) }))
+}
+
+/// The version of a document's work context (where its categories live).
+fn work_context_version(store: &Store, document_id: i64) -> i64 {
+    store.item_version("work_context", document_id).map(|m| m.version).unwrap_or(0)
+}
+
+/// What the phone says when the document changed under its ficha.
+const DOCUMENT_CHANGED: &str =
+    "Este documento foi alterado depois que você abriu a ficha. Abra-a de novo para ver a versão atual.";
+
+/// Replaces the categories of a document, refusing when it changed since the
+/// ficha was read (`version` is `categories_version` of `getDocument`).
+fn set_document_categories(
+    store: &mut Store,
+    document_id: i64,
+    uids: &[String],
+    version: i64,
+) -> Result<Value> {
+    store.load_document(document_id).context("Documento não encontrado.")?;
+    anyhow::ensure!(work_context_version(store, document_id) == version, DOCUMENT_CHANGED);
+    store.set_document_categories(document_id, uids).map_err(|error| {
+        if format!("{error:#}").starts_with("Conflito de edição simultânea") {
+            anyhow::anyhow!(DOCUMENT_CHANGED)
+        } else {
+            error
+        }
+    })?;
+    Ok(json!({
+        "categories": store.document_categories(document_id)?,
+        "categories_version": work_context_version(store, document_id),
+    }))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listCategories<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| with_store(|store| list_categories(store)))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createCategory<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    name: JString<'local>,
+    color: jlong,
+) -> jstring {
+    answer(&mut env, |env| {
+        let name = text(env, &name)?;
+        with_store(|store| create_category(store, &name, color))
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_setDocumentCategories<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    document_id: jlong,
+    uids_json: JString<'local>,
+    version: jlong,
+) -> jstring {
+    answer(&mut env, |env| {
+        let uids = uid_list(&json_arg(env, &uids_json)?)
+            .context("Dados inválidos vindos do aplicativo.")?;
+        with_store(|store| set_document_categories(store, document_id, &uids, version))
+    })
 }
 
 /// Moves a task to `document_id`, or (0) takes it out of its document.
@@ -1939,6 +2046,102 @@ mod tests {
         let v2 = version(&store);
         assert!(relink_task(&mut store, id, 0, v2).is_err());
         assert_eq!(version(&store), v2);
+    }
+
+    fn new_uid(store: &mut Store, name: &str, color: i64) -> String {
+        create_category(store, name, color).unwrap()["category"]["uid"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn categories_list_create_and_reach_tasks() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        assert!(list_categories(&store).unwrap()["categories"].as_array().unwrap().is_empty());
+        let made = create_category(&mut store, "  Urgente ", 4).unwrap();
+        let uid = made["category"]["uid"].as_str().unwrap().to_owned();
+        assert!(!uid.is_empty());
+        assert_eq!(made["category"]["name"], "Urgente");
+        assert_eq!(made["category"]["color"], 4);
+        assert_eq!(made["category"]["archived"], false);
+        // Same name ignoring case, empty name and bad colour are refused.
+        assert!(create_category(&mut store, "URGENTE", 1).is_err());
+        assert!(create_category(&mut store, "  ", 1).is_err());
+        assert!(create_category(&mut store, "Outra", 10).is_err());
+        assert!(create_category(&mut store, "Outra", -1).is_err());
+        assert_eq!(list_categories(&store).unwrap()["categories"].as_array().unwrap().len(), 1);
+
+        let created =
+            create_task(&mut store, &json!({"title": "t", "document_id": doc, "categories": [uid]}))
+                .unwrap();
+        let id = created["id"].as_i64().unwrap();
+        let got = get_task(&store, id).unwrap();
+        assert_eq!(got["categories"], json!([uid]));
+        let numbers = document_numbers(&store).unwrap();
+        assert_eq!(task_json(&find_task(&store, id).unwrap(), &numbers)["categories"], json!([uid]));
+
+        // Saving without the field keeps them; with it replaces them; a malformed uid is refused.
+        let v = got["version"].as_i64().unwrap();
+        let saved = save_task(&mut store, &json!({"id": id, "version": v, "title": "novo"})).unwrap();
+        assert_eq!(get_task(&store, id).unwrap()["categories"], json!([uid]));
+        let v = saved["version"].as_i64().unwrap();
+        assert!(
+            save_task(&mut store, &json!({"id": id, "version": v, "categories": ["inexistente"]}))
+                .is_err()
+        );
+        let saved = save_task(&mut store, &json!({"id": id, "version": v, "categories": []})).unwrap();
+        assert_eq!(get_task(&store, id).unwrap()["categories"], json!([]));
+        let v = saved["version"].as_i64().unwrap();
+        save_task(&mut store, &json!({"id": id, "version": v, "categories": [uid]})).unwrap();
+        assert_eq!(get_task(&store, id).unwrap()["categories"], json!([uid]));
+    }
+
+    #[test]
+    fn today_rows_carry_the_categories_of_the_task() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _doc) = library(&dir.0);
+        let uid = new_uid(&mut store, "Prazo", 0);
+        create_task(&mut store, &json!({"title": "hoje", "due_date": "2026-11-16", "categories": [uid]}))
+            .unwrap();
+        let lists = today_lists(&store, "2026-11-16").unwrap();
+        assert_eq!(lists["today"][0]["categories"], json!([uid]));
+    }
+
+    #[test]
+    fn a_task_takes_ten_categories_and_not_eleven() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _doc) = library(&dir.0);
+        let uids: Vec<String> = (0..11).map(|n| new_uid(&mut store, &format!("c{n}"), 1)).collect();
+        assert!(create_task(&mut store, &json!({"title": "a", "categories": uids})).is_err());
+        assert!(create_task(&mut store, &json!({"title": "a", "categories": &uids[..10]})).is_ok());
+    }
+
+    #[test]
+    fn document_categories_are_listed_set_and_checked_by_version() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let a = new_uid(&mut store, "A", 0);
+        let b = new_uid(&mut store, "B", 1);
+        let v0 = work_context_version(&store, doc);
+        let set = set_document_categories(&mut store, doc, &[a.clone(), b.clone()], v0).unwrap();
+        assert_eq!(set["categories"], json!([a, b]));
+        let v1 = set["categories_version"].as_i64().unwrap();
+        assert!(v1 > v0);
+        assert_eq!(store.document_categories(doc).unwrap(), vec![a.clone(), b.clone()]);
+        assert_eq!(store.list_documents("").unwrap()[0].categories, vec![a.clone(), b.clone()]);
+        // A stale version saves nothing and says so in plain words.
+        let error = set_document_categories(&mut store, doc, &[], v0).unwrap_err();
+        assert!(format!("{error:#}").contains("foi alterado depois"));
+        assert_eq!(store.document_categories(doc).unwrap().len(), 2);
+        // The current version works; more than ten and unknown documents are refused.
+        set_document_categories(&mut store, doc, &[b.clone()], v1).unwrap();
+        assert_eq!(store.document_categories(doc).unwrap(), vec![b.clone()]);
+        let v2 = work_context_version(&store, doc);
+        assert!(set_document_categories(&mut store, doc, &vec![a.clone(); 11], v2).is_err());
+        assert!(set_document_categories(&mut store, 9999, &[], 0).is_err());
     }
 
     #[test]

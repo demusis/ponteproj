@@ -29,22 +29,24 @@ internal fun NewTaskScreen(
     document: String,
     actions: List<Choice>,
     onBack: () -> Unit,
-    onCreate: (String, String, String, String) -> Unit,
+    onCreate: (String, String, String, String, List<String>) -> Unit,
     withoutDocument: Boolean = false,
     assignees: List<String> = emptyList(),
-    myName: String = ""
+    myName: String = "",
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") }
 ) {
     var title by rememberSaveable { mutableStateOf("") }
     var action by rememberSaveable { mutableStateOf(actions.firstOrNull()?.key ?: "") }
     var due by rememberSaveable { mutableStateOf("") }
     var assignee by rememberSaveable { mutableStateOf(myName) }
+    var categories by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var tried by rememberSaveable { mutableStateOf(false) }
 
     DetailScaffold(
         title = "Nova tarefa", onBack = onBack, close = true,
         footer = {
             PrimaryButton("Criar tarefa", onClick = {
-                if (title.isBlank()) tried = true else onCreate(title.trim(), action, due, assignee.trim())
+                if (title.isBlank()) tried = true else onCreate(title.trim(), action, due, assignee.trim(), categories)
             })
         }
     ) {
@@ -74,6 +76,7 @@ internal fun NewTaskScreen(
             if (actions.isNotEmpty()) ChoiceField("Ação", actions, action, { action = it })
             DateField("Prazo (opcional)", due, { due = it }, emptyText = "Sem prazo")
             AssigneeField(assignee, { assignee = it }, assignees, myName)
+            CategoryField(categories, { categories = it }, onCreateCategory)
         }
     }
 }

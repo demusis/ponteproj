@@ -30,11 +30,26 @@ internal object Api {
         c(if (done) core.completeTask(taskId) else core.reopenTask(taskId))
     }
 
-    fun createTask(documentId: Long, title: String, action: String, due: String, assignee: String = ""): Long {
+    fun createTask(
+        documentId: Long, title: String, action: String, due: String, assignee: String = "",
+        categories: List<String> = emptyList()
+    ): Long {
         val o = JSONObject().put("document_id", documentId).put("title", title)
             .put("action", action).put("due_date", due).put("assignee", assignee)
+            .put("categories", JSONArray(categories))
         return c(core.createTask(o.toString())).optLong("id")
     }
+
+    /** Every category (archived ones too), by name. */
+    fun categories(): List<Category> = c(core.listCategories()).optJSONArray("categories").objs().map { it.toCategory() }
+
+    /** Creates a category and answers it as stored. */
+    fun createCategory(name: String, color: Int): Category =
+        c(core.createCategory(name, color.toLong())).getJSONObject("category").toCategory()
+
+    /** Replaces the categories of a document; [version] is the one its ficha was read at. Answers the new version. */
+    fun setDocumentCategories(documentId: Long, uids: List<String>, version: Long): Long =
+        c(core.setDocumentCategories(documentId, JSONArray(uids).toString(), version)).optLong("categories_version")
 
     fun assignees(): List<String> {
         val names = c(core.assignees()).optJSONArray("names") ?: return emptyList()
@@ -57,9 +72,9 @@ internal object Api {
     fun task(id: Long): TaskDetail = c(core.getTask(id)).toTaskDetail()
 
     /** Sends only [changes] (field to value); [version] is the one the form started from. Answers the new version. */
-    fun saveTask(id: Long, version: Long, changes: Map<String, String>): Long {
+    fun saveTask(id: Long, version: Long, changes: Map<String, Any>): Long {
         val o = JSONObject().put("id", id).put("version", version)
-        for ((k, v) in changes) o.put(k, v)
+        for ((k, v) in changes) o.put(k, if (v is List<*>) JSONArray(v) else v)
         return c(core.saveTask(o.toString())).optLong("version")
     }
 

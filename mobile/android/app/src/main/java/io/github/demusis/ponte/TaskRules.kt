@@ -24,8 +24,8 @@ internal data class TaskDraft(
     companion object {
         fun fromList(l: List<Any>): TaskDraft? = try {
             TaskDraft(
-                l[0] as Int, l[1] as Long, TaskForm.fromList(l.subList(3, 9).map { it as String }),
-                TaskForm.fromList(l.subList(9, 15).map { it as String }), l[2] as Boolean
+                l[0] as Int, l[1] as Long, TaskForm.fromList(l.subList(3, 10).map { it as String }),
+                TaskForm.fromList(l.subList(10, 17).map { it as String }), l[2] as Boolean
             )
         } catch (_: Throwable) {
             null
@@ -35,12 +35,15 @@ internal data class TaskDraft(
 
 /** What a save sends: the task, the version the form started from, and only what differs from it. */
 internal data class TaskSave(val taskId: Long, val version: Long, val base: TaskForm, val form: TaskForm) {
-    val changes: Map<String, String> get() = form.changes(base)
+    val changes: Map<String, Any> get() = form.changes(base)
 }
 
-internal fun TaskForm.toList(): List<String> = listOf(title, action, priority, dueDate, assignee, notes)
+/** The categories travel as one string (uids have no commas) so the list stays flat. */
+internal fun TaskForm.toList(): List<String> =
+    listOf(title, action, priority, dueDate, assignee, notes, categories.joinToString(","))
 
-internal fun TaskForm.Companion.fromList(l: List<String>) = TaskForm(l[0], l[1], l[2], l[3], l[4], l[5])
+internal fun TaskForm.Companion.fromList(l: List<String>) =
+    TaskForm(l[0], l[1], l[2], l[3], l[4], l[5], l[6].split(",").filter { it.isNotEmpty() })
 
 /** Decisions of the task screen. */
 internal object TaskRules {

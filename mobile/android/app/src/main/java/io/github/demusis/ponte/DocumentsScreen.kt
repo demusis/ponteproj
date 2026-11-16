@@ -60,10 +60,12 @@ internal fun DocumentsScreen(
     filter: DocFilter,
     onFilter: (DocFilter) -> Unit,
     onOpen: (Long) -> Unit,
-    onPhoto: () -> Unit
+    onPhoto: () -> Unit,
+    categoryFilter: Set<String> = emptySet(),
+    onCategoryFilter: (Set<String>) -> Unit = {}
 ) {
     val c = Ponte.colors
-    val shown = remember(docs, query, filter) {
+    val shown = remember(docs, query, filter, categoryFilter) {
         docs.filter { d ->
             val byFilter = when (filter) {
                 DocFilter.ALL -> true
@@ -71,7 +73,7 @@ internal fun DocumentsScreen(
                 DocFilter.EMAILS -> d.email
                 DocFilter.RECORDS -> d.manual
             }
-            byFilter && matchesQuery(d, query)
+            byFilter && CategoryRules.matches(d.categories, categoryFilter) && matchesQuery(d, query)
         }
     }
     Box(Modifier.fillMaxSize()) {
@@ -108,6 +110,9 @@ internal fun DocumentsScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp)
                 )
             }
+            item(key = "category-filter") {
+                CategoryFilterButton(categoryFilter, onCategoryFilter, Modifier.padding(horizontal = 16.dp))
+            }
             if (docs.isEmpty()) {
                 item(key = "none") {
                     EmptyState(
@@ -123,7 +128,7 @@ internal fun DocumentsScreen(
                         text = "Nenhum documento combina com a busca e o filtro escolhidos.",
                         icon = Icons.Outlined.SearchOff,
                         action = {
-                            TextButton(onClick = { onQuery(""); onFilter(DocFilter.ALL) }) {
+                            TextButton(onClick = { onQuery(""); onFilter(DocFilter.ALL); onCategoryFilter(emptySet()) }) {
                                 Text("Limpar busca e filtros", color = c.accent, fontWeight = FontWeight.SemiBold)
                             }
                         }
@@ -180,6 +185,7 @@ internal fun DocCard(d: Doc,onClick: () -> Unit, modifier: Modifier = Modifier) 
                     }
                 }
             }
+            CategoryChips(d.categories)
             d.noteError?.let {
                 Row(verticalAlignment = Alignment.Top) {
                     Icon(Icons.Outlined.WarningAmber, contentDescription = null, tint = c.warning, modifier = Modifier.size(16.dp).padding(top = 2.dp))

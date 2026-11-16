@@ -20,6 +20,7 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
@@ -41,12 +42,18 @@ internal fun TasksScreen(
     state: TasksState,
     onToggle: (TaskItem) -> Unit,
     onOpen: (TaskItem) -> Unit,
-    onNew: () -> Unit = {}
+    onNew: () -> Unit = {},
+    categoryFilter: Set<String> = emptySet(),
+    onCategoryFilter: (Set<String>) -> Unit = {}
 ) {
     val c = Ponte.colors
     var showDone by rememberSaveable { mutableStateOf(false) }
-    val groups = remember(state.tasks) {
-        val open = state.tasks.filter { !it.done }
+    // The category filter: an item with ANY chosen category, or none when "Sem categoria" is chosen.
+    val all = remember(state.tasks, categoryFilter) {
+        state.tasks.filter { CategoryRules.matches(it.categories, categoryFilter) }
+    }
+    val groups = remember(all) {
+        val open = all.filter { !it.done }
         val late = open.filter { it.overdue }
         val today = open.filter { !it.overdue && it.dueToday }
         val next = open.filter { !it.overdue && !it.dueToday && it.dueDate.isNotEmpty() }.sortedBy { it.dueDate }
@@ -58,8 +65,9 @@ internal fun TasksScreen(
             TaskGroup("none", "Sem prazo", none)
         ).filter { it.tasks.isNotEmpty() }
     }
-    val done = remember(state.tasks) { state.tasks.filter { it.done }.sortedByDescending { it.id }.take(30) }
-    val noOpen = state.tasks.none { !it.done }
+    val done = remember(all) { all.filter { it.done }.sortedByDescending { it.id }.take(30) }
+    val noOpen = all.none { !it.done }
+    val filtering = categoryFilter.isNotEmpty()
 
     if (state.loading && state.tasks.isEmpty()) {
         LoadingBox("Carregando as tarefas…", Modifier.fillMaxSize())
@@ -73,7 +81,21 @@ internal fun TasksScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         state.error?.let { item(key = "error") { Notice(it) } }
-        if (noOpen) {
+        item(key = "category-filter") { CategoryFilterButton(categoryFilter, onCategoryFilter) }
+        if (noOpen && filtering) {
+            item(key = "empty-filter") {
+                EmptyState(
+                    "Nenhuma tarefa em aberto com essas categorias.",
+                    text = "Mude as categorias marcadas ou limpe o filtro.",
+                    icon = Icons.Outlined.CheckCircle,
+                    action = {
+                        TextButton(onClick = { onCategoryFilter(emptySet()) }) {
+                            Text("Limpar o filtro", color = c.accent, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                )
+            }
+        } else if (noOpen) {
             item(key = "empty") {
                 EmptyState(
                     "Nenhuma tarefa em aberto.",

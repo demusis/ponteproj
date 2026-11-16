@@ -92,7 +92,8 @@ internal fun AppRoot() {
                                 if (c.tasksSegment == 0) {
                                     TasksScreen(
                                         c.tasks, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
-                                        onNew = c::openNewTaskWithoutDocument
+                                        onNew = c::openNewTaskWithoutDocument,
+                                        categoryFilter = c.taskCatFilter, onCategoryFilter = { c.taskCatFilter = it }
                                     )
                                 } else if (c.tasksSegment == 2) {
                                     ResourcesScreen(
@@ -113,6 +114,7 @@ internal fun AppRoot() {
                             docs = c.docs,
                             query = c.docQuery, onQuery = { c.docQuery = it },
                             filter = c.docFilter, onFilter = { c.docFilter = it },
+                            categoryFilter = c.docCatFilter, onCategoryFilter = { c.docCatFilter = it },
                             onOpen = c::openDocument, onPhoto = c::openPhoto
                         )
                         else -> MailScreen(
@@ -153,13 +155,15 @@ private fun RouteScreen(route: Route) {
             onOpenFile = c::openFile, onReadText = c::openText, onOpenTask = { c.openTask(it.id) },
             attachBusy = Intake.attachBusy,
             onAttachPhoto = { d -> doc?.let { Intake.attachPhoto(it.id, d) } },
-            onAttachFile = { d -> doc?.let { Intake.attachPick(it.id, d) } }
+            onAttachFile = { d -> doc?.let { Intake.attachPick(it.id, d) } },
+            onCategories = c::saveDocumentCategories, onCreateCategory = c::createCategory
         )
         is Route.EditTask -> TaskScreen(
             routeId = route.id, state = c.taskEdit, actions = c.actions, priorities = c.priorities,
             onBack = c::back, onSave = c::saveTask, onFinish = c::finishTask,
             onOpenDocument = { c.openTaskDocument() }, onLink = c::openPicker, onUnlink = c::unlinkTask,
-            onReload = c::reloadTask, assignees = c.assignees, myName = c.personName
+            onReload = c::reloadTask, assignees = c.assignees, myName = c.personName,
+            onCreateCategory = c::createCategory
         )
         is Route.Attendance -> AttendanceScreen(
             routeId = route.id, state = c.attendance, onBack = c::back,
@@ -193,7 +197,7 @@ private fun RouteScreen(route: Route) {
             // A task without document has nothing to triage.
             actions = if (route.id > 0) c.actions else c.actions.filter { it.key != "triar" },
             onBack = c::back, onCreate = c::createTask, withoutDocument = route.id <= 0,
-            assignees = c.assignees, myName = c.personName
+            assignees = c.assignees, myName = c.personName, onCreateCategory = c::createCategory
         )
         Route.Share -> {
             val sh = Intake.share

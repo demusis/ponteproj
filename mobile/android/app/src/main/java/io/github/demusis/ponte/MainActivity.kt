@@ -1,5 +1,6 @@
 package io.github.demusis.ponte
 
+import androidx.compose.runtime.CompositionLocalProvider
 import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
@@ -46,7 +47,11 @@ class MainActivity : ComponentActivity() {
         live = this
         Controller.attach(this, savedInstanceState)
         applySecure(Controller.secureScreen())
-        setContent { PonteTheme { AppRoot() } }
+        setContent {
+            PonteTheme {
+                CompositionLocalProvider(LocalCategories provides Controller.categories) { AppRoot() }
+            }
+        }
         // Only a fresh start looks at the intent: a recreated Activity (rotation, process restored
         // from the saved state) must not take a share again. The share itself is taken once from
         // memory (see Intake.offer), so even a repeated marker finds nothing.

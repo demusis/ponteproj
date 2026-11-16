@@ -167,6 +167,14 @@ internal object Controller {
         private set
     var docQuery by mutableStateOf("")
     var docFilter by mutableStateOf(DocFilter.ALL)
+
+    /** Every category of the library; chips and pickers read it (archived ones included). */
+    var categories by mutableStateOf<List<Category>>(emptyList())
+        private set
+
+    /** The category filters of Tarefas and Documentos: chosen uids, plus [CategoryRules.NONE]. */
+    var taskCatFilter by mutableStateOf<Set<String>>(emptySet())
+    var docCatFilter by mutableStateOf<Set<String>>(emptySet())
     var tasks by mutableStateOf(TasksState())
         private set
 
@@ -943,7 +951,47 @@ internal object Controller {
         else copy(done = d, overdue = if (d) false else overdue, dueToday = if (d) false else dueToday)
     }
 
+    /** Reads the list of categories; a failure keeps the one already shown. */
+    private fun refreshCategories() {
+        SyncRunner.background({ Api.categories() }, { list ->
+            categories = list
+            taskCatFilter = CategoryRules.pruneFilter(taskCatFilter, list)
+            docCatFilter = CategoryRules.pruneFilter(docCatFilter, list)
+        })
+    }
+
+    /** Makes a category on the spot (from a picker) and hands it, or the reason it failed, to [done]. */
+    fun createCategory(name: String, color: Int, done: (Category?, String) -> Unit) {
+        SyncRunner.background({
+            val made = Api.createCategory(name.trim(), color)
+            made to Api.categories()
+        }, { (made, list) ->
+            categories = list
+            done(made, "")
+            requestSync(null, auto = true)
+        }, { done(null, it) }, fail = "Não foi possível criar a categoria. Tente de novo.")
+    }
+
+    /** Saves the categories of the open document; a ficha that changed meanwhile is refused and reloaded. */
+    fun saveDocumentCategories(uids: List<String>) {
+        val d = document.doc ?: return
+        SyncRunner.background({
+            val version = Api.setDocumentCategories(d.id, uids, d.categoriesVersion)
+            SyncRunner.refreshDocs()
+            version
+        }, {
+            docs = SyncRunner.docs
+            reloadDocument()
+            say("Categorias salvas.")
+            requestSync(null, auto = true)
+        }, {
+            reloadDocument()
+            say(it, long = true)
+        }, fail = "Não foi possível salvar as categorias. Tente de novo.")
+    }
+
     fun refreshTasks() {
+        refreshCategories()
         SyncRunner.background({ Api.tasks().map { it.toTask() } }, { read ->
             val list = read.map { it.withPending() }
             tasks = TasksState(loading = false, error = null, tasks = list)
@@ -1331,12 +1379,12 @@ internal object Controller {
         }, fail = "Não foi possível trocar o documento da tarefa. Tente de novo.")
     }
 
-    fun createTask(title: String, action: String, due: String, assignee: String = "") {
+    fun createTask(title: String, action: String, due: String, assignee: String = "", categories: List<String> = emptyList()) {
         val id = (stack.lastOrNull() as? Route.NewTask)?.id ?: return
         if (title.isBlank()) return
         pop()
         SyncRunner.background({
-            Api.createTask(id, title.trim(), action, due, assignee.trim())
+            Api.createTask(id, title.trim(), action, due, assignee.trim(), categories)
             SyncRunner.refreshDocs()
         }, {
             docs = SyncRunner.docs

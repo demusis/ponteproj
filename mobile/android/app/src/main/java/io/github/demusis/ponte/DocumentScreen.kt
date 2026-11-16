@@ -65,7 +65,10 @@ internal fun DocumentScreen(
     /** Take a picture to attach; the argument is the description typed (may be empty). */
     onAttachPhoto: (String) -> Unit = {},
     /** Pick a file to attach; the argument is the description typed (may be empty). */
-    onAttachFile: (String) -> Unit = {}
+    onAttachFile: (String) -> Unit = {},
+    /** The categories chosen for the document (saved at once, with the version of the ficha). */
+    onCategories: (List<String>) -> Unit = {},
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") }
 ) {
     val c = Ponte.colors
     val doc = state.doc
@@ -87,7 +90,7 @@ internal fun DocumentScreen(
                 state.error != null -> Notice(state.error, modifier = Modifier.padding(16.dp))
                 doc != null -> FichaBody(
                     doc, onToggleTask, onNewTask, onEditNote, onOpenFile, onReadText, onOpenTask,
-                    attachBusy, onAttachPhoto, onAttachFile
+                    attachBusy, onAttachPhoto, onAttachFile, onCategories, onCreateCategory
                 )
             }
         }
@@ -105,7 +108,9 @@ private fun FichaBody(
     onOpenTask: (TaskItem) -> Unit,
     attachBusy: Boolean,
     onAttachPhoto: (String) -> Unit,
-    onAttachFile: (String) -> Unit
+    onAttachFile: (String) -> Unit,
+    onCategories: (List<String>) -> Unit,
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit
 ) {
     val c = Ponte.colors
     var chooser by rememberSaveable { mutableStateOf(false) }
@@ -144,6 +149,11 @@ private fun FichaBody(
             if (doc.origin.isNotBlank()) {
                 Text(doc.origin, style = MaterialTheme.typography.bodyMedium, color = c.secondary)
             }
+        }
+
+        // Categories: the chips and the way to change them
+        PonteCard {
+            CategoryField(doc.categories, onCategories, onCreateCategory, Modifier.padding(16.dp))
         }
 
         // Tasks: open first
