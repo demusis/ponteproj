@@ -477,7 +477,7 @@ Para concluir, mudar o prazo, o responsável ou a prioridade, ou excluir várias
 
 1. Clique em **Selecionar**, ao lado da busca. O botão fica desabilitado enquanto a tarefa aberta no painel tem alterações sem salvar; uma tarefa aberta e sem alterações é fechada.
 2. Em cada linha, o círculo de concluir vira um quadrado: clique nele para marcar ou desmarcar a tarefa. Uma faixa sob os filtros diz quantas estão selecionadas e traz **Selecionar todas as visíveis** (ou **Ctrl+A**, quando nenhuma caixa de texto está em uso), **Limpar seleção** e **Sair da seleção** (ou **Esc**). Só as tarefas que aparecem na lista podem ficar selecionadas: se a busca ou a visão as esconde, elas saem da seleção.
-3. Com ao menos uma marcada, uma barra aparece embaixo, com **Concluir**, **Prazo…**, **Responsável…**, **Prioridade…** e **Excluir…**.
+3. Com ao menos uma marcada, uma barra aparece embaixo, com **Concluir**, **Prazo…**, **Responsável…**, **Prioridade…**, **Adicionar categoria…**, **Remover categoria…** e **Excluir…**.
 4. Cada botão pergunta antes de agir, com o número de tarefas, e tem **Cancelar**:
 
 | Botão | Pergunta | Confirmação |
@@ -486,6 +486,8 @@ Para concluir, mudar o prazo, o responsável ou a prioridade, ou excluir várias
 | **Prazo…** | uma data (digitada ou do calendário) ou **Sem prazo** | **Mudar prazo** (ou **Tirar prazo**) |
 | **Responsável…** | o nome, **Eu** ou **Sem responsável** | **Atribuir** (ou **Tirar responsável**) |
 | **Prioridade…** | *Baixa*, *Normal*, *Alta* ou *Urgente* | **Mudar prioridade** |
+| **Adicionar categoria…** | uma categoria da lista (as arquivadas não aparecem); quem já a tem ou já está com 10 categorias fica como está, e a linha de resultado conta as que estavam com 10 | **Adicionar** |
+| **Remover categoria…** | uma das categorias que as tarefas selecionadas têm; as que não a têm ficam como estão | **Remover** |
 | **Excluir…** | *Excluir N tarefas? Elas vão para a Lixeira.* (desabilitado enquanto outra operação, como a sincronização, está em andamento) | **Excluir** |
 
 Os botões de confirmação só ficam ativos quando a escolha está completa. Mudar a seleção fecha a pergunta aberta.
@@ -533,7 +535,8 @@ Uma **categoria** é uma palavra que você escolhe para organizar o trabalho, co
 - **Numa tarefa:** no painel da tarefa, **Categorias** mostra as escolhidas e **+ Categoria**, que abre a lista para marcar, com uma caixa de busca. Se o que você digitou não existe, aparece **Criar “texto”**, que cria e já marca. Clicar numa categoria escolhida a tira. Faz parte da tarefa: vale ao **Salvar** e some ao **Cancelar**.
 - **Num documento:** na ficha, aba **Resumo**, abra **Contexto de trabalho**: **Categorias** funciona do mesmo modo e é salva junto com o resto do contexto, em **Salvar contexto**. Pôr ou tirar uma categoria não deixa a análise da IA desatualizada, e as categorias não vão à IA.
 - **Filtrar:** em **Tarefas**, o botão **Categorias** ao lado das visões; em **Documentos**, **Filtros ▸ Categorias**. Mostra o que tem **qualquer uma** das marcadas; **Sem categoria** mostra o que não tem nenhuma.
-- **Nas listas:** cada tarefa mostra até 3 categorias e cada documento até 2, com **+N** para as demais (o mouse sobre o **+N** lista as outras).
+- **Nas listas:** cada tarefa mostra até 3 categorias e cada documento até 2, com **+N** para as demais (o mouse sobre o **+N** lista as outras). Na busca geral e em **Hoje**, as linhas de tarefas (e, na busca, as de documentos) mostram até 2.
+- **Em várias tarefas:** em **Selecionar**, **Adicionar categoria…** e **Remover categoria…** agem em todas as tarefas marcadas, com **Desfazer** ([6.5](#65-ações-em-lote)).
 - **Em equipe:** com computador principal ou pasta compartilhada, a lista de categorias é a mesma para todos, e o que se cria, renomeia, arquiva ou apaga chega a todos na próxima sincronização.
 - **Formato:** as categorias mudam o formato do acervo (17) e o da pasta compartilhada (5). Um Ponte ou um Ponte de bolso mais antigo recusa o acervo e o arquivo novos e diz para atualizar: atualize todos os computadores e o celular juntos.
 

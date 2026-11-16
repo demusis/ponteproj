@@ -818,6 +818,10 @@ mod batch {
         /// New assignee; empty means "sem responsável".
         Assignee(String),
         Priority(String),
+        /// Adds a category (uid, name) to each task.
+        AddCategory(String, String),
+        /// Takes a category (uid, name) off each task.
+        RemoveCategory(String, String),
         Trash,
     }
 
@@ -827,6 +831,8 @@ mod batch {
         Due,
         Assignee,
         Priority,
+        AddCategory,
+        RemoveCategory,
         Trash,
         Undo,
     }
@@ -838,6 +844,8 @@ mod batch {
                 Self::Due(_) => Kind::Due,
                 Self::Assignee(_) => Kind::Assignee,
                 Self::Priority(_) => Kind::Priority,
+                Self::AddCategory(..) => Kind::AddCategory,
+                Self::RemoveCategory(..) => Kind::RemoveCategory,
                 Self::Trash => Kind::Trash,
             }
         }
@@ -851,6 +859,8 @@ mod batch {
         Missing,
         Changed,
         Same,
+        /// The task already has the most categories an item may have.
+        AtLimit,
         Refused(String),
     }
 
@@ -861,6 +871,7 @@ mod batch {
         Due,
         Assignee,
         Priority,
+        Categories,
         /// A task changed as a side effect (the cascade of a conclusion):
         /// the whole previous state is put back.
         Whole,
@@ -927,6 +938,11 @@ mod batch {
             Change::Due(due) if task.due_date == *due => Err(Reason::Same),
             Change::Assignee(name) if task.assignee.trim() == name.trim() => Err(Reason::Same),
             Change::Priority(priority) if task.priority == *priority => Err(Reason::Same),
+            Change::AddCategory(uid, _) if task.categories.contains(uid) => Err(Reason::Same),
+            Change::AddCategory(..) if !crate::category_ui::can_add(&task.categories) => {
+                Err(Reason::AtLimit)
+            }
+            Change::RemoveCategory(uid, _) if !task.categories.contains(uid) => Err(Reason::Same),
             _ => Ok(()),
         }
     }
@@ -945,6 +961,8 @@ mod batch {
             }
             Change::Assignee(name) => task.assignee = name.trim().to_owned(),
             Change::Priority(priority) => task.priority = priority.clone(),
+            Change::AddCategory(uid, _) => task.categories.push(uid.clone()),
+            Change::RemoveCategory(uid, _) => task.categories.retain(|u| u != uid),
             Change::Trash => {}
         }
     }
@@ -955,6 +973,7 @@ mod batch {
             Change::Due(_) => Touched::Due,
             Change::Assignee(_) => Touched::Assignee,
             Change::Priority(_) => Touched::Priority,
+            Change::AddCategory(..) | Change::RemoveCategory(..) => Touched::Categories,
             Change::Trash => Touched::Untrash,
         }
     }
@@ -972,6 +991,7 @@ mod batch {
             }
             Touched::Assignee => to.assignee = from.assignee.clone(),
             Touched::Priority => to.priority = from.priority.clone(),
+            Touched::Categories => to.categories = from.categories.clone(),
             Touched::Whole => *to = from.clone(),
             Touched::Untrash => {}
         }
@@ -1332,9 +1352,20 @@ mod batch {
                 (Kind::Due, false) => "já têm esse prazo",
                 (Kind::Assignee, true) => "já tem esse responsável",
                 (Kind::Assignee, false) => "já têm esse responsável",
+                (Kind::AddCategory, true) => "já tem essa categoria",
+                (Kind::AddCategory, false) => "já têm essa categoria",
+                (Kind::RemoveCategory, true) => "não tem essa categoria",
+                (Kind::RemoveCategory, false) => "não têm essa categoria",
                 (_, true) => "já tem essa prioridade",
                 (_, false) => "já têm essa prioridade",
             },
+            Reason::AtLimit => {
+                if one {
+                    "já tem 10 categorias"
+                } else {
+                    "já têm 10 categorias"
+                }
+            }
             Reason::Refused(message) => {
                 return format!("— {}", message.trim().trim_end_matches('.'));
             }
@@ -1372,6 +1403,14 @@ mod batch {
                 "{} {}",
                 plural(n, "tarefa com prioridade", "tarefas com prioridade"),
                 crate::labels::priority(priority)
+            ),
+            Change::AddCategory(_, name) => format!(
+                "{} «{name}»",
+                plural(n, "tarefa com a categoria", "tarefas com a categoria")
+            ),
+            Change::RemoveCategory(_, name) => format!(
+                "{} «{name}»",
+                plural(n, "tarefa sem a categoria", "tarefas sem a categoria")
             ),
             Change::Trash => plural(n, "tarefa excluída", "tarefas excluídas"),
         }
@@ -1411,6 +1450,18 @@ mod batch {
             }
         }
         for (reason, titles) in groups {
+            if *reason == Reason::AtLimit {
+                let k = titles.len();
+                lines.push(format!(
+                    "{} {} 10 categorias e {} como {}: {}.",
+                    plural(k, "tarefa", "tarefas"),
+                    if k == 1 { "já tinha" } else { "já tinham" },
+                    if k == 1 { "ficou" } else { "ficaram" },
+                    if k == 1 { "estava" } else { "estavam" },
+                    title_list(&titles)
+                ));
+                continue;
+            }
             lines.push(format!(
                 "{} {}: {} {}.",
                 titles.len(),
@@ -1447,6 +1498,8 @@ enum AskKind {
     Due,
     Assignee,
     Priority,
+    AddCategory,
+    RemoveCategory,
     Trash,
 }
 
@@ -1531,6 +1584,8 @@ pub struct TaskPanel {
     batch_assignee: String,
     batch_assignee_clear: bool,
     batch_priority: String,
+    /// Uid of the category chosen in the confirmation (add or remove).
+    batch_category: String,
     /// Result line of the last batch, and what undoes it until it expires.
     batch_result: Option<(String, Tone)>,
     batch_undo: Option<BatchUndo>,
@@ -1901,6 +1956,7 @@ impl TaskPanel {
         self.batch_assignee.clear();
         self.batch_assignee_clear = false;
         self.batch_priority.clear();
+        self.batch_category.clear();
     }
 
     /// Adds or takes out one task; a change of the selection closes the
@@ -2052,7 +2108,13 @@ impl TaskPanel {
 
     /// The bar at the bottom: the result line of the last batch and, while
     /// something is selected, the actions or the confirmation of one.
-    fn show_batch_bar(&mut self, ui: &mut egui::Ui, actor: &str) -> Option<BarAction> {
+    fn show_batch_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        actor: &str,
+        categories: &[Category],
+        present: &[String],
+    ) -> Option<BarAction> {
         let mut action = None;
         let count_text = |n: usize| crate::labels::count(n, "tarefa", "tarefas");
         egui::Panel::bottom("task-batch")
@@ -2112,6 +2174,8 @@ impl TaskPanel {
                                     ("Prazo…", AskKind::Due, "Muda o prazo de todas as selecionadas."),
                                     ("Responsável…", AskKind::Assignee, "Muda o responsável de todas as selecionadas."),
                                     ("Prioridade…", AskKind::Priority, "Muda a prioridade de todas as selecionadas."),
+                                    ("Adicionar categoria…", AskKind::AddCategory, "Põe uma categoria em todas as selecionadas."),
+                                    ("Remover categoria…", AskKind::RemoveCategory, "Tira uma categoria de todas as selecionadas."),
                                 ] {
                                     if ui
                                         .add(widgets::secondary(label))
@@ -2245,6 +2309,59 @@ impl TaskPanel {
                                             Some(batch::Change::Assignee(name)),
                                             "Atribuir",
                                         )
+                                    }
+                                }
+                                AskKind::AddCategory | AskKind::RemoveCategory => {
+                                    let adding = kind == AskKind::AddCategory;
+                                    let choices: Vec<&Category> = categories
+                                        .iter()
+                                        .filter(|c| {
+                                            if adding {
+                                                !c.archived
+                                            } else {
+                                                present.contains(&c.uid)
+                                            }
+                                        })
+                                        .collect();
+                                    ui.horizontal_wrapped(|ui| {
+                                        for category in &choices {
+                                            let on = self.batch_category == category.uid;
+                                            if widgets::chip(ui, on, &category.name).clicked() {
+                                                self.batch_category = category.uid.clone();
+                                            }
+                                        }
+                                    });
+                                    let chosen = choices
+                                        .iter()
+                                        .find(|c| c.uid == self.batch_category)
+                                        .map(|c| (c.uid.clone(), c.name.clone()));
+                                    let button = if adding { "Adicionar" } else { "Remover" };
+                                    match chosen {
+                                        Some((uid, name)) if adding => (
+                                            format!("Adicionar a categoria «{name}» a {tasks_text}?"),
+                                            Some(batch::Change::AddCategory(uid, name)),
+                                            button,
+                                        ),
+                                        Some((uid, name)) => (
+                                            format!("Tirar a categoria «{name}» de {tasks_text}?"),
+                                            Some(batch::Change::RemoveCategory(uid, name)),
+                                            button,
+                                        ),
+                                        None if choices.is_empty() && adding => (
+                                            "Não há categorias para adicionar. Crie uma em Ajustes ▸ Categorias.".to_owned(),
+                                            None,
+                                            button,
+                                        ),
+                                        None if choices.is_empty() => (
+                                            "As tarefas selecionadas não têm categorias.".to_owned(),
+                                            None,
+                                            button,
+                                        ),
+                                        None => (
+                                            format!("Escolha a categoria para {tasks_text}."),
+                                            None,
+                                            button,
+                                        ),
                                     }
                                 }
                                 AskKind::Priority => {
@@ -2613,7 +2730,13 @@ impl TaskPanel {
                 // The action bar and the result of the last batch sit at the
                 // bottom, under the list.
                 if (self.selecting && !self.selected.is_empty()) || self.batch_result.is_some() {
-                    bar_action = self.show_batch_bar(ui, &actor);
+                    // Categories on the selected tasks: what "Remover categoria" offers.
+                    let present: Vec<String> = tasks
+                        .iter()
+                        .filter(|t| self.selected.contains(&t.id))
+                        .flat_map(|t| t.categories.iter().cloned())
+                        .collect();
+                    bar_action = self.show_batch_bar(ui, &actor, &categories, &present);
                 }
 
                 // The list: tasks grouped by deadline, one card per group.
@@ -3882,6 +4005,7 @@ pub const SHOTS: &[&str] = &[
     "selecao-concluir",
     "selecao-prazo",
     "selecao-excluir",
+    "selecao-categoria",
     "selecao-resultado",
 ];
 
@@ -3943,7 +4067,7 @@ impl TaskPanel {
                 self.start_new(None);
             }
             "selecao" | "selecao-concluir" | "selecao-prazo" | "selecao-excluir"
-            | "selecao-resultado" => {
+            | "selecao-categoria" | "selecao-resultado" => {
                 self.selecting = true;
                 let deps = crate::tasks::Dependencies::new(&tasks);
                 let open: Vec<&Task> = tasks.iter().filter(|t| t.status != "concluida").collect();
@@ -3977,11 +4101,20 @@ impl TaskPanel {
                         "selecao-concluir" => Some(AskKind::Conclude),
                         "selecao-prazo" => Some(AskKind::Due),
                         "selecao-excluir" => Some(AskKind::Trash),
+                        "selecao-categoria" => Some(AskKind::AddCategory),
                         _ => None,
                     };
                     if let Some(kind) = kind {
                         if kind == AskKind::Due {
                             self.batch_due = "2026-11-14".into();
+                        }
+                        if kind == AskKind::AddCategory {
+                            self.batch_category = store
+                                .list_categories()
+                                .unwrap_or_default()
+                                .first()
+                                .map(|c| c.uid.clone())
+                                .unwrap_or_default();
                         }
                         let snapshot = batch::snapshot(store, &self.selected, &tasks);
                         self.batch_ask = Some(Ask { kind, snapshot });
@@ -4294,6 +4427,78 @@ mod batch_tests {
             message(Some(&Change::Conclude), false, &Outcome::default()),
             "Nada foi alterado."
         );
+    }
+
+    fn with_categories(store: &mut Store, title: &str, uids: &[String]) -> i64 {
+        let mut task = Task::standalone();
+        task.title = title.into();
+        task.categories = uids.to_vec();
+        store.save_task(&task).unwrap()
+    }
+
+    #[test]
+    fn adding_a_category_skips_the_ones_that_have_it_or_are_full() {
+        let (_dir, mut store) = store();
+        let urgent = store
+            .save_category(&crate::categories::Category::new("Urgente", 0))
+            .unwrap()
+            .uid;
+        let full: Vec<String> = (0..10)
+            .map(|n| {
+                store
+                    .save_category(&crate::categories::Category::new(&format!("C{n}"), 0))
+                    .unwrap()
+                    .uid
+            })
+            .collect();
+        let plain = with_categories(&mut store, "Sem nada", &[]);
+        let has = with_categories(&mut store, "Já tem", std::slice::from_ref(&urgent));
+        let full_a = with_categories(&mut store, "Cheia A", &full);
+        let full_b = with_categories(&mut store, "Cheia B", &full);
+        let snap = pick(&store, &[plain, has, full_a, full_b]);
+        let change = Change::AddCategory(urgent.clone(), "Urgente".into());
+        let out = apply_batch(&mut store, &snap, &change);
+        assert_eq!(out.done, 1);
+        assert_eq!(get(&store, plain).categories, std::slice::from_ref(&urgent));
+        assert_eq!(get(&store, full_a).categories, full);
+        assert_eq!(
+            message(Some(&change), false, &out),
+            "1 tarefa com a categoria «Urgente».\n\
+             1 não foi alterada: «Já tem» já tem essa categoria.\n\
+             2 tarefas já tinham 10 categorias e ficaram como estavam: «Cheia A» e «Cheia B»."
+        );
+        // Undo puts the previous list back.
+        let undone = undo_batch(&mut store, &out.undo);
+        assert_eq!(undone.done, 1);
+        assert!(get(&store, plain).categories.is_empty());
+    }
+
+    #[test]
+    fn removing_a_category_touches_only_the_tasks_that_have_it() {
+        let (_dir, mut store) = store();
+        let a = store
+            .save_category(&crate::categories::Category::new("A", 0))
+            .unwrap()
+            .uid;
+        let b = store
+            .save_category(&crate::categories::Category::new("B", 0))
+            .unwrap()
+            .uid;
+        let both = with_categories(&mut store, "Duas", &[a.clone(), b.clone()]);
+        let only_b = with_categories(&mut store, "Só B", std::slice::from_ref(&b));
+        let snap = pick(&store, &[both, only_b]);
+        let change = Change::RemoveCategory(a.clone(), "A".into());
+        let out = apply_batch(&mut store, &snap, &change);
+        assert_eq!(out.done, 1);
+        assert_eq!(get(&store, both).categories, std::slice::from_ref(&b));
+        assert_eq!(get(&store, only_b).categories, std::slice::from_ref(&b));
+        assert_eq!(
+            message(Some(&change), false, &out),
+            "1 tarefa sem a categoria «A».\n1 não foi alterada: «Só B» não tem essa categoria."
+        );
+        let undone = undo_batch(&mut store, &out.undo);
+        assert_eq!(undone.done, 1);
+        assert_eq!(get(&store, both).categories, [a, b]);
     }
 
     #[test]

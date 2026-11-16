@@ -43,6 +43,8 @@ pub(super) struct TodayData {
     /// The library has at least one resource: the card of resources stays
     /// in sight even when nothing is in use or reserved today.
     pub has_resources: bool,
+    /// Every category, to draw the chips of the task rows.
+    pub categories: Vec<crate::categories::Category>,
     /// Why the library could not be read, if it could not.
     pub error: Option<String>,
 }
@@ -98,6 +100,7 @@ impl TodayData {
             }
             Err(error) => data.error = Some(error.to_string()),
         }
+        data.categories = store.list_categories().unwrap_or_default();
         data.by_day = items_by_day(&data.dated_tasks, &data.dated_attendances, today);
         // Resources: the lists are memoized by the library, read once here.
         match (store.list_resources(), store.list_resource_uses()) {
@@ -496,6 +499,7 @@ impl PonteApp {
                         &self.today.late,
                         &now.to_string(),
                         &title_of,
+                        &self.today.categories,
                         asked,
                     );
                     task_group(
@@ -505,6 +509,7 @@ impl PonteApp {
                         &self.today.today,
                         &now.to_string(),
                         &title_of,
+                        &self.today.categories,
                         asked,
                     );
                     if self.today.late.is_empty()
@@ -525,6 +530,7 @@ impl PonteApp {
                         &self.today.upcoming,
                         &now.to_string(),
                         &title_of,
+                        &self.today.categories,
                         asked,
                     );
                 };
@@ -911,6 +917,7 @@ fn list_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn task_group(
     ui: &mut egui::Ui,
     title: &str,
@@ -918,6 +925,7 @@ fn task_group(
     tasks: &[Task],
     today: &str,
     title_of: &dyn Fn(i64) -> String,
+    categories: &[crate::categories::Category],
     asked: &mut Option<Asked>,
 ) {
     if tasks.is_empty() {
@@ -1008,6 +1016,12 @@ fn task_group(
                                     },
                                 );
                             }
+                            crate::category_ui::category_chips_compact(
+                                ui,
+                                &task.categories,
+                                categories,
+                                2,
+                            );
                         });
                     });
                 },

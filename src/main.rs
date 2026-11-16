@@ -90,11 +90,19 @@ fn run() -> Result<()> {
             }
             if report.examples_created > 0 {
                 println!(
-                    "{} como não conferidos: aprove-os na área Modelos para que a IA os use.",
+                    "{}: aprove-{o} na área Modelos para que a IA {o} use.",
                     if report.examples_created == 1 {
-                        "1 exemplo criado".to_owned()
+                        "1 exemplo criado como não conferido".to_owned()
                     } else {
-                        format!("{} exemplos criados", report.examples_created)
+                        format!(
+                            "{} exemplos criados como não conferidos",
+                            report.examples_created
+                        )
+                    },
+                    o = if report.examples_created == 1 {
+                        "o"
+                    } else {
+                        "os"
                     }
                 );
             }

@@ -395,9 +395,10 @@ impl Store {
     }
 
     /// Applies a category change that came from another computer (main
-    /// computer, offline queue, shared folder). A new category whose name is
-    /// taken is stored as "Nome (2)", "Nome (3)"…, and the limit of
-    /// categories is not enforced, so nothing sent later is lost.
+    /// computer, offline queue, shared folder). A category, new or edited,
+    /// whose name another category has is stored as "Nome (2)", "Nome (3)"…,
+    /// and the limit of categories is not enforced, so nothing sent later is
+    /// lost.
     pub(crate) fn save_category_applied(
         &mut self,
         category: &Category,
@@ -405,10 +406,17 @@ impl Store {
     ) -> Result<Category> {
         let mut category = category.normalized();
         category.validate()?;
-        if !category.uid.is_empty() && !self.category_exists(&category.uid) {
+        if !category.uid.is_empty() {
             let all = read_all(&self.conn)?;
             let key = category.name_key();
-            if all.iter().any(|c| c.name_key() == key) {
+            // New or edited: either way a name another category has is
+            // stored with a number, as a refusal here could not be undone.
+            let own_uid = category.uid.clone();
+            let taken_by_other = |name_key: &str| {
+                all.iter()
+                    .any(|c| c.uid != own_uid && c.name_key() == name_key)
+            };
+            if taken_by_other(&key) {
                 let base: String = category.name.clone();
                 for n in 2.. {
                     let suffix = format!(" ({n})");
@@ -417,7 +425,7 @@ impl Store {
                     let mut candidate = category.clone();
                     candidate.name = format!("{}{suffix}", head.trim_end());
                     let taken = candidate.name_key();
-                    if !all.iter().any(|c| c.name_key() == taken) {
+                    if !taken_by_other(&taken) {
                         category = candidate;
                         break;
                     }
@@ -1260,6 +1268,47 @@ mod tests {
         assert!(host.list_categories().unwrap().len() > MAX_CATEGORIES);
         // The person in the interface is still refused.
         assert!(host.save_category(&Category::new("Mais uma", 0)).is_err());
+    }
+
+    #[test]
+    fn an_edit_that_arrives_with_a_taken_name_is_stored_with_a_number() {
+        let (_dir, mut host, _cfg, _document) = host_with_document();
+        make(&mut host, "Urgente");
+        let other = make(&mut host, "Rotina");
+        // Someone renamed "Rotina" to "urgente" while another computer made
+        // "Urgente": the edit is kept, not refused.
+        let mut edited = other.clone();
+        edited.name = "urgente".into();
+        host.execute_mutation(
+            "Servidor B",
+            IntranetMutation::SaveCategory {
+                category: edited.clone(),
+                expected_version: None,
+            },
+        )
+        .unwrap();
+        let mut names: Vec<_> = host
+            .list_categories()
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["Urgente", "urgente (2)"]);
+        // The person in the interface is still refused.
+        let mut again = other;
+        again.name = "Urgente".into();
+        assert!(host.save_category(&again).is_err());
+        // Saving a category again under its own name is no collision.
+        edited.name = "urgente (2)".into();
+        host.execute_mutation(
+            "Servidor B",
+            IntranetMutation::SaveCategory {
+                category: edited,
+                expected_version: None,
+            },
+        )
+        .unwrap();
     }
 
     #[test]

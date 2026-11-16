@@ -229,8 +229,9 @@ pub fn write_bundle(path: &std::path::Path, bundle: &Bundle) -> Result<()> {
 }
 
 impl Store {
-    /// The first instruction of `version` without a published version (a
-    /// template cannot be published before its instructions).
+    /// Says why `version` cannot be published: its first instruction without
+    /// a published version, or one that no longer exists (a template cannot
+    /// be published before its instructions). The text is shown to the person.
     fn unpublished_block(
         &self,
         version: Option<&crate::work_templates::TemplateVersion>,
@@ -242,8 +243,13 @@ impl Store {
         for reference in &version.block_refs {
             match blocks.iter().find(|b| b.uid == reference.block_uid) {
                 Some(b) if b.published_version().is_some() && b.status != Status::Archived => {}
-                Some(b) => return Ok(Some(b.name.clone())),
-                None => return Ok(Some(reference.block_uid.clone())),
+                Some(b) => {
+                    return Ok(Some(format!(
+                        "a instrução \"{}\" não está publicada",
+                        b.name
+                    )))
+                }
+                None => return Ok(Some("uma instrução que não existe mais".to_owned())),
             }
         }
         Ok(None)
@@ -556,9 +562,9 @@ impl Store {
                 .template_by_uid(&uid)?
                 .context("Modelo não encontrado.")?;
             match self.unpublished_block(template.draft_version())? {
-                Some(block) => report.kept.push(format!(
-                    "Modelo \"{name}\" ficou como rascunho: a instrução \"{block}\" não está publicada"
-                )),
+                Some(reason) => report
+                    .kept
+                    .push(format!("Modelo \"{name}\" ficou como rascunho: {reason}")),
                 None => {
                     self.set_template_status(&uid, Status::Published, None)
                         .with_context(|| format!("Publicar o modelo \"{name}\""))?;

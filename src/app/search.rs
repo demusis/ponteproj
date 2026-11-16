@@ -25,6 +25,8 @@ struct DocumentRow {
     title: String,
     /// "Manual" or "E-mail" for what was made in the Ponte.
     kind: Option<&'static str>,
+    /// Uids of the document's categories.
+    categories: Vec<String>,
 }
 
 /// A task found.
@@ -37,6 +39,8 @@ struct TaskRow {
     standalone: bool,
     due_date: String,
     done: bool,
+    /// Uids of the task's categories.
+    categories: Vec<String>,
 }
 
 /// An atendimento found.
@@ -96,6 +100,8 @@ struct Results {
     attendances: Group<AttendanceRow>,
     resources: Group<ResourceRow>,
     resource_uses: Group<ResourceUseRow>,
+    /// Every category, to draw the chips of the rows.
+    categories: Vec<crate::categories::Category>,
     /// Why the library could not be read, if it could not.
     error: Option<String>,
 }
@@ -312,7 +318,10 @@ impl GlobalSearch {
             return;
         }
         let needle = fold(&text);
-        let mut results = Results::default();
+        let mut results = Results {
+            categories: store.list_categories().unwrap_or_default(),
+            ..Results::default()
+        };
         let mut errors = Vec::new();
         match store.list_documents(&text) {
             Ok(documents) => {
@@ -323,6 +332,7 @@ impl GlobalSearch {
                             id: d.id,
                             number: d.document_number,
                             title: d.title,
+                            categories: d.categories,
                             kind: if d.email {
                                 Some("E-mail")
                             } else if d.whatsapp {
@@ -354,6 +364,7 @@ impl GlobalSearch {
                             done: task_done(&t),
                             due_date: t.due_date,
                             title: t.title,
+                            categories: t.categories,
                         })
                         .collect(),
                 );
@@ -772,6 +783,24 @@ fn draw_results(
                                         egui::Layout::right_to_left(egui::Align::Min),
                                         |ui| {
                                             widgets::pill(ui, kind, Tone::Neutral);
+                                            crate::category_ui::category_chips_compact(
+                                                ui,
+                                                &document.categories,
+                                                &results.categories,
+                                                2,
+                                            );
+                                        },
+                                    );
+                                } else if !document.categories.is_empty() {
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Min),
+                                        |ui| {
+                                            crate::category_ui::category_chips_compact(
+                                                ui,
+                                                &document.categories,
+                                                &results.categories,
+                                                2,
+                                            );
                                         },
                                     );
                                 }
@@ -841,6 +870,12 @@ fn draw_results(
                                             (day_month(&task.due_date), Tone::Info)
                                         };
                                         widgets::pill(ui, text, tone);
+                                        crate::category_ui::category_chips_compact(
+                                            ui,
+                                            &task.categories,
+                                            &results.categories,
+                                            2,
+                                        );
                                     },
                                 );
                             });
@@ -1250,6 +1285,7 @@ mod tests {
             number: "ORG-OFI-2026/00431".into(),
             title: "Ofício".into(),
             kind: None,
+            categories: Vec::new(),
         }]);
         search.results.tasks = Group::limited(vec![TaskRow {
             id: 20,
@@ -1258,6 +1294,7 @@ mod tests {
             standalone: false,
             due_date: String::new(),
             done: false,
+            categories: Vec::new(),
         }]);
         search.results.attendances = Group::limited(vec![AttendanceRow {
             id: 30,
