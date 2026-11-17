@@ -40,16 +40,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import java.text.Normalizer
-
-private fun fold(s: String): String =
-    Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").lowercase()
-
-/** The search of the Documentos tab and of the document picker: number, title, origin, sender. */
-internal fun matchesQuery(d: Doc, query: String): Boolean {
-    val q = fold(query.trim())
-    return q.isEmpty() || fold("${d.number} ${d.title} ${d.origin} ${d.emailFrom}").contains(q)
-}
 
 /** The Documentos area (inside MainShell): search, filters, the list and the photo button. */
 @Composable
@@ -62,10 +52,12 @@ internal fun DocumentsScreen(
     onOpen: (Long) -> Unit,
     onPhoto: () -> Unit,
     categoryFilter: Set<String> = emptySet(),
-    onCategoryFilter: (Set<String>) -> Unit = {}
+    onCategoryFilter: (Set<String>) -> Unit = {},
+    /** Ids the core's search found for [query]; null while there is nothing typed. */
+    matches: Set<Long>? = null
 ) {
     val c = Ponte.colors
-    val shown = remember(docs, query, filter, categoryFilter) {
+    val shown = remember(docs, matches, filter, categoryFilter) {
         docs.filter { d ->
             val byFilter = when (filter) {
                 DocFilter.ALL -> true
@@ -73,7 +65,7 @@ internal fun DocumentsScreen(
                 DocFilter.EMAILS -> d.email
                 DocFilter.RECORDS -> d.manual
             }
-            byFilter && CategoryRules.matches(d.categories, categoryFilter) && matchesQuery(d, query)
+            byFilter && CategoryRules.matches(d.categories, categoryFilter) && (matches == null || d.id in matches)
         }
     }
     Box(Modifier.fillMaxSize()) {

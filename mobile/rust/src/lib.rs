@@ -191,7 +191,7 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listDocuments<'loc
             let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
             // Open tasks by document: how many, and the earliest due date.
             let mut open = std::collections::HashMap::<i64, (usize, String)>::new();
-            for task in store.list_tasks()?.iter().filter(|t| t.status != "concluida") {
+            for task in store.list_tasks()?.iter().filter(|t| !t.is_done()) {
                 // Tasks without a document count for no document.
                 let Some(document) = task.document_id else {
                     continue;
@@ -279,9 +279,10 @@ fn task_json_on(
     numbers: &std::collections::HashMap<i64, String>,
     today: &str,
 ) -> Value {
-    let open = task.status != "concluida";
+    let open = !task.is_done();
     json!({
         "id": task.id,
+        "uid": task.uid,
         // 0 and an empty number: a task without a document.
         "document_id": task.document_id.unwrap_or(0),
         "document_number": task
@@ -296,9 +297,21 @@ fn task_json_on(
         "priority": task.priority,
         "priority_label": ponteproj::tasks::priority_label(&task.priority),
         "due_date": task.due_date,
+        "scheduled_start": task.scheduled_start,
+        "scheduled_end": task.scheduled_end,
+        "estimate_minutes": task.estimate_minutes,
+        "reminder_offsets_minutes": task.reminder_offsets_minutes,
+        "parent_task_id": task.parent_task_id,
         "due_label": ponteproj::labels::date(&task.due_date),
         "overdue": open && !task.due_date.is_empty() && task.due_date.as_str() < today,
         "due_today": open && task.due_date == today,
+        "done": !open,
+        // What it would be if it were open (for a task reopened on the phone before the next reload).
+        "late_if_open": !task.due_date.is_empty() && task.due_date.as_str() < today,
+        "today_if_open": task.due_date == today,
+        // The group of the task lists, and the short wording of the due chip.
+        "bucket": task.bucket(today).key(),
+        "due_chip": if task.due_date.is_empty() { String::new() } else { ponteproj::labels::due_relative(&task.due_date, today) },
         "notes": task.notes,
         // Uids of the categories; names and colours come from `listCategories`.
         "categories": task.categories,
@@ -437,6 +450,39 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_exportFile<'local>
     })
 }
 
+/// How many concluded tasks the phone lists.
+const DONE_LIMIT: usize = 30;
+
+/// The tasks in display order: by group (late, today, upcoming, no deadline,
+/// concluded); upcoming by date; the concluded newest first, at most 30.
+fn ordered_tasks(
+    mut tasks: Vec<ponteproj::tasks::Task>,
+    numbers: &std::collections::HashMap<i64, String>,
+    today: &str,
+) -> Vec<Value> {
+    tasks.sort_by(|a, b| {
+        let (x, y) = (a.bucket(today), b.bucket(today));
+        x.slot().cmp(&y.slot()).then_with(|| match x {
+            ponteproj::tasks::Bucket::Upcoming => a.due_date.cmp(&b.due_date),
+            ponteproj::tasks::Bucket::Done => b.id.cmp(&a.id),
+            _ => std::cmp::Ordering::Equal,
+        })
+    });
+    let mut done = 0;
+    tasks
+        .iter()
+        .filter(|t| {
+            if t.is_done() {
+                done += 1;
+                done <= DONE_LIMIT
+            } else {
+                true
+            }
+        })
+        .map(|t| task_json_on(t, numbers, today))
+        .collect()
+}
+
 /// Open tasks first (overdue, then due today, then by date), concluded last.
 #[no_mangle]
 pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listTasks<'local>(
@@ -446,11 +492,8 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listTasks<'local>(
     answer(&mut env, |_| {
         with_store(|store| {
             let numbers = document_numbers(store)?;
-            let tasks = store
-                .list_tasks()?
-                .iter()
-                .map(|t| task_json(t, &numbers))
-                .collect::<Vec<_>>();
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            let tasks = ordered_tasks(store.list_tasks()?, &numbers, &today);
             Ok(json!({ "tasks": tasks }))
         })
     })
@@ -511,6 +554,7 @@ fn create_task(store: &mut Store, input: &Value) -> Result<Value> {
         task.action = action.to_owned();
     }
     task.due_date = valid_due(input["due_date"].as_str().unwrap_or(""))?;
+    apply_planning(&mut task, input)?;
     // The responsible person, when the phone knows the person's name.
     task.assignee = input["assignee"].as_str().unwrap_or("").trim().chars().take(80).collect();
     if let Some(uids) = uid_list(&input["categories"]) {
@@ -518,6 +562,24 @@ fn create_task(store: &mut Store, input: &Value) -> Result<Value> {
     }
     let id = store.save_task(&task)?;
     Ok(json!({ "id": id }))
+}
+
+fn apply_planning(task: &mut ponteproj::tasks::Task, input: &Value) -> Result<()> {
+    for (key, target) in [("scheduled_start", &mut task.scheduled_start), ("scheduled_end", &mut task.scheduled_end)] {
+        if let Some(value) = input.get(key) {
+            *target = value.as_str().context("Horário inválido.")?.to_owned();
+        }
+    }
+    if let Some(value) = input.get("estimate_minutes") {
+        task.estimate_minutes = u32::try_from(value.as_u64().context("Estimativa inválida.")?)?;
+    }
+    if let Some(value) = input.get("reminder_offsets_minutes") {
+        task.reminder_offsets_minutes = value.as_array().context("Avisos inválidos.")?.iter().map(|v| Ok(u32::try_from(v.as_u64().context("Aviso inválido.")?)?)).collect::<Result<Vec<_>>>()?;
+    }
+    if let Some(value) = input.get("parent_task_id") {
+        task.parent_task_id = if value.is_null() { None } else { Some(value.as_i64().context("Tarefa pai inválida.")?) };
+    }
+    Ok(())
 }
 
 /// A due date as the core keeps it: empty, or `AAAA-MM-DD`.
@@ -584,6 +646,7 @@ fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
     let id = input["id"].as_i64().context("Tarefa ausente.")?;
     let version = input["version"].as_i64().context("Versão da tarefa ausente.")?;
     let mut task = find_task(store, id)?;
+    apply_planning(&mut task, input)?;
     let text = |key: &str| input[key].as_str().map(str::to_owned);
     if let Some(title) = text("title") {
         task.title = title.trim().to_owned();
@@ -769,9 +832,33 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_today<'local>(
             let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
             let mut lists = today_lists(store, &today)?;
             lists["resources"] = resource_counts(store, &today, &ponteproj::resources::now_moment())?;
+            add_today_words(&mut lists);
             Ok(lists)
         })
     })
+}
+
+/// The counts of "Hoje" from its lists.
+fn today_counts_of(lists: &Value) -> ponteproj::labels::TodayCounts {
+    let n = |v: &Value| v.as_array().map_or(0, Vec::len);
+    let r = |key: &str| lists["resources"][key].as_u64().unwrap_or(0) as usize;
+    ponteproj::labels::TodayCounts {
+        late: n(&lists["late"]),
+        today: n(&lists["today"]),
+        attendances: n(&lists["attendances"]),
+        reservations: r("reservations_today"),
+        overdue_returns: r("overdue"),
+    }
+}
+
+/// Adds the words of "Hoje": `summary` (the line of the screen), `notice` (the
+/// sentence of the daily notice, "" when nothing is due) and `badge` (late
+/// plus due today tasks, the number on the Tarefas tab).
+fn add_today_words(lists: &mut Value) {
+    let counts = today_counts_of(lists);
+    lists["summary"] = json!(counts.summary());
+    lists["notice"] = json!(counts.notice().unwrap_or_default());
+    lists["badge"] = json!(counts.late + counts.today);
 }
 
 /// How many tasks "Próximos dias" lists.
@@ -820,7 +907,9 @@ fn today_lists(store: &Store, today: &str) -> Result<Value> {
                 "subject": a.subject,
                 "status_label": ponteproj::saiop::status_label(&a.status),
                 "due_date": a.due_date,
+                "due_chip": ponteproj::labels::due_relative(&a.due_date, today),
                 "late": a.due_date.as_str() < today,
+                "due_today": a.due_date == today,
             })
         })
         .collect::<Vec<_>>();
@@ -1029,22 +1118,9 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_attachFile<'local>
 // The responsible people, the atendimentos (read-only) and the search over the
 // whole library. Pure functions over the store, tested on the host.
 
-/// Lowercase without accents, for comparing text (`fold` of the desktop
-/// search, `src/app/search.rs`, which is desktop-only code: re-expressed here).
+/// Lowercase without accents, for comparing text: the core's one fold.
 fn fold(value: &str) -> String {
-    value
-        .to_lowercase()
-        .chars()
-        .map(|c| match c {
-            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'ç' => 'c',
-            c => c,
-        })
-        .collect()
+    ponteproj::labels::fold(value)
 }
 
 /// How many names `assignees` sends. The app filters them as the person types
@@ -1142,6 +1218,7 @@ fn attendance_rows(store: &Store, today: &str) -> Result<Value> {
                 "open": is_open,
                 "due_date": due,
                 "due_label": ponteproj::labels::date(due),
+                "due_chip": if due.is_empty() { String::new() } else { ponteproj::labels::due_relative(due, today) },
                 "late": is_open && !due.is_empty() && due < today,
                 "due_today": is_open && due == today,
                 "assignee": a.assignee,
@@ -1341,6 +1418,7 @@ fn resource_use_rows(store: &Store, now: &str) -> Result<Value> {
                 "status_label": u.status.label(),
                 "notes": u.notes,
                 "overdue": u.overdue_at(now),
+                "period": ponteproj::resources::period_text(&u.start, &u.end),
                 "document_id": document.map(|d| d.id).unwrap_or(0),
                 "document_number": document.map(|d| d.document_number.as_str()).unwrap_or(""),
                 "document_title": document.map(|d| d.title.as_str()).unwrap_or(""),
@@ -1352,6 +1430,88 @@ fn resource_use_rows(store: &Store, now: &str) -> Result<Value> {
         })
         .collect::<Vec<_>>();
     Ok(json!({ "uses": rows }))
+}
+
+/// The Recursos screens, everything decided as of `now` (`AAAA-MM-DDTHH:MM`):
+/// - `uses`: every use (see [`resource_use_rows`], with `period` and `overdue`);
+/// - `resources`: every resource with `in_use_now`, `free_now`, `usage_line`,
+///   `free_text`, `today` (uids of the uses holding it today, by start) and
+///   `next` (uids of what is out or still ahead, by start);
+/// - `groups`: the uses that match `query`, in the desktop's groups, each
+///   `{key, title, late, uids}`, only the ones with something in them;
+/// - `rows`: uids of the resources that match `query`, the active ones first.
+fn resource_view(store: &Store, query: &str, now: &str) -> Result<Value> {
+    use ponteproj::resources::{day_occupation, group_uses, query_matches, taken_now};
+    let day = chrono::NaiveDate::parse_from_str(&now[..10.min(now.len())], "%Y-%m-%d").context("Data inválida.")?;
+    let day_text = day.format("%Y-%m-%d").to_string();
+    let resources = store.list_resources()?;
+    let uses = store.list_resource_uses()?;
+    let mut view = resource_use_rows(store, now)?;
+    let documents = store.list_documents("")?;
+    let attendances = store.list_saiop_attendances()?;
+    let tasks = store.list_tasks()?;
+    // What the desktop searches a use by, plus what only the phone showed: the linked
+    // document (number, title), the atendimento (reference) and the task (title).
+    let extra_of = |u: &ponteproj::resources::ResourceUse| {
+        let document = u.document_id.and_then(|d| documents.iter().find(|x| x.id == d));
+        let attendance = u.saiop_id.and_then(|a| attendances.iter().find(|x| x.id == a));
+        let task = u.task_id.and_then(|t| tasks.iter().find(|x| x.id == t));
+        format!(
+            "{} {} {} {}",
+            document.map(|d| d.document_number.as_str()).unwrap_or(""),
+            document.map(|d| d.title.as_str()).unwrap_or(""),
+            attendance.map(attendance_reference).unwrap_or(""),
+            task.map(|t| t.title.as_str()).unwrap_or("")
+        )
+    };
+    let matching: Vec<&ponteproj::resources::ResourceUse> = uses
+        .iter()
+        .filter(|u| {
+            let resource = resources.iter().find(|r| r.uid == u.resource_uid);
+            query_matches(u, resource, query, &extra_of(u))
+        })
+        .collect();
+    let groups = group_uses(&matching, day, now);
+    let group_rows = groups
+        .sections()
+        .iter()
+        .filter(|(_, _, list)| !list.is_empty())
+        .map(|(key, title, list)| {
+            json!({
+                "key": key, "title": title, "late": *key == "atrasados",
+                "uids": list.iter().map(|u| u.uid.as_str()).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut resource_rows = Vec::new();
+    for r in &resources {
+        let taken = taken_now(&uses, &r.uid, now);
+        let free = r.quantity.saturating_sub(taken);
+        let mine: Vec<&ponteproj::resources::ResourceUse> = uses.iter().filter(|u| u.resource_uid == r.uid).collect();
+        let own = group_uses(&mine, day, now);
+        let mut ahead: Vec<&ponteproj::resources::ResourceUse> = own.sections()[..5].iter().flat_map(|(_, _, l)| l.iter().copied()).collect();
+        ahead.sort_by(|a, b| (&a.start, &a.end).cmp(&(&b.start, &b.end)));
+        let today_uses = day_occupation(&uses, &r.uid, "", &day_text, now);
+        let mut json = resource_json(r);
+        json["in_use_now"] = json!(taken);
+        json["free_now"] = json!(free);
+        json["usage_line"] = json!(format!("{taken} de {} em uso agora", r.quantity));
+        json["free_text"] = json!(ponteproj::labels::count(free as usize, "livre", "livres"));
+        json["today"] = json!(today_uses.iter().map(|u| u.uid.as_str()).collect::<Vec<_>>());
+        json["next"] = json!(ahead.iter().map(|u| u.uid.as_str()).collect::<Vec<_>>());
+        resource_rows.push(json);
+    }
+    let folded = ponteproj::labels::fold(query);
+    let hit = |r: &ponteproj::resources::Resource| {
+        let haystack = ponteproj::labels::fold(&format!("{} {} {}", r.name, r.location, r.identification));
+        folded.split_whitespace().all(|w| haystack.contains(w))
+    };
+    let mut rows: Vec<&str> = resources.iter().filter(|r| hit(r) && r.status == ponteproj::resources::ResourceStatus::Active).map(|r| r.uid.as_str()).collect();
+    rows.extend(resources.iter().filter(|r| hit(r) && r.status != ponteproj::resources::ResourceStatus::Active).map(|r| r.uid.as_str()));
+    view["resources"] = json!(resource_rows);
+    view["groups"] = json!(group_rows);
+    view["rows"] = json!(rows);
+    Ok(view)
 }
 
 /// The two counts of Hoje: reservations of the day and overdue returns (counts only).
@@ -1378,6 +1538,41 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listResourceUses<'
 ) -> jstring {
     answer(&mut env, |_| {
         with_store(|store| resource_use_rows(store, &ponteproj::resources::now_moment()))
+    })
+}
+
+/// The Recursos screens for the text typed (empty: everything), as of now.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_resourceView<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    query: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let query = text(env, &query)?;
+        with_store(|store| resource_view(store, &query, &ponteproj::resources::now_moment()))
+    })
+}
+
+/// The ids, in order, of the documents the core's search finds for `query`
+/// (words, case and accents ignored): the same search as the global one. An
+/// empty query is every document.
+fn document_ids(store: &Store, query: &str) -> Result<Value> {
+    let text: String = query.trim().chars().take(SEARCH_MAX_CHARS).collect();
+    let ids = store.list_documents(&text)?.iter().map(|d| d.id).collect::<Vec<_>>();
+    Ok(json!({ "ids": ids }))
+}
+
+/// The ids of the documents that match the text of the Documentos tab or of the picker.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_documentIds<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    query: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let query = text(env, &query)?;
+        with_store(|store| document_ids(store, &query))
     })
 }
 
@@ -2889,5 +3084,150 @@ mod tests {
         assert_eq!(counts["reservations_today"], json!(expected.reservations_today));
         assert!(counts["reservations_today"].as_u64().unwrap() >= 1);
         assert!(resource_counts(&store, "not a date", "2099-11-10T10:00").is_err());
+    }
+
+    #[test]
+    fn tasks_come_ordered_by_group_with_chip_and_the_cap_on_the_concluded() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let today = "2026-11-10";
+        add_task(&mut store, Some(doc), "sem prazo", "");
+        add_task(&mut store, Some(doc), "depois", "2026-12-25");
+        add_task(&mut store, Some(doc), "amanha", "2026-11-11");
+        add_task(&mut store, Some(doc), "hoje", "2026-11-10");
+        add_task(&mut store, Some(doc), "ontem", "2026-11-09");
+        for n in 0..32 {
+            let id = add_task(&mut store, None, &format!("feita {n}"), "");
+            store.complete_task(id).unwrap();
+        }
+        let numbers = document_numbers(&store).unwrap();
+        let rows = ordered_tasks(store.list_tasks().unwrap(), &numbers, today);
+        let open: Vec<_> = rows.iter().filter(|t| t["done"] == json!(false) && t["title"] != json!("Triar documento")).collect();
+        let order: Vec<_> = open.iter().map(|t| t["title"].as_str().unwrap()).collect();
+        assert_eq!(order, ["ontem", "hoje", "amanha", "depois", "sem prazo"]);
+        let buckets: Vec<_> = open.iter().map(|t| t["bucket"].as_str().unwrap()).collect();
+        assert_eq!(buckets, ["atrasadas", "hoje", "proximas", "proximas", "sem_prazo"]);
+        let chips: Vec<_> = open.iter().map(|t| t["due_chip"].as_str().unwrap()).collect();
+        assert_eq!(chips, ["ontem", "hoje", "amanhã", "25/12", ""]);
+        let done: Vec<_> = rows.iter().filter(|t| t["bucket"] == json!("concluidas")).collect();
+        assert_eq!(done.len(), 30, "the phone's cap");
+        assert!(rows.len() >= 35);
+        // A late task that is reopened later is late again.
+        assert_eq!(open[0]["late_if_open"], json!(true));
+    }
+
+    #[test]
+    fn a_task_with_a_conclusion_date_counts_as_concluded_everywhere() {
+        let mut task = ponteproj::tasks::Task::blank(None);
+        task.title = "x".into();
+        task.due_date = "2026-11-01".into();
+        task.completed_at = Some("2026-11-02T10:00:00".into());
+        let json = task_json_on(&task, &std::collections::HashMap::new(), "2026-11-10");
+        assert_eq!(json["done"], json!(true));
+        assert_eq!(json["overdue"], json!(false));
+        assert_eq!(json["bucket"], json!("concluidas"));
+    }
+
+    #[test]
+    fn today_carries_the_words_and_the_badge() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        add_task(&mut store, Some(doc), "a", "2026-11-09");
+        add_task(&mut store, Some(doc), "b", "2026-11-10");
+        let mut lists = today_lists(&store, "2026-11-10").unwrap();
+        lists["resources"] = json!({"reservations_today": 2, "overdue": 0});
+        add_today_words(&mut lists);
+        assert_eq!(lists["summary"], json!("1 tarefa atrasada · 1 para hoje · 2 reservas de hoje"));
+        assert_eq!(lists["notice"], json!("1 tarefa atrasada, 1 para hoje e 2 reservas de hoje."));
+        assert_eq!(lists["badge"], json!(2));
+        let mut none = json!({"late": [], "today": [], "attendances": []});
+        add_today_words(&mut none);
+        assert_eq!(none["summary"], json!("Nada vence hoje."));
+        assert_eq!(none["notice"], json!(""));
+    }
+
+    #[test]
+    fn the_resource_view_groups_searches_and_counts_as_the_computer_does() {
+        use ponteproj::resources::{Resource, ResourceUse, UseStatus};
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let room = store
+            .save_resource(&Resource { name: "Sala de reuniões".into(), kind: "sala".into(), ..Resource::default() }, None)
+            .unwrap();
+        let laptops = store
+            .save_resource(&Resource { name: "Notebook".into(), kind: "equipamento".into(), quantity: 2, ..Resource::default() }, None)
+            .unwrap();
+        let task = add_task(&mut store, None, "Devolver as chaves", "");
+        let mut put = |resource: &str, who: &str, start: &str, end: &str, status: UseStatus, task_id: Option<i64>, document: Option<i64>| {
+            store
+                .save_resource_use(
+                    &ResourceUse {
+                        resource_uid: resource.into(),
+                        who: who.into(),
+                        start: start.into(),
+                        end: end.into(),
+                        status,
+                        returned_at: (status == UseStatus::Returned).then(|| end.to_owned()),
+                        task_id,
+                        document_id: document,
+                        ..ResourceUse::default()
+                    },
+                    None,
+                )
+                .unwrap();
+        };
+        // 10/11 at 10:00: a reservation of the morning that passed (still "Hoje"), one in the
+        // afternoon, a late loan, a loan out, two closed ones.
+        put(&room, "Servidor A", "2026-11-10T08:00", "2026-11-10T09:00", UseStatus::Reserved, None, None);
+        put(&room, "Servidor B", "2026-11-10T14:00", "2026-11-10T16:00", UseStatus::Reserved, Some(task), Some(doc));
+        put(&laptops, "Servidor C", "2026-11-08T09:00", "2026-11-09T09:00", UseStatus::InUse, None, None);
+        put(&laptops, "Servidor D", "2026-11-10T09:00", "2026-11-10T18:00", UseStatus::InUse, None, None);
+        put(&room, "Servidor E", "2026-11-01T09:00", "2026-11-01T10:00", UseStatus::Returned, None, None);
+        put(&room, "Servidor F", "2026-11-05T09:00", "2026-11-05T10:00", UseStatus::Cancelled, None, None);
+        let now = "2026-11-10T10:00";
+        let view = resource_view(&store, "", now).unwrap();
+        let groups = view["groups"].as_array().unwrap();
+        let keys: Vec<_> = groups.iter().map(|g| g["key"].as_str().unwrap()).collect();
+        assert_eq!(keys, ["atrasados", "em_uso", "hoje", "encerrados"]);
+        assert_eq!(groups[3]["title"], json!("Mais antigos e encerrados"));
+        assert_eq!(groups[2]["uids"].as_array().unwrap().len(), 2, "the morning reservation stays under today");
+        let who_of = |uid: &Value| {
+            let uses = view["uses"].as_array().unwrap();
+            uses.iter().find(|u| &u["uid"] == uid).unwrap()["who"].as_str().unwrap().to_owned()
+        };
+        let closed: Vec<_> = groups[3]["uids"].as_array().unwrap().iter().map(who_of).collect();
+        assert_eq!(closed, ["Servidor F", "Servidor E"], "closed ones by start, latest first");
+        assert!(!view["uses"][0]["period"].as_str().unwrap().is_empty());
+        let find = |name: &str| view["resources"].as_array().unwrap().iter().find(|r| r["name"] == json!(name)).unwrap().clone();
+        // The notebook: two units, one out and late, one out until 18:00.
+        let notebook = find("Notebook");
+        assert_eq!(notebook["in_use_now"], json!(2));
+        assert_eq!(notebook["free_now"], json!(0));
+        assert_eq!(notebook["usage_line"], json!("2 de 2 em uso agora"));
+        assert_eq!(notebook["free_text"], json!("0 livres"));
+        assert_eq!(find("Sala de reuniões")["today"].as_array().unwrap().len(), 2);
+        // The search is the union of the desktop's fields and what only the phone had.
+        let by_task = resource_view(&store, "chaves", now).unwrap();
+        assert_eq!(by_task["groups"].as_array().unwrap().len(), 1);
+        let by_who = resource_view(&store, "  SERVIDOR   b ", now).unwrap();
+        assert_eq!(by_who["groups"][0]["uids"].as_array().unwrap().len(), 1);
+        assert_eq!(resource_view(&store, "zzz", now).unwrap()["groups"], json!([]));
+        assert_eq!(resource_view(&store, "NOTEBOOK", now).unwrap()["rows"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn document_ids_follow_the_core_search() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (store, doc) = library(&dir.0);
+        let all = document_ids(&store, "").unwrap();
+        assert_eq!(all["ids"], json!([doc]));
+        assert_eq!(document_ids(&store, "  zzzxqj  ").unwrap()["ids"], json!([]));
+        let number = store.list_documents("").unwrap().remove(0).document_number;
+        let shouted = number.to_uppercase();
+        assert_eq!(document_ids(&store, &format!(" {shouted} ")).unwrap()["ids"], json!([doc]));
     }
 }

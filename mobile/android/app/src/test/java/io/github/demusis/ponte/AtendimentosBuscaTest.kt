@@ -185,7 +185,7 @@ class AtendimentosBuscaTest {
     @Test fun hojeComAtendimentosToqueaveis() {
         paparazzi.tall(2600)
         paparazzi.shotInShell("hoje_atendimentos", 0, shell = Samples.shell.copy(badge = 0)) {
-            TodayScreen(TodayState(loading = false, attendances = Samples.attendances), {}, {}, {})
+            TodayScreen(TodayState(loading = false, attendances = Samples.attendances, summary = "2 atendimentos com prazo vencido ou para hoje"), {}, {}, {})
         }
     }
 

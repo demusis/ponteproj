@@ -95,6 +95,7 @@ impl<T> Group<T> {
 
 #[derive(Default)]
 struct Results {
+    commands: Vec<Command>,
     documents: Group<DocumentRow>,
     tasks: Group<TaskRow>,
     attendances: Group<AttendanceRow>,
@@ -113,11 +114,13 @@ impl Results {
             + self.attendances.rows.len()
             + self.resources.rows.len()
             + self.resource_uses.rows.len()
+            + self.commands.len()
     }
 }
 
 /// What the person chose.
 enum Pick {
+    Command(Command),
     Document(i64),
     Task(i64),
     Attendance(i64),
@@ -125,6 +128,81 @@ enum Pick {
     Resource(String),
     /// A use of a resource, by uid.
     ResourceUse(String),
+}
+
+/// An action the box offers besides records ("Ações"). Each one goes through
+/// `PonteApp::navigate`, so unsaved edits are protected as for any other move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Command {
+    NewTask,
+    NewManual,
+    NewAttendance,
+    Today,
+    Week,
+    Documents,
+    Tasks,
+    Attendances,
+    Resources,
+    Templates,
+    Settings,
+    Help,
+}
+
+impl Command {
+    const ALL: [Command; 12] = [
+        Self::NewTask,
+        Self::NewManual,
+        Self::NewAttendance,
+        Self::Today,
+        Self::Week,
+        Self::Documents,
+        Self::Tasks,
+        Self::Attendances,
+        Self::Resources,
+        Self::Templates,
+        Self::Settings,
+        Self::Help,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::NewTask => "Nova tarefa",
+            Self::NewManual => "Novo registro manual",
+            Self::NewAttendance => "Nova entrada em Atendimentos",
+            Self::Today => "Abrir Hoje e pendências",
+            Self::Week => "Planejar a semana",
+            Self::Documents => "Abrir documentos",
+            Self::Tasks => "Abrir tarefas",
+            Self::Attendances => "Abrir atendimentos",
+            Self::Resources => "Abrir reservas e recursos",
+            Self::Templates => "Abrir modelos",
+            Self::Settings => "Abrir ajustes e sincronização",
+            Self::Help => "Abrir a ajuda (guia do usuário)",
+        }
+    }
+
+    /// The keyboard shortcut that does the same, when there is one.
+    fn shortcut(self) -> &'static str {
+        match self {
+            Self::Today => "Ctrl+1",
+            Self::Documents => "Ctrl+2",
+            Self::Tasks => "Ctrl+3",
+            Self::Attendances => "Ctrl+4",
+            Self::Templates => "Ctrl+5",
+            Self::Resources => "Ctrl+6",
+            _ => "",
+        }
+    }
+}
+
+/// The actions that match the text: empty or starting with `>` lists them,
+/// the rest of the text filters by name, ignoring case and accents.
+fn commands(query: &str) -> Vec<Command> {
+    let needle = fold(query.trim().trim_start_matches('>').trim());
+    Command::ALL
+        .into_iter()
+        .filter(|command| fields_match(&needle, &[command.label()]))
+        .collect()
 }
 
 /// What the search box holds between frames.
@@ -160,19 +238,7 @@ impl GlobalSearch {
 
 /// Lowercase without accents, for comparing text.
 fn fold(value: &str) -> String {
-    value
-        .to_lowercase()
-        .chars()
-        .map(|c| match c {
-            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'ç' => 'c',
-            c => c,
-        })
-        .collect()
+    crate::labels::fold(value)
 }
 
 /// Every word of the (already folded) `needle` appears in some of the fields.
@@ -313,6 +379,11 @@ impl GlobalSearch {
         self.searched = self.query.clone();
         self.highlight = None;
         let text = self.query.trim().to_owned();
+        if text.is_empty() || text.starts_with('>') {
+            self.results = Results { commands: commands(&text), ..Results::default() };
+            self.highlight = (!self.results.commands.is_empty()).then_some(0);
+            return;
+        }
         if text.chars().count() < MIN_CHARS {
             self.results = Results::default();
             return;
@@ -434,6 +505,10 @@ impl GlobalSearch {
         let tasks = r.tasks.rows.len();
         let attendances = r.attendances.rows.len();
         let resources = r.resources.rows.len();
+        let records = documents + tasks + attendances + resources + r.resource_uses.rows.len();
+        if index >= records {
+            return r.commands.get(index - records).copied().map(Pick::Command);
+        }
         if index < documents {
             Some(Pick::Document(r.documents.rows[index].id))
         } else if index < documents + tasks {
@@ -521,8 +596,12 @@ impl PonteApp {
             return;
         }
         if !self.global_search.was_open {
-            self.global_search.was_open = true;
+            // The tour opens the box already searched and without focus; a
+            // normal Ctrl+K focuses the field. Decide before forcing the
+            // first (immediate) search that lists the actions.
             self.global_search.focus_field = !self.global_search.immediate;
+            self.global_search.immediate = true;
+            self.global_search.was_open = true;
             if self.global_search.highlight.is_none() && self.global_search.results.total() > 0 {
                 self.global_search.highlight = Some(0);
             }
@@ -621,7 +700,7 @@ impl PonteApp {
                                 widgets::search(
                                     ui,
                                     &mut search.query,
-                                    "Buscar no acervo, nas tarefas, nos atendimentos e nos recursos",
+                                    "Buscar no acervo ou > para ações",
                                     inner,
                                 )
                             })
@@ -643,7 +722,7 @@ impl PonteApp {
                         }
                         ui.add_space(S2);
                         let trimmed = search.query.trim();
-                        if trimmed.chars().count() < MIN_CHARS {
+                        if trimmed.chars().count() < MIN_CHARS && !trimmed.is_empty() && !trimmed.starts_with('>') {
                             widgets::muted(
                                 ui,
                                 "Busque por número, assunto, texto, tarefa, atendimento ou recurso.",
@@ -661,15 +740,59 @@ impl PonteApp {
             self.global_search.open = false;
             self.global_search.was_open = false;
             self.global_search.highlight = None;
-            self.open_pick(pick);
+            self.open_pick(pick, ctx);
         } else if close {
             self.global_search.open = false;
         }
     }
 
+    /// Goes to `leave` through `navigate` and says whether the move really
+    /// happened: it did not when a question about unsaved work is pending or
+    /// when the area refused to be left. Whatever must follow the move only
+    /// happens when this is true.
+    fn go_checked(&mut self, leave: Leave, area: super::Area) -> bool {
+        self.navigate(leave);
+        self.leave.is_none() && self.area == area
+    }
+
+    /// Runs an action; every one of them moves through the same guards as
+    /// the rail and the shortcuts.
+    fn run_command(&mut self, command: Command, ctx: &egui::Context) {
+        use super::Area;
+        match command {
+            Command::NewTask => self.navigate(Leave::NewTask(None)),
+            Command::Today => self.navigate(Leave::Today),
+            Command::Week => {
+                // The week view is only switched on once Hoje is on screen.
+                if self.go_checked(Leave::Today, Area::Today) {
+                    ctx.data_mut(|d| d.insert_temp(egui::Id::new("today-week-view"), true));
+                }
+            }
+            Command::NewManual => {
+                if self.go_checked(Leave::Documents, Area::Documents) {
+                    self.manual_form.open_new();
+                }
+            }
+            Command::NewAttendance => {
+                if self.go_checked(Leave::Saiop, Area::Saiop) {
+                    // Refuses (with a notice) while another one is unsaved.
+                    self.saiop.key_new(&self.store);
+                }
+            }
+            Command::Documents => self.navigate(Leave::Documents),
+            Command::Tasks => self.go_tasks(),
+            Command::Attendances => self.navigate(Leave::Saiop),
+            Command::Resources => self.navigate(Leave::Resources),
+            Command::Templates => self.navigate(Leave::Templates),
+            Command::Settings => self.navigate(Leave::Settings),
+            Command::Help => self.open_guide(),
+        }
+    }
+
     /// Goes to the chosen row through the app's own navigation.
-    fn open_pick(&mut self, pick: Pick) {
+    fn open_pick(&mut self, pick: Pick, ctx: &egui::Context) {
         match pick {
+            Pick::Command(command) => self.run_command(command, ctx),
             Pick::Document(id) => self.navigate(Leave::Select(id)),
             Pick::Task(id) => {
                 let current = self
@@ -1034,6 +1157,40 @@ fn draw_results(
                 }
                 more_line(ui, results.resource_uses.more);
             }
+            if !results.commands.is_empty() {
+                heading(ui, "Ações");
+                for command in &results.commands {
+                    let on = search.highlight == Some(index);
+                    if result_row(
+                        ui,
+                        ("gs-command", index),
+                        on,
+                        scroll_to_highlight,
+                        false,
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = S2;
+                                ui.label(
+                                    RichText::new("›")
+                                        .font(theme::font_strong(theme::SIZE_BODY))
+                                        .color(p.primary),
+                                );
+                                ui.add(egui::Label::new(command.label()).selectable(false));
+                                let shortcut = command.shortcut();
+                                if !shortcut.is_empty() {
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Min),
+                                        |ui| widgets::small_muted(ui, shortcut),
+                                    );
+                                }
+                            });
+                        },
+                    ) {
+                        clicked = Some(Pick::Command(*command));
+                    }
+                    index += 1;
+                }
+            }
         });
     clicked
 }
@@ -1041,6 +1198,70 @@ fn draw_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commands_filter_ignoring_accents_and_the_prefix() {
+        assert_eq!(commands("").len(), Command::ALL.len());
+        assert_eq!(commands(">").len(), Command::ALL.len());
+        assert_eq!(commands("  >  ").len(), Command::ALL.len());
+        assert_eq!(commands("> sincronizacao"), [Command::Settings]);
+        assert_eq!(commands("SEMANA"), [Command::Week]);
+        assert_eq!(commands("> guia"), [Command::Help]);
+        assert_eq!(commands("> registro manual"), [Command::NewManual]);
+        assert!(commands("> tarefa").contains(&Command::NewTask));
+        assert!(commands("> tarefa").contains(&Command::Tasks));
+        assert!(commands("> xyz").is_empty());
+    }
+
+    #[test]
+    fn command_labels_are_unique() {
+        let mut labels: Vec<&str> = Command::ALL.iter().map(|c| c.label()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), Command::ALL.len());
+    }
+
+    #[test]
+    fn commands_come_after_the_records_in_the_keyboard_order() {
+        let mut search = GlobalSearch::default();
+        search.results.documents = Group::limited(vec![DocumentRow {
+            id: 10,
+            number: "N".into(),
+            title: "T".into(),
+            kind: None,
+            categories: Vec::new(),
+        }]);
+        search.results.resource_uses = Group::limited(vec![ResourceUseRow {
+            uid: "u1".into(),
+            text: String::new(),
+            tone: Tone::Info,
+            label: String::new(),
+        }]);
+        search.results.commands = vec![Command::Week, Command::Help];
+        assert_eq!(search.results.total(), 4);
+        assert!(matches!(search.pick_at(0), Some(Pick::Document(10))));
+        assert!(matches!(search.pick_at(1), Some(Pick::ResourceUse(ref u)) if u == "u1"));
+        assert!(matches!(search.pick_at(2), Some(Pick::Command(Command::Week))));
+        assert!(matches!(search.pick_at(3), Some(Pick::Command(Command::Help))));
+        assert!(search.pick_at(4).is_none());
+        // Arrows wrap over records and actions together.
+        assert_eq!(move_highlight(Some(3), search.results.total(), 1), Some(0));
+        assert_eq!(move_highlight(Some(0), search.results.total(), -1), Some(3));
+    }
+
+    #[test]
+    fn with_only_commands_the_first_index_is_a_command() {
+        let search = GlobalSearch {
+            results: Results {
+                commands: commands("> semana"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(search.results.total(), 1);
+        assert!(matches!(search.pick_at(0), Some(Pick::Command(Command::Week))));
+        assert!(search.pick_at(1).is_none());
+    }
 
     fn task(id: i64, title: &str, notes: &str, assignee: &str, done: bool) -> Task {
         let mut task = Task::new(1);

@@ -21,13 +21,15 @@ use crate::{
     widgets::{self, form_section, labeled, pick, pick_row, Tone},
 };
 use chrono::{Duration, NaiveDate};
+pub use crate::resources::{
+    day_occupation, group_uses, period_text, query_matches, taken_now, Groups,
+};
 use eframe::egui::{self, RichText};
 use std::collections::BTreeMap;
 
 /// Width of the side panel (the ficha).
 const FICHA_WIDTH: f32 = 440.0;
 /// How many days ahead "Próximos dias" looks.
-const HORIZON_DAYS: i64 = 14;
 
 /// What the person asked the app to open from a link of a use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,29 +134,6 @@ pub fn linked_uses(store: &Store, link: &UseLink) -> Vec<LinkedUse> {
     linked_uses_from(&resources, &uses, link, &now_moment())
 }
 
-/// "10/11 14:00–16:00", or both dates when the use crosses days.
-pub fn period_text(start: &str, end: &str) -> String {
-    let short = |moment: &str| match parse_moment(moment) {
-        Ok(m) => m.format("%d/%m").to_string(),
-        Err(_) => moment.to_owned(),
-    };
-    if moment_date(start) == moment_date(end) {
-        format!(
-            "{} {}–{}",
-            short(start),
-            moment_time(start),
-            moment_time(end)
-        )
-    } else {
-        format!(
-            "{} {} – {} {}",
-            short(start),
-            moment_time(start),
-            short(end),
-            moment_time(end)
-        )
-    }
-}
 
 /// The pill of a use: the situation, "Atrasado" when the return is late.
 fn status_pill(item: &ResourceUse, now: &str) -> (&'static str, Tone) {
@@ -470,74 +449,7 @@ pub fn use_draft_from_proposal(
     (draft, check)
 }
 
-/// What of a resource is out at `now`: every use in use (even a late one),
-/// and the reserved ones whose time has come.
-pub fn taken_now(uses: &[ResourceUse], resource_uid: &str, now: &str) -> u32 {
-    uses.iter()
-        .filter(|item| item.resource_uid == resource_uid)
-        .filter(|item| match item.status {
-            UseStatus::InUse => true,
-            UseStatus::Reserved => item.start.as_str() <= now && now < item.end.as_str(),
-            UseStatus::Returned | UseStatus::Cancelled => false,
-        })
-        .map(|item| item.quantity)
-        .sum()
-}
 
-/// What view 1 shows, by group.
-#[derive(Debug, Default)]
-pub struct Groups<'a> {
-    pub overdue: Vec<&'a ResourceUse>,
-    pub in_use: Vec<&'a ResourceUse>,
-    pub today: Vec<&'a ResourceUse>,
-    pub next_days: Vec<&'a ResourceUse>,
-    pub later: Vec<&'a ResourceUse>,
-    pub older: Vec<&'a ResourceUse>,
-}
-
-impl Groups<'_> {
-    pub fn current(&self) -> usize {
-        self.overdue.len()
-            + self.in_use.len()
-            + self.today.len()
-            + self.next_days.len()
-            + self.later.len()
-    }
-}
-
-/// Splits uses into Atrasados / Em uso agora / Hoje / Próximos dias, then
-/// what lies further ahead, then what is over (returned, cancelled, or a
-/// reservation whose day passed without being used).
-pub fn group_uses<'a>(items: &[&'a ResourceUse], today: NaiveDate, now: &str) -> Groups<'a> {
-    let today_iso = today.format("%Y-%m-%d").to_string();
-    let horizon = (today + Duration::days(HORIZON_DAYS))
-        .format("%Y-%m-%d")
-        .to_string();
-    let mut groups = Groups::default();
-    for &item in items {
-        match item.status {
-            UseStatus::Returned | UseStatus::Cancelled => groups.older.push(item),
-            UseStatus::InUse if item.overdue_at(now) => groups.overdue.push(item),
-            UseStatus::InUse => groups.in_use.push(item),
-            UseStatus::Reserved => {
-                let (first, last) = (moment_date(&item.start), moment_date(&item.end));
-                if last < today_iso {
-                    groups.older.push(item);
-                } else if first <= today_iso {
-                    groups.today.push(item);
-                } else if first <= horizon {
-                    groups.next_days.push(item);
-                } else {
-                    groups.later.push(item);
-                }
-            }
-        }
-    }
-    groups.overdue.sort_by(|a, b| a.end.cmp(&b.end));
-    groups.in_use.sort_by(|a, b| a.end.cmp(&b.end));
-    groups.older.sort_by(|a, b| b.start.cmp(&a.start));
-    groups
-}
 
 /// The filters of view 1.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -603,20 +515,7 @@ pub fn use_matches(item: &ResourceUse, resource: Option<&Resource>, filters: &Fi
     if !filters.to.is_empty() && first.as_str() > filters.to.as_str() {
         return false;
     }
-    let query = fold_text(filters.query.trim());
-    if query.is_empty() {
-        return true;
-    }
-    let haystack = fold_text(&format!(
-        "{} {} {} {} {} {}",
-        resource.map(|r| r.name.as_str()).unwrap_or(""),
-        resource.map(|r| r.location.as_str()).unwrap_or(""),
-        resource.map(|r| r.identification.as_str()).unwrap_or(""),
-        item.who,
-        item.sector,
-        item.purpose
-    ));
-    query.split_whitespace().all(|word| haystack.contains(word))
+    query_matches(item, resource, &filters.query, "")
 }
 
 /// The uses on each day of `[first, last]`, cancelled ones left out; a use
@@ -656,31 +555,6 @@ pub fn uses_by_day<'a>(
     days
 }
 
-/// The other uses holding `resource_uid` on `day` (ISO), by start.
-pub fn day_occupation<'a>(
-    uses: &'a [ResourceUse],
-    resource_uid: &str,
-    except_uid: &str,
-    day: &str,
-    now: &str,
-) -> Vec<&'a ResourceUse> {
-    let from = format!("{day}T00:00");
-    let to = NaiveDate::parse_from_str(day, "%Y-%m-%d")
-        .map(|d| format!("{}T00:00", (d + Duration::days(1)).format("%Y-%m-%d")))
-        .unwrap_or_default();
-    let mut out: Vec<&ResourceUse> = uses
-        .iter()
-        .filter(|item| {
-            item.resource_uid == resource_uid && (except_uid.is_empty() || item.uid != except_uid)
-        })
-        .filter(|item| {
-            item.occupies_at(now)
-                .is_some_and(|(start, end)| start < to && from < end)
-        })
-        .collect();
-    out.sort_by(|a, b| (&a.start, &a.uid).cmp(&(&b.start, &b.uid)));
-    out
-}
 
 /// Joins a typed date (ISO or raw) and time into a moment; what cannot be
 /// read stays visible so that saving refuses it.

@@ -33,7 +33,9 @@ internal fun TodayScreen(
     onToggle: (TaskItem) -> Unit,
     onOpen: (TaskItem) -> Unit,
     onOpenAttendance: (AttendanceItem) -> Unit = {},
-    onOpenResources: () -> Unit = {}
+    onOpenResources: () -> Unit = {},
+    /** The week (see [WeekPlan.days]): planned tasks and resource uses by day, deadlines apart. Empty: no section. */
+    week: List<WeekDay> = emptyList()
 ) {
     val c = Ponte.colors
     if (state.loading && state.isEmpty) {
@@ -56,9 +58,7 @@ internal fun TodayScreen(
             }
         } else {
             item(key = "summary") {
-                val line = todaySummary(
-                    state.late.size, state.today.size, state.attendances.size, state.reservationsToday, state.overdueReturns
-                )
+                val line = state.summary
                 Text(
                     line, Modifier.padding(start = 4.dp, bottom = 4.dp),
                     fontSize = 17.sp, fontWeight = FontWeight.Medium,
@@ -69,6 +69,7 @@ internal fun TodayScreen(
         section("late", "Atrasadas", state.late, onToggle, onOpen, late = true)
         section("today", "Para hoje", state.today, onToggle, onOpen)
         section("upcoming", "Próximos dias", state.upcoming, onToggle, onOpen)
+        weekSection(week)
         if (state.attendances.isNotEmpty()) {
             item(key = "h-att") {
                 SectionLabel("Atendimentos com prazo · ${state.attendances.size}", Modifier.padding(top = 8.dp))
@@ -100,6 +101,39 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
         SectionLabel("$title · ${list.size}", Modifier.padding(top = 8.dp), color = if (late) Ponte.colors.error else Ponte.colors.muted)
     }
     items(list, key = { "t-${it.id}" }) { t -> TaskCard(t, onToggle, onOpen) }
+}
+
+private val WEEKDAYS = listOf("seg", "ter", "qua", "qui", "sex", "sáb", "dom")
+
+/** "seg 17/11". */
+internal fun weekDayTitle(date: java.time.LocalDate) =
+    "${WEEKDAYS[date.dayOfWeek.value - 1]} %02d/%02d".format(date.dayOfMonth, date.monthValue)
+
+/** The week of Hoje: one card per day that has something (hour blocks first, deadlines after, apart). */
+private fun androidx.compose.foundation.lazy.LazyListScope.weekSection(week: List<WeekDay>) {
+    val days = week.filter { !it.isEmpty }
+    if (days.isEmpty()) return
+    item(key = "h-week") { SectionLabel("Semana", Modifier.padding(top = 8.dp)) }
+    items(days, key = { "w-${it.date}" }) { day ->
+        val c = Ponte.colors
+        PonteCard {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(weekDayTitle(day.date), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
+                day.blocks.forEach { b ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(WeekPlan.label(b), Modifier.width(112.dp), fontSize = 14.sp, color = c.muted, maxLines = 1)
+                        Text(b.entry.title, Modifier.weight(1f), fontSize = 15.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                day.deadlines.forEach { d ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Prazo", Modifier.width(112.dp), fontSize = 14.sp, color = c.error, maxLines = 1)
+                        Text(d.title, Modifier.weight(1f), fontSize = 15.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /** A line of Hoje about resources ("Reservas de hoje", 2): a count only, a tap opens the Recursos list. */

@@ -20,6 +20,9 @@ const RECENT_LIMIT: usize = 6;
 /// What the area shows, read from the library on each refresh (not on each frame).
 #[derive(Default)]
 pub(super) struct TodayData {
+    pub planning_tasks: Vec<Task>,
+    pub planning_uses: Vec<crate::resources::ResourceUse>,
+    pub planning_resources: Vec<crate::resources::Resource>,
     pub late: Vec<Task>,
     pub today: Vec<Task>,
     pub upcoming: Vec<Task>,
@@ -65,6 +68,7 @@ impl TodayData {
         let mut data = Self::default();
         match store.list_tasks() {
             Ok(tasks) => {
+                data.planning_tasks = tasks.clone();
                 data.dated_tasks = tasks
                     .iter()
                     .filter(|t| is_open_dated_task(t))
@@ -105,6 +109,8 @@ impl TodayData {
         // Resources: the lists are memoized by the library, read once here.
         match (store.list_resources(), store.list_resource_uses()) {
             (Ok(resources), Ok(uses)) => {
+                data.planning_resources = resources.clone();
+                data.planning_uses = uses.clone();
                 let now = crate::resources::now_moment();
                 let groups = resource_groups(&resources, &uses, today, &now);
                 data.has_resources = !resources.is_empty();
@@ -378,7 +384,7 @@ fn day_month(iso: &str) -> String {
 }
 
 /// What the person asked for in a row.
-enum Asked {
+pub(super) enum Asked {
     Conclude(Task),
     OpenTask(Task),
     OpenDocument(i64),
@@ -394,6 +400,21 @@ impl PonteApp {
         let p = theme::c();
         let now = chrono::Local::now().date_naive();
         let mut asked: Option<Asked> = None;
+        let alarms = self.reminders.individual_tasks();
+        if !alarms.is_empty() {
+            widgets::card(ui, |ui| {
+                widgets::section(ui, "Avisos agendados");
+                for id in alarms {
+                    if let Some(task) = self.today.planning_tasks.iter().find(|t| t.uid == id && !t.is_done()) {
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.add(widgets::quiet(&task.title)).clicked() { asked = Some(Asked::OpenTask(task.clone())); }
+                            if ui.button("Adiar 10 min").clicked() { self.reminders.snooze_individual(&id); }
+                            if ui.button("Dispensar aviso").clicked() { self.reminders.dismiss_individual(&id); }
+                        });
+                    }
+                }
+            });
+        }
         ui.horizontal(|ui| {
             widgets::heading(ui, "Hoje");
             widgets::muted(ui, long_date(now));
@@ -402,14 +423,22 @@ impl PonteApp {
         let mut calendar = ui
             .data(|d| d.get_temp::<bool>(view_id))
             .unwrap_or(DEFAULT_CALENDAR);
+        let week_id = egui::Id::new("today-week-view");
+        let mut weekly = ui.data(|d| d.get_temp::<bool>(week_id)).unwrap_or(false);
         ui.horizontal(|ui| {
-            if widgets::chip(ui, !calendar, "Lista").clicked() {
+            if widgets::chip(ui, !calendar && !weekly, "Lista").clicked() {
                 calendar = false;
+                weekly = false;
             }
-            if widgets::chip(ui, calendar, "Calendário").clicked() {
+            if widgets::chip(ui, calendar && !weekly, "Calendário").clicked() {
                 calendar = true;
+                weekly = false;
+            }
+            if widgets::chip(ui, weekly, "Semana").clicked() {
+                weekly = true;
             }
         });
+        ui.data_mut(|d| d.insert_temp(week_id, weekly));
         ui.data_mut(|d| d.insert_temp(view_id, calendar));
         ui.add_space(S1);
         let late = self.today.late.len();
@@ -475,6 +504,11 @@ impl PonteApp {
             })
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                if weekly {
+                    self.repetition_card(ui);
+                    super::week::show(ui, &self.today, now, &mut asked);
+                    return;
+                }
                 if calendar {
                     ui.set_max_width(ui.available_width() - 14.0);
                     calendar_view(ui, &self.today, now, grid_height, &mut asked);

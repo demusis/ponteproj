@@ -1699,6 +1699,7 @@ impl Store {
             .map(|v| v.version);
         let task = att.document_id.map(|doc_id| Task {
             id: 0,
+            uid: uuid::Uuid::new_v4().to_string(),
             document_id: Some(doc_id),
             title: title.trim().to_owned(),
             action: "examinar".into(),
@@ -1709,6 +1710,11 @@ impl Store {
                 "normal".into()
             },
             due_date: due_date.trim().to_owned(),
+            scheduled_start: String::new(),
+            scheduled_end: String::new(),
+            estimate_minutes: 0,
+            reminder_offsets_minutes: Vec::new(),
+            parent_task_id: None,
             notes: format!(
                 "Referência do gabinete: {}",
                 if att.reference_raw.is_empty() {
@@ -1731,6 +1737,7 @@ impl Store {
             task.validate()?;
         }
         if let Some(cfg) = self.client_config()? {
+            self.ensure_host_stores_schedule(&cfg)?;
             return match self.remote_mutate(
                 &cfg,
                 crate::intranet::IntranetMutation::CreateTaskForSaiop {

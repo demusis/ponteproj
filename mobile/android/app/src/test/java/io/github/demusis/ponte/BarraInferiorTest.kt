@@ -19,17 +19,17 @@ class BarraInferiorTest {
 
     @Test fun telaEstreita() {
         paparazzi.unsafeUpdateConfig(deviceConfig = small(1f))
-        paparazzi.shotInShell("estreita", 0) { TodayScreen(TodayState(false, null, Samples.todayLate, Samples.todayDue, emptyList(), emptyList()), {}, {}, {}) }
+        paparazzi.shotInShell("estreita", 0) { TodayScreen(TodayState(false, null, Samples.todayLate, Samples.todayDue, emptyList(), emptyList(), summary = "3 tarefas atrasadas · 1 para hoje"), {}, {}, {}) }
     }
 
     @Test fun letraGrande() {
         paparazzi.unsafeUpdateConfig(deviceConfig = small(1.3f))
-        paparazzi.shotInShell("letra_grande", 2) { TodayScreen(TodayState(false, null, Samples.todayLate, Samples.todayDue, emptyList(), emptyList()), {}, {}, {}) }
+        paparazzi.shotInShell("letra_grande", 2) { TodayScreen(TodayState(false, null, Samples.todayLate, Samples.todayDue, emptyList(), emptyList(), summary = "3 tarefas atrasadas · 1 para hoje"), {}, {}, {}) }
     }
 
     @Test fun letraMuitoGrandeEscuro() {
         paparazzi.unsafeUpdateConfig(deviceConfig = small(1.6f))
-        paparazzi.shotInShell("letra_muito_grande_escuro", 2, dark = true) { TodayScreen(TodayState(false, null, Samples.todayLate, Samples.todayDue, emptyList(), emptyList()), {}, {}, {}) }
+        paparazzi.shotInShell("letra_muito_grande_escuro", 2, dark = true) { TodayScreen(TodayState(false, null, Samples.todayLate, Samples.todayDue, emptyList(), emptyList(), summary = "3 tarefas atrasadas · 1 para hoje"), {}, {}, {}) }
     }
 
     @Test fun oTamanhoDosNomesCabeNaBarra() {

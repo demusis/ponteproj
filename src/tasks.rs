@@ -15,9 +15,38 @@ pub const ACTIONS: &[&str] = &[
     "acompanhar",
 ];
 
+/// The deadline groups of the task lists, in display order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bucket {
+    Late,
+    Today,
+    Upcoming,
+    NoDeadline,
+    Done,
+}
+
+impl Bucket {
+    /// The key the phone reads.
+    pub fn key(self) -> &'static str {
+        match self {
+            Bucket::Late => "atrasadas",
+            Bucket::Today => "hoje",
+            Bucket::Upcoming => "proximas",
+            Bucket::NoDeadline => "sem_prazo",
+            Bucket::Done => "concluidas",
+        }
+    }
+    /// Position in the display order.
+    pub fn slot(self) -> usize {
+        self as usize
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub id: i64,
+    #[serde(default)]
+    pub uid: String,
     /// The document the task belongs to; `None` for a task without document
     /// ("sem documento"). A plain integer stored by older versions reads as
     /// `Some(n)`.
@@ -28,6 +57,16 @@ pub struct Task {
     pub status: String,
     pub priority: String,
     pub due_date: String,
+    #[serde(default)]
+    pub scheduled_start: String,
+    #[serde(default)]
+    pub scheduled_end: String,
+    #[serde(default)]
+    pub estimate_minutes: u32,
+    #[serde(default)]
+    pub reminder_offsets_minutes: Vec<u32>,
+    #[serde(default)]
+    pub parent_task_id: Option<i64>,
     pub notes: String,
     pub completed_at: Option<String>,
     #[serde(default)]
@@ -65,6 +104,7 @@ impl Task {
     pub fn blank(document_id: Option<i64>) -> Self {
         Self {
             id: 0,
+            uid: uuid::Uuid::new_v4().to_string(),
             document_id,
             title: if document_id.is_some() {
                 "Triar documento".into()
@@ -79,6 +119,11 @@ impl Task {
             status: "pendente".into(),
             priority: "normal".into(),
             due_date: String::new(),
+            scheduled_start: String::new(),
+            scheduled_end: String::new(),
+            estimate_minutes: 0,
+            reminder_offsets_minutes: Vec::new(),
+            parent_task_id: None,
             notes: String::new(),
             completed_at: None,
             due_source: String::new(),
@@ -89,6 +134,24 @@ impl Task {
             assignee: String::new(),
             proposal_id: String::new(),
             categories: Vec::new(),
+        }
+    }
+    /// Concluded: the status says so, or a conclusion date is set.
+    pub fn is_done(&self) -> bool {
+        self.status == "concluida" || self.completed_at.is_some()
+    }
+    /// The deadline group of the task as of `today` (`AAAA-MM-DD`).
+    pub fn bucket(&self, today: &str) -> Bucket {
+        if self.is_done() {
+            Bucket::Done
+        } else if self.due_date.is_empty() {
+            Bucket::NoDeadline
+        } else if self.due_date.as_str() < today {
+            Bucket::Late
+        } else if self.due_date == today {
+            Bucket::Today
+        } else {
+            Bucket::Upcoming
         }
     }
     pub fn overdue(&self) -> bool {
@@ -129,6 +192,18 @@ impl Task {
                 && self.checklist.iter().all(|(_, text)| text.len() <= 1000),
             "A tarefa tem texto ou itens demais."
         );
+        ensure!(self.reminder_offsets_minutes.len() <= 10 && self.reminder_offsets_minutes.iter().all(|v| *v <= 525_600) && self.reminder_offsets_minutes.iter().collect::<std::collections::BTreeSet<_>>().len() == self.reminder_offsets_minutes.len(), "Os avisos devem ser únicos, no máximo dez, e de até 525600 minutos.");
+        ensure!(self.estimate_minutes <= 525_600, "A estimativa não pode ultrapassar 525600 minutos.");
+        ensure!(self.scheduled_start.is_empty() == self.scheduled_end.is_empty(), "Informe início e fim do agendamento, ou deixe ambos vazios.");
+        if !self.scheduled_start.is_empty() {
+            let parse = |text: &str| -> Result<chrono::NaiveDateTime> {
+                let date = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M")
+                    .map_err(|_| anyhow::anyhow!("Agendamento inválido. Use AAAA-MM-DDTHH:MM."))?;
+                ensure!(date.format("%Y-%m-%dT%H:%M").to_string() == text, "Agendamento inválido. Use AAAA-MM-DDTHH:MM.");
+                Ok(date)
+            };
+            ensure!(parse(&self.scheduled_end)? > parse(&self.scheduled_start)?, "O fim do agendamento deve ser posterior ao início.");
+        }
         if !self.reminder_date.is_empty() {
             let date = chrono::NaiveDate::parse_from_str(&self.reminder_date, "%Y-%m-%d").map_err(
                 |_| anyhow::anyhow!("Data do lembrete inválida. Use o formato dd/mm/aaaa."),
@@ -148,6 +223,23 @@ impl Task {
         }
         Ok(())
     }
+}
+pub(crate) fn backfill_task_uids(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let rows = {
+        let mut statement = tx.prepare("SELECT id,payload FROM tasks")?;
+        let values = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        values.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (id, bytes) in rows {
+        let mut task: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+        if task.uid.is_empty() {
+            task.uid = uuid::Uuid::new_v4().to_string();
+            tx.execute("UPDATE tasks SET payload=?1 WHERE id=?2", params![encode(&task)?, id])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 fn encode(task: &Task) -> Result<Vec<u8>> {
     protection::seal(&serde_json::to_vec(task)?)
@@ -451,6 +543,7 @@ impl Store {
             if !task.categories.is_empty() {
                 self.ensure_host_stores_categories(&cfg)?;
             }
+            self.ensure_host_stores_schedule(&cfg)?;
             match self.remote_mutate(
                 &cfg,
                 crate::intranet::IntranetMutation::SaveTask {
@@ -485,6 +578,80 @@ impl Store {
         }
         Ok(saved.id)
     }
+
+    /// Saves the copies of a repetition (`recurrence::task_occurrences`) as
+    /// one batch: a single write transaction, so either every new occurrence
+    /// is stored or none is. Each copy is an independent task (its own row,
+    /// uid, status, history) saved by the same rules as `save_task`.
+    ///
+    /// The `uid` each copy was born with is the idempotence key: a copy whose
+    /// uid is already stored is **not written again** (it keeps whatever the
+    /// person did with it since: concluded, edited, in the trash), so sending
+    /// the same preview twice creates nothing new. Returns the id of every
+    /// copy, in order, whether it was just created or was already there.
+    ///
+    /// Overdue or past occurrences are saved like any other: nothing is
+    /// filtered by date. On a client computer the batch is refused (the
+    /// host has no batch mutation yet, and a loop of single requests could
+    /// stop halfway); make the repetition on the main computer.
+    pub fn save_repeated_tasks(&mut self, tasks: &[Task]) -> Result<Vec<i64>> {
+        ensure!(!tasks.is_empty(), "Não há ocorrências para criar.");
+        ensure!(
+            tasks.len() <= usize::from(crate::recurrence::MAX_COUNT),
+            "São ocorrências demais de uma vez (no máximo {}).",
+            crate::recurrence::MAX_COUNT
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for (index, task) in tasks.iter().enumerate() {
+            let label = || format!("Ocorrência {} de {}", index + 1, tasks.len());
+            ensure!(task.id == 0, "{}: a cópia já tem número; não é uma ocorrência nova.", label());
+            ensure!(
+                uuid::Uuid::parse_str(&task.uid).is_ok() && seen.insert(task.uid.clone()),
+                "{}: a identidade da cópia está vazia, inválida ou repetida.",
+                label()
+            );
+            task.validate().map_err(|e| anyhow::anyhow!("{}: {e}", label()))?;
+        }
+        if self.client_config()?.is_some() {
+            anyhow::bail!(
+                "Neste computador (conectado ao principal) não é possível criar várias ocorrências de uma vez. Faça a repetição no computador principal."
+            );
+        }
+        let actor = self.active_actor();
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut stored = std::collections::BTreeMap::<String, i64>::new();
+        {
+            let mut statement = tx.prepare("SELECT id,payload FROM tasks")?;
+            let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+            for row in rows {
+                let (id, bytes) = row?;
+                let existing: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+                if !existing.uid.is_empty() {
+                    stored.insert(existing.uid, id);
+                }
+            }
+        }
+        let mut ids = Vec::with_capacity(tasks.len());
+        for (index, task) in tasks.iter().enumerate() {
+            if let Some(&id) = stored.get(&task.uid) {
+                ids.push(id);
+                continue;
+            }
+            let saved = write_task(&tx, &actor, task, None).map_err(|e| {
+                anyhow::anyhow!(
+                    "Ocorrência {} de {} ({}): {e}",
+                    index + 1,
+                    tasks.len(),
+                    crate::labels::date(if task.due_date.is_empty() { task.scheduled_start.get(..10).unwrap_or_default() } else { &task.due_date })
+                )
+            })?;
+            ids.push(saved.id);
+        }
+        tx.commit()?;
+        Ok(ids)
+    }
 }
 
 /// Writes a task inside the caller's transaction (dependency rules,
@@ -500,6 +667,21 @@ pub(crate) fn write_task(
     if let Some(document_id) = task.document_id {
         crate::trash::require_active_document(tx, document_id)?;
     }
+    if task.id == 0 && !task.uid.is_empty() {
+        let mut statement = tx.prepare("SELECT id,payload FROM tasks")?;
+        let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        for row in rows {
+            let (id, bytes) = row?;
+            let mut existing: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+            if existing.uid == task.uid {
+                ensure!(crate::trash::require_active_task(tx, id).is_ok(), "A identidade da tarefa pertence a um item na lixeira.");
+                existing.id = 0;
+                ensure!(existing == *task, "Conflito: esta identidade já pertence a outra versão da tarefa.");
+                existing.id = id;
+                return Ok(existing);
+            }
+        }
+    }
     if task.id > 0 {
         ensure!(
             crate::trash::require_active_task(tx, task.id)? == task.document_id,
@@ -507,6 +689,19 @@ pub(crate) fn write_task(
         );
     }
     let mut saved = task.clone();
+    if task.id > 0 {
+        let bytes: Vec<u8> = tx.query_row("SELECT payload FROM tasks WHERE id=?1", [task.id], |r| r.get(0))?;
+        let stored: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+        // An existing task keeps the uid it has here. Each copy of the
+        // library gave its old tasks a uid of its own when it first opened
+        // in this version, so an edit made on another copy may carry a
+        // different one: that is the same task (same id), not a conflict.
+        if !stored.uid.is_empty() {
+            saved.uid = stored.uid;
+        }
+    }
+    if saved.uid.is_empty() { saved.uid = uuid::Uuid::new_v4().to_string(); }
+    ensure!(uuid::Uuid::parse_str(&saved.uid).is_ok(), "Identidade da tarefa inválida.");
     saved.categories = crate::categories::retain_known(tx, &task.categories)?;
     saved.completed_at = if task.status == "concluida" {
         task.completed_at
@@ -577,6 +772,14 @@ pub(crate) fn write_task(
                     pending.extend(value.dependencies.iter().copied());
                 }
             }
+        }
+    }
+    if let Some(parent) = saved.parent_task_id {
+        let mut current = Some(parent);
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(id) = current {
+            ensure!(id != saved.id && visited.insert(id), "A hierarquia de tarefas formaria um ciclo.");
+            current = graph.get(&id).ok_or_else(|| anyhow::anyhow!("A tarefa pai não existe ou está na lixeira."))?.parent_task_id;
         }
     }
     crate::intranet::record_mutation(
@@ -1317,6 +1520,7 @@ mod link_tests {
         extra.title = "Segunda tarefa".into();
         let kept = store.save_task(&extra).unwrap();
         extra.title = "Terceira tarefa".into();
+        extra.uid = uuid::Uuid::new_v4().to_string();
         let gone = store.save_task(&extra).unwrap();
         store
             .conn
@@ -1549,4 +1753,163 @@ mod link_tests {
         assert_eq!(store.purge_trash_item(task).unwrap(), None);
         assert!(store.list_tasks().unwrap().iter().all(|t| t.id != id));
     }
+}
+
+#[cfg(test)]
+mod planning_tests {
+    use super::*;
+
+    #[test]
+    fn old_json_and_planning_validation() {
+        let mut original = Task::standalone();
+        original.title = "Exame".into();
+        let mut json = serde_json::to_value(&original).unwrap();
+        for key in ["uid", "scheduled_start", "scheduled_end", "estimate_minutes", "parent_task_id", "reminder_offsets_minutes"] {
+            json.as_object_mut().unwrap().remove(key);
+        }
+        let mut task: Task = serde_json::from_value(json).unwrap();
+        assert!(task.uid.is_empty());
+        original.uid.clear();
+        assert_eq!(task, original);
+        task.scheduled_start = "2026-11-17T10:00".into();
+        assert!(task.validate().is_err());
+        task.scheduled_end = "2026-11-17T10:00".into();
+        assert!(task.validate().is_err());
+        task.scheduled_end = "2026-11-17T11:00".into();
+        assert!(task.validate().is_ok());
+        task.reminder_offsets_minutes = vec![15, 15];
+        assert!(task.validate().is_err());
+        task.reminder_offsets_minutes = vec![525_601];
+        assert!(task.validate().is_err());
+        task.reminder_offsets_minutes.clear();
+        task.estimate_minutes = 525_601;
+        assert!(task.validate().is_err());
+    }
+
+    #[test]
+    fn scheduling_preserves_deadline_and_hierarchy_rejects_cycles_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("planning.sqlite3")).unwrap();
+        let mut a = Task::standalone(); a.title = "Pai".into(); a.due_date = "2026-12-20".into();
+        a.id = store.save_task(&a).unwrap();
+        let mut b = Task::standalone(); b.title = "Filha".into(); b.parent_task_id = Some(a.id);
+        b.id = store.save_task(&b).unwrap();
+        a.scheduled_start = "2026-11-17T10:00".into(); a.scheduled_end = "2026-11-17T11:00".into();
+        store.save_task(&a).unwrap();
+        a.parent_task_id = Some(b.id);
+        assert!(store.save_task(&a).is_err());
+        let saved = store.list_tasks().unwrap().into_iter().find(|t| t.id == a.id).unwrap();
+        assert_eq!(saved.due_date, "2026-12-20"); assert_eq!(saved.parent_task_id, None);
+        b.parent_task_id = Some(999999); assert!(store.save_task(&b).is_err());
+    }
+    #[test]
+    fn uid_replay_is_idempotent_and_never_overwrites_a_newer_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("replay.sqlite3")).unwrap();
+        let mut task = Task::standalone(); task.title = "Primeira".into();
+        let id = store.save_task(&task).unwrap();
+        assert_eq!(store.save_task(&task).unwrap(), id);
+        assert_eq!(store.list_tasks().unwrap().len(), 1);
+        let mut edited = store.list_tasks().unwrap().remove(0);
+        edited.title = "Editada".into(); store.save_task(&edited).unwrap();
+        assert!(store.save_task(&task).is_err());
+        assert_eq!(store.list_tasks().unwrap()[0].title, "Editada");
+    }
+
+    fn weekly(count: u16) -> crate::recurrence::Recurrence {
+        crate::recurrence::Recurrence { frequency: crate::recurrence::Frequency::Weekly, interval: 1, until: String::new(), count }
+    }
+
+    fn series_origin(store: &mut Store, due: &str) -> Task {
+        let mut task = Task::standalone();
+        task.title = "Relatório semanal".into();
+        task.due_date = due.into();
+        task.id = store.save_task(&task).unwrap();
+        task
+    }
+
+    #[test]
+    fn repeated_tasks_are_independent_idempotent_and_keep_past_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("series.sqlite3")).unwrap();
+        // The origin is already overdue: nothing may be hidden or dropped.
+        let origin = series_origin(&mut store, "2020-01-06");
+        let copies = crate::recurrence::task_occurrences(&origin, &weekly(4)).unwrap();
+        assert_eq!(copies.len(), 3);
+        let ids = store.save_repeated_tasks(&copies).unwrap();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(store.list_tasks().unwrap().len(), 4);
+        // Past occurrences are still listed as late.
+        assert!(store.list_tasks().unwrap().iter().all(|t| t.overdue()));
+        // The person works on one copy; a replay of the same batch changes nothing.
+        let mut second = store.list_tasks().unwrap().into_iter().find(|t| t.id == ids[1]).unwrap();
+        second.status = "concluida".into();
+        store.save_task(&second).unwrap();
+        assert_eq!(store.save_repeated_tasks(&copies).unwrap(), ids);
+        let all = store.list_tasks().unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all.iter().find(|t| t.id == ids[1]).unwrap().status, "concluida");
+        assert_eq!(all.iter().filter(|t| t.status == "pendente").count(), 3);
+        // The origin is untouched.
+        assert_eq!(all.iter().find(|t| t.id == origin.id).unwrap().due_date, "2020-01-06");
+    }
+
+    #[test]
+    fn repeated_tasks_are_all_or_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("atomic.sqlite3")).unwrap();
+        let origin = series_origin(&mut store, "2026-12-07");
+        let mut copies = crate::recurrence::task_occurrences(&origin, &weekly(4)).unwrap();
+        copies[2].parent_task_id = Some(999_999); // the last one cannot be stored
+        let error = store.save_repeated_tasks(&copies).unwrap_err().to_string();
+        assert!(error.contains("Ocorrência 3 de 3"), "{error}");
+        assert_eq!(store.list_tasks().unwrap().len(), 1);
+        // An invalid or repeated identity is refused before anything is written.
+        let mut copies = crate::recurrence::task_occurrences(&origin, &weekly(3)).unwrap();
+        copies[1].uid = copies[0].uid.clone();
+        assert!(store.save_repeated_tasks(&copies).is_err());
+        copies[1].uid.clear();
+        assert!(store.save_repeated_tasks(&copies).is_err());
+        assert!(store.save_repeated_tasks(&[]).is_err());
+        assert_eq!(store.list_tasks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn old_task_json_without_new_fields_still_repeats() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("old.sqlite3")).unwrap();
+        let mut json = serde_json::to_value(Task::standalone()).unwrap();
+        for key in ["uid", "scheduled_start", "scheduled_end", "estimate_minutes", "parent_task_id", "reminder_offsets_minutes", "categories", "proposal_id"] {
+            json.as_object_mut().unwrap().remove(key);
+        }
+        json["title"] = "Antiga".into();
+        json["due_date"] = "2026-12-01".into();
+        let mut old: Task = serde_json::from_value(json).unwrap();
+        assert!(old.uid.is_empty());
+        old.id = store.save_task(&old).unwrap();
+        let old = store.list_tasks().unwrap().remove(0);
+        assert!(!old.uid.is_empty(), "a uid is given on save");
+        let copies = crate::recurrence::task_occurrences(&old, &weekly(3)).unwrap();
+        assert_eq!(store.save_repeated_tasks(&copies).unwrap().len(), 2);
+        assert_eq!(store.list_tasks().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn old_client_and_snapshot_preserve_planning_and_uid() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("compat.sqlite3")).unwrap();
+        let mut task = Task::standalone(); task.title = "Planejada".into();
+        task.scheduled_start = "2026-11-17T10:00".into(); task.scheduled_end = "2026-11-17T11:00".into();
+        task.reminder_offsets_minutes = vec![15]; task.id = store.save_task(&task).unwrap();
+        let mut old = task.clone(); old.uid.clear(); old.scheduled_start.clear(); old.scheduled_end.clear(); old.reminder_offsets_minutes.clear();
+        let mutation = crate::intranet::IntranetMutation::SaveTask { task: old, expected_version: None };
+        let crate::intranet::IntranetMutation::SaveTask { task: kept, .. } = store.keep_unseen_fields(mutation, 17).unwrap() else { panic!() };
+        assert_eq!(kept.uid, task.uid); assert_eq!(kept.scheduled_start, task.scheduled_start); assert_eq!(kept.reminder_offsets_minutes, vec![15]);
+        let mut snapshot = store.export_snapshot().unwrap(); snapshot.schema_version = 17;
+        snapshot.tasks[0].uid.clear(); snapshot.tasks[0].scheduled_start.clear(); snapshot.tasks[0].scheduled_end.clear(); snapshot.tasks[0].reminder_offsets_minutes.clear();
+        store.apply_snapshot(&snapshot, |_, _| unreachable!(), |_| unreachable!()).unwrap();
+        let restored = store.list_tasks().unwrap().remove(0);
+        assert_eq!(restored.uid, task.uid); assert_eq!(restored.scheduled_start, task.scheduled_start); assert_eq!(restored.reminder_offsets_minutes, vec![15]);
+    }
+
 }

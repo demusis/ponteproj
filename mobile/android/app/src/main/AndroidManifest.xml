@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
-    <!-- The daily deadline notice (off until the person turns it on; no exact alarms). -->
+    <!-- The daily deadline notice (off until the person turns it on) and the notices of each task; neither uses exact alarms. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- The camera permission is NOT declared: the photo is taken by the camera app. -->
@@ -98,6 +98,13 @@
         <!-- Rung by the app's own alarm only. -->
         <receiver
             android:name=".NoticeReceiver"
+            android:exported="false" />
+        <!-- The individual notices of the tasks: the alarm and the "Adiar 10 min" button, both from the app's own PendingIntents. -->
+        <receiver
+            android:name=".PlannedNoticeReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".PlannedNoticeActionReceiver"
             android:exported="false" />
         <!-- Not exported: Android still delivers these system broadcasts to it, and no other app can send them. -->
         <receiver

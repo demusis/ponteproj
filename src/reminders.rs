@@ -271,6 +271,7 @@ impl Fire {
 /// The state machine and the hand-off to the window.
 #[derive(Default)]
 pub struct Reminders {
+    individual: IndividualReminders,
     settings: ReminderSettings,
     /// When the first check of this run happened (the start-up delay).
     first_seen: Option<DateTime<Local>>,
@@ -289,6 +290,7 @@ impl Reminders {
     pub fn load() -> Self {
         let mut reminders = Self::default();
         reminders.settings = ReminderSettings::load();
+        reminders.individual = IndividualReminders::load();
         reminders
     }
 
@@ -391,6 +393,13 @@ impl Reminders {
             return;
         }
         let now = Local::now();
+        if self.individual.update(store, now.naive_local()) {
+            let text = "Há tarefas com aviso agendado. Abra Hoje para conferir ou adiar.";
+            if !self.focused {
+                crate::windows_ui::show_notification("Lembrete do Ponte", text);
+            }
+            self.notice = Some(text.to_owned());
+        }
         if self.wants_counts(now) {
             // On a read error, try again in a minute.
             if let Ok(counts) = Counts::from_store(store, now.date_naive()) {
@@ -441,6 +450,21 @@ impl Reminders {
         std::mem::take(&mut self.open_today)
     }
 
+    pub fn individual_tasks(&self) -> Vec<String> {
+        self.individual.state.active.keys().cloned().collect()
+    }
+
+    pub fn dismiss_individual(&mut self, id: &str) {
+        self.individual.state.active.remove(id);
+        self.individual.save();
+    }
+
+    pub fn snooze_individual(&mut self, id: &str) {
+        self.individual.state.active.remove(id);
+        self.individual.state.snoozed.insert(id.to_owned(), (Local::now().naive_local() + Duration::minutes(10)).to_string());
+        self.individual.save();
+    }
+
     /// The summary to show with the app's own notice, only while the window is
     /// in front (a notice would expire unseen otherwise).
     pub fn take_notice(&mut self) -> Option<String> {
@@ -463,10 +487,135 @@ impl Drop for Reminders {
     }
 }
 
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct IndividualState {
+    delivered: std::collections::BTreeMap<String, String>,
+    active: std::collections::BTreeMap<String, String>,
+    snoozed: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Default)]
+struct IndividualReminders {
+    state: IndividualState,
+    last_check: Option<chrono::NaiveDateTime>,
+}
+
+/// No title or document text in a system notification. The local delivery
+/// ledger is encrypted and separate from synchronized task data.
+impl IndividualReminders {
+    fn path() -> Option<std::path::PathBuf> {
+        crate::paths::data_dir().ok().map(|p| p.join("avisos-individuais.bin"))
+    }
+    fn load() -> Self {
+        let state = Self::path().and_then(|p| std::fs::read(p).ok())
+            .and_then(|bytes| crate::protection::unseal(&bytes).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        Self { state, last_check: None }
+    }
+    fn save(&self) {
+        if let (Some(path), Ok(bytes)) = (Self::path(), serde_json::to_vec(&self.state)) {
+            if let Ok(bytes) = crate::protection::seal(&bytes) { let _ = std::fs::write(path, bytes); }
+        }
+    }
+    fn update(&mut self, store: &Store, now: chrono::NaiveDateTime) -> bool {
+        if self.last_check.is_some_and(|last| now >= last && now - last < Duration::seconds(30)) { return false; }
+        self.last_check = Some(now);
+        let Ok(tasks) = store.list_tasks() else { return false; };
+        let fired = self.decide(&tasks, now);
+        self.save();
+        fired
+    }
+    fn decide(&mut self, tasks: &[crate::tasks::Task], now: chrono::NaiveDateTime) -> bool {
+        let open: std::collections::BTreeSet<_> = tasks.iter().filter(|t| !t.is_done()).map(|t| t.uid.clone()).collect();
+        self.state.active.retain(|id, _| open.contains(id));
+        self.state.snoozed.retain(|id, _| open.contains(id));
+        let oldest = (now - Duration::days(370)).to_string();
+        self.state.delivered.retain(|_, at| *at >= oldest);
+        let mut fired = false;
+        for task in tasks.iter().filter(|t| !t.is_done()) {
+            if let Some(at) = self.state.snoozed.get(&task.uid).cloned() {
+                if at <= now.to_string() {
+                    self.state.snoozed.remove(&task.uid);
+                    self.state.active.insert(task.uid.clone(), now.to_string());
+                    fired = true;
+                }
+            }
+            let Some(anchor) = reminder_anchor(task) else { continue; };
+            for offset in &task.reminder_offsets_minutes {
+                let trigger = anchor - Duration::minutes(i64::from(*offset));
+                let key = format!("{}|{}|{}", task.uid, anchor, offset);
+                if now >= trigger && now <= anchor + Duration::minutes(5) && !self.state.delivered.contains_key(&key) {
+                    self.state.delivered.insert(key, now.to_string());
+                    self.state.active.insert(task.uid.clone(), now.to_string());
+                    fired = true;
+                }
+            }
+        }
+        fired
+    }
+}
+
+fn reminder_anchor(task: &crate::tasks::Task) -> Option<chrono::NaiveDateTime> {
+    if !task.scheduled_start.is_empty() {
+        crate::resources::parse_moment(&task.scheduled_start).ok()
+    } else {
+        NaiveDate::parse_from_str(&task.due_date, "%Y-%m-%d").ok()?.and_hms_opt(9, 0, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::{TimeZone, Timelike};
+
+    #[test]
+    fn individual_reminder_survives_restart_and_local_id_changes() {
+        let mut task = crate::tasks::Task::standalone();
+        task.id = 1;
+        task.scheduled_start = "2026-11-18T10:00".into();
+        task.scheduled_end = "2026-11-18T11:00".into();
+        task.reminder_offsets_minutes = vec![15];
+        let now = crate::resources::parse_moment("2026-11-18T09:45").unwrap();
+        let mut engine = IndividualReminders::default();
+        assert!(!engine.decide(&[task.clone()], now - Duration::minutes(1)));
+        assert!(engine.decide(&[task.clone()], now));
+        let serialized = serde_json::to_vec(&engine.state).unwrap();
+        let mut restored = IndividualReminders { state: serde_json::from_slice(&serialized).unwrap(), last_check: None };
+        task.id = 100;
+        assert!(!restored.decide(&[task.clone()], now + Duration::minutes(1)));
+        task.status = "concluida".into();
+        assert!(!restored.decide(&[task], now + Duration::minutes(2)));
+        assert!(restored.state.active.is_empty());
+    }
+
+    #[test]
+    fn a_moment_missed_by_more_than_five_minutes_is_not_shown_late() {
+        let mut task = crate::tasks::Task::standalone();
+        task.scheduled_start = "2026-11-18T10:00".into();
+        task.reminder_offsets_minutes = vec![15];
+        let anchor = crate::resources::parse_moment("2026-11-18T10:00").unwrap();
+        // The app was closed from 09:30 until after the start: nothing shows.
+        let mut late = IndividualReminders::default();
+        assert!(!late.decide(&[task.clone()], anchor + Duration::minutes(6)));
+        assert!(late.state.active.is_empty() && late.state.delivered.is_empty());
+        // Opened within the window: it still shows, once.
+        let mut inside = IndividualReminders::default();
+        assert!(inside.decide(&[task.clone()], anchor + Duration::minutes(5)));
+        assert!(!inside.decide(&[task], anchor + Duration::minutes(5)));
+    }
+
+    #[test]
+    fn due_only_reminder_uses_nine_and_snooze_fires_once() {
+        let mut task = crate::tasks::Task::standalone();
+        task.due_date = "2026-11-18".into();
+        let now = crate::resources::parse_moment("2026-11-18T09:00").unwrap();
+        assert_eq!(reminder_anchor(&task), Some(now));
+        let mut engine = IndividualReminders::default();
+        engine.state.snoozed.insert(task.uid.clone(), (now + Duration::minutes(10)).to_string());
+        assert!(!engine.decide(&[task.clone()], now));
+        assert!(engine.decide(&[task.clone()], now + Duration::minutes(10)));
+        assert!(!engine.decide(&[task], now + Duration::minutes(11)));
+    }
 
     fn at(day: u32, hour: u32, minute: u32) -> DateTime<Local> {
         Local

@@ -40,7 +40,7 @@ internal object Samples {
     private fun task(
         id: Long, title: String, action: String, number: String, due: String = "", chip: String = "",
         done: Boolean = false, overdue: Boolean = false, today: Boolean = false
-    ) = TaskItem(id, 100 + id, title, action, number, due, chip, done, overdue, today)
+    ) = TaskItem(id, 100 + id, title, action, number, due, chip, done, overdue, today, bucket = bucketOf(due, done, overdue, today))
 
     val tasks = listOf(
         task(1, "Responder ofício sobre o pessoal do Projeto Alfa", "Responder", "OF. 0412/2026", "2026-11-05", "há 4 dias", overdue = true),
@@ -54,11 +54,20 @@ internal object Samples {
         task(9, "Encaminhar escala de trabalho", "Encaminhar", "MEM. 101/2026", "", "", done = true)
     )
 
+    /** The group the core would send for the flags of a sample task. */
+    private fun bucketOf(due: String, done: Boolean, overdue: Boolean, today: Boolean) = when {
+        done -> "concluidas"
+        overdue -> "atrasadas"
+        today -> "hoje"
+        due.isEmpty() -> "sem_prazo"
+        else -> "proximas"
+    }
+
     private fun urgent(t: TaskItem, key: String, label: String) = t.copy(priority = key, priorityLabel = label)
 
     /** A task without document: "Sem documento" instead of the number. */
     private fun loose(id: Long, title: String, action: String, due: String, chip: String, overdue: Boolean = false, today: Boolean = false) =
-        TaskItem(id, 0, title, action, "", due, chip, false, overdue, today)
+        TaskItem(id, 0, title, action, "", due, chip, false, overdue, today, bucket = bucketOf(due, false, overdue, today))
 
     val todayLate = listOf(
         urgent(tasks[0], "urgente", "Urgente"),
@@ -76,7 +85,8 @@ internal object Samples {
         AttendanceItem(2, "ORG-PRO-2026/00212", "Consulta sobre o quadro de pessoal", "Aguardando resposta", "2026-11-10", "hoje", false)
     )
     val today = TodayState(
-        loading = false, late = todayLate, today = todayDue, upcoming = todayUpcoming, attendances = attendances
+        loading = false, late = todayLate, today = todayDue, upcoming = todayUpcoming, attendances = attendances,
+        summary = "3 tarefas atrasadas · 1 para hoje · 2 atendimentos com prazo vencido ou para hoje"
     )
 
     private fun detailOf(

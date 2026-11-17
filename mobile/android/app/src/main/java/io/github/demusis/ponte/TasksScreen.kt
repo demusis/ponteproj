@@ -52,20 +52,17 @@ internal fun TasksScreen(
     val all = remember(state.tasks, categoryFilter) {
         state.tasks.filter { CategoryRules.matches(it.categories, categoryFilter) }
     }
+    // The core says which group each task is in, and sends them in the order to show.
     val groups = remember(all) {
-        val open = all.filter { !it.done }
-        val late = open.filter { it.overdue }
-        val today = open.filter { !it.overdue && it.dueToday }
-        val next = open.filter { !it.overdue && !it.dueToday && it.dueDate.isNotEmpty() }.sortedBy { it.dueDate }
-        val none = open.filter { !it.overdue && !it.dueToday && it.dueDate.isEmpty() }
+        fun of(bucket: String) = all.filter { !it.done && it.openBucket == bucket }
         listOf(
-            TaskGroup("late", "Atrasadas", late, late = true),
-            TaskGroup("today", "Para hoje", today),
-            TaskGroup("next", "Próximas", next),
-            TaskGroup("none", "Sem prazo", none)
+            TaskGroup("late", "Atrasadas", of("atrasadas"), late = true),
+            TaskGroup("today", "Para hoje", of("hoje")),
+            TaskGroup("next", "Próximas", of("proximas")),
+            TaskGroup("none", "Sem prazo", of("sem_prazo"))
         ).filter { it.tasks.isNotEmpty() }
     }
-    val done = remember(all) { all.filter { it.done }.sortedByDescending { it.id }.take(30) }
+    val done = remember(all) { all.filter { it.done } }
     val noOpen = all.none { !it.done }
     val filtering = categoryFilter.isNotEmpty()
 

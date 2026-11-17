@@ -126,9 +126,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /** The system asks for the permission to show notifications (Android 13 or newer). */
-    fun askNoticePermission() {
+    fun askNoticePermission(request: Int = REQ_NOTICE) {
         if (android.os.Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQ_NOTICE)
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), request)
         }
     }
 
@@ -136,9 +136,9 @@ class MainActivity : ComponentActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         @Suppress("DEPRECATION")
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_NOTICE) {
-            Controller.onNoticePermission(grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED)
-        }
+        val granted = grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (requestCode == REQ_NOTICE) Controller.onNoticePermission(granted)
+        if (requestCode == REQ_TASK_NOTICE) Controller.onTaskNoticePermission(granted)
     }
 
     @Deprecated("The classic result callback: no extra library needed.")
@@ -161,6 +161,7 @@ class MainActivity : ComponentActivity() {
         const val REQ_NOTICE = 4
         const val REQ_ATTACH_PHOTO = 5
         const val REQ_ATTACH_FILE = 6
+        const val REQ_TASK_NOTICE = 7
 
         /** The Activity on screen, for what needs one (pickers, fingerprint prompt). */
         @Volatile

@@ -23,9 +23,10 @@ internal data class TaskDraft(
 
     companion object {
         fun fromList(l: List<Any>): TaskDraft? = try {
+            val size = if (l.size >= 27) 12 else if (l.size >= 25) 11 else 7
             TaskDraft(
-                l[0] as Int, l[1] as Long, TaskForm.fromList(l.subList(3, 10).map { it as String }),
-                TaskForm.fromList(l.subList(10, 17).map { it as String }), l[2] as Boolean
+                l[0] as Int, l[1] as Long, TaskForm.fromList(l.subList(3, 3 + size).map { it as String }),
+                TaskForm.fromList(l.subList(3 + size, 3 + 2 * size).map { it as String }), l[2] as Boolean
             )
         } catch (_: Throwable) {
             null
@@ -40,13 +41,23 @@ internal data class TaskSave(val taskId: Long, val version: Long, val base: Task
 
 /** The categories travel as one string (uids have no commas) so the list stays flat. */
 internal fun TaskForm.toList(): List<String> =
-    listOf(title, action, priority, dueDate, assignee, notes, categories.joinToString(","))
+    listOf(title, action, priority, dueDate, assignee, notes, categories.joinToString(","), scheduledStart, scheduledEnd, estimateMinutes.toString(), parentTaskId?.toString() ?: "", reminderOffsetsMinutes.joinToString(","))
 
 internal fun TaskForm.Companion.fromList(l: List<String>) =
-    TaskForm(l[0], l[1], l[2], l[3], l[4], l[5], l[6].split(",").filter { it.isNotEmpty() })
+    TaskForm(l[0], l[1], l[2], l[3], l[4], l[5], l[6].split(",").filter { it.isNotEmpty() }, l.getOrElse(7) { "" }, l.getOrElse(8) { "" }, l.getOrNull(9)?.toIntOrNull() ?: 0, l.getOrNull(10)?.toLongOrNull(), l.getOrNull(11)?.split(",")?.mapNotNull { it.toIntOrNull() } ?: emptyList())
 
 /** Decisions of the task screen. */
 internal object TaskRules {
+    /** One line under "Avisos antes do início" when the permission to notify was refused. */
+    const val REMINDERS_BLOCKED =
+        "Sem permissão para notificações, os avisos desta tarefa não aparecem. Permita-as nas configurações do telefone."
+
+    /** The hint is for a task that asks for reminders while the phone does not let the app notify. */
+    fun remindersBlockedShown(offsets: List<Int>, blocked: Boolean) = blocked && offsets.isNotEmpty()
+
+    /** Asking for the permission is for the moment an offset is added, not when one is taken away. */
+    fun offsetAdded(before: List<Int>, after: List<Int>) = after.any { it !in before }
+
     /**
      * The text of the core's conflict answer (mobile/rust/src/lib.rs, `TASK_CHANGED`); it also says
      * what the draft rule below detects, so the person reads one sentence for both.

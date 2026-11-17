@@ -44,11 +44,11 @@ class TarefasDocumentosTest {
     }
 
     @Test fun documentosBusca() = paparazzi.shotInShell("busca", 2) {
-        DocumentsScreen(Samples.docs, "veículos", {}, DocFilter.WITH_TASK, {}, {}, {})
+        DocumentsScreen(Samples.docs, "veículos", {}, DocFilter.WITH_TASK, {}, {}, {}, matches = setOf(105L))
     }
 
     @Test fun documentosSemResultado() = paparazzi.shotInShell("sem_resultado", 2) {
-        DocumentsScreen(Samples.docs, "xyz", {}, DocFilter.EMAILS, {}, {}, {})
+        DocumentsScreen(Samples.docs, "xyz", {}, DocFilter.EMAILS, {}, {}, {}, matches = emptySet())
     }
 
     @Test fun documentosVazio() = paparazzi.shotInShell(

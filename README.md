@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.38.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.39.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.38.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.39.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -138,7 +138,7 @@ Vale ler antes de usar: são as palavras que aparecem nas telas.
 | Atalho | O que faz |
 |---|---|
 | **Ctrl+1** a **Ctrl+6** | Ir para Hoje, Documentos, Tarefas, Atendimentos, Modelos e Recursos |
-| **Ctrl+K** | Abrir a busca em todo o acervo (documentos, tarefas, atendimentos e recursos), de qualquer área |
+| **Ctrl+K** | Abrir a busca em todo o acervo (documentos, tarefas, atendimentos e recursos), de qualquer área. Com a caixa vazia, ou começando com `>`, lista **Ações** (**Nova tarefa**, **Planejar a semana**, **Abrir ajustes e sincronização**…) |
 | **Ctrl+F** | Ir para a busca da área; a partir de outras áreas, para a busca de documentos |
 | **Ctrl+N** | Criar: registro manual (em Hoje e Documentos), nova tarefa (em Tarefas: sem documento, ou do documento pelo qual a lista está filtrada), nova entrada (em Atendimentos), nova reserva (em Recursos; na aba **Recursos**, novo recurso) |
 | **Ctrl+S** | Salvar o que está em edição: tarefa, atendimento, reserva ou recurso, notas do documento, modelo ou configuração de IA. Em Notas e minutas, salva a nota ou, estando a nota já salva, uma nova versão da minuta |
@@ -157,9 +157,9 @@ Na área **Modelos**, **Ctrl+F** (buscar modelo), **Ctrl+N** (**Novo modelo**), 
 | **Equipe e sincronização** | Trabalhar em equipe ou em mais de um computador; conflitos de edição e alterações a enviar ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)) |
 | **E-mail** | Contas, pasta e filtro, lista de mensagens e importação, tudo na própria página, e o botão **Importar um e-mail salvo em arquivo (.eml)…** ([5.5](#55-registros-manuais)) |
 | **Importação do SIGADOC** | Criar atendimento ao importar do SIGADOC ([7.1](#71-de-onde-vêm-os-atendimentos)) |
-| **Lembretes** | Aviso diário de prazos do Windows: ligar ou desligar, **Horário** e **Mostrar um aviso de teste** ([6.6](#66-lembretes-de-prazos)) |
+| **Lembretes** | Resumo diário de prazos e avisos das tarefas, no Windows: ligar ou desligar, **Horário do resumo diário** e **Mostrar um aviso de teste** ([6.6](#66-lembretes-de-prazos)) |
 | **Inteligência artificial** | Escolher onde a IA roda ([seção 9](#9-ia-opcional)). Salva com **Salvar** ou ao sair da seção |
-| **Cópia de segurança e exportação** | **Fazer cópia agora**, onde as cópias ficam (**Abrir pasta**) e **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) |
+| **Cópia de segurança e exportação** | **Fazer cópia agora**, onde as cópias ficam (**Abrir pasta**), **Exportar dados para CSV…** ([10.3](#103-backup), [10.5](#105-exportar-dados-csv)) e o card **Calendário (.ics)** ([6.9](#69-calendário-ics)) |
 | **Categorias** | criar, renomear, colorir, arquivar e apagar as categorias de tarefas e documentos ([6.7](#67-categorias)) |
 | **Lixeira** | Restaurar itens excluídos e definir o prazo de limpeza |
 | **Aparência** | Tema: *Como o Windows*, *Claro* ou *Escuro*; **Tamanho do texto**: *Normal*, *Grande* ou *Maior* |
@@ -178,9 +178,13 @@ Quando nada está atrasado nem para hoje, a tela diz *Nenhuma tarefa atrasada ou
 
 **Calendário de prazos.** No alto de Hoje, os botões **Lista** e **Calendário** trocam a visão. O calendário mostra o mês com as tarefas e os atendimentos que têm prazo: vermelho é atraso, âmbar é para hoje, azul está no prazo, e os atendimentos levam um ícone. As setas trocam de mês e **Hoje** volta ao mês atual. Clique num item para abri-lo; clique em "+N", ou num dia com itens, para listar os desse dia sob o calendário (**Fechar** esconde a lista). Tarefas concluídas e atendimentos encerrados não aparecem.
 
+**Semana.** O terceiro botão, **Semana**, mostra os sete dias (de segunda a domingo) com os blocos de trabalho das tarefas e as reservas de recursos, e os **Prazos de entrega** à parte, em cada dia. No fim, **Ainda não planejadas** lista as tarefas abertas sem horário de trabalho. Veja [6.8](#68-planejar-o-trabalho). Quando uma tarefa tem aviso agendado, o card **Avisos agendados** aparece no alto de Hoje ([6.6](#66-lembretes-de-prazos)).
+
 **Buscar em todo o acervo.** **Buscar**, no alto da barra lateral, ou **Ctrl+K**, abre uma caixa de busca sobre qualquer área. Digite pelo menos duas letras: o Ponte procura em documentos (número, assunto, texto, notas e PDFs), tarefas e atendimentos, e agrupa os resultados em **Documentos**, **Tarefas** e **Atendimentos**, com até 8 de cada e uma linha "e mais N" quando há outros. Nas tarefas e nos atendimentos, a busca ignora maiúsculas e acentos. As setas movem o destaque, **Enter** (ou o clique) abre o item, levando à ficha, à tarefa ou ao atendimento, e **Esc** fecha. Os recursos e as reservas de recursos também são encontrados, em grupos próprios. A busca da própria área (**Ctrl+F**) continua como antes.
 
-**A área Recursos.** Controla o que o gabinete reserva ou empresta: salas, livros, equipamentos. Cada **recurso** é cadastrado uma vez (nome, **quantidade**, onde fica, identificação); cada reserva ou empréstimo é um **uso**, com data e hora de início e de fim previsto, quem usa, setor e finalidade. A área tem três abas: **Agora e próximos** (atrasados, em uso, hoje e os próximos dias, com busca e filtros), **Calendário** (o mês, por recurso ou todos) e **Recursos** (o cadastro). O Ponte não guarda duas reservas que passem da quantidade do recurso no mesmo horário: recusa e diz quem está com ele e até quando. Os botões **Reservar**, **Registrar uso agora**, **Registrar devolução**, **Prorrogar**, **Cancelar a reserva**, **Reabrir** e **Apagar de vez…** ficam na ficha do uso; o uso pode ser ligado a um documento, a um atendimento e a uma tarefa, e **Criar tarefa de devolução** cria a tarefa com prazo no dia do fim previsto. Um recurso que já teve usos não é apagado: fica **Fora de uso**. Documentos, atendimentos e tarefas mostram os usos ligados a eles e têm **Reservar recurso…**; Hoje e o lembrete diário contam as reservas de hoje e as devoluções atrasadas. **Exportar dados para CSV…** ganha `recursos.csv` e `usos-de-recursos.csv` ([10.5](#105-exportar-dados-csv)), e **Exportar esta lista…** grava só os usos filtrados. Em equipe, duas reservas do mesmo horário feitas sem conexão viram um **conflito de edição** ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)); os horários são os do relógio de cada computador. Esta versão muda o formato do acervo: atualize todos os computadores e o celular juntos. No Ponte de bolso 0.7.0, Recursos é só de consulta.
+**Ações no Ctrl+K.** Com a caixa vazia, ou com um `>` no começo, o Ponte lista **Ações**, e não resultados: **Nova tarefa**, **Novo registro manual**, **Nova entrada em Atendimentos**, **Abrir Hoje e pendências**, **Planejar a semana**, **Abrir documentos**, **Abrir tarefas**, **Abrir atendimentos**, **Abrir reservas e recursos**, **Abrir modelos**, **Abrir ajustes e sincronização** e **Abrir a ajuda (guia do usuário)**; as que têm atalho mostram-no ao lado (Ctrl+1 a Ctrl+6). Depois do `>`, escreva parte do nome para filtrar (`> semana`; maiúsculas e acentos não importam). As setas e o **Enter** funcionam como nos resultados. Cada ação passa pelas proteções de sempre: com algo sem salvar, o Ponte pergunta antes de sair da tela.
+
+**A área Recursos.** Controla o que o gabinete reserva ou empresta: salas, livros, equipamentos. Cada **recurso** é cadastrado uma vez (nome, **quantidade**, onde fica, identificação); cada reserva ou empréstimo é um **uso**, com data e hora de início e de fim previsto, quem usa, setor e finalidade. A área tem três abas: **Agora e próximos** (atrasados, em uso, hoje e os próximos dias, com busca e filtros), **Calendário** (o mês, por recurso ou todos) e **Recursos** (o cadastro). O Ponte não guarda duas reservas que passem da quantidade do recurso no mesmo horário: recusa e diz quem está com ele e até quando. Os botões **Reservar**, **Registrar uso agora**, **Registrar devolução**, **Prorrogar**, **Cancelar a reserva**, **Reabrir** e **Apagar de vez…** ficam na ficha do uso; o uso pode ser ligado a um documento, a um atendimento e a uma tarefa, e **Criar tarefa de devolução** cria a tarefa com prazo no dia do fim previsto. Um recurso que já teve usos não é apagado: fica **Fora de uso**. Documentos, atendimentos e tarefas mostram os usos ligados a eles e têm **Reservar recurso…**; Hoje e o lembrete diário contam as reservas de hoje e as devoluções atrasadas. **Exportar dados para CSV…** ganha `recursos.csv` e `usos-de-recursos.csv` ([10.5](#105-exportar-dados-csv)), e **Exportar esta lista…** grava só os usos filtrados. Em equipe, duas reservas do mesmo horário feitas sem conexão viram um **conflito de edição** ([seção 8](#8-mais-de-um-computador-equipe-e-pasta-compartilhada)); os horários são os do relógio de cada computador. Uma reserva pode ser repetida (diária, semanal, mensal ou anual) em **Hoje ▸ Semana ▸ Repetir tarefa ou reserva…** ([6.8](#68-planejar-o-trabalho)); cada data é conferida de novo e, se uma estiver ocupada, nenhuma é criada. Esta versão muda o formato do acervo: atualize todos os computadores e o celular juntos. No Ponte de bolso 0.7.0, Recursos é só de consulta.
 
 **Datas:** todo campo de data aceita digitar `dd/mm/aaaa` ou escolher no calendário, pelo ícone de calendário. O calendário abre o mês, com os dias da semana (D S T Q Q S S), setas ◀ ▶ para trocar de mês, hoje em destaque e os atalhos **Hoje** e **Limpar**. Uma data inválida, como `31/02/2026`, fica marcada em vermelho.
 
@@ -429,7 +433,7 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 - **A área abre com todas as tarefas**, qualquer que seja o documento selecionado em Documentos. Para ver só as de um documento, use **Ver todas** no card Tarefas da ficha dele, ou **Só as de ORG-OFI-2026/00042** no fim da fileira de visões. Enquanto a lista está restrita, uma faixa diz *Mostrando só as tarefas de ORG-OFI-2026/00042 — Pedido de revisão de materiais de treinamento*, com **Ver todas** para voltar a tudo.
 - **Ordenar:** à direita das visões, *Prazo*, *Prioridade* ou *Documento*.
 - **Lista vazia:** a área diz por quê (por exemplo, nenhuma tarefa na visão escolhida ou na busca).
-- **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*.
+- **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*. A caixa **Ainda não planejadas**, junto das visões, mostra só as tarefas sem horário de trabalho ([6.8](#68-planejar-o-trabalho)).
 - **Mostrar concluídas** inclui as já concluídas na lista.
 - **Tarefa sem documento.** Na área **Tarefas**, **Nova tarefa** (ou **Ctrl+N**) cria uma tarefa que não pertence a nenhum documento; na lista ela aparece como **Sem documento**. Com a lista filtrada por um documento (faixa "Mostrando só as tarefas de…"), a tarefa nova é dele. No painel da tarefa, **Vincular a um documento…** abre uma busca por número, assunto ou texto; depois, **Trocar de documento…** e **Desvincular do documento** mudam ou desfazem o vínculo. A tarefa é a mesma o tempo todo: anexos, lista de providências e histórico ficam com ela.
 - O painel da tarefa mostra o número e o assunto do documento a que ela pertence.
@@ -444,6 +448,9 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 | Situação | *Pendente*, *Em análise*, *Aguardando*, *Concluída* |
 | Prioridade | *Baixa*, *Normal*, *Alta*, *Urgente* |
 | Prazo | `13/11/2026` |
+| **Planejamento** | **Início**, **Fim** (`2026-11-18T09:00`) e **Estimativa em minutos**: o horário em que você vai trabalhar, separado do prazo ([6.8](#68-planejar-o-trabalho)) |
+| **Avisos antes do início** | *No início*, *15 min*, *1 hora*, *1 dia* ([6.6](#66-lembretes-de-prazos)) |
+| **Tarefa pai** | a lista **Sem tarefa pai** faz desta uma subtarefa ([6.8](#68-planejar-o-trabalho)) |
 | Observações | texto livre |
 | **Categorias** | palavras suas para organizar, como *Urgente* ou *Jurídico*; até 10 por tarefa ([6.7](#67-categorias)) |
 | **Anexos** | arquivos seus ligados à tarefa ([5.6](#56-anexos)) |
@@ -521,9 +528,17 @@ Exemplo: *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Quando na
 - **Quando:** uma vez por dia, a partir do horário escolhido (9h, de fábrica). Se o Ponte abre depois do horário, o aviso vem cerca de um minuto depois da abertura. Só funciona **enquanto o Ponte está aberto ou minimizado**: fechado, não avisa.
 - **Com o Ponte na frente:** o aviso do Windows não é mostrado, e a mesma frase aparece no aviso do canto inferior direito da janela.
 - **Clicar no aviso do Windows** traz o Ponte para a frente, em **Hoje**. Se há algo sem salvar, o Ponte pergunta antes de sair da tela, como sempre.
-- **Ajustes ▸ Lembretes** (ligado de fábrica): a caixa **Lembrar dos prazos uma vez por dia** liga e desliga; **Horário** escolhe hora e minuto (de 5 em 5 minutos); **Mostrar um aviso de teste** mostra o aviso na hora, com números de exemplo, sem relação com o seu acervo.
+- **Ajustes ▸ Lembretes** (ligado de fábrica): a caixa **Ativar resumo diário e avisos das tarefas** liga e desliga os dois (o resumo diário e os avisos de cada tarefa, abaixo); **Horário do resumo diário** escolhe hora e minuto (de 5 em 5 minutos); **Mostrar um aviso de teste** mostra o aviso na hora, com números de exemplo, sem relação com o seu acervo.
 - **Se nada aparecer:** abra *Configurações do Windows ▸ Sistema ▸ Notificações* e confira que as notificações do Ponte, e o modo Não perturbe ou Assistente de foco, permitem o aviso.
 - **Privacidade:** o aviso é montado no computador, com contagens; nada é enviado a lugar nenhum. A escolha de ligar, o horário e o último dia avisado ficam num arquivo pequeno da pasta de dados (`lembretes.txt`), sem nada do acervo.
+
+**Avisos de cada tarefa.** Além do resumo diário, uma tarefa pode avisar antes de começar. No painel da tarefa, em **Avisos antes do início**, marque um ou mais entre **No início**, **15 min**, **1 hora** e **1 dia**.
+
+- **A partir de quando contam:** do **Início** do horário de trabalho ([6.8](#68-planejar-o-trabalho)); sem horário de trabalho, das 9h do dia do **Prazo**. Tarefa sem horário e sem prazo não tem de onde contar. Tarefa concluída não avisa.
+- **O que aparece:** uma notificação do Windows, *Lembrete do Ponte*, com a frase *Há tarefas com aviso agendado. Abra Hoje para conferir ou adiar.* Com o Ponte na frente, a frase aparece no aviso do canto da janela. **O título da tarefa não vai na notificação**, de propósito: ela pode ficar visível sobre outras janelas e na tela de bloqueio. Os títulos aparecem em **Hoje**, no card **Avisos agendados**, onde cada tarefa tem **Adiar 10 min** e **Dispensar aviso**; um clique no título abre a tarefa.
+- **Só com o Ponte aberto.** Se o momento de um aviso passa com o Ponte fechado, ele **não é mostrado depois**: o Ponte ainda mostra o que venceu há até cinco minutos, e o que ficou para trás além disso é deixado de lado. O mesmo aviso não se repete a cada abertura nem depois de reiniciar o programa.
+- **Privacidade:** o registro do que já foi avisado fica só neste computador, cifrado (`avisos-individuais.bin`), fora do acervo e sem seguir para a equipe ou para a pasta compartilhada.
+- **No celular** (Ponte de bolso 0.9.0): os mesmos quatro tempos, como notificação do Android com o botão **Adiar 10 min**. Exigem a permissão de notificações; sem ela o aplicativo avisa na própria tarefa. A notificação também não traz o título.
 
 ---
 
@@ -539,6 +554,42 @@ Uma **categoria** é uma palavra que você escolhe para organizar o trabalho, co
 - **Em várias tarefas:** em **Selecionar**, **Adicionar categoria…** e **Remover categoria…** agem em todas as tarefas marcadas, com **Desfazer** ([6.5](#65-ações-em-lote)).
 - **Em equipe:** com computador principal ou pasta compartilhada, a lista de categorias é a mesma para todos, e o que se cria, renomeia, arquiva ou apaga chega a todos na próxima sincronização.
 - **Formato:** as categorias mudam o formato do acervo (17) e o da pasta compartilhada (5). Um Ponte ou um Ponte de bolso mais antigo recusa o acervo e o arquivo novos e diz para atualizar: atualize todos os computadores e o celular juntos.
+
+### 6.8 Planejar o trabalho
+
+O **Prazo** é a data em que a entrega vence. O **horário de trabalho** é quando você pretende fazer. São coisas separadas: marcar ou mudar o horário **não altera o prazo**.
+
+- **Planejamento na tarefa.** No painel da tarefa, o bloco **Planejamento** tem **Início**, **Fim** e **Estimativa em minutos** (0 = sem estimativa). Início e fim se escrevem `AAAA-MM-DDTHH:MM` (por exemplo `2026-11-18T09:00`), são horários deste computador, e o fim precisa ser depois do início. Os dois vêm juntos ou nenhum dos dois. Um fim à meia-noite não ocupa o dia seguinte.
+- **Subtarefas.** Na lista **Sem tarefa pai**, escolha a tarefa a que esta pertence. A tarefa pai passa a mostrar *Subtarefas: N/M concluídas* e atalhos para abri-las. Uma tarefa não pode ser pai de si mesma, nem de quem é pai dela. A subtarefa é uma tarefa comum, com prazo e situação próprios. (As dependências de [6.4](#64-dependências-entre-tarefas) são outra coisa: dizem o que precisa ser feito antes.)
+- **Ainda não planejadas.** Em **Tarefas**, a caixa **Ainda não planejadas** mostra só as tarefas que ainda não têm horário de trabalho.
+- **A semana.** Em **Hoje**, **Semana** mostra os sete dias, de segunda a domingo. Cada dia tem os blocos de trabalho (`09:00–10:30 · título`) e as reservas de recursos, em ordem de horário, e, à parte, em **Prazos de entrega**, as tarefas e os atendimentos que vencem nesse dia. **◀ Semana anterior**, **Próxima semana ▶** e **Esta semana** movem a visão. Clicar numa tarefa abre o painel dela para planejar ou reagendar; clicar numa reserva abre o uso. No fim, **Ainda não planejadas** lista as tarefas abertas sem horário, com o prazo e a estimativa. Atalho: **Ctrl+K**, `> semana`, **Planejar a semana**.
+- **Repetir uma tarefa ou uma reserva.** Na visão **Semana**, abra **Repetir tarefa ou reserva…**:
+  1. Escolha **Tarefa** ou **Reserva** e qual.
+  2. Escolha a frequência (**Diária**, **Semanal**, **Mensal** ou **Anual**), **A cada** quantas e as **Ocorrências (inclui a original)**, de 2 a 104. Os intervalos vão até 365 dias, 104 semanas, 24 meses ou 10 anos.
+  3. **Conferir próximas ocorrências** mostra a lista (prazo e horário de cada uma) sem gravar nada. Mudar qualquer opção apaga a lista, para você conferir de novo.
+  4. **Criar N novas ocorrências** grava todas de uma vez, ou nenhuma.
+
+  Cada data conta a partir da original, sem acumular erro: uma repetição mensal de dia 31 cai no último dia dos meses curtos e volta ao dia 31 quando o mês tem. **A original fica como está.** Dependências e tarefa pai **não são copiadas**. Nas reservas, o Ponte confere de novo se o recurso está livre em cada data; se uma só estiver ocupada, nada é criado e a mensagem diz qual. Repetir é sempre uma ação sua: concluir uma tarefa não cria a próxima.
+
+Duas regras para ter em mente:
+
+- **As cópias são independentes.** Mudar ou cancelar uma não muda as outras, e não há "alterar todas". Para mudar o grupo, edite cada uma.
+- **Não está disponível num computador conectado ao computador principal** (cliente da equipe). A mensagem diz *Faça a repetição no computador principal.* Num computador só, no principal e na pasta compartilhada, funciona.
+
+**Formato:** o planejamento muda o formato do acervo (18) e o da pasta compartilhada (6), como na 0.37.0. Atualize **primeiro o computador principal**: um computador já na 0.39 não salva tarefas num principal ainda na 0.38 e avisa *Atualize o Ponte no computador principal para sincronizar tarefas.* Um Ponte mais antigo recusa o arquivo novo da pasta compartilhada e diz para atualizar. Cada tarefa ganha uma identificação interna na primeira abertura.
+
+### 6.9 Calendário (.ics)
+
+Para levar a agenda a outro programa (Google Agenda, Outlook, o calendário do celular) ou trazer compromissos para o Ponte, use o card **Calendário (.ics)**, em **Ajustes ▸ Cópia de segurança e exportação**.
+
+- **Exportar calendário…** grava um arquivo `ponte-agenda.ics`, no lugar que você escolher, com as tarefas (o prazo como data; o horário de trabalho, como um bloco à parte) e as reservas de recursos que ainda ocupam o recurso. A caixa **Incluir títulos, finalidades e notas no arquivo exportado** vem **desmarcada**: sem ela, o arquivo diz só *Tarefa reservada*, *Trabalho reservado* e *Recurso reservado*, sem nada do conteúdo.
+- **Conferir arquivo de calendário…** lê um `.ics` (até 4 MB e 500 entradas) e **mostra cada entrada antes de gravar**: título, prazo, início e fim, e as notas. **Importar esta entrada como tarefa** grava uma por vez; **Fechar conferência sem importar as restantes** descarta o que sobrou. Uma entrada que já está no acervo não é duplicada: o Ponte diz *Esta entrada já está no acervo; nada foi alterado.* Os eventos entram como **tarefas agendadas**; **não reservam recursos**, mesmo que tenham saído de uma reserva.
+
+**O que isto não é.**
+
+- **Não é sincronização.** O arquivo exportado é uma **cópia de um momento**. O que você mudar no outro calendário **não volta** para o Ponte, e o que mudar no Ponte não chega lá sozinho. Para atualizar, exporte de novo (e o outro programa pode mostrar as entradas antigas em dobro).
+- **A importação é restrita de propósito.** Se o arquivo tiver qualquer coisa que o Ponte não sabe representar, **o arquivo inteiro é recusado** e nada é importado; a mensagem lista o que impediu. Não são aceitos: **regras de repetição**, **fusos horários** (só vale horário local, com minuto exato; horário em UTC ou com fuso é recusado), **eventos de dia inteiro** (exceto o prazo de uma tarefa), **convidados**, **alarmes** e outras propriedades. Por isso, **arquivos exportados do Google Agenda ou do Outlook costumam ser recusados**, porque quase sempre trazem fuso, repetição ou convidados. Os arquivos que o próprio Ponte exporta são aceitos de volta.
+- **O arquivo sai do acervo protegido.** Ele é texto aberto, sem cifra, e, com **Incluir títulos…** marcada, leva títulos, finalidades e notas. Guarde-o e envie-o com o mesmo cuidado de uma ficha impressa ([5.7](#57-imprimir-ou-salvar-a-ficha)).
 
 ## 7. Atendimentos (controle do gabinete)
 
@@ -717,6 +768,7 @@ Um caso especial: se o computador principal recusou a criação de um item feito
 | `● em dia há 3 min` | pasta compartilhada sincronizada |
 | `● 2 a enviar` | pasta compartilhada com alterações a enviar |
 | `● pasta fora de alcance` | a pasta não está acessível agora |
+| *"Atualize o Ponte no computador principal para sincronizar tarefas."* | Este computador (ou o celular) já está na 0.39 e o principal ainda na 0.38. Atualize primeiro o principal ([6.8](#68-planejar-o-trabalho)). Nada se perdeu. |
 | `● ⚠ 2 conflito(s) de edição` | há conflitos a decidir |
 
 Passe o mouse para a frase completa e clique para abrir Ajustes ▸ Equipe e sincronização. Durante uma sincronização, a mesma linha mostra a etapa em andamento.
@@ -932,6 +984,8 @@ Por padrão, nada. O que pode sair, e só por escolha sua:
 | A nota escrita no painel da extensão ([5.4](#54-importar-de-novo-o-mesmo-documento)) | Ao clicar em **Importar para o assistente** | Só ao Ponte deste computador, pela ligação entre o navegador e o programa. Depois é uma nota comum do documento: segue para a equipe ou a pasta compartilhada se você usa uma delas |
 | As mensagens e os arquivos escolhidos no WhatsApp Web ([5.8](#58-conversas-do-whatsapp)) | Ao clicar em **Enviar ao Ponte**, no painel da extensão (recurso opcional, desligado de fábrica) | Só ao Ponte deste computador, pela ligação entre o navegador e o programa; a extensão não envia nada à internet. Depois é um registro comum: segue para a equipe ou a pasta compartilhada se você usa uma delas |
 | Os avisos de prazos do Windows ([6.6](#66-lembretes-de-prazos)) | Uma vez por dia | Para ninguém: são só contagens, mostradas neste computador. Nenhum título ou número de documento entra no aviso |
+| Os avisos de cada tarefa ([6.6](#66-lembretes-de-prazos)) | Antes do início ou do prazo, nos tempos que você marcou | Para ninguém: são mostrados neste computador, sem título na notificação do sistema |
+| O calendário `.ics` ([6.9](#69-calendário-ics)) | Só ao clicar em **Exportar calendário…** | O arquivo `.ics` na pasta que você escolher, **fora do acervo protegido** e em texto aberto; sem títulos, finalidades e notas, a menos que você marque **Incluir títulos, finalidades e notas no arquivo exportado**. Nada é enviado: o arquivo é uma cópia, não uma sincronização |
 | A lista de importações recentes ([5.4](#54-importar-de-novo-o-mesmo-documento)) | Durante a sessão do navegador | Para ninguém: fica na memória do navegador e some ao fechá-lo |
 | Uma consulta à página de versões no GitHub | Só quando você clica em **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** | `github.com/demusis/ponteproj`, sem nenhum dado do acervo |
 
@@ -1001,6 +1055,9 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | *"Item na lixeira; restaure antes de editar"* | O item foi excluído. Restaure-o em Ajustes ▸ Lixeira. |
 | O aviso diário de prazos não aparece | Confira em **Ajustes ▸ Lembretes** se está ligado e se o horário já passou; o Ponte precisa estar aberto ou minimizado, e só avisa quando algo vence. Use **Mostrar um aviso de teste** e, se nem ele aparecer, veja *Configurações do Windows ▸ Sistema ▸ Notificações*. |
 | Em Tarefas, uma ação em lote deixou tarefas de fora | Não é erro: a linha de resultado diz quais e por quê ([6.5](#65-ações-em-lote)). **Desfazer** vale por 30 segundos; tarefas excluídas estão em Ajustes ▸ Lixeira. |
+| O aviso de uma tarefa não apareceu | Confira em **Ajustes ▸ Lembretes** se **Ativar resumo diário e avisos das tarefas** está ligada e se a tarefa tem **Avisos antes do início** marcados e um **Início** ou um **Prazo**. O Ponte precisa estar aberto: um aviso cujo momento passou com o programa fechado não é mostrado depois. Tarefa concluída não avisa. No celular, confira a permissão de notificações. |
+| *"Itens não suportados (nenhuma entrada foi importada)…"* ao conferir um `.ics` | Não é erro do Ponte: o arquivo tem algo que ele não representa (repetição, fuso, evento de dia inteiro, convidados, alarmes…). A mensagem lista o quê, e o arquivo inteiro é recusado ([6.9](#69-calendário-ics)). Arquivos do Google Agenda e do Outlook costumam cair aqui. |
+| *"Neste computador (conectado ao principal) não é possível criar várias ocorrências de uma vez"* | A repetição não funciona em computador conectado a um principal. Faça-a no computador principal ([6.8](#68-planejar-o-trabalho)). |
 
 ---
 
@@ -1097,7 +1154,10 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/imap.rs` | Cliente IMAP mínimo sobre TLS (`rustls`, raízes Mozilla): LIST, EXAMINE, UID SEARCH, UID FETCH com literais, só leitura; contas seladas só neste computador; nomes de pasta em UTF-7 modificado |
 | `src/mail_ui.rs` | Contas, pasta e filtro, lista das mensagens e importação das marcadas: dentro de Ajustes ▸ E-mail e na janela "Importar do e-mail" (atalho de Documentos ▸ Novo) |
 | `src/export.rs` | Exportação CSV (documentos, tarefas, atendimentos, recursos e usos de recursos) |
-| `src/app/search.rs` | Busca em todo o acervo (Ctrl+K): documentos, tarefas e atendimentos, com resultados agrupados e teclado |
+| `src/app/search.rs` | Busca em todo o acervo (Ctrl+K): documentos, tarefas e atendimentos, com resultados agrupados e teclado, e as **Ações** (`>`) |
+| `src/recurrence.rs`, `src/app/repetition.rs` | Repetição de tarefas e reservas: datas calculadas a partir da original, prévia e gravação em lote numa transação só (`save_repeated_tasks`, `save_repeated_uses`) |
+| `src/app/week.rs` | A visão **Semana** de Hoje: blocos de trabalho, reservas, prazos à parte e tarefas ainda não planejadas |
+| `src/calendar_ics.rs`, `src/app/calendar_exchange.rs` | Exportação e conferência de `.ics` (horários locais e datas; recusa o que não representa) e o card **Calendário (.ics)** |
 | `src/ficha_export.rs` | A ficha como página `.html` única, para imprimir ou salvar em PDF (**Imprimir ou salvar a ficha…**) |
 | `src/update_check.rs` | **Verificar se há versão nova**: consulta, só a pedido, a última versão publicada no GitHub; não envia dados do acervo, não baixa nem instala |
 | `src/guide.rs` | Guia do usuário: `GUIA_DO_USUARIO.md` embutido e convertido em página para o navegador |

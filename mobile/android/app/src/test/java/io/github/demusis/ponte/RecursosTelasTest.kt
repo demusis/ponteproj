@@ -22,6 +22,28 @@ internal object ResourceSamples {
         if (active) "ativo" else "fora_de_uso", if (active) "Ativo" else "Fora de uso", active
     )
 
+    /** What the core says of each resource at [NOW]: taken, free text, the uids of today's and next uses. */
+    private class Facts(val taken: Int, val today: List<String>, val next: List<String>)
+
+    private val facts = mapOf(
+        "r1" to Facts(0, listOf("u3"), listOf("u3", "u5", "u7")),
+        "r2" to Facts(0, emptyList(), listOf("u4")),
+        "r3" to Facts(1, listOf("u1"), listOf("u1")),
+        "r4" to Facts(1, listOf("u2"), listOf("u2")),
+        "r5" to Facts(0, emptyList(), listOf("u6")),
+        "r6" to Facts(0, emptyList(), emptyList()),
+        "r7" to Facts(0, emptyList(), emptyList())
+    )
+
+    private fun withFacts(r: ResourceItem): ResourceItem {
+        val f = facts.getValue(r.uid)
+        val free = (r.quantity - f.taken).coerceAtLeast(0)
+        return r.copy(
+            inUseNow = f.taken, freeNow = free, usageLine = "${f.taken} de ${r.quantity} em uso agora",
+            freeText = if (free == 1) "1 livre" else "$free livres", todayUids = f.today, nextUids = f.next
+        )
+    }
+
     // By name, as the core lists them.
     val resources = listOf(
         resource("r2", "Auditório", 1, "Térreo, bloco B"),
@@ -34,7 +56,15 @@ internal object ResourceSamples {
             "r1", "Sala de reuniões do 2º andar", 1, "2º andar, bloco A", "",
             "A chave fica na portaria."
         )
-    )
+    ).map { withFacts(it) }
+
+    /** The period as the core words it (same day: "10/11 14:00–16:00"; several days: "11/11 08:00 – 12/11 18:00"). */
+    private fun periodOf(start: String, end: String): String {
+        fun day(m: String) = "${m.substring(8, 10)}/${m.substring(5, 7)}"
+        fun clock(m: String) = m.substring(11, 16)
+        return if (start.take(10) == end.take(10)) "${day(start)} ${clock(start)}–${clock(end)}"
+        else "${day(start)} ${clock(start)} – ${day(end)} ${clock(end)}"
+    }
 
     private val labels = mapOf("reservado" to "Reservado", "em_uso" to "Em uso", "devolvido" to "Devolvido", "cancelado" to "Cancelado")
 
@@ -48,7 +78,7 @@ internal object ResourceSamples {
         uid = uid, resourceUid = resource.uid, resourceName = resource.name,
         quantity = quantity, who = who, sector = sector, purpose = purpose, start = start, end = end,
         returnedAt = returnedAt, status = status, statusLabel = labels.getValue(status), notes = notes,
-        overdue = status == "em_uso" && end < NOW
+        overdue = status == "em_uso" && end < NOW, period = periodOf(start, end)
     )
 
     private fun r(uid: String) = resources.first { it.uid == uid }
@@ -79,14 +109,32 @@ internal object ResourceSamples {
         use("u9", r("r2"), "Servidor C", "", "", "cancelado", "2026-11-08T09:00", "2026-11-08T11:00")
     )
 
-    val state = ResourcesState(loading = false, uses = uses, resources = resources)
+    private fun group(key: String, title: String, vararg uids: String) =
+        ResourceGroup(key, title, key == "atrasados", uids.toList())
+
+    /** The core's groups at [NOW] for no search. */
+    val state = ResourcesState(
+        loading = false, uses = uses, resources = resources,
+        groups = listOf(
+            group("atrasados", "Atrasados", "u1"), group("em_uso", "Em uso agora", "u2"), group("hoje", "Hoje", "u3"),
+            group("proximos", "Próximos dias", "u6", "u4", "u5"), group("adiante", "Mais adiante", "u7"),
+            group("encerrados", "Mais antigos e encerrados", "u9", "u8")
+        ),
+        rows = listOf("r2", "r5", "r6", "r4", "r3", "r1", "r7")
+    )
+
+    /** What the core answers for a search that finds nothing, and for "auditorio". */
+    val stateNothing = state.copy(groups = emptyList(), rows = emptyList())
+    val stateAuditorium = state.copy(
+        groups = listOf(group("proximos", "Próximos dias", "u4"), group("encerrados", "Mais antigos e encerrados", "u9")),
+        rows = listOf("r2")
+    )
 }
 
 /** Pictures of the Recursos area: the list (uses and register), the two details, Hoje, and the bar of three names. */
 class RecursosTelasTest {
     @get:Rule val paparazzi = newPaparazzi()
 
-    private val now = ResourceSamples.NOW
 
     private fun list(
         name: String, state: ResourcesState, view: Int = 0, query: String = "", dark: Boolean = false, height: Int = 3000
@@ -95,7 +143,7 @@ class RecursosTelasTest {
         paparazzi.shotInShell(name, 1, dark, shell = Samples.shell.copy(resources = true)) {
             Column(Modifier.fillMaxSize()) {
                 SegmentedTabs(listOf("Tarefas", "Atendimentos", PhoneWords.RES_AREA), 2, {})
-                Box(Modifier.weight(1f).fillMaxWidth()) { ResourcesScreen(state, now, query, {}, view, {}, {}, {}) }
+                Box(Modifier.weight(1f).fillMaxWidth()) { ResourcesScreen(state, query, {}, view, {}, {}, {}) }
             }
         }
     }
@@ -104,9 +152,9 @@ class RecursosTelasTest {
 
     @Test fun usosListaEscuro() = list("usos_escuro", ResourceSamples.state, dark = true)
 
-    @Test fun usosBuscaSemResultado() = list("usos_sem_resultado", ResourceSamples.state, query = "zzz", height = 1800)
+    @Test fun usosBuscaSemResultado() = list("usos_sem_resultado", ResourceSamples.stateNothing, query = "zzz", height = 1800)
 
-    @Test fun usosBuscaComEncerrado() = list("usos_busca_auditorio", ResourceSamples.state, query = "auditorio", height = 2000)
+    @Test fun usosBuscaComEncerrado() = list("usos_busca_auditorio", ResourceSamples.stateAuditorium, query = "auditorio", height = 2000)
 
     @Test fun usosVazio() = list("usos_vazio", ResourcesState(loading = false), height = 1800)
 
@@ -118,7 +166,7 @@ class RecursosTelasTest {
 
     private fun useDetail(name: String, uid: String, dark: Boolean = false, state: ResourcesState = ResourceSamples.state) {
         paparazzi.tall(2300)
-        paparazzi.shot(name, dark) { ResourceUseScreen(uid, state, now, {}, {}, {}, {}, {}) }
+        paparazzi.shot(name, dark) { ResourceUseScreen(uid, state, {}, {}, {}, {}, {}) }
     }
 
     @Test fun usoAtrasado() = useDetail("uso_atrasado", "u1")
@@ -133,7 +181,7 @@ class RecursosTelasTest {
 
     private fun resourceDetail(name: String, uid: String, dark: Boolean = false) {
         paparazzi.tall(2300)
-        paparazzi.shot(name, dark) { ResourceScreen(uid, ResourceSamples.state, now, {}, {}) }
+        paparazzi.shot(name, dark) { ResourceScreen(uid, ResourceSamples.state, {}, {}) }
     }
 
     @Test fun recursoSala() = resourceDetail("recurso_sala", "r1")
@@ -146,7 +194,8 @@ class RecursosTelasTest {
 
     private val busy = TodayState(
         loading = false, late = Samples.todayLate, today = Samples.todayDue, upcoming = emptyList(),
-        attendances = Samples.attendances, reservationsToday = 2, overdueReturns = 1
+        attendances = Samples.attendances, reservationsToday = 2, overdueReturns = 1,
+        summary = "3 tarefas atrasadas · 1 para hoje · 2 atendimentos com prazo vencido ou para hoje · 2 reservas de hoje · 1 devolução atrasada"
     )
 
     @Test fun hojeComRecursos() {
@@ -161,7 +210,7 @@ class RecursosTelasTest {
 
     @Test fun hojeSoComRecursos() = paparazzi.shotInShell(
         "hoje_so_recursos", 0, shell = Samples.shell.copy(badge = 0)
-    ) { TodayScreen(TodayState(loading = false, reservationsToday = 1, overdueReturns = 2), {}, {}) }
+    ) { TodayScreen(TodayState(loading = false, reservationsToday = 1, overdueReturns = 2, summary = "1 reserva de hoje · 2 devoluções atrasadas"), {}, {}) }
 
     // The three names of the segmented control on a narrow screen and with a large font.
     private fun small(fontScale: Float) = DeviceConfig.PIXEL_5.copy(
@@ -175,7 +224,7 @@ class RecursosTelasTest {
             Column(Modifier.fillMaxSize()) {
                 SegmentedTabs(listOf("Tarefas", "Atendimentos", PhoneWords.RES_AREA), 2, {})
                 Box(Modifier.weight(1f).fillMaxWidth()) {
-                    ResourcesScreen(ResourceSamples.state, now, "", {}, 0, {}, {}, {})
+                    ResourcesScreen(ResourceSamples.state, "", {}, 0, {}, {}, {})
                 }
             }
         }

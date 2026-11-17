@@ -65,7 +65,9 @@ internal fun TaskScreen(
     onReload: () -> Unit,
     assignees: List<String> = emptyList(),
     myName: String = "",
-    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") }
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") },
+    remindersBlocked: Boolean = false,
+    onRemindersChosen: () -> Unit = {}
 ) {
     // Only the task this screen was opened for: never the form of one with the data of another.
     val task = TaskRules.shown(routeId, state)
@@ -76,7 +78,7 @@ internal fun TaskScreen(
         }
         return
     }
-    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory)
+    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory, remindersBlocked, onRemindersChosen)
 }
 
 private val DraftSaver = Saver<TaskDraft, List<Any>>(save = { it.toList() }, restore = { TaskDraft.fromList(it) })
@@ -96,7 +98,9 @@ private fun TaskLoaded(
     onReload: () -> Unit,
     assignees: List<String>,
     myName: String,
-    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit,
+    remindersBlocked: Boolean,
+    onRemindersChosen: () -> Unit
 ) {
     val c = Ponte.colors
     // The draft remembers the version it started from; a newer stored task resets it (nothing
@@ -161,6 +165,27 @@ private fun TaskLoaded(
             if (shownActions.isNotEmpty()) ChoiceField("Ação", shownActions, form.action, { v -> edit { it.copy(action = v) } })
             ChoiceField("Prioridade", priorities.ifEmpty { DefaultPriorities }, form.priority, { v -> edit { it.copy(priority = v) } })
             DateField("Prazo", form.dueDate, { v -> edit { it.copy(dueDate = v) } }, emptyText = "Sem prazo")
+            LabeledField("Início planejado (AAAA-MM-DDTHH:MM)", form.scheduledStart, { v -> edit { it.copy(scheduledStart = v) } })
+            LabeledField("Fim planejado (AAAA-MM-DDTHH:MM)", form.scheduledEnd, { v -> edit { it.copy(scheduledEnd = v) } })
+            LabeledField("Estimativa em minutos (0 = sem estimativa)", form.estimateMinutes.toString(), { v -> v.toIntOrNull()?.let { n -> edit { it.copy(estimateMinutes = n) } } })
+            LabeledField("ID da tarefa pai (vazio = nenhuma)", form.parentTaskId?.toString() ?: "", { v -> if (v.isEmpty() || v.toLongOrNull() != null) edit { it.copy(parentTaskId = v.toLongOrNull()) } })
+            Text("Avisos antes do início")
+            listOf(0 to "No início", 15 to "15 minutos", 60 to "1 hora", 1440 to "1 dia").forEach { (minutes, label) ->
+                androidx.compose.material3.FilterChip(
+                    selected = minutes in form.reminderOffsetsMinutes,
+                    onClick = {
+                        val before = form.reminderOffsetsMinutes
+                        val after = if (minutes in before) before - minutes else before + minutes
+                        edit { it.copy(reminderOffsetsMinutes = after) }
+                        // Without the permission the notices stay mute: ask now, as Ajustes does.
+                        if (TaskRules.offsetAdded(before, after)) onRemindersChosen()
+                    },
+                    label = { Text(label) }
+                )
+            }
+            if (TaskRules.remindersBlockedShown(form.reminderOffsetsMinutes, remindersBlocked)) {
+                Notice(TaskRules.REMINDERS_BLOCKED, Tone.WARNING)
+            }
             // "Eu" and the suggestions only fill the typed form: the draft rules above stay as they are.
             AssigneeField(form.assignee, { v -> edit { it.copy(assignee = v) } }, assignees, myName)
             // Part of the draft like the other fields: saved with Salvar, refused with the rest on a conflict.

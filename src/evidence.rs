@@ -104,20 +104,10 @@ pub fn find_quote(
         != crate::model::Origin::Nowhere
 }
 
-/// Lowercase without accents, for comparing words.
+/// Lowercase without accents, for comparing words. Same length as the input
+/// (no whitespace collapse), because callers index into the folded text.
 pub(crate) fn fold(word: &str) -> String {
-    word.to_lowercase()
-        .chars()
-        .map(|c| match c {
-            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'ç' => 'c',
-            c => c,
-        })
-        .collect()
+    crate::labels::strip_accents(word)
 }
 
 fn digit_end(chars: &[char], start: usize) -> usize {

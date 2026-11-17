@@ -29,14 +29,14 @@ impl PonteApp {
             widgets::section(ui, "Lembretes de prazos");
             let mut on = self.reminders.enabled();
             if ui
-                .checkbox(&mut on, "Lembrar dos prazos uma vez por dia")
+                .checkbox(&mut on, "Ativar resumo diário e avisos das tarefas")
                 .changed()
             {
                 self.reminders.set_enabled(on);
             }
             ui.add_enabled_ui(on, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Horário");
+                    ui.label("Horário do resumo diário");
                     let (mut hour, mut minute) = self.reminders.time();
                     egui::ComboBox::from_id_salt("reminder-hour")
                         .width(56.0)
@@ -62,6 +62,7 @@ impl PonteApp {
                 ui,
                 "O Ponte mostra um aviso do Windows com a quantidade de tarefas e atendimentos que vencem, de reservas de recursos para hoje e de devoluções atrasadas. Só enquanto o Ponte está aberto ou minimizado.",
             );
+            widgets::small_muted(ui, "Os avisos individuais são escolhidos na tarefa. Contam a partir do início agendado ou, sem agendamento, das 9h do dia do prazo. Em Hoje, você pode abrir a tarefa, dispensar ou adiar o aviso por dez minutos.");
             ui.add_space(S1);
             if ui
                 .add(widgets::quiet("Mostrar um aviso de teste"))
@@ -349,6 +350,8 @@ impl PonteApp {
                 if export {
                     self.export_csv(ctx);
                 }
+                ui.add_space(S3);
+                self.calendar_exchange(ui);
                 if copy_backup {
                     if let Some(path) = &self.backup_path {
                         ctx.copy_text(path.display().to_string());

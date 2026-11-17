@@ -17,6 +17,9 @@ mod queue;
 mod search;
 mod settings;
 mod today;
+mod week;
+mod calendar_exchange;
+mod repetition;
 #[cfg(feature = "shots")]
 mod tour;
 mod windows;
@@ -1173,6 +1176,8 @@ struct PonteApp {
     focus_search: bool,
     /// The search across the whole library (Ctrl+K).
     global_search: search::GlobalSearch,
+    calendar_exchange: calendar_exchange::CalendarExchange,
+    repetition: repetition::Repetition,
     /// "Is there a newer version?" in Ajustes ▸ Sobre o Ponte.
     update: crate::update_check::UpdateState,
     /// Open tasks that are late or due today, shown on the rail.
@@ -1289,6 +1294,8 @@ impl PonteApp {
             return_after_select: None,
             focus_search: false,
             global_search: Default::default(),
+            calendar_exchange: Default::default(),
+            repetition: Default::default(),
             update: Default::default(),
             task_badge: 0,
             appearance: load_appearance().0,

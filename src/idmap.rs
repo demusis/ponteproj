@@ -584,6 +584,9 @@ impl IdMap {
                 if let Some(document) = task.document_id {
                     task.document_id = Some(t(K::Document, document)?);
                 }
+                if let Some(parent) = &mut task.parent_task_id {
+                    *parent = t(K::Task, *parent)?;
+                }
                 for dependency in &mut task.dependencies {
                     *dependency = t(K::Task, *dependency)?;
                 }
@@ -645,6 +648,9 @@ impl IdMap {
                 if let Some(task) = task {
                     if let Some(document) = task.document_id {
                         task.document_id = Some(t(K::Document, document)?);
+                    }
+                    if let Some(parent) = &mut task.parent_task_id {
+                        *parent = t(K::Task, *parent)?;
                     }
                     for dependency in &mut task.dependencies {
                         *dependency = t(K::Task, *dependency)?;
@@ -944,6 +950,22 @@ mod tests {
 
     fn open_store(dir: &tempfile::TempDir) -> Store {
         Store::open(&dir.path().join("acervo.sqlite3")).unwrap()
+    }
+
+    #[test]
+    fn remaps_parent_and_dependencies_without_changing_uid() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let mut ids = map(&[(IdKind::Task, 100)]);
+        ids.learn(&[CreatedId::new(IdKind::Task, "parent", 105)], Some(&[CreatedId::new(IdKind::Task, "parent", 130)]));
+        let mut task = crate::tasks::Task::standalone();
+        task.id = 0; task.parent_task_id = Some(105); task.dependencies = vec![105];
+        let uid = task.uid.clone();
+        let mutation = IntranetMutation::SaveTask { task, expected_version: None };
+        let IntranetMutation::SaveTask { task, .. } = ids.remap(&mutation, &store, None).unwrap() else { panic!("wrong mutation") };
+        assert_eq!(task.parent_task_id, Some(130));
+        assert_eq!(task.dependencies, vec![130]);
+        assert_eq!(task.uid, uid);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use std::time::Duration;
 /// open the library instead of saving over fields it does not know. 17 adds
 /// the categories (a table, and the uids kept in the payloads of tasks and
 /// of the document context), a new synced entity.
-pub(crate) const SCHEMA_VERSION: i64 = 17;
+pub(crate) const SCHEMA_VERSION: i64 = 18;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -217,6 +217,7 @@ impl Store {
             read_cache: Default::default(),
         };
         store.ensure_tasks()?;
+        crate::tasks::backfill_task_uids(&mut store.conn)?;
         store.ensure_files()?;
         store.ensure_work_context()?;
         store.ensure_page_text()?;
@@ -2089,6 +2090,7 @@ mod tests {
 
         // So is a write committed by another connection (the team server).
         task.title = "De lá".into();
+        task.uid = uuid::Uuid::new_v4().to_string();
         there.save_task(&task).unwrap();
         let titles: Vec<String> = here
             .list_tasks()

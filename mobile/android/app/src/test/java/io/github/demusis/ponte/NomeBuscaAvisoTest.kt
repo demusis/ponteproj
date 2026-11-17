@@ -204,22 +204,6 @@ class NomeBuscaAvisoTest {
         }
     }
 
-    @Test fun textoDoAvisoSoTemNumeros() {
-        assertEquals("3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.", DeadlineNotice.body(3, 2, 1))
-        assertEquals("1 tarefa atrasada, 1 para hoje e 2 atendimentos com prazo.", DeadlineNotice.body(1, 1, 2))
-        assertEquals("2 tarefas atrasadas e 1 para hoje.", DeadlineNotice.body(2, 1, 0))
-        assertEquals("1 tarefa atrasada e 3 atendimentos com prazo.", DeadlineNotice.body(1, 0, 3))
-        assertEquals("2 tarefas para hoje e 1 atendimento com prazo.", DeadlineNotice.body(0, 2, 1))
-        assertEquals("1 tarefa atrasada.", DeadlineNotice.body(1, 0, 0))
-        assertEquals("4 tarefas para hoje.", DeadlineNotice.body(0, 4, 0))
-        assertEquals("1 atendimento com prazo.", DeadlineNotice.body(0, 0, 1))
-    }
-
-    @Test fun nadaVenceNadaDeAviso() {
-        assertNull(DeadlineNotice.body(0, 0, 0))
-        assertNull(DeadlineNotice.body(-1, 0, -3))
-    }
-
     @Test fun horariosDoAviso() {
         assertEquals(DeadlineNotice.Time(8, 0), DeadlineNotice.DEFAULT)
         assertEquals("08:00", DeadlineNotice.DEFAULT.key)

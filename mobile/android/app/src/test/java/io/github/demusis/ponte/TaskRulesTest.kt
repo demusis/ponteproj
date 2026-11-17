@@ -15,6 +15,22 @@ class TaskRulesTest {
     private fun task(id: Long, version: Long, f: TaskForm = form()) =
         TaskDetail(id, 100 + id, "ORG-OFI-2026/0000$id", "Assunto $id", f, false, version, emptyList())
 
+    // ---- reminders and the permission to notify
+
+    @Test fun avisoSemPermissaoSoApareceParaTarefaComAvisos() {
+        assertTrue(TaskRules.remindersBlockedShown(listOf(15), blocked = true))
+        assertFalse("no offsets, nothing to warn about", TaskRules.remindersBlockedShown(emptyList(), blocked = true))
+        assertFalse("permission given", TaskRules.remindersBlockedShown(listOf(15), blocked = false))
+        assertTrue(TaskRules.REMINDERS_BLOCKED.lines().size == 1 && TaskRules.REMINDERS_BLOCKED.endsWith("."))
+    }
+
+    @Test fun permissaoEPedidaAoAcrescentarUmAvisoENaoAoTirar() {
+        assertTrue(TaskRules.offsetAdded(emptyList(), listOf(15)))
+        assertTrue(TaskRules.offsetAdded(listOf(15), listOf(15, 60)))
+        assertFalse(TaskRules.offsetAdded(listOf(15, 60), listOf(15)))
+        assertFalse(TaskRules.offsetAdded(emptyList(), emptyList()))
+    }
+
     // ---- which task the screen shows
 
     @Test fun telaMostraSoATarefaDaRota() {

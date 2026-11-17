@@ -3,7 +3,6 @@ package io.github.demusis.ponte
 import androidx.compose.ui.graphics.ImageBitmap
 import org.json.JSONObject
 import java.time.LocalDate
-import java.time.temporal.ChronoUnit
 
 // What the screens show. Plain values, built from the core's JSON by the controller, so every
 // screen is a function of its state and can be rendered on the computer with sample data.
@@ -30,26 +29,33 @@ internal data class TaskItem(
     val priorityLabel: String = "",
     val notes: String = "",
     /** Uids of the categories (names and colours come from [Category]). */
-    val categories: List<String> = emptyList()
+    val categories: List<String> = emptyList(),
+    /** The core's deadline group: "atrasadas", "hoje", "proximas", "sem_prazo" or "concluidas". */
+    val bucket: String = "",
+    /** What the task would be if it were open: late, or due today (the core decides; used when it is reopened). */
+    val lateIfOpen: Boolean = false,
+    val todayIfOpen: Boolean = false,
+    val uid: String = "",
+    val scheduledStart: String = "",
+    val scheduledEnd: String = "",
+    val estimateMinutes: Int = 0,
+    val parentTaskId: Long? = null,
+    val reminderOffsetsMinutes: List<Int> = emptyList()
 ) {
+    /** The group while open: the core's, or, for a task reopened here and not yet reloaded, from its flags. */
+    val openBucket: String
+        get() = when {
+            bucket != "concluidas" -> bucket
+            lateIfOpen -> "atrasadas"
+            todayIfOpen -> "hoje"
+            dueDate.isEmpty() -> "sem_prazo"
+            else -> "proximas"
+        }
+
     /** The second line of a row: the action and the document ("Sem documento" for none). */
     val secondLine: String
         get() = listOf(actionLabel, if (documentId <= 0) "Sem documento" else documentNumber)
             .filter { it.isNotEmpty() }.joinToString(" · ")
-}
-
-/** Short, relative wording of a due date for the chip. */
-internal fun dueChipText(iso: String, today: LocalDate = LocalDate.now()): String {
-    val d = try { LocalDate.parse(iso) } catch (_: Throwable) { return iso }
-    val days = ChronoUnit.DAYS.between(today, d)
-    return when {
-        days == 0L -> "hoje"
-        days == 1L -> "amanhã"
-        days == -1L -> "ontem"
-        days < 0 -> "há ${-days} dias"
-        d.year == today.year -> "%02d/%02d".format(d.dayOfMonth, d.monthValue)
-        else -> "%02d/%02d/%d".format(d.dayOfMonth, d.monthValue, d.year)
-    }
 }
 
 internal fun JSONObject.toTask(): TaskItem {
@@ -61,14 +67,21 @@ internal fun JSONObject.toTask(): TaskItem {
         actionLabel = s("action_label"),
         documentNumber = s("document_number"),
         dueDate = due,
-        dueChip = if (due.isEmpty()) "" else dueChipText(due),
-        done = s("status") == "concluida",
+        dueChip = s("due_chip"),
+        done = optBoolean("done"),
         overdue = optBoolean("overdue"),
         dueToday = optBoolean("due_today"),
         priority = s("priority", "normal").ifEmpty { "normal" },
         priorityLabel = s("priority_label"),
         notes = s("notes"),
-        categories = optJSONArray("categories").strings()
+        categories = optJSONArray("categories").strings(),
+        bucket = s("bucket"),
+        lateIfOpen = optBoolean("late_if_open"),
+        todayIfOpen = optBoolean("today_if_open"),
+        uid = s("uid"), scheduledStart = s("scheduled_start"), scheduledEnd = s("scheduled_end"),
+        estimateMinutes = optInt("estimate_minutes"),
+        parentTaskId = if (isNull("parent_task_id")) null else optLong("parent_task_id"),
+        reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList()
     )
 }
 
@@ -94,10 +107,9 @@ internal data class AttendanceItem(
 internal fun JSONObject.toAttendance() = AttendanceItem(
     id = optLong("id"), reference = s("reference"), subject = s("subject"),
     statusLabel = s("status_label"), dueDate = s("due_date"),
-    dueChip = s("due_date").let { if (it.isEmpty()) "" else dueChipText(it) }, late = optBoolean("late"),
+    dueChip = s("due_chip"), late = optBoolean("late"),
     assignee = s("assignee"), observation = s("observation"), open = optBoolean("open", true),
-    // Hoje lists only atendimentos due today or before, and does not say which are today's.
-    dueToday = if (has("due_today")) optBoolean("due_today") else s("due_date") == LocalDate.now().toString()
+    dueToday = optBoolean("due_today")
 )
 
 /** A fact of an atendimento's ficha: the desktop's label and its text. */
@@ -185,27 +197,6 @@ internal fun JSONObject.toSearchResult(): SearchResult {
     )
 }
 
-/**
- * "1 tarefa atrasada · 2 para hoje · 1 atendimento com prazo vencido ou para hoje · 2 reservas de hoje ·
- * 1 devolução atrasada", or "Nada vence hoje." when there is nothing in any of them.
- */
-internal fun todaySummary(
-    late: Int, today: Int, attendances: Int = 0, reservations: Int = 0, overdueReturns: Int = 0
-): String {
-    val tasks = when {
-        late > 0 && today > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas") + " · $today para hoje"
-        late > 0 -> PhoneWords.plural(late, "tarefa atrasada", "tarefas atrasadas")
-        today > 0 -> PhoneWords.plural(today, "tarefa para hoje", "tarefas para hoje")
-        else -> ""
-    }
-    val att = if (attendances > 0) {
-        PhoneWords.plural(attendances, "atendimento com prazo vencido ou para hoje", "atendimentos com prazo vencido ou para hoje")
-    } else ""
-    val booked = if (reservations > 0) PhoneWords.plural(reservations, "reserva de hoje", "reservas de hoje") else ""
-    val back = if (overdueReturns > 0) PhoneWords.plural(overdueReturns, "devolução atrasada", "devoluções atrasadas") else ""
-    return listOf(tasks, att, booked, back).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "Nada vence hoje." }
-}
-
 /** The checklist of a task (read-only here). */
 internal data class ChecklistItem(val done: Boolean, val text: String)
 
@@ -219,7 +210,12 @@ internal data class TaskForm(
     val assignee: String,
     val notes: String,
     /** Uids of the categories, in the order they were chosen. */
-    val categories: List<String> = emptyList()
+    val categories: List<String> = emptyList(),
+    val scheduledStart: String = "",
+    val scheduledEnd: String = "",
+    val estimateMinutes: Int = 0,
+    val parentTaskId: Long? = null,
+    val reminderOffsetsMinutes: List<Int> = emptyList()
 ) {
     companion object
 
@@ -233,6 +229,11 @@ internal data class TaskForm(
         if (action != saved.action) out["action"] = action
         if (priority != saved.priority) out["priority"] = priority
         if (dueDate != saved.dueDate) out["due_date"] = dueDate
+        if (scheduledStart != saved.scheduledStart) out["scheduled_start"] = scheduledStart
+        if (scheduledEnd != saved.scheduledEnd) out["scheduled_end"] = scheduledEnd
+        if (estimateMinutes != saved.estimateMinutes) out["estimate_minutes"] = estimateMinutes
+        if (reminderOffsetsMinutes != saved.reminderOffsetsMinutes) out["reminder_offsets_minutes"] = reminderOffsetsMinutes
+        if (parentTaskId != saved.parentTaskId) out["parent_task_id"] = parentTaskId ?: JSONObject.NULL
         if (assignee.trim() != saved.assignee.trim()) out["assignee"] = assignee.trim()
         if (notes != saved.notes) out["notes"] = notes
         if (categories.toSet() != saved.categories.toSet()) out["categories"] = categories
@@ -250,8 +251,15 @@ internal data class TaskDetail(
     val form: TaskForm,
     val done: Boolean,
     val version: Long,
-    val checklist: List<ChecklistItem>
+    val checklist: List<ChecklistItem>,
+    val uid: String = ""
 ) {
+    val scheduledStart: String get() = form.scheduledStart
+    val scheduledEnd: String get() = form.scheduledEnd
+    val estimateMinutes: Int get() = form.estimateMinutes
+    val parentTaskId: Long? get() = form.parentTaskId
+    val reminderOffsetsMinutes: List<Int> get() = form.reminderOffsetsMinutes
+
     /** "ORG-… — assunto", or whichever of the two exists. */
     val documentLine: String
         get() = listOf(documentNumber, documentTitle).filter { it.isNotBlank() }.joinToString(" — ")
@@ -259,17 +267,23 @@ internal data class TaskDetail(
     /** As a row of a list, for the common actions (conclude, reopen). */
     fun asItem() = TaskItem(
         id = id, documentId = documentId, title = form.title, actionLabel = "", documentNumber = documentNumber,
-        dueDate = form.dueDate, dueChip = "", done = done, overdue = false, dueToday = false
+        dueDate = form.dueDate, dueChip = "", done = done, overdue = false, dueToday = false,
+        uid = uid, scheduledStart = form.scheduledStart, scheduledEnd = form.scheduledEnd,
+        estimateMinutes = form.estimateMinutes, parentTaskId = form.parentTaskId, reminderOffsetsMinutes = form.reminderOffsetsMinutes
     )
 }
 
 internal fun JSONObject.toTaskDetail() = TaskDetail(
     id = optLong("id"), documentId = optLong("document_id"), documentNumber = s("document_number"),
-    documentTitle = s("document_title"),
+    documentTitle = s("document_title"), uid = s("uid"),
     form = TaskForm(
         title = s("title"), action = s("action"), priority = s("priority", "normal").ifEmpty { "normal" },
         dueDate = s("due_date"), assignee = s("assignee"), notes = s("notes"),
-        categories = optJSONArray("categories").strings()
+        categories = optJSONArray("categories").strings(),
+        scheduledStart = s("scheduled_start"), scheduledEnd = s("scheduled_end"),
+        estimateMinutes = optInt("estimate_minutes"),
+        parentTaskId = if (isNull("parent_task_id")) null else optLong("parent_task_id"),
+        reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList()
     ),
     done = s("status") == "concluida", version = optLong("version"),
     checklist = optJSONArray("checklist").objs().map { ChecklistItem(it.optBoolean("done"), it.s("text")) }
@@ -486,14 +500,25 @@ internal data class ResourceItem(
     /** "ativo" or "fora_de_uso". */
     val status: String,
     val statusLabel: String,
-    val active: Boolean
+    val active: Boolean,
+    /** How many are out now, how many are free, and the line "1 de 3 em uso agora" (the core decides). */
+    val inUseNow: Int = 0,
+    val freeNow: Int = 0,
+    val usageLine: String = "",
+    /** "1 livre", "3 livres". */
+    val freeText: String = "",
+    /** Uids of the uses holding it today (by start) and of what is out or still ahead (by start). */
+    val todayUids: List<String> = emptyList(),
+    val nextUids: List<String> = emptyList()
 )
 
 internal fun JSONObject.toResource() = ResourceItem(
     uid = s("uid"), name = s("name"),
     quantity = optInt("quantity", 1), location = s("location"), identification = s("identification"),
     notes = s("notes"), status = s("status", "ativo"), statusLabel = s("status_label"),
-    active = optBoolean("active", true)
+    active = optBoolean("active", true),
+    inUseNow = optInt("in_use_now"), freeNow = optInt("free_now"), usageLine = s("usage_line"), freeText = s("free_text"),
+    todayUids = optJSONArray("today").strings(), nextUids = optJSONArray("next").strings()
 )
 
 /** One use of a resource: a reservation or a loan, with its start and end (`AAAA-MM-DDTHH:MM`, local time). */
@@ -516,8 +541,10 @@ internal data class ResourceUseItem(
     val status: String,
     val statusLabel: String,
     val notes: String,
-    /** As the core computed it when the list was read; the screens ask [ResourceRules.isOverdue] with the clock. */
+    /** In use and past its expected end, as the core decided when the screen was read. */
     val overdue: Boolean,
+    /** "10/11 14:00 – 16:00", as the core words the period. */
+    val period: String = "",
     /** 0: no document linked. */
     val documentId: Long = 0,
     val documentNumber: String = "",
@@ -537,18 +564,50 @@ internal fun JSONObject.toResourceUse() = ResourceUseItem(
     quantity = optInt("quantity", 1),
     who = s("who"), sector = s("sector"), purpose = s("purpose"), start = s("start"), end = s("end"),
     returnedAt = s("returned_at"), status = s("status", "reservado"), statusLabel = s("status_label"),
-    notes = s("notes"), overdue = optBoolean("overdue"),
+    notes = s("notes"), overdue = optBoolean("overdue"), period = s("period"),
     documentId = optLong("document_id"), documentNumber = s("document_number"), documentTitle = s("document_title"),
     attendanceId = optLong("attendance_id"), attendanceReference = s("attendance_reference"),
     taskId = optLong("task_id"), taskTitle = s("task_title")
 )
 
-/** The Recursos area: the uses and the register, as the core listed them (uses by start, resources by name). */
+/** A group of the list of uses, as the core decided it (title included): the uses are those of [uids]. */
+internal data class ResourceGroup(val key: String, val title: String, val late: Boolean, val uids: List<String>)
+
+/**
+ * The Recursos area as the core decided it for the text searched: all the uses and resources (the detail
+ * screens look them up), the groups of the uses that match, and the uids of the resources that match.
+ */
 internal data class ResourcesState(
     val loading: Boolean = true,
     val error: String? = null,
     val uses: List<ResourceUseItem> = emptyList(),
-    val resources: List<ResourceItem> = emptyList()
+    val resources: List<ResourceItem> = emptyList(),
+    val groups: List<ResourceGroup> = emptyList(),
+    val rows: List<String> = emptyList()
+) {
+    fun use(uid: String): ResourceUseItem? = uses.firstOrNull { it.uid == uid }
+
+    fun usesOf(uids: List<String>): List<ResourceUseItem> {
+        val byUid = uses.associateBy { it.uid }
+        return uids.mapNotNull { byUid[it] }
+    }
+
+    /** The resources that match the text, as the core ordered them. */
+    val rowResources: List<ResourceItem>
+        get() {
+            val byUid = resources.associateBy { it.uid }
+            return rows.mapNotNull { byUid[it] }
+        }
+}
+
+internal fun JSONObject.toResourcesState() = ResourcesState(
+    loading = false,
+    uses = optJSONArray("uses").objs().map { it.toResourceUse() },
+    resources = optJSONArray("resources").objs().map { it.toResource() },
+    groups = optJSONArray("groups").objs().map {
+        ResourceGroup(it.s("key"), it.s("title"), it.optBoolean("late"), it.optJSONArray("uids").strings())
+    },
+    rows = optJSONArray("rows").strings()
 )
 
 /**
@@ -575,7 +634,10 @@ internal data class TodayState(
     /** Resources reserved or in use today (a count; the names are in the Recursos list). */
     val reservationsToday: Int = 0,
     /** Resources in use past their expected end. */
-    val overdueReturns: Int = 0
+    val overdueReturns: Int = 0,
+    /** The core's line for the top of Hoje, and the number on the Tarefas tab. */
+    val summary: String = "",
+    val badge: Int = 0
 ) {
     val isEmpty: Boolean
         get() = late.isEmpty() && today.isEmpty() && upcoming.isEmpty() && attendances.isEmpty() &&

@@ -28,11 +28,11 @@ class HojeTarefaTest {
     }
 
     @Test fun hojeSoAtendimentos() = paparazzi.shotInShell("so_atendimentos", 0, shell = Samples.shell.copy(badge = 0)) {
-        TodayScreen(TodayState(loading = false, attendances = Samples.attendances), {}, {})
+        TodayScreen(TodayState(loading = false, attendances = Samples.attendances, summary = "2 atendimentos com prazo vencido ou para hoje"), {}, {})
     }
 
     @Test fun hojeSoProximos() = paparazzi.shotInShell("so_proximos", 0, shell = Samples.shell.copy(badge = 0)) {
-        TodayScreen(TodayState(loading = false, upcoming = Samples.todayUpcoming), {}, {})
+        TodayScreen(TodayState(loading = false, upcoming = Samples.todayUpcoming, summary = "Nada vence hoje."), {}, {})
     }
 
     private fun screen(

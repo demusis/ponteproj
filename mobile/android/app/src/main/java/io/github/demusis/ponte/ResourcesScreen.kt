@@ -55,7 +55,6 @@ internal const val RESOURCE_READ_ONLY = "Para reservar ou devolver, use o Ponte 
 @Composable
 internal fun ResourcesScreen(
     state: ResourcesState,
-    now: String,
     query: String,
     onQuery: (String) -> Unit,
     view: Int,
@@ -66,8 +65,8 @@ internal fun ResourcesScreen(
 ) {
     val c = Ponte.colors
     var showClosed by rememberSaveable { mutableStateOf(false) }
-    val groups = remember(state.uses, query, now) { ResourceRules.group(state.uses, query, now) }
-    val rows = remember(state.resources, query) { ResourceRules.resourceRows(state.resources, query) }
+    // The core already grouped and searched; nothing is computed over the uses here.
+    val rows = state.rowResources
 
     if (state.loading && state.uses.isEmpty() && state.resources.isEmpty()) {
         LoadingBox("Carregando os recursos…", Modifier.fillMaxSize())
@@ -75,7 +74,7 @@ internal fun ResourcesScreen(
     }
     val usesView = view == 0
     val hasData = if (usesView) state.uses.isNotEmpty() else state.resources.isNotEmpty()
-    val noMatch = hasData && (if (usesView) groups.total == 0 else rows.isEmpty())
+    val noMatch = hasData && (if (usesView) state.groups.isEmpty() else rows.isEmpty())
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 32.dp),
@@ -117,17 +116,18 @@ internal fun ResourcesScreen(
                 )
             }
             !usesView -> items(rows, key = { "r-${it.uid}" }) { r ->
-                ResourceCard(r, ResourceRules.usageLine(r, state.uses, now), onClick = { onOpenResource(r) })
+                ResourceCard(r, r.usageLine, onClick = { onOpenResource(r) })
             }
             else -> {
-                for ((group, list) in groups.shown) {
-                    if (group == ResourceRules.Group.CLOSED) {
+                for (group in state.groups) {
+                    val list = state.usesOf(group.uids)
+                    if (group.key == "encerrados") {
                         item(key = "h-closed") {
                             Row(
                                 Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { showClosed = !showClosed },
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                SectionLabel("${ResourceRules.groupTitle(group)} · ${list.size}", Modifier.weight(1f))
+                                SectionLabel("${group.title} · ${list.size}", Modifier.weight(1f))
                                 Icon(
                                     Icons.Outlined.ExpandMore,
                                     contentDescription = if (showClosed) "Recolher os encerrados" else "Mostrar os encerrados",
@@ -137,16 +137,16 @@ internal fun ResourcesScreen(
                         }
                         // A search that found closed uses shows them: the person asked for them.
                         if (showClosed || query.isNotBlank()) {
-                            items(list, key = { "u-${it.uid}" }) { u -> ResourceUseCard(u, now, onClick = { onOpenUse(u) }) }
+                            items(list, key = { "u-${it.uid}" }) { u -> ResourceUseCard(u, onClick = { onOpenUse(u) }) }
                         }
                     } else {
-                        item(key = "h-$group") {
+                        item(key = "h-${group.key}") {
                             SectionLabel(
-                                "${ResourceRules.groupTitle(group)} · ${list.size}", Modifier.padding(top = 4.dp),
-                                color = if (group == ResourceRules.Group.LATE) c.error else c.muted
+                                "${group.title} · ${list.size}", Modifier.padding(top = 4.dp),
+                                color = if (group.late) c.error else c.muted
                             )
                         }
-                        items(list, key = { "u-${it.uid}" }) { u -> ResourceUseCard(u, now, onClick = { onOpenUse(u) }) }
+                        items(list, key = { "u-${it.uid}" }) { u -> ResourceUseCard(u, onClick = { onOpenUse(u) }) }
                     }
                 }
             }
@@ -156,9 +156,9 @@ internal fun ResourcesScreen(
 
 /** The pill of a use: "Atrasado" in red, else its situation. */
 @Composable
-private fun UsePill(u: ResourceUseItem, now: String, modifier: Modifier = Modifier) {
+private fun UsePill(u: ResourceUseItem, modifier: Modifier = Modifier) {
     when {
-        ResourceRules.isOverdue(u, now) -> Pill(PhoneWords.RES_OVERDUE, Tone.ERROR, modifier)
+        u.overdue -> Pill(PhoneWords.RES_OVERDUE, Tone.ERROR, modifier)
         u.status == ResourceRules.IN_USE -> Pill(u.statusLabel.ifEmpty { "Em uso" }, Tone.ACCENT, modifier)
         u.status == ResourceRules.RESERVED -> Pill(u.statusLabel.ifEmpty { "Reservado" }, Tone.NEUTRAL, modifier)
         else -> Pill(u.statusLabel, Tone.NEUTRAL, modifier)
@@ -170,7 +170,7 @@ private fun UsePill(u: ResourceUseItem, now: String, modifier: Modifier = Modifi
  * or cancelled use is in the muted color.
  */
 @Composable
-internal fun ResourceUseCard(u: ResourceUseItem, now: String, onClick: (() -> Unit)? = null) {
+internal fun ResourceUseCard(u: ResourceUseItem, onClick: (() -> Unit)? = null) {
     val c = Ponte.colors
     val closed = u.status == ResourceRules.RETURNED || u.status == ResourceRules.CANCELLED
     PonteCard(onClick = onClick) {
@@ -184,12 +184,12 @@ internal fun ResourceUseCard(u: ResourceUseItem, now: String, onClick: (() -> Un
                 if (who.isNotEmpty()) {
                     Text(who, style = MaterialTheme.typography.bodySmall, color = c.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                val period = ResourceRules.periodText(u.start, u.end) +
+                val period = u.period +
                     if (u.quantity > 1) " · " + PhoneWords.plural(u.quantity, "unidade", "unidades") else ""
                 Text(period, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(8.dp))
-            UsePill(u, now)
+            UsePill(u)
         }
     }
 }
@@ -273,7 +273,6 @@ private fun LinkCard(icon: ImageVector, label: String, text: String, onClick: ()
 internal fun ResourceUseScreen(
     uid: String,
     state: ResourcesState,
-    now: String,
     onBack: () -> Unit,
     onOpenResource: (String) -> Unit,
     onOpenDocument: (Long) -> Unit,
@@ -287,7 +286,7 @@ internal fun ResourceUseScreen(
         footer = if (u != null && footer != null) ({ footer(u) }) else null
     ) {
         when {
-            u != null -> ResourceUseBody(u, state, now, onOpenResource, onOpenDocument, onOpenAttendance, onOpenTask)
+            u != null -> ResourceUseBody(u, state, onOpenResource, onOpenDocument, onOpenAttendance, onOpenTask)
             state.error != null -> Notice(state.error, Tone.ERROR, Modifier.padding(16.dp))
             state.loading -> LoadingBox()
             else -> Notice("Este uso não foi encontrado. Ele pode ter sido apagado em outro aparelho.", Tone.WARNING, Modifier.padding(16.dp))
@@ -299,7 +298,6 @@ internal fun ResourceUseScreen(
 private fun ResourceUseBody(
     u: ResourceUseItem,
     state: ResourcesState,
-    now: String,
     onOpenResource: (String) -> Unit,
     onOpenDocument: (Long) -> Unit,
     onOpenAttendance: (Long) -> Unit,
@@ -320,8 +318,8 @@ private fun ResourceUseBody(
             val who = ResourceRules.whoLine(u)
             if (who.isNotEmpty()) Text(who, style = MaterialTheme.typography.bodyLarge, color = c.secondary)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                UsePill(u, now)
-                if (ResourceRules.isOverdue(u, now)) Pill("Fim previsto ${ResourceRules.momentText(u.end)}", Tone.NEUTRAL, Modifier.weight(1f, fill = false))
+                UsePill(u)
+                if (u.overdue) Pill("Fim previsto ${ResourceRules.momentText(u.end)}", Tone.NEUTRAL, Modifier.weight(1f, fill = false))
             }
         }
         Notice(RESOURCE_READ_ONLY, Tone.NEUTRAL)
@@ -334,7 +332,7 @@ private fun ResourceUseBody(
                 PhoneWords.RES_START to ResourceRules.momentText(u.start),
                 PhoneWords.RES_END to ResourceRules.momentText(u.end),
                 PhoneWords.RES_RETURNED to if (u.returnedAt.isEmpty()) "" else ResourceRules.momentText(u.returnedAt),
-                PhoneWords.RES_STATUS to if (ResourceRules.isOverdue(u, now)) "${u.statusLabel} · ${PhoneWords.RES_OVERDUE}" else u.statusLabel,
+                PhoneWords.RES_STATUS to if (u.overdue) "${u.statusLabel} · ${PhoneWords.RES_OVERDUE}" else u.statusLabel,
                 PhoneWords.RES_QUANTITY to u.quantity.toString(),
                 PhoneWords.RES_NOTES to u.notes
             )
@@ -363,7 +361,6 @@ private fun ResourceUseBody(
 internal fun ResourceScreen(
     uid: String,
     state: ResourcesState,
-    now: String,
     onBack: () -> Unit,
     onOpenUse: (String) -> Unit,
     footer: (@Composable ColumnScope.(ResourceItem) -> Unit)? = null
@@ -374,7 +371,7 @@ internal fun ResourceScreen(
         footer = if (r != null && footer != null) ({ footer(r) }) else null
     ) {
         when {
-            r != null -> ResourceBody(r, state, now, onOpenUse)
+            r != null -> ResourceBody(r, state, onOpenUse)
             state.error != null -> Notice(state.error, Tone.ERROR, Modifier.padding(16.dp))
             state.loading -> LoadingBox()
             else -> Notice("Este recurso não foi encontrado. Ele pode ter sido apagado em outro aparelho.", Tone.WARNING, Modifier.padding(16.dp))
@@ -383,10 +380,10 @@ internal fun ResourceScreen(
 }
 
 @Composable
-private fun ResourceBody(r: ResourceItem, state: ResourcesState, now: String, onOpenUse: (String) -> Unit) {
+private fun ResourceBody(r: ResourceItem, state: ResourcesState, onOpenUse: (String) -> Unit) {
     val c = Ponte.colors
-    val next = ResourceRules.nextUses(r, state.uses, now)
-    val today = ResourceRules.occupationToday(r, state.uses, now)
+    val next = state.usesOf(r.nextUids)
+    val today = state.usesOf(r.todayUids)
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 32.dp),
@@ -397,8 +394,7 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, now: String, on
             if (!r.active) Pill(PhoneWords.RES_INACTIVE, Tone.NEUTRAL)
             if (r.active) {
                 Text(
-                    ResourceRules.usageLine(r, state.uses, now) + " · " +
-                        PhoneWords.plural(ResourceRules.freeNow(r, state.uses, now), "livre", "livres"),
+                    r.usageLine + " · " + r.freeText,
                     style = MaterialTheme.typography.bodyMedium, color = c.secondary
                 )
             }
@@ -423,9 +419,9 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, now: String, on
                 today.forEachIndexed { i, u ->
                     if (i > 0) HorizontalDivider(color = c.divider)
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(ResourceRules.periodText(u.start, u.end), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
+                        Text(u.period, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
                         Text(
-                            listOf(ResourceRules.whoLine(u), if (ResourceRules.isOverdue(u, now)) PhoneWords.RES_OVERDUE else u.statusLabel)
+                            listOf(ResourceRules.whoLine(u), if (u.overdue) PhoneWords.RES_OVERDUE else u.statusLabel)
                                 .filter { it.isNotEmpty() }.joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall, color = c.secondary
                         )
@@ -445,14 +441,14 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, now: String, on
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    ResourceRules.periodText(u.start, u.end), fontSize = 15.sp, fontWeight = FontWeight.Medium,
+                                    u.period, fontSize = 15.sp, fontWeight = FontWeight.Medium,
                                     color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis
                                 )
                                 val who = ResourceRules.whoLine(u)
                                 if (who.isNotEmpty()) Text(who, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             Spacer(Modifier.width(8.dp))
-                            UsePill(u, now)
+                            UsePill(u)
                         }
                     }
                 }

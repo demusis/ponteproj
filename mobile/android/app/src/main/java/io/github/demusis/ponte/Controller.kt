@@ -167,6 +167,12 @@ internal object Controller {
         private set
     var docQuery by mutableStateOf("")
     var docFilter by mutableStateOf(DocFilter.ALL)
+    /** Ids of the documents the core's search found for [docQuery]; null while nothing is typed. */
+    var docMatches by mutableStateOf<Set<Long>?>(null)
+        private set
+    /** The same for the text typed in the document picker. */
+    var pickMatches by mutableStateOf<Set<Long>?>(null)
+        private set
 
     /** Every category of the library; chips and pickers read it (archived ones included). */
     var categories by mutableStateOf<List<Category>>(emptyList())
@@ -306,6 +312,7 @@ internal object Controller {
         tab = s.getInt("tab", 0).coerceIn(0, 3)
         tasksSegment = s.getInt("segment", 0).coerceIn(0, 2)
         docQuery = s.getString("query") ?: ""
+        docFinder.ask(docQuery)
         docFilter = try { DocFilter.valueOf(s.getString("filter") ?: "") } catch (_: Throwable) { DocFilter.ALL }
         stack.clear()
         s.getStringArrayList("stack")?.mapNotNull { Route.parse(it) }?.forEach { stack.add(it) }
@@ -659,7 +666,7 @@ internal object Controller {
     fun render() {
         try {
             val busy = SyncRunner.running.get()
-            docs = SyncRunner.docs
+            takeDocs()
             if (wasRunning && !busy) runEnded()
             wasRunning = busy
 
@@ -676,7 +683,7 @@ internal object Controller {
             }
             shell = ShellState(
                 tab = tab,
-                badge = tasks.tasks.count { !it.done && (it.overdue || it.dueToday) },
+                badge = today.badge,
                 syncing = busy,
                 statusLine = line,
                 statusKind = kind,
@@ -885,7 +892,7 @@ internal object Controller {
             }
             SyncRunner.refreshDocs()
         }, {
-            docs = SyncRunner.docs
+            takeDocs()
             reloadDocument()
         }, { status(it, true) }, fail = "Não foi possível guardar a nota neste aparelho. Tente salvar de novo.")
     }
@@ -948,7 +955,7 @@ internal object Controller {
     private fun TaskItem.withPending(): TaskItem {
         val d = pendingDone[id]?.second ?: return this
         return if (d == done) this
-        else copy(done = d, overdue = if (d) false else overdue, dueToday = if (d) false else dueToday)
+        else copy(done = d, overdue = !d && lateIfOpen, dueToday = !d && todayIfOpen)
     }
 
     /** Reads the list of categories; a failure keeps the one already shown. */
@@ -980,7 +987,7 @@ internal object Controller {
             SyncRunner.refreshDocs()
             version
         }, {
-            docs = SyncRunner.docs
+            takeDocs()
             reloadDocument()
             say("Categorias salvas.")
             requestSync(null, auto = true)
@@ -995,7 +1002,9 @@ internal object Controller {
         SyncRunner.background({ Api.tasks().map { it.toTask() } }, { read ->
             val list = read.map { it.withPending() }
             tasks = TasksState(loading = false, error = null, tasks = list)
-            shell = shell.copy(badge = list.count { t -> !t.done && (t.overdue || t.dueToday) })
+            // The list changed (a save, a conclusion, a sync): arm the task notices again, so a
+            // notice set a moment ago is not left waiting for the next time the app opens.
+            if (::app.isInitialized) PlannedNotices.refreshAsync(app)
         }, { tasks = TasksState(loading = false, error = it, tasks = tasks.tasks) },
             fail = "Não foi possível ler as tarefas. Toque em Sincronizar agora e tente de novo.")
         refreshToday()
@@ -1059,10 +1068,65 @@ internal object Controller {
 
     // ---------------------------------------------------------------- recursos (read-only)
 
-    /** Reads the uses and the register of resources (the detail screens are drawn from them). */
-    private fun refreshResources() {
-        SyncRunner.background({ Api.resourceUses() to Api.resources() }, { (uses, list) ->
-            resources = ResourcesState(loading = false, error = null, uses = uses, resources = list)
+    /**
+     * The search over the documents for a text typed in a box: the core searches 300 ms after the last
+     * keystroke, off the main thread, and only the newest answer is kept. Nothing typed: no call, all shown.
+     */
+    private class DocFinder(private val apply: (Set<Long>?) -> Unit) {
+        private var gen = 0
+        private var text = ""
+        private val runner = Runnable { run() }
+
+        fun ask(q: String) {
+            main.removeCallbacks(runner)
+            gen++
+            text = q.trim()
+            if (text.isEmpty()) apply(null) else main.postDelayed(runner, SearchRules.DEBOUNCE_MS)
+        }
+
+        private fun run() {
+            if (locked) return
+            val asked = ++gen
+            val t = text
+            SyncRunner.background({ Api.documentIds(t) }, { ids -> if (asked == gen && !locked) apply(ids) }, { },
+                fail = "Não foi possível buscar. Tente de novo.")
+        }
+    }
+
+    private val docFinder = DocFinder { docMatches = it }
+    private val pickFinder = DocFinder { pickMatches = it }
+
+    /** Takes the documents the sync runner holds; what the Documentos search found is asked again for them. */
+    private fun takeDocs() {
+        docs = SyncRunner.docs
+        docFinder.ask(docQuery)
+    }
+
+    fun typeDocQuery(q: String) {
+        docQuery = q
+        docFinder.ask(q)
+    }
+
+    fun setPickQuery(q: String) = pickFinder.ask(q)
+
+    private val resRunner = Runnable { refreshResources() }
+
+    /** Typing in the search of Recursos: the core searches 300 ms after the last keystroke (at once when emptied). */
+    fun typeResQuery(q: String) {
+        resQuery = q.take(200)
+        main.removeCallbacks(resRunner)
+        if (resQuery.isBlank()) refreshResources() else main.postDelayed(resRunner, SearchRules.DEBOUNCE_MS)
+    }
+
+    /**
+     * Reads the Recursos area as the core decides it now, for the text searched: groups, who holds what,
+     * the period wording. Called when the screen opens, after a sync and every minute while it is visible.
+     */
+    fun refreshResources() {
+        val asked = resQuery.trim()
+        SyncRunner.background({ Api.resourceView(asked) }, { read ->
+            // A newer text was typed while this was read: that one will answer.
+            if (asked == resQuery.trim()) resources = read
         }, { resources = resources.copy(loading = false, error = it) },
             fail = "Não foi possível ler os recursos. Toque em Sincronizar agora e tente de novo.")
     }
@@ -1145,11 +1209,13 @@ internal object Controller {
                 loading = false, late = tasksOf("late"), today = tasksOf("today"), upcoming = tasksOf("upcoming"),
                 attendances = o.optJSONArray("attendances").objs().map { it.toAttendance() },
                 reservationsToday = o.optJSONObject("resources")?.optInt("reservations_today") ?: 0,
-                overdueReturns = o.optJSONObject("resources")?.optInt("overdue") ?: 0
+                overdueReturns = o.optJSONObject("resources")?.optInt("overdue") ?: 0,
+                summary = o.optString("summary"), badge = o.optInt("badge")
             )
         }, { read ->
             val open = { list: List<TaskItem> -> list.map { it.withPending() }.filter { !it.done } }
             today = read.copy(late = open(read.late), today = open(read.today), upcoming = open(read.upcoming))
+            shell = shell.copy(badge = read.badge)
         }, { today = today.copy(loading = false, error = it) },
             fail = "Não foi possível ler o que vence hoje. Toque em Sincronizar agora e tente de novo.")
     }
@@ -1164,7 +1230,7 @@ internal object Controller {
         val settled: () -> Unit = { if (pendingDone[t.id]?.first == seq) pendingDone.remove(t.id) }
         val flip = { x: TaskItem ->
             if (x.id != t.id) x
-            else x.copy(done = done, overdue = if (done) false else x.overdue, dueToday = if (done) false else x.dueToday)
+            else x.copy(done = done, overdue = !done && x.lateIfOpen, dueToday = !done && x.todayIfOpen)
         }
         tasks = tasks.copy(tasks = tasks.tasks.map(flip))
         if (done) {
@@ -1177,7 +1243,7 @@ internal object Controller {
             SyncRunner.refreshDocs()
         }, {
             settled()
-            docs = SyncRunner.docs
+            takeDocs()
             refreshTasks()
             reloadDocument()
             if (offerUndo) {
@@ -1234,6 +1300,8 @@ internal object Controller {
         val next = TaskRules.withTask(stack.toList(), id)
         taskGen++
         taskEdit = TaskEditState(id = id)
+        // The hint about a refused permission is about the last try: a new task starts without it.
+        taskNoticeBlocked = false
         stack.clear()
         stack.addAll(next)
         loadTask(id)
@@ -1301,7 +1369,7 @@ internal object Controller {
             SyncRunner.refreshDocs()
             version
         }, { version ->
-            docs = SyncRunner.docs
+            takeDocs()
             if (taskOnScreen(t.id, gen)) {
                 taskEdit = taskEdit.copy(task = t.copy(form = s.form, version = version), busy = true)
                 stack.remove(Route.EditTask(t.id))
@@ -1359,7 +1427,7 @@ internal object Controller {
             SyncRunner.refreshDocs()
             version
         }, { version ->
-            docs = SyncRunner.docs
+            takeDocs()
             if (taskOnScreen(t.id, gen)) {
                 stack.removeAll { it is Route.Pick }
                 // Stays busy until the task is read again: a save before that would send the old version.
@@ -1387,7 +1455,7 @@ internal object Controller {
             Api.createTask(id, title.trim(), action, due, assignee.trim(), categories)
             SyncRunner.refreshDocs()
         }, {
-            docs = SyncRunner.docs
+            takeDocs()
             refreshTasks()
             reloadDocument()
             say("Tarefa criada.")
@@ -1606,7 +1674,7 @@ internal object Controller {
                     photo = PhotoState(kinds = photo.kinds)
                     src.delete()
                     out.delete()
-                    docs = SyncRunner.docs
+                    takeDocs()
                     stack.remove(Route.Photo)
                     tab = 2
                     shell = shell.copy(tab = 2)
@@ -1790,7 +1858,7 @@ internal object Controller {
             SyncRunner.refreshDocs()
             r
         }, { results ->
-            docs = SyncRunner.docs
+            takeDocs()
             val done = HashSet<Long>()
             val failed = HashMap<Long, String>()
             var fresh = 0
@@ -2010,6 +2078,39 @@ internal object Controller {
         NoticeScheduler.setTime(app, DeadlineNotice.Time.fromKey(key))
         NoticeScheduler.arm(app)
         updateSettings()
+    }
+
+    /** The person set reminders on a task and the phone does not let this app notify (refused, or blocked in its settings). */
+    var taskNoticeBlocked by mutableStateOf(false)
+        private set
+
+    /**
+     * A reminder offset was chosen on a task. Without the permission (Android 13 or newer) the notices of the
+     * tasks would stay mute, so it is asked for here, as the daily notice's switch does; if it is refused the
+     * task screen says so in one line. Does not touch the switch of the daily notice.
+     */
+    fun taskRemindersChosen() {
+        if (NoticeScheduler.allowed(app)) {
+            taskNoticeBlocked = false
+            PlannedNotices.refreshAsync(app)
+            return
+        }
+        val a = activity
+        if (android.os.Build.VERSION.SDK_INT >= 33 && a != null &&
+            app.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            a.askNoticePermission(MainActivity.REQ_TASK_NOTICE)
+        } else {
+            // The phone itself blocks this app's notifications: only its settings can allow them.
+            onTaskNoticePermission(false)
+        }
+    }
+
+    /** The answer of the system's permission question asked from a task. */
+    fun onTaskNoticePermission(granted: Boolean) {
+        val ok = granted && NoticeScheduler.allowed(app)
+        taskNoticeBlocked = !ok
+        if (ok) PlannedNotices.refreshAsync(app)
     }
 
     /** The phone's own notification settings of this app, where the permission can be given. */

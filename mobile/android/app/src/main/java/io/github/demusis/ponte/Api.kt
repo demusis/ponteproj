@@ -60,9 +60,11 @@ internal object Api {
 
     fun attendance(id: Long): AttendanceDetail = c(core.getAttendance(id)).toAttendanceDetail()
 
-    fun resources(): List<ResourceItem> = c(core.listResources()).optJSONArray("resources").objs().map { it.toResource() }
+    fun resourceView(query: String): ResourcesState = c(core.resourceView(query)).toResourcesState()
 
-    fun resourceUses(): List<ResourceUseItem> = c(core.listResourceUses()).optJSONArray("uses").objs().map { it.toResourceUse() }
+    /** The ids of the documents the core's search finds for [query]. */
+    fun documentIds(query: String): Set<Long> =
+        c(core.documentIds(query)).optJSONArray("ids").let { a -> (0 until (a?.length() ?: 0)).map { a!!.optLong(it) }.toSet() }
 
     /** The query is passed on and forgotten: nothing here keeps or logs it. */
     fun search(query: String): SearchResult = c(core.search(query)).toSearchResult()

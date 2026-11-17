@@ -48,6 +48,17 @@ internal fun AppRoot() {
         known = keys
     }
 
+    // The Recursos screens say who holds what "now": the core decides it again when they open (the
+    // list is read as the area is chosen) and then once a minute while one of them is in front.
+    val resourcesVisible = !c.locked &&
+        (top is Route.ResourceUse || top is Route.Resource || (top == null && c.tab == 1 && c.tasksSegment == 2))
+    LaunchedEffect(resourcesVisible) {
+        while (resourcesVisible) {
+            kotlinx.coroutines.delay(60_000L)
+            c.refreshResources()
+        }
+    }
+
     // What waited behind the lock (a refusal of a share) is said once the app is open.
     LaunchedEffect(c.locked) {
         if (!c.locked) {
@@ -97,8 +108,8 @@ internal fun AppRoot() {
                                     )
                                 } else if (c.tasksSegment == 2) {
                                     ResourcesScreen(
-                                        c.resources, now = ResourceRules.nowMoment(),
-                                        query = c.resQuery, onQuery = { c.resQuery = it },
+                                        c.resources,
+                                        query = c.resQuery, onQuery = c::typeResQuery,
                                         view = c.resView, onView = { c.resView = it },
                                         onOpenUse = { c.openResourceUse(it.uid) }, onOpenResource = { c.openResource(it.uid) }
                                     )
@@ -112,7 +123,7 @@ internal fun AppRoot() {
                         }
                         2 -> DocumentsScreen(
                             docs = c.docs,
-                            query = c.docQuery, onQuery = { c.docQuery = it },
+                            query = c.docQuery, onQuery = c::typeDocQuery, matches = c.docMatches,
                             filter = c.docFilter, onFilter = { c.docFilter = it },
                             categoryFilter = c.docCatFilter, onCategoryFilter = { c.docCatFilter = it },
                             onOpen = c::openDocument, onPhoto = c::openPhoto
@@ -163,19 +174,20 @@ private fun RouteScreen(route: Route) {
             onBack = c::back, onSave = c::saveTask, onFinish = c::finishTask,
             onOpenDocument = { c.openTaskDocument() }, onLink = c::openPicker, onUnlink = c::unlinkTask,
             onReload = c::reloadTask, assignees = c.assignees, myName = c.personName,
-            onCreateCategory = c::createCategory
+            onCreateCategory = c::createCategory,
+            remindersBlocked = c.taskNoticeBlocked, onRemindersChosen = c::taskRemindersChosen
         )
         is Route.Attendance -> AttendanceScreen(
             routeId = route.id, state = c.attendance, onBack = c::back,
             onOpenDocument = c::openDocument, onOpenTask = c::openTask, onOpenFile = c::openFile
         )
         is Route.ResourceUse -> ResourceUseScreen(
-            uid = route.uid, state = c.resources, now = ResourceRules.nowMoment(), onBack = c::back,
+            uid = route.uid, state = c.resources, onBack = c::back,
             onOpenResource = c::openResource, onOpenDocument = c::openDocument,
             onOpenAttendance = c::openAttendance, onOpenTask = c::openTask
         )
         is Route.Resource -> ResourceScreen(
-            uid = route.uid, state = c.resources, now = ResourceRules.nowMoment(), onBack = c::back,
+            uid = route.uid, state = c.resources, onBack = c::back,
             onOpenUse = c::openResourceUse
         )
         Route.Search -> SearchScreen(
@@ -184,7 +196,8 @@ private fun RouteScreen(route: Route) {
         )
         is Route.Pick -> DocumentPickerScreen(
             docs = c.docs, currentId = c.taskEdit.task?.documentId ?: 0L, busy = c.taskEdit.busy,
-            onBack = c::back, onPick = c::pickDocument
+            onBack = c::back, onPick = c::pickDocument,
+            matches = c.pickMatches, onQuery = c::setPickQuery
         )
         is Route.Text ->
             if (doc == null) Waiting("Texto do documento", c.document, c::back)
@@ -215,7 +228,8 @@ private fun RouteScreen(route: Route) {
         }
         Route.SharePick -> DocumentPickerScreen(
             docs = c.docs, currentId = 0L, busy = false,
-            onBack = c::back, onPick = Intake::pickTarget, title = "Anexar a um documento"
+            onBack = c::back, onPick = Intake::pickTarget, title = "Anexar a um documento",
+            matches = c.pickMatches, onQuery = c::setPickQuery
         )
         Route.Photo -> PhotoScreen(
             state = c.photo,

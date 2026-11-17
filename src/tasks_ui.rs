@@ -7,6 +7,12 @@ use crate::{categories::Category, model::TaskProposal, storage::Store, tasks::Ta
 use eframe::egui::{self, RichText};
 use std::collections::BTreeSet;
 
+/// Said under the "Avisos antes do início" boxes: the individual notices are
+/// part of the same switch as the daily summary (Ajustes ▸ Lembretes de
+/// prazos) and are only shown while Ponte is running; one whose moment passed
+/// more than five minutes ago, with Ponte closed, is not shown afterwards.
+pub const REMINDER_FORM_HINT: &str = "O aviso aparece com o Ponte aberto e só se “Ativar resumo diário e avisos das tarefas” estiver ligado em Ajustes ▸ Lembretes de prazos.";
+
 /// How the notes of a task made from an old-style suggestion begin.
 pub const SUGGESTION_NOTE_MARKER: &str = "Sugestão da IA para revisão.";
 /// How the notes of a task made from a proposal begin.
@@ -1531,6 +1537,7 @@ struct BatchUndo {
 pub struct TaskPanel {
     /// Categories the list is narrowed to.
     category_filter: CategoryFilter,
+    unplanned_only: bool,
     /// "Gerenciar categorias…" was clicked; the app opens Ajustes.
     open_categories: bool,
     draft: Option<Task>,
@@ -1600,6 +1607,16 @@ pub struct TaskPanel {
     #[cfg(feature = "shots")]
     shots_scroll: f32,
 }
+/// True when `task` is still exactly what "Nova tarefa" proposes. The blank
+/// gets a fresh uid on every call, so the uid is not compared.
+fn is_untouched_blank(task: &Task) -> bool {
+    *task
+        == Task {
+            uid: task.uid.clone(),
+            ..Task::blank(task.document_id)
+        }
+}
+
 impl TaskPanel {
     /// The person asked to manage the categories (Ajustes, Categorias).
     pub fn take_open_categories(&mut self) -> bool {
@@ -1909,7 +1926,7 @@ impl TaskPanel {
     /// has nothing to lose and does not count.
     pub fn dirty(&self) -> bool {
         match (&self.draft, &self.original) {
-            (Some(draft), None) => *draft != Task::blank(draft.document_id),
+            (Some(draft), None) => !is_untouched_blank(draft),
             (draft, original) => draft != original,
         }
     }
@@ -2511,6 +2528,7 @@ impl TaskPanel {
                     context,
                     &scope,
                 ) && in_view(self.view, task, context, &deps, &scope)
+                    && (!self.unplanned_only || task.scheduled_start.is_empty())
             })
             .collect();
         // Each task after the ones it depends on; ties keep the usual order.
@@ -2627,6 +2645,7 @@ impl TaskPanel {
                                     }
                                 }
                             });
+                            ui.checkbox(&mut self.unplanned_only, "Ainda não planejadas");
                             if !categories.is_empty() || self.category_filter.is_active() {
                                 crate::category_ui::category_filter_button(
                                     ui,
@@ -2769,16 +2788,12 @@ impl TaskPanel {
                 };
                 let mut groups: [Vec<&Task>; 5] = Default::default();
                 for task in &visible {
-                    let slot = if task.status == "concluida" {
-                        4
-                    } else if task.overdue() {
-                        0
-                    } else if task.due_date.is_empty() {
-                        3
-                    } else if task.due_date == today_text {
-                        1
-                    } else {
-                        2
+                    let slot = match task.bucket(&today_text) {
+                        crate::tasks::Bucket::Late => 0,
+                        crate::tasks::Bucket::Today => 1,
+                        crate::tasks::Bucket::Upcoming => 2,
+                        crate::tasks::Bucket::NoDeadline => 3,
+                        crate::tasks::Bucket::Done => 4,
                     };
                     groups[slot].push(task);
                 }
@@ -3298,6 +3313,44 @@ impl TaskPanel {
                             },
                         );
                         ui.add_space(S2);
+                        widgets::field_label(ui, "Planejamento (data e hora locais: AAAA-MM-DDTHH:MM)");
+                        ui.horizontal(|ui| {
+                            ui.label("Início");
+                            ui.text_edit_singleline(&mut task.scheduled_start);
+                            ui.label("Fim");
+                            ui.text_edit_singleline(&mut task.scheduled_end);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Estimativa em minutos (0 = sem estimativa)");
+                            ui.add(egui::DragValue::new(&mut task.estimate_minutes).range(0..=525_600));
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Avisos antes do início:");
+                            for (minutes, label) in [(0, "No início"), (15, "15 min"), (60, "1 hora"), (1440, "1 dia")] {
+                                let mut selected = task.reminder_offsets_minutes.contains(&minutes);
+                                if ui.checkbox(&mut selected, label).changed() {
+                                    if selected { task.reminder_offsets_minutes.push(minutes); }
+                                    else { task.reminder_offsets_minutes.retain(|v| *v != minutes); }
+                                }
+                            }
+                        });
+                        widgets::small_muted(ui, REMINDER_FORM_HINT);
+                        egui::ComboBox::from_id_salt(("task-parent", task_id))
+                            .selected_text(task.parent_task_id.and_then(|id| tasks.iter().find(|t| t.id == id)).map(|t| t.title.as_str()).unwrap_or("Sem tarefa pai"))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut task.parent_task_id, None, "Sem tarefa pai");
+                                for candidate in tasks.iter().filter(|t| t.id != task_id) {
+                                    ui.selectable_value(&mut task.parent_task_id, Some(candidate.id), &candidate.title);
+                                }
+                            });
+                        if task_id > 0 {
+                            let children: Vec<_> = tasks.iter().filter(|t| t.parent_task_id == Some(task_id)).collect();
+                            if !children.is_empty() {
+                                ui.label(format!("Subtarefas: {}/{} concluídas", children.iter().filter(|t| t.is_done()).count(), children.len()));
+                                for child in children { chain_row(ui, child, &mut open_task); }
+                            }
+                        }
+                        ui.add_space(S2);
                         two_columns(
                             ui,
                             0.55,
@@ -3644,7 +3697,7 @@ impl TaskPanel {
         if task.id != 0 {
             return;
         }
-        if *task == Task::blank(task.document_id) {
+        if is_untouched_blank(task) {
             *task = Task::blank(document_id);
         } else {
             task.document_id = document_id;
@@ -3751,6 +3804,17 @@ impl TaskPanel {
 #[cfg(test)]
 mod navigation_tests {
     use super::*;
+
+    #[test]
+    fn the_reminder_hint_names_the_real_switch_and_the_open_app() {
+        // The hint quotes the checkbox of Ajustes: it must follow its text.
+        let settings = include_str!("app/settings.rs");
+        assert!(settings.contains("\"Ativar resumo diário e avisos das tarefas\""));
+        assert!(REMINDER_FORM_HINT.contains("“Ativar resumo diário e avisos das tarefas”"));
+        assert!(REMINDER_FORM_HINT.starts_with("O aviso aparece com o Ponte aberto"));
+        assert!(REMINDER_FORM_HINT.contains("Ajustes ▸ Lembretes de prazos"));
+        assert!(settings.contains("widgets::section(ui, \"Lembretes de prazos\")"));
+    }
 
     fn task(id: i64, document: i64, due: &str, status: &str) -> Task {
         let mut t = Task::new(document);

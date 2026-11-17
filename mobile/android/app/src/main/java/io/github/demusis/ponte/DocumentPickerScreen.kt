@@ -22,6 +22,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,25 +45,30 @@ internal fun DocumentPickerScreen(
     onBack: () -> Unit,
     onPick: (Doc) -> Unit,
     /** Overrides the heading (the share uses its own). */
-    title: String? = null
+    title: String? = null,
+    /** Ids the core's search found for what is typed; null while nothing is typed. */
+    matches: Set<Long>? = null,
+    /** Called with the text as it changes (and once when the screen opens): the app searches after a pause. */
+    onQuery: (String) -> Unit = {}
 ) {
     val c = Ponte.colors
     var query by rememberSaveable { mutableStateOf("") }
-    val shown = remember(docs, query, currentId) { docs.filter { it.id != currentId && matchesQuery(it, query) } }
+    LaunchedEffect(Unit) { onQuery(query) }
+    val shown = remember(docs, matches, currentId) { docs.filter { it.id != currentId && (matches == null || it.id in matches) } }
     DetailScaffold(
         title = title ?: if (currentId > 0) "Trocar de documento" else "Vincular a um documento",
         onBack = onBack
     ) {
         Column(Modifier.fillMaxSize()) {
             OutlinedTextField(
-                value = query, onValueChange = { query = it },
+                value = query, onValueChange = { query = it; onQuery(it) },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 4.dp, bottom = 8.dp),
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyLarge,
                 placeholder = { Text("Buscar por número, título ou origem", color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, tint = c.secondary) },
                 trailingIcon = if (query.isEmpty()) null else ({
-                    IconButton(onClick = { query = "" }) {
+                    IconButton(onClick = { query = ""; onQuery("") }) {
                         Icon(Icons.Outlined.Close, contentDescription = "Limpar a busca", tint = c.secondary)
                     }
                 }),
@@ -85,7 +91,7 @@ internal fun DocumentPickerScreen(
                                 "Nada encontrado.", text = "Nenhum documento combina com a busca.",
                                 icon = Icons.Outlined.SearchOff,
                                 action = {
-                                    TextButton(onClick = { query = "" }) {
+                                    TextButton(onClick = { query = ""; onQuery("") }) {
                                         Text("Limpar a busca", color = c.accent, fontWeight = FontWeight.SemiBold)
                                     }
                                 }

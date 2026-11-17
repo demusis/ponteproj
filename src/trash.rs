@@ -152,6 +152,7 @@ struct TaskNode {
     id: i64,
     document_id: Option<i64>,
     dependencies: Vec<i64>,
+    parent_task_id: Option<i64>,
 }
 fn all_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
     let count: i64 = conn.query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))?;
@@ -173,6 +174,7 @@ fn all_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
             id,
             document_id: doc,
             dependencies: task.dependencies,
+            parent_task_id: task.parent_task_id,
         })
     })
     .collect()
@@ -342,19 +344,7 @@ fn describe(conn: &Connection, kind: Kind, id: i64) -> Result<(String, String)> 
 }
 /// Lowercase without accents, for searching.
 pub fn fold(value: &str) -> String {
-    value
-        .to_lowercase()
-        .chars()
-        .map(|c| match c {
-            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'ç' => 'c',
-            c => c,
-        })
-        .collect()
+    crate::labels::fold(value)
 }
 /// True when every word of `query` is in the number, title, file name or
 /// owner of the entry (case and accents ignored). An empty query matches.
@@ -475,7 +465,8 @@ fn deletion_plan(conn: &Connection, target: Target) -> Result<Plan> {
                 .iter()
                 .filter(|t| {
                     !removing.contains(&t.id)
-                        && t.dependencies.iter().any(|id| removing.contains(id))
+                        && (t.dependencies.iter().any(|id| removing.contains(id))
+                            || t.parent_task_id.is_some_and(|id| removing.contains(&id)))
                 })
                 .count();
             if dependents > 0 {
@@ -960,7 +951,8 @@ impl Store {
                 ensure!(
                     task.dependencies
                         .iter()
-                        .all(|id| active.contains(id) || restoring.contains(id)),
+                        .all(|id| active.contains(id) || restoring.contains(id))
+                        && task.parent_task_id.is_none_or(|id| active.contains(&id) || restoring.contains(&id)),
                     "Restaure primeiro as tarefas ou documentos usados como dependências."
                 );
             }

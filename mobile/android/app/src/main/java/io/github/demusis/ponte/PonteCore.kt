@@ -78,19 +78,15 @@ class PonteCore {
     external fun getAttendance(attendanceId: Long): String
 
     /**
-     * The resources register, by name: {resources: [{uid, name, kind, kind_label, quantity, location,
-     * identification, notes, status, status_label, active}]}. Read-only.
+     * The Recursos screens for a text (empty: all), decided by the core as of now: {uses: [...every use, with
+     * period and overdue], resources: [...every resource, with in_use_now, free_now, usage_line, free_text,
+     * today and next (uids of uses)], groups: [{key, title, late, uids}] of the uses that match, rows: [uids
+     * of the resources that match]}. The answer of [today] also carries "resources": {reservations_today, overdue}.
      */
-    external fun listResources(): String
+    external fun resourceView(query: String): String
 
-    /**
-     * Every use of a resource, by start: {uses: [{uid, resource_uid, resource_name, resource_kind,
-     * resource_kind_label, quantity, who, sector, purpose, start, end (AAAA-MM-DDTHH:MM), returned_at
-     * (null or text), status, status_label, notes, overdue, document_id, document_number,
-     * document_title, attendance_id, attendance_reference, task_id, task_title}]} (links that do not
-     * exist come as 0 and ""). The answer of [today] also carries "resources": {reservations_today, overdue}.
-     */
-    external fun listResourceUses(): String
+    /** The ids, in order, of the documents that match a text, by the core's own search: {ids: [...]}. */
+    external fun documentIds(query: String): String
 
     /**
      * The search over the whole library (two characters or more): {documents, tasks,

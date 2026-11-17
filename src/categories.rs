@@ -102,7 +102,7 @@ impl Category {
 
 /// Case and accent folding of a name, the one the filters of the screens use.
 pub fn name_key(name: &str) -> String {
-    crate::evidence::fold(name.trim())
+    crate::labels::fold(name)
 }
 
 fn valid_uid(uid: &str) -> bool {
@@ -351,9 +351,15 @@ impl Store {
             IntranetMutation::SaveTask {
                 mut task,
                 expected_version,
-            } if task.id > 0 && client_schema < crate::intranet::CATEGORIES_SCHEMA => {
+            } if task.id > 0 && client_schema < 18 => {
                 if let Some(stored) = self.list_tasks()?.into_iter().find(|t| t.id == task.id) {
-                    task.categories = stored.categories;
+                    task.uid = stored.uid;
+                    task.scheduled_start = stored.scheduled_start;
+                    task.scheduled_end = stored.scheduled_end;
+                    task.estimate_minutes = stored.estimate_minutes;
+                    task.parent_task_id = stored.parent_task_id;
+                    task.reminder_offsets_minutes = stored.reminder_offsets_minutes;
+                    if client_schema < crate::intranet::CATEGORIES_SCHEMA { task.categories = stored.categories; }
                     if client_schema < crate::intranet::PROPOSALS_SCHEMA {
                         task.proposal_id = stored.proposal_id;
                     }
@@ -362,6 +368,13 @@ impl Store {
                     task,
                     expected_version,
                 }
+            }
+            IntranetMutation::SaveResourceUse { mut item, expected_version }
+                if client_schema < crate::intranet::PROPOSALS_SCHEMA && !item.uid.is_empty() => {
+                if let Some(stored) = self.list_resource_uses()?.into_iter().find(|u| u.uid == item.uid) {
+                    item.proposal_id = stored.proposal_id;
+                }
+                IntranetMutation::SaveResourceUse { item, expected_version }
             }
             IntranetMutation::SaveWorkContext {
                 document_id,
@@ -903,7 +916,11 @@ mod tests {
         // A library of a newer schema is refused, as before.
         drop(store);
         let conn = Connection::open(&path).unwrap();
-        conn.execute_batch("PRAGMA user_version=18;").unwrap();
+        conn.execute_batch(&format!(
+            "PRAGMA user_version={};",
+            crate::storage::SCHEMA_VERSION + 1
+        ))
+        .unwrap();
         drop(conn);
         assert!(Store::open(&path).is_err());
     }

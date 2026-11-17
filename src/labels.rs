@@ -1,6 +1,145 @@
 //! Rótulos e formatos exibidos ao usuário. Os valores internos (chaves em
 //! minúsculas, datas ISO/RFC3339) nunca chegam à interface sem passar por aqui.
 
+/// Lowercase without accents. Keeps the text as it is otherwise (no whitespace
+/// change), for callers that index into the folded text.
+pub fn strip_accents(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            c => c,
+        })
+        .collect()
+}
+
+/// The one text fold of the library, for searching and comparing names:
+/// lowercase, no accents, runs of whitespace as one space, no spaces at the ends.
+pub fn fold(value: &str) -> String {
+    strip_accents(value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Short, relative wording of a due date (`AAAA-MM-DD`) for a chip, as of
+/// `today`: "hoje", "amanhã", "ontem", "há N dias", "dd/mm" and "dd/mm/aaaa"
+/// when the year is not today's. Text that is not a date is returned as is.
+pub fn due_relative(iso: &str, today: &str) -> String {
+    use chrono::Datelike;
+    let parse = |t: &str| chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d").ok();
+    let (Some(day), Some(now)) = (parse(iso), parse(today)) else {
+        return iso.to_owned();
+    };
+    match (day - now).num_days() {
+        0 => "hoje".to_owned(),
+        1 => "amanhã".to_owned(),
+        -1 => "ontem".to_owned(),
+        n if n < 0 => format!("há {} dias", -n),
+        _ if day.year() == now.year() => format!("{:02}/{:02}", day.day(), day.month()),
+        _ => format!("{:02}/{:02}/{}", day.day(), day.month(), day.year()),
+    }
+}
+
+/// The counts of the "Hoje" area, in words.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TodayCounts {
+    pub late: usize,
+    pub today: usize,
+    pub attendances: usize,
+    pub reservations: usize,
+    pub overdue_returns: usize,
+}
+
+impl TodayCounts {
+    /// "1 tarefa atrasada · 2 para hoje · 1 atendimento com prazo vencido ou
+    /// para hoje · 2 reservas de hoje · 1 devolução atrasada", or "Nada vence
+    /// hoje." when every count is zero.
+    pub fn summary(&self) -> String {
+        let tasks = match (self.late, self.today) {
+            (0, 0) => String::new(),
+            (l, 0) => count(l, "tarefa atrasada", "tarefas atrasadas"),
+            (0, t) => count(t, "tarefa para hoje", "tarefas para hoje"),
+            (l, t) => format!("{} · {t} para hoje", count(l, "tarefa atrasada", "tarefas atrasadas")),
+        };
+        let parts = [
+            tasks,
+            self.attendances_text(
+                "atendimento com prazo vencido ou para hoje",
+                "atendimentos com prazo vencido ou para hoje",
+            ),
+            self.reservations_text(),
+            self.returns_text(),
+        ];
+        let parts: Vec<String> = parts.into_iter().filter(|p| !p.is_empty()).collect();
+        if parts.is_empty() {
+            "Nada vence hoje.".to_owned()
+        } else {
+            parts.join(" · ")
+        }
+    }
+
+    /// The sentence of the daily notice, counts only: "3 tarefas atrasadas, 2
+    /// para hoje, 1 atendimento com prazo e 2 reservas de hoje.". `None` when
+    /// nothing is due.
+    pub fn notice(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if self.late > 0 {
+            parts.push(count(self.late, "tarefa atrasada", "tarefas atrasadas"));
+        }
+        if self.today > 0 {
+            parts.push(if self.late > 0 {
+                format!("{} para hoje", self.today)
+            } else {
+                count(self.today, "tarefa para hoje", "tarefas para hoje")
+            });
+        }
+        for text in [
+            self.attendances_text("atendimento com prazo", "atendimentos com prazo"),
+            self.reservations_text(),
+            self.returns_text(),
+        ] {
+            if !text.is_empty() {
+                parts.push(text);
+            }
+        }
+        let last = parts.pop()?;
+        Some(if parts.is_empty() {
+            format!("{last}.")
+        } else {
+            format!("{} e {last}.", parts.join(", "))
+        })
+    }
+
+    fn attendances_text(&self, one: &str, many: &str) -> String {
+        if self.attendances > 0 {
+            count(self.attendances, one, many)
+        } else {
+            String::new()
+        }
+    }
+    fn reservations_text(&self) -> String {
+        if self.reservations > 0 {
+            count(self.reservations, "reserva de hoje", "reservas de hoje")
+        } else {
+            String::new()
+        }
+    }
+    fn returns_text(&self) -> String {
+        if self.overdue_returns > 0 {
+            count(self.overdue_returns, "devolução atrasada", "devoluções atrasadas")
+        } else {
+            String::new()
+        }
+    }
+}
+
 /// `AAAA-MM-DD` → `dd/mm/aaaa`. Texto que não é data é devolvido como está.
 pub fn date(value: &str) -> String {
     let value = value.trim();
@@ -537,6 +676,43 @@ fn calendar_popup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn today_counts_in_words() {
+        let none = TodayCounts::default();
+        assert_eq!(none.summary(), "Nada vence hoje.");
+        assert_eq!(none.notice(), None);
+        let all = TodayCounts { late: 3, today: 2, attendances: 1, reservations: 2, overdue_returns: 1 };
+        assert_eq!(
+            all.summary(),
+            "3 tarefas atrasadas · 2 para hoje · 1 atendimento com prazo vencido ou para hoje · 2 reservas de hoje · 1 devolução atrasada"
+        );
+        assert_eq!(
+            all.notice().unwrap(),
+            "3 tarefas atrasadas, 2 para hoje, 1 atendimento com prazo, 2 reservas de hoje e 1 devolução atrasada."
+        );
+        let one = TodayCounts { today: 1, ..Default::default() };
+        assert_eq!(one.summary(), "1 tarefa para hoje");
+        assert_eq!(one.notice().unwrap(), "1 tarefa para hoje.");
+    }
+
+    #[test]
+    fn due_chip_wording() {
+        let t = "2026-11-10";
+        assert_eq!(due_relative("2026-11-10", t), "hoje");
+        assert_eq!(due_relative("2026-11-11", t), "amanhã");
+        assert_eq!(due_relative("2026-11-09", t), "ontem");
+        assert_eq!(due_relative("2026-11-05", t), "há 5 dias");
+        assert_eq!(due_relative("2026-12-25", t), "25/12");
+        assert_eq!(due_relative("2027-01-05", t), "05/01/2027");
+        assert_eq!(due_relative("sem data", t), "sem data");
+    }
+
+    #[test]
+    fn fold_drops_case_accents_and_extra_spaces() {
+        assert_eq!(fold("  AÇÃO   Média	"), "acao media");
+        assert_eq!(strip_accents("Ação  X"), "acao  x");
+    }
 
     #[test]
     fn month_grid_starts_on_sunday_and_knows_leap_years() {

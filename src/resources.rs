@@ -1187,6 +1187,144 @@ impl Store {
         Ok(uid)
     }
 
+    /// Saves the copies of a repetition (`recurrence::resource_occurrences`)
+    /// as one batch, in a single write transaction: if any occurrence does
+    /// not fit, nothing is stored. Every new occurrence is checked against
+    /// the uses already stored **and** against the occurrences of the same
+    /// batch accepted before it, with the same rule as `save_resource_use`
+    /// (quantity of the resource, half-open intervals). The refusal starts
+    /// with [`HORARIO_OCUPADO`] and names the occurrence and its start.
+    ///
+    /// The `uid` each copy was born with is the idempotence key: a copy whose
+    /// uid is already stored is **not written again** (it keeps what was done
+    /// with it since: returned, cancelled, edited), so sending the same
+    /// preview twice creates nothing. Returns the uid of every copy, in
+    /// order. Past occurrences are stored like any other. On a client
+    /// computer the batch is refused (no batch mutation in the host yet);
+    /// make the repetition on the main computer.
+    pub fn save_repeated_uses(&mut self, items: &[ResourceUse]) -> Result<Vec<String>> {
+        ensure!(!items.is_empty(), "Não há ocorrências para criar.");
+        ensure!(
+            items.len() <= usize::from(crate::recurrence::MAX_COUNT),
+            "São ocorrências demais de uma vez (no máximo {}).",
+            crate::recurrence::MAX_COUNT
+        );
+        let total = items.len();
+        let mut seen = BTreeSet::new();
+        let mut batch = Vec::with_capacity(total);
+        for (index, item) in items.iter().enumerate() {
+            let item = item.normalized();
+            let label = format!("Ocorrência {} de {total}", index + 1);
+            ensure!(
+                !item.uid.is_empty() && check_uid(&item.uid).is_ok() && seen.insert(item.uid.clone()),
+                "{label}: a identidade da cópia está vazia, inválida ou repetida."
+            );
+            item.validate().map_err(|e| anyhow::anyhow!("{label}: {e}"))?;
+            batch.push(item);
+        }
+        if self.client_config()?.is_some() {
+            bail!("Neste computador (conectado ao principal) não é possível criar várias reservas de uma vez. Faça a repetição no computador principal.");
+        }
+        let actor = self.active_actor();
+        let timestamp = now_stamp();
+        let now = now_moment();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Per resource: the resource and its uses, growing with the batch.
+        let mut by_resource: std::collections::BTreeMap<String, (Resource, Vec<ResourceUse>)> =
+            std::collections::BTreeMap::new();
+        let mut uids = Vec::with_capacity(total);
+        for (index, item) in batch.into_iter().enumerate() {
+            let label = format!("Ocorrência {} de {total}", index + 1);
+            uids.push(item.uid.clone());
+            let already: Option<i64> = tx
+                .query_row(
+                    "SELECT 1 FROM resource_uses WHERE uid=?1",
+                    [&item.uid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if already.is_some() {
+                continue;
+            }
+            if !by_resource.contains_key(&item.resource_uid) {
+                let resource = load_resource(&tx, &item.resource_uid)?.context(
+                    "O recurso desta reserva não foi encontrado. Ele pode ter sido apagado em outro computador.",
+                )?;
+                let uses = uses_of(&tx, &resource.uid)?;
+                by_resource.insert(item.resource_uid.clone(), (resource, uses));
+            }
+            let (resource, uses) = by_resource
+                .get_mut(&item.resource_uid)
+                .context("Recurso não carregado.")?;
+            let mut stored = item;
+            stored.created_by = actor.clone();
+            stored.created_at = timestamp.clone();
+            stored.updated_at = timestamp.clone();
+            let exists = |sql: &str, id: Option<i64>| -> Result<Option<i64>> {
+                match id {
+                    Some(id) => Ok(tx.query_row(sql, [id], |_| Ok(())).optional()?.map(|()| id)),
+                    None => Ok(None),
+                }
+            };
+            stored.document_id = exists("SELECT 1 FROM documents WHERE id=?1", stored.document_id)?;
+            stored.task_id = exists("SELECT 1 FROM tasks WHERE id=?1", stored.task_id)?;
+            stored.saiop_id = exists("SELECT 1 FROM saiop_attendances WHERE id=?1", stored.saiop_id)?;
+            if stored.status.occupying() {
+                ensure!(
+                    resource.status == ResourceStatus::Active,
+                    "{label}: o recurso “{}” está Fora de uso e não aceita novas reservas.",
+                    resource.name
+                );
+                ensure!(
+                    stored.quantity <= resource.quantity,
+                    "{label}: a quantidade passa do que o recurso tem ({}).",
+                    resource.quantity
+                );
+                let clashing = clashes(resource, uses, &stored, &now);
+                if !clashing.is_empty() {
+                    bail!(
+                        "{HORARIO_OCUPADO}{label} ({}): {}",
+                        moment_label(&stored.start),
+                        clash_sentence(resource, &clashing, &now)
+                    );
+                }
+            }
+            let details = format!(
+                "Reservou \"{}\" ({} a {}), repetição",
+                resource.name,
+                moment_label(&stored.start),
+                moment_label(&stored.end)
+            );
+            tx.execute(
+                "INSERT INTO resource_uses(uid,resource_uid,status,document_id,payload,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    stored.uid,
+                    stored.resource_uid,
+                    stored.status.as_str(),
+                    stored.document_id,
+                    encode(&stored)?,
+                    timestamp
+                ],
+            )?;
+            record_mutation(
+                &tx,
+                &actor,
+                "resource_use",
+                version_key(&stored.uid),
+                None,
+                "save_resource_use",
+                stored.document_id,
+                &details,
+            )?;
+            uses.push(stored);
+        }
+        tx.commit()?;
+        Ok(uids)
+    }
+
     /// Permanent removal of a use; there is no trash for it.
     pub fn delete_resource_use(&mut self, uid: &str, expected_version: Option<i64>) -> Result<()> {
         check_uid(uid)?;
@@ -1331,6 +1469,167 @@ pub(crate) fn apply_resources(tx: &Connection, snapshot: &ResourcesSnapshot) -> 
         )?;
     }
     Ok(())
+}
+
+/// "Próximos dias" reaches this many days after today.
+const HORIZON_DAYS: i64 = 14;
+
+/// Every word of `query` is in the fields a use is searched by: the resource
+/// (name, place, identification), who, sector and purpose, plus `extra` text
+/// the caller knows about the use (the linked document, atendimento or task).
+/// Case, accents and spacing are ignored; an empty query matches.
+pub fn query_matches(
+    item: &ResourceUse,
+    resource: Option<&Resource>,
+    query: &str,
+    extra: &str,
+) -> bool {
+    let query = crate::labels::fold(query);
+    if query.is_empty() {
+        return true;
+    }
+    let haystack = crate::labels::fold(&format!(
+        "{} {} {} {} {} {} {}",
+        resource.map(|r| r.name.as_str()).unwrap_or(""),
+        resource.map(|r| r.location.as_str()).unwrap_or(""),
+        resource.map(|r| r.identification.as_str()).unwrap_or(""),
+        item.who,
+        item.sector,
+        item.purpose,
+        extra
+    ));
+    query.split_whitespace().all(|word| haystack.contains(word))
+}
+
+/// "10/11 14:00–16:00", or both dates when the use crosses days.
+pub fn period_text(start: &str, end: &str) -> String {
+    let short = |moment: &str| match parse_moment(moment) {
+        Ok(m) => m.format("%d/%m").to_string(),
+        Err(_) => moment.to_owned(),
+    };
+    if moment_date(start) == moment_date(end) {
+        format!(
+            "{} {}–{}",
+            short(start),
+            moment_time(start),
+            moment_time(end)
+        )
+    } else {
+        format!(
+            "{} {} – {} {}",
+            short(start),
+            moment_time(start),
+            short(end),
+            moment_time(end)
+        )
+    }
+}
+
+/// What of a resource is out at `now`: every use in use (even a late one),
+/// and the reserved ones whose time has come.
+pub fn taken_now(uses: &[ResourceUse], resource_uid: &str, now: &str) -> u32 {
+    uses.iter()
+        .filter(|item| item.resource_uid == resource_uid)
+        .filter(|item| match item.status {
+            UseStatus::InUse => true,
+            UseStatus::Reserved => item.start.as_str() <= now && now < item.end.as_str(),
+            UseStatus::Returned | UseStatus::Cancelled => false,
+        })
+        .map(|item| item.quantity)
+        .sum()
+}
+
+/// What view 1 shows, by group.
+#[derive(Debug, Default)]
+pub struct Groups<'a> {
+    pub overdue: Vec<&'a ResourceUse>,
+    pub in_use: Vec<&'a ResourceUse>,
+    pub today: Vec<&'a ResourceUse>,
+    pub next_days: Vec<&'a ResourceUse>,
+    pub later: Vec<&'a ResourceUse>,
+    pub older: Vec<&'a ResourceUse>,
+}
+
+impl<'a> Groups<'a> {
+    /// The six groups in the order of the screens: key, title and uses.
+    pub fn sections(&self) -> [(&'static str, &'static str, &[&'a ResourceUse]); 6] {
+        [
+            ("atrasados", "Atrasados", &self.overdue),
+            ("em_uso", "Em uso agora", &self.in_use),
+            ("hoje", "Hoje", &self.today),
+            ("proximos", "Próximos dias", &self.next_days),
+            ("adiante", "Mais adiante", &self.later),
+            ("encerrados", "Mais antigos e encerrados", &self.older),
+        ]
+    }
+
+    pub fn current(&self) -> usize {
+        self.overdue.len()
+            + self.in_use.len()
+            + self.today.len()
+            + self.next_days.len()
+            + self.later.len()
+    }
+}
+
+/// Splits uses into Atrasados / Em uso agora / Hoje / Próximos dias, then
+/// what lies further ahead, then what is over (returned, cancelled, or a
+/// reservation whose day passed without being used).
+pub fn group_uses<'a>(items: &[&'a ResourceUse], today: NaiveDate, now: &str) -> Groups<'a> {
+    let today_iso = today.format("%Y-%m-%d").to_string();
+    let horizon = (today + Duration::days(HORIZON_DAYS))
+        .format("%Y-%m-%d")
+        .to_string();
+    let mut groups = Groups::default();
+    for &item in items {
+        match item.status {
+            UseStatus::Returned | UseStatus::Cancelled => groups.older.push(item),
+            UseStatus::InUse if item.overdue_at(now) => groups.overdue.push(item),
+            UseStatus::InUse => groups.in_use.push(item),
+            UseStatus::Reserved => {
+                let (first, last) = (moment_date(&item.start), moment_date(&item.end));
+                if last < today_iso {
+                    groups.older.push(item);
+                } else if first <= today_iso {
+                    groups.today.push(item);
+                } else if first <= horizon {
+                    groups.next_days.push(item);
+                } else {
+                    groups.later.push(item);
+                }
+            }
+        }
+    }
+    groups.overdue.sort_by(|a, b| a.end.cmp(&b.end));
+    groups.in_use.sort_by(|a, b| a.end.cmp(&b.end));
+    groups.older.sort_by(|a, b| b.start.cmp(&a.start));
+    groups
+}
+
+/// The other uses holding `resource_uid` on `day` (ISO), by start.
+pub fn day_occupation<'a>(
+    uses: &'a [ResourceUse],
+    resource_uid: &str,
+    except_uid: &str,
+    day: &str,
+    now: &str,
+) -> Vec<&'a ResourceUse> {
+    let from = format!("{day}T00:00");
+    let to = NaiveDate::parse_from_str(day, "%Y-%m-%d")
+        .map(|d| format!("{}T00:00", (d + Duration::days(1)).format("%Y-%m-%d")))
+        .unwrap_or_default();
+    let mut out: Vec<&ResourceUse> = uses
+        .iter()
+        .filter(|item| {
+            item.resource_uid == resource_uid && (except_uid.is_empty() || item.uid != except_uid)
+        })
+        .filter(|item| {
+            item.occupies_at(now)
+                .is_some_and(|(start, end)| start < to && from < end)
+        })
+        .collect();
+    out.sort_by(|a, b| (&a.start, &a.uid).cmp(&(&b.start, &b.uid)));
+    out
 }
 
 #[cfg(test)]
@@ -2171,5 +2470,104 @@ mod tests {
         assert!(saved.same_content(&other));
         other.name = "Outro nome".into();
         assert!(!saved.same_content(&other));
+    }
+
+    fn weekly(count: u16) -> crate::recurrence::Recurrence {
+        crate::recurrence::Recurrence {
+            frequency: crate::recurrence::Frequency::Weekly,
+            interval: 1,
+            until: String::new(),
+            count,
+        }
+    }
+
+    fn series_of(store: &mut Store, resource: &Resource, count: u16) -> Vec<ResourceUse> {
+        let origin = use_of(resource, "Ana", "09:00", "10:00");
+        store.save_resource_use(&origin, None).unwrap();
+        let origin = store.list_resource_uses().unwrap().remove(0);
+        crate::recurrence::resource_occurrences(&origin, &weekly(count)).unwrap()
+    }
+
+    #[test]
+    fn repeated_uses_are_idempotent_and_keep_what_was_done_with_them() {
+        let (_dir, mut store) = store();
+        let resource = new_resource(&mut store, "Sala", 1);
+        let copies = series_of(&mut store, &resource, 4);
+        assert_eq!(copies.len(), 3);
+        let uids = store.save_repeated_uses(&copies).unwrap();
+        assert_eq!(uids, copies.iter().map(|c| c.uid.clone()).collect::<Vec<_>>());
+        assert_eq!(store.list_resource_uses().unwrap().len(), 4);
+        // One occurrence is cancelled; replaying the same batch neither
+        // duplicates nor revives it.
+        let mut cancelled = found(&store, &uids[1]);
+        cancelled.status = UseStatus::Cancelled;
+        store.save_resource_use(&cancelled, None).unwrap();
+        assert_eq!(store.save_repeated_uses(&copies).unwrap(), uids);
+        assert_eq!(store.list_resource_uses().unwrap().len(), 4);
+        assert_eq!(found(&store, &uids[1]).status, UseStatus::Cancelled);
+        assert_eq!(found(&store, &uids[0]).status, UseStatus::Reserved);
+    }
+
+    #[test]
+    fn repeated_uses_are_refused_whole_when_one_occurrence_clashes() {
+        let (_dir, mut store) = store();
+        let resource = new_resource(&mut store, "Sala", 1);
+        let copies = series_of(&mut store, &resource, 4);
+        // Somebody else holds the room on the day of the 2nd copy.
+        let mut other = copies[1].clone();
+        other.uid = new_uid();
+        other.who = "Bruno".into();
+        store.save_resource_use(&other, None).unwrap();
+        let before = store.list_resource_uses().unwrap().len();
+        let error = store.save_repeated_uses(&copies).unwrap_err().to_string();
+        assert!(error.starts_with(HORARIO_OCUPADO), "{error}");
+        assert!(error.contains("Ocorrência 2 de 3") && error.contains("Bruno"), "{error}");
+        // The 1st copy, which fits, was not kept either.
+        assert_eq!(store.list_resource_uses().unwrap().len(), before);
+        assert!(!store.resource_use_exists(&copies[0].uid));
+        // A bigger resource takes the same batch.
+        let mut bigger = resource.clone();
+        bigger.quantity = 2;
+        store.save_resource(&bigger, None).unwrap();
+        assert_eq!(store.save_repeated_uses(&copies).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn repeated_uses_clash_with_each_other_and_validate_before_writing() {
+        let (_dir, mut store) = store();
+        let resource = new_resource(&mut store, "Sala", 1);
+        let copies = series_of(&mut store, &resource, 3);
+        let mut twin = copies[0].clone();
+        twin.uid = new_uid();
+        let both = [copies[0].clone(), twin];
+        let error = store.save_repeated_uses(&both).unwrap_err().to_string();
+        assert!(error.contains("Ocorrência 2 de 2"), "{error}");
+        assert_eq!(store.list_resource_uses().unwrap().len(), 1);
+        let mut bad = copies.clone();
+        bad[1].end = bad[1].start.clone();
+        assert!(store.save_repeated_uses(&bad).is_err());
+        bad[1] = copies[1].clone();
+        bad[0].uid.clear();
+        assert!(store.save_repeated_uses(&bad).is_err());
+        assert!(store.save_repeated_uses(&[]).is_err());
+        assert_eq!(store.list_resource_uses().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn old_use_json_without_new_fields_still_loads_and_repeats() {
+        let (_dir, mut store) = store();
+        let resource = new_resource(&mut store, "Sala", 1);
+        let origin = use_of(&resource, "Ana", "09:00", "10:00");
+        let mut json = serde_json::to_value(&origin).unwrap();
+        for key in ["quantity", "sector", "purpose", "notes", "returned_at", "status", "document_id", "saiop_id", "task_id", "proposal_id", "created_by", "created_at", "updated_at"] {
+            json.as_object_mut().unwrap().remove(key);
+        }
+        let old: ResourceUse = serde_json::from_value(json).unwrap();
+        assert_eq!((old.quantity, old.status), (1, UseStatus::Reserved));
+        store.save_resource_use(&old, None).unwrap();
+        let saved = store.list_resource_uses().unwrap().remove(0);
+        let copies = crate::recurrence::resource_occurrences(&saved, &weekly(3)).unwrap();
+        assert_eq!(store.save_repeated_uses(&copies).unwrap().len(), 2);
+        assert_eq!(store.list_resource_uses().unwrap().len(), 3);
     }
 }

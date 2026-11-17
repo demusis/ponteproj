@@ -35,27 +35,6 @@ class TarefaModelTest {
         assertTrue(typed.changedFrom(saved))
     }
 
-    @Test fun resumoDeHoje() {
-        assertEquals("1 tarefa atrasada · 2 para hoje", todaySummary(1, 2))
-        assertEquals("3 tarefas atrasadas · 1 para hoje", todaySummary(3, 1))
-        assertEquals("2 tarefas atrasadas", todaySummary(2, 0))
-        assertEquals("1 tarefa atrasada", todaySummary(1, 0))
-        assertEquals("1 tarefa para hoje", todaySummary(0, 1))
-        assertEquals("4 tarefas para hoje", todaySummary(0, 4))
-        assertEquals("Nada vence hoje.", todaySummary(0, 0))
-    }
-
-    @Test fun resumoContaOsAtendimentos() {
-        assertEquals("2 atendimentos com prazo vencido ou para hoje", todaySummary(0, 0, 2))
-        assertEquals("1 atendimento com prazo vencido ou para hoje", todaySummary(0, 0, 1))
-        assertEquals(
-            "1 tarefa atrasada · 2 para hoje · 3 atendimentos com prazo vencido ou para hoje",
-            todaySummary(1, 2, 3)
-        )
-        assertEquals("1 tarefa para hoje · 1 atendimento com prazo vencido ou para hoje", todaySummary(0, 1, 1))
-        assertEquals("Nada vence hoje.", todaySummary(0, 0, 0))
-    }
-
     @Test fun linhaDoDocumento() {
         val d = TaskDetail(1, 101, "ORG-OFI-2026/00431", "Pedido de apoio", saved, false, 2, emptyList())
         assertEquals("ORG-OFI-2026/00431 — Pedido de apoio", d.documentLine)
@@ -79,19 +58,5 @@ class TarefaModelTest {
         assertEquals("Urgente", priorityFlag(item(1, "x", priority = "urgente"))?.first)
         assertEquals("Prioridade alta", priorityFlag(item(1, "x", priority = "alta"))?.first)
         assertEquals("Prioridade baixa", priorityFlag(item(1, "x", priority = "baixa"))?.first)
-    }
-
-    private fun doc(number: String, title: String, origin: String = "", from: String = "") =
-        Doc(1, number, title, "", null, origin = origin, emailFrom = from)
-
-    @Test fun buscaDeDocumentoPorNumeroTituloOuOrigem() {
-        val d = doc("ORG-OFI-2026/00431", "Solicitação de apoio logístico", origin = "Servidor A")
-        assertTrue(matchesQuery(d, ""))
-        assertTrue(matchesQuery(d, "00431"))
-        assertTrue(matchesQuery(d, "SOLICITACAO"))
-        assertTrue(matchesQuery(d, " logistico "))
-        assertTrue(matchesQuery(d, "servidor a"))
-        assertFalse(matchesQuery(d, "memorando"))
-        assertTrue(matchesQuery(doc("", "x", from = "Comitê <comite@exemplo.org>"), "comite@"))
     }
 }

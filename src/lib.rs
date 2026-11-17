@@ -65,6 +65,8 @@ pub mod saiop;
 
 /// Categories the person defines, for tasks and documents.
 pub mod categories;
+pub mod calendar_ics;
+pub mod recurrence;
 /// Categories on the screens: chips, picker, filter and manager.
 #[cfg(feature = "desktop")]
 pub mod category_ui;
