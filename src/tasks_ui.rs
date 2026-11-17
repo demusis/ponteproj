@@ -2528,7 +2528,10 @@ impl TaskPanel {
                     context,
                     &scope,
                 ) && in_view(self.view, task, context, &deps, &scope)
-                    && (!self.unplanned_only || task.scheduled_start.is_empty())
+                    // "Ainda não planejadas": open tasks without working hours,
+                    // the same rule as the list at the end of the Semana view.
+                    && (!self.unplanned_only
+                        || (!task.is_done() && task.scheduled_start.is_empty()))
             })
             .collect();
         // Each task after the ones it depends on; ties keep the usual order.
@@ -3558,10 +3561,43 @@ impl TaskPanel {
                                 } else {
                                     Default::default()
                                 };
-                                let mut options: Vec<&Task> = tasks.iter().filter(|t| t.id != task_id).collect();
-                                // Concluded tasks last, greyed, so the live ones stand out.
-                                options.sort_by_key(|t| t.status == "concluida");
-                                egui::ScrollArea::vertical().id_salt("dependency-options").max_height(180.0).show(ui, |ui| {
+                                // A filter, kept in egui memory per task form: with dozens of
+                                // tasks, scrolling a short list to find one is slow.
+                                let filter_id = egui::Id::new(("dependency-filter", task_id));
+                                let mut filter: String =
+                                    ui.data(|d| d.get_temp(filter_id)).unwrap_or_default();
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut filter)
+                                        .hint_text("Filtrar tarefas pelo título")
+                                        .desired_width(f32::INFINITY),
+                                );
+                                ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+                                let needle = crate::labels::fold(filter.trim());
+                                let mut options: Vec<&Task> = tasks
+                                    .iter()
+                                    .filter(|t| t.id != task_id)
+                                    // The ones already marked stay visible whatever the filter.
+                                    .filter(|t| {
+                                        needle.is_empty()
+                                            || task.dependencies.contains(&t.id)
+                                            || crate::labels::fold(&t.title).contains(&needle)
+                                    })
+                                    .collect();
+                                // Marked first, then the open ones; concluded last, greyed.
+                                options.sort_by_key(|t| {
+                                    (!task.dependencies.contains(&t.id), t.status == "concluida")
+                                });
+                                if options.is_empty() {
+                                    widgets::small_muted(ui, "Nenhuma tarefa com esse título.");
+                                }
+                                // Inside the task panel's own scroll, a nested list shrinks to the
+                                // space left on screen (about a line and a half): give it a real
+                                // height of its own, about eight lines.
+                                egui::ScrollArea::vertical()
+                                    .id_salt("dependency-options")
+                                    .min_scrolled_height(220.0)
+                                    .max_height(220.0)
+                                    .show(ui, |ui| {
                                     for previous in options {
                                         let mut checked = task.dependencies.contains(&previous.id);
                                         let would_cycle = cycle_makers.contains(&previous.id);

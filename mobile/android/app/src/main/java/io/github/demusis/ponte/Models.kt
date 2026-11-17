@@ -780,5 +780,22 @@ internal data class SetupState(
     /** The first sync worked. */
     val done: Boolean = false,
     /** "Seu nome nas tarefas", asked after the first sync (optional; saved as it is typed). */
-    val personName: String = ""
+    val personName: String = "",
+    /** The first sync did not run because there is no Wi-Fi: the screen offers mobile data. */
+    val noWifi: Boolean = false
 )
+
+/** What the first-sync step says after an attempt that did not finish. */
+internal object SetupRules {
+    const val NO_WIFI_PREFIX = "Sem Wi-Fi"
+
+    /**
+     * The reason to show when the sync is not running and did not work: any status text
+     * (no Wi-Fi, fingerprint not released, password missing, an error), not only errors.
+     * Empty when there is nothing to say (still running, done, or no attempt yet).
+     */
+    fun reason(busy: Boolean, text: String): String =
+        if (busy || text.isEmpty() || text.startsWith("Sincronizado") || text == "Pronto.") "" else text
+
+    fun noWifi(busy: Boolean, text: String): Boolean = !busy && text.startsWith(NO_WIFI_PREFIX)
+}

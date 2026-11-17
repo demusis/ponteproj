@@ -695,9 +695,10 @@ internal object Controller {
             if (stack.lastOrNull() == Route.Setup && setup.step == 2) {
                 setup = setup.copy(
                     syncing = busy,
-                    status = if (busy) "" else text,
+                    status = SetupRules.reason(busy, text),
                     statusError = SyncRunner.statusError,
-                    done = !busy && text.startsWith("Sincronizado")
+                    done = !busy && text.startsWith("Sincronizado"),
+                    noWifi = SetupRules.noWifi(busy, text)
                 )
             }
             if (Route.Settings in stack) updateSettings()
@@ -840,8 +841,15 @@ internal object Controller {
     // ---------------------------------------------------------------- sync
 
     /** True unless the network is metered and mobile data is not allowed. */
+    /** Set by "Usar dados móveis desta vez": lets the next sync start on mobile data, once. */
+    private var mobileOnce = false
+
     private fun networkAllowed(): Boolean {
         if (prefs.getBoolean("mobile_ok", false)) return true
+        if (mobileOnce) {
+            mobileOnce = false
+            return true
+        }
         return try {
             val cm = app.getSystemService(ConnectivityManager::class.java)
             val net = cm.activeNetwork ?: return true
@@ -2311,6 +2319,12 @@ internal object Controller {
         }
         requestSync(null, auto = true)
         render()
+    }
+
+    /** "Usar dados móveis desta vez": the first sync on mobile data, without changing Ajustes. */
+    fun setupSyncMobile() {
+        mobileOnce = true
+        setupSync()
     }
 
     private fun setupBack() {

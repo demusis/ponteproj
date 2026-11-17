@@ -57,7 +57,8 @@ internal fun SetupScreen(
     onSync: () -> Unit,
     onFinish: () -> Unit,
     onSkip: () -> Unit,
-    onName: (String) -> Unit = {}
+    onName: (String) -> Unit = {},
+    onSyncMobile: () -> Unit = {}
 ) {
     val c = Ponte.colors
     Column(Modifier.fillMaxSize().background(c.ground).statusBarsPadding().imePadding()) {
@@ -103,6 +104,12 @@ internal fun SetupScreen(
                 else -> when {
                     state.syncing -> Spacer(Modifier.height(8.dp))
                     state.done -> PrimaryButton("Começar", onFinish)
+                    state.noWifi -> {
+                        PrimaryButton("Usar dados móveis desta vez", onSyncMobile)
+                        Quiet("Tentar de novo", onSync)
+                        Quiet("Voltar", onBack)
+                        Quiet("Agora não", onSkip)
+                    }
                     else -> {
                         PrimaryButton("Tentar de novo", onSync)
                         Quiet("Voltar", onBack)
@@ -253,8 +260,16 @@ private fun StepSync(state: SetupState, onName: (String) -> Unit) {
             Spacer(Modifier.height(8.dp))
             Mark(Icons.Outlined.Sync)
             Heading("Primeira sincronização")
-            if (state.statusError && state.status.isNotEmpty()) Notice(state.status)
-            else Body("Falta só trazer o acervo para o celular.")
+            when {
+                state.noWifi -> Notice(
+                    "O celular não está no Wi-Fi, e por padrão o Ponte de bolso só sincroniza no Wi-Fi. " +
+                        "Use os dados móveis desta vez, ou conecte-se a um Wi-Fi e toque em Tentar de novo. " +
+                        "Para sempre permitir, ative os dados móveis em Ajustes.",
+                    Tone.WARNING
+                )
+                state.status.isNotEmpty() -> Notice(state.status, if (state.statusError) Tone.ERROR else Tone.WARNING)
+                else -> Body("Falta só trazer o acervo para o celular.")
+            }
         }
     }
 }

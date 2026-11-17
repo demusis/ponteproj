@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.39.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.39.1 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.39.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.39.1.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -465,7 +465,7 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 
 ### 6.4 Dependências entre tarefas
 
-Uma tarefa pode depender de outras ("só posso responder depois de receber o parecer"). Marque em **Mais detalhes ▸ dependências**.
+Uma tarefa pode depender de outras ("só posso responder depois de receber o parecer"). Marque em **Mais detalhes ▸ Depende de outras tarefas**; o campo **Filtrar tarefas pelo título** acha a tarefa sem rolar, e as já marcadas ficam no alto.
 
 | O que você vê | O que significa |
 |---|---|
@@ -563,7 +563,7 @@ O **Prazo** é a data em que a entrega vence. O **horário de trabalho** é quan
 
 - **Planejamento na tarefa.** No painel da tarefa, o bloco **Planejamento** tem **Início**, **Fim** e **Estimativa em minutos** (0 = sem estimativa). Início e fim se escrevem `AAAA-MM-DDTHH:MM` (por exemplo `2026-11-18T09:00`), são horários deste computador, e o fim precisa ser depois do início. Os dois vêm juntos ou nenhum dos dois. Um fim à meia-noite não ocupa o dia seguinte.
 - **Subtarefas.** Na lista **Sem tarefa pai**, escolha a tarefa a que esta pertence. A tarefa pai passa a mostrar *Subtarefas: N/M concluídas* e atalhos para abri-las. Uma tarefa não pode ser pai de si mesma, nem de quem é pai dela. A subtarefa é uma tarefa comum, com prazo e situação próprios. No celular, use **Tarefa pai ▸ Escolher tarefa pai…**. (As dependências de [6.4](#64-dependências-entre-tarefas) são outra coisa: dizem o que precisa ser feito antes.)
-- **Ainda não planejadas.** Em **Tarefas**, a caixa **Ainda não planejadas** mostra só as tarefas que ainda não têm horário de trabalho.
+- **Ainda não planejadas.** Em **Tarefas**, a caixa **Ainda não planejadas** mostra só as tarefas abertas que ainda não têm horário de trabalho (a mesma regra da lista no fim da **Semana**).
 - **A semana.** Em **Hoje**, **Semana** mostra os sete dias, de segunda a domingo. Cada dia tem os blocos de trabalho (`09:00–10:30 · título`) e as reservas de recursos, em ordem de horário, e, à parte, em **Prazos de entrega**, as tarefas e os atendimentos que vencem nesse dia. **◀ Semana anterior**, **Próxima semana ▶** e **Esta semana** movem a visão. Clicar numa tarefa abre o painel dela para planejar ou reagendar; clicar numa reserva abre o uso. Setas ligam as tarefas que dependem umas das outras, e uma seta vermelha avisa quando a ordem está invertida ([6.4](#64-dependências-entre-tarefas)). No fim, **Ainda não planejadas** lista as tarefas abertas sem horário, com o prazo e a estimativa. Atalho: **Ctrl+K**, `> semana`, **Planejar a semana**.
 - **Repetir uma tarefa ou uma reserva.** Na visão **Semana**, abra **Repetir tarefa ou reserva…**:
   1. Escolha **Tarefa** ou **Reserva** e qual.

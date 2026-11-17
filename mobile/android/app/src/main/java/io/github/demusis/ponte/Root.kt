@@ -255,7 +255,8 @@ private fun RouteScreen(route: Route) {
             state = c.setup, onPickFile = c::pickFile,
             onPassphrase = c::setSetupPassphrase, onRemember = c::setSetupRemember,
             onNext = c::setupNext, onBack = c::back, onSync = c::setupSync,
-            onFinish = c::finishSetup, onSkip = c::finishSetup, onName = c::changePersonName
+            onFinish = c::finishSetup, onSkip = c::finishSetup, onName = c::changePersonName,
+            onSyncMobile = c::setupSyncMobile
         )
     }
 }
