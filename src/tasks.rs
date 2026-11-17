@@ -256,6 +256,14 @@ pub(crate) fn backfill_task_uids(conn: &mut Connection) -> Result<()> {
         return Ok(());
     }
     let tx = conn.transaction()?;
+    // Tasks in the trash, or of a document in the trash, take their uid too.
+    // The guards that refuse edits to them are not about this bookkeeping:
+    // drop them here; Store::open puts them back right after
+    // (ensure_write_guards). Without this, one such task kept the whole
+    // library from opening.
+    tx.execute_batch(
+        "DROP TRIGGER IF EXISTS ponte_active_tasks_update; DROP TRIGGER IF EXISTS ponte_item_active_tasks;",
+    )?;
     let rows = {
         let mut statement =
             tx.prepare("SELECT id,payload FROM tasks WHERE uid IS NULL OR uid=''")?;
@@ -1997,6 +2005,65 @@ mod planning_tests {
             .execute("UPDATE tasks SET payload=zeroblob(1) WHERE id=?1", [id])
             .unwrap();
         backfill_task_uids(&mut store.conn).unwrap();
+    }
+
+    #[test]
+    fn a_task_of_a_trashed_document_does_not_keep_the_library_from_opening() {
+        // The 0.39.0 installer case: an older library (no uid column) with a
+        // task whose document is in the trash. Opening must fill its uid and
+        // keep the trash guard working afterwards.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("uid-trash.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let document = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        let task = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.document_id == Some(document))
+            .unwrap();
+        let mut alone = Task::standalone();
+        alone.title = "Tarefa que foi para a lixeira".into();
+        let alone = store.save_task(&alone).unwrap();
+        store
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Document,
+                id: document,
+            })
+            .unwrap();
+        store
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Task,
+                id: alone,
+            })
+            .unwrap();
+        store
+            .conn
+            .execute_batch("DROP INDEX tasks_uid; ALTER TABLE tasks DROP COLUMN uid; PRAGMA user_version=18;")
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).expect("the library opens");
+        let uid: String = store
+            .conn
+            .query_row("SELECT uid FROM tasks WHERE id=?1", [task.id], |r| r.get(0))
+            .unwrap();
+        assert!(!uid.is_empty());
+        // The guard is back: the trashed document's task still refuses edits.
+        let refused = store
+            .conn
+            .execute("UPDATE tasks SET uid=uid WHERE id=?1", [task.id])
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("lixeira"), "{refused}");
+        let refused = store
+            .conn
+            .execute("UPDATE tasks SET uid=uid WHERE id=?1", [alone])
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("lixeira"), "{refused}");
     }
 
     fn weekly(count: u16) -> crate::recurrence::Recurrence {

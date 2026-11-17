@@ -43,7 +43,7 @@ bash mobile/build-android.sh            # núcleo (arm64) + APK
 bash mobile/build-android.sh --rust-only
 ```
 
-O APK sai em `mobile/android/app/build/outputs/apk/release/app-release.apk` (reduzido pelo R8 e assinado com a mesma chave de depuração das versões anteriores, para instalar por cima sem perder o acervo do aparelho); instale-o no celular (por arquivo, permitindo "instalar apps desconhecidos", ou com `adb install -r`).
+O APK sai em `mobile/android/app/build/outputs/apk/release/app-release.apk` (reduzido pelo R8 e assinado com a chave própria em `~/.ponte-assinatura/`, fora do projeto; sem ela, o build usa a chave de depuração e avisa). **A chave mudou na 0.9.0:** quem tinha uma versão anterior precisa sincronizar, desinstalar e instalar de novo; daí em diante as atualizações instalam por cima; instale-o no celular (por arquivo, permitindo "instalar apps desconhecidos", ou com `adb install -r`).
 
 ## Acervo de teste no computador
 
