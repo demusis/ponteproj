@@ -478,6 +478,8 @@ Uma tarefa pode depender de outras ("só posso responder depois de receber o par
 
 Enquanto houver tarefa anterior em aberto, concluir fica desabilitado, com a dica *"Conclua antes: A, B"*. O Ponte não deixa formar ciclos: as opções que criariam um aparecem desabilitadas e explicadas.
 
+**Na Semana** ([6.8](#68-planejar-o-trabalho)), quando a tarefa anterior e a que depende dela têm horário na semana mostrada, uma seta liga o fim de uma ao começo da outra (mais fina e clara se a anterior já foi concluída). Se a que depende começa antes de a anterior terminar, a seta fica vermelha e o bloco mostra *⚠ começa antes de terminar A*: é hora de reagendar. Se a anterior está em outra semana ou ainda sem horário, o bloco mostra *↳ depende de N*; passe o mouse para a lista, com ○, ⚠ e ✓, e clique para abrir. Subtarefas não ganham seta: a tarefa pai é outra coisa.
+
 ### 6.5 Ações em lote
 
 Para concluir, mudar o prazo, o responsável ou a prioridade, ou excluir várias tarefas de uma vez, use o modo de seleção da área **Tarefas**.
@@ -560,9 +562,9 @@ Uma **categoria** é uma palavra que você escolhe para organizar o trabalho, co
 O **Prazo** é a data em que a entrega vence. O **horário de trabalho** é quando você pretende fazer. São coisas separadas: marcar ou mudar o horário **não altera o prazo**.
 
 - **Planejamento na tarefa.** No painel da tarefa, o bloco **Planejamento** tem **Início**, **Fim** e **Estimativa em minutos** (0 = sem estimativa). Início e fim se escrevem `AAAA-MM-DDTHH:MM` (por exemplo `2026-11-18T09:00`), são horários deste computador, e o fim precisa ser depois do início. Os dois vêm juntos ou nenhum dos dois. Um fim à meia-noite não ocupa o dia seguinte.
-- **Subtarefas.** Na lista **Sem tarefa pai**, escolha a tarefa a que esta pertence. A tarefa pai passa a mostrar *Subtarefas: N/M concluídas* e atalhos para abri-las. Uma tarefa não pode ser pai de si mesma, nem de quem é pai dela. A subtarefa é uma tarefa comum, com prazo e situação próprios. (As dependências de [6.4](#64-dependências-entre-tarefas) são outra coisa: dizem o que precisa ser feito antes.)
+- **Subtarefas.** Na lista **Sem tarefa pai**, escolha a tarefa a que esta pertence. A tarefa pai passa a mostrar *Subtarefas: N/M concluídas* e atalhos para abri-las. Uma tarefa não pode ser pai de si mesma, nem de quem é pai dela. A subtarefa é uma tarefa comum, com prazo e situação próprios. No celular, use **Tarefa pai ▸ Escolher tarefa pai…**. (As dependências de [6.4](#64-dependências-entre-tarefas) são outra coisa: dizem o que precisa ser feito antes.)
 - **Ainda não planejadas.** Em **Tarefas**, a caixa **Ainda não planejadas** mostra só as tarefas que ainda não têm horário de trabalho.
-- **A semana.** Em **Hoje**, **Semana** mostra os sete dias, de segunda a domingo. Cada dia tem os blocos de trabalho (`09:00–10:30 · título`) e as reservas de recursos, em ordem de horário, e, à parte, em **Prazos de entrega**, as tarefas e os atendimentos que vencem nesse dia. **◀ Semana anterior**, **Próxima semana ▶** e **Esta semana** movem a visão. Clicar numa tarefa abre o painel dela para planejar ou reagendar; clicar numa reserva abre o uso. No fim, **Ainda não planejadas** lista as tarefas abertas sem horário, com o prazo e a estimativa. Atalho: **Ctrl+K**, `> semana`, **Planejar a semana**.
+- **A semana.** Em **Hoje**, **Semana** mostra os sete dias, de segunda a domingo. Cada dia tem os blocos de trabalho (`09:00–10:30 · título`) e as reservas de recursos, em ordem de horário, e, à parte, em **Prazos de entrega**, as tarefas e os atendimentos que vencem nesse dia. **◀ Semana anterior**, **Próxima semana ▶** e **Esta semana** movem a visão. Clicar numa tarefa abre o painel dela para planejar ou reagendar; clicar numa reserva abre o uso. Setas ligam as tarefas que dependem umas das outras, e uma seta vermelha avisa quando a ordem está invertida ([6.4](#64-dependências-entre-tarefas)). No fim, **Ainda não planejadas** lista as tarefas abertas sem horário, com o prazo e a estimativa. Atalho: **Ctrl+K**, `> semana`, **Planejar a semana**.
 - **Repetir uma tarefa ou uma reserva.** Na visão **Semana**, abra **Repetir tarefa ou reserva…**:
   1. Escolha **Tarefa** ou **Reserva** e qual.
   2. Escolha a frequência (**Diária**, **Semanal**, **Mensal** ou **Anual**), **A cada** quantas e as **Ocorrências (inclui a original)**, de 2 a 104. Os intervalos vão até 365 dias, 104 semanas, 24 meses ou 10 anos.
@@ -576,7 +578,7 @@ Duas regras para ter em mente:
 - **As cópias são independentes.** Mudar ou cancelar uma não muda as outras, e não há "alterar todas". Para mudar o grupo, edite cada uma.
 - **Não está disponível num computador conectado ao computador principal** (cliente da equipe). A mensagem diz *Faça a repetição no computador principal.* Num computador só, no principal e na pasta compartilhada, funciona.
 
-**Formato:** o planejamento muda o formato do acervo (18) e o da pasta compartilhada (6), como na 0.37.0. Atualize **primeiro o computador principal**: um computador já na 0.39 não salva tarefas num principal ainda na 0.38 e avisa *Atualize o Ponte no computador principal para sincronizar tarefas.* Um Ponte mais antigo recusa o arquivo novo da pasta compartilhada e diz para atualizar. Cada tarefa ganha uma identificação interna na primeira abertura.
+**Formato:** o planejamento muda o formato do acervo (19) e o da pasta compartilhada (6), como na 0.37.0. Atualize **primeiro o computador principal**: um computador já na 0.39 não salva tarefas num principal ainda na 0.38 e avisa *Atualize o Ponte no computador principal para sincronizar tarefas.* Um Ponte mais antigo recusa o arquivo novo da pasta compartilhada e diz para atualizar. Cada tarefa ganha uma identificação interna na primeira abertura.
 
 ### 6.9 Calendário (.ics)
 

@@ -2113,11 +2113,12 @@ impl Store {
             }
             if value.uid.is_empty() { value.uid = uuid::Uuid::new_v4().to_string(); }
             tx.execute(
-                "INSERT INTO tasks(id,document_id,payload) VALUES(?1,?2,?3)",
+                "INSERT INTO tasks(id,document_id,payload,uid) VALUES(?1,?2,?3,?4)",
                 params![
                     value.id,
                     value.document_id,
-                    seal(&serde_json::to_vec(&value)?)?
+                    seal(&serde_json::to_vec(&value)?)?,
+                    value.uid
                 ],
             )?;
         }
@@ -12302,7 +12303,7 @@ mod resources_sync_tests {
         assert!(other.list_resources().unwrap().is_empty());
         assert!(other.list_resource_uses().unwrap().is_empty());
         // Schema 17 and format 5 are the ones this build writes.
-        assert_eq!(crate::storage::SCHEMA_VERSION, 18);
+        assert_eq!(crate::storage::SCHEMA_VERSION, 19);
         assert_eq!(crate::sharedfolder::FORMAT, 6);
     }
     #[test]

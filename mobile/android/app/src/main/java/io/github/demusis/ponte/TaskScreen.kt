@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -19,6 +20,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -67,7 +70,9 @@ internal fun TaskScreen(
     myName: String = "",
     onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") },
     remindersBlocked: Boolean = false,
-    onRemindersChosen: () -> Unit = {}
+    onRemindersChosen: () -> Unit = {},
+    relations: TasksState = TasksState(),
+    onOpenTask: (Long) -> Unit = {}
 ) {
     // Only the task this screen was opened for: never the form of one with the data of another.
     val task = TaskRules.shown(routeId, state)
@@ -78,7 +83,7 @@ internal fun TaskScreen(
         }
         return
     }
-    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory, remindersBlocked, onRemindersChosen)
+    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory, remindersBlocked, onRemindersChosen, relations, onOpenTask)
 }
 
 private val DraftSaver = Saver<TaskDraft, List<Any>>(save = { it.toList() }, restore = { TaskDraft.fromList(it) })
@@ -100,7 +105,9 @@ private fun TaskLoaded(
     myName: String,
     onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit,
     remindersBlocked: Boolean,
-    onRemindersChosen: () -> Unit
+    onRemindersChosen: () -> Unit,
+    relations: TasksState,
+    onOpenTask: (Long) -> Unit
 ) {
     val c = Ponte.colors
     // The draft remembers the version it started from; a newer stored task resets it (nothing
@@ -112,6 +119,8 @@ private fun TaskLoaded(
     val edit = { change: (TaskForm) -> TaskForm -> stored = draft.copy(form = change(draft.form)) }
     var tried by rememberSaveable { mutableStateOf(false) }
     var asking by rememberSaveable { mutableStateOf(false) }
+    var parentPicker by rememberSaveable { mutableStateOf(false) }
+    var pendingSubtask by rememberSaveable { mutableStateOf<Long?>(null) }
     var unlinking by rememberSaveable { mutableStateOf(false) }
     val changed = draft.changed
     val conflict = draft.conflict || state.conflict
@@ -168,7 +177,12 @@ private fun TaskLoaded(
             LabeledField("Início planejado (AAAA-MM-DDTHH:MM)", form.scheduledStart, { v -> edit { it.copy(scheduledStart = v) } })
             LabeledField("Fim planejado (AAAA-MM-DDTHH:MM)", form.scheduledEnd, { v -> edit { it.copy(scheduledEnd = v) } })
             LabeledField("Estimativa em minutos (0 = sem estimativa)", form.estimateMinutes.toString(), { v -> v.toIntOrNull()?.let { n -> edit { it.copy(estimateMinutes = n) } } })
-            LabeledField("ID da tarefa pai (vazio = nenhuma)", form.parentTaskId?.toString() ?: "", { v -> if (v.isEmpty() || v.toLongOrNull() != null) edit { it.copy(parentTaskId = v.toLongOrNull()) } })
+            SectionLabel("Tarefa pai")
+            val parentTitle = relations.tasks.firstOrNull { it.id == form.parentTaskId }?.title
+            Text(if (form.parentTaskId == null) "Sem tarefa pai" else parentTitle ?: "Tarefa pai #${form.parentTaskId}")
+            SecondaryButton("Escolher tarefa pai…", onClick = { parentPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
+            if (relations.loading) Text("Carregando tarefas…")
+            relations.error?.let { Notice(it, Tone.ERROR) }
             Text("Avisos antes do início")
             listOf(0 to "No início", 15 to "15 minutos", 60 to "1 hora", 1440 to "1 dia").forEach { (minutes, label) ->
                 androidx.compose.material3.FilterChip(
@@ -195,18 +209,42 @@ private fun TaskLoaded(
                 singleLine = false, minLines = 4,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
             )
+            val prerequisites = TaskRules.prerequisites(task.dependencies, relations.tasks)
+            if (task.dependencies.isNotEmpty()) {
+                SectionLabel("Depende de")
+                prerequisites.forEach { prerequisite ->
+                    PonteCard(onClick = { if (changed) { pendingSubtask = prerequisite.id; asking = true } else onOpenTask(prerequisite.id) }) {
+                        Text("${TaskRules.prerequisiteSymbol(prerequisite)} ${prerequisite.title}", Modifier.padding(16.dp))
+                    }
+                }
+            }
+            val subtasks = relations.tasks.filter { it.parentTaskId == task.id }
+            if (subtasks.isNotEmpty()) {
+                SectionLabel("Subtarefas · ${subtasks.count { it.done }} de ${subtasks.size} concluídas")
+                subtasks.forEach { child ->
+                    PonteCard(onClick = { if (changed) { pendingSubtask = child.id; asking = true } else onOpenTask(child.id) }) {
+                        Text(child.title + if (child.done) " · Concluída" else "", Modifier.padding(16.dp))
+                    }
+                }
+            }
             if (task.checklist.isNotEmpty()) Checklist(task.checklist)
             DocumentActions(linked, enabled = !changed && !state.busy, changed = changed, onLink = onLink, onUnlink = { unlinking = true })
         }
     }
 
+    if (parentPicker) {
+        ParentTaskPicker(relations.tasks, task.id, onDismiss = { parentPicker = false }) { id ->
+            edit { it.copy(parentTaskId = id) }
+            parentPicker = false
+        }
+    }
     if (asking) {
         AlertDialog(
-            onDismissRequest = { asking = false },
+            onDismissRequest = { asking = false; pendingSubtask = null },
             title = { Text("Descartar as alterações?") },
             text = { Text("O que você mudou nesta tarefa ainda não foi salvo.") },
-            confirmButton = { TextButton(onClick = { asking = false; onBack() }) { Text("Descartar", color = c.error) } },
-            dismissButton = { TextButton(onClick = { asking = false }) { Text("Continuar editando") } }
+            confirmButton = { TextButton(onClick = { asking = false; val id = pendingSubtask; pendingSubtask = null; if (id != null) onOpenTask(id) else onBack() }) { Text("Descartar", color = c.error) } },
+            dismissButton = { TextButton(onClick = { asking = false; pendingSubtask = null }) { Text("Continuar editando") } }
         )
     }
     if (unlinking) {
@@ -286,6 +324,28 @@ private fun DocumentActions(
         if (linked) SecondaryButton("Desvincular do documento", onClick = onUnlink, enabled = enabled, danger = true)
         if (changed) {
             Text("Salve as alterações antes de trocar o documento.", style = MaterialTheme.typography.bodySmall, color = c.muted)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ParentTaskPicker(tasks: List<TaskItem>, taskId: Long, onDismiss: () -> Unit, onPick: (Long?) -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val candidates = parentCandidates(tasks, taskId, query)
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Ponte.colors.surface) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Escolher tarefa pai", style = MaterialTheme.typography.titleMedium)
+            SearchBox(query, { query = it }, "Buscar tarefa")
+            TextButton(onClick = { onPick(null) }) { Text("Sem tarefa pai") }
+            Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
+                if (candidates.isEmpty()) Text("Nenhuma tarefa encontrada", Modifier.padding(16.dp))
+                candidates.forEach { candidate ->
+                    TextButton(onClick = { onPick(candidate.id) }, modifier = Modifier.fillMaxWidth()) {
+                        Text(candidate.title, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
         }
     }
 }

@@ -15,6 +15,44 @@ class TaskRulesTest {
     private fun task(id: Long, version: Long, f: TaskForm = form()) =
         TaskDetail(id, 100 + id, "ORG-OFI-2026/0000$id", "Assunto $id", f, false, version, emptyList())
 
+    private fun relation(id: Long, title: String, parent: Long? = null, done: Boolean = false) =
+        TaskItem(id, 0, title, "", "", "", "", done, false, false, parentTaskId = parent)
+
+    @Test fun candidatosExcluemPropriaTarefaDescendentesEConcluidas() {
+        val rows = listOf(
+            relation(1, "Atual"), relation(2, "Filha", 1, true), relation(3, "Neta", 2),
+            relation(4, "Outra"), relation(5, "Concluída", done = true), relation(6, "Filha ativa", 1)
+        )
+        assertEquals(listOf(4L), parentCandidates(rows, 1, "").map { it.id })
+    }
+
+    @Test fun candidatosBuscamTituloSemAcentosOuMaiusculas() {
+        val rows = listOf(relation(1, "Atual"), relation(2, "Revisão de Ofício"), relation(3, "Outra"))
+        assertEquals(listOf(2L), parentCandidates(rows, 1, "REVISAO de oficio").map { it.id })
+        assertTrue(parentCandidates(rows, 1, "inexistente").isEmpty())
+    }
+
+    @Test fun dependenciasUsamIdsEEstadosSemConfundirSubtarefas() {
+        val rows = listOf(relation(1, "Atual"), relation(2, "Pai"), relation(3, "Filha", 1),
+            relation(4, "Concluída", done = true), relation(5, "Atrasada").copy(overdue = true))
+        val deps = TaskRules.prerequisites(listOf(5, 4, 2, 5), rows)
+        assertEquals(listOf(5L, 4L, 2L), deps.map { it.id })
+        assertEquals(listOf("⚠", "✓", "○"), deps.map { TaskRules.prerequisiteSymbol(it) })
+    }
+
+    @Test fun semanaContaApenasDependenciasAbertasEDetectaOrdem() {
+        val task = relation(1, "Atual", parent = 2).copy(dependencies = listOf(3, 4), scheduledStart = "2026-11-17T10:00")
+        val parent = relation(2, "Pai").copy(scheduledEnd = "2026-11-17T15:00")
+        val open = relation(3, "Preparar").copy(scheduledEnd = "2026-11-17T11:00")
+        val done = relation(4, "Pronta", done = true).copy(scheduledEnd = "2026-11-17T12:00")
+        val child = relation(5, "Filha", parent = 1)
+        val all = listOf(task, parent, open, done, child)
+        assertEquals("⚠ começa antes de terminar Preparar" to true, WeekPlan.dependencyNotice(task, all))
+        assertEquals("↳ depende de 1" to false, WeekPlan.dependencyNotice(task.copy(scheduledStart = "2026-11-17T11:00"), all))
+        assertNull(WeekPlan.dependencyNotice(task, listOf(task, parent, open.copy(done = true), done, child)))
+        assertNull(WeekPlan.dependencyNotice(task.copy(dependencies = emptyList()), all))
+    }
+
     // ---- reminders and the permission to notify
 
     @Test fun avisoSemPermissaoSoApareceParaTarefaComAvisos() {

@@ -302,6 +302,7 @@ fn task_json_on(
         "estimate_minutes": task.estimate_minutes,
         "reminder_offsets_minutes": task.reminder_offsets_minutes,
         "parent_task_id": task.parent_task_id,
+        "dependencies": task.dependencies,
         "due_label": ponteproj::labels::date(&task.due_date),
         "overdue": open && !task.due_date.is_empty() && task.due_date.as_str() < today,
         "due_today": open && task.due_date == today,
@@ -494,6 +495,21 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listTasks<'local>(
             let numbers = document_numbers(store)?;
             let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
             let tasks = ordered_tasks(store.list_tasks()?, &numbers, &today);
+            Ok(json!({ "tasks": tasks }))
+        })
+    })
+}
+
+/// Complete task graph, including all concluded tasks, for parent selection and subtasks.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listTaskRelations<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            let numbers = document_numbers(store)?;
+            let tasks = store.list_tasks()?.iter().map(|t| task_json(t, &numbers)).collect::<Vec<_>>();
             Ok(json!({ "tasks": tasks }))
         })
     })
@@ -2116,6 +2132,7 @@ mod tests {
         let id = store.save_task(&task).unwrap();
 
         let before = get_task(&store, id).unwrap();
+        assert_eq!(before["dependencies"], json!([other]));
         let version = before["version"].as_i64().unwrap();
         let saved = save_task(
             &mut store,

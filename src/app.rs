@@ -8,20 +8,20 @@ use crate::widgets::{self, Tone};
 use anyhow::{Context, Result};
 
 pub(crate) mod calendar;
+mod calendar_exchange;
 mod conference;
 mod ficha;
 mod library;
 mod minuta;
 mod proposals;
 mod queue;
+mod repetition;
 mod search;
 mod settings;
 mod today;
-mod week;
-mod calendar_exchange;
-mod repetition;
 #[cfg(feature = "shots")]
 mod tour;
+mod week;
 mod windows;
 use eframe::egui::{self, Color32, RichText};
 use std::collections::BTreeMap;
@@ -1054,6 +1054,14 @@ enum PendingTarget {
 enum Leave {
     /// The "Hoje" screen.
     Today,
+    /// Open the week planner after reaching Hoje.
+    Week(egui::Context),
+    /// Open a new manual record after reaching Documentos.
+    NewManual,
+    /// Open a new attendance after reaching Atendimentos.
+    NewAttendance,
+    /// Open a new reservation after reaching Recursos.
+    NewReservation,
     /// The "Atendimentos" screen.
     Saiop,
     /// The "Modelos" screen.
@@ -1683,6 +1691,20 @@ impl PonteApp {
         }
     }
 
+    fn cancel_pending_leave(&mut self) {
+        self.leave = None;
+        self.leave_error = None;
+        self.return_after_select = None;
+        self.area = Area::Tasks;
+    }
+
+    fn complete_pending_leave(&mut self) {
+        if let Some(leave) = self.leave.take() {
+            self.leave_error = None;
+            self.perform_leave(leave);
+        }
+    }
+
     fn perform_leave(&mut self, leave: Leave) {
         // The way back belongs to the document just opened for the person;
         // going anywhere else ends it.
@@ -1691,6 +1713,22 @@ impl PonteApp {
             self.return_after_select = None;
         }
         match leave {
+            Leave::Week(ctx) => {
+                self.area = Area::Today;
+                ctx.data_mut(|data| data.insert_temp(egui::Id::new("today-week-view"), true));
+            }
+            Leave::NewManual => {
+                self.area = Area::Documents;
+                self.manual_form.open_new();
+            }
+            Leave::NewAttendance => {
+                self.area = Area::Saiop;
+                self.saiop.key_new(&self.store);
+            }
+            Leave::NewReservation => {
+                self.area = Area::Resources;
+                self.resources.new_reservation(&self.store);
+            }
             Leave::Saiop => {
                 self.area = Area::Saiop;
             }
@@ -3965,6 +4003,52 @@ mod tests {
         DocTaskStatusSummary, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION, LIBRARY_MIN_WIDTH,
     };
     use crate::tasks::Task;
+
+    fn app_with_dirty_task() -> (tempfile::TempDir, super::PonteApp) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acervo.sqlite3");
+        let store = crate::storage::Store::open(&path).unwrap();
+        let mut app = super::PonteApp::new(store, path);
+        let suggestion = crate::model::ActionSuggestion {
+            action: "Revisar".into(),
+            reason: String::new(),
+            evidence: String::new(),
+        };
+        assert!(app.tasks.prepare_suggestion(1, &suggestion, "normal"));
+        assert!(app.tasks.dirty());
+        app.area = super::Area::Tasks;
+        (dir, app)
+    }
+
+    #[test]
+    fn pending_follow_up_runs_after_discard() {
+        let (_dir, mut app) = app_with_dirty_task();
+        let ctx = eframe::egui::Context::default();
+        app.navigate(super::Leave::Week(ctx.clone()));
+        assert!(app.leave.is_some());
+        assert!(ctx
+            .data(|d| d.get_temp::<bool>(eframe::egui::Id::new("today-week-view")))
+            .is_none());
+        app.tasks.discard_draft();
+        app.complete_pending_leave();
+        assert!(app.area == super::Area::Today);
+        assert_eq!(
+            ctx.data(|d| d.get_temp::<bool>(eframe::egui::Id::new("today-week-view"))),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn cancelling_pending_follow_up_keeps_the_edit() {
+        let (_dir, mut app) = app_with_dirty_task();
+        app.navigate(super::Leave::NewManual);
+        assert!(app.leave.is_some());
+        app.cancel_pending_leave();
+        app.complete_pending_leave();
+        assert!(app.area == super::Area::Tasks);
+        assert!(app.tasks.dirty());
+        assert!(!app.manual_form.open);
+    }
 
     #[test]
     fn document_sort_orders_by_deadline_priority_number_and_title() {

@@ -25,6 +25,7 @@ internal object Api {
         c(core.exportFile(kind, id, captureId, destDir))
 
     fun tasks(): List<JSONObject> = c(core.listTasks()).optJSONArray("tasks").objs()
+    fun taskRelations(): List<JSONObject> = c(core.listTaskRelations()).optJSONArray("tasks").objs()
 
     fun setDone(taskId: Long, done: Boolean) {
         c(if (done) core.completeTask(taskId) else core.reopenTask(taskId))

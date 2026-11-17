@@ -48,6 +48,17 @@ internal fun TaskForm.Companion.fromList(l: List<String>) =
 
 /** Decisions of the task screen. */
 internal object TaskRules {
+    fun prerequisites(ids: List<Long>, tasks: List<TaskItem>): List<TaskItem> {
+        val byId = tasks.associateBy { it.id }
+        return ids.distinct().mapNotNull { byId[it] }
+    }
+
+    fun prerequisiteSymbol(task: TaskItem): String = when {
+        task.done -> "✓"
+        task.overdue -> "⚠"
+        else -> "○"
+    }
+
     /** One line under "Avisos antes do início" when the permission to notify was refused. */
     const val REMINDERS_BLOCKED =
         "Sem permissão para notificações, os avisos desta tarefa não aparecem. Permita-as nas configurações do telefone."
@@ -106,4 +117,19 @@ internal object TaskRules {
             }
         }
     }
+}
+
+/** Possible parents, excluding the whole subtree even through concluded tasks. */
+internal fun parentCandidates(tasks: List<TaskItem>, taskId: Long, query: String): List<TaskItem> {
+    val excluded = mutableSetOf(taskId)
+    val children = tasks.groupBy { it.parentTaskId }
+    val pending = ArrayDeque<Long>()
+    pending.add(taskId)
+    while (pending.isNotEmpty()) {
+        for (child in children[pending.removeFirst()].orEmpty()) {
+            if (excluded.add(child.id)) pending.add(child.id)
+        }
+    }
+    val q = foldText(query)
+    return tasks.filter { !it.done && it.id !in excluded && foldText(it.title).contains(q) }
 }

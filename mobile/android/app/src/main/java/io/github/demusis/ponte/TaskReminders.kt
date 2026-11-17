@@ -342,7 +342,9 @@ internal data class WeekEntry(
     val start: LocalDateTime? = null,
     val end: LocalDateTime? = null,
     /** A deadline's day. */
-    val day: LocalDate? = null
+    val day: LocalDate? = null,
+    val dependencyNotice: String? = null,
+    val dependencyWarning: Boolean = false
 )
 
 /** The piece of an entry that falls on one day, cut at midnight ([to] is 24:00 as [LocalTime.MAX] when it goes on). */
@@ -363,6 +365,24 @@ internal data class WeekDay(val date: LocalDate, val blocks: List<WeekBlock>, va
  * pure, so it is tested with fixed dates. Entries come from models already available ([task], [use]).
  */
 internal object WeekPlan {
+    fun dependencyNotice(task: TaskItem, tasks: List<TaskItem>): Pair<String, Boolean>? {
+        val open = TaskRules.prerequisites(task.dependencies, tasks).filter { !it.done }
+        if (open.isEmpty()) return null
+        val start = moment(task.scheduledStart.trim())
+        val wrong = open.firstOrNull { prerequisite ->
+            val end = moment(prerequisite.scheduledEnd.trim())
+            start != null && end != null && start.isBefore(end)
+        }
+        return if (wrong != null) "⚠ começa antes de terminar ${wrong.title}" to true
+        else "↳ depende de ${open.size}" to false
+    }
+
+    fun taskEntries(task: TaskItem, tasks: List<TaskItem>): List<WeekEntry> {
+        val notice = dependencyNotice(task, tasks)
+        return task(task.uid, task.title, task.scheduledStart, task.scheduledEnd, task.estimateMinutes, task.dueDate)
+            .map { if (it.kind == WeekKind.TASK && notice != null) it.copy(dependencyNotice = notice.first, dependencyWarning = notice.second) else it }
+    }
+
     private val MOMENT = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm")
 
     fun moment(text: String): LocalDateTime? {

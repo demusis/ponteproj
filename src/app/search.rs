@@ -137,6 +137,7 @@ enum Command {
     NewTask,
     NewManual,
     NewAttendance,
+    NewReservation,
     Today,
     Week,
     Documents,
@@ -149,10 +150,11 @@ enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 12] = [
+    const ALL: [Command; 13] = [
         Self::NewTask,
         Self::NewManual,
         Self::NewAttendance,
+        Self::NewReservation,
         Self::Today,
         Self::Week,
         Self::Documents,
@@ -169,6 +171,7 @@ impl Command {
             Self::NewTask => "Nova tarefa",
             Self::NewManual => "Novo registro manual",
             Self::NewAttendance => "Nova entrada em Atendimentos",
+            Self::NewReservation => "Nova reserva",
             Self::Today => "Abrir Hoje e pendências",
             Self::Week => "Planejar a semana",
             Self::Documents => "Abrir documentos",
@@ -380,7 +383,10 @@ impl GlobalSearch {
         self.highlight = None;
         let text = self.query.trim().to_owned();
         if text.is_empty() || text.starts_with('>') {
-            self.results = Results { commands: commands(&text), ..Results::default() };
+            self.results = Results {
+                commands: commands(&text),
+                ..Results::default()
+            };
             self.highlight = (!self.results.commands.is_empty()).then_some(0);
             return;
         }
@@ -746,39 +752,16 @@ impl PonteApp {
         }
     }
 
-    /// Goes to `leave` through `navigate` and says whether the move really
-    /// happened: it did not when a question about unsaved work is pending or
-    /// when the area refused to be left. Whatever must follow the move only
-    /// happens when this is true.
-    fn go_checked(&mut self, leave: Leave, area: super::Area) -> bool {
-        self.navigate(leave);
-        self.leave.is_none() && self.area == area
-    }
-
     /// Runs an action; every one of them moves through the same guards as
     /// the rail and the shortcuts.
     fn run_command(&mut self, command: Command, ctx: &egui::Context) {
-        use super::Area;
         match command {
             Command::NewTask => self.navigate(Leave::NewTask(None)),
             Command::Today => self.navigate(Leave::Today),
-            Command::Week => {
-                // The week view is only switched on once Hoje is on screen.
-                if self.go_checked(Leave::Today, Area::Today) {
-                    ctx.data_mut(|d| d.insert_temp(egui::Id::new("today-week-view"), true));
-                }
-            }
-            Command::NewManual => {
-                if self.go_checked(Leave::Documents, Area::Documents) {
-                    self.manual_form.open_new();
-                }
-            }
-            Command::NewAttendance => {
-                if self.go_checked(Leave::Saiop, Area::Saiop) {
-                    // Refuses (with a notice) while another one is unsaved.
-                    self.saiop.key_new(&self.store);
-                }
-            }
+            Command::Week => self.navigate(Leave::Week(ctx.clone())),
+            Command::NewManual => self.navigate(Leave::NewManual),
+            Command::NewAttendance => self.navigate(Leave::NewAttendance),
+            Command::NewReservation => self.navigate(Leave::NewReservation),
             Command::Documents => self.navigate(Leave::Documents),
             Command::Tasks => self.go_tasks(),
             Command::Attendances => self.navigate(Leave::Saiop),
@@ -1208,6 +1191,8 @@ mod tests {
         assert_eq!(commands("SEMANA"), [Command::Week]);
         assert_eq!(commands("> guia"), [Command::Help]);
         assert_eq!(commands("> registro manual"), [Command::NewManual]);
+        assert_eq!(commands("> nova reserva"), [Command::NewReservation]);
+        assert_eq!(Command::NewReservation.label(), "Nova reserva");
         assert!(commands("> tarefa").contains(&Command::NewTask));
         assert!(commands("> tarefa").contains(&Command::Tasks));
         assert!(commands("> xyz").is_empty());
@@ -1241,8 +1226,14 @@ mod tests {
         assert_eq!(search.results.total(), 4);
         assert!(matches!(search.pick_at(0), Some(Pick::Document(10))));
         assert!(matches!(search.pick_at(1), Some(Pick::ResourceUse(ref u)) if u == "u1"));
-        assert!(matches!(search.pick_at(2), Some(Pick::Command(Command::Week))));
-        assert!(matches!(search.pick_at(3), Some(Pick::Command(Command::Help))));
+        assert!(matches!(
+            search.pick_at(2),
+            Some(Pick::Command(Command::Week))
+        ));
+        assert!(matches!(
+            search.pick_at(3),
+            Some(Pick::Command(Command::Help))
+        ));
         assert!(search.pick_at(4).is_none());
         // Arrows wrap over records and actions together.
         assert_eq!(move_highlight(Some(3), search.results.total(), 1), Some(0));
@@ -1259,7 +1250,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(search.results.total(), 1);
-        assert!(matches!(search.pick_at(0), Some(Pick::Command(Command::Week))));
+        assert!(matches!(
+            search.pick_at(0),
+            Some(Pick::Command(Command::Week))
+        ));
         assert!(search.pick_at(1).is_none());
     }
 

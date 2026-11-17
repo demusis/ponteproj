@@ -182,6 +182,7 @@ internal object Controller {
     var taskCatFilter by mutableStateOf<Set<String>>(emptySet())
     var docCatFilter by mutableStateOf<Set<String>>(emptySet())
     var tasks by mutableStateOf(TasksState())
+    var taskRelations by mutableStateOf(TasksState())
         private set
 
     /** 0 Tarefas, 1 Atendimentos: what the Tarefas area shows. */
@@ -333,7 +334,7 @@ internal object Controller {
                 is Route.Text -> documentId = r.id
                 is Route.Note -> documentId = r.id
                 is Route.NewTask -> if (r.id > 0) documentId = r.id
-                is Route.EditTask -> loadTask(r.id)
+                is Route.EditTask -> { loadTask(r.id); loadTaskRelations(r.id) }
                 is Route.Pick -> {}
                 // Read from the lists, which are read again at start.
                 is Route.ResourceUse, is Route.Resource -> {}
@@ -1201,7 +1202,16 @@ internal object Controller {
     }
 
     /** Reads what Hoje lists; what the person just concluded stays out even before it is saved. */
+    var week by mutableStateOf<List<WeekDay>>(emptyList())
+        private set
+
     private fun refreshToday() {
+        SyncRunner.background({
+            val all = Api.taskRelations().map { it.toTask() }
+            val entries = all.filter { !it.done }.flatMap { WeekPlan.taskEntries(it, all) } +
+                Api.resourceView("").uses.mapNotNull { WeekPlan.use(it) }
+            WeekPlan.days(WeekPlan.mondayOf(java.time.LocalDate.now()), entries)
+        }, { week = it }, { week = emptyList() }, fail = "Não foi possível carregar a semana.")
         SyncRunner.background({
             val o = Api.today()
             val tasksOf = { key: String -> o.optJSONArray(key).objs().map { it.toTask() } }
@@ -1305,6 +1315,17 @@ internal object Controller {
         stack.clear()
         stack.addAll(next)
         loadTask(id)
+        loadTaskRelations(id)
+    }
+
+    private fun loadTaskRelations(id: Long) {
+        val gen = taskGen
+        taskRelations = TasksState(loading = true)
+        SyncRunner.background({ Api.taskRelations().map { it.toTask() } }, { list ->
+            if (taskOnScreen(id, gen)) taskRelations = TasksState(loading = false, tasks = list)
+        }, { error ->
+            if (taskOnScreen(id, gen)) taskRelations = TasksState(loading = false, error = error)
+        }, fail = "Não foi possível carregar as tarefas.")
     }
 
     /**
@@ -1341,7 +1362,7 @@ internal object Controller {
     /** A sync ended while the task screen is open: it may have brought a newer version. */
     private fun refreshOpenTask() {
         val id = (stack.lastOrNull() as? Route.EditTask)?.id ?: return
-        if (!taskEdit.busy && taskEdit.id == id) loadTask(id)
+        if (!taskEdit.busy && taskEdit.id == id) { loadTask(id); loadTaskRelations(id) }
     }
 
     /** Applies the answer of a failed change: the conflict gets its own button. */

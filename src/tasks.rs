@@ -192,17 +192,39 @@ impl Task {
                 && self.checklist.iter().all(|(_, text)| text.len() <= 1000),
             "A tarefa tem texto ou itens demais."
         );
-        ensure!(self.reminder_offsets_minutes.len() <= 10 && self.reminder_offsets_minutes.iter().all(|v| *v <= 525_600) && self.reminder_offsets_minutes.iter().collect::<std::collections::BTreeSet<_>>().len() == self.reminder_offsets_minutes.len(), "Os avisos devem ser únicos, no máximo dez, e de até 525600 minutos.");
-        ensure!(self.estimate_minutes <= 525_600, "A estimativa não pode ultrapassar 525600 minutos.");
-        ensure!(self.scheduled_start.is_empty() == self.scheduled_end.is_empty(), "Informe início e fim do agendamento, ou deixe ambos vazios.");
+        ensure!(
+            self.reminder_offsets_minutes.len() <= 10
+                && self.reminder_offsets_minutes.iter().all(|v| *v <= 525_600)
+                && self
+                    .reminder_offsets_minutes
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == self.reminder_offsets_minutes.len(),
+            "Os avisos devem ser únicos, no máximo dez, e de até 525600 minutos."
+        );
+        ensure!(
+            self.estimate_minutes <= 525_600,
+            "A estimativa não pode ultrapassar 525600 minutos."
+        );
+        ensure!(
+            self.scheduled_start.is_empty() == self.scheduled_end.is_empty(),
+            "Informe início e fim do agendamento, ou deixe ambos vazios."
+        );
         if !self.scheduled_start.is_empty() {
             let parse = |text: &str| -> Result<chrono::NaiveDateTime> {
                 let date = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M")
                     .map_err(|_| anyhow::anyhow!("Agendamento inválido. Use AAAA-MM-DDTHH:MM."))?;
-                ensure!(date.format("%Y-%m-%dT%H:%M").to_string() == text, "Agendamento inválido. Use AAAA-MM-DDTHH:MM.");
+                ensure!(
+                    date.format("%Y-%m-%dT%H:%M").to_string() == text,
+                    "Agendamento inválido. Use AAAA-MM-DDTHH:MM."
+                );
                 Ok(date)
             };
-            ensure!(parse(&self.scheduled_end)? > parse(&self.scheduled_start)?, "O fim do agendamento deve ser posterior ao início.");
+            ensure!(
+                parse(&self.scheduled_end)? > parse(&self.scheduled_start)?,
+                "O fim do agendamento deve ser posterior ao início."
+            );
         }
         if !self.reminder_date.is_empty() {
             let date = chrono::NaiveDate::parse_from_str(&self.reminder_date, "%Y-%m-%d").map_err(
@@ -225,18 +247,31 @@ impl Task {
     }
 }
 pub(crate) fn backfill_task_uids(conn: &mut Connection) -> Result<()> {
+    let missing: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tasks WHERE uid IS NULL OR uid='')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !missing {
+        return Ok(());
+    }
     let tx = conn.transaction()?;
     let rows = {
-        let mut statement = tx.prepare("SELECT id,payload FROM tasks")?;
-        let values = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        let mut statement =
+            tx.prepare("SELECT id,payload FROM tasks WHERE uid IS NULL OR uid=''")?;
+        let values =
+            statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
         values.collect::<rusqlite::Result<Vec<_>>>()?
     };
     for (id, bytes) in rows {
         let mut task: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
         if task.uid.is_empty() {
             task.uid = uuid::Uuid::new_v4().to_string();
-            tx.execute("UPDATE tasks SET payload=?1 WHERE id=?2", params![encode(&task)?, id])?;
         }
+        tx.execute(
+            "UPDATE tasks SET uid=?1,payload=?2 WHERE id=?3",
+            params![task.uid, encode(&task)?, id],
+        )?;
     }
     tx.commit()?;
     Ok(())
@@ -251,9 +286,10 @@ pub(crate) fn ensure_document_task(conn: &Connection, document_id: i64) -> Resul
         |r| r.get(0),
     )?;
     if count == 0 {
+        let task = Task::new(document_id);
         conn.execute(
-            "INSERT INTO tasks(document_id,payload) VALUES(?1,?2)",
-            params![document_id, encode(&Task::new(document_id))?],
+            "INSERT INTO tasks(document_id,payload,uid) VALUES(?1,?2,?3)",
+            params![document_id, encode(&task)?, task.uid],
         )?;
     }
     Ok(())
@@ -324,6 +360,15 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute_batch("CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY AUTOINCREMENT,document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,payload BLOB NOT NULL); CREATE INDEX IF NOT EXISTS tasks_document ON tasks(document_id);")?;
         migrate_task_links(&tx)?;
+        let has_uid: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('tasks') WHERE name='uid')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_uid {
+            tx.execute("ALTER TABLE tasks ADD COLUMN uid TEXT", [])?;
+        }
+        tx.execute("CREATE INDEX IF NOT EXISTS tasks_uid ON tasks(uid)", [])?;
         let version = tx.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?;
         if version < 2 {
             // A library from before tasks existed: every document gets its
@@ -604,13 +649,18 @@ impl Store {
         let mut seen = std::collections::BTreeSet::new();
         for (index, task) in tasks.iter().enumerate() {
             let label = || format!("Ocorrência {} de {}", index + 1, tasks.len());
-            ensure!(task.id == 0, "{}: a cópia já tem número; não é uma ocorrência nova.", label());
+            ensure!(
+                task.id == 0,
+                "{}: a cópia já tem número; não é uma ocorrência nova.",
+                label()
+            );
             ensure!(
                 uuid::Uuid::parse_str(&task.uid).is_ok() && seen.insert(task.uid.clone()),
                 "{}: a identidade da cópia está vazia, inválida ou repetida.",
                 label()
             );
-            task.validate().map_err(|e| anyhow::anyhow!("{}: {e}", label()))?;
+            task.validate()
+                .map_err(|e| anyhow::anyhow!("{}: {e}", label()))?;
         }
         if self.client_config()?.is_some() {
             anyhow::bail!(
@@ -621,32 +671,33 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let mut stored = std::collections::BTreeMap::<String, i64>::new();
-        {
-            let mut statement = tx.prepare("SELECT id,payload FROM tasks")?;
-            let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-            for row in rows {
-                let (id, bytes) = row?;
-                let existing: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
-                if !existing.uid.is_empty() {
-                    stored.insert(existing.uid, id);
-                }
-            }
-        }
+        let mut graph = load_task_graph(&tx)?;
         let mut ids = Vec::with_capacity(tasks.len());
         for (index, task) in tasks.iter().enumerate() {
-            if let Some(&id) = stored.get(&task.uid) {
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM tasks WHERE uid=?1 ORDER BY id LIMIT 1",
+                    [&task.uid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(id) = existing {
                 ids.push(id);
                 continue;
             }
-            let saved = write_task(&tx, &actor, task, None).map_err(|e| {
-                anyhow::anyhow!(
-                    "Ocorrência {} de {} ({}): {e}",
-                    index + 1,
-                    tasks.len(),
-                    crate::labels::date(if task.due_date.is_empty() { task.scheduled_start.get(..10).unwrap_or_default() } else { &task.due_date })
-                )
-            })?;
+            let saved =
+                write_task_with_graph(&tx, &actor, task, None, Some(&mut graph)).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Ocorrência {} de {} ({}): {e}",
+                        index + 1,
+                        tasks.len(),
+                        crate::labels::date(if task.due_date.is_empty() {
+                            task.scheduled_start.get(..10).unwrap_or_default()
+                        } else {
+                            &task.due_date
+                        })
+                    )
+                })?;
             ids.push(saved.id);
         }
         tx.commit()?;
@@ -663,71 +714,15 @@ pub(crate) fn write_task(
     task: &Task,
     expected_version: Option<i64>,
 ) -> Result<Task> {
-    task.validate()?;
-    if let Some(document_id) = task.document_id {
-        crate::trash::require_active_document(tx, document_id)?;
-    }
-    if task.id == 0 && !task.uid.is_empty() {
-        let mut statement = tx.prepare("SELECT id,payload FROM tasks")?;
-        let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-        for row in rows {
-            let (id, bytes) = row?;
-            let mut existing: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
-            if existing.uid == task.uid {
-                ensure!(crate::trash::require_active_task(tx, id).is_ok(), "A identidade da tarefa pertence a um item na lixeira.");
-                existing.id = 0;
-                ensure!(existing == *task, "Conflito: esta identidade já pertence a outra versão da tarefa.");
-                existing.id = id;
-                return Ok(existing);
-            }
-        }
-    }
-    if task.id > 0 {
-        ensure!(
-            crate::trash::require_active_task(tx, task.id)? == task.document_id,
-            "Vínculo da tarefa alterado."
-        );
-    }
-    let mut saved = task.clone();
-    if task.id > 0 {
-        let bytes: Vec<u8> = tx.query_row("SELECT payload FROM tasks WHERE id=?1", [task.id], |r| r.get(0))?;
-        let stored: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
-        // An existing task keeps the uid it has here. Each copy of the
-        // library gave its old tasks a uid of its own when it first opened
-        // in this version, so an edit made on another copy may carry a
-        // different one: that is the same task (same id), not a conflict.
-        if !stored.uid.is_empty() {
-            saved.uid = stored.uid;
-        }
-    }
-    if saved.uid.is_empty() { saved.uid = uuid::Uuid::new_v4().to_string(); }
-    ensure!(uuid::Uuid::parse_str(&saved.uid).is_ok(), "Identidade da tarefa inválida.");
-    saved.categories = crate::categories::retain_known(tx, &task.categories)?;
-    saved.completed_at = if task.status == "concluida" {
-        task.completed_at
-            .clone()
-            .or_else(|| Some(chrono::Utc::now().to_rfc3339()))
-    } else {
-        None
-    };
-    if task.id == 0 {
-        tx.execute(
-            "INSERT INTO tasks(document_id,payload) VALUES(?1,?2)",
-            params![task.document_id, encode(&saved)?],
-        )?;
-        saved.id = tx.last_insert_rowid();
-    } else {
-        ensure!(
-            tx.execute(
-                "UPDATE tasks SET payload=?1 WHERE id=?2 AND document_id IS ?3",
-                params![encode(&saved)?, task.id, task.document_id]
-            )? == 1,
-            "Tarefa não encontrada ou vínculo alterado."
-        );
-    }
+    write_task_with_graph(tx, actor, task, expected_version, None)
+}
+
+type TaskGraph = std::collections::BTreeMap<i64, Task>;
+
+fn load_task_graph(tx: &rusqlite::Transaction) -> Result<TaskGraph> {
     let mut statement = tx.prepare("SELECT t.id,t.payload FROM tasks t WHERE NOT EXISTS(SELECT 1 FROM trash x WHERE x.kind='task' AND x.item_id=t.id) AND NOT EXISTS(SELECT 1 FROM trash x WHERE x.kind='document' AND x.item_id=t.document_id)")?;
     let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-    let mut graph = std::collections::BTreeMap::<i64, Task>::new();
+    let mut graph = TaskGraph::new();
     for row in rows {
         let (id, bytes) = row?;
         let mut value: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
@@ -738,7 +733,113 @@ pub(crate) fn write_task(
             "Há tarefas demais para verificar as dependências."
         );
     }
-    drop(statement);
+    Ok(graph)
+}
+
+fn write_task_with_graph(
+    tx: &rusqlite::Transaction,
+    actor: &str,
+    task: &Task,
+    expected_version: Option<i64>,
+    batch_graph: Option<&mut TaskGraph>,
+) -> Result<Task> {
+    task.validate()?;
+    if let Some(document_id) = task.document_id {
+        crate::trash::require_active_document(tx, document_id)?;
+    }
+    let mut saved = task.clone();
+    saved.categories = crate::categories::retain_known(tx, &task.categories)?;
+    if task.id == 0 && !task.uid.is_empty() {
+        let found: Option<(i64, Vec<u8>)> = tx
+            .query_row(
+                "SELECT id,payload FROM tasks WHERE uid=?1 ORDER BY id LIMIT 1",
+                [&task.uid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((id, bytes)) = found {
+            let mut existing: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+            ensure!(
+                crate::trash::require_active_task(tx, id).is_ok(),
+                "A identidade da tarefa pertence a um item na lixeira."
+            );
+            existing.id = 0;
+            // A generated completion timestamp belongs to the original create, not the retry.
+            if saved.status == "concluida" && saved.completed_at.is_none() {
+                saved.completed_at = existing.completed_at.clone();
+            } else if saved.status != "concluida" {
+                saved.completed_at = None;
+            }
+            ensure!(
+                existing == saved,
+                "Conflito: esta identidade já pertence a outra versão da tarefa."
+            );
+            existing.id = id;
+            return Ok(existing);
+        }
+    }
+    if task.id > 0 {
+        ensure!(
+            crate::trash::require_active_task(tx, task.id)? == task.document_id,
+            "Vínculo da tarefa alterado."
+        );
+    }
+    if task.id > 0 {
+        let bytes: Vec<u8> =
+            tx.query_row("SELECT payload FROM tasks WHERE id=?1", [task.id], |r| {
+                r.get(0)
+            })?;
+        let stored: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+        // An existing task keeps the uid it has here. Each copy of the
+        // library gave its old tasks a uid of its own when it first opened
+        // in this version, so an edit made on another copy may carry a
+        // different one: that is the same task (same id), not a conflict.
+        if !stored.uid.is_empty() {
+            saved.uid = stored.uid;
+        }
+    }
+    if saved.uid.is_empty() {
+        saved.uid = uuid::Uuid::new_v4().to_string();
+    }
+    ensure!(
+        uuid::Uuid::parse_str(&saved.uid).is_ok(),
+        "Identidade da tarefa inválida."
+    );
+    saved.completed_at = if task.status == "concluida" {
+        task.completed_at
+            .clone()
+            .or_else(|| Some(chrono::Utc::now().to_rfc3339()))
+    } else {
+        None
+    };
+    if task.id == 0 {
+        tx.execute(
+            "INSERT INTO tasks(document_id,payload,uid) VALUES(?1,?2,?3)",
+            params![task.document_id, encode(&saved)?, saved.uid],
+        )?;
+        saved.id = tx.last_insert_rowid();
+    } else {
+        ensure!(
+            tx.execute(
+                "UPDATE tasks SET payload=?1,uid=?4 WHERE id=?2 AND document_id IS ?3",
+                params![encode(&saved)?, task.id, task.document_id, saved.uid]
+            )? == 1,
+            "Tarefa não encontrada ou vínculo alterado."
+        );
+    }
+    let mut owned_graph;
+    let graph = match batch_graph {
+        Some(graph) => graph,
+        None => {
+            owned_graph = load_task_graph(tx)?;
+            &mut owned_graph
+        }
+    };
+    graph.insert(saved.id, saved.clone());
+    ensure!(
+        graph.len() <= 10000,
+        "Há tarefas demais para verificar as dependências."
+    );
     ensure!(
         saved.dependencies.len() <= 100
             && saved
@@ -778,8 +879,14 @@ pub(crate) fn write_task(
         let mut current = Some(parent);
         let mut visited = std::collections::BTreeSet::new();
         while let Some(id) = current {
-            ensure!(id != saved.id && visited.insert(id), "A hierarquia de tarefas formaria um ciclo.");
-            current = graph.get(&id).ok_or_else(|| anyhow::anyhow!("A tarefa pai não existe ou está na lixeira."))?.parent_task_id;
+            ensure!(
+                id != saved.id && visited.insert(id),
+                "A hierarquia de tarefas formaria um ciclo."
+            );
+            current = graph
+                .get(&id)
+                .ok_or_else(|| anyhow::anyhow!("A tarefa pai não existe ou está na lixeira."))?
+                .parent_task_id;
         }
     }
     crate::intranet::record_mutation(
@@ -1764,7 +1871,14 @@ mod planning_tests {
         let mut original = Task::standalone();
         original.title = "Exame".into();
         let mut json = serde_json::to_value(&original).unwrap();
-        for key in ["uid", "scheduled_start", "scheduled_end", "estimate_minutes", "parent_task_id", "reminder_offsets_minutes"] {
+        for key in [
+            "uid",
+            "scheduled_start",
+            "scheduled_end",
+            "estimate_minutes",
+            "parent_task_id",
+            "reminder_offsets_minutes",
+        ] {
             json.as_object_mut().unwrap().remove(key);
         }
         let mut task: Task = serde_json::from_value(json).unwrap();
@@ -1790,34 +1904,108 @@ mod planning_tests {
     fn scheduling_preserves_deadline_and_hierarchy_rejects_cycles_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("planning.sqlite3")).unwrap();
-        let mut a = Task::standalone(); a.title = "Pai".into(); a.due_date = "2026-12-20".into();
+        let mut a = Task::standalone();
+        a.title = "Pai".into();
+        a.due_date = "2026-12-20".into();
         a.id = store.save_task(&a).unwrap();
-        let mut b = Task::standalone(); b.title = "Filha".into(); b.parent_task_id = Some(a.id);
+        let mut b = Task::standalone();
+        b.title = "Filha".into();
+        b.parent_task_id = Some(a.id);
         b.id = store.save_task(&b).unwrap();
-        a.scheduled_start = "2026-11-17T10:00".into(); a.scheduled_end = "2026-11-17T11:00".into();
+        a.scheduled_start = "2026-11-17T10:00".into();
+        a.scheduled_end = "2026-11-17T11:00".into();
         store.save_task(&a).unwrap();
         a.parent_task_id = Some(b.id);
         assert!(store.save_task(&a).is_err());
-        let saved = store.list_tasks().unwrap().into_iter().find(|t| t.id == a.id).unwrap();
-        assert_eq!(saved.due_date, "2026-12-20"); assert_eq!(saved.parent_task_id, None);
-        b.parent_task_id = Some(999999); assert!(store.save_task(&b).is_err());
+        let saved = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == a.id)
+            .unwrap();
+        assert_eq!(saved.due_date, "2026-12-20");
+        assert_eq!(saved.parent_task_id, None);
+        b.parent_task_id = Some(999999);
+        assert!(store.save_task(&b).is_err());
     }
     #[test]
     fn uid_replay_is_idempotent_and_never_overwrites_a_newer_edit() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("replay.sqlite3")).unwrap();
-        let mut task = Task::standalone(); task.title = "Primeira".into();
+        let mut task = Task::standalone();
+        task.title = "Primeira".into();
         let id = store.save_task(&task).unwrap();
         assert_eq!(store.save_task(&task).unwrap(), id);
         assert_eq!(store.list_tasks().unwrap().len(), 1);
         let mut edited = store.list_tasks().unwrap().remove(0);
-        edited.title = "Editada".into(); store.save_task(&edited).unwrap();
+        edited.title = "Editada".into();
+        store.save_task(&edited).unwrap();
         assert!(store.save_task(&task).is_err());
         assert_eq!(store.list_tasks().unwrap()[0].title, "Editada");
     }
 
+    #[test]
+    fn uid_replay_normalizes_completion_and_categories_but_rejects_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("normalized-replay.sqlite3")).unwrap();
+        let mut done = Task::standalone();
+        done.title = "Concluída".into();
+        done.status = "concluida".into();
+        let id = store.save_task(&done).unwrap();
+        assert_eq!(store.save_task(&done).unwrap(), id);
+        assert!(store.list_tasks().unwrap()[0].completed_at.is_some());
+        let mut categorized = Task::standalone();
+        categorized.title = "Categoria desconhecida".into();
+        categorized.categories = vec![uuid::Uuid::new_v4().simple().to_string()];
+        let category_id = store.save_task(&categorized).unwrap();
+        assert_eq!(store.save_task(&categorized).unwrap(), category_id);
+        assert!(store
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .find(|t| t.id == category_id)
+            .unwrap()
+            .categories
+            .is_empty());
+        done.title = "Outra tarefa".into();
+        assert!(store
+            .save_task(&done)
+            .unwrap_err()
+            .to_string()
+            .contains("Conflito"));
+        assert_eq!(store.list_tasks().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn uid_column_backfill_migrates_and_skips_completed_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("uid-migration.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let mut task = Task::standalone();
+        task.title = "Migration".into();
+        let id = store.save_task(&task).unwrap();
+        store.conn.execute_batch("DROP INDEX tasks_uid; ALTER TABLE tasks DROP COLUMN uid; PRAGMA user_version=18;").unwrap();
+        drop(store);
+        let mut store = Store::open(&path).unwrap();
+        let uid: String = store
+            .conn
+            .query_row("SELECT uid FROM tasks WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(uid, task.uid);
+        store
+            .conn
+            .execute("UPDATE tasks SET payload=zeroblob(1) WHERE id=?1", [id])
+            .unwrap();
+        backfill_task_uids(&mut store.conn).unwrap();
+    }
+
     fn weekly(count: u16) -> crate::recurrence::Recurrence {
-        crate::recurrence::Recurrence { frequency: crate::recurrence::Frequency::Weekly, interval: 1, until: String::new(), count }
+        crate::recurrence::Recurrence {
+            frequency: crate::recurrence::Frequency::Weekly,
+            interval: 1,
+            until: String::new(),
+            count,
+        }
     }
 
     fn series_origin(store: &mut Store, due: &str) -> Task {
@@ -1842,16 +2030,27 @@ mod planning_tests {
         // Past occurrences are still listed as late.
         assert!(store.list_tasks().unwrap().iter().all(|t| t.overdue()));
         // The person works on one copy; a replay of the same batch changes nothing.
-        let mut second = store.list_tasks().unwrap().into_iter().find(|t| t.id == ids[1]).unwrap();
+        let mut second = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == ids[1])
+            .unwrap();
         second.status = "concluida".into();
         store.save_task(&second).unwrap();
         assert_eq!(store.save_repeated_tasks(&copies).unwrap(), ids);
         let all = store.list_tasks().unwrap();
         assert_eq!(all.len(), 4);
-        assert_eq!(all.iter().find(|t| t.id == ids[1]).unwrap().status, "concluida");
+        assert_eq!(
+            all.iter().find(|t| t.id == ids[1]).unwrap().status,
+            "concluida"
+        );
         assert_eq!(all.iter().filter(|t| t.status == "pendente").count(), 3);
         // The origin is untouched.
-        assert_eq!(all.iter().find(|t| t.id == origin.id).unwrap().due_date, "2020-01-06");
+        assert_eq!(
+            all.iter().find(|t| t.id == origin.id).unwrap().due_date,
+            "2020-01-06"
+        );
     }
 
     #[test]
@@ -1879,7 +2078,16 @@ mod planning_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("old.sqlite3")).unwrap();
         let mut json = serde_json::to_value(Task::standalone()).unwrap();
-        for key in ["uid", "scheduled_start", "scheduled_end", "estimate_minutes", "parent_task_id", "reminder_offsets_minutes", "categories", "proposal_id"] {
+        for key in [
+            "uid",
+            "scheduled_start",
+            "scheduled_end",
+            "estimate_minutes",
+            "parent_task_id",
+            "reminder_offsets_minutes",
+            "categories",
+            "proposal_id",
+        ] {
             json.as_object_mut().unwrap().remove(key);
         }
         json["title"] = "Antiga".into();
@@ -1898,18 +2106,41 @@ mod planning_tests {
     fn old_client_and_snapshot_preserve_planning_and_uid() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("compat.sqlite3")).unwrap();
-        let mut task = Task::standalone(); task.title = "Planejada".into();
-        task.scheduled_start = "2026-11-17T10:00".into(); task.scheduled_end = "2026-11-17T11:00".into();
-        task.reminder_offsets_minutes = vec![15]; task.id = store.save_task(&task).unwrap();
-        let mut old = task.clone(); old.uid.clear(); old.scheduled_start.clear(); old.scheduled_end.clear(); old.reminder_offsets_minutes.clear();
-        let mutation = crate::intranet::IntranetMutation::SaveTask { task: old, expected_version: None };
-        let crate::intranet::IntranetMutation::SaveTask { task: kept, .. } = store.keep_unseen_fields(mutation, 17).unwrap() else { panic!() };
-        assert_eq!(kept.uid, task.uid); assert_eq!(kept.scheduled_start, task.scheduled_start); assert_eq!(kept.reminder_offsets_minutes, vec![15]);
-        let mut snapshot = store.export_snapshot().unwrap(); snapshot.schema_version = 17;
-        snapshot.tasks[0].uid.clear(); snapshot.tasks[0].scheduled_start.clear(); snapshot.tasks[0].scheduled_end.clear(); snapshot.tasks[0].reminder_offsets_minutes.clear();
-        store.apply_snapshot(&snapshot, |_, _| unreachable!(), |_| unreachable!()).unwrap();
+        let mut task = Task::standalone();
+        task.title = "Planejada".into();
+        task.scheduled_start = "2026-11-17T10:00".into();
+        task.scheduled_end = "2026-11-17T11:00".into();
+        task.reminder_offsets_minutes = vec![15];
+        task.id = store.save_task(&task).unwrap();
+        let mut old = task.clone();
+        old.uid.clear();
+        old.scheduled_start.clear();
+        old.scheduled_end.clear();
+        old.reminder_offsets_minutes.clear();
+        let mutation = crate::intranet::IntranetMutation::SaveTask {
+            task: old,
+            expected_version: None,
+        };
+        let crate::intranet::IntranetMutation::SaveTask { task: kept, .. } =
+            store.keep_unseen_fields(mutation, 17).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(kept.uid, task.uid);
+        assert_eq!(kept.scheduled_start, task.scheduled_start);
+        assert_eq!(kept.reminder_offsets_minutes, vec![15]);
+        let mut snapshot = store.export_snapshot().unwrap();
+        snapshot.schema_version = 17;
+        snapshot.tasks[0].uid.clear();
+        snapshot.tasks[0].scheduled_start.clear();
+        snapshot.tasks[0].scheduled_end.clear();
+        snapshot.tasks[0].reminder_offsets_minutes.clear();
+        store
+            .apply_snapshot(&snapshot, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
         let restored = store.list_tasks().unwrap().remove(0);
-        assert_eq!(restored.uid, task.uid); assert_eq!(restored.scheduled_start, task.scheduled_start); assert_eq!(restored.reminder_offsets_minutes, vec![15]);
+        assert_eq!(restored.uid, task.uid);
+        assert_eq!(restored.scheduled_start, task.scheduled_start);
+        assert_eq!(restored.reminder_offsets_minutes, vec![15]);
     }
-
 }

@@ -23,6 +23,7 @@ class PonteCore {
     /** kind is "pdf" or "attachment"; captureId is 0 for attachments. Answer: {path,name,mime}. */
     external fun exportFile(kind: String, id: Long, captureId: Long, destDir: String): String
     external fun listTasks(): String
+    external fun listTaskRelations(): String
     external fun completeTask(taskId: Long): String
     external fun reopenTask(taskId: Long): String
     /** A missing or zero "document_id" makes a task without document. Answer: {id}. */

@@ -122,7 +122,12 @@ private fun androidx.compose.foundation.lazy.LazyListScope.weekSection(week: Lis
                 day.blocks.forEach { b ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(WeekPlan.label(b), Modifier.width(112.dp), fontSize = 14.sp, color = c.muted, maxLines = 1)
-                        Text(b.entry.title, Modifier.weight(1f), fontSize = 15.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Column(Modifier.weight(1f)) {
+                            Text(b.entry.title, fontSize = 15.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            b.entry.dependencyNotice?.let { notice ->
+                                Text(notice, fontSize = 13.sp, color = if (b.entry.dependencyWarning) c.warning else c.muted)
+                            }
+                        }
                     }
                 }
                 day.deadlines.forEach { d ->

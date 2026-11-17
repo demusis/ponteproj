@@ -132,7 +132,11 @@ fn parse_date(text: &str, what: &str) -> Result<NaiveDate> {
 }
 
 fn last_day_of_month(year: i32, month: u32) -> u32 {
-    let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     NaiveDate::from_ymd_opt(next_year, next_month, 1)
         .and_then(|first| first.pred_opt())
         .map_or(28, |d| d.day())
@@ -163,12 +167,17 @@ impl Recurrence {
     fn nth(&self, anchor: NaiveDate, k: u32) -> Option<NaiveDate> {
         let steps = u64::from(k) * u64::from(self.interval);
         let date = match self.frequency {
-            Frequency::Daily => anchor.checked_add_signed(Duration::days(i64::try_from(steps).ok()?)),
-            Frequency::Weekly => {
-                anchor.checked_add_signed(Duration::days(i64::try_from(steps.checked_mul(7)?).ok()?))
+            Frequency::Daily => {
+                anchor.checked_add_signed(Duration::days(i64::try_from(steps).ok()?))
             }
+            Frequency::Weekly => anchor
+                .checked_add_signed(Duration::days(i64::try_from(steps.checked_mul(7)?).ok()?)),
             Frequency::Monthly | Frequency::Yearly => {
-                let months = if self.frequency == Frequency::Yearly { steps.checked_mul(12)? } else { steps };
+                let months = if self.frequency == Frequency::Yearly {
+                    steps.checked_mul(12)?
+                } else {
+                    steps
+                };
                 let total = u64::from(anchor.month0()) + months;
                 let year = i64::from(anchor.year()) + i64::try_from(total / 12).ok()?;
                 let year = i32::try_from(year).ok()?;
@@ -202,7 +211,9 @@ impl Recurrence {
         };
         let mut dates = Vec::with_capacity(usize::from(self.count));
         for k in 0..u32::from(self.count) {
-            let Some(date) = self.nth(anchor, k) else { break };
+            let Some(date) = self.nth(anchor, k) else {
+                break;
+            };
             if limit.is_some_and(|until| date > until) {
                 break;
             }
@@ -292,7 +303,8 @@ pub fn task_occurrences(task: &Task, rule: &Recurrence) -> Result<Vec<Task>> {
         copy.due_date = shift_date(&task.due_date, delta, "O prazo da tarefa")?;
         copy.reminder_date = shift_date(&task.reminder_date, delta, "A data do lembrete")?;
         if !task.scheduled_start.is_empty() {
-            copy.scheduled_start = shift_moment(&task.scheduled_start, delta, "O início do agendamento")?;
+            copy.scheduled_start =
+                shift_moment(&task.scheduled_start, delta, "O início do agendamento")?;
             copy.scheduled_end = shift_moment(&task.scheduled_end, delta, "O fim do agendamento")?;
         }
         copies.push(copy);
@@ -343,11 +355,19 @@ mod tests {
     }
 
     fn rule(frequency: Frequency, interval: u16, count: u16) -> Recurrence {
-        Recurrence { frequency, interval, until: String::new(), count }
+        Recurrence {
+            frequency,
+            interval,
+            until: String::new(),
+            count,
+        }
     }
 
     fn text(dates: &[NaiveDate]) -> Vec<String> {
-        dates.iter().map(|d| d.format(DATE_FORMAT).to_string()).collect()
+        dates
+            .iter()
+            .map(|d| d.format(DATE_FORMAT).to_string())
+            .collect()
     }
 
     #[test]
@@ -369,9 +389,15 @@ mod tests {
     #[test]
     fn daily_and_weekly_cross_months_and_years() {
         let r = rule(Frequency::Daily, 2, 4);
-        assert_eq!(text(&r.dates(d(2026, 12, 30)).unwrap()), ["2026-12-30", "2027-01-01", "2027-01-03", "2027-01-05"]);
+        assert_eq!(
+            text(&r.dates(d(2026, 12, 30)).unwrap()),
+            ["2026-12-30", "2027-01-01", "2027-01-03", "2027-01-05"]
+        );
         let r = rule(Frequency::Weekly, 2, 3);
-        assert_eq!(text(&r.dates(d(2026, 2, 20)).unwrap()), ["2026-02-20", "2026-03-06", "2026-03-20"]);
+        assert_eq!(
+            text(&r.dates(d(2026, 2, 20)).unwrap()),
+            ["2026-02-20", "2026-03-06", "2026-03-20"]
+        );
     }
 
     #[test]
@@ -379,7 +405,13 @@ mod tests {
         let r = rule(Frequency::Monthly, 1, 5);
         assert_eq!(
             text(&r.dates(d(2027, 1, 31)).unwrap()),
-            ["2027-01-31", "2027-02-28", "2027-03-31", "2027-04-30", "2027-05-31"]
+            [
+                "2027-01-31",
+                "2027-02-28",
+                "2027-03-31",
+                "2027-04-30",
+                "2027-05-31"
+            ]
         );
         // Ano bissexto: fevereiro de 2028 tem 29.
         assert_eq!(
@@ -391,7 +423,10 @@ mod tests {
     #[test]
     fn monthly_interval_crosses_year_end() {
         let r = rule(Frequency::Monthly, 5, 4);
-        assert_eq!(text(&r.dates(d(2026, 10, 30)).unwrap()), ["2026-10-30", "2027-03-30", "2027-08-30", "2028-01-30"]);
+        assert_eq!(
+            text(&r.dates(d(2026, 10, 30)).unwrap()),
+            ["2026-10-30", "2027-03-30", "2027-08-30", "2028-01-30"]
+        );
     }
 
     #[test]
@@ -399,7 +434,13 @@ mod tests {
         let r = rule(Frequency::Yearly, 1, 5);
         assert_eq!(
             text(&r.dates(d(2028, 2, 29)).unwrap()),
-            ["2028-02-29", "2029-02-28", "2030-02-28", "2031-02-28", "2032-02-29"]
+            [
+                "2028-02-29",
+                "2029-02-28",
+                "2030-02-28",
+                "2031-02-28",
+                "2032-02-29"
+            ]
         );
     }
 
@@ -407,7 +448,10 @@ mod tests {
     fn until_is_inclusive_and_competes_with_count() {
         let mut r = rule(Frequency::Weekly, 1, 10);
         r.until = "2026-12-01".into();
-        assert_eq!(text(&r.dates(d(2026, 11, 17)).unwrap()), ["2026-11-17", "2026-11-24", "2026-12-01"]);
+        assert_eq!(
+            text(&r.dates(d(2026, 11, 17)).unwrap()),
+            ["2026-11-17", "2026-11-24", "2026-12-01"]
+        );
         r.until = "2026-11-17".into();
         assert_eq!(r.dates(d(2026, 11, 17)).unwrap(), vec![d(2026, 11, 17)]);
         r.until = "2030-01-01".into();
@@ -430,7 +474,13 @@ mod tests {
             assert!(bad.dates(a).is_err(), "{bad:?}");
         }
         assert!(rule(Frequency::Daily, 365, 104).validate().is_ok());
-        for until in ["2026-02-30", "2026-1-5", "17/11/2026", " 2026-11-17", "2026-11-17T10:00"] {
+        for until in [
+            "2026-02-30",
+            "2026-1-5",
+            "17/11/2026",
+            " 2026-11-17",
+            "2026-11-17T10:00",
+        ] {
             let mut r = rule(Frequency::Weekly, 1, 3);
             r.until = until.into();
             assert!(r.validate().is_err(), "{until}");
@@ -533,7 +583,9 @@ mod tests {
     #[test]
     fn task_without_date_or_with_one_occurrence() {
         let mut t = sample_task();
-        assert!(task_occurrences(&t, &rule(Frequency::Weekly, 1, 1)).unwrap().is_empty());
+        assert!(task_occurrences(&t, &rule(Frequency::Weekly, 1, 1))
+            .unwrap()
+            .is_empty());
         t.due_date.clear();
         t.scheduled_start.clear();
         t.scheduled_end.clear();
@@ -577,8 +629,14 @@ mod tests {
         let u = sample_use();
         let copies = resource_occurrences(&u, &rule(Frequency::Monthly, 1, 3)).unwrap();
         assert_eq!(copies.len(), 2);
-        assert_eq!((copies[0].start.as_str(), copies[0].end.as_str()), ("2027-02-28T22:00", "2027-03-01T01:00"));
-        assert_eq!((copies[1].start.as_str(), copies[1].end.as_str()), ("2027-03-31T22:00", "2027-04-01T01:00"));
+        assert_eq!(
+            (copies[0].start.as_str(), copies[0].end.as_str()),
+            ("2027-02-28T22:00", "2027-03-01T01:00")
+        );
+        assert_eq!(
+            (copies[1].start.as_str(), copies[1].end.as_str()),
+            ("2027-03-31T22:00", "2027-04-01T01:00")
+        );
         for c in &copies {
             assert_ne!(c.uid, u.uid);
             assert!(!c.uid.is_empty());
@@ -587,7 +645,10 @@ mod tests {
             assert_eq!(c.task_id, None);
             assert!(c.proposal_id.is_empty() && c.created_by.is_empty());
             assert!(c.created_at.is_empty() && c.updated_at.is_empty());
-            assert_eq!((c.document_id, c.resource_uid.as_str(), c.who.as_str()), (Some(9), "sala", "Ana"));
+            assert_eq!(
+                (c.document_id, c.resource_uid.as_str(), c.who.as_str()),
+                (Some(9), "sala", "Ana")
+            );
         }
         assert_ne!(copies[0].uid, copies[1].uid);
     }

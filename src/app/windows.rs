@@ -1,6 +1,6 @@
 //! Secondary windows and dialogs: about, consult, manual record, e-mail and confirmations.
 use super::{
-    display_date, facts, notice_line, plural, Area, Consult, ManualForm, PasteStep, PendingTarget,
+    display_date, facts, notice_line, plural, Consult, ManualForm, PasteStep, PendingTarget,
     PonteApp, Tab, WorkKind, WorkResult, EXTENSION_VERSION, PROJECT_URL,
 };
 use crate::model::DocumentDetail;
@@ -588,28 +588,19 @@ impl PonteApp {
                     });
                 });
             if stay {
-                self.leave = None;
-                self.leave_error = None;
-                self.return_after_select = None;
-                self.area = Area::Tasks;
+                self.cancel_pending_leave();
             }
             if save {
                 match self.tasks.save_draft(&mut self.store) {
                     Ok(()) => {
-                        if let Some(leave) = self.leave.take() {
-                            self.leave_error = None;
-                            self.perform_leave(leave);
-                        }
+                        self.complete_pending_leave();
                     }
                     Err(error) => self.leave_error = Some(error),
                 }
             }
             if discard {
                 self.tasks.discard_draft();
-                if let Some(leave) = self.leave.take() {
-                    self.leave_error = None;
-                    self.perform_leave(leave);
-                }
+                self.complete_pending_leave();
             }
         }
         if self.exit_confirm {

@@ -5,6 +5,58 @@ use crate::theme::{self, S1, S2};
 use crate::widgets::{self, Tone};
 use chrono::{Datelike, Duration, NaiveDate};
 use eframe::egui;
+use std::collections::{HashMap, HashSet};
+
+use crate::tasks::Task;
+
+#[derive(Debug, PartialEq, Eq)]
+struct Link {
+    prerequisite: i64,
+    dependent: i64,
+    wrong_order: bool,
+    concluded: bool,
+}
+
+// Only dependency IDs create links; parent_task_id describes a different relationship.
+fn dependency_layout(tasks: &[Task], visible: &HashSet<i64>) -> (Vec<Link>, HashMap<i64, Vec<i64>>) {
+    let by_id: HashMap<_, _> = tasks.iter().map(|task| (task.id, task)).collect();
+    let mut links = Vec::new();
+    let mut outside = HashMap::new();
+    for task in tasks.iter().filter(|task| visible.contains(&task.id)) {
+        for &id in &task.dependencies {
+            if visible.contains(&id) {
+                if let Some(previous) = by_id.get(&id) {
+                    let wrong_order = !previous.is_done()
+                        && matches!((parse_moment(&task.scheduled_start), parse_moment(&previous.scheduled_end)),
+                            (Ok(start), Ok(end)) if start < end);
+                    links.push(Link { prerequisite: id, dependent: task.id, wrong_order, concluded: previous.is_done() });
+                }
+            } else {
+                outside.entry(task.id).or_insert_with(Vec::new).push(id);
+            }
+        }
+    }
+    (links, outside)
+}
+
+fn dependency_hint(ids: &[i64], tasks: &HashMap<i64, &Task>, today: NaiveDate) -> String {
+    let today = today.to_string();
+    ids.iter().map(|id| match tasks.get(id) {
+        Some(task) => {
+            let mark = if task.is_done() { "✓" } else if !task.due_date.is_empty() && task.due_date < today { "⚠" } else { "○" };
+            format!("{} {}", mark, task.title)
+        }
+        None => format!("○ Tarefa #{}", id),
+    }).collect::<Vec<_>>().join("\n")
+}
+
+fn arrow_geometry(from: egui::Rect, to: egui::Rect) -> [egui::Pos2; 4] {
+    let a = from.center_bottom();
+    let b = to.center_top();
+    let bend = ((b.y - a.y).abs() * 0.5).max(24.0);
+    [a, a + egui::vec2(0.0, bend), b - egui::vec2(0.0, bend), b]
+}
+
 
 fn monday(day: NaiveDate) -> NaiveDate {
     day - Duration::days(i64::from(day.weekday().num_days_from_monday()))
@@ -30,15 +82,31 @@ pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked:
     ui.data_mut(|d| d.insert_temp(id, start));
     widgets::muted(ui, "Horários locais. Agendar o trabalho não altera o prazo de entrega. Clique em uma tarefa para planejar ou reagendar.");
     ui.add_space(S2);
+    let referenced: HashSet<i64> = data.planning_tasks.iter().flat_map(|task| task.dependencies.iter().copied()).collect();
+    let visible: HashSet<i64> = data.planning_tasks.iter()
+        .filter(|task| (!task.is_done() || referenced.contains(&task.id))
+            && (0..7).any(|offset| touches(&task.scheduled_start, &task.scheduled_end, start + Duration::days(offset))))
+        .map(|task| task.id).collect();
+    let (links, outside) = dependency_layout(&data.planning_tasks, &visible);
+    let by_id: HashMap<_, _> = data.planning_tasks.iter().map(|task| (task.id, task)).collect();
+    let mut blocks: HashMap<i64, Vec<egui::Rect>> = HashMap::new();
+    let mut warnings: HashMap<i64, Vec<i64>> = HashMap::new();
+    for link in links.iter().filter(|link| link.wrong_order) {
+        warnings.entry(link.dependent).or_default().push(link.prerequisite);
+    }
+    let background_arrows = ui.painter().add(egui::Shape::Noop);
+    let mut card_arrows = Vec::new();
     for offset in 0..7 {
         let day = start + Duration::days(offset);
         let iso = day.to_string();
-        widgets::card(ui, |ui| {
+        let card = widgets::card_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let arrow_slot = ui.painter().add(egui::Shape::Noop);
             widgets::section(ui, super::calendar::long_date(day));
             if day == today { widgets::pill(ui, "Hoje", Tone::Info); }
             let mut rows: Vec<(String, String, Asked)> = Vec::new();
             for task in &data.planning_tasks {
-                if !task.is_done() && touches(&task.scheduled_start, &task.scheduled_end, day) {
+                if visible.contains(&task.id) && touches(&task.scheduled_start, &task.scheduled_end, day) {
                     rows.push((task.scheduled_start.clone(), format!("{}–{} · {}", task.scheduled_start.get(11..).unwrap_or(""), task.scheduled_end.get(11..).unwrap_or(""), task.title), Asked::OpenTask(task.clone())));
                 }
             }
@@ -51,7 +119,26 @@ pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked:
             rows.sort_by(|a,b| a.0.cmp(&b.0));
             if rows.is_empty() { widgets::muted(ui, "Sem trabalho agendado nem reservas."); }
             for (_, label, action) in rows {
-                if ui.add(widgets::quiet(label)).clicked() { *asked = Some(action); }
+                let task_id = if let Asked::OpenTask(task) = &action { Some(task.id) } else { None };
+                let response = ui.add(widgets::quiet(label));
+                if let Some(id) = task_id {
+                    blocks.entry(id).or_default().push(response.rect);
+                }
+                if response.clicked() { *asked = Some(action); }
+                if let Some(id) = task_id {
+                    if let Some(ids) = outside.get(&id) {
+                        let marker = ui.add(widgets::quiet(format!("↳ depende de {}", ids.len())))
+                            .on_hover_text(dependency_hint(ids, &by_id, today));
+                        if marker.clicked() { *asked = by_id.get(&id).map(|task| Asked::OpenTask((*task).clone())); }
+                    }
+                    for prerequisite in warnings.get(&id).into_iter().flatten() {
+                        if let Some(previous) = by_id.get(prerequisite) {
+                            let marker = ui.add(widgets::quiet(format!("⚠ começa antes de terminar {}", previous.title)))
+                                .on_hover_text("Esta tarefa começa antes do término agendado do pré-requisito ainda aberto.");
+                            if marker.clicked() { *asked = by_id.get(&id).map(|task| Asked::OpenTask((*task).clone())); }
+                        }
+                    }
+                }
             }
             let deadlines: Vec<_> = data.dated_tasks.iter().filter(|t| t.due_date == iso).collect();
             let attendances: Vec<_> = data.dated_attendances.iter().filter(|a| a.due_date == iso).collect();
@@ -65,8 +152,28 @@ pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked:
                     if ui.add(widgets::quiet(format!("Atendimento · {}", attendance.subject))).clicked() { *asked = Some(Asked::OpenAttendance(attendance.id)); }
                 }
             }
+            arrow_slot
         });
+        card_arrows.push((card.inner, card.response.rect));
         ui.add_space(S2);
+    }
+    // Paint each curve below card contents, and also in the gaps between cards.
+    let mut arrow_shapes = Vec::new();
+    for link in &links {
+        if let (Some(from), Some(to)) = (blocks.get(&link.prerequisite), blocks.get(&link.dependent)) {
+            let points = arrow_geometry(*from.last().unwrap(), to[0]);
+            let color = if link.wrong_order { theme::c().warn } else { theme::c().muted };
+            let color = color.gamma_multiply(if link.concluded { 0.35 } else { 0.65 });
+            let stroke = egui::Stroke::new(if link.concluded { 0.8 } else { 1.3 }, color);
+            arrow_shapes.push(egui::epaint::CubicBezierShape::from_points_stroke(points, false, egui::Color32::TRANSPARENT, stroke).into());
+            let tip = points[3];
+            arrow_shapes.push(egui::Shape::line_segment([tip + egui::vec2(-4.0, -7.0), tip], stroke));
+            arrow_shapes.push(egui::Shape::line_segment([tip + egui::vec2(4.0, -7.0), tip], stroke));
+        }
+    }
+    ui.painter().set(background_arrows, egui::Shape::Vec(arrow_shapes.clone()));
+    for (slot, rect) in card_arrows {
+        ui.painter().with_clip_rect(rect).set(slot, egui::Shape::Vec(arrow_shapes.clone()));
     }
     widgets::section(ui, "Ainda não planejadas");
     let mut unscheduled: Vec<_> = data.planning_tasks.iter().filter(|t| !t.is_done() && t.scheduled_start.is_empty()).collect();
@@ -94,4 +201,35 @@ mod tests {
         assert!(touches("2026-11-17T23:00", "2026-11-18T01:00", day));
         assert!(!touches("invalid", "invalid", day));
     }
+    #[test]
+    fn week_dependency_links_and_outside_markers() {
+        let mut a = Task::standalone();
+        a.id = 1;
+        a.scheduled_end = "2026-11-17T11:00".into();
+        let mut b = Task::standalone();
+        b.id = 2;
+        b.scheduled_start = "2026-11-17T10:00".into();
+        b.dependencies = vec![1, 3];
+        b.parent_task_id = Some(4);
+        let mut parent = Task::standalone();
+        parent.id = 4;
+        let visible = [1, 2, 4].into_iter().collect();
+        let (links, outside) = dependency_layout(&[a.clone(), b.clone(), parent.clone()], &visible);
+        assert_eq!(links, vec![Link { prerequisite: 1, dependent: 2, wrong_order: true, concluded: false }]);
+        assert_eq!(outside.get(&2), Some(&vec![3]));
+        a.status = "concluida".into();
+        let (links, _) = dependency_layout(&[a, b, parent], &visible);
+        assert!(!links[0].wrong_order);
+        assert!(links[0].concluded);
+    }
+
+    #[test]
+    fn week_arrow_geometry_uses_block_end_and_start() {
+        let from = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(20.0, 10.0));
+        let to = egui::Rect::from_min_max(egui::pos2(40.0, 80.0), egui::pos2(60.0, 90.0));
+        let points = arrow_geometry(from, to);
+        assert_eq!(points[0], from.center_bottom());
+        assert_eq!(points[3], to.center_top());
+    }
+
 }

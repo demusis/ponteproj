@@ -21,7 +21,7 @@ use std::time::Duration;
 /// open the library instead of saving over fields it does not know. 17 adds
 /// the categories (a table, and the uids kept in the payloads of tasks and
 /// of the document context), a new synced entity.
-pub(crate) const SCHEMA_VERSION: i64 = 18;
+pub(crate) const SCHEMA_VERSION: i64 = 19;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {

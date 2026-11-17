@@ -40,7 +40,8 @@ internal data class TaskItem(
     val scheduledEnd: String = "",
     val estimateMinutes: Int = 0,
     val parentTaskId: Long? = null,
-    val reminderOffsetsMinutes: List<Int> = emptyList()
+    val reminderOffsetsMinutes: List<Int> = emptyList(),
+    val dependencies: List<Long> = emptyList()
 ) {
     /** The group while open: the core's, or, for a task reopened here and not yet reloaded, from its flags. */
     val openBucket: String
@@ -81,6 +82,7 @@ internal fun JSONObject.toTask(): TaskItem {
         uid = s("uid"), scheduledStart = s("scheduled_start"), scheduledEnd = s("scheduled_end"),
         estimateMinutes = optInt("estimate_minutes"),
         parentTaskId = if (isNull("parent_task_id")) null else optLong("parent_task_id"),
+        dependencies = optJSONArray("dependencies")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList(),
         reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList()
     )
 }
@@ -252,7 +254,8 @@ internal data class TaskDetail(
     val done: Boolean,
     val version: Long,
     val checklist: List<ChecklistItem>,
-    val uid: String = ""
+    val uid: String = "",
+    val dependencies: List<Long> = emptyList()
 ) {
     val scheduledStart: String get() = form.scheduledStart
     val scheduledEnd: String get() = form.scheduledEnd
@@ -276,6 +279,7 @@ internal data class TaskDetail(
 internal fun JSONObject.toTaskDetail() = TaskDetail(
     id = optLong("id"), documentId = optLong("document_id"), documentNumber = s("document_number"),
     documentTitle = s("document_title"), uid = s("uid"),
+    dependencies = optJSONArray("dependencies")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList(),
     form = TaskForm(
         title = s("title"), action = s("action"), priority = s("priority", "normal").ifEmpty { "normal" },
         dueDate = s("due_date"), assignee = s("assignee"), notes = s("notes"),

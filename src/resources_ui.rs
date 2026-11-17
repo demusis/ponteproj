@@ -9,6 +9,9 @@
 //! The rules (clashes, quantities, statuses) live in `crate::resources`; this
 //! file only draws and asks the library. "Now" is read once per frame and
 //! handed down: no row calls the clock.
+pub use crate::resources::{
+    day_occupation, group_uses, period_text, query_matches, taken_now, Groups,
+};
 use crate::{
     doc_picker::DocumentPicker,
     resources::{
@@ -21,9 +24,6 @@ use crate::{
     widgets::{self, form_section, labeled, pick, pick_row, Tone},
 };
 use chrono::{Duration, NaiveDate};
-pub use crate::resources::{
-    day_occupation, group_uses, period_text, query_matches, taken_now, Groups,
-};
 use eframe::egui::{self, RichText};
 use std::collections::BTreeMap;
 
@@ -133,7 +133,6 @@ pub fn linked_uses(store: &Store, link: &UseLink) -> Vec<LinkedUse> {
     let resources = store.list_resources().unwrap_or_default();
     linked_uses_from(&resources, &uses, link, &now_moment())
 }
-
 
 /// The pill of a use: the situation, "Atrasado" when the return is late.
 fn status_pill(item: &ResourceUse, now: &str) -> (&'static str, Tone) {
@@ -449,8 +448,6 @@ pub fn use_draft_from_proposal(
     (draft, check)
 }
 
-
-
 /// The filters of view 1.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filters {
@@ -554,7 +551,6 @@ pub fn uses_by_day<'a>(
     }
     days
 }
-
 
 /// Joins a typed date (ISO or raw) and time into a moment; what cannot be
 /// read stays visible so that saving refuses it.
@@ -882,6 +878,13 @@ impl ResourcesPanel {
             self.set_notice(why, true);
         }
         true
+    }
+
+    /// Opens the same blank reservation as the panel's primary button.
+    pub fn new_reservation(&mut self, store: &Store) {
+        if let Err(why) = self.new_use(store, None, None, None) {
+            self.set_notice(why, true);
+        }
     }
 
     /// Ctrl+S: what "Salvar" does, with a ficha open and unsaved. True when

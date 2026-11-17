@@ -94,7 +94,7 @@ internal fun AppRoot() {
                     when (c.tab) {
                         0 -> TodayScreen(
                             c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
-                            onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources
+                            onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources, week = c.week
                         )
                         // Tarefas | Atendimentos | Recursos: they have no tab of their own (four is the limit).
                         1 -> Column(Modifier.fillMaxSize()) {
@@ -175,7 +175,8 @@ private fun RouteScreen(route: Route) {
             onOpenDocument = { c.openTaskDocument() }, onLink = c::openPicker, onUnlink = c::unlinkTask,
             onReload = c::reloadTask, assignees = c.assignees, myName = c.personName,
             onCreateCategory = c::createCategory,
-            remindersBlocked = c.taskNoticeBlocked, onRemindersChosen = c::taskRemindersChosen
+            remindersBlocked = c.taskNoticeBlocked, onRemindersChosen = c::taskRemindersChosen,
+            relations = c.taskRelations, onOpenTask = c::openTask
         )
         is Route.Attendance -> AttendanceScreen(
             routeId = route.id, state = c.attendance, onBack = c::back,
