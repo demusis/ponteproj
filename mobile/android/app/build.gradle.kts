@@ -14,8 +14,8 @@ android {
         applicationId = "io.github.demusis.ponte"
         minSdk = 26
         targetSdk = 34
-        versionCode = 17
-        versionName = "0.10.0"
+        versionCode = 18
+        versionName = "0.11.0"
         // Only the 64-bit ARM phone ABI: keeps the APK small.
         ndk { abiFilters += "arm64-v8a" }
     }

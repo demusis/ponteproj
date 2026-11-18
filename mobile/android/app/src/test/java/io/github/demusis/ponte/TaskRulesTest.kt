@@ -53,6 +53,23 @@ class TaskRulesTest {
         assertNull(WeekPlan.dependencyNotice(task.copy(dependencies = emptyList()), all))
     }
 
+    @Test fun candidatasDeDependenciaExcluemCiclosEOrdenamConcluidas() {
+        val rows = listOf(relation(1, "Atual"), relation(2, "Direta", done = true).copy(dependencies = listOf(1)),
+            relation(3, "Indireta").copy(dependencies = listOf(2)), relation(4, "Revisão", done = true),
+            relation(5, "Revisão aberta"), relation(6, "Outra"))
+        assertEquals(listOf(5L, 6L, 4L), dependencyCandidates(rows, 1, "").map { it.id })
+        assertEquals(listOf(5L, 4L), dependencyCandidates(rows, 1, "REVISAO").map { it.id })
+    }
+
+    @Test fun patchDeDependenciasApenasQuandoAlteradas() {
+        val base = form().copy(dependencies = listOf(2, 3))
+        assertFalse("dependencies" in base.copy(dependencies = listOf(3, 2)).changes(base))
+        assertEquals(listOf(2L), base.copy(dependencies = listOf(2)).changes(base)["dependencies"])
+        assertEquals(emptyList<Long>(), base.copy(dependencies = emptyList()).changes(base)["dependencies"])
+        val draft = TaskDraft(0, 1, base, base.copy(dependencies = listOf(4)))
+        assertEquals(draft, TaskDraft.fromList(draft.toList()))
+    }
+
     // ---- reminders and the permission to notify
 
     @Test fun avisoSemPermissaoSoApareceParaTarefaComAvisos() {

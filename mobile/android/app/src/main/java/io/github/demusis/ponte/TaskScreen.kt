@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -120,6 +121,7 @@ private fun TaskLoaded(
     var tried by rememberSaveable { mutableStateOf(false) }
     var asking by rememberSaveable { mutableStateOf(false) }
     var parentPicker by rememberSaveable { mutableStateOf(false) }
+    var dependencyPicker by rememberSaveable { mutableStateOf(false) }
     var pendingSubtask by rememberSaveable { mutableStateOf<Long?>(null) }
     var unlinking by rememberSaveable { mutableStateOf(false) }
     val changed = draft.changed
@@ -209,9 +211,10 @@ private fun TaskLoaded(
                 singleLine = false, minLines = 4,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
             )
-            val prerequisites = TaskRules.prerequisites(task.dependencies, relations.tasks)
-            if (task.dependencies.isNotEmpty()) {
-                SectionLabel("Depende de")
+            val prerequisites = TaskRules.prerequisites(form.dependencies, relations.tasks)
+            SectionLabel("Depende de")
+            SecondaryButton("Escolher tarefas…", onClick = { dependencyPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
+            if (form.dependencies.isNotEmpty()) {
                 prerequisites.forEach { prerequisite ->
                     PonteCard(onClick = { if (changed) { pendingSubtask = prerequisite.id; asking = true } else onOpenTask(prerequisite.id) }) {
                         Text("${TaskRules.prerequisiteSymbol(prerequisite)} ${prerequisite.title}", Modifier.padding(16.dp))
@@ -236,6 +239,12 @@ private fun TaskLoaded(
         ParentTaskPicker(relations.tasks, task.id, onDismiss = { parentPicker = false }) { id ->
             edit { it.copy(parentTaskId = id) }
             parentPicker = false
+        }
+    }
+    if (dependencyPicker) {
+        DependencyPicker(relations.tasks, task.id, form.dependencies, onDismiss = { dependencyPicker = false }) { ids ->
+            edit { it.copy(dependencies = ids) }
+            dependencyPicker = false
         }
     }
     if (asking) {
@@ -346,6 +355,31 @@ private fun ParentTaskPicker(tasks: List<TaskItem>, taskId: Long, onDismiss: () 
                     }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DependencyPicker(tasks: List<TaskItem>, taskId: Long, selected: List<Long>, onDismiss: () -> Unit, onPick: (List<Long>) -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var chosen by rememberSaveable { mutableStateOf(selected) }
+    val candidates = dependencyCandidates(tasks, taskId, query)
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Ponte.colors.surface) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Escolher tarefas", style = MaterialTheme.typography.titleMedium)
+            SearchBox(query, { query = it }, "Buscar tarefa")
+            Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
+                if (candidates.isEmpty()) Text("Nenhuma tarefa encontrada", Modifier.padding(16.dp))
+                candidates.forEach { candidate ->
+                    val toggle = { chosen = if (candidate.id in chosen) chosen - candidate.id else chosen + candidate.id }
+                    TextButton(onClick = toggle, modifier = Modifier.fillMaxWidth()) {
+                        Checkbox(checked = candidate.id in chosen, onCheckedChange = { toggle() })
+                        Text(candidate.title + if (candidate.done) " · Concluída" else "", modifier = Modifier.weight(1f), color = if (candidate.done) Ponte.colors.muted else Ponte.colors.text)
+                    }
+                }
+            }
+            TextButton(onClick = { onPick(chosen) }) { Text("Confirmar") }
         }
     }
 }

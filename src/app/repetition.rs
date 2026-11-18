@@ -14,6 +14,14 @@ pub(super) struct Repetition {
     preview: Option<Preview>,
 }
 
+fn repetition_message(created: usize, total: usize) -> String {
+    if created == 0 {
+        "Todas as ocorrências já existiam; nada foi criado.".into()
+    } else {
+        format!("{created} novas ocorrências criadas; {} já existiam.", total - created)
+    }
+}
+
 impl PonteApp {
     pub(super) fn repetition_card(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("Repetir tarefa ou reserva…", |ui| {
@@ -61,7 +69,7 @@ impl PonteApp {
                 };
                 egui::ScrollArea::vertical().id_salt("repeat-preview").max_height(200.0).show(ui, |ui| { for label in &labels { ui.label(label); } });
                 widgets::small_muted(ui, "Dependências e vínculo com tarefa principal não são copiados. Reservas são verificadas novamente ao salvar; um conflito impede o lote inteiro.");
-                commit = ui.add_enabled(!labels.is_empty(), widgets::primary(format!("Criar {} novas ocorrências", labels.len()))).clicked();
+                commit = ui.add_enabled(!labels.is_empty(), widgets::primary(format!("Salvar {} ocorrências", labels.len()))).clicked();
             }
             if prepare {
                 let result = if state.resource {
@@ -77,15 +85,26 @@ impl PonteApp {
             }
             if commit {
                 let result = match &self.repetition.preview {
-                    Some(Preview::Tasks(tasks)) => self.store.save_repeated_tasks(tasks).map(|ids| ids.len()),
-                    Some(Preview::Uses(uses)) => self.store.save_repeated_uses(uses).map(|ids| ids.len()),
+                    Some(Preview::Tasks(tasks)) => self.store.save_repeated_tasks_counted(tasks).map(|(ids, created)| (created, ids.len())),
+                    Some(Preview::Uses(uses)) => self.store.save_repeated_uses_counted(uses).map(|(ids, created)| (created, ids.len())),
                     None => return,
                 };
                 match result {
-                    Ok(count) => { self.repetition.preview = None; self.refresh(); self.message(format!("{count} ocorrências criadas.")); }
+                    Ok((created, total)) => { self.repetition.preview = None; self.refresh(); self.message(repetition_message(created, total)); }
                     Err(error) => self.error(format!("Nenhuma nova ocorrência foi criada: {}", crate::resources::strip_marker(&error.to_string()))),
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repetition_message;
+    #[test]
+    fn repetition_messages_report_created_and_existing() {
+        assert_eq!(repetition_message(2, 3), "2 novas ocorrências criadas; 1 já existiam.");
+        assert_eq!(repetition_message(3, 3), "3 novas ocorrências criadas; 0 já existiam.");
+        assert_eq!(repetition_message(0, 3), "Todas as ocorrências já existiam; nada foi criado.");
     }
 }

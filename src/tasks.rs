@@ -648,6 +648,10 @@ impl Store {
     /// host has no batch mutation yet, and a loop of single requests could
     /// stop halfway); make the repetition on the main computer.
     pub fn save_repeated_tasks(&mut self, tasks: &[Task]) -> Result<Vec<i64>> {
+        self.save_repeated_tasks_counted(tasks).map(|(ids, _)| ids)
+    }
+
+    pub fn save_repeated_tasks_counted(&mut self, tasks: &[Task]) -> Result<(Vec<i64>, usize)> {
         ensure!(!tasks.is_empty(), "Não há ocorrências para criar.");
         ensure!(
             tasks.len() <= usize::from(crate::recurrence::MAX_COUNT),
@@ -681,6 +685,7 @@ impl Store {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut graph = load_task_graph(&tx)?;
         let mut ids = Vec::with_capacity(tasks.len());
+        let mut created = 0;
         for (index, task) in tasks.iter().enumerate() {
             let existing: Option<i64> = tx
                 .query_row(
@@ -693,6 +698,7 @@ impl Store {
                 ids.push(id);
                 continue;
             }
+            created += 1;
             let saved =
                 write_task_with_graph(&tx, &actor, task, None, Some(&mut graph)).map_err(|e| {
                     anyhow::anyhow!(
@@ -709,7 +715,7 @@ impl Store {
             ids.push(saved.id);
         }
         tx.commit()?;
-        Ok(ids)
+        Ok((ids, created))
     }
 }
 
@@ -2091,7 +2097,12 @@ mod planning_tests {
         let origin = series_origin(&mut store, "2020-01-06");
         let copies = crate::recurrence::task_occurrences(&origin, &weekly(4)).unwrap();
         assert_eq!(copies.len(), 3);
-        let ids = store.save_repeated_tasks(&copies).unwrap();
+        let (ids, created) = store.save_repeated_tasks_counted(&copies[..1]).unwrap();
+        assert_eq!(created, 1);
+        let (all_ids, created) = store.save_repeated_tasks_counted(&copies).unwrap();
+        assert_eq!(created, 2);
+        assert_eq!(ids[0], all_ids[0]);
+        let ids = all_ids;
         assert_eq!(ids.len(), 3);
         assert_eq!(store.list_tasks().unwrap().len(), 4);
         // Past occurrences are still listed as late.
@@ -2105,7 +2116,8 @@ mod planning_tests {
             .unwrap();
         second.status = "concluida".into();
         store.save_task(&second).unwrap();
-        assert_eq!(store.save_repeated_tasks(&copies).unwrap(), ids);
+        let regenerated = crate::recurrence::task_occurrences(&origin, &weekly(4)).unwrap();
+        assert_eq!(store.save_repeated_tasks_counted(&regenerated).unwrap(), (ids.clone(), 0));
         let all = store.list_tasks().unwrap();
         assert_eq!(all.len(), 4);
         assert_eq!(

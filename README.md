@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.40.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.41.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.40.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.41.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -465,7 +465,7 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 
 ### 6.4 Dependências entre tarefas
 
-Uma tarefa pode depender de outras ("só posso responder depois de receber o parecer"). Marque em **Mais detalhes ▸ Depende de outras tarefas**; o campo **Filtrar tarefas pelo título** acha a tarefa sem rolar, e as já marcadas ficam no alto.
+Uma tarefa pode depender de outras ("só posso responder depois de receber o parecer"). Marque em **Mais detalhes ▸ Depende de outras tarefas**; o campo **Filtrar tarefas pelo título** acha a tarefa sem rolar, e as já marcadas ficam no alto. No celular, ao editar uma tarefa, em **Depende de**, **Escolher tarefas…** abre **Escolher tarefas**: marque várias, use **Buscar tarefa** e **Confirmar**; as concluídas aparecem com **· Concluída**. Tarefas que criariam ciclo não são oferecidas; o núcleo ainda recusa escolhas inválidas e o formulário mostra o motivo. Essa escolha não está em **Nova tarefa**.
 
 | O que você vê | O que significa |
 |---|---|
@@ -571,7 +571,7 @@ O **Prazo** é a data em que a entrega vence. O **horário de trabalho** é quan
   3. **Conferir próximas ocorrências** mostra a lista (prazo e horário de cada uma) sem gravar nada. Mudar qualquer opção apaga a lista, para você conferir de novo.
   4. **Criar N novas ocorrências** grava todas de uma vez, ou nenhuma.
 
-  Cada data conta a partir da original, sem acumular erro: uma repetição mensal de dia 31 cai no último dia dos meses curtos e volta ao dia 31 quando o mês tem. **A original fica como está.** Dependências e tarefa pai **não são copiadas**. Nas reservas, o Ponte confere de novo se o recurso está livre em cada data; se uma só estiver ocupada, nada é criado e a mensagem diz qual. Repetir é sempre uma ação sua: concluir uma tarefa não cria a próxima.
+  Cada data conta a partir da original, sem acumular erro: uma repetição mensal de dia 31 cai no último dia dos meses curtos e volta ao dia 31 quando o mês tem. **A original fica como está.** Ao gerar novamente a mesma repetição, com a mesma original e as mesmas datas, o Ponte reconhece as cópias já criadas. A mensagem informa “N novas ocorrências criadas; M já existiam.” ou “Todas as ocorrências já existiam; nada foi criado.” Dependências e tarefa pai **não são copiadas**. Nas reservas, o Ponte confere de novo se o recurso está livre em cada data; se uma só estiver ocupada, nada é criado e a mensagem diz qual. Repetir é sempre uma ação sua: concluir uma tarefa não cria a próxima.
 
 Duas regras para ter em mente:
 

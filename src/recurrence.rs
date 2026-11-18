@@ -35,14 +35,8 @@
 //!    mesma transação SQLite (`BEGIN IMMEDIATE`); se uma falhar (validação,
 //!    conflito de horário, limite), desfaça tudo — nunca fique com um lote
 //!    pela metade.
-//! 3. **Idempotência.** Cada cópia já nasce com `uid` próprio (tarefas: UUID
-//!    com hífens; usos: UUID simples, como `resources::new_uid`). O lote
-//!    prévio deve ser o mesmo que se grava: guarde o `Vec` da prévia e grave
-//!    esse vetor; não chame a fábrica de novo na confirmação (geraria uids
-//!    novos e, num reenvio, duplicaria). Gravar por `uid` com `INSERT OR
-//!    IGNORE` / upsert faz o reenvio do mesmo lote (duplo clique, replay da
-//!    fila offline) não duplicar nada. No celular/fila offline, envie o lote
-//!    como uma única mutação com os uids já fixados.
+//! 3. **Idempotence.** Copy identities derive from the kind, original uid
+//!    and occurrence date or time, so regenerating a series is safe.
 //! 4. **Sem efeito colateral.** Concluir uma tarefa não cria a próxima;
 //!    repetir é uma ação explícita de "Repetir…" sobre a tarefa/reserva.
 //! 5. **Ids.** Tarefas voltam com `id = 0` (o `INSERT` atribui). Dependências
@@ -248,12 +242,18 @@ fn shift_moment(text: &str, delta: Duration, what: &str) -> Result<String> {
     Ok(shifted.format(MOMENT_FORMAT).to_string())
 }
 
-fn new_task_uid() -> String {
-    uuid::Uuid::new_v4().to_string()
-}
-
-fn new_use_uid() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
+fn occurrence_uid(kind: &str, original_uid: &str, occurrence: &str, simple: bool) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for part in ["ponte-recurrence", kind, original_uid, occurrence] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    let digest = hash.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    let uid = uuid::Uuid::from_bytes(bytes);
+    if simple { uid.simple().to_string() } else { uid.to_string() }
 }
 
 /// Data-âncora da tarefa: o prazo; sem prazo, o dia do início do agendamento.
@@ -290,7 +290,7 @@ pub fn task_occurrences(task: &Task, rule: &Recurrence) -> Result<Vec<Task>> {
         let delta = date.signed_duration_since(anchor);
         let mut copy = task.clone();
         copy.id = 0;
-        copy.uid = new_task_uid();
+        copy.uid = occurrence_uid("task", &task.uid, &date.to_string(), false);
         copy.status = "pendente".into();
         copy.completed_at = None;
         copy.outcome = String::new();
@@ -331,8 +331,8 @@ pub fn resource_occurrences(usage: &ResourceUse, rule: &Recurrence) -> Result<Ve
     for date in dates.into_iter().skip(1) {
         let delta = date.signed_duration_since(anchor);
         let mut copy = usage.clone();
-        copy.uid = new_use_uid();
         copy.start = shift_moment(&usage.start, delta, "O início da reserva")?;
+        copy.uid = occurrence_uid("use", &usage.uid, &copy.start, true);
         copy.end = shift_moment(&usage.end, delta, "O fim da reserva")?;
         copy.returned_at = None;
         copy.status = UseStatus::Reserved;
@@ -517,6 +517,21 @@ mod tests {
         t.checklist = vec![(true, "a".into()), (false, "b".into())];
         t.categories = vec!["c".repeat(32)];
         t
+    }
+
+    #[test]
+    fn occurrence_identities_are_stable_and_distinct() {
+        let task = sample_task();
+        let rule = rule(Frequency::Monthly, 1, 3);
+        let copies = task_occurrences(&task, &rule).unwrap();
+        assert_eq!(copies[0].uid, task_occurrences(&task, &rule).unwrap()[0].uid);
+        assert_ne!(copies[0].uid, copies[1].uid);
+        let mut other = task.clone();
+        other.uid = "another-original".into();
+        assert_ne!(copies[0].uid, task_occurrences(&other, &rule).unwrap()[0].uid);
+        assert_ne!(occurrence_uid("task", "a", "2026-01-01", false), occurrence_uid("use", "a", "2026-01-01", false));
+        assert_ne!(occurrence_uid("use", "a", "2026-01-01T09:00", true), occurrence_uid("use", "a", "2026-01-01T10:00", true));
+        assert_ne!(occurrence_uid("use", "a", "2026-01-01T09:00", true), occurrence_uid("use", "b", "2026-01-01T09:00", true));
     }
 
     #[test]

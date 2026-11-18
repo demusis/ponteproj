@@ -592,6 +592,11 @@ fn apply_planning(task: &mut ponteproj::tasks::Task, input: &Value) -> Result<()
     if let Some(value) = input.get("reminder_offsets_minutes") {
         task.reminder_offsets_minutes = value.as_array().context("Avisos inválidos.")?.iter().map(|v| Ok(u32::try_from(v.as_u64().context("Aviso inválido.")?)?)).collect::<Result<Vec<_>>>()?;
     }
+    if let Some(value) = input.get("dependencies") {
+        task.dependencies = value.as_array().context("Dependências inválidas.")?.iter()
+            .map(|id| id.as_i64().context("Dependência inválida."))
+            .collect::<Result<Vec<_>>>()?;
+    }
     if let Some(value) = input.get("parent_task_id") {
         task.parent_task_id = if value.is_null() { None } else { Some(value.as_i64().context("Tarefa pai inválida.")?) };
     }
@@ -656,7 +661,7 @@ fn get_task(store: &Store, id: i64) -> Result<Value> {
 
 /// Saves the editable fields present in `input` (`id`, `version`, `title`,
 /// `action`, `priority`, `due_date`, `assignee`, `notes`) over the stored task;
-/// everything else (dependencies, reminder, checklist, outcome, document,
+/// everything else (reminder, checklist, outcome, document,
 /// status) stays as stored. A stale `version` saves nothing.
 fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
     let id = input["id"].as_i64().context("Tarefa ausente.")?;

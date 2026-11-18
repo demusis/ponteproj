@@ -23,7 +23,7 @@ internal data class TaskDraft(
 
     companion object {
         fun fromList(l: List<Any>): TaskDraft? = try {
-            val size = if (l.size >= 27) 12 else if (l.size >= 25) 11 else 7
+            val size = if (l.size >= 29) 13 else if (l.size >= 27) 12 else if (l.size >= 25) 11 else 7
             TaskDraft(
                 l[0] as Int, l[1] as Long, TaskForm.fromList(l.subList(3, 3 + size).map { it as String }),
                 TaskForm.fromList(l.subList(3 + size, 3 + 2 * size).map { it as String }), l[2] as Boolean
@@ -41,10 +41,10 @@ internal data class TaskSave(val taskId: Long, val version: Long, val base: Task
 
 /** The categories travel as one string (uids have no commas) so the list stays flat. */
 internal fun TaskForm.toList(): List<String> =
-    listOf(title, action, priority, dueDate, assignee, notes, categories.joinToString(","), scheduledStart, scheduledEnd, estimateMinutes.toString(), parentTaskId?.toString() ?: "", reminderOffsetsMinutes.joinToString(","))
+    listOf(title, action, priority, dueDate, assignee, notes, categories.joinToString(","), scheduledStart, scheduledEnd, estimateMinutes.toString(), parentTaskId?.toString() ?: "", reminderOffsetsMinutes.joinToString(","), dependencies.joinToString(","))
 
 internal fun TaskForm.Companion.fromList(l: List<String>) =
-    TaskForm(l[0], l[1], l[2], l[3], l[4], l[5], l[6].split(",").filter { it.isNotEmpty() }, l.getOrElse(7) { "" }, l.getOrElse(8) { "" }, l.getOrNull(9)?.toIntOrNull() ?: 0, l.getOrNull(10)?.toLongOrNull(), l.getOrNull(11)?.split(",")?.mapNotNull { it.toIntOrNull() } ?: emptyList())
+    TaskForm(l[0], l[1], l[2], l[3], l[4], l[5], l[6].split(",").filter { it.isNotEmpty() }, l.getOrElse(7) { "" }, l.getOrElse(8) { "" }, l.getOrNull(9)?.toIntOrNull() ?: 0, l.getOrNull(10)?.toLongOrNull(), l.getOrNull(11)?.split(",")?.mapNotNull { it.toIntOrNull() } ?: emptyList(), l.getOrNull(12)?.split(",")?.mapNotNull { it.toLongOrNull() } ?: emptyList())
 
 /** Decisions of the task screen. */
 internal object TaskRules {
@@ -132,4 +132,18 @@ internal fun parentCandidates(tasks: List<TaskItem>, taskId: Long, query: String
     }
     val q = foldText(query)
     return tasks.filter { !it.done && it.id !in excluded && foldText(it.title).contains(q) }
+}
+
+/** Tasks that can be prerequisites without creating a dependency cycle. */
+internal fun dependencyCandidates(tasks: List<TaskItem>, taskId: Long, query: String): List<TaskItem> {
+    val dependents = mutableMapOf<Long, MutableList<Long>>()
+    tasks.forEach { task -> task.dependencies.forEach { dependents.getOrPut(it) { mutableListOf() }.add(task.id) } }
+    val excluded = mutableSetOf(taskId)
+    val pending = ArrayDeque<Long>()
+    pending.add(taskId)
+    while (pending.isNotEmpty()) {
+        dependents[pending.removeFirst()].orEmpty().forEach { if (excluded.add(it)) pending.add(it) }
+    }
+    val q = foldText(query)
+    return tasks.filter { it.id !in excluded && foldText(it.title).contains(q) }.sortedBy { it.done }
 }

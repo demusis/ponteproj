@@ -1203,6 +1203,10 @@ impl Store {
     /// computer the batch is refused (no batch mutation in the host yet);
     /// make the repetition on the main computer.
     pub fn save_repeated_uses(&mut self, items: &[ResourceUse]) -> Result<Vec<String>> {
+        self.save_repeated_uses_counted(items).map(|(ids, _)| ids)
+    }
+
+    pub fn save_repeated_uses_counted(&mut self, items: &[ResourceUse]) -> Result<(Vec<String>, usize)> {
         ensure!(!items.is_empty(), "Não há ocorrências para criar.");
         ensure!(
             items.len() <= usize::from(crate::recurrence::MAX_COUNT),
@@ -1235,6 +1239,7 @@ impl Store {
         let mut by_resource: std::collections::BTreeMap<String, (Resource, Vec<ResourceUse>)> =
             std::collections::BTreeMap::new();
         let mut uids = Vec::with_capacity(total);
+        let mut created = 0;
         for (index, item) in batch.into_iter().enumerate() {
             let label = format!("Ocorrência {} de {total}", index + 1);
             uids.push(item.uid.clone());
@@ -1248,6 +1253,7 @@ impl Store {
             if already.is_some() {
                 continue;
             }
+            created += 1;
             if !by_resource.contains_key(&item.resource_uid) {
                 let resource = load_resource(&tx, &item.resource_uid)?.context(
                     "O recurso desta reserva não foi encontrado. Ele pode ter sido apagado em outro computador.",
@@ -1322,7 +1328,7 @@ impl Store {
             uses.push(stored);
         }
         tx.commit()?;
-        Ok(uids)
+        Ok((uids, created))
     }
 
     /// Permanent removal of a use; there is no trash for it.
@@ -2494,7 +2500,10 @@ mod tests {
         let resource = new_resource(&mut store, "Sala", 1);
         let copies = series_of(&mut store, &resource, 4);
         assert_eq!(copies.len(), 3);
-        let uids = store.save_repeated_uses(&copies).unwrap();
+        let (_, created) = store.save_repeated_uses_counted(&copies[..1]).unwrap();
+        assert_eq!(created, 1);
+        let (uids, created) = store.save_repeated_uses_counted(&copies).unwrap();
+        assert_eq!(created, 2);
         assert_eq!(uids, copies.iter().map(|c| c.uid.clone()).collect::<Vec<_>>());
         assert_eq!(store.list_resource_uses().unwrap().len(), 4);
         // One occurrence is cancelled; replaying the same batch neither
@@ -2502,7 +2511,9 @@ mod tests {
         let mut cancelled = found(&store, &uids[1]);
         cancelled.status = UseStatus::Cancelled;
         store.save_resource_use(&cancelled, None).unwrap();
-        assert_eq!(store.save_repeated_uses(&copies).unwrap(), uids);
+        let origin = store.list_resource_uses().unwrap().into_iter().find(|u| !uids.contains(&u.uid)).unwrap();
+        let regenerated = crate::recurrence::resource_occurrences(&origin, &weekly(4)).unwrap();
+        assert_eq!(store.save_repeated_uses_counted(&regenerated).unwrap(), (uids.clone(), 0));
         assert_eq!(store.list_resource_uses().unwrap().len(), 4);
         assert_eq!(found(&store, &uids[1]).status, UseStatus::Cancelled);
         assert_eq!(found(&store, &uids[0]).status, UseStatus::Reserved);

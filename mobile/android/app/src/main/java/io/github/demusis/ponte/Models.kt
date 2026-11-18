@@ -217,7 +217,8 @@ internal data class TaskForm(
     val scheduledEnd: String = "",
     val estimateMinutes: Int = 0,
     val parentTaskId: Long? = null,
-    val reminderOffsetsMinutes: List<Int> = emptyList()
+    val reminderOffsetsMinutes: List<Int> = emptyList(),
+    val dependencies: List<Long> = emptyList()
 ) {
     companion object
 
@@ -235,6 +236,7 @@ internal data class TaskForm(
         if (scheduledEnd != saved.scheduledEnd) out["scheduled_end"] = scheduledEnd
         if (estimateMinutes != saved.estimateMinutes) out["estimate_minutes"] = estimateMinutes
         if (reminderOffsetsMinutes != saved.reminderOffsetsMinutes) out["reminder_offsets_minutes"] = reminderOffsetsMinutes
+        if (dependencies.toSet() != saved.dependencies.toSet()) out["dependencies"] = dependencies
         if (parentTaskId != saved.parentTaskId) out["parent_task_id"] = parentTaskId ?: JSONObject.NULL
         if (assignee.trim() != saved.assignee.trim()) out["assignee"] = assignee.trim()
         if (notes != saved.notes) out["notes"] = notes
@@ -287,7 +289,8 @@ internal fun JSONObject.toTaskDetail() = TaskDetail(
         scheduledStart = s("scheduled_start"), scheduledEnd = s("scheduled_end"),
         estimateMinutes = optInt("estimate_minutes"),
         parentTaskId = if (isNull("parent_task_id")) null else optLong("parent_task_id"),
-        reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList()
+        reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList(),
+        dependencies = optJSONArray("dependencies")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList()
     ),
     done = s("status") == "concluida", version = optLong("version"),
     checklist = optJSONArray("checklist").objs().map { ChecklistItem(it.optBoolean("done"), it.s("text")) }
