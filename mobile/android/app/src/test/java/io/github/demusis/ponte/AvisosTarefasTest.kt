@@ -357,6 +357,11 @@ class AvisosTarefasTest {
         assertEquals(7, WeekPlan.days(monday, emptyList()).size)
     }
 
+    @Test fun theWeekTitleCrossesMonthsAndYears() {
+        assertEquals("16/11 a 22/11/2026", WeekPlan.weekTitle(monday))
+        assertEquals("28/12 a 03/01/2027", WeekPlan.weekTitle(LocalDate.of(2026, 12, 28)))
+    }
+
     @Test fun aTaskIsABlockAndItsDueDateIsAnotherThingOnAnotherDay() {
         val entries = WeekPlan.task("u1", "Audiência", "2026-11-17T14:00", "2026-11-17T15:30", 0, "2026-11-20")
         val days = WeekPlan.days(monday, entries)

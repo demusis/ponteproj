@@ -344,7 +344,9 @@ internal data class WeekEntry(
     /** A deadline's day. */
     val day: LocalDate? = null,
     val dependencyNotice: String? = null,
-    val dependencyWarning: Boolean = false
+    val dependencyWarning: Boolean = false,
+    /** The task behind a block or deadline (null for a resource use): a tap opens it. */
+    val taskId: Long? = null
 )
 
 /** The piece of an entry that falls on one day, cut at midnight ([to] is 24:00 as [LocalTime.MAX] when it goes on). */
@@ -381,6 +383,7 @@ internal object WeekPlan {
         val notice = dependencyNotice(task, tasks)
         return task(task.uid, task.title, task.scheduledStart, task.scheduledEnd, task.estimateMinutes, task.dueDate)
             .map { if (it.kind == WeekKind.TASK && notice != null) it.copy(dependencyNotice = notice.first, dependencyWarning = notice.second) else it }
+            .map { it.copy(taskId = task.id) }
     }
 
     private val MOMENT = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm")
@@ -398,6 +401,12 @@ internal object WeekPlan {
         if (text.length == 10) LocalDate.parse(text) else null
     } catch (_: Exception) {
         null
+    }
+
+    /** "16/11 a 22/11/2026": the week that starts on [monday]. */
+    fun weekTitle(monday: LocalDate): String {
+        val end = monday.plusDays(6)
+        return "%02d/%02d a %02d/%02d/%d".format(monday.dayOfMonth, monday.monthValue, end.dayOfMonth, end.monthValue, end.year)
     }
 
     /** The Monday of the week of [date]. */

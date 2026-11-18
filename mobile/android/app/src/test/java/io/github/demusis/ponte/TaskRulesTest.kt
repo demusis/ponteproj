@@ -48,6 +48,8 @@ class TaskRulesTest {
         val child = relation(5, "Filha", parent = 1)
         val all = listOf(task, parent, open, done, child)
         assertEquals("⚠ começa antes de terminar Preparar" to true, WeekPlan.dependencyNotice(task, all))
+        // A tap on the block or on the deadline opens the task itself.
+        assertEquals(listOf(1L), WeekPlan.taskEntries(task.copy(dueDate = "2026-11-20"), all).map { it.taskId }.distinct())
         assertEquals("↳ depende de 1" to false, WeekPlan.dependencyNotice(task.copy(scheduledStart = "2026-11-17T11:00"), all))
         assertNull(WeekPlan.dependencyNotice(task, listOf(task, parent, open.copy(done = true), done, child)))
         assertNull(WeekPlan.dependencyNotice(task.copy(dependencies = emptyList()), all))

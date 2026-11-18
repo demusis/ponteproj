@@ -1233,13 +1233,37 @@ internal object Controller {
     var week by mutableStateOf<List<WeekDay>>(emptyList())
         private set
 
-    private fun refreshToday() {
+    /** The Monday of the week Hoje shows; moves with [moveWeek]. */
+    var weekStart by mutableStateOf(WeekPlan.mondayOf(java.time.LocalDate.now()))
+        private set
+
+    /** Earlier (-1) or later (+1) week; 0 comes back to this week. */
+    fun moveWeek(delta: Int) {
+        weekStart = if (delta == 0) WeekPlan.mondayOf(java.time.LocalDate.now()) else weekStart.plusWeeks(delta.toLong())
+        refreshWeek()
+    }
+
+    /** A tap on a line of the week: the task (block or deadline), or the resource use. */
+    fun openWeekEntry(e: WeekEntry) {
+        when {
+            e.taskId != null -> openTask(e.taskId)
+            e.kind == WeekKind.USE -> openResourceUse(e.id.removePrefix("u-"))
+        }
+    }
+
+    private fun refreshWeek() {
+        val start = weekStart
         SyncRunner.background({
             val all = Api.taskRelations().map { it.toTask() }
             val entries = all.filter { !it.done }.flatMap { WeekPlan.taskEntries(it, all) } +
                 Api.resourceView("").uses.mapNotNull { WeekPlan.use(it) }
-            WeekPlan.days(WeekPlan.mondayOf(java.time.LocalDate.now()), entries)
-        }, { week = it }, { week = emptyList() }, fail = "Não foi possível carregar a semana.")
+            WeekPlan.days(start, entries)
+        }, { if (start == weekStart) week = it }, { if (start == weekStart) week = emptyList() },
+            fail = "Não foi possível carregar a semana.")
+    }
+
+    private fun refreshToday() {
+        refreshWeek()
         SyncRunner.background({
             val o = Api.today()
             val tasksOf = { key: String -> o.optJSONArray(key).objs().map { it.toTask() } }

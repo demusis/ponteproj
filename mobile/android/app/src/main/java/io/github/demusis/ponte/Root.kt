@@ -94,7 +94,8 @@ internal fun AppRoot() {
                     when (c.tab) {
                         0 -> TodayScreen(
                             c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
-                            onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources, week = c.week
+                            onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources, week = c.week,
+                            weekStart = c.weekStart, onMoveWeek = c::moveWeek, onOpenWeekEntry = c::openWeekEntry
                         )
                         // Tarefas | Atendimentos | Recursos: they have no tab of their own (four is the limit).
                         1 -> Column(Modifier.fillMaxSize()) {
