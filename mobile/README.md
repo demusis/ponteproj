@@ -2,7 +2,9 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (0.9.1)
+## O que faz (0.10.0)
+
+- **Sincronização pedida por você:** em **Sincronizar agora**, na tela de documento ou no diálogo de status, ela acontece ou informa por que não; sem Wi-Fi, oferece **Usar dados móveis desta vez**. As mensagens podem ser: “Escolha primeiro o arquivo ponte-sync.ponte em Ajustes.”, “Informe a senha de sincronização em Ajustes para sincronizar.”, “Abra o aplicativo para liberar a senha e sincronizar.”, “Sincronização cancelada: a senha não foi liberada.” ou “Já há uma sincronização em andamento.” As sincronizações automáticas continuam silenciosas. A versão 0.10.0 instala por cima da 0.9.x.
 
 Quatro áreas numa barra no rodapé — **Hoje**, **Tarefas**, **Documentos** e **E-mail** — e telas próprias para cada coisa que se abre (ficha, texto, nota, nova tarefa, registro por foto, ajustes). Tema claro e escuro, seguindo o aparelho.
 
@@ -37,11 +39,12 @@ O app do Drive no celular trabalha com uma cópia em cache: o celular pode grava
 
 ## Como montar
 
-Ferramentas (portáteis, sem administrador) em `%LOCALAPPDATA%\Programs\PonteProj\devtools\android`: JDK 17, Android SDK 34 com NDK r26d e Gradle 8.7; o Rust com o alvo `aarch64-linux-android`.
+Ferramentas (portáteis, sem administrador) em `%LOCALAPPDATA%\Programs\PonteProj\devtools\android`: JDK 17, Android SDK 34 com NDK r26d e o wrapper Gradle do projeto; o Rust com o alvo `aarch64-linux-android`.
 
 ```
 bash mobile/build-android.sh            # núcleo (arm64) + APK
 bash mobile/build-android.sh --rust-only
+cd mobile/android && ./gradlew testDebugUnitTest
 ```
 
 O APK sai em `mobile/android/app/build/outputs/apk/release/app-release.apk` (reduzido pelo R8 e assinado com a chave própria em `~/.ponte-assinatura/`, fora do projeto; sem ela, o build usa a chave de depuração e avisa). **A chave mudou na 0.9.0:** quem tinha uma versão anterior precisa sincronizar, desinstalar e instalar de novo; daí em diante as atualizações instalam por cima; instale-o no celular (por arquivo, permitindo "instalar apps desconhecidos", ou com `adb install -r`).

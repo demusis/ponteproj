@@ -30,8 +30,12 @@ else
     : "${JAVA_HOME:?JAVA_HOME não definido (JDK 17)}"
     SDK="$(cygpath -u "$ANDROID_HOME")"
     JDK="$(cygpath -u "$JAVA_HOME")"
-    # Gradle: PONTE_GRADLE, else the one on PATH, else the newest in the wrapper cache.
-    GRADLE="${PONTE_GRADLE:-$(command -v gradle || ls -d "$HOME"/.gradle/wrapper/dists/gradle-*/*/gradle-*/bin/gradle 2>/dev/null | sort -V | tail -1)}"
+    # Prefer the project wrapper, then PONTE_GRADLE, PATH, or the wrapper cache.
+    if [ -f "$REPO/mobile/android/gradlew" ]; then
+        GRADLE="$REPO/mobile/android/gradlew"
+    else
+        GRADLE="${PONTE_GRADLE:-$(command -v gradle || ls -d "$HOME"/.gradle/wrapper/dists/gradle-*/*/gradle-*/bin/gradle 2>/dev/null | sort -V | tail -1)}"
+    fi
     NDK_ROOT="$(ls -d "$SDK"/ndk/*/ 2>/dev/null | sort -V | tail -1)"
     [ -n "$NDK_ROOT" ] || { echo "Nenhum NDK em $SDK/ndk." >&2; exit 1; }
     NDK="${NDK_ROOT%/}/toolchains/llvm/prebuilt/windows-x86_64/bin"

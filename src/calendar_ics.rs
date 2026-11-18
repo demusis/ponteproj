@@ -1,5 +1,4 @@
-//! Original, deliberately bounded iCalendar interoperability. Floating local
-//! times and DATE values only; unsupported semantics are refused before import.
+//! iCalendar export and reviewed, partial import of representable entries.
 use anyhow::{bail, ensure, Context, Result};
 use chrono::NaiveDate;
 use crate::{resources::{Resource, ResourceUse}, tasks::Task};
@@ -90,6 +89,7 @@ pub struct ImportedEntry {
     pub due: String,
     pub completed: bool,
     pub related_to: String,
+    pub details: Vec<String>,
     event: bool,
 }
 
@@ -111,13 +111,33 @@ fn parse_date(value: &str) -> Result<String> {
     Ok(NaiveDate::parse_from_str(value, "%Y%m%d")?.to_string())
 }
 fn parse_time(value: &str) -> Result<String> {
-    ensure!(value.len() == 15 && value.ends_with("00"), "Só horários locais com precisão de minuto são aceitos; UTC e fusos precisam ser convertidos antes da importação.");
-    let parsed = chrono::NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%S")?;
-    ensure!(parsed.format("%Y%m%dT%H%M%S").to_string() == value, "Horário ICS inválido.");
-    Ok(parsed.format("%Y-%m-%dT%H:%M").to_string())
+    let utc = value.ends_with('Z');
+    let raw = value.strip_suffix('Z').unwrap_or(value);
+    ensure!(raw.len() == 15 && raw.ends_with("00"), "horário com precisão inferior a um minuto não suportado");
+    let parsed = chrono::NaiveDateTime::parse_from_str(raw, "%Y%m%dT%H%M%S")?;
+    let local = if utc { parsed.and_utc().with_timezone(&chrono::Local).naive_local() } else { parsed };
+    ensure!(local.format("%S").to_string() == "00", "horário local com segundos não suportado");
+    Ok(local.format("%Y-%m-%dT%H:%M").to_string())
 }
 
-pub fn parse_calendar(text: &str) -> Result<Vec<ImportedEntry>> {
+#[derive(Clone, Debug)]
+pub struct SkippedEntry { pub title: String, pub reason: String }
+#[derive(Clone, Debug, Default)]
+pub struct CalendarReview {
+    pub entries: Vec<ImportedEntry>,
+    pub skipped: Vec<SkippedEntry>,
+    pub general_ignored: bool,
+}
+// Keep the existing round-trip callers convenient.
+impl std::ops::Deref for CalendarReview {
+    type Target = [ImportedEntry];
+    fn deref(&self) -> &Self::Target { &self.entries }
+}
+fn add_detail(details: &mut Vec<String>, detail: &str) {
+    if !details.iter().any(|d| d == detail) { details.push(detail.to_owned()); }
+}
+
+pub fn parse_calendar(text: &str) -> Result<CalendarReview> {
     ensure!(text.len() <= 4_000_000, "Calendário grande demais (máximo 4 MB).");
     let mut lines: Vec<String> = Vec::new();
     for raw in text.lines() {
@@ -127,12 +147,14 @@ pub fn parse_calendar(text: &str) -> Result<Vec<ImportedEntry>> {
         } else if !raw.is_empty() { lines.push(raw.to_owned()); }
     }
     ensure!(lines.first().map(String::as_str) == Some("BEGIN:VCALENDAR") && lines.last().map(String::as_str) == Some("END:VCALENDAR"), "Arquivo não é um VCALENDAR completo.");
-    let mut entries = Vec::new();
+    let mut review = CalendarReview::default();
     let mut current: Option<ImportedEntry> = None;
+    let mut reasons = Vec::new();
     let mut fields = std::collections::BTreeSet::new();
-    // Everything the importer cannot represent is listed, never dropped.
-    let mut unsupported: Vec<String> = Vec::new();
     let mut skip_depth = 0usize;
+    let mut all_day = false;
+    let mut all_day_end = String::new();
+    let mut count = 0usize;
     for raw in &lines[1..lines.len()-1] {
         let (key, value) = raw.split_once(':').context("Linha ICS inválida.")?;
         if skip_depth > 0 {
@@ -141,60 +163,100 @@ pub fn parse_calendar(text: &str) -> Result<Vec<ImportedEntry>> {
         }
         if key == "BEGIN" {
             if current.is_none() && matches!(value, "VEVENT" | "VTODO") {
+                count += 1; ensure!(count <= 500, "Máximo de 500 entradas por importação.");
                 current = Some(ImportedEntry { event: value == "VEVENT", ..Default::default() });
-                fields.clear();
+                fields.clear(); reasons.clear(); all_day = false; all_day_end.clear();
             } else {
-                unsupported.push(format!("componente {value}"));
+                if let Some(entry) = current.as_mut() {
+                    add_detail(&mut entry.details, if value == "VALARM" { "alarmes" } else { value });
+                } else if value == "VTIMEZONE" { review.general_ignored = true; }
+                else { review.skipped.push(SkippedEntry { title: format!("Componente {value}"), reason: "componente não suportado".into() }); }
                 skip_depth = 1;
             }
             continue;
         }
         if key == "END" {
-            let entry = current.take().context("Fim de entrada sem início.")?;
+            let mut entry = current.take().context("Fim de entrada sem início.")?;
             ensure!(value == if entry.event { "VEVENT" } else { "VTODO" }, "Fim de entrada incompatível.");
-            if !unsupported.is_empty() { continue; }
-            ensure!(!entry.uid.is_empty() && !entry.title.trim().is_empty(), "Entrada sem UID ou título.");
-            ensure!(entry.start.is_empty() == entry.end.is_empty(), "Entrada deve ter início e fim, ou nenhum dos dois.");
-            ensure!(!entry.event || !entry.start.is_empty(), "Evento sem intervalo de horário.");
-            ensure!(entry.end.is_empty() || entry.end > entry.start, "Fim deve ser posterior ao início.");
-            entries.push(entry); ensure!(entries.len() <= 500, "Máximo de 500 entradas por importação."); continue;
+            if entry.uid.is_empty() { add_detail(&mut reasons, "entrada sem UID"); }
+            if entry.title.trim().is_empty() { add_detail(&mut reasons, "entrada sem título"); }
+            if !all_day && !all_day_end.is_empty() { add_detail(&mut reasons, "fim de dia inteiro incompatível com início"); }
+            if all_day {
+                if !entry.end.is_empty() || !entry.start.is_empty() { add_detail(&mut reasons, "horários incompatíveis com evento de dia inteiro"); }
+                if !entry.event { add_detail(&mut reasons, "início em dia inteiro de tarefa não suportado"); }
+                if !all_day_end.is_empty() {
+                    let next = NaiveDate::parse_from_str(&entry.due, "%Y-%m-%d").ok().and_then(|d| d.succ_opt()).map(|d| d.to_string());
+                    if next.as_deref() != Some(all_day_end.as_str()) { add_detail(&mut reasons, "evento de vários dias não pode ser representado por um único prazo"); }
+                }
+                add_detail(&mut entry.details, "evento de dia inteiro importado como tarefa com prazo nesse dia");
+            } else {
+                if entry.start.is_empty() != entry.end.is_empty() { add_detail(&mut reasons, "início e fim são necessários"); }
+                if entry.event && entry.start.is_empty() { add_detail(&mut reasons, "evento sem intervalo de horário"); }
+                if !entry.end.is_empty() && entry.end <= entry.start { add_detail(&mut reasons, "fim deve ser posterior ao início"); }
+            }
+            if !reasons.is_empty() && !entry.details.is_empty() { reasons.push(format!("detalhes omitidos: {}", entry.details.join("; "))); }
+            if reasons.is_empty() { review.entries.push(entry); }
+            else { review.skipped.push(SkippedEntry { title: if entry.title.trim().is_empty() { "Entrada sem título".into() } else { entry.title }, reason: reasons.join("; ") }); }
+            continue;
         }
         if let Some(entry) = current.as_mut() {
-            let known = matches!(key, "UID" | "SUMMARY" | "DESCRIPTION" | "RELATED-TO" | "DTSTART" | "DTEND" | "DUE;VALUE=DATE"
-                | "STATUS" | "DTSTAMP" | "CREATED" | "LAST-MODIFIED" | "SEQUENCE");
-            if !known { unsupported.push(format!("propriedade {key}")); continue; }
-            ensure!(fields.insert(key.to_owned()), "Propriedade repetida: {key}.");
-            match key {
-                "UID" => entry.uid = unescape(value)?, "SUMMARY" => entry.title = unescape(value)?,
-                "DESCRIPTION" => entry.notes = unescape(value)?, "RELATED-TO" => entry.related_to = unescape(value)?,
-                "DTSTART" => entry.start = parse_time(value)?, "DTEND" => entry.end = parse_time(value)?,
-                "DUE;VALUE=DATE" => entry.due = parse_date(value)?,
-                "STATUS" => match value { "COMPLETED" => entry.completed = true, "NEEDS-ACTION" | "CONFIRMED" | "IN-PROCESS" => {}, _ => bail!("Situação não suportada: {value}.") },
-                "DTSTAMP" | "CREATED" | "LAST-MODIFIED" | "SEQUENCE" => {},
-                _ => unreachable!(),
+            let name = key.split(';').next().unwrap_or(key);
+            if matches!(name, "RRULE" | "RDATE" | "EXDATE") { add_detail(&mut reasons, "repetição: Ponte importaria apenas uma ocorrência"); continue; }
+            if matches!(name, "UID" | "SUMMARY" | "DESCRIPTION" | "RELATED-TO" | "DTSTART" | "DTEND" | "DUE" | "STATUS" | "LOCATION") && !fields.insert(name.to_owned()) {
+                add_detail(&mut reasons, &format!("propriedade repetida: {name}")); continue;
             }
-        } else if matches!(key, "VERSION" | "PRODID" | "CALSCALE") {
-            if key == "VERSION" { ensure!(value == "2.0", "Versão ICS não suportada."); }
+            let params = key.split(';').skip(1).collect::<Vec<_>>();
+            if matches!(name, "DTSTART" | "DTEND" | "DUE") && params.iter().any(|p| p.to_ascii_uppercase().starts_with("TZID=")) {
+                add_detail(&mut reasons, "fuso horário não suportado"); continue;
+            }
+            let date_value = params.iter().any(|p| p.eq_ignore_ascii_case("VALUE=DATE"));
+            if matches!(name, "UID" | "SUMMARY" | "DESCRIPTION" | "RELATED-TO" | "DTSTART" | "DTEND" | "DUE" | "STATUS" | "LOCATION") && !params.is_empty() && !(date_value && params.len() == 1 && matches!(name, "DTSTART" | "DTEND" | "DUE")) {
+                add_detail(&mut reasons, &format!("parâmetros não suportados em {name}")); continue;
+            }
+            let result: Result<()> = (|| {
+                match name {
+                    "UID" => entry.uid = unescape(value)?, "SUMMARY" => entry.title = unescape(value)?,
+                    "DESCRIPTION" => { let description = unescape(value)?; if entry.notes.is_empty() { entry.notes = description; } else { entry.notes = format!("{description}\n{}", entry.notes); } },
+                    "LOCATION" => { let location = unescape(value)?; if !entry.notes.is_empty() { entry.notes.push('\n'); } entry.notes.push_str(&format!("Local: {location}")); },
+                    "RELATED-TO" => entry.related_to = unescape(value)?,
+                    "DTSTART" if date_value => { all_day = true; entry.due = parse_date(value)?; },
+                    "DTEND" if date_value => all_day_end = parse_date(value)?,
+                    "DTSTART" => entry.start = parse_time(value)?, "DTEND" => entry.end = parse_time(value)?,
+                    "DUE" if date_value => entry.due = parse_date(value)?,
+                    "DUE" => bail!("prazo com horário não suportado"),
+                    "STATUS" => match value { "COMPLETED" => entry.completed = true, "NEEDS-ACTION" | "CONFIRMED" | "IN-PROCESS" => {}, _ => bail!("situação não suportada: {value}") },
+                    "ATTENDEE" => add_detail(&mut entry.details, "convidados"),
+                    "ORGANIZER" => add_detail(&mut entry.details, "organizador"),
+                    "DTSTAMP" | "CREATED" | "LAST-MODIFIED" | "SEQUENCE" | "TRANSP" | "CLASS" => add_detail(&mut entry.details, name),
+                    _ => add_detail(&mut entry.details, &format!("propriedade {name}")),
+                }
+                Ok(())
+            })();
+            if let Err(error) = result { add_detail(&mut reasons, &format!("{name}: {error}")); }
+        } else if matches!(key, "VERSION" | "PRODID" | "CALSCALE" | "METHOD" | "X-WR-CALNAME" | "X-WR-TIMEZONE" | "X-WR-CALDESC") {
+            review.general_ignored = true;
         } else {
-            unsupported.push(format!("propriedade de calendário {key}"));
+            review.skipped.push(SkippedEntry { title: format!("Propriedade do calendário {key}"), reason: "propriedade não suportada".into() });
         }
     }
     ensure!(current.is_none() && skip_depth == 0, "Entrada incompleta.");
-    if !unsupported.is_empty() {
-        unsupported.dedup();
-        bail!("Itens não suportados (nenhuma entrada foi importada): {}.", unsupported.join("; "));
-    }
     let mut uids = std::collections::BTreeSet::new();
-    ensure!(entries.iter().all(|entry| uids.insert(entry.uid.clone())), "UID repetido no arquivo.");
-    // Rejoin Ponte work blocks to their task without duplicating the task.
-    let blocks: Vec<_> = entries.iter().filter(|e| e.event && !e.related_to.is_empty()).cloned().collect();
+    review.entries.retain(|entry| {
+        if uids.insert(entry.uid.clone()) { true } else {
+            review.skipped.push(SkippedEntry { title: entry.title.clone(), reason: "UID repetido no arquivo".into() }); false
+        }
+    });
+    let blocks: Vec<_> = review.entries.iter().filter(|e| e.event && !e.related_to.is_empty()).cloned().collect();
     for block in blocks {
-        let task = entries.iter_mut().find(|e| !e.event && e.uid == block.related_to).context("Bloco de trabalho sem tarefa relacionada no arquivo.")?;
-        ensure!(task.start.is_empty(), "Mais de um bloco para a mesma tarefa ainda não é suportado.");
-        task.start = block.start; task.end = block.end;
-        entries.retain(|e| e.uid != block.uid);
+        if let Some(task) = review.entries.iter_mut().find(|e| !e.event && e.uid == block.related_to && e.start.is_empty() && e.title == block.title && block.notes.is_empty() && block.due.is_empty() && !block.completed) {
+            task.start = block.start.clone(); task.end = block.end.clone();
+            for detail in &block.details { add_detail(&mut task.details, detail); }
+            review.entries.retain(|e| e.uid != block.uid);
+        } else if let Some(entry) = review.entries.iter_mut().find(|e| e.uid == block.uid) {
+            add_detail(&mut entry.details, "relação com outra entrada não incorporada");
+        }
     }
-    Ok(entries)
+    Ok(review)
 }
 
 #[cfg(test)]
@@ -289,25 +351,29 @@ mod tests {
         assert_eq!((e[0].start.as_str(), e[0].end.as_str(), e[0].due.as_str()), ("2026-11-18T09:00", "2026-11-18T10:30", ""));
     }
     #[test]
-    fn rrule_and_unknown_items_are_listed_not_dropped() {
-        let text = wrap("BEGIN:VEVENT\r\nUID:e1\r\nSUMMARY:Rep\r\nDTSTART:20261118T090000\r\nDTEND:20261118T100000\r\nRRULE:FREQ=DAILY\r\nX-FOO:1\r\nEND:VEVENT\r\nBEGIN:VJOURNAL\r\nUID:j\r\nEND:VJOURNAL\r\nBEGIN:VTODO\r\nUID:t\r\nSUMMARY:T\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nEND:VALARM\r\nEND:VTODO\r\n");
-        let msg = parse_calendar(&text).unwrap_err().to_string();
-        for needle in ["RRULE", "X-FOO", "VJOURNAL", "VALARM"] { assert!(msg.contains(needle), "{needle} em {msg}"); }
-        let cal_prop = format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-CALNAME:x\r\nEND:VCALENDAR\r\n");
-        assert!(parse_calendar(&cal_prop).unwrap_err().to_string().contains("X-WR-CALNAME"));
-        let tz = wrap("BEGIN:VTIMEZONE\r\nTZID:X\r\nBEGIN:STANDARD\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n");
-        assert!(parse_calendar(&tz).unwrap_err().to_string().contains("VTIMEZONE"));
+    fn google_and_outlook_partial_review() {
+        let text = wrap("PRODID:example\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Agenda\r\nBEGIN:VTIMEZONE\r\nTZID:Example\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nUID:1\r\nSUMMARY:Reunião\r\nDTSTART:20261118T090000Z\r\nDTEND:20261118T100000Z\r\nLOCATION:Sala\r\nATTENDEE;CN=Pessoa:mailto:a@example.com\r\nX-FOO:bar\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:2\r\nSUMMARY:Repetido\r\nDTSTART:20261118T090000\r\nDTEND:20261118T100000\r\nRRULE:FREQ=DAILY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:3\r\nSUMMARY:Dia inteiro\r\nDTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:4\r\nSUMMARY:Fuso\r\nDTSTART;TZID=America/Cuiaba:20261118T090000\r\nDTEND;TZID=America/Cuiaba:20261118T100000\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:5\r\nSUMMARY:Tarefa\r\nDUE;VALUE=DATE:20261122\r\nEND:VTODO\r\n");
+        let review = parse_calendar(&text).unwrap();
+        assert!(review.general_ignored);
+        assert_eq!(review.entries.len(), 3); assert_eq!(review.skipped.len(), 2);
+        assert!(review.skipped.iter().any(|e| e.reason.contains("repetição")));
+        assert!(review.skipped.iter().any(|e| e.reason.contains("fuso horário não suportado")));
+        let event = &review.entries[0];
+        assert_eq!(event.start, chrono::DateTime::parse_from_rfc3339("2026-11-18T09:00:00Z").unwrap().with_timezone(&chrono::Local).format("%Y-%m-%dT%H:%M").to_string());
+        assert_eq!(event.notes, "Local: Sala");
+        for detail in ["convidados", "alarmes", "propriedade X-FOO"] { assert!(event.details.iter().any(|d| d == detail), "{detail}"); }
+        assert_eq!(review.entries[1].due, "2026-11-20");
+        assert!(review.entries[1].start.is_empty());
+        assert!(review.entries[1].details.iter().any(|d| d.contains("dia inteiro")));
     }
     #[test]
-    fn all_day_vs_timed() {
-        let due = wrap("BEGIN:VTODO\r\nUID:a\r\nSUMMARY:A\r\nDUE;VALUE=DATE:20261120\r\nEND:VTODO\r\n");
-        assert_eq!(parse_calendar(&due).unwrap()[0].due, "2026-11-20");
-        let timed_due = wrap("BEGIN:VTODO\r\nUID:a\r\nSUMMARY:A\r\nDUE:20261120T090000\r\nEND:VTODO\r\n");
-        assert!(parse_calendar(&timed_due).is_err());
-        let all_day_event = wrap("BEGIN:VEVENT\r\nUID:a\r\nSUMMARY:A\r\nDTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121\r\nEND:VEVENT\r\n");
-        assert!(parse_calendar(&all_day_event).unwrap_err().to_string().contains("DTSTART;VALUE=DATE"));
-        let timed = wrap("BEGIN:VEVENT\r\nUID:a\r\nSUMMARY:A\r\nDTSTART:20261120T090000\r\nDTEND:20261120T100000\r\nEND:VEVENT\r\n");
-        assert_eq!(parse_calendar(&timed).unwrap()[0].start, "2026-11-20T09:00");
+    fn outlook_review_accounts_for_every_entry() {
+        let text = wrap("METHOD:PUBLISH\r\nBEGIN:VEVENT\r\nUID:outlook-1\r\nSUMMARY:Consulta\r\nDTSTART:20261201T140000\r\nDTEND:20261201T150000\r\nORGANIZER;CN=Equipe:mailto:a@example.com\r\nCLASS:PUBLIC\r\nTRANSP:OPAQUE\r\nX-MICROSOFT-CDO-BUSYSTATUS:BUSY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:outlook-2\r\nSUMMARY:Série\r\nDTSTART:20261201T140000\r\nDTEND:20261201T150000\r\nRDATE:20261202T140000\r\nEXDATE:20261203T140000\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:outlook-3\r\nSUMMARY:Prazo\r\nDUE;VALUE=DATE:20261204\r\nEND:VTODO\r\n");
+        let review = parse_calendar(&text).unwrap();
+        assert_eq!(review.entries.len() + review.skipped.len(), 3);
+        assert!(review.entries[0].details.iter().any(|d| d == "organizador"));
+        assert!(review.entries[0].details.iter().any(|d| d == "propriedade X-MICROSOFT-CDO-BUSYSTATUS"));
+        assert!(review.skipped[0].reason.contains("repetição"));
     }
     #[test]
     fn event_ending_at_midnight_is_an_open_end() {
@@ -316,13 +382,6 @@ mod tests {
         assert_eq!(e[0].end, "2026-11-21T00:00");
         assert!(e[0].end > e[0].start);
         let same = wrap("BEGIN:VEVENT\r\nUID:a\r\nSUMMARY:N\r\nDTSTART:20261121T000000\r\nDTEND:20261121T000000\r\nEND:VEVENT\r\n");
-        assert!(parse_calendar(&same).is_err());
-    }
-    #[test]
-    fn unsupported_semantics_are_never_silently_dropped() {
-        for property in ["RRULE:FREQ=DAILY", "DTSTART;TZID=America/Cuiaba:20261118T090000", "ATTENDEE:mailto:a@example.com", "DTSTART:20261118T090000Z"] {
-            let text = format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:test\r\nSUMMARY:Teste\r\n{property}\r\nEND:VTODO\r\nEND:VCALENDAR\r\n");
-            assert!(parse_calendar(&text).is_err());
-        }
+        assert_eq!(parse_calendar(&same).unwrap().skipped.len(), 1);
     }
 }

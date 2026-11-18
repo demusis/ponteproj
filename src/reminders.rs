@@ -389,11 +389,16 @@ impl Reminders {
         if crate::windows_ui::take_notification_click() {
             self.open_today = true;
         }
+        let now = Local::now();
+        let (fired, missed) = self.individual.update(store, now.naive_local());
+        if self.settings.enabled && missed > 0 && !self.focused {
+            crate::windows_ui::show_notification("Lembrete do Ponte", &missed_summary(missed).unwrap());
+        }
         if !self.settings.enabled {
+            ctx.request_repaint_after(std::time::Duration::from_secs(30));
             return;
         }
-        let now = Local::now();
-        if self.individual.update(store, now.naive_local()) {
+        if fired {
             let text = "Há tarefas com aviso agendado. Abra Hoje para conferir ou adiar.";
             if !self.focused {
                 crate::windows_ui::show_notification("Lembrete do Ponte", text);
@@ -454,6 +459,16 @@ impl Reminders {
         self.individual.state.active.keys().cloned().collect()
     }
 
+    pub fn missed_individual(&self) -> Vec<(String, String, chrono::NaiveDateTime)> {
+        self.individual.state.missed.iter().map(|(key, item)|
+            (key.clone(), item.uid.clone(), item.moment)).collect()
+    }
+
+    pub fn dismiss_missed(&mut self, key: &str) {
+        self.individual.state.missed.remove(key);
+        self.individual.save();
+    }
+
     pub fn dismiss_individual(&mut self, id: &str) {
         self.individual.state.active.remove(id);
         self.individual.save();
@@ -487,11 +502,28 @@ impl Drop for Reminders {
     }
 }
 
+const MISSED_LIMIT: usize = 100;
+
+fn missed_summary(count: usize) -> Option<String> {
+    if count == 0 { return None; }
+    let noun = if count == 1 { "aviso de tarefa passou" } else { "avisos de tarefas passaram" };
+    Some(format!("{count} {noun} com o Ponte fechado. Abra Hoje para conferir."))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MissedReminder {
+    uid: String,
+    moment: chrono::NaiveDateTime,
+}
+
 #[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct IndividualState {
     delivered: std::collections::BTreeMap<String, String>,
     active: std::collections::BTreeMap<String, String>,
     snoozed: std::collections::BTreeMap<String, String>,
+    missed: std::collections::BTreeMap<String, MissedReminder>,
+    last_checked: Option<chrono::NaiveDateTime>,
 }
 
 #[derive(Default)]
@@ -517,13 +549,45 @@ impl IndividualReminders {
             if let Ok(bytes) = crate::protection::seal(&bytes) { let _ = std::fs::write(path, bytes); }
         }
     }
-    fn update(&mut self, store: &Store, now: chrono::NaiveDateTime) -> bool {
-        if self.last_check.is_some_and(|last| now >= last && now - last < Duration::seconds(30)) { return false; }
+    fn update(&mut self, store: &Store, now: chrono::NaiveDateTime) -> (bool, usize) {
+        if self.last_check.is_some_and(|last| now >= last && now - last < Duration::seconds(30)) { return (false, 0); }
+        let Ok(tasks) = store.list_tasks() else { return (false, 0); };
         self.last_check = Some(now);
-        let Ok(tasks) = store.list_tasks() else { return false; };
+        let missed = self.collect_missed(&tasks, now);
         let fired = self.decide(&tasks, now);
         self.save();
-        fired
+        (fired, missed)
+    }
+
+    fn collect_missed(&mut self, tasks: &[crate::tasks::Task], now: chrono::NaiveDateTime) -> usize {
+        let open: std::collections::BTreeSet<_> = tasks.iter().filter(|t| !t.is_done()).map(|t| t.uid.as_str()).collect();
+        self.state.missed.retain(|_, item| open.contains(item.uid.as_str()));
+        let previous = self.state.last_checked.replace(now);
+        let Some(previous) = previous else { return 0; };
+        if previous > now { return 0; }
+        let cutoff = now - Duration::minutes(5);
+        let start = (previous - Duration::minutes(5)).max(now - Duration::days(7));
+        let mut candidates = Vec::new();
+        for task in tasks.iter().filter(|t| !t.is_done()) {
+            let Some(anchor) = reminder_anchor(task) else { continue; };
+            for offset in &task.reminder_offsets_minutes {
+                let moment = anchor - Duration::minutes(i64::from(*offset));
+                let key = format!("{}|{}|{}", task.uid, anchor, offset);
+                if moment >= start && moment < cutoff && !self.state.delivered.contains_key(&key) {
+                    candidates.push((moment, key, task.uid.clone()));
+                }
+            }
+        }
+        candidates.sort();
+        let mut added = 0;
+        for (moment, key, uid) in candidates {
+            if self.state.missed.len() >= MISSED_LIMIT { break; }
+            if self.state.delivered.contains_key(&key) { continue; }
+            self.state.delivered.insert(key.clone(), now.to_string());
+            self.state.missed.insert(key, MissedReminder { uid, moment });
+            added += 1;
+        }
+        added
     }
     fn decide(&mut self, tasks: &[crate::tasks::Task], now: chrono::NaiveDateTime) -> bool {
         let open: std::collections::BTreeSet<_> = tasks.iter().filter(|t| !t.is_done()).map(|t| t.uid.clone()).collect();
@@ -544,7 +608,7 @@ impl IndividualReminders {
             for offset in &task.reminder_offsets_minutes {
                 let trigger = anchor - Duration::minutes(i64::from(*offset));
                 let key = format!("{}|{}|{}", task.uid, anchor, offset);
-                if now >= trigger && now <= anchor + Duration::minutes(5) && !self.state.delivered.contains_key(&key) {
+                if now >= trigger && now <= trigger + Duration::minutes(5) && !self.state.delivered.contains_key(&key) {
                     self.state.delivered.insert(key, now.to_string());
                     self.state.active.insert(task.uid.clone(), now.to_string());
                     fired = true;
@@ -598,10 +662,10 @@ mod tests {
         let mut late = IndividualReminders::default();
         assert!(!late.decide(&[task.clone()], anchor + Duration::minutes(6)));
         assert!(late.state.active.is_empty() && late.state.delivered.is_empty());
-        // Opened within the window: it still shows, once.
+        // Opened within five minutes of the reminder: it still shows, once.
         let mut inside = IndividualReminders::default();
-        assert!(inside.decide(&[task.clone()], anchor + Duration::minutes(5)));
-        assert!(!inside.decide(&[task], anchor + Duration::minutes(5)));
+        assert!(inside.decide(&[task.clone()], anchor - Duration::minutes(10)));
+        assert!(!inside.decide(&[task], anchor - Duration::minutes(10)));
     }
 
     #[test]
@@ -615,6 +679,55 @@ mod tests {
         assert!(!engine.decide(&[task.clone()], now));
         assert!(engine.decide(&[task.clone()], now + Duration::minutes(10)));
         assert!(!engine.decide(&[task], now + Duration::minutes(11)));
+    }
+
+    #[test]
+    fn missed_window_first_run_cap_dismissal_and_restart() {
+        let now = crate::resources::parse_moment("2026-11-18T12:00").unwrap();
+        let mut task = crate::tasks::Task::standalone();
+        task.scheduled_start = "2026-11-18T10:00".into();
+        task.reminder_offsets_minutes = vec![0];
+        let mut engine = IndividualReminders::default();
+        assert_eq!(engine.collect_missed(&[task.clone()], now), 0);
+        engine.state.last_checked = Some(now - Duration::days(20));
+        assert_eq!(engine.collect_missed(&[task.clone()], now), 1);
+        let key = engine.state.missed.keys().next().unwrap().clone();
+        let bytes = serde_json::to_vec(&engine.state).unwrap();
+        let mut restored = IndividualReminders { state: serde_json::from_slice(&bytes).unwrap(), last_check: None };
+        assert!(restored.state.missed.contains_key(&key));
+        restored.state.missed.remove(&key);
+        restored.state.last_checked = Some(now - Duration::days(1));
+        assert_eq!(restored.collect_missed(&[task.clone()], now), 0);
+        let bytes = serde_json::to_vec(&restored.state).unwrap();
+        let mut restored = IndividualReminders { state: serde_json::from_slice(&bytes).unwrap(), last_check: None };
+        restored.state.last_checked = Some(now - Duration::days(1));
+        assert_eq!(restored.collect_missed(&[task.clone()], now), 0);
+        let mut old = task.clone();
+        old.uid = "old".into();
+        old.scheduled_start = "2026-11-10T10:00".into();
+        let mut done = task.clone();
+        done.uid = "done".into();
+        done.status = "concluida".into();
+        restored.state.last_checked = Some(now - Duration::days(20));
+        assert_eq!(restored.collect_missed(&[old, done], now), 0);
+    }
+
+    #[test]
+    fn missed_count_is_capped_and_summary_is_single_generic_message() {
+        let now = crate::resources::parse_moment("2026-11-18T12:00").unwrap();
+        let mut task = crate::tasks::Task::standalone();
+        task.scheduled_start = "2026-11-18T10:00".into();
+        task.reminder_offsets_minutes = (0..150).collect();
+        let mut engine = IndividualReminders::default();
+        engine.state.last_checked = Some(now - Duration::days(1));
+        let count = engine.collect_missed(&[task.clone()], now);
+        assert_eq!(count, MISSED_LIMIT);
+        assert_eq!(engine.state.missed.len(), MISSED_LIMIT);
+        assert!(missed_summary(count).unwrap().contains("Abra Hoje"));
+        assert!(missed_summary(0).is_none());
+        task.status = "concluida".into();
+        engine.collect_missed(&[task], now);
+        assert!(engine.state.missed.is_empty());
     }
 
     fn at(day: u32, hour: u32, minute: u32) -> DateTime<Local> {

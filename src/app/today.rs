@@ -401,9 +401,22 @@ impl PonteApp {
         let now = chrono::Local::now().date_naive();
         let mut asked: Option<Asked> = None;
         let alarms = self.reminders.individual_tasks();
-        if !alarms.is_empty() {
+        let missed = self.reminders.missed_individual();
+        if !alarms.is_empty() || !missed.is_empty() {
             widgets::card(ui, |ui| {
                 widgets::section(ui, "Avisos agendados");
+                if !missed.is_empty() {
+                    widgets::small_muted(ui, "Perdidos enquanto o Ponte estava fechado");
+                    for (key, id, moment) in missed {
+                        if let Some(task) = self.today.planning_tasks.iter().find(|t| t.uid == id && !t.is_done()) {
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.add(widgets::quiet(&task.title)).clicked() { asked = Some(Asked::OpenTask(task.clone())); }
+                                ui.label(moment.format("%d/%m/%Y às %H:%M").to_string());
+                                if ui.button("Dispensar aviso").clicked() { self.reminders.dismiss_missed(&key); }
+                            });
+                        }
+                    }
+                }
                 for id in alarms {
                     if let Some(task) = self.today.planning_tasks.iter().find(|t| t.uid == id && !t.is_done()) {
                         ui.horizontal_wrapped(|ui| {
@@ -423,7 +436,7 @@ impl PonteApp {
         let mut calendar = ui
             .data(|d| d.get_temp::<bool>(view_id))
             .unwrap_or(DEFAULT_CALENDAR);
-        let week_id = egui::Id::new("today-week-view");
+        let week_id = egui::Id::unique("today-week-view");
         let mut weekly = ui.data(|d| d.get_temp::<bool>(week_id)).unwrap_or(false);
         ui.horizontal(|ui| {
             if widgets::chip(ui, !calendar && !weekly, "Lista").clicked() {

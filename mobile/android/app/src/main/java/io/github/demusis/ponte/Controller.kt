@@ -863,13 +863,13 @@ internal object Controller {
     }
 
     /** Passphrase from memory, or released by fingerprint/PIN when remembered. */
-    private fun withPassphrase(notify: Boolean, onOk: (String) -> Unit, onFail: () -> Unit) {
+    private fun withPassphrase(auto: Boolean, onOk: (String) -> Unit, onFail: () -> Unit) {
         if (SyncRunner.passphrase.isNotEmpty()) {
             onOk(SyncRunner.passphrase)
             return
         }
         if (!Secrets.isRemembered(app)) {
-            status("Informe a senha de sincronização em Ajustes para sincronizar.", false, notify)
+            syncRefused(SyncRefusal.PASSPHRASE_MISSING, auto)
             onFail()
             return
         }
@@ -877,18 +877,32 @@ internal object Controller {
         if (a == null || !inFront()) {
             // The fingerprint prompt needs the app in front: the sync is tried again on return.
             if (idleTask == null) idleTask = { requestSync(null, auto = true) }
+            syncRefused(SyncRefusal.NOT_FOREGROUND, auto)
             onFail()
             return
         }
-        Secrets.unlock(a) { pass, msg ->
+        Secrets.unlock(a) { pass, _ ->
             promptDone(pass != null)
             if (pass != null) {
                 SyncRunner.passphrase = pass
                 onOk(pass)
             } else {
-                status(msg ?: "Senha de sincronização não liberada.", false, notify)
+                syncRefused(SyncRefusal.PASSPHRASE_CANCELLED, auto)
                 onFail()
             }
+        }
+    }
+
+    private fun syncRefused(reason: SyncRefusal, auto: Boolean) {
+        val feedback = SyncFeedback.decide(reason, auto)
+        if (reason != SyncRefusal.BUSY) status(feedback.status, reason == SyncRefusal.NO_FILE, notify = false)
+        feedback.message?.let { message ->
+            if (feedback.mobileAction) {
+                say(message, "Usar dados móveis desta vez", long = true) {
+                    mobileOnce = true
+                    requestSync(null)
+                }
+            } else say(message, long = true)
         }
     }
 
@@ -913,41 +927,47 @@ internal object Controller {
      * line and are not said at the bottom.
      */
     fun requestSync(note: Pair<Long, String>?, auto: Boolean = false, then: (() -> Unit)? = null) {
-        val notify = !auto
         try {
+            if (SyncRunner.running.get()) {
+                mobileOnce = false
+                note?.let { saveNoteOnly(it) }
+                syncRefused(SyncRefusal.BUSY, auto)
+                then?.invoke()
+                return
+            }
             val uri = fileUri
             if (uri == null) {
                 note?.let { saveNoteOnly(it) }
-                if (!auto) status("Escolha primeiro o arquivo ponte-sync.ponte em Ajustes.", true)
+                syncRefused(SyncRefusal.NO_FILE, auto)
                 then?.invoke()
                 return
             }
             if (!networkAllowed()) {
                 note?.let { saveNoteOnly(it) }
-                status("Sem Wi-Fi: sincronização adiada. Para usar dados móveis, ative em Ajustes.", false, notify)
+                syncRefused(SyncRefusal.NO_WIFI, auto)
                 then?.invoke()
                 return
             }
-            withPassphrase(notify, { pass ->
+            withPassphrase(auto, { pass ->
                 try {
                     if (SyncRunner.startSync(app, uri, pass, note)) {
                         idleTask = then
                     } else {
                         note?.let { saveNoteOnly(it) }
-                        if (!auto) say("Já há uma sincronização em andamento.")
+                        syncRefused(SyncRefusal.BUSY, auto)
                         then?.invoke()
                     }
                     render()
                 } catch (e: Throwable) {
                     note?.let { saveNoteOnly(it) }
-                    status(PhoneWords.explain(e, START_FAILED), true)
+                    status(PhoneWords.explain(e, START_FAILED), true, notify = !auto)
                 }
             }, {
                 note?.let { saveNoteOnly(it) }
                 then?.invoke()
             })
         } catch (e: Throwable) {
-            status(PhoneWords.explain(e, START_FAILED), true)
+            status(PhoneWords.explain(e, START_FAILED), true, notify = !auto)
         }
     }
 
@@ -2314,6 +2334,8 @@ internal object Controller {
     /** The first sync; its result is shown on the setup screen itself. */
     fun setupSync() {
         if (SyncRunner.running.get()) {
+            mobileOnce = false
+            syncRefused(SyncRefusal.BUSY, auto = false)
             render()
             return
         }

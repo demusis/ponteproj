@@ -71,7 +71,7 @@ fn touches(start: &str, end: &str, day: NaiveDate) -> bool {
 }
 
 pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked: &mut Option<Asked>) {
-    let id = egui::Id::new("planning-week-start");
+    let id = egui::Id::unique("planning-week-start");
     let mut start = ui.data(|d| d.get_temp::<NaiveDate>(id)).unwrap_or_else(|| monday(today));
     ui.horizontal(|ui| {
         if ui.button("◀ Semana anterior").clicked() { start -= Duration::days(7); }

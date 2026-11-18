@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 /// part of the same switch as the daily summary (Ajustes ▸ Lembretes de
 /// prazos) and are only shown while Ponte is running; one whose moment passed
 /// more than five minutes ago, with Ponte closed, is not shown afterwards.
-pub const REMINDER_FORM_HINT: &str = "O aviso aparece com o Ponte aberto e só se “Ativar resumo diário e avisos das tarefas” estiver ligado em Ajustes ▸ Lembretes de prazos.";
+pub const REMINDER_FORM_HINT: &str = "O aviso aparece com o Ponte aberto; se perdido, aparece em Hoje ao reabrir. Ative “Ativar resumo diário e avisos das tarefas” em Ajustes ▸ Lembretes de prazos.";
 
 /// How the notes of a task made from an old-style suggestion begin.
 pub const SUGGESTION_NOTE_MARKER: &str = "Sugestão da IA para revisão.";
@@ -3563,7 +3563,7 @@ impl TaskPanel {
                                 };
                                 // A filter, kept in egui memory per task form: with dozens of
                                 // tasks, scrolling a short list to find one is slow.
-                                let filter_id = egui::Id::new(("dependency-filter", task_id));
+                                let filter_id = egui::Id::unique(("dependency-filter", task_id));
                                 let mut filter: String =
                                     ui.data(|d| d.get_temp(filter_id)).unwrap_or_default();
                                 ui.add(

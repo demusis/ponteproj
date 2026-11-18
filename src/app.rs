@@ -1715,7 +1715,7 @@ impl PonteApp {
         match leave {
             Leave::Week(ctx) => {
                 self.area = Area::Today;
-                ctx.data_mut(|data| data.insert_temp(egui::Id::new("today-week-view"), true));
+                ctx.data_mut(|data| data.insert_temp(egui::Id::unique("today-week-view"), true));
             }
             Leave::NewManual => {
                 self.area = Area::Documents;
@@ -4027,13 +4027,13 @@ mod tests {
         app.navigate(super::Leave::Week(ctx.clone()));
         assert!(app.leave.is_some());
         assert!(ctx
-            .data(|d| d.get_temp::<bool>(eframe::egui::Id::new("today-week-view")))
+            .data(|d| d.get_temp::<bool>(eframe::egui::Id::unique("today-week-view")))
             .is_none());
         app.tasks.discard_draft();
         app.complete_pending_leave();
         assert!(app.area == super::Area::Today);
         assert_eq!(
-            ctx.data(|d| d.get_temp::<bool>(eframe::egui::Id::new("today-week-view"))),
+            ctx.data(|d| d.get_temp::<bool>(eframe::egui::Id::unique("today-week-view"))),
             Some(true)
         );
     }

@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.39.1 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.40.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.39.1.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.40.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -538,7 +538,7 @@ Exemplo: *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Quando na
 
 - **A partir de quando contam:** do **Início** do horário de trabalho ([6.8](#68-planejar-o-trabalho)); sem horário de trabalho, das 9h do dia do **Prazo**. Tarefa sem horário e sem prazo não tem de onde contar. Tarefa concluída não avisa.
 - **O que aparece:** uma notificação do Windows, *Lembrete do Ponte*, com a frase *Há tarefas com aviso agendado. Abra Hoje para conferir ou adiar.* Com o Ponte na frente, a frase aparece no aviso do canto da janela. **O título da tarefa não vai na notificação**, de propósito: ela pode ficar visível sobre outras janelas e na tela de bloqueio. Os títulos aparecem em **Hoje**, no card **Avisos agendados**, onde cada tarefa tem **Adiar 10 min** e **Dispensar aviso**; um clique no título abre a tarefa.
-- **Só com o Ponte aberto.** Se o momento de um aviso passa com o Ponte fechado, ele **não é mostrado depois**: o Ponte ainda mostra o que venceu há até cinco minutos, e o que ficou para trás além disso é deixado de lado. O mesmo aviso não se repete a cada abertura nem depois de reiniciar o programa.
+- **Avisos perdidos:** ao reabrir, **Hoje ▸ Avisos agendados** mostra em **Perdidos enquanto o Ponte estava fechado** o título e o horário previsto dos avisos dos últimos 7 dias (até 100). **Dispensar aviso** impede que volte, mesmo após reiniciar; concluir a tarefa também o remove. Na primeira execução após atualizar, avisos antigos não são recuperados. Pode aparecer até uma notificação genérica do Windows, sem títulos: *N avisos de tarefas passaram com o Ponte fechado. Abra Hoje para conferir.* O formulário orienta: “O aviso aparece com o Ponte aberto; se perdido, aparece em Hoje ao reabrir. Ative “Ativar resumo diário e avisos das tarefas” em Ajustes ▸ Lembretes de prazos.”
 - **Privacidade:** o registro do que já foi avisado fica só neste computador, cifrado (`avisos-individuais.bin`), fora do acervo e sem seguir para a equipe ou para a pasta compartilhada.
 - **No celular** (Ponte de bolso 0.9.0): os mesmos quatro tempos, como notificação do Android com o botão **Adiar 10 min**. Exigem a permissão de notificações; sem ela o aplicativo avisa na própria tarefa. A notificação também não traz o título.
 
@@ -585,12 +585,12 @@ Duas regras para ter em mente:
 Para levar a agenda a outro programa (Google Agenda, Outlook, o calendário do celular) ou trazer compromissos para o Ponte, use o card **Calendário (.ics)**, em **Ajustes ▸ Cópia de segurança e exportação**.
 
 - **Exportar calendário…** grava um arquivo `ponte-agenda.ics`, no lugar que você escolher, com as tarefas (o prazo como data; o horário de trabalho, como um bloco à parte) e as reservas de recursos que ainda ocupam o recurso. A caixa **Incluir títulos, finalidades e notas no arquivo exportado** vem **desmarcada**: sem ela, o arquivo diz só *Tarefa reservada*, *Trabalho reservado* e *Recurso reservado*, sem nada do conteúdo.
-- **Conferir arquivo de calendário…** lê um `.ics` (até 4 MB e 500 entradas) e **mostra cada entrada antes de gravar**: título, prazo, início e fim, e as notas. **Importar esta entrada como tarefa** grava uma por vez; **Fechar conferência sem importar as restantes** descarta o que sobrou. Uma entrada que já está no acervo não é duplicada: o Ponte diz *Esta entrada já está no acervo; nada foi alterado.* Os eventos entram como **tarefas agendadas**; **não reservam recursos**, mesmo que tenham saído de uma reserva.
+- **Conferir arquivo de calendário…** lê um `.ics` (até 4 MB e 500 entradas) e mostra as entradas antes de gravar. **Importar esta entrada como tarefa** importa uma, e **Importar todas as N** importa as disponíveis; nada é gravado antes do clique e reimportar não duplica. Os eventos viram tarefas, sem reservar recursos.
 
 **O que isto não é.**
 
 - **Não é sincronização.** O arquivo exportado é uma **cópia de um momento**. O que você mudar no outro calendário **não volta** para o Ponte, e o que mudar no Ponte não chega lá sozinho. Para atualizar, exporte de novo (e o outro programa pode mostrar as entradas antigas em dobro).
-- **A importação é restrita de propósito.** Se o arquivo tiver qualquer coisa que o Ponte não sabe representar, **o arquivo inteiro é recusado** e nada é importado; a mensagem lista o que impediu. Não são aceitos: **regras de repetição**, **fusos horários** (só vale horário local, com minuto exato; horário em UTC ou com fuso é recusado), **eventos de dia inteiro** (exceto o prazo de uma tarefa), **convidados**, **alarmes** e outras propriedades. Por isso, **arquivos exportados do Google Agenda ou do Outlook costumam ser recusados**, porque quase sempre trazem fuso, repetição ou convidados. Os arquivos que o próprio Ponte exporta são aceitos de volta.
+- **Importação parcial:** arquivos do Google Agenda e Outlook podem ser importados parcialmente. **Não importadas (N)** é uma lista recolhível com motivos como *repetição: Ponte importaria apenas uma ocorrência* e *fuso horário não suportado*. **Detalhes da importação: …** informa dados descartados, como convidados e alarmes; *informações gerais do calendário ignoradas* indica dados gerais descartados. Horários UTC são convertidos para a hora local; evento de dia inteiro de um dia vira tarefa com aquele prazo, mas eventos de vários dias ficam na lista de não importados. O local vai nas notas como *Local: …*.
 - **O arquivo sai do acervo protegido.** Ele é texto aberto, sem cifra, e, com **Incluir títulos…** marcada, leva títulos, finalidades e notas. Guarde-o e envie-o com o mesmo cuidado de uma ficha impressa ([5.7](#57-imprimir-ou-salvar-a-ficha)).
 
 ## 7. Atendimentos (controle do gabinete)
@@ -1057,8 +1057,8 @@ A maioria das mensagens já diz o que fazer. Estas são as mais comuns.
 | *"Item na lixeira; restaure antes de editar"* | O item foi excluído. Restaure-o em Ajustes ▸ Lixeira. |
 | O aviso diário de prazos não aparece | Confira em **Ajustes ▸ Lembretes** se está ligado e se o horário já passou; o Ponte precisa estar aberto ou minimizado, e só avisa quando algo vence. Use **Mostrar um aviso de teste** e, se nem ele aparecer, veja *Configurações do Windows ▸ Sistema ▸ Notificações*. |
 | Em Tarefas, uma ação em lote deixou tarefas de fora | Não é erro: a linha de resultado diz quais e por quê ([6.5](#65-ações-em-lote)). **Desfazer** vale por 30 segundos; tarefas excluídas estão em Ajustes ▸ Lixeira. |
-| O aviso de uma tarefa não apareceu | Confira em **Ajustes ▸ Lembretes** se **Ativar resumo diário e avisos das tarefas** está ligada e se a tarefa tem **Avisos antes do início** marcados e um **Início** ou um **Prazo**. O Ponte precisa estar aberto: um aviso cujo momento passou com o programa fechado não é mostrado depois. Tarefa concluída não avisa. No celular, confira a permissão de notificações. |
-| *"Itens não suportados (nenhuma entrada foi importada)…"* ao conferir um `.ics` | Não é erro do Ponte: o arquivo tem algo que ele não representa (repetição, fuso, evento de dia inteiro, convidados, alarmes…). A mensagem lista o quê, e o arquivo inteiro é recusado ([6.9](#69-calendário-ics)). Arquivos do Google Agenda e do Outlook costumam cair aqui. |
+| O aviso de uma tarefa não apareceu | Confira **Ativar resumo diário e avisos das tarefas**, os avisos marcados e o início ou prazo. Avisos perdidos aparecem em **Hoje ▸ Avisos agendados**, com os limites descritos em [6.6](#66-lembretes-de-prazos); tarefas concluídas não avisam. No celular, confira a permissão de notificações. |
+| Entradas ausentes ao conferir um `.ics` | Abra **Não importadas (N)** para ver os motivos e confira **Detalhes da importação: …** para dados descartados ([6.9](#69-calendário-ics)). |
 | *"Neste computador (conectado ao principal) não é possível criar várias ocorrências de uma vez"* | A repetição não funciona em computador conectado a um principal. Faça-a no computador principal ([6.8](#68-planejar-o-trabalho)). |
 
 ---
@@ -1159,7 +1159,7 @@ O mesmo executável faz os dois papéis. Aberto pelo usuário, mostra a janela. 
 | `src/app/search.rs` | Busca em todo o acervo (Ctrl+K): documentos, tarefas e atendimentos, com resultados agrupados e teclado, e as **Ações** (`>`) |
 | `src/recurrence.rs`, `src/app/repetition.rs` | Repetição de tarefas e reservas: datas calculadas a partir da original, prévia e gravação em lote numa transação só (`save_repeated_tasks`, `save_repeated_uses`) |
 | `src/app/week.rs` | A visão **Semana** de Hoje: blocos de trabalho, reservas, prazos à parte e tarefas ainda não planejadas |
-| `src/calendar_ics.rs`, `src/app/calendar_exchange.rs` | Exportação e conferência de `.ics` (horários locais e datas; recusa o que não representa) e o card **Calendário (.ics)** |
+| `src/calendar_ics.rs`, `src/app/calendar_exchange.rs` | Exportação e conferência de `.ics`, com importação parcial e indicação dos itens não importados |
 | `src/ficha_export.rs` | A ficha como página `.html` única, para imprimir ou salvar em PDF (**Imprimir ou salvar a ficha…**) |
 | `src/update_check.rs` | **Verificar se há versão nova**: consulta, só a pedido, a última versão publicada no GitHub; não envia dados do acervo, não baixa nem instala |
 | `src/guide.rs` | Guia do usuário: `GUIA_DO_USUARIO.md` embutido e convertido em página para o navegador |
