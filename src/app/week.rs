@@ -18,7 +18,10 @@ struct Link {
 }
 
 // Only dependency IDs create links; parent_task_id describes a different relationship.
-fn dependency_layout(tasks: &[Task], visible: &HashSet<i64>) -> (Vec<Link>, HashMap<i64, Vec<i64>>) {
+fn dependency_layout(
+    tasks: &[Task],
+    visible: &HashSet<i64>,
+) -> (Vec<Link>, HashMap<i64, Vec<i64>>) {
     let by_id: HashMap<_, _> = tasks.iter().map(|task| (task.id, task)).collect();
     let mut links = Vec::new();
     let mut outside = HashMap::new();
@@ -29,7 +32,12 @@ fn dependency_layout(tasks: &[Task], visible: &HashSet<i64>) -> (Vec<Link>, Hash
                     let wrong_order = !previous.is_done()
                         && matches!((parse_moment(&task.scheduled_start), parse_moment(&previous.scheduled_end)),
                             (Ok(start), Ok(end)) if start < end);
-                    links.push(Link { prerequisite: id, dependent: task.id, wrong_order, concluded: previous.is_done() });
+                    links.push(Link {
+                        prerequisite: id,
+                        dependent: task.id,
+                        wrong_order,
+                        concluded: previous.is_done(),
+                    });
                 }
             } else {
                 outside.entry(task.id).or_insert_with(Vec::new).push(id);
@@ -42,9 +50,18 @@ fn dependency_layout(tasks: &[Task], visible: &HashSet<i64>) -> (Vec<Link>, Hash
 fn outside_dependency_label(task: &Task) -> String {
     let status = if task.is_done() {
         "concluída".to_owned()
-    } else if let (Ok(start), Ok(end)) = (parse_moment(&task.scheduled_start), parse_moment(&task.scheduled_end)) {
-        if end > start { format!("planejada em {}", start.format("%d/%m")) } else { "sem horário".to_owned() }
-    } else { "sem horário".to_owned() };
+    } else if let (Ok(start), Ok(end)) = (
+        parse_moment(&task.scheduled_start),
+        parse_moment(&task.scheduled_end),
+    ) {
+        if end > start {
+            format!("planejada em {}", start.format("%d/%m"))
+        } else {
+            "sem horário".to_owned()
+        }
+    } else {
+        "sem horário".to_owned()
+    };
     format!("↳ depende de: {} ({status})", task.title)
 }
 
@@ -54,7 +71,6 @@ fn arrow_geometry(from: egui::Rect, to: egui::Rect) -> [egui::Pos2; 4] {
     let bend = ((b.y - a.y).abs() * 0.5).max(24.0);
     [a, a + egui::vec2(0.0, bend), b - egui::vec2(0.0, bend), b]
 }
-
 
 fn monday(day: NaiveDate) -> NaiveDate {
     day - Duration::days(i64::from(day.weekday().num_days_from_monday()))
@@ -68,33 +84,73 @@ fn touches(start: &str, end: &str, day: NaiveDate) -> bool {
     start < from + Duration::days(1) && end > from
 }
 
-pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked: &mut Option<Asked>) {
+pub(super) fn show(
+    ui: &mut egui::Ui,
+    data: &TodayData,
+    today: NaiveDate,
+    asked: &mut Option<Asked>,
+) {
     let id = egui::Id::unique("planning-week-start");
-    let mut start = ui.data(|d| d.get_temp::<NaiveDate>(id)).unwrap_or_else(|| monday(today));
+    let mut start = ui
+        .data(|d| d.get_temp::<NaiveDate>(id))
+        .unwrap_or_else(|| monday(today));
     ui.horizontal(|ui| {
-        if ui.button("◀ Semana anterior").clicked() { start -= Duration::days(7); }
-        widgets::section(ui, format!("{} a {}", start.format("%d/%m"), (start + Duration::days(6)).format("%d/%m/%Y")));
-        if ui.button("Próxima semana ▶").clicked() { start += Duration::days(7); }
-        if ui.button("Esta semana").clicked() { start = monday(today); }
+        if ui.button("◀ Semana anterior").clicked() {
+            start -= Duration::days(7);
+        }
+        widgets::section(
+            ui,
+            format!(
+                "{} a {}",
+                start.format("%d/%m"),
+                (start + Duration::days(6)).format("%d/%m/%Y")
+            ),
+        );
+        if ui.button("Próxima semana ▶").clicked() {
+            start += Duration::days(7);
+        }
+        if ui.button("Esta semana").clicked() {
+            start = monday(today);
+        }
     });
     ui.data_mut(|d| d.insert_temp(id, start));
     widgets::muted(ui, "Horários locais. Agendar o trabalho não altera o prazo de entrega. Clique em uma tarefa para planejar ou reagendar.");
     ui.add_space(S2);
     let projections = crate::projection::project(&data.planning_tasks);
-    let referenced: HashSet<i64> = data.planning_tasks.iter().flat_map(|task| task.dependencies.iter().copied()).collect();
-    let visible: HashSet<i64> = data.planning_tasks.iter()
-        .filter(|task| (!task.is_done() || referenced.contains(&task.id))
-            && (0..7).any(|offset| {
-                let day = start + Duration::days(offset);
-                touches(&task.scheduled_start, &task.scheduled_end, day) || projections.get(&task.id).is_some_and(|(a,b)| *a < (day + Duration::days(1)).and_hms_opt(0,0,0).unwrap() && *b > day.and_hms_opt(0,0,0).unwrap())
-            }))
-        .map(|task| task.id).collect();
+    let referenced: HashSet<i64> = data
+        .planning_tasks
+        .iter()
+        .flat_map(|task| task.dependencies.iter().copied())
+        .collect();
+    let visible: HashSet<i64> = data
+        .planning_tasks
+        .iter()
+        .filter(|task| {
+            (!task.is_done() || referenced.contains(&task.id))
+                && (0..7).any(|offset| {
+                    let day = start + Duration::days(offset);
+                    touches(&task.scheduled_start, &task.scheduled_end, day)
+                        || projections.get(&task.id).is_some_and(|(a, b)| {
+                            *a < (day + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap()
+                                && *b > day.and_hms_opt(0, 0, 0).unwrap()
+                        })
+                })
+        })
+        .map(|task| task.id)
+        .collect();
     let (links, outside) = dependency_layout(&data.planning_tasks, &visible);
-    let by_id: HashMap<_, _> = data.planning_tasks.iter().map(|task| (task.id, task)).collect();
+    let by_id: HashMap<_, _> = data
+        .planning_tasks
+        .iter()
+        .map(|task| (task.id, task))
+        .collect();
     let mut blocks: HashMap<i64, Vec<egui::Rect>> = HashMap::new();
     let mut warnings: HashMap<i64, Vec<i64>> = HashMap::new();
     for link in links.iter().filter(|link| link.wrong_order) {
-        warnings.entry(link.dependent).or_default().push(link.prerequisite);
+        warnings
+            .entry(link.dependent)
+            .or_default()
+            .push(link.prerequisite);
     }
     let background_arrows = ui.painter().add(egui::Shape::Noop);
     let mut card_arrows = Vec::new();
@@ -170,40 +226,97 @@ pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked:
     // Paint each curve below card contents, and also in the gaps between cards.
     let mut arrow_shapes = Vec::new();
     for link in &links {
-        if let (Some(from), Some(to)) = (blocks.get(&link.prerequisite), blocks.get(&link.dependent)) {
+        if let (Some(from), Some(to)) =
+            (blocks.get(&link.prerequisite), blocks.get(&link.dependent))
+        {
             let points = arrow_geometry(*from.last().unwrap(), to[0]);
-            let color = if link.wrong_order { theme::c().warn } else { theme::c().muted };
+            let color = if link.wrong_order {
+                theme::c().warn
+            } else {
+                theme::c().muted
+            };
             let color = color.gamma_multiply(if link.concluded { 0.35 } else { 0.65 });
             let stroke = egui::Stroke::new(if link.concluded { 0.8 } else { 1.3 }, color);
-            arrow_shapes.push(egui::epaint::CubicBezierShape::from_points_stroke(points, false, egui::Color32::TRANSPARENT, stroke).into());
+            arrow_shapes.push(
+                egui::epaint::CubicBezierShape::from_points_stroke(
+                    points,
+                    false,
+                    egui::Color32::TRANSPARENT,
+                    stroke,
+                )
+                .into(),
+            );
             let tip = points[3];
-            arrow_shapes.push(egui::Shape::line_segment([tip + egui::vec2(-4.0, -7.0), tip], stroke));
-            arrow_shapes.push(egui::Shape::line_segment([tip + egui::vec2(4.0, -7.0), tip], stroke));
+            arrow_shapes.push(egui::Shape::line_segment(
+                [tip + egui::vec2(-4.0, -7.0), tip],
+                stroke,
+            ));
+            arrow_shapes.push(egui::Shape::line_segment(
+                [tip + egui::vec2(4.0, -7.0), tip],
+                stroke,
+            ));
         }
     }
-    ui.painter().set(background_arrows, egui::Shape::Vec(arrow_shapes.clone()));
+    ui.painter()
+        .set(background_arrows, egui::Shape::Vec(arrow_shapes.clone()));
     for (slot, rect) in card_arrows {
-        ui.painter().with_clip_rect(rect).set(slot, egui::Shape::Vec(arrow_shapes.clone()));
+        ui.painter()
+            .with_clip_rect(rect)
+            .set(slot, egui::Shape::Vec(arrow_shapes.clone()));
     }
     widgets::section(ui, "Ainda não planejadas");
-    let mut unscheduled: Vec<_> = data.planning_tasks.iter().filter(|t| !t.is_done() && t.scheduled_start.is_empty()).collect();
-    unscheduled.sort_by(|a,b| (a.due_date.is_empty(), &a.due_date, &a.title).cmp(&(b.due_date.is_empty(), &b.due_date, &b.title)));
-    if unscheduled.is_empty() { widgets::muted(ui, "Todas as tarefas abertas têm um horário reservado."); }
+    let mut unscheduled: Vec<_> = data
+        .planning_tasks
+        .iter()
+        .filter(|t| !t.is_done() && t.scheduled_start.is_empty())
+        .collect();
+    unscheduled.sort_by(|a, b| {
+        (a.due_date.is_empty(), &a.due_date, &a.title).cmp(&(
+            b.due_date.is_empty(),
+            &b.due_date,
+            &b.title,
+        ))
+    });
+    if unscheduled.is_empty() {
+        widgets::muted(ui, "Todas as tarefas abertas têm um horário reservado.");
+    }
     for task in unscheduled {
-        let due = if task.due_date.is_empty() { "sem prazo".to_owned() } else { format!("prazo {}", crate::labels::date(&task.due_date)) };
+        let due = if task.due_date.is_empty() {
+            "sem prazo".to_owned()
+        } else {
+            format!("prazo {}", crate::labels::date(&task.due_date))
+        };
         let estimate = estimate_label(task.estimate_minutes);
-        let suffix = if estimate.is_empty() { String::new() } else { format!(" · {estimate}") };
-        let projected = projections.get(&task.id).map(|(a,b)| format!(" · previsto {}–{}", a.format("%d/%m"), b.format("%d/%m"))).unwrap_or_default();
-        if ui.add(widgets::quiet(format!("{} · {}{}{}", task.title, due, suffix, projected))).clicked() {
+        let suffix = if estimate.is_empty() {
+            String::new()
+        } else {
+            format!(" · {estimate}")
+        };
+        let projected = projections
+            .get(&task.id)
+            .map(|(a, b)| format!(" · previsto {}–{}", a.format("%d/%m"), b.format("%d/%m")))
+            .unwrap_or_default();
+        if ui
+            .add(widgets::quiet(format!(
+                "{} · {}{}{}",
+                task.title, due, suffix, projected
+            )))
+            .clicked()
+        {
             *asked = Some(Asked::OpenTask(task.clone()));
         }
     }
 }
 
 fn estimate_label(minutes: u32) -> String {
-    if minutes == 0 { String::new() }
-    else if minutes % 1440 == 0 { let days = minutes / 1440; format!("{} {}", days, if days == 1 { "dia" } else { "dias" }) }
-    else { format!("{minutes} min") }
+    if minutes == 0 {
+        String::new()
+    } else if minutes.is_multiple_of(1440) {
+        let days = minutes / 1440;
+        format!("{} {}", days, if days == 1 { "dia" } else { "dias" })
+    } else {
+        format!("{minutes} min")
+    }
 }
 
 #[cfg(test)]
@@ -219,11 +332,14 @@ mod tests {
     use super::*;
     #[test]
     fn week_crosses_year_and_sunday_belongs_to_previous_monday() {
-        assert_eq!(monday(NaiveDate::from_ymd_opt(2027,1,3).unwrap()).to_string(), "2026-12-28");
+        assert_eq!(
+            monday(NaiveDate::from_ymd_opt(2027, 1, 3).unwrap()).to_string(),
+            "2026-12-28"
+        );
     }
     #[test]
     fn midnight_end_does_not_occupy_following_day() {
-        let day = NaiveDate::from_ymd_opt(2026,11,18).unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
         assert!(!touches("2026-11-17T23:00", "2026-11-18T00:00", day));
         assert!(touches("2026-11-17T23:00", "2026-11-18T01:00", day));
         assert!(!touches("invalid", "invalid", day));
@@ -242,7 +358,15 @@ mod tests {
         parent.id = 4;
         let visible = [1, 2, 4].into_iter().collect();
         let (links, outside) = dependency_layout(&[a.clone(), b.clone(), parent.clone()], &visible);
-        assert_eq!(links, vec![Link { prerequisite: 1, dependent: 2, wrong_order: true, concluded: false }]);
+        assert_eq!(
+            links,
+            vec![Link {
+                prerequisite: 1,
+                dependent: 2,
+                wrong_order: true,
+                concluded: false
+            }]
+        );
         assert_eq!(outside.get(&2), Some(&vec![3]));
         a.status = "concluida".into();
         let (links, _) = dependency_layout(&[a, b, parent], &visible);
@@ -254,12 +378,21 @@ mod tests {
     fn week_outside_dependency_labels() {
         let mut task = Task::standalone();
         task.title = "Preparar".into();
-        assert_eq!(outside_dependency_label(&task), "↳ depende de: Preparar (sem horário)");
+        assert_eq!(
+            outside_dependency_label(&task),
+            "↳ depende de: Preparar (sem horário)"
+        );
         task.scheduled_start = "2026-11-17T10:00".into();
         task.scheduled_end = "2026-11-17T11:00".into();
-        assert_eq!(outside_dependency_label(&task), "↳ depende de: Preparar (planejada em 17/11)");
+        assert_eq!(
+            outside_dependency_label(&task),
+            "↳ depende de: Preparar (planejada em 17/11)"
+        );
         task.status = "concluida".into();
-        assert_eq!(outside_dependency_label(&task), "↳ depende de: Preparar (concluída)");
+        assert_eq!(
+            outside_dependency_label(&task),
+            "↳ depende de: Preparar (concluída)"
+        );
     }
 
     #[test]
@@ -270,5 +403,4 @@ mod tests {
         assert_eq!(points[0], from.center_bottom());
         assert_eq!(points[3], to.center_top());
     }
-
 }

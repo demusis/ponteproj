@@ -359,7 +359,9 @@ impl Store {
                     task.estimate_minutes = stored.estimate_minutes;
                     task.parent_task_id = stored.parent_task_id;
                     task.reminder_offsets_minutes = stored.reminder_offsets_minutes;
-                    if client_schema < crate::intranet::CATEGORIES_SCHEMA { task.categories = stored.categories; }
+                    if client_schema < crate::intranet::CATEGORIES_SCHEMA {
+                        task.categories = stored.categories;
+                    }
                     if client_schema < crate::intranet::PROPOSALS_SCHEMA {
                         task.proposal_id = stored.proposal_id;
                     }
@@ -369,12 +371,21 @@ impl Store {
                     expected_version,
                 }
             }
-            IntranetMutation::SaveResourceUse { mut item, expected_version }
-                if client_schema < crate::intranet::PROPOSALS_SCHEMA && !item.uid.is_empty() => {
-                if let Some(stored) = self.list_resource_uses()?.into_iter().find(|u| u.uid == item.uid) {
+            IntranetMutation::SaveResourceUse {
+                mut item,
+                expected_version,
+            } if client_schema < crate::intranet::PROPOSALS_SCHEMA && !item.uid.is_empty() => {
+                if let Some(stored) = self
+                    .list_resource_uses()?
+                    .into_iter()
+                    .find(|u| u.uid == item.uid)
+                {
                     item.proposal_id = stored.proposal_id;
                 }
-                IntranetMutation::SaveResourceUse { item, expected_version }
+                IntranetMutation::SaveResourceUse {
+                    item,
+                    expected_version,
+                }
             }
             IntranetMutation::SaveWorkContext {
                 document_id,

@@ -952,7 +952,9 @@ impl Store {
                     task.dependencies
                         .iter()
                         .all(|id| active.contains(id) || restoring.contains(id))
-                        && task.parent_task_id.is_none_or(|id| active.contains(&id) || restoring.contains(&id)),
+                        && task
+                            .parent_task_id
+                            .is_none_or(|id| active.contains(&id) || restoring.contains(&id)),
                     "Restaure primeiro as tarefas ou documentos usados como dependências."
                 );
             }

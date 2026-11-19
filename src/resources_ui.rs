@@ -29,7 +29,6 @@ use std::collections::BTreeMap;
 
 /// Width of the side panel (the ficha).
 const FICHA_WIDTH: f32 = 440.0;
-/// How many days ahead "Próximos dias" looks.
 
 /// What the person asked the app to open from a link of a use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

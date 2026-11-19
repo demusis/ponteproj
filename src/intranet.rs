@@ -1033,7 +1033,11 @@ impl Store {
     }
 
     pub(crate) fn ensure_host_stores_schedule(&self, cfg: &IntranetConfig) -> Result<()> {
-        self.ensure_host_schema(cfg, SCHEDULE_SCHEMA, "Atualize o Ponte no computador principal para sincronizar tarefas.")
+        self.ensure_host_schema(
+            cfg,
+            SCHEDULE_SCHEMA,
+            "Atualize o Ponte no computador principal para sincronizar tarefas.",
+        )
     }
 
     /// The same for the categories.
@@ -1948,7 +1952,8 @@ impl Store {
 
         let old_tasks = if snapshot.schema_version < SCHEDULE_SCHEMA {
             let mut statement = self.conn.prepare("SELECT id,payload FROM tasks")?;
-            let rows = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+            let rows =
+                statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
             let mut tasks = std::collections::BTreeMap::new();
             for row in rows {
                 let (id, bytes) = row?;
@@ -1956,7 +1961,9 @@ impl Store {
                 tasks.insert(id, task);
             }
             tasks
-        } else { std::collections::BTreeMap::new() };
+        } else {
+            std::collections::BTreeMap::new()
+        };
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2102,16 +2109,23 @@ impl Store {
         for task in &snapshot.tasks {
             let mut value = task.clone();
             kept_proposals.restore_task(&mut value);
-            if let Some(old) = old_tasks.get(&value.id).filter(|old| old.document_id == value.document_id) {
+            if let Some(old) = old_tasks
+                .get(&value.id)
+                .filter(|old| old.document_id == value.document_id)
+            {
                 value.uid = old.uid.clone();
                 value.scheduled_start = old.scheduled_start.clone();
                 value.scheduled_end = old.scheduled_end.clone();
                 value.estimate_minutes = old.estimate_minutes;
                 value.parent_task_id = old.parent_task_id;
                 value.reminder_offsets_minutes = old.reminder_offsets_minutes.clone();
-                if snapshot.schema_version < CATEGORIES_SCHEMA { value.categories = old.categories.clone(); }
+                if snapshot.schema_version < CATEGORIES_SCHEMA {
+                    value.categories = old.categories.clone();
+                }
             }
-            if value.uid.is_empty() { value.uid = uuid::Uuid::new_v4().to_string(); }
+            if value.uid.is_empty() {
+                value.uid = uuid::Uuid::new_v4().to_string();
+            }
             tx.execute(
                 "INSERT INTO tasks(id,document_id,payload,uid) VALUES(?1,?2,?3,?4)",
                 params![
@@ -4206,7 +4220,8 @@ impl Store {
                     let base_schedule = base_task.map(|b| (&b.scheduled_start, &b.scheduled_end));
                     let host_schedule = (&ht.scheduled_start, &ht.scheduled_end);
                     let local_schedule = (&local_task.scheduled_start, &local_task.scheduled_end);
-                    let (schedule, both) = pick(base_schedule.as_ref(), &host_schedule, &local_schedule);
+                    let (schedule, both) =
+                        pick(base_schedule.as_ref(), &host_schedule, &local_schedule);
                     if both {
                         kept.push(format!(
                             "Planejamento: no computador principal estava \"{} – {}\"",
@@ -4216,8 +4231,12 @@ impl Store {
                     m.scheduled_start = schedule.0.clone();
                     m.scheduled_end = schedule.1.clone();
                     scalar!(estimate_minutes, "Estimativa", |v: &u32| v.to_string());
-                    scalar!(parent_task_id, "Tarefa pai", |v: &Option<i64>| format!("{v:?}"));
-                    scalar!(reminder_offsets_minutes, "Avisos", |v: &Vec<u32>| format!("{v:?}"));
+                    scalar!(parent_task_id, "Tarefa pai", |v: &Option<i64>| format!(
+                        "{v:?}"
+                    ));
+                    scalar!(reminder_offsets_minutes, "Avisos", |v: &Vec<u32>| format!(
+                        "{v:?}"
+                    ));
                     scalar!(due_source, "Origem do prazo", plain);
                     scalar!(reminder_date, "Lembrete", |v: &String| crate::labels::date(
                         v
@@ -4243,17 +4262,23 @@ impl Store {
                     // One side changed the list: take that side (removals
                     // included). Both changed, or no base: join the two, so
                     // no item is lost (the old behaviour).
-                    let (one_side, both) = pick(base_task.map(|b| &b.checklist), &ht.checklist, &local_task.checklist);
+                    let (one_side, both) = pick(
+                        base_task.map(|b| &b.checklist),
+                        &ht.checklist,
+                        &local_task.checklist,
+                    );
                     if base_task.is_some() && !both {
                         m.checklist = one_side;
-                    } else { for (done_l, text_l) in &local_task.checklist {
-                        if let Some((done_m, _)) = m.checklist.iter_mut().find(|(_, t)| t == text_l)
-                        {
-                            *done_m = *done_m || *done_l;
-                        } else {
-                            m.checklist.push((*done_l, text_l.clone()));
+                    } else {
+                        for (done_l, text_l) in &local_task.checklist {
+                            if let Some((done_m, _)) =
+                                m.checklist.iter_mut().find(|(_, t)| t == text_l)
+                            {
+                                *done_m = *done_m || *done_l;
+                            } else {
+                                m.checklist.push((*done_l, text_l.clone()));
+                            }
                         }
-                    }
                     }
                     for dep in &local_task.dependencies {
                         if !m.dependencies.contains(dep) {
@@ -5958,7 +5983,10 @@ fn task_fields(t: &Task, cats: &[crate::categories::Category]) -> Vec<(&'static 
         ("Início planejado", t.scheduled_start.clone()),
         ("Fim planejado", t.scheduled_end.clone()),
         ("Estimativa (min)", t.estimate_minutes.to_string()),
-        ("Tarefa pai", t.parent_task_id.map(|v| v.to_string()).unwrap_or_default()),
+        (
+            "Tarefa pai",
+            t.parent_task_id.map(|v| v.to_string()).unwrap_or_default(),
+        ),
         ("Avisos (min)", format!("{:?}", t.reminder_offsets_minutes)),
         ("Origem do prazo", t.due_source.clone()),
         ("Lembrete", crate::labels::date(&t.reminder_date)),
@@ -6711,10 +6739,18 @@ fn send_rpc_classified(
             }
         }
     }
-    if let RpcRequest::Mutate { mutation: IntranetMutation::SaveTask { .. } | IntranetMutation::CreateTaskForSaiop { .. }, .. } = request {
-        if let Ok(RpcResponse::Pong { schema_version, .. }) = send_rpc_classified(cfg, &RpcRequest::Ping) {
+    if let RpcRequest::Mutate {
+        mutation: IntranetMutation::SaveTask { .. } | IntranetMutation::CreateTaskForSaiop { .. },
+        ..
+    } = request
+    {
+        if let Ok(RpcResponse::Pong { schema_version, .. }) =
+            send_rpc_classified(cfg, &RpcRequest::Ping)
+        {
             if schema_version < SCHEDULE_SCHEMA {
-                return Err(RpcError::Unreachable("Atualize o Ponte no computador principal para sincronizar tarefas.".into()));
+                return Err(RpcError::Unreachable(
+                    "Atualize o Ponte no computador principal para sincronizar tarefas.".into(),
+                ));
             }
         }
     }

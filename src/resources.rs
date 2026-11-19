@@ -1206,7 +1206,10 @@ impl Store {
         self.save_repeated_uses_counted(items).map(|(ids, _)| ids)
     }
 
-    pub fn save_repeated_uses_counted(&mut self, items: &[ResourceUse]) -> Result<(Vec<String>, usize)> {
+    pub fn save_repeated_uses_counted(
+        &mut self,
+        items: &[ResourceUse],
+    ) -> Result<(Vec<String>, usize)> {
         ensure!(!items.is_empty(), "Não há ocorrências para criar.");
         ensure!(
             items.len() <= usize::from(crate::recurrence::MAX_COUNT),
@@ -1220,10 +1223,13 @@ impl Store {
             let item = item.normalized();
             let label = format!("Ocorrência {} de {total}", index + 1);
             ensure!(
-                !item.uid.is_empty() && check_uid(&item.uid).is_ok() && seen.insert(item.uid.clone()),
+                !item.uid.is_empty()
+                    && check_uid(&item.uid).is_ok()
+                    && seen.insert(item.uid.clone()),
                 "{label}: a identidade da cópia está vazia, inválida ou repetida."
             );
-            item.validate().map_err(|e| anyhow::anyhow!("{label}: {e}"))?;
+            item.validate()
+                .map_err(|e| anyhow::anyhow!("{label}: {e}"))?;
             batch.push(item);
         }
         if self.client_config()?.is_some() {
@@ -1276,7 +1282,10 @@ impl Store {
             };
             stored.document_id = exists("SELECT 1 FROM documents WHERE id=?1", stored.document_id)?;
             stored.task_id = exists("SELECT 1 FROM tasks WHERE id=?1", stored.task_id)?;
-            stored.saiop_id = exists("SELECT 1 FROM saiop_attendances WHERE id=?1", stored.saiop_id)?;
+            stored.saiop_id = exists(
+                "SELECT 1 FROM saiop_attendances WHERE id=?1",
+                stored.saiop_id,
+            )?;
             if stored.status.occupying() {
                 ensure!(
                     resource.status == ResourceStatus::Active,
@@ -2504,16 +2513,27 @@ mod tests {
         assert_eq!(created, 1);
         let (uids, created) = store.save_repeated_uses_counted(&copies).unwrap();
         assert_eq!(created, 2);
-        assert_eq!(uids, copies.iter().map(|c| c.uid.clone()).collect::<Vec<_>>());
+        assert_eq!(
+            uids,
+            copies.iter().map(|c| c.uid.clone()).collect::<Vec<_>>()
+        );
         assert_eq!(store.list_resource_uses().unwrap().len(), 4);
         // One occurrence is cancelled; replaying the same batch neither
         // duplicates nor revives it.
         let mut cancelled = found(&store, &uids[1]);
         cancelled.status = UseStatus::Cancelled;
         store.save_resource_use(&cancelled, None).unwrap();
-        let origin = store.list_resource_uses().unwrap().into_iter().find(|u| !uids.contains(&u.uid)).unwrap();
+        let origin = store
+            .list_resource_uses()
+            .unwrap()
+            .into_iter()
+            .find(|u| !uids.contains(&u.uid))
+            .unwrap();
         let regenerated = crate::recurrence::resource_occurrences(&origin, &weekly(4)).unwrap();
-        assert_eq!(store.save_repeated_uses_counted(&regenerated).unwrap(), (uids.clone(), 0));
+        assert_eq!(
+            store.save_repeated_uses_counted(&regenerated).unwrap(),
+            (uids.clone(), 0)
+        );
         assert_eq!(store.list_resource_uses().unwrap().len(), 4);
         assert_eq!(found(&store, &uids[1]).status, UseStatus::Cancelled);
         assert_eq!(found(&store, &uids[0]).status, UseStatus::Reserved);
@@ -2532,7 +2552,10 @@ mod tests {
         let before = store.list_resource_uses().unwrap().len();
         let error = store.save_repeated_uses(&copies).unwrap_err().to_string();
         assert!(error.starts_with(HORARIO_OCUPADO), "{error}");
-        assert!(error.contains("Ocorrência 2 de 3") && error.contains("Bruno"), "{error}");
+        assert!(
+            error.contains("Ocorrência 2 de 3") && error.contains("Bruno"),
+            "{error}"
+        );
         // The 1st copy, which fits, was not kept either.
         assert_eq!(store.list_resource_uses().unwrap().len(), before);
         assert!(!store.resource_use_exists(&copies[0].uid));
@@ -2570,7 +2593,21 @@ mod tests {
         let resource = new_resource(&mut store, "Sala", 1);
         let origin = use_of(&resource, "Ana", "09:00", "10:00");
         let mut json = serde_json::to_value(&origin).unwrap();
-        for key in ["quantity", "sector", "purpose", "notes", "returned_at", "status", "document_id", "saiop_id", "task_id", "proposal_id", "created_by", "created_at", "updated_at"] {
+        for key in [
+            "quantity",
+            "sector",
+            "purpose",
+            "notes",
+            "returned_at",
+            "status",
+            "document_id",
+            "saiop_id",
+            "task_id",
+            "proposal_id",
+            "created_by",
+            "created_at",
+            "updated_at",
+        ] {
             json.as_object_mut().unwrap().remove(key);
         }
         let old: ResourceUse = serde_json::from_value(json).unwrap();

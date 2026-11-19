@@ -253,7 +253,11 @@ fn occurrence_uid(kind: &str, original_uid: &str, occurrence: &str, simple: bool
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     let uid = uuid::Uuid::from_bytes(bytes);
-    if simple { uid.simple().to_string() } else { uid.to_string() }
+    if simple {
+        uid.simple().to_string()
+    } else {
+        uid.to_string()
+    }
 }
 
 /// Data-âncora da tarefa: o prazo; sem prazo, o dia do início do agendamento.
@@ -524,14 +528,29 @@ mod tests {
         let task = sample_task();
         let rule = rule(Frequency::Monthly, 1, 3);
         let copies = task_occurrences(&task, &rule).unwrap();
-        assert_eq!(copies[0].uid, task_occurrences(&task, &rule).unwrap()[0].uid);
+        assert_eq!(
+            copies[0].uid,
+            task_occurrences(&task, &rule).unwrap()[0].uid
+        );
         assert_ne!(copies[0].uid, copies[1].uid);
         let mut other = task.clone();
         other.uid = "another-original".into();
-        assert_ne!(copies[0].uid, task_occurrences(&other, &rule).unwrap()[0].uid);
-        assert_ne!(occurrence_uid("task", "a", "2026-01-01", false), occurrence_uid("use", "a", "2026-01-01", false));
-        assert_ne!(occurrence_uid("use", "a", "2026-01-01T09:00", true), occurrence_uid("use", "a", "2026-01-01T10:00", true));
-        assert_ne!(occurrence_uid("use", "a", "2026-01-01T09:00", true), occurrence_uid("use", "b", "2026-01-01T09:00", true));
+        assert_ne!(
+            copies[0].uid,
+            task_occurrences(&other, &rule).unwrap()[0].uid
+        );
+        assert_ne!(
+            occurrence_uid("task", "a", "2026-01-01", false),
+            occurrence_uid("use", "a", "2026-01-01", false)
+        );
+        assert_ne!(
+            occurrence_uid("use", "a", "2026-01-01T09:00", true),
+            occurrence_uid("use", "a", "2026-01-01T10:00", true)
+        );
+        assert_ne!(
+            occurrence_uid("use", "a", "2026-01-01T09:00", true),
+            occurrence_uid("use", "b", "2026-01-01T09:00", true)
+        );
     }
 
     #[test]

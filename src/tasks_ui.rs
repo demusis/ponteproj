@@ -268,7 +268,14 @@ fn in_view(
         4 => pending && !due.is_empty() && due < scope.today,
         5 => task.status == "aguardando",
         6 => {
-            pending && ((!task.reminder_date.is_empty() && task.reminder_date.as_str() <= scope.today) || (!task.scheduled_start.is_empty() && task.scheduled_start.split('T').next().is_some_and(|date| date <= scope.today)))
+            pending
+                && ((!task.reminder_date.is_empty() && task.reminder_date.as_str() <= scope.today)
+                    || (!task.scheduled_start.is_empty()
+                        && task
+                            .scheduled_start
+                            .split('T')
+                            .next()
+                            .is_some_and(|date| date <= scope.today)))
         }
         7 => pending && due.is_empty(),
         8 => pending && !deps.is_blocked(task.id),
@@ -277,19 +284,36 @@ fn in_view(
 }
 
 fn planned_end_after_due(end: &str, due: &str) -> bool {
-    let Ok(end) = chrono::NaiveDateTime::parse_from_str(end, "%Y-%m-%dT%H:%M") else { return false; };
-    let Ok(due) = chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d") else { return false; };
+    let Ok(end) = chrono::NaiveDateTime::parse_from_str(end, "%Y-%m-%dT%H:%M") else {
+        return false;
+    };
+    let Ok(due) = chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d") else {
+        return false;
+    };
     end.date() > due
 }
 
 fn reminder_options(offsets: &[u32]) -> Vec<(u32, String)> {
-    let mut options = vec![(0, "No início".into()), (1440, "1 dia antes".into()), (10080, "7 dias antes".into())];
-    let mut legacy: Vec<_> = offsets.iter().copied().filter(|v| ![0, 1440, 10080].contains(v)).collect();
-    legacy.sort_unstable(); legacy.dedup();
+    let mut options = vec![
+        (0, "No início".into()),
+        (1440, "1 dia antes".into()),
+        (10080, "7 dias antes".into()),
+    ];
+    let mut legacy: Vec<_> = offsets
+        .iter()
+        .copied()
+        .filter(|v| ![0, 1440, 10080].contains(v))
+        .collect();
+    legacy.sort_unstable();
+    legacy.dedup();
     for n in legacy {
-        let text = if n % 1440 == 0 { format!("{} dias", n / 1440) }
-            else if n % 60 == 0 { format!("{} {}", n / 60, if n == 60 { "hora" } else { "horas" }) }
-            else { format!("{n} min") };
+        let text = if n % 1440 == 0 {
+            format!("{} dias", n / 1440)
+        } else if n % 60 == 0 {
+            format!("{} {}", n / 60, if n == 60 { "hora" } else { "horas" })
+        } else {
+            format!("{n} min")
+        };
         options.push((n, format!("{text} antes (antigo)")));
     }
     options
@@ -3905,7 +3929,14 @@ mod navigation_tests {
         use super::*;
         let mut task = Task::new(1);
         let categories = CategoryFilter::default();
-        let scope = Scope { document: None, query: "", show_done: false, today: "2026-11-18", week: "2026-11-25", categories: &categories };
+        let scope = Scope {
+            document: None,
+            query: "",
+            show_done: false,
+            today: "2026-11-18",
+            week: "2026-11-25",
+            categories: &categories,
+        };
         let deps = crate::tasks::Dependencies::new(&[]);
         task.scheduled_start = "2026-11-18T09:00".into();
         assert!(in_view(6, &task, None, &deps, &scope));

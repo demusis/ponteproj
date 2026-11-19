@@ -957,12 +957,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = open_store(&dir);
         let mut ids = map(&[(IdKind::Task, 100)]);
-        ids.learn(&[CreatedId::new(IdKind::Task, "parent", 105)], Some(&[CreatedId::new(IdKind::Task, "parent", 130)]));
+        ids.learn(
+            &[CreatedId::new(IdKind::Task, "parent", 105)],
+            Some(&[CreatedId::new(IdKind::Task, "parent", 130)]),
+        );
         let mut task = crate::tasks::Task::standalone();
-        task.id = 0; task.parent_task_id = Some(105); task.dependencies = vec![105];
+        task.id = 0;
+        task.parent_task_id = Some(105);
+        task.dependencies = vec![105];
         let uid = task.uid.clone();
-        let mutation = IntranetMutation::SaveTask { task, expected_version: None };
-        let IntranetMutation::SaveTask { task, .. } = ids.remap(&mutation, &store, None).unwrap() else { panic!("wrong mutation") };
+        let mutation = IntranetMutation::SaveTask {
+            task,
+            expected_version: None,
+        };
+        let IntranetMutation::SaveTask { task, .. } = ids.remap(&mutation, &store, None).unwrap()
+        else {
+            panic!("wrong mutation")
+        };
         assert_eq!(task.parent_task_id, Some(130));
         assert_eq!(task.dependencies, vec![130]);
         assert_eq!(task.uid, uid);

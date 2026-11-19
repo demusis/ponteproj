@@ -1,9 +1,17 @@
 //! Explicit finite repetition, with a stable preview held until commit.
 use super::PonteApp;
-use crate::{recurrence::{Frequency, Recurrence}, resources::ResourceUse, tasks::Task, widgets};
+use crate::{
+    recurrence::{Frequency, Recurrence},
+    resources::ResourceUse,
+    tasks::Task,
+    widgets,
+};
 use eframe::egui;
 
-enum Preview { Tasks(Vec<Task>), Uses(Vec<ResourceUse>) }
+enum Preview {
+    Tasks(Vec<Task>),
+    Uses(Vec<ResourceUse>),
+}
 
 #[derive(Default)]
 pub(super) struct Repetition {
@@ -18,7 +26,10 @@ fn repetition_message(created: usize, total: usize) -> String {
     if created == 0 {
         "Todas as ocorrências já existiam; nada foi criado.".into()
     } else {
-        format!("{created} novas ocorrências criadas; {} já existiam.", total - created)
+        format!(
+            "{created} novas ocorrências criadas; {} já existiam.",
+            total - created
+        )
     }
 }
 
@@ -103,8 +114,17 @@ mod tests {
     use super::repetition_message;
     #[test]
     fn repetition_messages_report_created_and_existing() {
-        assert_eq!(repetition_message(2, 3), "2 novas ocorrências criadas; 1 já existiam.");
-        assert_eq!(repetition_message(3, 3), "3 novas ocorrências criadas; 0 já existiam.");
-        assert_eq!(repetition_message(0, 3), "Todas as ocorrências já existiam; nada foi criado.");
+        assert_eq!(
+            repetition_message(2, 3),
+            "2 novas ocorrências criadas; 1 já existiam."
+        );
+        assert_eq!(
+            repetition_message(3, 3),
+            "3 novas ocorrências criadas; 0 já existiam."
+        );
+        assert_eq!(
+            repetition_message(0, 3),
+            "Todas as ocorrências já existiam; nada foi criado."
+        );
     }
 }

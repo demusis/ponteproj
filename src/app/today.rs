@@ -287,12 +287,21 @@ fn month_items_by_day(
     use chrono::{Datelike, Duration, NaiveDate};
     let mut days = existing.clone();
     let projections = crate::projection::project(tasks);
-    let Some(mut day) = NaiveDate::from_ymd_opt(year, month, 1) else { return days };
+    let Some(mut day) = NaiveDate::from_ymd_opt(year, month, 1) else {
+        return days;
+    };
     while day.month() == month {
         let from = day.and_hms_opt(0, 0, 0).unwrap();
         for (index, task) in tasks.iter().enumerate() {
-            let (Ok(start), Ok(end)) = (crate::resources::parse_moment(&task.scheduled_start), crate::resources::parse_moment(&task.scheduled_end)) else { continue };
-            if task.is_done() || end <= start || start >= from + Duration::days(1) || end <= from { continue; }
+            let (Ok(start), Ok(end)) = (
+                crate::resources::parse_moment(&task.scheduled_start),
+                crate::resources::parse_moment(&task.scheduled_end),
+            ) else {
+                continue;
+            };
+            if task.is_done() || end <= start || start >= from + Duration::days(1) || end <= from {
+                continue;
+            }
             let time = if start < from && end >= from + Duration::days(1) {
                 "o dia todo".to_owned()
             } else if start < from {
@@ -303,19 +312,38 @@ fn month_items_by_day(
                 format!("{}–{}", start.format("%H:%M"), end.format("%H:%M"))
             };
             days.entry(day.to_string()).or_default().push(CalItem {
-                kind: ItemKind::Planned, index, state: DueState::Future,
-                label: task.title.clone(), detail: format!("{time} · {} (planejado)", task.title),
-                uid: String::new(), situation: String::new(),
+                kind: ItemKind::Planned,
+                index,
+                state: DueState::Future,
+                label: task.title.clone(),
+                detail: format!("{time} · {} (planejado)", task.title),
+                uid: String::new(),
+                situation: String::new(),
             });
         }
         for (index, task) in tasks.iter().enumerate() {
-            let Some(&(start, end)) = projections.get(&task.id) else { continue };
-            if start >= from + Duration::days(1) || end <= from { continue; }
-            let title = crate::projection::anchor_title(task, tasks, &projections).unwrap_or("tarefa anterior");
+            let Some(&(start, end)) = projections.get(&task.id) else {
+                continue;
+            };
+            if start >= from + Duration::days(1) || end <= from {
+                continue;
+            }
+            let title = crate::projection::anchor_title(task, tasks, &projections)
+                .unwrap_or("tarefa anterior");
             days.entry(day.to_string()).or_default().push(CalItem {
-                kind: ItemKind::Projected, index, state: DueState::Future,
-                label: task.title.clone(), detail: format!("{}–{} · {} (previsto, depois de {})", start.format("%H:%M"), end.format("%H:%M"), task.title, title),
-                uid: String::new(), situation: String::new(),
+                kind: ItemKind::Projected,
+                index,
+                state: DueState::Future,
+                label: task.title.clone(),
+                detail: format!(
+                    "{}–{} · {} (previsto, depois de {})",
+                    start.format("%H:%M"),
+                    end.format("%H:%M"),
+                    task.title,
+                    title
+                ),
+                uid: String::new(),
+                situation: String::new(),
             });
         }
         day += Duration::days(1);
@@ -456,21 +484,41 @@ impl PonteApp {
                 if !missed.is_empty() {
                     widgets::small_muted(ui, "Perdidos enquanto o Ponte estava fechado");
                     for (key, id, moment) in missed {
-                        if let Some(task) = self.today.planning_tasks.iter().find(|t| t.uid == id && !t.is_done()) {
+                        if let Some(task) = self
+                            .today
+                            .planning_tasks
+                            .iter()
+                            .find(|t| t.uid == id && !t.is_done())
+                        {
                             ui.horizontal_wrapped(|ui| {
-                                if ui.add(widgets::quiet(&task.title)).clicked() { asked = Some(Asked::OpenTask(task.clone())); }
+                                if ui.add(widgets::quiet(&task.title)).clicked() {
+                                    asked = Some(Asked::OpenTask(task.clone()));
+                                }
                                 ui.label(moment.format("%d/%m/%Y às %H:%M").to_string());
-                                if ui.button("Dispensar aviso").clicked() { self.reminders.dismiss_missed(&key); }
+                                if ui.button("Dispensar aviso").clicked() {
+                                    self.reminders.dismiss_missed(&key);
+                                }
                             });
                         }
                     }
                 }
                 for id in alarms {
-                    if let Some(task) = self.today.planning_tasks.iter().find(|t| t.uid == id && !t.is_done()) {
+                    if let Some(task) = self
+                        .today
+                        .planning_tasks
+                        .iter()
+                        .find(|t| t.uid == id && !t.is_done())
+                    {
                         ui.horizontal_wrapped(|ui| {
-                            if ui.add(widgets::quiet(&task.title)).clicked() { asked = Some(Asked::OpenTask(task.clone())); }
-                            if ui.button("Adiar 10 min").clicked() { self.reminders.snooze_individual(&id); }
-                            if ui.button("Dispensar aviso").clicked() { self.reminders.dismiss_individual(&id); }
+                            if ui.add(widgets::quiet(&task.title)).clicked() {
+                                asked = Some(Asked::OpenTask(task.clone()));
+                            }
+                            if ui.button("Adiar 10 min").clicked() {
+                                self.reminders.snooze_individual(&id);
+                            }
+                            if ui.button("Dispensar aviso").clicked() {
+                                self.reminders.dismiss_individual(&id);
+                            }
                         });
                     }
                 }
@@ -806,7 +854,11 @@ fn asked_for(item: &CalItem, data: &TodayData) -> Option<Asked> {
             .get(item.index)
             .cloned()
             .map(Asked::OpenTask),
-        ItemKind::Planned | ItemKind::Projected => data.planning_tasks.get(item.index).cloned().map(Asked::OpenTask),
+        ItemKind::Planned | ItemKind::Projected => data
+            .planning_tasks
+            .get(item.index)
+            .cloned()
+            .map(Asked::OpenTask),
         ItemKind::Attendance => data
             .dated_attendances
             .get(item.index)
@@ -871,8 +923,17 @@ fn calendar_view(
                 let line = line_rect(cell.rect, cell.col_w, i);
                 let (fg, bg) = due_tone(item.state).colors();
                 if matches!(item.kind, ItemKind::Planned | ItemKind::Projected) {
-                    let color = if item.kind == ItemKind::Projected { p.muted.gamma_multiply(0.55) } else { p.muted };
-                    painter.rect_stroke(line, egui::CornerRadius::same(3), egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+                    let color = if item.kind == ItemKind::Projected {
+                        p.muted.gamma_multiply(0.55)
+                    } else {
+                        p.muted
+                    };
+                    painter.rect_stroke(
+                        line,
+                        egui::CornerRadius::same(3),
+                        egui::Stroke::new(1.0, color),
+                        egui::StrokeKind::Inside,
+                    );
                     paint_line(painter, line, &item_text(item, &item.label), color);
                 } else {
                     painter.rect_filled(line, egui::CornerRadius::same(3), bg);
@@ -954,25 +1015,56 @@ fn calendar_view(
                         ui.spacing_mut().item_spacing.x = S3;
                         ui.add(
                             egui::Label::new(
-                                RichText::new(if matches!(item.kind, ItemKind::Planned | ItemKind::Projected) { item.detail.clone() } else { item_text(item, &item.detail) })
-                                    .font(theme::font_strong(theme::SIZE_BODY)),
+                                RichText::new(
+                                    if matches!(item.kind, ItemKind::Planned | ItemKind::Projected)
+                                    {
+                                        item.detail.clone()
+                                    } else {
+                                        item_text(item, &item.detail)
+                                    },
+                                )
+                                .font(theme::font_strong(theme::SIZE_BODY)),
                             )
                             .selectable(false)
                             .truncate(),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            if !matches!(item.kind, ItemKind::Planned | ItemKind::Projected) { widgets::pill(ui, item_state(item), due_tone(item.state)); }
+                            if !matches!(item.kind, ItemKind::Planned | ItemKind::Projected) {
+                                widgets::pill(ui, item_state(item), due_tone(item.state));
+                            }
                         });
                     });
                     if item.kind == ItemKind::Planned {
                         if let Some(task) = data.planning_tasks.get(item.index) {
-                            let prerequisites: Vec<_> = task.dependencies.iter().filter_map(|id| data.planning_tasks.iter().find(|t| t.id == *id && !t.is_done())).collect();
+                            let prerequisites: Vec<_> = task
+                                .dependencies
+                                .iter()
+                                .filter_map(|id| {
+                                    data.planning_tasks
+                                        .iter()
+                                        .find(|t| t.id == *id && !t.is_done())
+                                })
+                                .collect();
                             if !prerequisites.is_empty() {
-                                widgets::muted(ui, format!("↳ depende de: {}", prerequisites.iter().map(|t| t.title.as_str()).collect::<Vec<_>>().join(", ")));
+                                widgets::muted(
+                                    ui,
+                                    format!(
+                                        "↳ depende de: {}",
+                                        prerequisites
+                                            .iter()
+                                            .map(|t| t.title.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    ),
+                                );
                             }
                             for previous in prerequisites {
-                                if matches!((crate::resources::parse_moment(&task.scheduled_start), crate::resources::parse_moment(&previous.scheduled_end)), (Ok(start), Ok(end)) if start < end) {
-                                    widgets::muted(ui, format!("⚠ começa antes de terminar {}", previous.title));
+                                if matches!((crate::resources::parse_moment(&task.scheduled_start), crate::resources::parse_moment(&previous.scheduled_end)), (Ok(start), Ok(end)) if start < end)
+                                {
+                                    widgets::muted(
+                                        ui,
+                                        format!("⚠ começa antes de terminar {}", previous.title),
+                                    );
                                 }
                             }
                         }
@@ -1410,9 +1502,21 @@ mod tests {
         let existing = items_by_day(&[task.clone()], &[], "2026-11-18");
         let days = month_items_by_day(&existing, &[task, done], 2026, 11);
         assert_eq!(days["2026-11-17"].len(), 1);
-        assert_eq!(days["2026-11-17"][0].detail, "a partir das 10:00 \u{00b7} Projeto (planejado)");
-        assert_eq!(days["2026-11-18"].iter().map(|item| item.kind).collect::<Vec<_>>(), vec![ItemKind::Task, ItemKind::Planned]);
-        assert_eq!(days["2026-11-18"][1].detail, "o dia todo \u{00b7} Projeto (planejado)");
+        assert_eq!(
+            days["2026-11-17"][0].detail,
+            "a partir das 10:00 \u{00b7} Projeto (planejado)"
+        );
+        assert_eq!(
+            days["2026-11-18"]
+                .iter()
+                .map(|item| item.kind)
+                .collect::<Vec<_>>(),
+            vec![ItemKind::Task, ItemKind::Planned]
+        );
+        assert_eq!(
+            days["2026-11-18"][1].detail,
+            "o dia todo \u{00b7} Projeto (planejado)"
+        );
         assert!(!days.contains_key("2026-11-19"));
     }
 

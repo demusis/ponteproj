@@ -1998,7 +1998,12 @@ mod planning_tests {
         let mut task = Task::standalone();
         task.title = "Migration".into();
         let id = store.save_task(&task).unwrap();
-        store.conn.execute_batch("DROP INDEX tasks_uid; ALTER TABLE tasks DROP COLUMN uid; PRAGMA user_version=18;").unwrap();
+        store
+            .conn
+            .execute_batch(
+                "DROP INDEX tasks_uid; ALTER TABLE tasks DROP COLUMN uid; PRAGMA user_version=18;",
+            )
+            .unwrap();
         drop(store);
         let mut store = Store::open(&path).unwrap();
         let uid: String = store
@@ -2048,7 +2053,9 @@ mod planning_tests {
             .unwrap();
         store
             .conn
-            .execute_batch("DROP INDEX tasks_uid; ALTER TABLE tasks DROP COLUMN uid; PRAGMA user_version=18;")
+            .execute_batch(
+                "DROP INDEX tasks_uid; ALTER TABLE tasks DROP COLUMN uid; PRAGMA user_version=18;",
+            )
             .unwrap();
         drop(store);
         let store = Store::open(&path).expect("the library opens");
@@ -2117,7 +2124,10 @@ mod planning_tests {
         second.status = "concluida".into();
         store.save_task(&second).unwrap();
         let regenerated = crate::recurrence::task_occurrences(&origin, &weekly(4)).unwrap();
-        assert_eq!(store.save_repeated_tasks_counted(&regenerated).unwrap(), (ids.clone(), 0));
+        assert_eq!(
+            store.save_repeated_tasks_counted(&regenerated).unwrap(),
+            (ids.clone(), 0)
+        );
         let all = store.list_tasks().unwrap();
         assert_eq!(all.len(), 4);
         assert_eq!(

@@ -30,8 +30,8 @@ pub mod native;
 /// How the program reaches the internet: certificates, proxy, failures, the connection test.
 pub mod netdiag;
 pub mod paths;
-pub mod prompting;
 pub mod projection;
+pub mod prompting;
 pub mod protection;
 /// A record with its attachments created in one operation (all or nothing).
 pub mod record_import;
@@ -64,13 +64,13 @@ pub mod intranet;
 
 pub mod saiop;
 
+pub mod calendar_ics;
 /// Categories the person defines, for tasks and documents.
 pub mod categories;
-pub mod calendar_ics;
-pub mod recurrence;
 /// Categories on the screens: chips, picker, filter and manager.
 #[cfg(feature = "desktop")]
 pub mod category_ui;
+pub mod recurrence;
 /// Rooms, books and equipment, and their bookings and loans.
 pub mod resources;
 
