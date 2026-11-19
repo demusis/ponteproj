@@ -99,9 +99,18 @@ pub fn anchor_title<'a>(
     tasks: &'a [Task],
     projections: &HashMap<i64, (NaiveDateTime, NaiveDateTime)>,
 ) -> Option<&'a str> {
+    let by_id = tasks.iter().map(|task| (task.id, task)).collect();
+    anchor_title_indexed(task, &by_id, projections)
+}
+
+pub(crate) fn anchor_title_indexed<'a>(
+    task: &Task,
+    by_id: &HashMap<i64, &'a Task>,
+    projections: &HashMap<i64, (NaiveDateTime, NaiveDateTime)>,
+) -> Option<&'a str> {
     task.dependencies
         .iter()
-        .filter_map(|id| tasks.iter().find(|t| t.id == *id && !t.is_done()))
+        .filter_map(|id| by_id.get(id).copied().filter(|t| !t.is_done()))
         .filter_map(|t| {
             let end = match (
                 parse_moment(&t.scheduled_start),

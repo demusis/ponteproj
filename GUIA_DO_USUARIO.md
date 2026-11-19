@@ -394,6 +394,8 @@ Em **Ajustes ▸ Equipe e sincronização**. No alto, um resumo mostra como este
 
 No celular, ao editar uma tarefa, em **Depende de**, **Escolher tarefas…** abre **Escolher tarefas**: marque várias, use **Buscar tarefa** e **Confirmar**; as concluídas aparecem com **· Concluída**. Tarefas que criariam ciclo não são oferecidas; o núcleo ainda recusa escolhas inválidas e o formulário mostra o motivo. Essa escolha não está em **Nova tarefa**.
 
+**Hoje no celular (Ponte de bolso 0.15.0).** No alto, uma linha de resumo diz o que vence (ou *Nada vence hoje.*); se há tarefas atrasadas, *⚠ N atrasadas · ver* leva à lista. Logo abaixo, a semana: as setas mudam de semana e **Hoje** volta à atual. A faixa mostra os sete dias com pontinhos (azul: trabalho planejado ou reserva; vermelho: prazo). Toque num dia para ver a agenda dele, com o horário e os avisos de dependência; dia sem nada diz *Dia livre.* Tocar numa linha abre a tarefa ou a reserva.
+
 **No Ponte de bolso 0.10.0**, uma sincronização pedida em **Sincronizar agora**, na tela de documento ou no diálogo de status acontece ou informa o motivo; sem Wi-Fi, oferece **Usar dados móveis desta vez**. As sincronizações automáticas continuam silenciosas, e a versão instala por cima da 0.9.x.
 
 **Atualizar em equipe.** A versão 0.34.0 (as propostas da IA) muda o formato do acervo (16) e o do arquivo de sincronização (4): **atualize todos os computadores e o celular juntos** (Ponte 0.34.0 e Ponte de bolso 0.7.2). Um aparelho que ficar na versão anterior recusa o acervo e o arquivo novos e diz para atualizar; nada se perde. Com um computador principal, atualize primeiro o principal: um principal na versão anterior recusa, com uma mensagem clara, a análise que traz propostas.
@@ -401,6 +403,8 @@ No celular, ao editar uma tarefa, em **Depende de**, **Escolher tarefas…** abr
 A versão 0.35.0 (conferência da minuta) não muda o formato: os mesmos 16 e 4. Não é preciso atualizar todos os aparelhos no mesmo dia.
 
 As categorias mudam o formato do acervo (17) e o da pasta compartilhada (5): **atualize todos os computadores e o celular juntos**. Um Ponte ou um Ponte de bolso mais antigo recusa o acervo e o arquivo novos e diz para atualizar; nada se perde. Com um computador principal, atualize primeiro o principal.
+
+O planejamento de tarefas (0.39.0) muda o formato do acervo (19) e o da pasta compartilhada (6), com o mesmo cuidado: atualize o computador principal primeiro. Um computador já na 0.39 não salva tarefas num principal ainda na 0.38 e avisa *Atualize o Ponte no computador principal para sincronizar tarefas.*
 
 **Nunca** instale o Ponte nem copie o acervo para dentro do Google Drive ou do OneDrive: o acervo só abre na conta do Windows que o gravou.
 

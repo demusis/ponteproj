@@ -1,5 +1,13 @@
 //! The Tarefas panel: list views, the task form, dependency marks and
 //! attachments of a task.
+#[derive(Clone)]
+struct FormProjectionCache {
+    stamp: Option<(i64, i64)>,
+    task: crate::tasks::Task,
+    period: Option<(chrono::NaiveDateTime, chrono::NaiveDateTime)>,
+    title: String,
+}
+
 use crate::category_ui::CategoryFilter;
 use crate::theme::{self, c, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
@@ -3368,12 +3376,22 @@ impl TaskPanel {
                             crate::help_ui::help(ui, "Não muda o prazo. Hora em branco: 09:00 no início e 18:00 no fim.");
                         });
                         if task.scheduled_start.is_empty() && task.scheduled_end.is_empty() {
-                            let mut projection_tasks = tasks.to_vec();
-                            if let Some(existing) = projection_tasks.iter_mut().find(|t| t.id == task.id) { *existing = task.clone(); }
-                            else { projection_tasks.push(task.clone()); }
-                            let projections = crate::projection::project(&projection_tasks);
-                            if let Some(&(start, end)) = projections.get(&task.id) {
-                                let title = crate::projection::anchor_title(task, &projection_tasks, &projections).unwrap_or("tarefa anterior");
+                            let cache_id = egui::Id::unique("task-form-projection");
+                            let stamp = store.library_stamp();
+                            let cached = ui.data(|d| d.get_temp::<FormProjectionCache>(cache_id));
+                            let result = cached.filter(|cached| stamp.is_some() && cached.stamp == stamp && cached.task == *task).unwrap_or_else(|| {
+                                let mut projection_tasks = tasks.to_vec();
+                                if let Some(existing) = projection_tasks.iter_mut().find(|t| t.id == task.id) { *existing = task.clone(); }
+                                else { projection_tasks.push(task.clone()); }
+                                let projections = crate::projection::project(&projection_tasks);
+                                let period = projections.get(&task.id).copied();
+                                let title = crate::projection::anchor_title(task, &projection_tasks, &projections).unwrap_or("tarefa anterior").to_owned();
+                                let result = FormProjectionCache { stamp, task: task.clone(), period, title };
+                                ui.data_mut(|d| d.insert_temp(cache_id, result.clone()));
+                                result
+                            });
+                            if let Some((start, end)) = result.period {
+                                let title = &result.title;
                                 widgets::small_muted(ui, format!("Previsto: {} – {} (depois de {})", start.format("%d/%m %H:%M"), end.format("%d/%m %H:%M"), title));
                                 if ui.add(widgets::quiet("Fixar este período")).clicked() {
                                     task.scheduled_start = start.format("%Y-%m-%dT%H:%M").to_string();

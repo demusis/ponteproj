@@ -21,6 +21,9 @@ const RECENT_LIMIT: usize = 6;
 #[derive(Default)]
 pub(super) struct TodayData {
     pub planning_tasks: Vec<Task>,
+    pub projections: std::collections::HashMap<i64, (chrono::NaiveDateTime, chrono::NaiveDateTime)>,
+    month_cache: std::cell::RefCell<Option<MonthCache>>,
+    pub(super) week_cache: std::cell::RefCell<Option<super::week::WeekCache>>,
     pub planning_uses: Vec<crate::resources::ResourceUse>,
     pub planning_resources: Vec<crate::resources::Resource>,
     pub late: Vec<Task>,
@@ -104,6 +107,7 @@ impl TodayData {
             }
             Err(error) => data.error = Some(error.to_string()),
         }
+        data.projections = crate::projection::project(&data.planning_tasks);
         data.categories = store.list_categories().unwrap_or_default();
         data.by_day = items_by_day(&data.dated_tasks, &data.dated_attendances, today);
         // Resources: the lists are memoized by the library, read once here.
@@ -277,16 +281,19 @@ fn items_by_day(
     days
 }
 
+type MonthCache = ((i32, u32), std::collections::BTreeMap<String, Vec<CalItem>>);
+
 /// Combine existing calendar items with open planned tasks for the visible month.
 fn month_items_by_day(
     existing: &std::collections::BTreeMap<String, Vec<CalItem>>,
     tasks: &[Task],
     year: i32,
     month: u32,
+    projections: &std::collections::HashMap<i64, (chrono::NaiveDateTime, chrono::NaiveDateTime)>,
 ) -> std::collections::BTreeMap<String, Vec<CalItem>> {
     use chrono::{Datelike, Duration, NaiveDate};
     let mut days = existing.clone();
-    let projections = crate::projection::project(tasks);
+    let by_id = tasks.iter().map(|task| (task.id, task)).collect();
     let Some(mut day) = NaiveDate::from_ymd_opt(year, month, 1) else {
         return days;
     };
@@ -328,7 +335,7 @@ fn month_items_by_day(
             if start >= from + Duration::days(1) || end <= from {
                 continue;
             }
-            let title = crate::projection::anchor_title(task, tasks, &projections)
+            let title = crate::projection::anchor_title_indexed(task, &by_id, projections)
                 .unwrap_or("tarefa anterior");
             days.entry(day.to_string()).or_default().push(CalItem {
                 kind: ItemKind::Projected,
@@ -460,6 +467,7 @@ fn day_month(iso: &str) -> String {
 }
 
 /// What the person asked for in a row.
+#[derive(Clone)]
 pub(super) enum Asked {
     Conclude(Task),
     OpenTask(Task),
@@ -893,7 +901,20 @@ fn calendar_view(
         // The day list belongs to the month that was on show.
         selected.clear();
     }
-    let by_day = month_items_by_day(&data.by_day, &data.planning_tasks, year, month);
+    let mut cache = data.month_cache.borrow_mut();
+    if cache.as_ref().is_none_or(|(key, _)| *key != (year, month)) {
+        *cache = Some((
+            (year, month),
+            month_items_by_day(
+                &data.by_day,
+                &data.planning_tasks,
+                year,
+                month,
+                &data.projections,
+            ),
+        ));
+    }
+    let by_day = &cache.as_ref().unwrap().1;
     let row_h = grid_row_h(avail_h, month_weeks(year, month).len());
     let base = ui.make_persistent_id("today-calendar");
     let chosen = month_grid(
@@ -1491,6 +1512,28 @@ mod tests {
     }
 
     #[test]
+    fn today_loaded_projections_match_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut first = Task::standalone();
+        first.title = "First".into();
+        first.scheduled_start = "2026-11-18T09:00".into();
+        first.scheduled_end = "2026-11-18T18:00".into();
+        let id = store.save_task(&first).unwrap();
+        let mut second = Task::standalone();
+        second.title = "Second".into();
+        second.dependencies = vec![id];
+        second.estimate_minutes = 1440;
+        store.save_task(&second).unwrap();
+        let data = TodayData::load(&store, "2026-11-18");
+        assert_eq!(data.projections.len(), 1);
+        assert_eq!(
+            data.projections,
+            crate::projection::project(&data.planning_tasks)
+        );
+    }
+
+    #[test]
     fn today_month_planned_items_touch_days_and_follow_deadlines() {
         let mut task = Task::standalone();
         task.title = "Projeto".into();
@@ -1500,7 +1543,7 @@ mod tests {
         let mut done = task.clone();
         done.status = "concluida".into();
         let existing = items_by_day(&[task.clone()], &[], "2026-11-18");
-        let days = month_items_by_day(&existing, &[task, done], 2026, 11);
+        let days = month_items_by_day(&existing, &[task, done], 2026, 11, &Default::default());
         assert_eq!(days["2026-11-17"].len(), 1);
         assert_eq!(
             days["2026-11-17"][0].detail,

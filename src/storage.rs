@@ -77,7 +77,7 @@ const READ_CACHE_ENTRIES: usize = 8192;
 impl Store {
     /// Library state the read memo is tied to, or `None` when it cannot be
     /// read (the memo is then bypassed).
-    fn library_stamp(&self) -> Option<(i64, i64)> {
+    pub(crate) fn library_stamp(&self) -> Option<(i64, i64)> {
         self.conn
             .query_row(
                 "SELECT total_changes(), (SELECT data_version FROM pragma_data_version)",

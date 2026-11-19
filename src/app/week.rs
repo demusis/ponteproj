@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tasks::Task;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Link {
     prerequisite: i64,
     dependent: i64,
@@ -84,6 +84,130 @@ fn touches(start: &str, end: &str, day: NaiveDate) -> bool {
     start < from + Duration::days(1) && end > from
 }
 
+pub(super) struct WeekCache {
+    start: NaiveDate,
+    links: Vec<Link>,
+    outside: HashMap<i64, Vec<i64>>,
+    warnings: HashMap<i64, Vec<i64>>,
+    unscheduled: Vec<usize>,
+    rows: Vec<Vec<(String, String, Asked)>>,
+}
+
+fn build_week_cache(data: &TodayData, start: NaiveDate) -> WeekCache {
+    let projections = &data.projections;
+    let referenced: HashSet<i64> = data
+        .planning_tasks
+        .iter()
+        .flat_map(|task| task.dependencies.iter().copied())
+        .collect();
+    let visible: HashSet<i64> = data
+        .planning_tasks
+        .iter()
+        .filter(|task| {
+            (!task.is_done() || referenced.contains(&task.id))
+                && (0..7).any(|offset| {
+                    let day = start + Duration::days(offset);
+                    touches(&task.scheduled_start, &task.scheduled_end, day)
+                        || projections.get(&task.id).is_some_and(|(a, b)| {
+                            *a < (day + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap()
+                                && *b > day.and_hms_opt(0, 0, 0).unwrap()
+                        })
+                })
+        })
+        .map(|task| task.id)
+        .collect();
+    let (links, outside) = dependency_layout(&data.planning_tasks, &visible);
+    let mut warnings: HashMap<i64, Vec<i64>> = HashMap::new();
+    for link in links.iter().filter(|link| link.wrong_order) {
+        warnings
+            .entry(link.dependent)
+            .or_default()
+            .push(link.prerequisite);
+    }
+    let mut unscheduled: Vec<_> = data
+        .planning_tasks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.is_done() && t.scheduled_start.is_empty())
+        .map(|(index, _)| index)
+        .collect();
+    unscheduled.sort_by(|&a, &b| {
+        let (a, b) = (&data.planning_tasks[a], &data.planning_tasks[b]);
+        (a.due_date.is_empty(), &a.due_date, &a.title).cmp(&(
+            b.due_date.is_empty(),
+            &b.due_date,
+            &b.title,
+        ))
+    });
+    let rows = (0..7)
+        .map(|offset| {
+            let day = start + Duration::days(offset);
+            let mut rows: Vec<(String, String, Asked)> = Vec::new();
+            for task in &data.planning_tasks {
+                if visible.contains(&task.id)
+                    && touches(&task.scheduled_start, &task.scheduled_end, day)
+                {
+                    rows.push((
+                        task.scheduled_start.clone(),
+                        format!(
+                            "{}–{} · {}",
+                            task.scheduled_start.get(11..).unwrap_or(""),
+                            task.scheduled_end.get(11..).unwrap_or(""),
+                            task.title
+                        ),
+                        Asked::OpenTask(task.clone()),
+                    ));
+                }
+                if let Some(&(a, b)) = projections.get(&task.id) {
+                    let from = day.and_hms_opt(0, 0, 0).unwrap();
+                    if a < from + Duration::days(1) && b > from {
+                        rows.push((
+                            a.format("%Y-%m-%dT%H:%M").to_string(),
+                            format!(
+                                "{}–{} · ⇢ {} (previsto)",
+                                a.format("%H:%M"),
+                                b.format("%H:%M"),
+                                task.title
+                            ),
+                            Asked::OpenTask(task.clone()),
+                        ));
+                    }
+                }
+            }
+            for item in &data.planning_uses {
+                if item.status.occupying() && touches(&item.start, &item.end, day) {
+                    let resource = data
+                        .planning_resources
+                        .iter()
+                        .find(|r| r.uid == item.resource_uid)
+                        .map_or("Recurso", |r| r.name.as_str());
+                    rows.push((
+                        item.start.clone(),
+                        format!(
+                            "{}–{} · {} · {}",
+                            item.start.get(11..).unwrap_or(""),
+                            item.end.get(11..).unwrap_or(""),
+                            resource,
+                            item.purpose
+                        ),
+                        Asked::OpenUse(item.uid.clone()),
+                    ));
+                }
+            }
+            rows.sort_by(|a, b| a.0.cmp(&b.0));
+            rows
+        })
+        .collect();
+    WeekCache {
+        rows,
+        warnings,
+        unscheduled,
+        start,
+        links,
+        outside,
+    }
+}
+
 pub(super) fn show(
     ui: &mut egui::Ui,
     data: &TodayData,
@@ -116,42 +240,21 @@ pub(super) fn show(
     ui.data_mut(|d| d.insert_temp(id, start));
     widgets::muted(ui, "Horários locais. Agendar o trabalho não altera o prazo de entrega. Clique em uma tarefa para planejar ou reagendar.");
     ui.add_space(S2);
-    let projections = crate::projection::project(&data.planning_tasks);
-    let referenced: HashSet<i64> = data
-        .planning_tasks
-        .iter()
-        .flat_map(|task| task.dependencies.iter().copied())
-        .collect();
-    let visible: HashSet<i64> = data
-        .planning_tasks
-        .iter()
-        .filter(|task| {
-            (!task.is_done() || referenced.contains(&task.id))
-                && (0..7).any(|offset| {
-                    let day = start + Duration::days(offset);
-                    touches(&task.scheduled_start, &task.scheduled_end, day)
-                        || projections.get(&task.id).is_some_and(|(a, b)| {
-                            *a < (day + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap()
-                                && *b > day.and_hms_opt(0, 0, 0).unwrap()
-                        })
-                })
-        })
-        .map(|task| task.id)
-        .collect();
-    let (links, outside) = dependency_layout(&data.planning_tasks, &visible);
+    let mut cache = data.week_cache.borrow_mut();
+    if cache.as_ref().is_none_or(|cache| cache.start != start) {
+        *cache = Some(build_week_cache(data, start));
+    }
+    let cache = cache.as_ref().unwrap();
+    let projections = &data.projections;
+    let links = &cache.links;
+    let outside = &cache.outside;
     let by_id: HashMap<_, _> = data
         .planning_tasks
         .iter()
         .map(|task| (task.id, task))
         .collect();
     let mut blocks: HashMap<i64, Vec<egui::Rect>> = HashMap::new();
-    let mut warnings: HashMap<i64, Vec<i64>> = HashMap::new();
-    for link in links.iter().filter(|link| link.wrong_order) {
-        warnings
-            .entry(link.dependent)
-            .or_default()
-            .push(link.prerequisite);
-    }
+    let warnings = &cache.warnings;
     let background_arrows = ui.painter().add(egui::Shape::Noop);
     let mut card_arrows = Vec::new();
     for offset in 0..7 {
@@ -162,33 +265,15 @@ pub(super) fn show(
             let arrow_slot = ui.painter().add(egui::Shape::Noop);
             widgets::section(ui, super::calendar::long_date(day));
             if day == today { widgets::pill(ui, "Hoje", Tone::Info); }
-            let mut rows: Vec<(String, String, Asked)> = Vec::new();
-            for task in &data.planning_tasks {
-                if visible.contains(&task.id) && touches(&task.scheduled_start, &task.scheduled_end, day) {
-                    rows.push((task.scheduled_start.clone(), format!("{}–{} · {}", task.scheduled_start.get(11..).unwrap_or(""), task.scheduled_end.get(11..).unwrap_or(""), task.title), Asked::OpenTask(task.clone())));
-                }
-                if let Some(&(a, b)) = projections.get(&task.id) {
-                    let from = day.and_hms_opt(0, 0, 0).unwrap();
-                    if a < from + Duration::days(1) && b > from {
-                        rows.push((a.format("%Y-%m-%dT%H:%M").to_string(), format!("{}–{} · ⇢ {} (previsto)", a.format("%H:%M"), b.format("%H:%M"), task.title), Asked::OpenTask(task.clone())));
-                    }
-                }
-            }
-            for item in &data.planning_uses {
-                if item.status.occupying() && touches(&item.start, &item.end, day) {
-                    let resource = data.planning_resources.iter().find(|r| r.uid == item.resource_uid).map_or("Recurso", |r| r.name.as_str());
-                    rows.push((item.start.clone(), format!("{}–{} · {} · {}", item.start.get(11..).unwrap_or(""), item.end.get(11..).unwrap_or(""), resource, item.purpose), Asked::OpenUse(item.uid.clone())));
-                }
-            }
-            rows.sort_by(|a,b| a.0.cmp(&b.0));
+            let rows = &cache.rows[offset as usize];
             if rows.is_empty() { widgets::muted(ui, "Sem trabalho agendado nem reservas."); }
             for (_, label, action) in rows {
-                let task_id = if let Asked::OpenTask(task) = &action { Some(task.id) } else { None };
+                let task_id = if let Asked::OpenTask(task) = action { Some(task.id) } else { None };
                 let response = ui.add(widgets::quiet(label));
                 if let Some(id) = task_id {
                     blocks.entry(id).or_default().push(response.rect);
                 }
-                if response.clicked() { *asked = Some(action); }
+                if response.clicked() { *asked = Some(action.clone()); }
                 if let Some(id) = task_id {
                     if let Some(ids) = outside.get(&id) {
                         for prerequisite in ids.iter().filter_map(|id| by_id.get(id)) {
@@ -225,7 +310,7 @@ pub(super) fn show(
     }
     // Paint each curve below card contents, and also in the gaps between cards.
     let mut arrow_shapes = Vec::new();
-    for link in &links {
+    for link in links {
         if let (Some(from), Some(to)) =
             (blocks.get(&link.prerequisite), blocks.get(&link.dependent))
         {
@@ -265,22 +350,12 @@ pub(super) fn show(
             .set(slot, egui::Shape::Vec(arrow_shapes.clone()));
     }
     widgets::section(ui, "Ainda não planejadas");
-    let mut unscheduled: Vec<_> = data
-        .planning_tasks
-        .iter()
-        .filter(|t| !t.is_done() && t.scheduled_start.is_empty())
-        .collect();
-    unscheduled.sort_by(|a, b| {
-        (a.due_date.is_empty(), &a.due_date, &a.title).cmp(&(
-            b.due_date.is_empty(),
-            &b.due_date,
-            &b.title,
-        ))
-    });
+    let unscheduled = &cache.unscheduled;
     if unscheduled.is_empty() {
         widgets::muted(ui, "Todas as tarefas abertas têm um horário reservado.");
     }
-    for task in unscheduled {
+    for &index in unscheduled {
+        let task = &data.planning_tasks[index];
         let due = if task.due_date.is_empty() {
             "sem prazo".to_owned()
         } else {
