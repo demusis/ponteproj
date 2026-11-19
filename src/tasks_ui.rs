@@ -3343,6 +3343,20 @@ impl TaskPanel {
                             widgets::field_label(ui, "Planejamento (quando você vai trabalhar nela)");
                             crate::help_ui::help(ui, "Não muda o prazo. Hora em branco: 09:00 no início e 18:00 no fim.");
                         });
+                        if task.scheduled_start.is_empty() && task.scheduled_end.is_empty() {
+                            let mut projection_tasks = tasks.to_vec();
+                            if let Some(existing) = projection_tasks.iter_mut().find(|t| t.id == task.id) { *existing = task.clone(); }
+                            else { projection_tasks.push(task.clone()); }
+                            let projections = crate::projection::project(&projection_tasks);
+                            if let Some(&(start, end)) = projections.get(&task.id) {
+                                let title = crate::projection::anchor_title(task, &projection_tasks, &projections).unwrap_or("tarefa anterior");
+                                widgets::small_muted(ui, format!("Previsto: {} – {} (depois de {})", start.format("%d/%m %H:%M"), end.format("%d/%m %H:%M"), title));
+                                if ui.add(widgets::quiet("Fixar este período")).clicked() {
+                                    task.scheduled_start = start.format("%Y-%m-%dT%H:%M").to_string();
+                                    task.scheduled_end = end.format("%Y-%m-%dT%H:%M").to_string();
+                                }
+                            }
+                        }
                         ui.label("Início");
                         let start_changed = crate::labels::datetime_field(ui, ("task-start", task_id), &mut task.scheduled_start, "09:00").changed();
                         ui.label("Fim");
@@ -3356,9 +3370,7 @@ impl TaskPanel {
                         if task.estimate_minutes % 1440 != 0 { widgets::small_muted(ui, format!("Estimativa anterior: {} min", task.estimate_minutes)); }
                         if (start_changed || estimate_changed) && days > 0 && task.scheduled_end.is_empty() {
                             if let Ok(start) = chrono::NaiveDateTime::parse_from_str(&task.scheduled_start, "%Y-%m-%dT%H:%M") {
-                                if let Some(end) = start.date().checked_add_signed(chrono::Duration::days(i64::from(days - 1))) {
-                                    task.scheduled_end = format!("{}T18:00", end.format("%Y-%m-%d"));
-                                }
+                                task.scheduled_end = crate::projection::work_end(start, days).format("%Y-%m-%dT%H:%M").to_string();
                             }
                         }
                         if planned_end_after_due(&task.scheduled_end, &task.due_date) {

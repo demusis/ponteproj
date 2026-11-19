@@ -453,7 +453,7 @@ pub fn date_field(
             ui.spacing_mut().item_spacing.x = 4.0;
             let mut edit = egui::TextEdit::singleline(&mut state.0)
                 .hint_text("dd/mm/aaaa")
-                .desired_width(98.0);
+                .desired_width(120.0);
             if !valid {
                 edit = edit.text_color(crate::theme::error());
             }
@@ -534,7 +534,7 @@ pub fn datetime_field(
     let time_valid = state.1.trim().is_empty() || parse_typed_time(&state.1).is_some();
     let response = ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        let mut edit = egui::TextEdit::singleline(&mut state.0).hint_text("dd/mm/aaaa").desired_width(98.0);
+        let mut edit = egui::TextEdit::singleline(&mut state.0).hint_text("dd/mm/aaaa").desired_width(120.0);
         if !date_valid { edit = edit.text_color(crate::theme::error()); }
         let mut response = ui.add(edit);
         if !date_valid { crate::widgets::outline(ui, response.rect, crate::theme::error()); }
@@ -545,7 +545,7 @@ pub fn datetime_field(
             state.0 = chrono::Local::now().format("%d/%m/%Y").to_string();
             response.mark_changed();
         }
-        let mut time_edit = egui::TextEdit::singleline(&mut state.1).hint_text(default_time).desired_width(50.0);
+        let mut time_edit = egui::TextEdit::singleline(&mut state.1).hint_text(default_time).desired_width(70.0);
         if !time_valid { time_edit = time_edit.text_color(crate::theme::error()); }
         let time_response = ui.add(time_edit);
         if !time_valid { crate::widgets::outline(ui, time_response.rect, crate::theme::error()); }

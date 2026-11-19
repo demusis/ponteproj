@@ -200,6 +200,7 @@ enum ItemKind {
     Task,
     Attendance,
     Planned,
+    Projected,
     /// A reservation or loan of a resource.
     Resource,
 }
@@ -285,6 +286,7 @@ fn month_items_by_day(
 ) -> std::collections::BTreeMap<String, Vec<CalItem>> {
     use chrono::{Datelike, Duration, NaiveDate};
     let mut days = existing.clone();
+    let projections = crate::projection::project(tasks);
     let Some(mut day) = NaiveDate::from_ymd_opt(year, month, 1) else { return days };
     while day.month() == month {
         let from = day.and_hms_opt(0, 0, 0).unwrap();
@@ -303,6 +305,16 @@ fn month_items_by_day(
             days.entry(day.to_string()).or_default().push(CalItem {
                 kind: ItemKind::Planned, index, state: DueState::Future,
                 label: task.title.clone(), detail: format!("{time} · {} (planejado)", task.title),
+                uid: String::new(), situation: String::new(),
+            });
+        }
+        for (index, task) in tasks.iter().enumerate() {
+            let Some(&(start, end)) = projections.get(&task.id) else { continue };
+            if start >= from + Duration::days(1) || end <= from { continue; }
+            let title = crate::projection::anchor_title(task, tasks, &projections).unwrap_or("tarefa anterior");
+            days.entry(day.to_string()).or_default().push(CalItem {
+                kind: ItemKind::Projected, index, state: DueState::Future,
+                label: task.title.clone(), detail: format!("{}–{} · {} (previsto, depois de {})", start.format("%H:%M"), end.format("%H:%M"), task.title, title),
                 uid: String::new(), situation: String::new(),
             });
         }
@@ -763,7 +775,7 @@ fn state_text(kind: ItemKind, state: DueState) -> &'static str {
         (ItemKind::Task, DueState::Late) => "Atrasada",
         (ItemKind::Attendance, DueState::Late) => "Prazo vencido",
         // A use says its own situation (see `item_state`).
-        (ItemKind::Resource | ItemKind::Planned, _) => "",
+        (ItemKind::Resource | ItemKind::Planned | ItemKind::Projected, _) => "",
         (_, DueState::Today) => "Para hoje",
         (_, DueState::Future) => "No prazo",
     }
@@ -781,6 +793,7 @@ fn item_text(data: &CalItem, text: &str) -> String {
     match data.kind {
         ItemKind::Task => text.to_owned(),
         ItemKind::Planned => format!("▭ {text}"),
+        ItemKind::Projected => format!("⇢ {text}"),
         ItemKind::Attendance => format!("{} {text}", icon::ATTENDANCES),
         ItemKind::Resource => format!("{} {text}", icon::RESOURCES),
     }
@@ -793,7 +806,7 @@ fn asked_for(item: &CalItem, data: &TodayData) -> Option<Asked> {
             .get(item.index)
             .cloned()
             .map(Asked::OpenTask),
-        ItemKind::Planned => data.planning_tasks.get(item.index).cloned().map(Asked::OpenTask),
+        ItemKind::Planned | ItemKind::Projected => data.planning_tasks.get(item.index).cloned().map(Asked::OpenTask),
         ItemKind::Attendance => data
             .dated_attendances
             .get(item.index)
@@ -857,9 +870,10 @@ fn calendar_view(
             for (i, item) in items.iter().take(shown).enumerate() {
                 let line = line_rect(cell.rect, cell.col_w, i);
                 let (fg, bg) = due_tone(item.state).colors();
-                if item.kind == ItemKind::Planned {
-                    painter.rect_stroke(line, egui::CornerRadius::same(3), egui::Stroke::new(1.0, p.muted), egui::StrokeKind::Inside);
-                    paint_line(painter, line, &item_text(item, &item.label), p.muted);
+                if matches!(item.kind, ItemKind::Planned | ItemKind::Projected) {
+                    let color = if item.kind == ItemKind::Projected { p.muted.gamma_multiply(0.55) } else { p.muted };
+                    painter.rect_stroke(line, egui::CornerRadius::same(3), egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+                    paint_line(painter, line, &item_text(item, &item.label), color);
                 } else {
                     painter.rect_filled(line, egui::CornerRadius::same(3), bg);
                     paint_line(painter, line, &item_text(item, &item.label), fg);
@@ -911,7 +925,7 @@ fn calendar_view(
         d.insert_temp(day_id(), selected.clone());
     });
 
-    widgets::muted(ui, "Faixa cheia: prazo de entrega. Contorno: trabalho planejado. Ligações entre tarefas: veja Semana.");
+    widgets::muted(ui, "Faixa cheia: prazo de entrega. Contorno: trabalho planejado. ⇢ Previsto: calculado pelas dependências e pela estimativa, em dias úteis. Ligações entre tarefas: veja Semana.");
 
     // The day list under the grid.
     let Some(items) = by_day.get(&selected) else {
@@ -940,14 +954,14 @@ fn calendar_view(
                         ui.spacing_mut().item_spacing.x = S3;
                         ui.add(
                             egui::Label::new(
-                                RichText::new(if item.kind == ItemKind::Planned { item.detail.clone() } else { item_text(item, &item.detail) })
+                                RichText::new(if matches!(item.kind, ItemKind::Planned | ItemKind::Projected) { item.detail.clone() } else { item_text(item, &item.detail) })
                                     .font(theme::font_strong(theme::SIZE_BODY)),
                             )
                             .selectable(false)
                             .truncate(),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            if item.kind != ItemKind::Planned { widgets::pill(ui, item_state(item), due_tone(item.state)); }
+                            if !matches!(item.kind, ItemKind::Planned | ItemKind::Projected) { widgets::pill(ui, item_state(item), due_tone(item.state)); }
                         });
                     });
                     if item.kind == ItemKind::Planned {

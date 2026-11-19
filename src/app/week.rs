@@ -80,10 +80,14 @@ pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked:
     ui.data_mut(|d| d.insert_temp(id, start));
     widgets::muted(ui, "Horários locais. Agendar o trabalho não altera o prazo de entrega. Clique em uma tarefa para planejar ou reagendar.");
     ui.add_space(S2);
+    let projections = crate::projection::project(&data.planning_tasks);
     let referenced: HashSet<i64> = data.planning_tasks.iter().flat_map(|task| task.dependencies.iter().copied()).collect();
     let visible: HashSet<i64> = data.planning_tasks.iter()
         .filter(|task| (!task.is_done() || referenced.contains(&task.id))
-            && (0..7).any(|offset| touches(&task.scheduled_start, &task.scheduled_end, start + Duration::days(offset))))
+            && (0..7).any(|offset| {
+                let day = start + Duration::days(offset);
+                touches(&task.scheduled_start, &task.scheduled_end, day) || projections.get(&task.id).is_some_and(|(a,b)| *a < (day + Duration::days(1)).and_hms_opt(0,0,0).unwrap() && *b > day.and_hms_opt(0,0,0).unwrap())
+            }))
         .map(|task| task.id).collect();
     let (links, outside) = dependency_layout(&data.planning_tasks, &visible);
     let by_id: HashMap<_, _> = data.planning_tasks.iter().map(|task| (task.id, task)).collect();
@@ -106,6 +110,12 @@ pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked:
             for task in &data.planning_tasks {
                 if visible.contains(&task.id) && touches(&task.scheduled_start, &task.scheduled_end, day) {
                     rows.push((task.scheduled_start.clone(), format!("{}–{} · {}", task.scheduled_start.get(11..).unwrap_or(""), task.scheduled_end.get(11..).unwrap_or(""), task.title), Asked::OpenTask(task.clone())));
+                }
+                if let Some(&(a, b)) = projections.get(&task.id) {
+                    let from = day.and_hms_opt(0, 0, 0).unwrap();
+                    if a < from + Duration::days(1) && b > from {
+                        rows.push((a.format("%Y-%m-%dT%H:%M").to_string(), format!("{}–{} · ⇢ {} (previsto)", a.format("%H:%M"), b.format("%H:%M"), task.title), Asked::OpenTask(task.clone())));
+                    }
                 }
             }
             for item in &data.planning_uses {
@@ -183,7 +193,8 @@ pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked:
         let due = if task.due_date.is_empty() { "sem prazo".to_owned() } else { format!("prazo {}", crate::labels::date(&task.due_date)) };
         let estimate = estimate_label(task.estimate_minutes);
         let suffix = if estimate.is_empty() { String::new() } else { format!(" · {estimate}") };
-        if ui.add(widgets::quiet(format!("{} · {}{}", task.title, due, suffix))).clicked() {
+        let projected = projections.get(&task.id).map(|(a,b)| format!(" · previsto {}–{}", a.format("%d/%m"), b.format("%d/%m"))).unwrap_or_default();
+        if ui.add(widgets::quiet(format!("{} · {}{}{}", task.title, due, suffix, projected))).clicked() {
             *asked = Some(Asked::OpenTask(task.clone()));
         }
     }
