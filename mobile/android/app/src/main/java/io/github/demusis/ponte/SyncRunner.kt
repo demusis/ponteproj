@@ -153,6 +153,15 @@ internal object SyncRunner {
     /** Preference that keeps the text of [HolidayConfig.toText]. */
     const val HOLIDAYS_KEY = "holidays"
 
+    /** Keeps [text], the holidays of the library, as this phone's copy and uses it in the phone's rules. */
+    fun mirrorHolidays(ctx: Context, text: String) {
+        val canonical = Holidays.canonical(text)
+        if (prefsOf(ctx).getString(HOLIDAYS_KEY, null) != canonical) {
+            prefsOf(ctx).edit().putString(HOLIDAYS_KEY, canonical).apply()
+        }
+        Holidays.configure(canonical)
+    }
+
     fun startInit(ctx: Context, reset: Boolean): Boolean {
         val app = ctx.applicationContext
         setStatus("Preparando…", false)
@@ -162,8 +171,9 @@ internal object SyncRunner {
                 val key = loadOrCreateLibraryKey(app)
                 val name = phoneMemberName()
                 check(core.init(app.filesDir.absolutePath, key, name))
-                // The phone's own holidays (a state, days off) are not in the library: hand them over now.
-                core.setHolidays(prefsOf(app).getString(HOLIDAYS_KEY, "") ?: "")
+                // The holidays are the library's: take them, or (the library has none yet) hand over the
+                // copy this phone kept until now.
+                mirrorHolidays(app, check(core.adoptHolidays(prefsOf(app).getString(HOLIDAYS_KEY, "") ?: "")).optString("text"))
                 ready = true
                 keyBroken = false
                 val e = refreshDocs()
@@ -265,6 +275,8 @@ internal object SyncRunner {
 
             // b. let the core merge; it may rewrite the working file (atomically)
             val r = check(core.sync(work.absolutePath, if (pending.exists()) pending.absolutePath else "", pass))
+            // What another device saved as holidays is in force here now.
+            if (r.has("holidays")) mirrorHolidays(ctx, r.optString("holidays"))
             val summary = r.optString("summary")
             val conflicts = r.optInt("conflicts", 0)
             var message = "Sincronizado: " + PhoneWords.adapt(summary)

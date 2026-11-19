@@ -574,6 +574,10 @@ pub struct CabinetSnapshot {
     /// before them loads without.
     #[serde(default)]
     pub categories: Vec<crate::categories::Category>,
+    /// The library settings (the holidays). A copy written before them loads
+    /// without, and applying it keeps the ones this library has.
+    #[serde(default)]
+    pub settings: Vec<crate::library_settings::SettingRow>,
     /// The library schema of the computer that wrote this copy (0 when it
     /// did not say: a Ponte before the recursos). A copy below
     /// [`RESOURCES_SCHEMA`] knows nothing of recursos, so applying it keeps
@@ -593,6 +597,12 @@ pub(crate) const PROPOSALS_SCHEMA: i64 = 16;
 /// The first library schema that stores the categories.
 pub(crate) const CATEGORIES_SCHEMA: i64 = 17;
 pub(crate) const SCHEDULE_SCHEMA: i64 = 18;
+/// The first library schema that stores the library settings.
+pub(crate) const SETTINGS_SCHEMA: i64 = 20;
+
+/// What a person is told when the main computer does not store the library
+/// settings (the holidays shared by every computer).
+pub(crate) const HOST_WITHOUT_SETTINGS: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda os feriados do acervo. Atualize o Ponte no computador principal e tente de novo.";
 
 /// What a person is told when the main computer does not store categories.
 pub(crate) const HOST_WITHOUT_CATEGORIES: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda categorias. Atualize o Ponte no computador principal e tente de novo.";
@@ -815,6 +825,12 @@ pub enum IntranetMutation {
         #[serde(default)]
         expected_version: Option<i64>,
     },
+    /// A library setting (the holidays). Never a conflict: the change applied
+    /// last wins.
+    SaveSetting {
+        key: String,
+        value: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -990,6 +1006,10 @@ fn is_resource_mutation(mutation: &IntranetMutation) -> bool {
     )
 }
 
+fn is_setting_mutation(mutation: &IntranetMutation) -> bool {
+    matches!(mutation, IntranetMutation::SaveSetting { .. })
+}
+
 fn is_category_mutation(mutation: &IntranetMutation) -> bool {
     matches!(
         mutation,
@@ -1043,6 +1063,11 @@ impl Store {
     /// The same for the categories.
     pub(crate) fn ensure_host_stores_categories(&self, cfg: &IntranetConfig) -> Result<()> {
         self.ensure_host_schema(cfg, CATEGORIES_SCHEMA, HOST_WITHOUT_CATEGORIES)
+    }
+
+    /// The same for the library settings.
+    pub(crate) fn ensure_host_stores_settings(&self, cfg: &IntranetConfig) -> Result<()> {
+        self.ensure_host_schema(cfg, SETTINGS_SCHEMA, HOST_WITHOUT_SETTINGS)
     }
 
     /// The same for what carries the proposals of the AI (an analysis with
@@ -1853,6 +1878,7 @@ impl Store {
             templates: self.export_templates()?,
             resources: self.export_resources()?,
             categories: self.export_categories()?,
+            settings: self.export_library_settings()?,
             schema_version: crate::storage::SCHEMA_VERSION,
         })
     }
@@ -2019,6 +2045,11 @@ impl Store {
         let keep_categories = snapshot.schema_version < CATEGORIES_SCHEMA;
         if !keep_categories {
             tx.execute_batch("DELETE FROM categories;")?;
+        }
+        // And the library settings.
+        let keep_settings = snapshot.schema_version < SETTINGS_SCHEMA;
+        if !keep_settings {
+            tx.execute_batch("DELETE FROM library_settings;")?;
         }
         let mut kept_links: Vec<(String, i64)> = Vec::new();
         if keep_resources {
@@ -2286,6 +2317,9 @@ impl Store {
         if !keep_categories {
             crate::categories::apply_categories(&tx, &snapshot.categories)?;
         }
+        if !keep_settings {
+            crate::library_settings::apply_settings(&tx, &snapshot.settings)?;
+        }
         if !keep_resources {
             let mut resources = snapshot.resources.clone();
             for row in &mut resources.uses {
@@ -2447,6 +2481,9 @@ impl Store {
                 expected_version,
             } => self
                 .delete_category_checked(&uid, expected_version)
+                .map(|()| MutationReply::Unit),
+            IntranetMutation::SaveSetting { key, value } => self
+                .save_setting_applied(&key, &value)
                 .map(|()| MutationReply::Unit),
             IntranetMutation::RecordGeneration { record } => self
                 .record_generation(&record)
@@ -3113,6 +3150,14 @@ impl Store {
             if best.header.schema_version < CATEGORIES_SCHEMA {
                 crate::categories::apply_categories(&store.conn, &incoming.categories)?;
             }
+            // A copy from a Ponte before the settings says nothing about
+            // them: the ones this library has go into the copy being built.
+            if best.header.schema_version < SETTINGS_SCHEMA {
+                crate::library_settings::apply_settings(
+                    &store.conn,
+                    &self.export_library_settings()?,
+                )?;
+            }
             applied = best.payload.applied.iter().cloned().collect();
             journal = best.payload.journal.clone();
             // What each change created, with the numbers of the copy being
@@ -3242,6 +3287,13 @@ impl Store {
                     // Made on a library that the folder's one has replaced:
                     // its numbers mean nothing there.
                     ids.learn(&entry.created, None);
+                    if is_setting_mutation(&entry.mutation) {
+                        // A setting has no numbers and is never a conflict: the
+                        // folder's own value wins, and this computer's file
+                        // is only a cache of it.
+                        applied.insert(entry.uid.clone());
+                        continue;
+                    }
                     conflicts.push(conflict_for(
                         entry,
                         "Alteração feita antes de este computador entrar na pasta; o acervo daqui foi substituído pelo da pasta.",
@@ -5771,6 +5823,7 @@ impl Store {
                 s.key = Some(format!("category:{}", category.uid));
             }
             M::DeleteCategory { .. } => s.title = "Exclusão de uma categoria".into(),
+            M::SaveSetting { .. } => s.title = "Feriados e dias sem expediente".into(),
             M::SaveResourceUse { item, .. } => {
                 s.title = format!(
                     "Uso: {} — {}",
@@ -6540,6 +6593,7 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
             format!("Categoria \"{}\"", category.name)
         }
         IntranetMutation::DeleteCategory { .. } => "Exclusão de categoria".to_owned(),
+        IntranetMutation::SaveSetting { .. } => "Feriados e dias sem expediente".to_owned(),
         IntranetMutation::SaveResourceUse { item, .. } => format!(
             "Uso de recurso: {} ({} a {})",
             item.who,
@@ -6975,6 +7029,18 @@ fn send_rpc_classified(
             }
         }
     }
+    // The same for a library setting.
+    if let RpcRequest::Mutate { mutation, .. } = request {
+        if is_setting_mutation(mutation) {
+            if let Ok(RpcResponse::Pong { schema_version, .. }) =
+                send_rpc_classified(cfg, &RpcRequest::Ping)
+            {
+                if schema_version < SETTINGS_SCHEMA {
+                    return Err(RpcError::Unreachable(HOST_WITHOUT_SETTINGS.into()));
+                }
+            }
+        }
+    }
     let endpoint = format!("{base}/api/v1/rpc");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(25))
@@ -7038,6 +7104,9 @@ fn send_rpc_classified(
         }
         if message.starts_with(HOST_CANNOT_READ_START) && is_category_mutation(mutation) {
             return Err(RpcError::Unreachable(HOST_WITHOUT_CATEGORIES.into()));
+        }
+        if message.starts_with(HOST_CANNOT_READ_START) && is_setting_mutation(mutation) {
+            return Err(RpcError::Unreachable(HOST_WITHOUT_SETTINGS.into()));
         }
     }
     if !status.is_success() {
@@ -11524,6 +11593,205 @@ mod standalone_task_sync_tests {
         assert_eq!(saved.proposal_id, expected.proposal_id);
     }
 
+    fn holidays_of(store: &Store) -> Option<String> {
+        store
+            .library_setting(crate::library_settings::HOLIDAYS)
+            .unwrap()
+    }
+
+    #[test]
+    fn holidays_travel_between_two_computers_in_both_directions() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, _) = pair(dir.path());
+        assert_eq!(holidays_of(&a), None);
+        a.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf SP
+",
+        )
+        .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        assert_eq!(
+            holidays_of(&b).as_deref(),
+            Some(
+                "uf SP
+"
+            )
+        );
+        // And back: B edits, A receives.
+        b.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf RJ
+anual 05-02 Recesso
+",
+        )
+        .unwrap();
+        sync(&mut b);
+        sync(&mut a);
+        assert_eq!(
+            holidays_of(&a).as_deref(),
+            Some(
+                "uf RJ
+anual 05-02 Recesso
+"
+            )
+        );
+        // Cleared on purpose travels as a value too.
+        a.set_library_setting(crate::library_settings::HOLIDAYS, "")
+            .unwrap();
+        sync(&mut a);
+        sync(&mut b);
+        assert_eq!(holidays_of(&b).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn concurrent_holiday_edits_converge_to_the_one_synced_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, _) = pair(dir.path());
+        a.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf SP
+",
+        )
+        .unwrap();
+        b.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf MG
+",
+        )
+        .unwrap();
+        // Neither has seen the other's edit. A goes first, then B, then A
+        // again: both end with B's, the change applied last.
+        sync(&mut a);
+        sync(&mut b);
+        sync(&mut a);
+        assert_eq!(
+            holidays_of(&a).as_deref(),
+            Some(
+                "uf MG
+"
+            )
+        );
+        assert_eq!(
+            holidays_of(&b).as_deref(),
+            Some(
+                "uf MG
+"
+            )
+        );
+        // It was no conflict for the person to resolve.
+        assert!(a.list_sync_conflicts().unwrap().is_empty());
+        assert!(b.list_sync_conflicts().unwrap().is_empty());
+        // The other order gives the other winner, the same on both.
+        a.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf BA
+",
+        )
+        .unwrap();
+        b.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf CE
+",
+        )
+        .unwrap();
+        sync(&mut b);
+        sync(&mut a);
+        sync(&mut b);
+        assert_eq!(
+            holidays_of(&a).as_deref(),
+            Some(
+                "uf BA
+"
+            )
+        );
+        assert_eq!(
+            holidays_of(&b).as_deref(),
+            Some(
+                "uf BA
+"
+            )
+        );
+    }
+
+    #[test]
+    fn a_computer_joining_the_folder_takes_its_holidays_without_a_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, _, _) = pair(dir.path());
+        a.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf SP
+",
+        )
+        .unwrap();
+        sync(&mut a);
+        let folder = dir.path().join("Drive").join("ponte-sync.ponte");
+        let mut c = Store::open(&dir.path().join("c.sqlite3")).unwrap();
+        c.save_intranet_config(&config("Novo", &[folder.display().to_string()]))
+            .unwrap();
+        // The migration of its own local file, before it ever synced.
+        c.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf PR
+",
+        )
+        .unwrap();
+        sync(&mut c);
+        assert_eq!(
+            holidays_of(&c).as_deref(),
+            Some(
+                "uf SP
+"
+            )
+        );
+        assert!(c.list_sync_conflicts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_copy_from_a_ponte_before_the_settings_keeps_the_holidays() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, _, _) = pair(dir.path());
+        a.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf SP
+",
+        )
+        .unwrap();
+        sync(&mut a);
+        let path = dir.path().join("Drive").join("ponte-sync.ponte");
+        let mut copy = crate::sharedfolder::read(&path, KEY).unwrap().unwrap();
+        // What an older Ponte writes: no settings, its own schema.
+        copy.payload.snapshot.settings.clear();
+        copy.payload.snapshot.schema_version = SETTINGS_SCHEMA - 1;
+        let h = &copy.header;
+        let req = crate::sharedfolder::WriteRequest {
+            lineage: &h.lineage,
+            revision: h.revision + 1,
+            writer: "old-writer",
+            writer_name: "Antigo",
+            schema_version: SETTINGS_SCHEMA - 1,
+        };
+        crate::sharedfolder::write(&path, KEY, &req, &copy.payload, &copy.blobs).unwrap();
+        // Any change of this computer makes the next exchange write the copy.
+        a.save_task(&standalone("Depois da cópia antiga")).unwrap();
+        sync(&mut a);
+        assert_eq!(
+            holidays_of(&a).as_deref(),
+            Some(
+                "uf SP
+"
+            )
+        );
+        let written = crate::sharedfolder::read(&path, KEY).unwrap().unwrap();
+        assert_eq!(written.payload.snapshot.settings.len(), 1);
+        assert_eq!(
+            written.payload.snapshot.settings[0].value,
+            "uf SP
+"
+        );
+    }
+
     fn foreign_planning_entry(schema: i64) -> Task {
         let dir = tempfile::tempdir().unwrap();
         let (mut a, _, _) = pair(dir.path());
@@ -12911,9 +13179,9 @@ mod resources_sync_tests {
             .unwrap();
         assert!(other.list_resources().unwrap().is_empty());
         assert!(other.list_resource_uses().unwrap().is_empty());
-        // Schema 17 and format 5 are the ones this build writes.
-        assert_eq!(crate::storage::SCHEMA_VERSION, 19);
-        assert_eq!(crate::sharedfolder::FORMAT, 6);
+        // Schema 20 and format 7 are the ones this build writes.
+        assert_eq!(crate::storage::SCHEMA_VERSION, 20);
+        assert_eq!(crate::sharedfolder::FORMAT, 7);
     }
     #[test]
     fn a_client_books_through_the_main_computer_which_refuses_a_clash() {

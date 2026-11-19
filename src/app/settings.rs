@@ -22,15 +22,21 @@ struct DayRow {
 }
 
 /// The state and the extra days off as shown in Ajustes. What is complete
-/// (a state, valid dates) goes to `feriados.txt` and to the planning.
+/// (a state, valid dates) goes to the library, to the local copy
+/// (`feriados.txt`) and to the planning.
 #[derive(Default)]
 pub(super) struct HolidayDraft {
     uf: Option<&'static str>,
     rows: Vec<DayRow>,
+    /// What the draft showed when it was last taken from the library or
+    /// saved to it: the person is editing while the draft differs from this.
+    base_uf: Option<&'static str>,
+    base_rows: Vec<DayRow>,
 }
 
 impl HolidayDraft {
-    /// Reads `feriados.txt` and makes it the configuration in use.
+    /// Reads `feriados.txt` and makes it the configuration in use (until the
+    /// library, once open, says its own).
     pub(super) fn load() -> Self {
         // Tests build the app too: they must neither read this machine's
         // file nor change the configuration other tests are using.
@@ -42,8 +48,13 @@ impl HolidayDraft {
             crate::holidays::set_config(config.clone());
             config
         };
+        Self::from_config(&config)
+    }
+
+    /// The draft that shows `config`, with nothing being edited.
+    pub(super) fn from_config(config: &crate::holidays::HolidayConfig) -> Self {
         let year = chrono::Local::now().year();
-        let rows = config
+        let rows: Vec<DayRow> = config
             .custom
             .iter()
             .map(|day| {
@@ -64,8 +75,22 @@ impl HolidayDraft {
             .collect();
         Self {
             uf: config.uf,
+            base_uf: config.uf,
+            base_rows: rows.clone(),
             rows,
         }
+    }
+
+    /// Whether the person changed something that was not saved yet (a row
+    /// still without a valid date counts: it must not be thrown away).
+    pub(super) fn editing(&self) -> bool {
+        self.uf != self.base_uf || self.rows != self.base_rows
+    }
+
+    /// Marks what is shown now as saved.
+    fn mark_saved(&mut self) {
+        self.base_uf = self.uf;
+        self.base_rows = self.rows.clone();
     }
 
     /// What goes to the planning: rows with a valid date only.
@@ -88,6 +113,15 @@ impl HolidayDraft {
             custom,
         }
     }
+}
+
+/// Keeps `feriados.txt` as a copy of what is in force. Tests never touch the
+/// real file of this machine.
+fn save_holiday_cache(config: &crate::holidays::HolidayConfig) {
+    #[cfg(not(test))]
+    config.save();
+    #[cfg(test)]
+    let _ = config;
 }
 
 impl PonteApp {
@@ -157,15 +191,15 @@ impl PonteApp {
         });
     }
 
-    /// The state and the extra days off. Local to this computer: the library
-    /// and the shared folder do not carry them.
+    /// The state and the extra days off. They belong to the library: the same
+    /// on every computer and phone that syncs it.
     fn holidays_card(&mut self, ui: &mut egui::Ui) {
         let mut remove: Option<usize> = None;
         widgets::card(ui, |ui| {
             widgets::section(ui, "Feriados");
             widgets::small_muted(
                 ui,
-                "Os feriados nacionais já contam. Estaduais e os dias que você cadastrar valem só neste computador.",
+                "Os feriados nacionais já contam. Estaduais e os dias que você cadastrar valem para todos os aparelhos que sincronizam este acervo.",
             );
             ui.add_space(S1);
             ui.horizontal(|ui| {
@@ -237,15 +271,67 @@ impl PonteApp {
 
     /// Saves and uses the edited state and days, when they changed. Also
     /// called when the section is left or the app closes, so that a field
-    /// still focused at that moment is not lost.
+    /// still focused at that moment is not lost. Only what the person edited
+    /// is written to the library: a draft that merely shows an older value
+    /// never overwrites what another computer saved.
     pub(super) fn apply_holiday_draft(&mut self) {
-        let wanted = self.holiday_draft.config();
-        if wanted != crate::holidays::config() {
-            wanted.save();
-            crate::holidays::set_config(wanted);
-            // Projections, Semana and Calendário are rebuilt from the library.
-            self.refresh();
+        if !self.holiday_draft.editing() {
+            return;
         }
+        let wanted = self.holiday_draft.config();
+        if wanted == crate::holidays::config() {
+            self.holiday_draft.mark_saved();
+            return;
+        }
+        if let Err(error) = crate::holidays::save_to_library(&mut self.store, &wanted) {
+            // Saved nowhere: show again what is in force.
+            self.holiday_draft = HolidayDraft::from_config(&crate::holidays::config());
+            self.error(format!(
+                "Não foi possível salvar os feriados no acervo: {error}"
+            ));
+            return;
+        }
+        save_holiday_cache(&wanted);
+        crate::holidays::set_config(wanted);
+        self.holiday_draft.mark_saved();
+        // Projections, Semana and Calendário are rebuilt from the library.
+        self.refresh();
+    }
+
+    /// Brings the holidays of the library to this computer: after the library
+    /// opens and at every refresh, so also after each synchronization. The
+    /// library wins; when it has none yet, what this computer kept goes into
+    /// it. Returns whether the configuration in use changed.
+    pub(super) fn sync_holidays_with_library(&mut self) -> bool {
+        let local = crate::holidays::config();
+        let library = match crate::holidays::library_config(&self.store) {
+            Ok(library) => library,
+            Err(_) => return false,
+        };
+        let Some(wanted) = library else {
+            // Nobody set it yet: this computer's own goes in, once per state
+            // of the library (a main computer that cannot store it is not
+            // asked again every few seconds).
+            if local != crate::holidays::HolidayConfig::new() {
+                let revision = self.store.cabinet_revision().ok();
+                if self.holiday_migration_revision != Some(revision) {
+                    self.holiday_migration_revision = Some(revision);
+                    let _ = crate::holidays::save_to_library(&mut self.store, &local);
+                }
+            }
+            return false;
+        };
+        if wanted == local {
+            return false;
+        }
+        save_holiday_cache(&wanted);
+        crate::holidays::set_config(wanted.clone());
+        // Another computer changed it: the draft shows it too, unless the
+        // person is in the middle of an edit (their save then wins).
+        if !self.holiday_draft.editing() {
+            self.holiday_draft = HolidayDraft::from_config(&wanted);
+        }
+        true
     }
 
     /// One line of the list of sections, on the left of Ajustes.
@@ -1696,5 +1782,116 @@ mod ai_test_tests {
         assert_eq!(groups[1].1.len(), 2);
         // The grand total is the sum of the two.
         assert_eq!((report.passed(), report.total()), (28, 34));
+    }
+}
+
+#[cfg(test)]
+mod holiday_library_tests {
+    use super::*;
+    use crate::holidays::{HolidayConfig, TEST_LOCK};
+    use crate::library_settings::HOLIDAYS;
+    use crate::storage::Store;
+
+    /// An app on a fresh library, with the process-wide configuration empty.
+    /// The lock keeps the configuration out of the other tests' way.
+    fn app(dir: &tempfile::TempDir) -> PonteApp {
+        crate::holidays::set_config(HolidayConfig::new());
+        let path = dir.path().join("acervo.sqlite3");
+        PonteApp::new(Store::open(&path).unwrap(), path)
+    }
+
+    /// What another computer's synchronization does to the library file.
+    fn another_connection_sets(dir: &tempfile::TempDir, text: &str) {
+        let mut other = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        other.set_library_setting(HOLIDAYS, text).unwrap();
+    }
+
+    #[test]
+    fn what_another_computer_saved_reaches_this_one_and_its_draft() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(&dir);
+        assert!(!app.sync_holidays_with_library());
+        another_connection_sets(&dir, "uf MG\nanual 05-02 Recesso\n");
+        assert!(app.sync_holidays_with_library());
+        assert_eq!(crate::holidays::config().uf, Some("MG"));
+        assert_eq!(app.holiday_draft.uf, Some("MG"));
+        assert_eq!(app.holiday_draft.rows.len(), 1);
+        assert!(!app.holiday_draft.editing());
+        // Nothing new: nothing to do.
+        assert!(!app.sync_holidays_with_library());
+        crate::holidays::set_config(HolidayConfig::new());
+    }
+
+    #[test]
+    fn a_stale_draft_never_overwrites_what_another_computer_saved() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(&dir);
+        another_connection_sets(&dir, "uf SP\n");
+        assert!(app.sync_holidays_with_library());
+        // Ajustes is open and shows SP; the other computer then saves RJ.
+        another_connection_sets(&dir, "uf RJ\n");
+        assert!(app.sync_holidays_with_library());
+        // The screen applying its draft (as it does every frame) writes nothing.
+        app.apply_holiday_draft();
+        assert_eq!(
+            app.store.library_setting(HOLIDAYS).unwrap().as_deref(),
+            Some("uf RJ\n")
+        );
+        assert_eq!(app.holiday_draft.uf, Some("RJ"));
+        crate::holidays::set_config(HolidayConfig::new());
+    }
+
+    #[test]
+    fn an_edit_here_goes_to_the_library() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(&dir);
+        app.holiday_draft.uf = Some("BA");
+        app.holiday_draft.rows.push(DayRow {
+            date: "2031-05-02".into(),
+            yearly: false,
+            name: "Recesso".into(),
+        });
+        assert!(app.holiday_draft.editing());
+        app.apply_holiday_draft();
+        assert!(!app.holiday_draft.editing());
+        let stored = app.store.library_setting(HOLIDAYS).unwrap().unwrap();
+        assert_eq!(
+            HolidayConfig::parse(&stored),
+            crate::holidays::config(),
+            "the library and the planning agree"
+        );
+        assert_eq!(crate::holidays::config().uf, Some("BA"));
+        assert_eq!(crate::holidays::config().custom.len(), 1);
+        // Clearing everything is saved as a value, not as "never set".
+        app.holiday_draft.uf = None;
+        app.holiday_draft.rows.clear();
+        app.apply_holiday_draft();
+        assert_eq!(
+            app.store.library_setting(HOLIDAYS).unwrap().as_deref(),
+            Some("")
+        );
+        crate::holidays::set_config(HolidayConfig::new());
+    }
+
+    #[test]
+    fn this_computers_own_choice_moves_into_an_empty_library_once() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(&dir);
+        // What feriados.txt held before this version.
+        crate::holidays::set_config(HolidayConfig::parse("uf PR\n"));
+        assert!(!app.sync_holidays_with_library());
+        assert_eq!(
+            app.store.library_setting(HOLIDAYS).unwrap().as_deref(),
+            Some("uf PR\n")
+        );
+        // Now the library wins over whatever this device keeps.
+        another_connection_sets(&dir, "uf SC\n");
+        assert!(app.sync_holidays_with_library());
+        assert_eq!(crate::holidays::config().uf, Some("SC"));
+        crate::holidays::set_config(HolidayConfig::new());
     }
 }

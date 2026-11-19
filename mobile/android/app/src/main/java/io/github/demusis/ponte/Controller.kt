@@ -670,7 +670,11 @@ internal object Controller {
         // Hoje, Semana and the planning are worked out by the core: read them again with the new days.
         // Always queued: the worker is serial, so a change made while the core is still opening
         // lands after its startup read of the preferences instead of being lost.
-        SyncRunner.background({ Api.setHolidays(text) }, { if (SyncRunner.ready) refreshTasks() })
+        SyncRunner.background(
+            { Api.setHolidays(text) },
+            { if (SyncRunner.ready) refreshTasks() },
+            { say("Não foi possível salvar os feriados no acervo: $it", long = true) }
+        )
     }
 
     /** [uf] is a state code, or empty for none. */
@@ -780,6 +784,8 @@ internal object Controller {
             lastSync = System.currentTimeMillis()
             prefs.edit().putLong("last_sync", lastSync).apply()
         }
+        // The holidays may have changed with the library (a sync, or the opening of the core).
+        updateSettings()
         refreshTasks()
         reloadDocument()
         refreshOpenTask()

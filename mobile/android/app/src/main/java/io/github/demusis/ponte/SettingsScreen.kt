@@ -405,7 +405,7 @@ private fun SwitchRow(
 
 /** Said under "Feriados" in Ajustes. */
 internal const val HOLIDAYS_NOTE =
-    "Os feriados nacionais já contam. Estaduais e os dias que você cadastrar valem só neste celular."
+    "Os feriados nacionais já contam. Estaduais e os dias que você cadastrar valem para todos os aparelhos que sincronizam este acervo."
 internal const val HOLIDAYS_NO_STATE_DAYS = "Este estado não tem feriado estadual além dos nacionais."
 internal const val HOLIDAYS_OTHER_HINT =
     "Recesso, ponto facultativo, feriado da cidade. Com “Todo ano”, só o dia e o mês contam."

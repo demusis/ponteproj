@@ -1183,6 +1183,9 @@ struct PonteApp {
     reminders: crate::reminders::Reminders,
     /// The state and the extra days off, as edited in Ajustes.
     holiday_draft: settings::HolidayDraft,
+    /// Library revision at the last attempt to put this computer's own
+    /// holidays into the library (see `sync_holidays_with_library`).
+    holiday_migration_revision: Option<Option<i64>>,
     /// The way back offered on the ficha, and the one waiting for the next
     /// document to be opened.
     return_to: Option<ReturnTo>,
@@ -1306,6 +1309,7 @@ impl PonteApp {
             reminders: crate::reminders::Reminders::load(),
             // Reads feriados.txt and puts it to work before the first projection.
             holiday_draft: settings::HolidayDraft::load(),
+            holiday_migration_revision: None,
             today: Default::default(),
             return_to: None,
             return_after_select: None,
@@ -1929,6 +1933,9 @@ impl PonteApp {
     fn refresh(&mut self) {
         self.last_refresh = Instant::now();
         self.intranet.refresh_client(&mut self.store, &self.db_path);
+        // The holidays are the library's: what another computer saved arrives
+        // with the synchronization, before the projections below are built.
+        self.sync_holidays_with_library();
         match self.store.list_documents(&self.query) {
             Ok(documents) => self.documents = documents,
             Err(error) => self.error(format!(

@@ -1,6 +1,9 @@
 //! Days that are not worked in the planning: the national holidays, those of
-//! the state the person chose and the days they registered. The last two are
-//! a local choice (`feriados.txt`); the library never stores them.
+//! the state the person chose and the days they registered. The last two
+//! belong to the library (the `holidays` library setting, so they are the same
+//! on every computer and phone that syncs it); `feriados.txt` (the phone: the
+//! `holidays` preference) is only a copy kept so that the planning is right
+//! before the library opens.
 use chrono::{Datelike, NaiveDate, Weekday};
 use std::borrow::Cow;
 use std::sync::{Mutex, RwLock};
@@ -195,8 +198,8 @@ impl CustomDay {
     }
 }
 
-/// The person's local choices: a state and extra days off. Kept on this
-/// device only; nothing here reaches the library or the shared folder.
+/// The person's choices: a state and extra days off. They live in the library
+/// ([`adopt_library`], [`save_to_library`]); the local file is a cache.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HolidayConfig {
     /// State code, as in [`STATES`].
@@ -282,7 +285,7 @@ impl HolidayConfig {
         crate::paths::data_dir().ok().map(|dir| dir.join(FILE_NAME))
     }
 
-    /// Unreadable or missing file: no state and no extra days.
+    /// The local copy. Unreadable or missing file: no state and no extra days.
     pub fn load() -> Self {
         Self::path()
             .and_then(|path| std::fs::read_to_string(path).ok())
@@ -296,6 +299,38 @@ impl HolidayConfig {
             let _ = std::fs::write(path, self.to_text());
         }
     }
+}
+
+/// What the library says: `None` when nobody ever set it (a cleared
+/// configuration is `Some` of an empty one).
+pub fn library_config(store: &crate::storage::Store) -> anyhow::Result<Option<HolidayConfig>> {
+    Ok(store
+        .library_setting(crate::library_settings::HOLIDAYS)?
+        .map(|text| HolidayConfig::parse(&text)))
+}
+
+/// Puts `config` in the library, for every computer and phone that syncs it.
+pub fn save_to_library(
+    store: &mut crate::storage::Store,
+    config: &HolidayConfig,
+) -> anyhow::Result<()> {
+    store.set_library_setting(crate::library_settings::HOLIDAYS, &config.to_text())
+}
+
+/// The configuration this device should use now. The library wins; when it
+/// has none yet, the device's own (`local`, the file or preference it kept
+/// until now) goes into it, once, so the person does not set it again.
+pub fn adopt_library(
+    store: &mut crate::storage::Store,
+    local: &HolidayConfig,
+) -> anyhow::Result<HolidayConfig> {
+    if let Some(config) = library_config(store)? {
+        return Ok(config);
+    }
+    if *local != HolidayConfig::new() {
+        save_to_library(store, local)?;
+    }
+    Ok(local.clone())
 }
 
 /// The configuration the planning consults (process-wide).
@@ -374,6 +409,38 @@ pub fn is_working_day(date: NaiveDate) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_library_wins_and_a_local_choice_migrates_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::storage::Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        let local = HolidayConfig::parse(
+            "uf SP
+anual 05-02 Recesso
+",
+        );
+        // Nothing set: nothing to take, and an empty local choice writes nothing.
+        assert_eq!(library_config(&store).unwrap(), None);
+        assert_eq!(
+            adopt_library(&mut store, &HolidayConfig::new()).unwrap(),
+            HolidayConfig::new()
+        );
+        assert_eq!(library_config(&store).unwrap(), None);
+        // The local choice goes into the library, the first time.
+        assert_eq!(adopt_library(&mut store, &local).unwrap(), local);
+        assert_eq!(library_config(&store).unwrap(), Some(local.clone()));
+        // Later, the library wins over whatever this device kept.
+        let other = HolidayConfig::parse(
+            "uf RJ
+",
+        );
+        assert_eq!(adopt_library(&mut store, &other).unwrap(), local);
+        // Cleared on purpose stays cleared; an old local file does not return.
+        save_to_library(&mut store, &HolidayConfig::new()).unwrap();
+        assert_eq!(
+            adopt_library(&mut store, &local).unwrap(),
+            HolidayConfig::new()
+        );
+    }
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
     }

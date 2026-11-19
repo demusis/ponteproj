@@ -42,7 +42,7 @@ internal object Api {
         return c(core.createTask(o.toString())).optLong("id")
     }
 
-    /** Hands the core the phone's holiday choices (the text saved in the preferences). */
+    /** Saves the holidays chosen in Ajustes in the library (the other devices get them with the next sync). */
     fun setHolidays(text: String) { c(core.setHolidays(text)) }
 
     /** Every category (archived ones too), by name. */

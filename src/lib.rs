@@ -81,6 +81,8 @@ pub mod resources;
 pub mod icon;
 
 pub mod labels;
+/// Small named texts that belong to the library and sync with it.
+pub mod library_settings;
 
 #[cfg(feature = "desktop")]
 pub mod windows_ui;

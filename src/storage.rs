@@ -20,8 +20,10 @@ use std::time::Duration;
 /// table changes): the number is raised so that an older Ponte refuses to
 /// open the library instead of saving over fields it does not know. 17 adds
 /// the categories (a table, and the uids kept in the payloads of tasks and
-/// of the document context), a new synced entity.
-pub(crate) const SCHEMA_VERSION: i64 = 19;
+/// of the document context), a new synced entity. 20 adds the library
+/// settings (a table and a synced entity again: the holidays shared by every
+/// computer and phone of the library).
+pub(crate) const SCHEMA_VERSION: i64 = 20;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -259,6 +261,7 @@ impl Store {
         store.ensure_mail_accounts()?;
         store.ensure_resources()?;
         store.ensure_categories()?;
+        store.ensure_library_settings()?;
         store.ensure_write_guards()?;
         crate::idmap::init_watermark(&store.conn)?;
         // Schema 15 (recursos) stamps the library, so an older Ponte refuses
@@ -317,6 +320,7 @@ impl Store {
             "resources",
             "resource_uses",
             "categories",
+            "library_settings",
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());

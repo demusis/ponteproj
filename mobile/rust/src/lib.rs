@@ -173,6 +173,11 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
         "waiting": store.list_offline_outbox()?.len(),
         "conflicts": report.conflicts,
     });
+    // The holidays are the library's: what another device saved is now in
+    // force here, and the app refreshes its own copy from this.
+    if let Some(holidays) = holidays_after_sync(store) {
+        answer["holidays"] = holidays["text"].clone();
+    }
     if written {
         answer["bytes"] = json!(std::fs::metadata(path)?.len());
     }
@@ -795,12 +800,54 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_setDocumentCategor
     })
 }
 
-/// Makes the phone's own holiday choices (a state, extra days off) the ones the
-/// planning uses. Kept on this device only; the library does not carry them.
-fn apply_holidays(text: &str) {
-    ponteproj::holidays::set_config(ponteproj::holidays::HolidayConfig::parse(text));
+/// Makes `config` the one the planning of the core uses, and answers its text
+/// (what the app keeps as its own copy).
+fn use_holidays(config: ponteproj::holidays::HolidayConfig) -> Value {
+    let text = config.to_text();
+    ponteproj::holidays::set_config(config);
+    json!({ "text": text })
 }
 
+/// The holidays belong to the library, so they are the same on every computer
+/// and phone that syncs it. `local` is the text the app kept until now: the
+/// library wins; when it has none yet, `local` goes into it, once. Answers
+/// the text now in force.
+fn adopt_holidays(store: &mut Store, local: &str) -> Value {
+    let local = ponteproj::holidays::HolidayConfig::parse(local);
+    // A failure to write only means the library keeps none for now.
+    let config = ponteproj::holidays::adopt_library(store, &local).unwrap_or(local);
+    use_holidays(config)
+}
+
+/// The person's choice, from Ajustes: into the library (and so to the other
+/// devices) and into the planning.
+fn save_holidays(store: &mut Store, text: &str) -> Result<Value> {
+    let config = ponteproj::holidays::HolidayConfig::parse(text);
+    ponteproj::holidays::save_to_library(store, &config)?;
+    Ok(use_holidays(config))
+}
+
+/// After an exchange: what the library says, when it says anything.
+fn holidays_after_sync(store: &Store) -> Option<Value> {
+    let config = ponteproj::holidays::library_config(store).ok().flatten()?;
+    Some(use_holidays(config))
+}
+
+/// Takes the holidays of the library (or, with none yet, puts the app's own
+/// text into it) and makes them the planning's. Answers `{text}`.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_adoptHolidays<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    local_text: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let local = text(env, &local_text)?;
+        with_store(|store| Ok(adopt_holidays(store, &local)))
+    })
+}
+
+/// Saves the holidays chosen in Ajustes in the library. Answers `{text}`.
 #[no_mangle]
 pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_setHolidays<'local>(
     mut env: JNIEnv<'local>,
@@ -808,8 +855,8 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_setHolidays<'local
     text_lines: JString<'local>,
 ) -> jstring {
     answer(&mut env, |env| {
-        apply_holidays(&text(env, &text_lines)?);
-        Ok(json!({}))
+        let chosen = text(env, &text_lines)?;
+        with_store(|store| save_holidays(store, &chosen))
     })
 }
 
@@ -2114,6 +2161,43 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|n| n.contains(".tmp-"))
             .collect()
+    }
+
+    #[test]
+    fn holidays_set_on_the_computer_reach_the_phone_and_back() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        let reporter = ponteproj::ai::Reporter::silent();
+        let date = chrono::NaiveDate::from_ymd_opt(2031, 3, 17).unwrap();
+
+        // The computer chose a state and a day off, and sent them.
+        computer
+            .set_library_setting("holidays", "uf SP\ndia 2031-03-17 Recesso\n")
+            .unwrap();
+        let cfg = computer.load_intranet_config().unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+
+        // The phone joins: the answer carries the holidays, and they are in force.
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        let work_s = work.display().to_string();
+        let first = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(first["holidays"], "uf SP\ndia 2031-03-17 Recesso\n");
+        assert_eq!(ponteproj::holidays::holiday(date), Some("Recesso"));
+
+        // The person changes them on the phone; the computer gets them.
+        save_holidays(&mut phone, "uf MG\n").unwrap();
+        let second = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(second["written"], json!(true));
+        assert_eq!(second["holidays"], "uf MG\n");
+        assert_eq!(ponteproj::holidays::holiday(date), None);
+        std::fs::copy(&work, &drive).unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        assert_eq!(computer.library_setting("holidays").unwrap().as_deref(), Some("uf MG\n"));
+        ponteproj::holidays::set_config(ponteproj::holidays::HolidayConfig::new());
     }
 
     #[test]
@@ -3553,14 +3637,45 @@ mod tests {
     #[test]
     fn holidays_text_reaches_the_planning() {
         let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
         // A date no other test uses (a Monday).
         let date = chrono::NaiveDate::from_ymd_opt(2031, 3, 17).unwrap();
         assert_eq!(ponteproj::holidays::holiday(date), None);
-        apply_holidays("uf SP\ndia 2031-03-17 Recesso do órgão\nlixo\n");
+        let saved = save_holidays(&mut store, "uf SP\ndia 2031-03-17 Recesso do órgão\nlixo\n").unwrap();
+        // The answer is the canonical text the app keeps as its copy.
+        assert_eq!(saved["text"], "uf SP\ndia 2031-03-17 Recesso do órgão\n");
         assert_eq!(ponteproj::holidays::holiday(date), Some("Recesso do órgão"));
         assert!(!ponteproj::holidays::is_working_day(date));
-        apply_holidays("");
+        // ... and it is in the library, for every device.
+        assert_eq!(
+            store.library_setting("holidays").unwrap().as_deref(),
+            Some("uf SP\ndia 2031-03-17 Recesso do órgão\n")
+        );
+        save_holidays(&mut store, "").unwrap();
         assert_eq!(ponteproj::holidays::holiday(date), None);
         assert!(ponteproj::holidays::is_working_day(date));
+    }
+
+    #[test]
+    fn the_phone_adopts_the_library_holidays_and_migrates_its_own_once() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let date = chrono::NaiveDate::from_ymd_opt(2031, 3, 17).unwrap();
+        // The library has none: what the phone kept goes in.
+        let first = adopt_holidays(&mut store, "dia 2031-03-17 Recesso\n");
+        assert_eq!(first["text"], "dia 2031-03-17 Recesso\n");
+        assert_eq!(
+            store.library_setting("holidays").unwrap().as_deref(),
+            Some("dia 2031-03-17 Recesso\n")
+        );
+        assert_eq!(ponteproj::holidays::holiday(date), Some("Recesso"));
+        // Later the library wins over whatever the phone kept.
+        store.set_library_setting("holidays", "uf RJ\n").unwrap();
+        let second = adopt_holidays(&mut store, "dia 2031-03-17 Recesso\n");
+        assert_eq!(second["text"], "uf RJ\n");
+        assert_eq!(ponteproj::holidays::holiday(date), None);
+        ponteproj::holidays::set_config(ponteproj::holidays::HolidayConfig::new());
     }
 }

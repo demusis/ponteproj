@@ -136,10 +136,17 @@ class PonteCore {
     external fun atRisk(): String
 
     /**
-     * The phone's own holiday choices as the text of [HolidayConfig.toText] (a state, extra days off); the
-     * planning of the core uses them from now on. Kept on this device only.
+     * Saves the holidays chosen in Ajustes (the text of [HolidayConfig.toText]: a state, extra days off) in the
+     * library, so every computer and phone that syncs it gets them, and makes them the planning's. Answers `text`.
      */
     external fun setHolidays(text: String): String
+
+    /**
+     * At startup: takes the holidays of the library (the planning of the core uses them from now on) or, when
+     * the library has none yet, puts [localText], the copy this phone kept until now, into it. Answers `text`,
+     * the holidays in force.
+     */
+    external fun adoptHolidays(localText: String): String
 
     companion object {
         init {

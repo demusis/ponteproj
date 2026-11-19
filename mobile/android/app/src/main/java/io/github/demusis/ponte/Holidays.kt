@@ -103,6 +103,9 @@ internal object Holidays {
         config = HolidayConfig.parse(text)
     }
 
+    /** The text as it is kept: what is unreadable dropped, the lines in the order of [HolidayConfig.toText]. */
+    fun canonical(text: String): String = HolidayConfig.parse(text).toText()
+
     /** Easter Sunday of [year] (anonymous Gregorian algorithm, Meeus/Jones/Butcher). */
     fun easter(year: Int): LocalDate {
         val a = year % 19

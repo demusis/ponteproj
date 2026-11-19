@@ -581,6 +581,8 @@ Duas regras para ter em mente:
 
 **Formato:** o planejamento muda o formato do acervo (19) e o da pasta compartilhada (6), na 0.39.0 (antes, 17 e 5). Atualize **primeiro o computador principal**: um computador já na 0.39 não salva tarefas num principal ainda na 0.38 e avisa *Atualize o Ponte no computador principal para sincronizar tarefas.* Um Ponte mais antigo recusa o arquivo novo da pasta compartilhada e diz para atualizar. Cada tarefa ganha uma identificação interna na primeira abertura.
 
+**Feriados do acervo:** o estado e os dias sem expediente (Ajustes ▸ Feriados) ficam no acervo e valem para todos os computadores e celulares que o sincronizam; antes, cada aparelho tinha os seus (`feriados.txt`, agora só uma cópia local). É uma configuração da biblioteca (`library_settings`, chave `holidays`), sincronizada em todos os modos; se dois aparelhos mudarem ao mesmo tempo, vale a mudança aplicada por último, sem tela de conflito. Muda o formato do acervo (20) e o da pasta compartilhada (7): um Ponte 0.46.0 ou Ponte de bolso 0.19.1 recusa o acervo e o arquivo novos e diz para atualizar; atualize os computadores e o celular juntos, o principal primeiro. Na primeira abertura, os feriados que já estavam salvos no aparelho passam para o acervo, se ele ainda não tiver os seus.
+
 ### 6.9 Calendário (.ics)
 
 Para levar a agenda a outro programa (Google Agenda, Outlook, o calendário do celular) ou trazer compromissos para o Ponte, use o card **Calendário (.ics)**, em **Ajustes ▸ Cópia de segurança e exportação**.

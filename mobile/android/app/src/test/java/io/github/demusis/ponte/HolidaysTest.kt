@@ -58,6 +58,25 @@ class HolidaysTest {
         assertEquals(HolidayConfig(), HolidayConfig.parse(""))
     }
 
+    @Test fun copiaDoAcervoFicaNoTextoCanonicoELimpaOQueNaoEntende() {
+        // O que vem do acervo (de outro aparelho) vira a cópia local sem lixo e sem mudar o sentido.
+        val doAcervo = "lixo\nuf SP\nanual 09-07   Dia da cidade \ndia 2026-03-19 Ponte\nuf XX\n"
+        val canonico = Holidays.canonical(doAcervo)
+        // O último "uf" vale (aqui, um estado que não existe: nenhum).
+        assertEquals("anual 09-07 Dia da cidade\ndia 2026-03-19 Ponte\n", canonico)
+        assertEquals(HolidayConfig.parse(doAcervo), HolidayConfig.parse(canonico))
+        // Texto canônico é ponto fixo: guardar de novo não muda nada.
+        assertEquals(canonico, Holidays.canonical(canonico))
+        // Acervo com os feriados limpos de propósito é um texto vazio, não "sem configuração".
+        assertEquals("", Holidays.canonical(""))
+        assertEquals("", Holidays.canonical("lixo\n"))
+    }
+
+    @Test fun avisoDeAjustesDizQueValePeloAcervo() {
+        assertTrue(HOLIDAYS_NOTE.contains("todos os aparelhos que sincronizam este acervo"))
+        assertFalse(HOLIDAYS_NOTE.contains("só neste"))
+    }
+
     @Test fun diaDeSaoPauloSoContaEmSaoPaulo() {
         // 9/7/2026 é quinta-feira.
         assertTrue(Holidays.isWorkingDay(d(2026, 7, 9)))
