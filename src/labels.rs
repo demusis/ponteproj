@@ -501,6 +501,72 @@ pub fn date_field(
     response
 }
 
+/// Compose the stored datetime, preserving invalid input for validation.
+pub fn compose_datetime(date_text: &str, time_text: &str, default_time: &str) -> String {
+    if date_text.trim().is_empty() { return String::new(); }
+    let Some(date) = parse_typed_date(date_text) else { return format!("{}T{}", date_text, time_text); };
+    let time = if time_text.trim().is_empty() { Some(default_time.to_owned()) } else { parse_typed_time(time_text) };
+    format!("{}T{}", date, time.unwrap_or_else(|| time_text.to_owned()))
+}
+
+/// Recover the two visible buffers from a stored datetime or invalid input.
+pub fn datetime_parts(value: &str) -> (String, String) {
+    if value.is_empty() { return (String::new(), String::new()); }
+    let (day, time) = value.split_once('T').unwrap_or((value, ""));
+    (date(day), time.to_owned())
+}
+
+#[cfg(feature = "desktop")]
+pub fn datetime_field(
+    ui: &mut eframe::egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    value: &mut String,
+    default_time: &str,
+) -> eframe::egui::Response {
+    use eframe::egui;
+    let id = ui.make_persistent_id(("ponte-datetime-field", id_salt));
+    let mut state: (String, String, String) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    if state.2 != *value {
+        let (day, time) = datetime_parts(value);
+        state = (day, time, value.clone());
+    }
+    let date_valid = state.0.trim().is_empty() || parse_typed_date(&state.0).is_some();
+    let time_valid = state.1.trim().is_empty() || parse_typed_time(&state.1).is_some();
+    let response = ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let mut edit = egui::TextEdit::singleline(&mut state.0).hint_text("dd/mm/aaaa").desired_width(98.0);
+        if !date_valid { edit = edit.text_color(crate::theme::error()); }
+        let mut response = ui.add(edit);
+        if !date_valid { crate::widgets::outline(ui, response.rect, crate::theme::error()); }
+        let picker = crate::widgets::icon_button(ui, crate::theme::icon::CALENDAR, "Escolher a data num calendário");
+        let selected = calendar_popup(id, &picker, &state.0);
+        if let Some(chosen) = selected { state.0 = date(&chosen); response.mark_changed(); }
+        if ui.add(crate::widgets::quiet("Hoje")).on_hover_text("Preenche com a data de hoje").clicked() {
+            state.0 = chrono::Local::now().format("%d/%m/%Y").to_string();
+            response.mark_changed();
+        }
+        let mut time_edit = egui::TextEdit::singleline(&mut state.1).hint_text(default_time).desired_width(50.0);
+        if !time_valid { time_edit = time_edit.text_color(crate::theme::error()); }
+        let time_response = ui.add(time_edit);
+        if !time_valid { crate::widgets::outline(ui, time_response.rect, crate::theme::error()); }
+        if time_response.changed() { response.mark_changed(); }
+        if time_response.lost_focus() {
+            if let Some(time) = parse_typed_time(&state.1) { state.1 = time; }
+        }
+        if !date_valid || !time_valid {
+            ui.label(egui::RichText::new(crate::theme::icon::WARNING).size(16.0).color(crate::theme::error()))
+                .on_hover_text("Data ou hora inválida.");
+        }
+        response
+    }).inner;
+    if response.changed() {
+        *value = compose_datetime(&state.0, &state.1, default_time);
+        state.2 = value.clone();
+    }
+    ui.data_mut(|d| d.insert_temp(id, state));
+    response
+}
+
 #[cfg(feature = "desktop")]
 const MONTHS: [&str; 12] = [
     "Janeiro",
@@ -675,6 +741,17 @@ fn calendar_popup(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn datetime_buffers_and_composition() {
+        use super::*;
+        assert_eq!(compose_datetime("03/11/2026", "", "09:00"), "2026-11-03T09:00");
+        for time in ["9:00", "9h", "09h00"] { assert_eq!(compose_datetime("03/11/2026", time, "18:00"), "2026-11-03T09:00"); }
+        assert_eq!(compose_datetime("", "bad", "09:00"), "");
+        assert_eq!(compose_datetime("ruim", "9h", "09:00"), "ruimT9h");
+        assert_eq!(compose_datetime("03/11/2026", "ruim", "09:00"), "2026-11-03Truim");
+        assert_eq!(datetime_parts("2026-11-03T09:00"), ("03/11/2026".into(), "09:00".into()));
+    }
+
     use super::*;
 
     #[test]

@@ -59,6 +59,99 @@ internal object TaskRules {
         else -> "○"
     }
 
+    // ------------------------------------------------------------ planning (start, end, estimate)
+
+    const val PLANNING_HINT =
+        "Quando você vai trabalhar nela. Não muda o prazo. Hora em branco: 09:00 no início e 18:00 no fim."
+    const val HOUR_INVALID = "Hora inválida. Use 09:00."
+    const val START_HOUR = "09:00"
+    const val END_HOUR = "18:00"
+    const val MINUTES_PER_DAY = 1440
+
+    private val hourPattern = Regex("""^(\d{1,2})(?:[:hH](\d{2})?)?$""")
+
+    /** "HH:MM" for "09:00", "9:00", "9h", "09h30" or "9"; null when it is not an hour of the day. */
+    fun normalizeHour(text: String): String? {
+        val m = hourPattern.matchEntire(text.trim()) ?: return null
+        val h = m.groupValues[1].toInt()
+        val min = m.groupValues[2].ifEmpty { "0" }.toInt()
+        if (h !in 0..23 || min !in 0..59) return null
+        return "%02d:%02d".format(h, min)
+    }
+
+    private fun validDate(date: String) = try {
+        java.time.LocalDate.parse(date); true
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * The stored moment ("yyyy-MM-ddTHH:mm") of a [date] and an [hour] typed by the person.
+     * Blank date: "" (no moment). Blank hour: [defaultHour]. Invalid hour: null.
+     */
+    fun composeMoment(date: String, hour: String, defaultHour: String): String? {
+        if (date.isBlank()) return ""
+        if (!validDate(date.trim())) return null
+        val h = if (hour.isBlank()) defaultHour else normalizeHour(hour) ?: return null
+        return "${date.trim()}T$h"
+    }
+
+    /** A stored moment back into its date and the hour to show ("" when there is no valid hour). */
+    fun splitMoment(value: String): Pair<String, String> {
+        val v = value.trim()
+        if (v.length < 10 || !validDate(v.substring(0, 10))) return "" to ""
+        val hour = if (v.length > 10 && (v[10] == 'T' || v[10] == ' ')) normalizeHour(v.substring(11).take(5)) else null
+        return v.substring(0, 10) to (hour ?: "")
+    }
+
+    /** Whole days of an estimate, rounded up: 0 for none. */
+    fun estimateDays(minutes: Int): Int = if (minutes <= 0) 0 else (minutes + MINUTES_PER_DAY - 1) / MINUTES_PER_DAY
+
+    /** "Estimativa anterior: N min" for a stored estimate that is not a whole number of days; else "". */
+    fun legacyEstimateNote(minutes: Int): String =
+        if (minutes > 0 && minutes % MINUTES_PER_DAY != 0) "Estimativa anterior: $minutes min" else ""
+
+    /** The text typed for the days: a whole number from 0, or null. */
+    fun parseDays(text: String): Int? = if (text.isBlank()) 0 else text.trim().toIntOrNull()?.takeIf { it in 0..3650 }
+
+    /**
+     * The end to fill in after the start or the days changed: start date + (days - 1) at 18:00, only
+     * with a start, days above zero and no end yet. Null when nothing should be filled.
+     */
+    fun autoEnd(start: String, days: Int, end: String): String? {
+        if (days <= 0 || end.isNotBlank()) return null
+        val (date, _) = splitMoment(start)
+        if (date.isEmpty()) return null
+        return "${java.time.LocalDate.parse(date).plusDays(days - 1L)}T$END_HOUR"
+    }
+
+    /** "⚠ O fim planejado passa do prazo (dd/mm/aaaa)." when the planned end is after a valid due date; else "". */
+    fun overDueWarning(dueDate: String, scheduledEnd: String): String {
+        val due = dueDate.trim().take(10)
+        val (endDate, _) = splitMoment(scheduledEnd)
+        if (endDate.isEmpty() || !validDate(due)) return ""
+        if (java.time.LocalDate.parse(endDate) <= java.time.LocalDate.parse(due)) return ""
+        return "⚠ O fim planejado passa do prazo (${due.substring(8, 10)}/${due.substring(5, 7)}/${due.substring(0, 4)})."
+    }
+
+    /** One choice of the reminders: [legacy] ones are offsets the task already had that are no longer offered. */
+    data class ReminderOption(val minutes: Int, val label: String, val legacy: Boolean = false)
+
+    private val standardReminders = listOf(
+        ReminderOption(0, "No início"), ReminderOption(1440, "1 dia antes"), ReminderOption(10080, "7 dias antes")
+    )
+
+    private fun legacyLabel(minutes: Int): String = when {
+        minutes % 1440 == 0 -> "${minutes / 1440} ${if (minutes == 1440) "dia" else "dias"} antes (antigo)"
+        minutes % 60 == 0 -> "${minutes / 60} ${if (minutes == 60) "hora" else "horas"} antes (antigo)"
+        else -> "$minutes min antes (antigo)"
+    }
+
+    /** The standard options, then any other offset the task has (selected), smallest first. */
+    fun reminderOptions(offsets: List<Int>): List<ReminderOption> =
+        standardReminders + offsets.distinct().filter { o -> standardReminders.none { it.minutes == o } }.sorted()
+            .map { ReminderOption(it, legacyLabel(it), legacy = true) }
+
     /** One line under "Avisos antes do início" when the permission to notify was refused. */
     const val REMINDERS_BLOCKED =
         "Sem permissão para notificações, os avisos desta tarefa não aparecem. Permita-as nas configurações do telefone."

@@ -132,6 +132,17 @@ private fun TaskLoaded(
     // A task without document has nothing to triage.
     val shownActions = if (!linked && form.action != "triar") actions.filter { it.key != "triar" } else actions
     val titleMissing = form.title.isBlank()
+    // What is typed in the hour and days boxes starts over with a new epoch or stored version.
+    var startHour by rememberSaveable(state.epoch, task.version) { mutableStateOf(TaskRules.splitMoment(form.scheduledStart).second) }
+    var endHour by rememberSaveable(state.epoch, task.version) { mutableStateOf(TaskRules.splitMoment(form.scheduledEnd).second) }
+    var daysText by rememberSaveable(state.epoch, task.version) { mutableStateOf(TaskRules.estimateDays(form.estimateMinutes).toString()) }
+    val startDate = TaskRules.splitMoment(form.scheduledStart).first
+    val endDate = TaskRules.splitMoment(form.scheduledEnd).first
+    // The form only takes a valid hour; Salvar waits for the one that is not.
+    val startMoment = { date: String, hour: String -> TaskRules.composeMoment(date, hour, TaskRules.START_HOUR) }
+    val endMoment = { date: String, hour: String -> TaskRules.composeMoment(date, hour, TaskRules.END_HOUR) }
+    val hourInvalid = (startDate.isNotEmpty() && startMoment(startDate, startHour) == null) ||
+        (endDate.isNotEmpty() && endMoment(endDate, endHour) == null)
 
     SafeBackHandler(onBack = leave)
 
@@ -150,12 +161,12 @@ private fun TaskLoaded(
                 SecondaryButton(
                     if (task.done) "Reabrir" else "Concluir",
                     onClick = { if (titleMissing) tried = true else onFinish(draft.toSave(task.id)) },
-                    modifier = Modifier.weight(1f), enabled = !state.busy && !conflict
+                    modifier = Modifier.weight(1f), enabled = !state.busy && !conflict && !hourInvalid
                 )
                 PrimaryButton(
                     "Salvar",
                     onClick = { if (titleMissing) tried = true else onSave(draft.toSave(task.id)) },
-                    modifier = Modifier.weight(1f), enabled = changed && !conflict, loading = state.busy
+                    modifier = Modifier.weight(1f), enabled = changed && !conflict && !hourInvalid, loading = state.busy
                 )
             }
         }
@@ -176,17 +187,65 @@ private fun TaskLoaded(
             if (shownActions.isNotEmpty()) ChoiceField("Ação", shownActions, form.action, { v -> edit { it.copy(action = v) } })
             ChoiceField("Prioridade", priorities.ifEmpty { DefaultPriorities }, form.priority, { v -> edit { it.copy(priority = v) } })
             DateField("Prazo", form.dueDate, { v -> edit { it.copy(dueDate = v) } }, emptyText = "Sem prazo")
-            LabeledField("Início planejado (AAAA-MM-DDTHH:MM)", form.scheduledStart, { v -> edit { it.copy(scheduledStart = v) } })
-            LabeledField("Fim planejado (AAAA-MM-DDTHH:MM)", form.scheduledEnd, { v -> edit { it.copy(scheduledEnd = v) } })
-            LabeledField("Estimativa em minutos (0 = sem estimativa)", form.estimateMinutes.toString(), { v -> v.toIntOrNull()?.let { n -> edit { it.copy(estimateMinutes = n) } } })
+            val applyAutoEnd = { f: TaskForm, days: Int ->
+                TaskRules.autoEnd(f.scheduledStart, days, f.scheduledEnd)?.let { e ->
+                    endHour = TaskRules.END_HOUR
+                    f.copy(scheduledEnd = e)
+                } ?: f
+            }
+            val currentDays = TaskRules.parseDays(daysText) ?: 0
+            SectionLabel("Planejamento")
+            Text(TaskRules.PLANNING_HINT, style = MaterialTheme.typography.bodySmall, color = c.muted)
+            PlanningMoment(
+                "Início", "09:00", startDate, startHour,
+                onDate = { d ->
+                    if (d.isEmpty()) startHour = ""
+                    val m = startMoment(d, startHour) ?: startMoment(d, "") ?: ""
+                    edit { applyAutoEnd(it.copy(scheduledStart = m), currentDays) }
+                },
+                onHour = { h ->
+                    startHour = h
+                    startMoment(startDate, h)?.let { m -> edit { applyAutoEnd(it.copy(scheduledStart = m), currentDays) } }
+                },
+                error = if (startDate.isNotEmpty() && startMoment(startDate, startHour) == null) TaskRules.HOUR_INVALID else ""
+            )
+            PlanningMoment(
+                "Fim", "18:00", endDate, endHour,
+                onDate = { d ->
+                    if (d.isEmpty()) endHour = ""
+                    val m = endMoment(d, endHour) ?: endMoment(d, "") ?: ""
+                    edit { it.copy(scheduledEnd = m) }
+                },
+                onHour = { h ->
+                    endHour = h
+                    endMoment(endDate, h)?.let { m -> edit { it.copy(scheduledEnd = m) } }
+                },
+                error = if (endDate.isNotEmpty() && endMoment(endDate, endHour) == null) TaskRules.HOUR_INVALID else ""
+            )
+            TaskRules.overDueWarning(form.dueDate, form.scheduledEnd).takeIf { it.isNotEmpty() }?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = c.warning)
+            }
+            LabeledField(
+                "Estimativa em dias (0 = sem estimativa)", daysText,
+                { v ->
+                    TaskRules.parseDays(v)?.let { n ->
+                        daysText = v
+                        edit { applyAutoEnd(it.copy(estimateMinutes = n * TaskRules.MINUTES_PER_DAY), n) }
+                    }
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+            )
+            TaskRules.legacyEstimateNote(form.estimateMinutes).takeIf { it.isNotEmpty() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = c.muted)
+            }
             SectionLabel("Tarefa pai")
             val parentTitle = relations.tasks.firstOrNull { it.id == form.parentTaskId }?.title
             Text(if (form.parentTaskId == null) "Sem tarefa pai" else parentTitle ?: "Tarefa pai #${form.parentTaskId}")
             SecondaryButton("Escolher tarefa pai…", onClick = { parentPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
             if (relations.loading) Text("Carregando tarefas…")
             relations.error?.let { Notice(it, Tone.ERROR) }
-            Text("Avisos antes do início")
-            listOf(0 to "No início", 15 to "15 minutos", 60 to "1 hora", 1440 to "1 dia").forEach { (minutes, label) ->
+            Text("Avisos antes do início planejado")
+            TaskRules.reminderOptions(form.reminderOffsetsMinutes).forEach { (minutes, label) ->
                 androidx.compose.material3.FilterChip(
                     selected = minutes in form.reminderOffsetsMinutes,
                     onClick = {
@@ -264,6 +323,24 @@ private fun TaskLoaded(
             confirmButton = { TextButton(onClick = { unlinking = false; onUnlink() }) { Text("Desvincular", color = c.error) } },
             dismissButton = { TextButton(onClick = { unlinking = false }) { Text("Cancelar") } }
         )
+    }
+}
+
+/** A planned moment like Prazo (date chooser) plus a small optional hour box; [error] shows under them. */
+@Composable
+private fun PlanningMoment(
+    label: String, hourHint: String, date: String, hour: String,
+    onDate: (String) -> Unit, onHour: (String) -> Unit, error: String
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+            DateField(label, date, onDate, Modifier.weight(1f), emptyText = "Sem data")
+            LabeledField(
+                "Hora", hour, onHour, Modifier.width(112.dp), placeholder = hourHint,
+                error = "", keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Text)
+            )
+        }
+        if (error.isNotEmpty()) Text(error, style = MaterialTheme.typography.bodySmall, color = Ponte.colors.error)
     }
 }
 

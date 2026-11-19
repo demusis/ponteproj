@@ -181,14 +181,30 @@ pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked:
     if unscheduled.is_empty() { widgets::muted(ui, "Todas as tarefas abertas têm um horário reservado."); }
     for task in unscheduled {
         let due = if task.due_date.is_empty() { "sem prazo".to_owned() } else { format!("prazo {}", crate::labels::date(&task.due_date)) };
-        if ui.add(widgets::quiet(format!("{} · {} · {} min", task.title, due, task.estimate_minutes))).clicked() {
+        let estimate = estimate_label(task.estimate_minutes);
+        let suffix = if estimate.is_empty() { String::new() } else { format!(" · {estimate}") };
+        if ui.add(widgets::quiet(format!("{} · {}{}", task.title, due, suffix))).clicked() {
             *asked = Some(Asked::OpenTask(task.clone()));
         }
     }
 }
 
+fn estimate_label(minutes: u32) -> String {
+    if minutes == 0 { String::new() }
+    else if minutes % 1440 == 0 { let days = minutes / 1440; format!("{} {}", days, if days == 1 { "dia" } else { "dias" }) }
+    else { format!("{minutes} min") }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn estimate_display() {
+        assert_eq!(super::estimate_label(0), "");
+        assert_eq!(super::estimate_label(1440), "1 dia");
+        assert_eq!(super::estimate_label(2880), "2 dias");
+        assert_eq!(super::estimate_label(15), "15 min");
+    }
+
     use super::*;
     #[test]
     fn week_crosses_year_and_sunday_belongs_to_previous_monday() {

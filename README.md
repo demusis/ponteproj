@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.41.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.42.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.41.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.42.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -433,7 +433,7 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 - **A área abre com todas as tarefas**, qualquer que seja o documento selecionado em Documentos. Para ver só as de um documento, use **Ver todas** no card Tarefas da ficha dele, ou **Só as de ORG-OFI-2026/00042** no fim da fileira de visões. Enquanto a lista está restrita, uma faixa diz *Mostrando só as tarefas de ORG-OFI-2026/00042 — Pedido de revisão de materiais de treinamento*, com **Ver todas** para voltar a tudo.
 - **Ordenar:** à direita das visões, *Prazo*, *Prioridade* ou *Documento*.
 - **Lista vazia:** a área diz por quê (por exemplo, nenhuma tarefa na visão escolhida ou na busca).
-- **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando*, *Com lembrete* e *Sem prazo*. A caixa **Ainda não planejadas**, junto das visões, mostra só as tarefas sem horário de trabalho ([6.8](#68-planejar-o-trabalho)).
+- **Visões:** *Todas*, *Hoje*, *Próximos 7 dias*, *Atrasadas* e, em **Mais ▾**, *Prontas para fazer* (pendentes sem nenhuma tarefa anterior em aberto), *A triar*, *Aguardando*, *Para começar* (abertas cujo início planejado já chegou, ou com lembrete antigo vencido) e *Sem prazo*. A caixa **Ainda não planejadas**, junto das visões, mostra só as tarefas sem horário de trabalho ([6.8](#68-planejar-o-trabalho)).
 - **Mostrar concluídas** inclui as já concluídas na lista.
 - **Tarefa sem documento.** Na área **Tarefas**, **Nova tarefa** (ou **Ctrl+N**) cria uma tarefa que não pertence a nenhum documento; na lista ela aparece como **Sem documento**. Com a lista filtrada por um documento (faixa "Mostrando só as tarefas de…"), a tarefa nova é dele. No painel da tarefa, **Vincular a um documento…** abre uma busca por número, assunto ou texto; depois, **Trocar de documento…** e **Desvincular do documento** mudam ou desfazem o vínculo. A tarefa é a mesma o tempo todo: anexos, lista de providências e histórico ficam com ela.
 - O painel da tarefa mostra o número e o assunto do documento a que ela pertence.
@@ -448,13 +448,14 @@ O alto traz a busca e o botão **Nova tarefa**. A lista fica à esquerda, agrupa
 | Situação | *Pendente*, *Em análise*, *Aguardando*, *Concluída* |
 | Prioridade | *Baixa*, *Normal*, *Alta*, *Urgente* |
 | Prazo | `13/11/2026` |
-| **Planejamento** | **Início**, **Fim** (`2026-11-18T09:00`) e **Estimativa em minutos**: o horário em que você vai trabalhar, separado do prazo ([6.8](#68-planejar-o-trabalho)) |
-| **Avisos antes do início** | *No início*, *15 min*, *1 hora*, *1 dia* ([6.6](#66-lembretes-de-prazos)) |
+| **Planejamento** | **Início** e **Fim** (data como o prazo, hora opcional: 09:00 e 18:00 em branco) e **Estimativa em dias**: quando você vai trabalhar, separado do prazo ([6.8](#68-planejar-o-trabalho)) |
+| **Avisos antes do início planejado** | *No início*, *1 dia antes*, *7 dias antes*; avisos de versões anteriores aparecem com *(antigo)* ([6.6](#66-lembretes-de-prazos)) |
 | **Tarefa pai** | a lista **Sem tarefa pai** faz desta uma subtarefa ([6.8](#68-planejar-o-trabalho)) |
 | Observações | texto livre |
 | **Categorias** | palavras suas para organizar, como *Urgente* ou *Jurídico*; até 10 por tarefa ([6.7](#67-categorias)) |
 | **Anexos** | arquivos seus ligados à tarefa ([5.6](#56-anexos)) |
-| **Mais detalhes** | origem do prazo (ex.: *art. 5º do ofício*), lembrete, resultado, lista de etapas, dependências |
+| **De onde veio o prazo** | logo abaixo do prazo, quando há prazo (ex.: *art. 5º do ofício*) |
+| **Mais detalhes** | como foi concluída (ex.: número do ofício de resposta e data de envio), lista de etapas, dependências; um lembrete antigo aparece aqui, com **Apagar lembrete** |
 
 ### 6.3 Regras que vale conhecer
 
@@ -534,7 +535,7 @@ Exemplo: *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Quando na
 - **Se nada aparecer:** abra *Configurações do Windows ▸ Sistema ▸ Notificações* e confira que as notificações do Ponte, e o modo Não perturbe ou Assistente de foco, permitem o aviso.
 - **Privacidade:** o aviso é montado no computador, com contagens; nada é enviado a lugar nenhum. A escolha de ligar, o horário e o último dia avisado ficam num arquivo pequeno da pasta de dados (`lembretes.txt`), sem nada do acervo.
 
-**Avisos de cada tarefa.** Além do resumo diário, uma tarefa pode avisar antes de começar. No painel da tarefa, em **Avisos antes do início**, marque um ou mais entre **No início**, **15 min**, **1 hora** e **1 dia**.
+**Avisos de cada tarefa.** Além do resumo diário, uma tarefa pode avisar antes de começar. No painel da tarefa, em **Avisos antes do início planejado**, marque um ou mais entre **No início**, **1 dia antes** e **7 dias antes**. Avisos de versões anteriores (15 min, 1 hora) continuam valendo e aparecem com *(antigo)*.
 
 - **A partir de quando contam:** do **Início** do horário de trabalho ([6.8](#68-planejar-o-trabalho)); sem horário de trabalho, das 9h do dia do **Prazo**. Tarefa sem horário e sem prazo não tem de onde contar. Tarefa concluída não avisa.
 - **O que aparece:** uma notificação do Windows, *Lembrete do Ponte*, com a frase *Há tarefas com aviso agendado. Abra Hoje para conferir ou adiar.* Com o Ponte na frente, a frase aparece no aviso do canto da janela. **O título da tarefa não vai na notificação**, de propósito: ela pode ficar visível sobre outras janelas e na tela de bloqueio. Os títulos aparecem em **Hoje**, no card **Avisos agendados**, onde cada tarefa tem **Adiar 10 min** e **Dispensar aviso**; um clique no título abre a tarefa.
@@ -561,7 +562,7 @@ Uma **categoria** é uma palavra que você escolhe para organizar o trabalho, co
 
 O **Prazo** é a data em que a entrega vence. O **horário de trabalho** é quando você pretende fazer. São coisas separadas: marcar ou mudar o horário **não altera o prazo**.
 
-- **Planejamento na tarefa.** No painel da tarefa, o bloco **Planejamento** tem **Início**, **Fim** e **Estimativa em minutos** (0 = sem estimativa). Início e fim se escrevem `AAAA-MM-DDTHH:MM` (por exemplo `2026-11-18T09:00`), são horários deste computador, e o fim precisa ser depois do início. Os dois vêm juntos ou nenhum dos dois. Um fim à meia-noite não ocupa o dia seguinte.
+- **Planejamento na tarefa.** No painel da tarefa, o bloco **Planejamento** tem **Início**, **Fim** e **Estimativa em dias** (0 = sem estimativa). Início e fim se escolhem como o prazo (caixa `dd/mm/aaaa`, calendário e **Hoje**), com hora opcional: em branco, 09:00 no início e 18:00 no fim. Com início e estimativa e o fim vazio, o Ponte propõe o fim. Se o fim passa do prazo, o painel avisa, sem impedir de salvar. Ficam gravados como `AAAA-MM-DDTHH:MM`, são horários deste computador, e o fim precisa ser depois do início. Os dois vêm juntos ou nenhum dos dois. Um fim à meia-noite não ocupa o dia seguinte.
 - **Subtarefas.** Na lista **Sem tarefa pai**, escolha a tarefa a que esta pertence. A tarefa pai passa a mostrar *Subtarefas: N/M concluídas* e atalhos para abri-las. Uma tarefa não pode ser pai de si mesma, nem de quem é pai dela. A subtarefa é uma tarefa comum, com prazo e situação próprios. No celular, use **Tarefa pai ▸ Escolher tarefa pai…**. (As dependências de [6.4](#64-dependências-entre-tarefas) são outra coisa: dizem o que precisa ser feito antes.)
 - **Ainda não planejadas.** Em **Tarefas**, a caixa **Ainda não planejadas** mostra só as tarefas abertas que ainda não têm horário de trabalho (a mesma regra da lista no fim da **Semana**).
 - **A semana.** Em **Hoje**, **Semana** mostra os sete dias, de segunda a domingo. Cada dia tem os blocos de trabalho (`09:00–10:30 · título`) e as reservas de recursos, em ordem de horário, e, à parte, em **Prazos de entrega**, as tarefas e os atendimentos que vencem nesse dia. **◀ Semana anterior**, **Próxima semana ▶** e **Esta semana** movem a visão. Clicar numa tarefa abre o painel dela para planejar ou reagendar; clicar numa reserva abre o uso. Setas ligam as tarefas que dependem umas das outras, e uma seta vermelha avisa quando a ordem está invertida ([6.4](#64-dependências-entre-tarefas)). No fim, **Ainda não planejadas** lista as tarefas abertas sem horário, com o prazo e a estimativa. Atalho: **Ctrl+K**, `> semana`, **Planejar a semana**.

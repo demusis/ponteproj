@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 /// part of the same switch as the daily summary (Ajustes ▸ Lembretes de
 /// prazos) and are only shown while Ponte is running; one whose moment passed
 /// more than five minutes ago, with Ponte closed, is not shown afterwards.
-pub const REMINDER_FORM_HINT: &str = "O aviso aparece com o Ponte aberto; se perdido, aparece em Hoje ao reabrir. Ative “Ativar resumo diário e avisos das tarefas” em Ajustes ▸ Lembretes de prazos.";
+pub const REMINDER_FORM_HINT: &str = "O aviso aparece com o Ponte aberto; se perdido, aparece em Hoje ao reabrir. Ative “Ativar resumo diário e avisos das tarefas” em Ajustes ▸ Lembretes de prazos. O prazo de entrega é lembrado pelo resumo diário, também em Ajustes ▸ Lembretes de prazos.";
 
 /// How the notes of a task made from an old-style suggestion begin.
 pub const SUGGESTION_NOTE_MARKER: &str = "Sugestão da IA para revisão.";
@@ -49,7 +49,7 @@ const VIEWS: [&str; 9] = [
     "Próximos 7 dias",
     "Atrasadas",
     "Aguardando",
-    "Com lembrete",
+    "Para começar",
     "Sem prazo",
     "Prontas para fazer",
 ];
@@ -268,12 +268,31 @@ fn in_view(
         4 => pending && !due.is_empty() && due < scope.today,
         5 => task.status == "aguardando",
         6 => {
-            pending && !task.reminder_date.is_empty() && task.reminder_date.as_str() <= scope.today
+            pending && ((!task.reminder_date.is_empty() && task.reminder_date.as_str() <= scope.today) || (!task.scheduled_start.is_empty() && task.scheduled_start.split('T').next().is_some_and(|date| date <= scope.today)))
         }
         7 => pending && due.is_empty(),
         8 => pending && !deps.is_blocked(task.id),
         _ => true,
     }
+}
+
+fn planned_end_after_due(end: &str, due: &str) -> bool {
+    let Ok(end) = chrono::NaiveDateTime::parse_from_str(end, "%Y-%m-%dT%H:%M") else { return false; };
+    let Ok(due) = chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d") else { return false; };
+    end.date() > due
+}
+
+fn reminder_options(offsets: &[u32]) -> Vec<(u32, String)> {
+    let mut options = vec![(0, "No início".into()), (1440, "1 dia antes".into()), (10080, "7 dias antes".into())];
+    let mut legacy: Vec<_> = offsets.iter().copied().filter(|v| ![0, 1440, 10080].contains(v)).collect();
+    legacy.sort_unstable(); legacy.dedup();
+    for n in legacy {
+        let text = if n % 1440 == 0 { format!("{} dias", n / 1440) }
+            else if n % 60 == 0 { format!("{} {}", n / 60, if n == 60 { "hora" } else { "horas" }) }
+            else { format!("{n} min") };
+        options.push((n, format!("{text} antes (antigo)")));
+    }
+    options
 }
 
 /// Counts shown on the chips: what each view would list under the current
@@ -357,7 +376,7 @@ fn empty_text(query: &str, narrowed: bool, no_tasks: bool, view: usize, show_don
         3 => "Nenhuma tarefa nos próximos 7 dias.",
         4 => "Nenhuma tarefa atrasada.",
         5 => "Nenhuma tarefa aguardando.",
-        6 => "Nenhum lembrete vencido.",
+        6 => "Nenhuma tarefa para começar.",
         7 => "Nenhuma tarefa sem prazo.",
         8 => "Nenhuma tarefa pronta para fazer.",
         _ if show_done => "Nenhuma tarefa.",
@@ -3288,7 +3307,7 @@ impl TaskPanel {
                                     widgets::field_label(ui, "Prazo");
                                     crate::help_ui::help(
                                         ui,
-                                        "Deixe vazio se não houver prazo confirmado. Anote a origem em “Mais detalhes”.",
+                                        "Deixe vazio se não houver prazo confirmado. Anote logo abaixo de onde veio o prazo.",
                                     );
                                 });
                                 let response =
@@ -3297,6 +3316,10 @@ impl TaskPanel {
                                     && crate::labels::parse_typed_date(&task.due_date).is_none()
                                 {
                                     widgets::outline(ui, response.rect.expand(2.0), c().danger);
+                                }
+                                if !task.due_date.is_empty() || !task.due_source.is_empty() {
+                                    widgets::field_label(ui, "De onde veio o prazo (trecho, arquivo ou orientação)");
+                                    ui.add(egui::TextEdit::singleline(&mut task.due_source).desired_width(f32::INFINITY));
                                 }
                             },
                             |ui| {
@@ -3316,20 +3339,34 @@ impl TaskPanel {
                             },
                         );
                         ui.add_space(S2);
-                        widgets::field_label(ui, "Planejamento (data e hora locais: AAAA-MM-DDTHH:MM)");
                         ui.horizontal(|ui| {
-                            ui.label("Início");
-                            ui.text_edit_singleline(&mut task.scheduled_start);
-                            ui.label("Fim");
-                            ui.text_edit_singleline(&mut task.scheduled_end);
+                            widgets::field_label(ui, "Planejamento (quando você vai trabalhar nela)");
+                            crate::help_ui::help(ui, "Não muda o prazo. Hora em branco: 09:00 no início e 18:00 no fim.");
                         });
-                        ui.horizontal(|ui| {
-                            ui.label("Estimativa em minutos (0 = sem estimativa)");
-                            ui.add(egui::DragValue::new(&mut task.estimate_minutes).range(0..=525_600));
-                        });
+                        ui.label("Início");
+                        let start_changed = crate::labels::datetime_field(ui, ("task-start", task_id), &mut task.scheduled_start, "09:00").changed();
+                        ui.label("Fim");
+                        crate::labels::datetime_field(ui, ("task-end", task_id), &mut task.scheduled_end, "18:00");
+                        let mut days = task.estimate_minutes.div_ceil(1440);
+                        let estimate_changed = ui.horizontal(|ui| {
+                            ui.label("Estimativa em dias (0 = sem estimativa)");
+                            ui.add(egui::DragValue::new(&mut days).range(0..=365).clamp_existing_to_range(false)).changed()
+                        }).inner;
+                        if estimate_changed { task.estimate_minutes = days * 1440; }
+                        if task.estimate_minutes % 1440 != 0 { widgets::small_muted(ui, format!("Estimativa anterior: {} min", task.estimate_minutes)); }
+                        if (start_changed || estimate_changed) && days > 0 && task.scheduled_end.is_empty() {
+                            if let Ok(start) = chrono::NaiveDateTime::parse_from_str(&task.scheduled_start, "%Y-%m-%dT%H:%M") {
+                                if let Some(end) = start.date().checked_add_signed(chrono::Duration::days(i64::from(days - 1))) {
+                                    task.scheduled_end = format!("{}T18:00", end.format("%Y-%m-%d"));
+                                }
+                            }
+                        }
+                        if planned_end_after_due(&task.scheduled_end, &task.due_date) {
+                            ui.label(RichText::new(format!("⚠ O fim planejado passa do prazo ({}).", crate::labels::date(&task.due_date))).color(c().warn));
+                        }
                         ui.horizontal_wrapped(|ui| {
-                            ui.label("Avisos antes do início:");
-                            for (minutes, label) in [(0, "No início"), (15, "15 min"), (60, "1 hora"), (1440, "1 dia")] {
+                            ui.label("Avisos antes do início planejado:");
+                            for (minutes, label) in reminder_options(&task.reminder_offsets_minutes) {
                                 let mut selected = task.reminder_offsets_minutes.contains(&minutes);
                                 if ui.checkbox(&mut selected, label).changed() {
                                     if selected { task.reminder_offsets_minutes.push(minutes); }
@@ -3442,22 +3479,21 @@ impl TaskPanel {
                         more.show(ui, |ui| {
                             widgets::small_muted(
                                 ui,
-                                "Origem do prazo, lembrete, resultado, providências, dependências e anexos.",
+                                "Lembrete antigo, como foi concluída, providências, dependências e anexos.",
                             );
                             ui.add_space(S1);
-                            widgets::field_label(ui, "Origem do prazo (trecho, arquivo ou orientação)");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut task.due_source)
-                                    .desired_width(f32::INFINITY),
-                            );
-                            ui.add_space(S2);
+                            if !task.reminder_date.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(format!("Lembrete antigo: a partir de {}", crate::labels::date(&task.reminder_date)));
+                                    if ui.add(widgets::quiet("Apagar lembrete")).clicked() { task.reminder_date.clear(); }
+                                });
+                                widgets::small_muted(ui, "Para lembrar, use o planejamento e os avisos.");
+                                ui.add_space(S2);
+                            }
                             ui.horizontal(|ui| {
-                                widgets::field_label(ui, "Lembrar a partir de");
-                                crate::help_ui::help(ui, "Lembrete local, mostrado na lista “Com lembrete” enquanto o Ponte estiver aberto.");
+                                widgets::field_label(ui, "Como foi concluída");
+                                crate::help_ui::help(ui, "O desfecho da tarefa, para consultar depois: por exemplo, o número do ofício de resposta e a data de envio.");
                             });
-                            crate::labels::date_field(ui, ("task-reminder", task_id), &mut task.reminder_date);
-                            ui.add_space(S2);
-                            widgets::field_label(ui, "Resultado (número da resposta, data de envio, observações)");
                             ui.add(
                                 egui::TextEdit::multiline(&mut task.outcome)
                                     .desired_rows(2)
@@ -3839,6 +3875,36 @@ impl TaskPanel {
 
 #[cfg(test)]
 mod navigation_tests {
+    #[test]
+    fn planning_helpers() {
+        use super::*;
+        assert!(planned_end_after_due("2026-11-04T18:00", "2026-11-03"));
+        assert!(!planned_end_after_due("2026-11-03T18:00", "2026-11-03"));
+        assert!(!planned_end_after_due("invalid", "2026-11-03"));
+        let options = reminder_options(&[15, 60, 15, 1440]);
+        assert!(options.contains(&(15, "15 min antes (antigo)".into())));
+        assert!(options.contains(&(60, "1 hora antes (antigo)".into())));
+        assert_eq!(options.len(), 5);
+        assert_eq!(reminder_options(&[]).len(), 3);
+        assert!(REMINDER_FORM_HINT.contains("prazo de entrega é lembrado pelo resumo diário"));
+    }
+    #[test]
+    fn ready_to_start_view() {
+        use super::*;
+        let mut task = Task::new(1);
+        let categories = CategoryFilter::default();
+        let scope = Scope { document: None, query: "", show_done: false, today: "2026-11-18", week: "2026-11-25", categories: &categories };
+        let deps = crate::tasks::Dependencies::new(&[]);
+        task.scheduled_start = "2026-11-18T09:00".into();
+        assert!(in_view(6, &task, None, &deps, &scope));
+        task.scheduled_start = "2026-11-19T09:00".into();
+        assert!(!in_view(6, &task, None, &deps, &scope));
+        task.reminder_date = "2026-11-17".into();
+        assert!(in_view(6, &task, None, &deps, &scope));
+        task.status = "concluida".into();
+        assert!(!in_view(6, &task, None, &deps, &scope));
+    }
+
     use super::*;
 
     #[test]

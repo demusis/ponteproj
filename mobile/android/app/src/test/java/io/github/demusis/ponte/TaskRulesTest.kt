@@ -206,4 +206,58 @@ class TaskRulesTest {
         assertTrue(TaskRules.isConflict(TaskRules.CHANGED))
         assertFalse(TaskRules.isConflict("Não foi possível salvar a tarefa. Tente de novo."))
     }
+
+    @Test fun horaDoPlanejamentoAceitaFormasComuns() {
+        assertEquals("09:00", TaskRules.normalizeHour("09:00"))
+        assertEquals("09:00", TaskRules.normalizeHour("9:00"))
+        assertEquals("09:00", TaskRules.normalizeHour("9h"))
+        assertEquals("09:30", TaskRules.normalizeHour("09h30"))
+        assertNull(TaskRules.normalizeHour("24:00"))
+        assertNull(TaskRules.normalizeHour("9:60"))
+        assertNull(TaskRules.normalizeHour("abc"))
+    }
+
+    @Test fun comporEDividirMomentoPlanejado() {
+        assertEquals("2026-11-20T09:00", TaskRules.composeMoment("2026-11-20", "", TaskRules.START_HOUR))
+        assertEquals("2026-11-20T18:00", TaskRules.composeMoment("2026-11-20", " ", TaskRules.END_HOUR))
+        assertEquals("2026-11-20T09:30", TaskRules.composeMoment("2026-11-20", "9h30", TaskRules.END_HOUR))
+        assertEquals("", TaskRules.composeMoment("", "9h", TaskRules.START_HOUR))
+        assertNull(TaskRules.composeMoment("2026-11-20", "99", TaskRules.START_HOUR))
+        assertEquals("2026-11-20" to "14:05", TaskRules.splitMoment("2026-11-20T14:05"))
+        assertEquals("2026-11-20" to "", TaskRules.splitMoment("2026-11-20"))
+        assertEquals("" to "", TaskRules.splitMoment(""))
+    }
+
+    @Test fun estimativaEmDiasEFimAutomatico() {
+        assertEquals(0, TaskRules.estimateDays(0))
+        assertEquals(2, TaskRules.estimateDays(2880))
+        assertEquals(1, TaskRules.estimateDays(90))
+        assertEquals("Estimativa anterior: 90 min", TaskRules.legacyEstimateNote(90))
+        assertEquals("", TaskRules.legacyEstimateNote(1440))
+        assertEquals("", TaskRules.legacyEstimateNote(0))
+        assertEquals(0, TaskRules.parseDays(""))
+        assertNull(TaskRules.parseDays("x"))
+        assertNull(TaskRules.parseDays("-1"))
+        assertEquals("2026-11-22T18:00", TaskRules.autoEnd("2026-11-20T09:00", 3, ""))
+        assertEquals("2026-11-20T18:00", TaskRules.autoEnd("2026-11-20T09:00", 1, ""))
+        assertNull(TaskRules.autoEnd("2026-11-20T09:00", 3, "2026-11-21T18:00"))
+        assertNull(TaskRules.autoEnd("", 3, ""))
+        assertNull(TaskRules.autoEnd("2026-11-20T09:00", 0, ""))
+    }
+
+    @Test fun avisoDeFimDepoisDoPrazo() {
+        assertEquals("⚠ O fim planejado passa do prazo (20/11/2026).", TaskRules.overDueWarning("2026-11-20", "2026-11-21T18:00"))
+        assertEquals("", TaskRules.overDueWarning("2026-11-20", "2026-11-20T18:00"))
+        assertEquals("", TaskRules.overDueWarning("", "2026-11-21T18:00"))
+        assertEquals("", TaskRules.overDueWarning("2026-11-20", ""))
+    }
+
+    @Test fun opcoesDeAvisoComAntigos() {
+        assertEquals(listOf(0, 1440, 10080), TaskRules.reminderOptions(emptyList()).map { it.minutes })
+        assertEquals(listOf("No início", "1 dia antes", "7 dias antes"), TaskRules.reminderOptions(listOf(1440)).map { it.label })
+        val o = TaskRules.reminderOptions(listOf(60, 15, 0, 2880))
+        assertEquals(listOf(0, 1440, 10080, 15, 60, 2880), o.map { it.minutes })
+        assertEquals(listOf("15 min antes (antigo)", "1 hora antes (antigo)", "2 dias antes (antigo)"), o.drop(3).map { it.label })
+        assertTrue(o.drop(3).all { it.legacy })
+    }
 }
