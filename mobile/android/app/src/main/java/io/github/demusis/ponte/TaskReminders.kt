@@ -409,6 +409,36 @@ internal object WeekPlan {
         return "%02d/%02d a %02d/%02d/%d".format(monday.dayOfMonth, monday.monthValue, end.dayOfMonth, end.monthValue, end.year)
     }
 
+    private val MONTHS = listOf("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez")
+    private val LONG_MONTHS = listOf(
+        "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
+    )
+    private val LONG_DAYS = listOf("Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo")
+
+    /** Short period that fits a header: "16 – 22 nov 2026", "30 nov – 6 dez 2026", "28 dez 2026 – 3 jan 2027". */
+    fun shortWeekTitle(monday: LocalDate): String {
+        val end = monday.plusDays(6)
+        val a = MONTHS[monday.monthValue - 1]
+        val b = MONTHS[end.monthValue - 1]
+        return when {
+            monday.year != end.year -> "${monday.dayOfMonth} $a ${monday.year} – ${end.dayOfMonth} $b ${end.year}"
+            monday.monthValue != end.monthValue -> "${monday.dayOfMonth} $a – ${end.dayOfMonth} $b ${end.year}"
+            else -> "${monday.dayOfMonth} – ${end.dayOfMonth} $b ${end.year}"
+        }
+    }
+
+    /** "Quarta, 18 de novembro". */
+    fun longDayTitle(date: LocalDate): String =
+        "${LONG_DAYS[date.dayOfWeek.value - 1]}, ${date.dayOfMonth} de ${LONG_MONTHS[date.monthValue - 1]}"
+
+    /** The day selected first in a week: today when it is in that week, else its Monday. */
+    fun defaultSelected(weekStart: LocalDate, today: LocalDate): LocalDate =
+        if (!today.isBefore(weekStart) && !today.isAfter(weekStart.plusDays(6))) today else weekStart
+
+    /** Dots under a day of the strip: (has hour blocks, has deadlines). */
+    fun dayMarks(day: WeekDay): Pair<Boolean, Boolean> = day.blocks.isNotEmpty() to day.deadlines.isNotEmpty()
+
     /** The Monday of the week of [date]. */
     fun mondayOf(date: LocalDate): LocalDate = date.minusDays((date.dayOfWeek.value - 1).toLong())
 

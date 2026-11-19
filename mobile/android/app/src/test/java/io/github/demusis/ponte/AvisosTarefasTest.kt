@@ -357,6 +357,26 @@ class AvisosTarefasTest {
         assertEquals(7, WeekPlan.days(monday, emptyList()).size)
     }
 
+    @Test fun theShortWeekTitleFitsAHeader() {
+        assertEquals("16 – 22 nov 2026", WeekPlan.shortWeekTitle(monday))
+        assertEquals("30 nov – 6 dez 2026", WeekPlan.shortWeekTitle(LocalDate.of(2026, 11, 30)))
+        assertEquals("28 dez 2026 – 3 jan 2027", WeekPlan.shortWeekTitle(LocalDate.of(2026, 12, 28)))
+    }
+
+    @Test fun theDayStripHelpers() {
+        assertEquals("Quarta, 18 de novembro", WeekPlan.longDayTitle(LocalDate.of(2026, 11, 18)))
+        assertEquals("Domingo, 3 de janeiro", WeekPlan.longDayTitle(LocalDate.of(2027, 1, 3)))
+        assertEquals(LocalDate.of(2026, 11, 18), WeekPlan.defaultSelected(monday, LocalDate.of(2026, 11, 18)))
+        assertEquals(monday, WeekPlan.defaultSelected(monday, LocalDate.of(2026, 11, 23)))
+        assertEquals(monday, WeekPlan.defaultSelected(monday, LocalDate.of(2026, 11, 9)))
+        assertEquals(LocalDate.of(2026, 11, 22), WeekPlan.defaultSelected(monday, LocalDate.of(2026, 11, 22)))
+        val entries = WeekPlan.task("u1", "A", "2026-11-17T14:00", "", 30, "2026-11-18")
+        val days = WeekPlan.days(monday, entries)
+        assertEquals(false to false, WeekPlan.dayMarks(days[0]))
+        assertEquals(true to false, WeekPlan.dayMarks(days[1]))
+        assertEquals(false to true, WeekPlan.dayMarks(days[2]))
+    }
+
     @Test fun theWeekTitleCrossesMonthsAndYears() {
         assertEquals("16/11 a 22/11/2026", WeekPlan.weekTitle(monday))
         assertEquals("28/12 a 03/01/2027", WeekPlan.weekTitle(LocalDate.of(2026, 12, 28)))

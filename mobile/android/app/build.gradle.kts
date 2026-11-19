@@ -14,8 +14,8 @@ android {
         applicationId = "io.github.demusis.ponte"
         minSdk = 26
         targetSdk = 34
-        versionCode = 21
-        versionName = "0.14.0"
+        versionCode = 22
+        versionName = "0.15.0"
         // Only the 64-bit ARM phone ABI: keeps the APK small.
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -76,5 +76,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
 }
