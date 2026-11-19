@@ -847,6 +847,14 @@ internal object Controller {
         refreshResources()
     }
 
+    fun openFollowUps() {
+        stack.clear()
+        tab = 1
+        shell = shell.copy(tab = 1)
+        attQuery = ""
+        selectSegment(1)
+    }
+
     /** From Hoje: the Recursos list, in the Tarefas area. */
     fun openResources() {
         stack.clear()
@@ -2242,7 +2250,6 @@ internal object Controller {
     private var calendarRefreshing = false
 
     /** A calendar sync is already waiting for the worker: more requests join it. */
-    private val calQueued = java.util.concurrent.atomic.AtomicBoolean(false)
     private var calObserver: android.database.ContentObserver? = null
 
     /** The calendar changed (or the app came back): a short wait lets a burst of edits end first. */
@@ -2279,6 +2286,7 @@ internal object Controller {
 
     private fun calendarOnNow() {
         prefs.edit().putBoolean(CalendarSyncRunner.K_ON, true).remove(CalendarSyncRunner.K_WARN).apply()
+        CalendarBackground.arm(app)
         loadCalendars()
         watchCalendar(true)
         calendarSyncSoon()
@@ -2289,6 +2297,7 @@ internal object Controller {
     fun calendarOff(remove: Boolean) {
         dialog = null
         prefs.edit().putBoolean(CalendarSyncRunner.K_ON, false).remove(CalendarSyncRunner.K_WARN).apply()
+        CalendarBackground.arm(app)
         watchCalendar(false)
         SyncRunner.background({ CalendarSyncRunner.finishOff(app, remove) }, { updateSettings() })
         updateSettings()
@@ -2338,11 +2347,7 @@ internal object Controller {
     /** Asks for a reconcile on the worker (behind a sync, if one runs). Cheap when nothing changed. */
     fun calendarSyncSoon() {
         if (!::app.isInitialized || !calendarOn() || !SyncRunner.ready || calendarChosenId() < 0) return
-        if (!calQueued.compareAndSet(false, true)) return
-        SyncRunner.background({
-            calQueued.set(false)
-            CalendarSyncRunner.run(app)
-        }, { calendarDone(it) }, { updateSettings() })
+        CalendarSyncRunner.enqueue(app, done = { calendarDone(it) })
     }
 
     private fun calendarDone(o: CalendarSyncRunner.Outcome?) {

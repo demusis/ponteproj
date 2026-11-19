@@ -69,7 +69,9 @@ internal fun TodayScreen(
     onOpenWeekEntry: (WeekEntry) -> Unit = {},
     /** Deliveries at risk; empty: no card. A tap opens the cause ([onOpenTask] gets its id). */
     risks: List<RiskItem> = emptyList(),
-    onOpenTask: (Long) -> Unit = {}
+    onOpenTask: (Long) -> Unit = {},
+    followUpCount: Int = 0,
+    onOpenFollowUps: () -> Unit = {}
 ) {
     val c = Ponte.colors
     if (state.loading && state.isEmpty) {
@@ -81,7 +83,7 @@ internal fun TodayScreen(
     val currentWeek = weekStart != null && weekStart == WeekPlan.mondayOf(java.time.LocalDate.now())
     val weekDeadlines = if (currentWeek) week.sumOf { it.deadlines.size } else 0
     // Items before the "Atrasadas" header: error, summary, alert, week module.
-    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (state.late.isNotEmpty()) 1 else 0) + (if (risks.isNotEmpty()) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
+    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (state.late.isNotEmpty()) 1 else 0) + (if (risks.isNotEmpty()) 1 else 0) + (if (followUpCount > 0) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
     LazyColumn(
         Modifier.fillMaxSize(),
         state = listState,
@@ -118,6 +120,9 @@ internal fun TodayScreen(
                     Text("ver", fontSize = 15.sp, color = c.error)
                 }
             }
+        }
+        if (followUpCount > 0) item(key = "follow-ups") {
+            ResourceCountCard("Cobranças de hoje", followUpCount, Tone.ACCENT, onOpenFollowUps)
         }
         if (risks.isNotEmpty()) item(key = "risks") { RiskCard(risks, onOpenTask) }
         if (week.isNotEmpty()) {

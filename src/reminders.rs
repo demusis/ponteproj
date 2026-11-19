@@ -36,6 +36,8 @@ pub struct Counts {
     /// Open tasks whose reminder date is today or past, not already counted
     /// as late or due today.
     pub reminders: usize,
+    pub follow_ups: usize,
+    pub risks: usize,
 }
 
 impl Counts {
@@ -46,6 +48,8 @@ impl Counts {
             + self.resource_reservations
             + self.overdue_returns
             + self.reminders
+            + self.follow_ups
+            + self.risks
     }
 
     /// Reads the library once. Rules of `app/today.rs` (`split_tasks`,
@@ -60,7 +64,9 @@ impl Counts {
         let today_date = today;
         let today = today.format("%Y-%m-%d").to_string();
         let mut counts = Counts::default();
-        for task in store.list_tasks()? {
+        let tasks = store.list_tasks()?;
+        counts.risks = crate::risk::deliveries_at_risk(&tasks, today_date).len();
+        for task in tasks {
             let open = task.completed_at.is_none() && task.status != "concluida";
             let mut counted = false;
             if open && !task.due_date.is_empty() {
@@ -84,8 +90,14 @@ impl Counts {
                 counts.reminders += 1;
             }
         }
-        counts.due_attendances = store
-            .list_saiop_attendances()?
+        let attendances = store.list_saiop_attendances()?;
+        counts.follow_ups = crate::saiop::follow_ups_due_today(
+            &attendances,
+            today_date,
+            crate::saiop::DEFAULT_FOLLOW_UP_QUIET_DAYS,
+        )
+        .len();
+        counts.due_attendances = attendances
             .iter()
             .filter(|a| {
                 a.is_open() && !a.due_date.is_empty() && a.due_date.as_str() <= today.as_str()
@@ -141,6 +153,16 @@ impl Counts {
         }
         if self.reminders > 0 {
             parts.push(plural(self.reminders, "lembrete", "lembretes"));
+        }
+        if self.follow_ups > 0 {
+            parts.push(plural(
+                self.follow_ups,
+                "cobrança para hoje",
+                "cobranças para hoje",
+            ));
+        }
+        if self.risks > 0 {
+            parts.push(plural(self.risks, "entrega em risco", "entregas em risco"));
         }
         let text = match parts.len() {
             0 => return "Nada vence hoje.".to_owned(),
@@ -448,6 +470,7 @@ impl Reminders {
             resource_reservations: 2,
             overdue_returns: 1,
             reminders: 0,
+            ..Counts::default()
         };
         // It must not read as a real count of what is due.
         let mut fire = Fire::new(sample);
@@ -841,6 +864,7 @@ mod tests {
             resource_reservations: 0,
             overdue_returns: 0,
             reminders: 0,
+            ..Counts::default()
         }
     }
 
@@ -891,6 +915,32 @@ mod tests {
         assert_eq!(
             many.summary(),
             "4 tarefas para hoje, 2 atendimentos com prazo e 1 lembrete."
+        );
+        let extra = Counts {
+            follow_ups: 3,
+            risks: 2,
+            ..Counts::default()
+        };
+        assert_eq!(
+            extra.summary(),
+            "3 cobranças para hoje e 2 entregas em risco."
+        );
+        assert_eq!(extra.total(), 5);
+        assert_eq!(
+            Counts {
+                follow_ups: 1,
+                ..Counts::default()
+            }
+            .summary(),
+            "1 cobrança para hoje."
+        );
+        assert_eq!(
+            Counts {
+                risks: 1,
+                ..Counts::default()
+            }
+            .summary(),
+            "1 entrega em risco."
         );
         assert_eq!(Counts::default().summary(), "Nada vence hoje.");
     }
@@ -1013,6 +1063,7 @@ mod tests {
                 resource_reservations: 0,
                 overdue_returns: 0,
                 reminders: 1,
+                ..Counts::default()
             }
         );
     }

@@ -98,6 +98,7 @@
                 <data android:mimeType="application/vnd.ms-outlook" />
             </intent-filter>
         </activity>
+        <receiver android:name=".CalendarReceiver" android:exported="false" />
         <!-- Rung by the app's own alarm only. -->
         <receiver
             android:name=".NoticeReceiver"

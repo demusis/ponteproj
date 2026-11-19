@@ -96,7 +96,8 @@ internal fun AppRoot() {
                             c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
                             onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources, week = c.week,
                             weekStart = c.weekStart, onMoveWeek = c::moveWeek, onOpenWeekEntry = c::openWeekEntry,
-                            risks = c.risks, onOpenTask = c::openTask
+                            risks = c.risks, onOpenTask = c::openTask,
+                            followUpCount = c.attendances.followUps.size, onOpenFollowUps = c::openFollowUps
                         )
                         // Tarefas | Atendimentos | Recursos: they have no tab of their own (four is the limit).
                         1 -> Column(Modifier.fillMaxSize()) {
