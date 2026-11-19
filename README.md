@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.42.0 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.42.1 (extensão 0.4.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.42.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.42.1.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -176,7 +176,7 @@ Com recursos cadastrados, a tela mostra também um card fixo, **Recursos em uso 
 
 Quando nada está atrasado nem para hoje, a tela diz *Nenhuma tarefa atrasada ou para hoje*. Ao concluir uma tarefa por aqui, o aviso do canto inferior direito traz **Desfazer**, por alguns segundos.
 
-**Calendário de prazos.** No alto de Hoje, os botões **Lista** e **Calendário** trocam a visão. O calendário mostra o mês com as tarefas e os atendimentos que têm prazo: vermelho é atraso, âmbar é para hoje, azul está no prazo, e os atendimentos levam um ícone. As setas trocam de mês e **Hoje** volta ao mês atual. Clique num item para abri-lo; clique em "+N", ou num dia com itens, para listar os desse dia sob o calendário (**Fechar** esconde a lista). Tarefas concluídas e atendimentos encerrados não aparecem.
+**Calendário de prazos.** No alto de Hoje, os botões **Lista** e **Calendário** trocam a visão. O calendário mostra o mês com as tarefas e os atendimentos que têm prazo: vermelho é atraso, âmbar é para hoje, azul está no prazo, e os atendimentos levam um ícone. As setas trocam de mês e **Hoje** volta ao mês atual. Clique num item para abri-lo; clique em "+N", ou num dia com itens, para listar os desse dia sob o calendário (**Fechar** esconde a lista). Tarefas concluídas e atendimentos encerrados não aparecem. Também mostra o **trabalho planejado**: cada dia do período de uma tarefa aberta traz uma linha só contornada, *▭ título*, depois dos prazos. Na lista do dia, o planejado aparece com o horário e *(planejado)*, e com *↳ depende de: …* ou *⚠ começa antes de terminar …* quando for o caso. Uma legenda sob o mês resume: faixa cheia é prazo, contorno é trabalho planejado, e as ligações entre tarefas se veem na **Semana**.
 
 **Semana.** O terceiro botão, **Semana**, mostra os sete dias (de segunda a domingo) com os blocos de trabalho das tarefas e as reservas de recursos, e os **Prazos de entrega** à parte, em cada dia. No fim, **Ainda não planejadas** lista as tarefas abertas sem horário de trabalho. Veja [6.8](#68-planejar-o-trabalho). Quando uma tarefa tem aviso agendado, o card **Avisos agendados** aparece no alto de Hoje ([6.6](#66-lembretes-de-prazos)).
 
@@ -479,7 +479,7 @@ Uma tarefa pode depender de outras ("só posso responder depois de receber o par
 
 Enquanto houver tarefa anterior em aberto, concluir fica desabilitado, com a dica *"Conclua antes: A, B"*. O Ponte não deixa formar ciclos: as opções que criariam um aparecem desabilitadas e explicadas.
 
-**Na Semana** ([6.8](#68-planejar-o-trabalho)), quando a tarefa anterior e a que depende dela têm horário na semana mostrada, uma seta liga o fim de uma ao começo da outra (mais fina e clara se a anterior já foi concluída). Se a que depende começa antes de a anterior terminar, a seta fica vermelha e o bloco mostra *⚠ começa antes de terminar A*: é hora de reagendar. Se a anterior está em outra semana ou ainda sem horário, o bloco mostra *↳ depende de N*; passe o mouse para a lista, com ○, ⚠ e ✓, e clique para abrir. Subtarefas não ganham seta: a tarefa pai é outra coisa.
+**Na Semana** ([6.8](#68-planejar-o-trabalho)), quando a tarefa anterior e a que depende dela têm horário na semana mostrada, uma seta liga o fim de uma ao começo da outra (mais fina e clara se a anterior já foi concluída). Se a que depende começa antes de a anterior terminar, a seta fica vermelha e o bloco mostra *⚠ começa antes de terminar A*: é hora de reagendar. Se a anterior está em outra semana, ainda sem horário ou concluída, o bloco mostra uma linha por tarefa anterior: *↳ depende de: A (sem horário)*, *(planejada em dd/mm)* ou *(concluída)*. Clicar abre a tarefa anterior, para planejá-la. Subtarefas não ganham seta: a tarefa pai é outra coisa.
 
 ### 6.5 Ações em lote
 

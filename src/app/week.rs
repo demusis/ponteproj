@@ -39,15 +39,13 @@ fn dependency_layout(tasks: &[Task], visible: &HashSet<i64>) -> (Vec<Link>, Hash
     (links, outside)
 }
 
-fn dependency_hint(ids: &[i64], tasks: &HashMap<i64, &Task>, today: NaiveDate) -> String {
-    let today = today.to_string();
-    ids.iter().map(|id| match tasks.get(id) {
-        Some(task) => {
-            let mark = if task.is_done() { "✓" } else if !task.due_date.is_empty() && task.due_date < today { "⚠" } else { "○" };
-            format!("{} {}", mark, task.title)
-        }
-        None => format!("○ Tarefa #{}", id),
-    }).collect::<Vec<_>>().join("\n")
+fn outside_dependency_label(task: &Task) -> String {
+    let status = if task.is_done() {
+        "concluída".to_owned()
+    } else if let (Ok(start), Ok(end)) = (parse_moment(&task.scheduled_start), parse_moment(&task.scheduled_end)) {
+        if end > start { format!("planejada em {}", start.format("%d/%m")) } else { "sem horário".to_owned() }
+    } else { "sem horário".to_owned() };
+    format!("↳ depende de: {} ({status})", task.title)
 }
 
 fn arrow_geometry(from: egui::Rect, to: egui::Rect) -> [egui::Pos2; 4] {
@@ -127,9 +125,11 @@ pub(super) fn show(ui: &mut egui::Ui, data: &TodayData, today: NaiveDate, asked:
                 if response.clicked() { *asked = Some(action); }
                 if let Some(id) = task_id {
                     if let Some(ids) = outside.get(&id) {
-                        let marker = ui.add(widgets::quiet(format!("↳ depende de {}", ids.len())))
-                            .on_hover_text(dependency_hint(ids, &by_id, today));
-                        if marker.clicked() { *asked = by_id.get(&id).map(|task| Asked::OpenTask((*task).clone())); }
+                        for prerequisite in ids.iter().filter_map(|id| by_id.get(id)) {
+                            let marker = ui.add(widgets::quiet(outside_dependency_label(prerequisite)))
+                                .on_hover_text("Abrir a tarefa de que esta depende");
+                            if marker.clicked() { *asked = Some(Asked::OpenTask((*prerequisite).clone())); }
+                        }
                     }
                     for prerequisite in warnings.get(&id).into_iter().flatten() {
                         if let Some(previous) = by_id.get(prerequisite) {
@@ -237,6 +237,18 @@ mod tests {
         let (links, _) = dependency_layout(&[a, b, parent], &visible);
         assert!(!links[0].wrong_order);
         assert!(links[0].concluded);
+    }
+
+    #[test]
+    fn week_outside_dependency_labels() {
+        let mut task = Task::standalone();
+        task.title = "Preparar".into();
+        assert_eq!(outside_dependency_label(&task), "↳ depende de: Preparar (sem horário)");
+        task.scheduled_start = "2026-11-17T10:00".into();
+        task.scheduled_end = "2026-11-17T11:00".into();
+        assert_eq!(outside_dependency_label(&task), "↳ depende de: Preparar (planejada em 17/11)");
+        task.status = "concluida".into();
+        assert_eq!(outside_dependency_label(&task), "↳ depende de: Preparar (concluída)");
     }
 
     #[test]

@@ -199,6 +199,7 @@ fn due_tone(state: DueState) -> Tone {
 enum ItemKind {
     Task,
     Attendance,
+    Planned,
     /// A reservation or loan of a resource.
     Resource,
 }
@@ -271,6 +272,41 @@ fn items_by_day(
                 uid: String::new(),
                 situation: String::new(),
             });
+    }
+    days
+}
+
+/// Combine existing calendar items with open planned tasks for the visible month.
+fn month_items_by_day(
+    existing: &std::collections::BTreeMap<String, Vec<CalItem>>,
+    tasks: &[Task],
+    year: i32,
+    month: u32,
+) -> std::collections::BTreeMap<String, Vec<CalItem>> {
+    use chrono::{Datelike, Duration, NaiveDate};
+    let mut days = existing.clone();
+    let Some(mut day) = NaiveDate::from_ymd_opt(year, month, 1) else { return days };
+    while day.month() == month {
+        let from = day.and_hms_opt(0, 0, 0).unwrap();
+        for (index, task) in tasks.iter().enumerate() {
+            let (Ok(start), Ok(end)) = (crate::resources::parse_moment(&task.scheduled_start), crate::resources::parse_moment(&task.scheduled_end)) else { continue };
+            if task.is_done() || end <= start || start >= from + Duration::days(1) || end <= from { continue; }
+            let time = if start < from && end >= from + Duration::days(1) {
+                "o dia todo".to_owned()
+            } else if start < from {
+                format!("até {}", end.format("%H:%M"))
+            } else if end > from + Duration::days(1) {
+                format!("a partir das {}", start.format("%H:%M"))
+            } else {
+                format!("{}–{}", start.format("%H:%M"), end.format("%H:%M"))
+            };
+            days.entry(day.to_string()).or_default().push(CalItem {
+                kind: ItemKind::Planned, index, state: DueState::Future,
+                label: task.title.clone(), detail: format!("{time} · {} (planejado)", task.title),
+                uid: String::new(), situation: String::new(),
+            });
+        }
+        day += Duration::days(1);
     }
     days
 }
@@ -727,7 +763,7 @@ fn state_text(kind: ItemKind, state: DueState) -> &'static str {
         (ItemKind::Task, DueState::Late) => "Atrasada",
         (ItemKind::Attendance, DueState::Late) => "Prazo vencido",
         // A use says its own situation (see `item_state`).
-        (ItemKind::Resource, _) => "",
+        (ItemKind::Resource | ItemKind::Planned, _) => "",
         (_, DueState::Today) => "Para hoje",
         (_, DueState::Future) => "No prazo",
     }
@@ -744,6 +780,7 @@ fn item_state(item: &CalItem) -> &str {
 fn item_text(data: &CalItem, text: &str) -> String {
     match data.kind {
         ItemKind::Task => text.to_owned(),
+        ItemKind::Planned => format!("▭ {text}"),
         ItemKind::Attendance => format!("{} {text}", icon::ATTENDANCES),
         ItemKind::Resource => format!("{} {text}", icon::RESOURCES),
     }
@@ -756,6 +793,7 @@ fn asked_for(item: &CalItem, data: &TodayData) -> Option<Asked> {
             .get(item.index)
             .cloned()
             .map(Asked::OpenTask),
+        ItemKind::Planned => data.planning_tasks.get(item.index).cloned().map(Asked::OpenTask),
         ItemKind::Attendance => data
             .dated_attendances
             .get(item.index)
@@ -790,7 +828,7 @@ fn calendar_view(
         // The day list belongs to the month that was on show.
         selected.clear();
     }
-    let by_day = &data.by_day;
+    let by_day = month_items_by_day(&data.by_day, &data.planning_tasks, year, month);
     let row_h = grid_row_h(avail_h, month_weeks(year, month).len());
     let base = ui.make_persistent_id("today-calendar");
     let chosen = month_grid(
@@ -819,8 +857,13 @@ fn calendar_view(
             for (i, item) in items.iter().take(shown).enumerate() {
                 let line = line_rect(cell.rect, cell.col_w, i);
                 let (fg, bg) = due_tone(item.state).colors();
-                painter.rect_filled(line, egui::CornerRadius::same(3), bg);
-                paint_line(painter, line, &item_text(item, &item.label), fg);
+                if item.kind == ItemKind::Planned {
+                    painter.rect_stroke(line, egui::CornerRadius::same(3), egui::Stroke::new(1.0, p.muted), egui::StrokeKind::Inside);
+                    paint_line(painter, line, &item_text(item, &item.label), p.muted);
+                } else {
+                    painter.rect_filled(line, egui::CornerRadius::same(3), bg);
+                    paint_line(painter, line, &item_text(item, &item.label), fg);
+                }
                 let response = ui
                     .interact(
                         line,
@@ -868,6 +911,8 @@ fn calendar_view(
         d.insert_temp(day_id(), selected.clone());
     });
 
+    widgets::muted(ui, "Faixa cheia: prazo de entrega. Contorno: trabalho planejado. Ligações entre tarefas: veja Semana.");
+
     // The day list under the grid.
     let Some(items) = by_day.get(&selected) else {
         return;
@@ -895,16 +940,29 @@ fn calendar_view(
                         ui.spacing_mut().item_spacing.x = S3;
                         ui.add(
                             egui::Label::new(
-                                RichText::new(item_text(item, &item.detail))
+                                RichText::new(if item.kind == ItemKind::Planned { item.detail.clone() } else { item_text(item, &item.detail) })
                                     .font(theme::font_strong(theme::SIZE_BODY)),
                             )
                             .selectable(false)
                             .truncate(),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            widgets::pill(ui, item_state(item), due_tone(item.state));
+                            if item.kind != ItemKind::Planned { widgets::pill(ui, item_state(item), due_tone(item.state)); }
                         });
                     });
+                    if item.kind == ItemKind::Planned {
+                        if let Some(task) = data.planning_tasks.get(item.index) {
+                            let prerequisites: Vec<_> = task.dependencies.iter().filter_map(|id| data.planning_tasks.iter().find(|t| t.id == *id && !t.is_done())).collect();
+                            if !prerequisites.is_empty() {
+                                widgets::muted(ui, format!("↳ depende de: {}", prerequisites.iter().map(|t| t.title.as_str()).collect::<Vec<_>>().join(", ")));
+                            }
+                            for previous in prerequisites {
+                                if matches!((crate::resources::parse_moment(&task.scheduled_start), crate::resources::parse_moment(&previous.scheduled_end)), (Ok(start), Ok(end)) if start < end) {
+                                    widgets::muted(ui, format!("⚠ começa antes de terminar {}", previous.title));
+                                }
+                            }
+                        }
+                    }
                 },
             );
             if clicked {
@@ -1324,6 +1382,24 @@ mod tests {
         task.due_date = due.to_owned();
         task.status = status.to_owned();
         task
+    }
+
+    #[test]
+    fn today_month_planned_items_touch_days_and_follow_deadlines() {
+        let mut task = Task::standalone();
+        task.title = "Projeto".into();
+        task.due_date = "2026-11-18".into();
+        task.scheduled_start = "2026-11-17T10:00".into();
+        task.scheduled_end = "2026-11-19T00:00".into();
+        let mut done = task.clone();
+        done.status = "concluida".into();
+        let existing = items_by_day(&[task.clone()], &[], "2026-11-18");
+        let days = month_items_by_day(&existing, &[task, done], 2026, 11);
+        assert_eq!(days["2026-11-17"].len(), 1);
+        assert_eq!(days["2026-11-17"][0].detail, "a partir das 10:00 \u{00b7} Projeto (planejado)");
+        assert_eq!(days["2026-11-18"].iter().map(|item| item.kind).collect::<Vec<_>>(), vec![ItemKind::Task, ItemKind::Planned]);
+        assert_eq!(days["2026-11-18"][1].detail, "o dia todo \u{00b7} Projeto (planejado)");
+        assert!(!days.contains_key("2026-11-19"));
     }
 
     #[test]
