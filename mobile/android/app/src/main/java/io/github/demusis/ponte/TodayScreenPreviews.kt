@@ -15,7 +15,7 @@ private fun previewWeek(entries: List<WeekEntry>) =
 @Composable
 private fun PreviewHost(state: TodayState, week: List<WeekDay>, risks: List<RiskItem> = emptyList()) {
     PonteTheme {
-        TodayScreen(state, onToggle = {}, onOpen = {}, week = week, weekStart = WeekPlan.mondayOf(LocalDate.now()), risks = risks)
+        TodayScreen(state, onToggle = {}, onOpen = {}, week = week, weekStart = WeekPlan.mondayOf(LocalDate.now()), risks = risks, followUpCount = 2)
     }
 }
 

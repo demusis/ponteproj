@@ -101,6 +101,7 @@ internal object NoticeScheduler {
      */
     fun arm(ctx: Context) {
         armDaily(ctx)
+        CalendarBackground.arm(ctx)
         try {
             PlannedNotices.refreshAsync(ctx.applicationContext)
         } catch (_: Throwable) {
@@ -217,7 +218,12 @@ internal object NoticeCounts {
         if (!openCore(ctx)) return null
         val today = JSONObject(SyncRunner.core.today())
         if (!today.optBoolean("ok")) return null
-        return Counts(today.optString("notice"))
+        val prefs = ctx.getSharedPreferences("ponte", Context.MODE_PRIVATE)
+        SyncRunner.core.setHolidays(prefs.getString(SyncRunner.HOLIDAYS_KEY, "") ?: "")
+        val follow = JSONObject(SyncRunner.core.listFollowUps())
+        val risks = JSONObject(SyncRunner.core.atRisk())
+        if (!follow.optBoolean("ok") || !risks.optBoolean("ok")) return null
+        return Counts(NoticeText.build(today.optString("notice"), follow.optInt("count"), risks.optJSONArray("items")?.length() ?: 0))
     }
 }
 
@@ -272,6 +278,7 @@ class NoticeBootReceiver : BroadcastReceiver() {
             Intent.ACTION_TIME_CHANGED, Intent.ACTION_TIMEZONE_CHANGED -> {
                 val app = context.applicationContext
                 NoticeScheduler.armDaily(app)
+                CalendarBackground.arm(app)
                 // The individual notices are worked out again from the library (the zone or the clock moved the moments).
                 val pending = goAsync()
                 PlannedNotices.refreshAsync(app) { try { pending.finish() } catch (_: Throwable) { } }

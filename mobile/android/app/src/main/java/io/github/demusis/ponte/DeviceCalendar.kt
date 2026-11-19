@@ -320,10 +320,34 @@ internal object CalendarSyncRunner {
         emptyList()
     }
 
+    private val queueLock = Any()
+    private var queued = false
+    private val callbacks = mutableListOf<(Outcome?) -> Unit>()
+
+    /** Coalesce foreground and alarm requests on the shared serial worker. */
+    fun enqueue(ctx: Context, cold: Boolean = false, done: (Outcome?) -> Unit = {}): Boolean {
+        synchronized(queueLock) {
+            callbacks.add(done)
+            if (queued) return true
+            queued = true
+        }
+        fun finish(outcome: Outcome?) {
+            val listeners = synchronized(queueLock) {
+                queued = false
+                callbacks.toList().also { callbacks.clear() }
+            }
+            listeners.forEach { listener -> try { listener(outcome) } catch (_: Throwable) { } }
+        }
+        SyncRunner.background({
+            if (cold && !NoticeCounts.openCore(ctx)) null else run(ctx, cold)
+        }, { finish(it) }, { finish(null) })
+        return true
+    }
+
     /** One reconcile; null when there is nothing to do. Only on the SyncRunner worker. */
-    fun run(ctx: Context): Outcome? {
+    fun run(ctx: Context, cold: Boolean = false): Outcome? {
         val p = prefs(ctx)
-        if (!p.getBoolean(K_ON, false) || !SyncRunner.ready) return null
+        if (!p.getBoolean(K_ON, false) || (!SyncRunner.ready && !cold)) return null
         val id = p.getLong(K_ID, -1L)
         if (id < 0) return null
         return try {
