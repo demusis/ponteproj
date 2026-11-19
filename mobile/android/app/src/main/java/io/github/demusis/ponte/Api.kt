@@ -43,7 +43,7 @@ internal object Api {
     }
 
     /** Saves the holidays chosen in Ajustes in the library (the other devices get them with the next sync). */
-    fun setHolidays(text: String) { c(core.setHolidays(text)) }
+    fun setHolidays(text: String): String = c(core.setHolidays(text)).optString("text")
 
     /** Every category (archived ones too), by name. */
     fun categories(): List<Category> = c(core.listCategories()).optJSONArray("categories").objs().map { it.toCategory() }

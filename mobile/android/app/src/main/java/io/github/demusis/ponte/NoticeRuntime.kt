@@ -220,8 +220,7 @@ internal object NoticeCounts {
         val cold = !SyncRunner.ready
         if (!openCore(ctx)) return null
         if (cold) {
-            val prefs = ctx.getSharedPreferences("ponte", Context.MODE_PRIVATE)
-            SyncRunner.core.adoptHolidays(prefs.getString(SyncRunner.HOLIDAYS_KEY, "") ?: "")
+            SyncRunner.adoptHolidays(ctx)
         }
         val today = JSONObject(SyncRunner.core.today())
         if (!today.optBoolean("ok")) return null

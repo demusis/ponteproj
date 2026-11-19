@@ -317,20 +317,56 @@ pub fn save_to_library(
     store.set_library_setting(crate::library_settings::HOLIDAYS, &config.to_text())
 }
 
-/// The configuration this device should use now. The library wins; when it
-/// has none yet, the device's own (`local`, the file or preference it kept
-/// until now) goes into it, once, so the person does not set it again.
+/// The configuration this device should use now, and whether the library has
+/// one. The library wins. When it has none yet and `may_seed` (this device
+/// did not hand its own over before), the device's own (`local`, the file or
+/// preference it kept until now) goes into it as a seed: applied only where
+/// the library has no value, here and on every copy and the main computer it
+/// reaches later, so it never overwrites what another device shared. The
+/// caller remembers, per device, that the library has a value and stops
+/// offering a seed.
 pub fn adopt_library(
     store: &mut crate::storage::Store,
     local: &HolidayConfig,
-) -> anyhow::Result<HolidayConfig> {
+    may_seed: bool,
+) -> anyhow::Result<(HolidayConfig, bool)> {
     if let Some(config) = library_config(store)? {
-        return Ok(config);
+        return Ok((config, true));
     }
-    if *local != HolidayConfig::new() {
-        save_to_library(store, local)?;
+    if may_seed && *local != HolidayConfig::new() {
+        seed_library(store, local)?;
     }
-    Ok(local.clone())
+    Ok((local.clone(), library_config(store)?.is_some()))
+}
+
+/// Hands the device's own choice to a library that has none (see
+/// [`adopt_library`]); does nothing when the library already has one.
+pub fn seed_library(
+    store: &mut crate::storage::Store,
+    config: &HolidayConfig,
+) -> anyhow::Result<()> {
+    store.seed_library_setting(crate::library_settings::HOLIDAYS, &config.to_text())
+}
+
+/// Holds the process-wide configuration for a test: takes [`TEST_LOCK`],
+/// starts empty and, even if the test panics, leaves it empty again.
+#[cfg(test)]
+pub(crate) struct ConfigGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+impl ConfigGuard {
+    pub(crate) fn new() -> Self {
+        let lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_config(HolidayConfig::new());
+        Self(lock)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ConfigGuard {
+    fn drop(&mut self) {
+        set_config(HolidayConfig::new());
+    }
 }
 
 /// The configuration the planning consults (process-wide).
@@ -421,24 +457,36 @@ anual 05-02 Recesso
         // Nothing set: nothing to take, and an empty local choice writes nothing.
         assert_eq!(library_config(&store).unwrap(), None);
         assert_eq!(
-            adopt_library(&mut store, &HolidayConfig::new()).unwrap(),
-            HolidayConfig::new()
+            adopt_library(&mut store, &HolidayConfig::new(), true).unwrap(),
+            (HolidayConfig::new(), false)
+        );
+        assert_eq!(library_config(&store).unwrap(), None);
+        // A device that already handed its choice over does not offer it again.
+        assert_eq!(
+            adopt_library(&mut store, &local, false).unwrap(),
+            (local.clone(), false)
         );
         assert_eq!(library_config(&store).unwrap(), None);
         // The local choice goes into the library, the first time.
-        assert_eq!(adopt_library(&mut store, &local).unwrap(), local);
+        assert_eq!(
+            adopt_library(&mut store, &local, true).unwrap(),
+            (local.clone(), true)
+        );
         assert_eq!(library_config(&store).unwrap(), Some(local.clone()));
         // Later, the library wins over whatever this device kept.
         let other = HolidayConfig::parse(
             "uf RJ
 ",
         );
-        assert_eq!(adopt_library(&mut store, &other).unwrap(), local);
+        assert_eq!(
+            adopt_library(&mut store, &other, true).unwrap(),
+            (local.clone(), true)
+        );
         // Cleared on purpose stays cleared; an old local file does not return.
         save_to_library(&mut store, &HolidayConfig::new()).unwrap();
         assert_eq!(
-            adopt_library(&mut store, &local).unwrap(),
-            HolidayConfig::new()
+            adopt_library(&mut store, &local, true).unwrap(),
+            (HolidayConfig::new(), true)
         );
     }
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
@@ -557,7 +605,7 @@ anual 05-02 Recesso
     }
     #[test]
     fn the_process_wide_config_feeds_holiday_and_is_working_day() {
-        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ConfigGuard::new();
         // A date no other test of the crate uses.
         let date = d(2031, 3, 17);
         assert_eq!(holiday(date), None);
@@ -565,7 +613,5 @@ anual 05-02 Recesso
         assert_eq!(holiday(date), Some("Recesso do órgão"));
         assert!(!is_working_day(date));
         assert_eq!(config().custom.len(), 1);
-        set_config(HolidayConfig::new());
-        assert_eq!(holiday(date), None);
     }
 }

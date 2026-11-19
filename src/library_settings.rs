@@ -103,6 +103,22 @@ impl Store {
         if read_one(&self.conn, key)?.as_deref() == Some(value) {
             return Ok(());
         }
+        self.write_library_setting(key, value, false)
+    }
+
+    /// The one-time hand-over of what a device kept before the setting lived
+    /// in the library: it only fills a library that has no value for `key`
+    /// (an empty value is a value), here and, when it is replayed, on every
+    /// other copy and on the main computer. Never overwrites.
+    pub fn seed_library_setting(&mut self, key: &str, value: &str) -> Result<()> {
+        check(key, value)?;
+        if read_one(&self.conn, key)?.is_some() {
+            return Ok(());
+        }
+        self.write_library_setting(key, value, true)
+    }
+
+    fn write_library_setting(&mut self, key: &str, value: &str, seed: bool) -> Result<()> {
         if let Some(cfg) = self.client_config()? {
             self.ensure_host_stores_settings(&cfg)?;
             self.remote_mutate(
@@ -110,16 +126,23 @@ impl Store {
                 IntranetMutation::SaveSetting {
                     key: key.to_owned(),
                     value: value.to_owned(),
+                    seed,
                 },
             )?;
             return Ok(());
         }
-        self.save_setting_applied(key, value)
+        self.save_setting_applied(key, value, seed)
     }
 
     /// Applies a change that came from another computer (or that is made
-    /// here with no team mode): written as it is, whatever was there.
-    pub(crate) fn save_setting_applied(&mut self, key: &str, value: &str) -> Result<()> {
+    /// here with no team mode): written as it is, whatever was there. A
+    /// `seed` is written only when the key is absent.
+    pub(crate) fn save_setting_applied(
+        &mut self,
+        key: &str,
+        value: &str,
+        seed: bool,
+    ) -> Result<()> {
         check(key, value)?;
         let actor = self.active_actor();
         let timestamp = chrono::Utc::now().to_rfc3339();
@@ -128,6 +151,9 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let known: i64 = tx.query_row("SELECT count(*) FROM library_settings", [], |r| r.get(0))?;
         let exists = read_one(&tx, key)?.is_some();
+        if seed && exists {
+            return Ok(());
+        }
         ensure!(
             exists || (known as usize) < MAX_SETTINGS,
             "A biblioteca já tem configurações demais."
@@ -213,6 +239,55 @@ mod tests {
         );
         // Cleared on purpose is a value, not "never set".
         store.set_library_setting(HOLIDAYS, "").unwrap();
+        assert_eq!(
+            store.library_setting(HOLIDAYS).unwrap().as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn a_seed_only_fills_an_absent_key() {
+        let (_dir, mut store) = store();
+        store
+            .seed_library_setting(
+                HOLIDAYS, "uf SP
+",
+            )
+            .unwrap();
+        assert_eq!(
+            store.library_setting(HOLIDAYS).unwrap().as_deref(),
+            Some(
+                "uf SP
+"
+            )
+        );
+        store
+            .seed_library_setting(
+                HOLIDAYS, "uf RJ
+",
+            )
+            .unwrap();
+        assert_eq!(
+            store.library_setting(HOLIDAYS).unwrap().as_deref(),
+            Some(
+                "uf SP
+"
+            )
+        );
+        // The replayed change obeys the same rule, with an empty value too.
+        store.set_library_setting(HOLIDAYS, "").unwrap();
+        store
+            .execute_mutation(
+                "Outro",
+                IntranetMutation::SaveSetting {
+                    key: HOLIDAYS.into(),
+                    value: "uf MG
+"
+                    .into(),
+                    seed: true,
+                },
+            )
+            .unwrap();
         assert_eq!(
             store.library_setting(HOLIDAYS).unwrap().as_deref(),
             Some("")

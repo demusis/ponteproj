@@ -428,11 +428,16 @@ impl Store {
                 ensure_document_task(&tx, id)?;
             }
             tx.pragma_update(None, "user_version", 2)?;
-        } else if (10..crate::storage::SCHEMA_VERSION).contains(&version) {
+        } else if (10..crate::storage::SCHEMA_VERSION - 1).contains(&version) {
             // Every earlier step of this library is done (they end at 10):
             // the new shape of the table and its number are committed
             // together, so an older Ponte never opens a table it cannot read.
-            tx.pragma_update(None, "user_version", crate::storage::SCHEMA_VERSION)?;
+            // The number stops one short of the current schema: the tables
+            // and guards added by the later steps of `Store::open` are not
+            // committed yet, and a crash before they are must not leave a
+            // library that claims to be complete. `Store::open` stamps the
+            // current schema once everything is in place.
+            tx.pragma_update(None, "user_version", crate::storage::SCHEMA_VERSION - 1)?;
         }
         tx.commit()?;
         Ok(())
@@ -2112,6 +2117,49 @@ mod planning_tests {
             .execute("UPDATE tasks SET payload=zeroblob(1) WHERE id=?1", [id])
             .unwrap();
         backfill_task_uids(&mut store.conn).unwrap();
+    }
+
+    #[test]
+    fn the_current_schema_is_stamped_only_after_the_later_steps_are_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stamp.sqlite3");
+        drop(Store::open(&path).unwrap());
+        // A library from before the settings, as left by a crash right after
+        // the tasks step: no table, and the number of the previous schema.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "DROP TABLE library_settings; PRAGMA user_version={};",
+                crate::storage::SCHEMA_VERSION - 2
+            ))
+            .unwrap();
+        }
+        let version = |store: &Store| -> i64 {
+            store
+                .conn
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap()
+        };
+        {
+            // The tasks step alone never claims the current schema.
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let mut partial = Store {
+                conn,
+                suppress_remote: false,
+                actor_override: String::new(),
+                offline_queued: 0,
+                host_unreachable_until: None,
+                cascade_suppressed: false,
+                cascade_notes: Vec::new(),
+                read_cache: Default::default(),
+            };
+            partial.ensure_tasks().unwrap();
+            assert!(version(&partial) < crate::storage::SCHEMA_VERSION);
+        }
+        // Opening again finishes the job: table, guards and the number.
+        let store = Store::open(&path).unwrap();
+        assert_eq!(version(&store), crate::storage::SCHEMA_VERSION);
+        assert_eq!(store.library_setting("holidays").unwrap(), None);
     }
 
     #[test]

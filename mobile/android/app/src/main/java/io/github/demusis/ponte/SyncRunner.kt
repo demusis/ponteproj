@@ -153,13 +153,37 @@ internal object SyncRunner {
     /** Preference that keeps the text of [HolidayConfig.toText]. */
     const val HOLIDAYS_KEY = "holidays"
 
-    /** Keeps [text], the holidays of the library, as this phone's copy and uses it in the phone's rules. */
+    /**
+     * Set once the library has a value for the holidays: this phone then never hands its own copy over again
+     * (the hand-over is one-time and only fills a library that has none).
+     */
+    const val HOLIDAYS_SEEDED_KEY = "holidays_seeded"
+
+    /**
+     * Keeps [text], the holidays of the library, as this phone's copy and uses it in the phone's rules. The library
+     * has a value, so the hand-over of this phone's own copy is over.
+     */
     fun mirrorHolidays(ctx: Context, text: String) {
         val canonical = Holidays.canonical(text)
-        if (prefsOf(ctx).getString(HOLIDAYS_KEY, null) != canonical) {
-            prefsOf(ctx).edit().putString(HOLIDAYS_KEY, canonical).apply()
-        }
+        val p = prefsOf(ctx)
+        val e = p.edit()
+        if (p.getString(HOLIDAYS_KEY, null) != canonical) e.putString(HOLIDAYS_KEY, canonical)
+        if (!p.getBoolean(HOLIDAYS_SEEDED_KEY, false)) e.putBoolean(HOLIDAYS_SEEDED_KEY, true)
+        e.apply()
         Holidays.configure(canonical)
+    }
+
+    /**
+     * With the core open: takes the holidays of the library or, while this phone has not handed its own copy over
+     * and the library has none, offers it (the core only fills a library without a value, never overwrites one).
+     * Without a value in the library the phone keeps its own copy.
+     */
+    fun adoptHolidays(ctx: Context) {
+        val p = prefsOf(ctx)
+        val own = p.getString(HOLIDAYS_KEY, "") ?: ""
+        val seed = if (p.getBoolean(HOLIDAYS_SEEDED_KEY, false)) "" else own
+        val r = check(core.adoptHolidays(own, seed))
+        if (r.optBoolean("library")) mirrorHolidays(ctx, r.optString("text")) else Holidays.configure(own)
     }
 
     fun startInit(ctx: Context, reset: Boolean): Boolean {
@@ -173,7 +197,7 @@ internal object SyncRunner {
                 check(core.init(app.filesDir.absolutePath, key, name))
                 // The holidays are the library's: take them, or (the library has none yet) hand over the
                 // copy this phone kept until now.
-                mirrorHolidays(app, check(core.adoptHolidays(prefsOf(app).getString(HOLIDAYS_KEY, "") ?: "")).optString("text"))
+                adoptHolidays(app)
                 ready = true
                 keyBroken = false
                 val e = refreshDocs()
@@ -192,7 +216,10 @@ internal object SyncRunner {
         // The calendar sync remembers events of the old library: forget them and turn it off.
         CalendarSyncRunner.forget(ctx)
         @Suppress("ApplySharedPref") // Persist removal before deleting or replacing the keystore key.
-        prefsOf(ctx).edit().remove("key_ct").remove("key_iv").commit()
+        prefsOf(ctx).edit().remove("key_ct").remove("key_iv")
+            // The holidays belonged to the library that is gone: the old copy must not come back as a seed.
+            .remove(HOLIDAYS_KEY).remove(HOLIDAYS_SEEDED_KEY).commit()
+        Holidays.configure("")
         try {
             val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
             if (ks.containsAlias(ALIAS)) ks.deleteEntry(ALIAS)

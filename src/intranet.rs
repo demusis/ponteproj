@@ -826,10 +826,16 @@ pub enum IntranetMutation {
         expected_version: Option<i64>,
     },
     /// A library setting (the holidays). Never a conflict: the change applied
-    /// last wins.
+    /// last wins. With `seed`, it is the one-time hand-over of what a device
+    /// kept before the setting lived in the library: every replica applies it
+    /// only when the key is absent (an empty value counts as present), so it
+    /// can never overwrite what another device already shared, however late
+    /// it is replayed.
     SaveSetting {
         key: String,
         value: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        seed: bool,
     },
 }
 
@@ -2482,8 +2488,8 @@ impl Store {
             } => self
                 .delete_category_checked(&uid, expected_version)
                 .map(|()| MutationReply::Unit),
-            IntranetMutation::SaveSetting { key, value } => self
-                .save_setting_applied(&key, &value)
+            IntranetMutation::SaveSetting { key, value, seed } => self
+                .save_setting_applied(&key, &value, seed)
                 .map(|()| MutationReply::Unit),
             IntranetMutation::RecordGeneration { record } => self
                 .record_generation(&record)
@@ -3287,10 +3293,29 @@ impl Store {
                     // Made on a library that the folder's one has replaced:
                     // its numbers mean nothing there.
                     ids.learn(&entry.created, None);
-                    if is_setting_mutation(&entry.mutation) {
+                    if let IntranetMutation::SaveSetting { key, seed, .. } = &entry.mutation {
                         // A setting has no numbers and is never a conflict: the
                         // folder's own value wins, and this computer's file
-                        // is only a cache of it.
+                        // is only a cache of it. Except a seed (what this
+                        // computer kept before the setting lived in the
+                        // library) for a key the folder has no value for:
+                        // it is kept and goes to the folder from here.
+                        if *seed && store.library_setting(key)?.is_none() {
+                            store.execute_mutation(&entry.actor, entry.mutation.clone())?;
+                            report.pushed += 1;
+                            let revision = store.cabinet_revision()?;
+                            journal.push(JournalEntry {
+                                uid: entry.uid.clone(),
+                                created_at: entry.created_at.clone(),
+                                actor: entry.actor.clone(),
+                                writer: cfg.folder_writer.clone(),
+                                label: entry.label.clone(),
+                                mutation: entry.mutation.clone(),
+                                base: None,
+                                revision,
+                                created: Vec::new(),
+                            });
+                        }
                         applied.insert(entry.uid.clone());
                         continue;
                     }
@@ -11746,6 +11771,67 @@ anual 05-02 Recesso
             )
         );
         assert!(c.list_sync_conflicts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_late_seed_never_overwrites_what_another_computer_shared() {
+        for shared in [
+            "uf RJ
+", "",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut a, mut b, _) = pair(dir.path());
+            sync(&mut a);
+            sync(&mut b);
+            // B upgrades while offline: its own file becomes a queued seed.
+            b.seed_library_setting(
+                crate::library_settings::HOLIDAYS,
+                "uf SP
+",
+            )
+            .unwrap();
+            // Meanwhile A shared its choice, even an intentional clear.
+            a.set_library_setting(crate::library_settings::HOLIDAYS, shared)
+                .unwrap();
+            sync(&mut a);
+            sync(&mut b);
+            sync(&mut a);
+            assert_eq!(holidays_of(&a).as_deref(), Some(shared));
+            assert_eq!(holidays_of(&b).as_deref(), Some(shared));
+        }
+    }
+
+    #[test]
+    fn a_seed_kept_by_a_computer_joining_a_folder_without_holidays_is_shared() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, _, _) = pair(dir.path());
+        sync(&mut a);
+        let folder = dir.path().join("Drive").join("ponte-sync.ponte");
+        let mut c = Store::open(&dir.path().join("c.sqlite3")).unwrap();
+        c.save_intranet_config(&config("Novo", &[folder.display().to_string()]))
+            .unwrap();
+        c.seed_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf PR
+",
+        )
+        .unwrap();
+        sync(&mut c);
+        sync(&mut a);
+        assert_eq!(
+            holidays_of(&c).as_deref(),
+            Some(
+                "uf PR
+"
+            )
+        );
+        assert_eq!(
+            holidays_of(&a).as_deref(),
+            Some(
+                "uf PR
+"
+            )
+        );
     }
 
     #[test]

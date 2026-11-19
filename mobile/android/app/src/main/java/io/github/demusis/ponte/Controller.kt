@@ -672,7 +672,13 @@ internal object Controller {
         // lands after its startup read of the preferences instead of being lost.
         SyncRunner.background(
             { Api.setHolidays(text) },
-            { if (SyncRunner.ready) refreshTasks() },
+            { confirmed ->
+                // What the core stored is the truth: a sync that ran before this save may have shown the
+                // library's older value over the edit.
+                SyncRunner.mirrorHolidays(app, confirmed)
+                updateSettings()
+                if (SyncRunner.ready) refreshTasks()
+            },
             { say("Não foi possível salvar os feriados no acervo: $it", long = true) }
         )
     }

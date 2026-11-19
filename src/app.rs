@@ -1186,6 +1186,10 @@ struct PonteApp {
     /// Library revision at the last attempt to put this computer's own
     /// holidays into the library (see `sync_holidays_with_library`).
     holiday_migration_revision: Option<Option<i64>>,
+    /// Whether this computer's own holidays were already handed to a library
+    /// (it has a value now): remembered in a small file, so the hand-over
+    /// happens at most once per computer.
+    holiday_seed_done: bool,
     /// The way back offered on the ficha, and the one waiting for the next
     /// document to be opened.
     return_to: Option<ReturnTo>,
@@ -1310,6 +1314,7 @@ impl PonteApp {
             // Reads feriados.txt and puts it to work before the first projection.
             holiday_draft: settings::HolidayDraft::load(),
             holiday_migration_revision: None,
+            holiday_seed_done: settings::holiday_seed_marker_read(),
             today: Default::default(),
             return_to: None,
             return_after_select: None,

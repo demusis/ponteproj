@@ -142,11 +142,13 @@ class PonteCore {
     external fun setHolidays(text: String): String
 
     /**
-     * At startup: takes the holidays of the library (the planning of the core uses them from now on) or, when
-     * the library has none yet, puts [localText], the copy this phone kept until now, into it. Answers `text`,
-     * the holidays in force.
+     * At startup: takes the holidays of the library (the planning of the core uses them from now on). When the
+     * library has none yet, [seedText] (the copy this phone kept until now; empty when it was already handed
+     * over) is put into it as a seed: applied only where there is no value, never over one, even a cleared one.
+     * Answers `text`, the holidays in force ([localText] while the library has none), and `library`, whether
+     * the library has a value.
      */
-    external fun adoptHolidays(localText: String): String
+    external fun adoptHolidays(localText: String, seedText: String): String
 
     companion object {
         init {

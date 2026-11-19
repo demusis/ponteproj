@@ -174,18 +174,14 @@ mod tests {
     }
     #[test]
     fn a_state_holiday_is_skipped_only_with_the_state_chosen() {
-        let _lock = crate::holidays::TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::holidays::ConfigGuard::new();
         // 9/7/2026 (SP) is a Thursday.
-        crate::holidays::set_config(crate::holidays::HolidayConfig::new());
         assert_eq!(work_end(dt("2026-07-08T09:00"), 2), dt("2026-07-09T18:00"));
         crate::holidays::set_config(crate::holidays::HolidayConfig::parse(
             "uf SP
 ",
         ));
         assert_eq!(work_end(dt("2026-07-08T09:00"), 2), dt("2026-07-10T18:00"));
-        crate::holidays::set_config(crate::holidays::HolidayConfig::new());
     }
     #[test]
     fn chain_across_carnaval() {

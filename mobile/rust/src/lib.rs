@@ -809,14 +809,27 @@ fn use_holidays(config: ponteproj::holidays::HolidayConfig) -> Value {
 }
 
 /// The holidays belong to the library, so they are the same on every computer
-/// and phone that syncs it. `local` is the text the app kept until now: the
-/// library wins; when it has none yet, `local` goes into it, once. Answers
-/// the text now in force.
-fn adopt_holidays(store: &mut Store, local: &str) -> Value {
-    let local = ponteproj::holidays::HolidayConfig::parse(local);
+/// and phone that syncs it. The library wins. `local` is the text the app
+/// kept until now: it is what the phone uses while the library has none.
+/// `seed` is the same text, offered only while this phone has not handed it
+/// over (the app passes an empty one afterwards): when the library has none
+/// yet, it goes in as a seed, which every copy applies only where there is no
+/// value, never over what another device shared. Answers the text now in
+/// force and `library`, whether the library has a value (the hand-over is
+/// then over).
+fn adopt_holidays(store: &mut Store, local: &str, seed: &str) -> Value {
+    let offered = ponteproj::holidays::HolidayConfig::parse(seed);
     // A failure to write only means the library keeps none for now.
-    let config = ponteproj::holidays::adopt_library(store, &local).unwrap_or(local);
-    use_holidays(config)
+    let (config, library) = ponteproj::holidays::adopt_library(store, &offered, true)
+        .unwrap_or((offered, false));
+    let config = if library {
+        config
+    } else {
+        ponteproj::holidays::HolidayConfig::parse(local)
+    };
+    let mut answer = use_holidays(config);
+    answer["library"] = json!(library);
+    answer
 }
 
 /// The person's choice, from Ajustes: into the library (and so to the other
@@ -840,10 +853,12 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_adoptHolidays<'loc
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     local_text: JString<'local>,
+    seed_text: JString<'local>,
 ) -> jstring {
     answer(&mut env, |env| {
         let local = text(env, &local_text)?;
-        with_store(|store| Ok(adopt_holidays(store, &local)))
+        let seed = text(env, &seed_text)?;
+        with_store(|store| Ok(adopt_holidays(store, &local, &seed)))
     })
 }
 
@@ -2107,6 +2122,16 @@ mod tests {
 
     /// The core reads PONTEPROJ_DATA_DIR; tests take turns.
     static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Leaves the process-wide holidays empty when a test ends, even by a
+    /// panic (declared after the lock, so it drops while the lock is held).
+    struct ResetHolidays;
+
+    impl Drop for ResetHolidays {
+        fn drop(&mut self) {
+            ponteproj::holidays::set_config(ponteproj::holidays::HolidayConfig::new());
+        }
+    }
     const KEY: &str = "frase-de-teste-123";
 
     struct Dir(PathBuf);
@@ -2166,6 +2191,7 @@ mod tests {
     #[test]
     fn holidays_set_on_the_computer_reach_the_phone_and_back() {
         let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
         let dir = Dir::new();
         let (mut computer, drive, _) = first_transport(&dir.0);
         std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
@@ -2197,7 +2223,6 @@ mod tests {
         std::fs::copy(&work, &drive).unwrap();
         computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
         assert_eq!(computer.library_setting("holidays").unwrap().as_deref(), Some("uf MG\n"));
-        ponteproj::holidays::set_config(ponteproj::holidays::HolidayConfig::new());
     }
 
     #[test]
@@ -3637,6 +3662,7 @@ mod tests {
     #[test]
     fn holidays_text_reaches_the_planning() {
         let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
         let dir = Dir::new();
         let (mut store, _) = library(&dir.0);
         // A date no other test uses (a Monday).
@@ -3660,22 +3686,45 @@ mod tests {
     #[test]
     fn the_phone_adopts_the_library_holidays_and_migrates_its_own_once() {
         let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
         let dir = Dir::new();
         let (mut store, _) = library(&dir.0);
         let date = chrono::NaiveDate::from_ymd_opt(2031, 3, 17).unwrap();
         // The library has none: what the phone kept goes in.
-        let first = adopt_holidays(&mut store, "dia 2031-03-17 Recesso\n");
+        let first = adopt_holidays(&mut store, "dia 2031-03-17 Recesso\n", "dia 2031-03-17 Recesso\n");
         assert_eq!(first["text"], "dia 2031-03-17 Recesso\n");
         assert_eq!(
             store.library_setting("holidays").unwrap().as_deref(),
             Some("dia 2031-03-17 Recesso\n")
         );
         assert_eq!(ponteproj::holidays::holiday(date), Some("Recesso"));
+        assert_eq!(first["library"], json!(true));
         // Later the library wins over whatever the phone kept.
         store.set_library_setting("holidays", "uf RJ\n").unwrap();
-        let second = adopt_holidays(&mut store, "dia 2031-03-17 Recesso\n");
+        let second = adopt_holidays(&mut store, "dia 2031-03-17 Recesso\n", "dia 2031-03-17 Recesso\n");
         assert_eq!(second["text"], "uf RJ\n");
         assert_eq!(ponteproj::holidays::holiday(date), None);
-        ponteproj::holidays::set_config(ponteproj::holidays::HolidayConfig::new());
+    }
+
+    #[test]
+    fn the_phone_hand_over_never_overwrites_a_shared_value_even_a_cleared_one() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        // Another device shared "nothing, on purpose".
+        store.set_library_setting("holidays", "").unwrap();
+        let answer = adopt_holidays(&mut store, "uf SP\n", "uf SP\n");
+        assert_eq!(answer["text"], "");
+        assert_eq!(answer["library"], json!(true));
+        assert_eq!(store.library_setting("holidays").unwrap().as_deref(), Some(""));
+        // A library with none, and nothing offered: nothing is written.
+        let other = Dir::new();
+        let (mut empty, _) = library(&other.0);
+        let none = adopt_holidays(&mut empty, "uf PR\n", "");
+        assert_eq!(none["library"], json!(false));
+        assert_eq!(empty.library_setting("holidays").unwrap(), None);
+        // ... and the phone keeps using its own copy meanwhile.
+        assert_eq!(none["text"], "uf PR\n");
     }
 }
