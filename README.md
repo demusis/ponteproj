@@ -16,7 +16,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Instalador** | **[Baixar o Ponte para Windows](https://github.com/demusis/ponteproj/releases/latest/download/Ponte-Setup.exe)** (sempre a versão mais recente) |
 | **Extensão do navegador** | [Ponte na Chrome Web Store](https://chromewebstore.google.com/detail/hhppmkbmainkdfmcfeaanknlnfgihnah) (serve para Chrome e Edge; exige o Ponte 0.19.3 ou posterior) |
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
-| **Versão** | 0.43.0 (extensão 0.4.1; Ponte de bolso 0.15.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.43.1 (extensão 0.4.1; Ponte de bolso 0.15.1) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -63,7 +63,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.43.0.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.43.1.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -541,7 +541,7 @@ Exemplo: *3 tarefas atrasadas, 2 para hoje e 1 atendimento com prazo.* Quando na
 - **O que aparece:** uma notificação do Windows, *Lembrete do Ponte*, com a frase *Há tarefas com aviso agendado. Abra Hoje para conferir ou adiar.* Com o Ponte na frente, a frase aparece no aviso do canto da janela. **O título da tarefa não vai na notificação**, de propósito: ela pode ficar visível sobre outras janelas e na tela de bloqueio. Os títulos aparecem em **Hoje**, no card **Avisos agendados**, onde cada tarefa tem **Adiar 10 min** e **Dispensar aviso**; um clique no título abre a tarefa.
 - **Avisos perdidos:** ao reabrir, **Hoje ▸ Avisos agendados** mostra em **Perdidos enquanto o Ponte estava fechado** o título e o horário previsto dos avisos dos últimos 7 dias (até 100). **Dispensar aviso** impede que volte, mesmo após reiniciar; concluir a tarefa também o remove. Na primeira execução após atualizar, avisos antigos não são recuperados. Pode aparecer até uma notificação genérica do Windows, sem títulos: *N avisos de tarefas passaram com o Ponte fechado. Abra Hoje para conferir.* O formulário orienta: “O aviso aparece com o Ponte aberto; se perdido, aparece em Hoje ao reabrir. Ative “Ativar resumo diário e avisos das tarefas” em Ajustes ▸ Lembretes de prazos.”
 - **Privacidade:** o registro do que já foi avisado fica só neste computador, cifrado (`avisos-individuais.bin`), fora do acervo e sem seguir para a equipe ou para a pasta compartilhada.
-- **No celular** (Ponte de bolso 0.15.0): os mesmos tempos (**No início**, **1 dia antes**, **7 dias antes**), como notificação do Android com o botão **Adiar 10 min**. Exigem a permissão de notificações; sem ela o aplicativo avisa na própria tarefa. A notificação também não traz o título.
+- **No celular** (Ponte de bolso 0.15.1): os mesmos tempos (**No início**, **1 dia antes**, **7 dias antes**), como notificação do Android com o botão **Adiar 10 min**. Exigem a permissão de notificações; sem ela o aplicativo avisa na própria tarefa. A notificação também não traz o título.
 
 ---
 

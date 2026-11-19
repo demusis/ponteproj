@@ -136,15 +136,22 @@ impl PonteApp {
                 let mut created = 0;
                 let mut existing = 0;
                 let mut done = Vec::new();
+                let mut known_uids: std::collections::HashSet<_> = match self.store.list_tasks() {
+                    Ok(tasks) => tasks.into_iter().map(|task| task.uid).collect(),
+                    Err(error) => {
+                        self.error(error.to_string());
+                        return;
+                    }
+                };
                 for index in indexes {
                     let entry = self.calendar_exchange.pending[index].clone();
                     let result = (|| -> anyhow::Result<bool> {
                         let uid = imported_uid(&entry.uid);
-                        if self.store.list_tasks()?.iter().any(|task| task.uid == uid) {
+                        if known_uids.contains(&uid) {
                             return Ok(false);
                         }
                         let mut task = Task::standalone();
-                        task.uid = uid;
+                        task.uid = uid.clone();
                         task.title = entry.title;
                         task.notes = entry.notes;
                         task.due_date = entry.due;
@@ -154,6 +161,7 @@ impl PonteApp {
                             task.status = "concluida".into();
                         }
                         self.store.save_task(&task)?;
+                        known_uids.insert(uid);
                         Ok(true)
                     })();
                     match result {

@@ -70,7 +70,7 @@ internal fun TodayScreen(
 ) {
     val c = Ponte.colors
     if (state.loading && state.isEmpty) {
-        LoadingBox("Carregando…", Modifier.fillMaxSize())
+        LoadingBox(text = "Carregando…", modifier = Modifier.fillMaxSize())
         return
     }
     val listState = rememberLazyListState()
@@ -302,7 +302,7 @@ internal fun ResourceCountCard(title: String, count: Int, tone: Tone, onClick: (
         ) {
             Text(title, Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, color = c.text, maxLines = 2)
             Spacer(Modifier.width(8.dp))
-            Pill(count.toString(), tone)
+            Pill(count.toString(), tone = tone)
         }
     }
 }

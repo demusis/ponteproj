@@ -11,6 +11,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -48,7 +49,7 @@ internal fun NewTaskScreen(
     var startHour by rememberSaveable { mutableStateOf("") }
     var endHour by rememberSaveable { mutableStateOf("") }
     var daysText by rememberSaveable { mutableStateOf("") }
-    var estimate by rememberSaveable { mutableStateOf(0) }
+    var estimate by rememberSaveable { mutableIntStateOf(0) }
     var reminders by rememberSaveable { mutableStateOf(emptyList<Int>()) }
     val planning = NewPlanning(start, end, estimate, reminders)
     val hourInvalid = planningHourInvalid(start, end, startHour, endHour)

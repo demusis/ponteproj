@@ -174,6 +174,7 @@ internal object SyncRunner {
         for (n in listOf("acervo.sqlite3", "acervo.sqlite3-wal", "acervo.sqlite3-shm", PENDING)) {
             File(ctx.filesDir, n).delete()
         }
+        @Suppress("ApplySharedPref") // Persist removal before deleting or replacing the keystore key.
         prefsOf(ctx).edit().remove("key_ct").remove("key_iv").commit()
         try {
             val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

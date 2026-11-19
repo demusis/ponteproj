@@ -120,6 +120,31 @@ impl Store {
     }
 }
 
+fn create_document_active_guard(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    operation: &str,
+) -> Result<()> {
+    let name = format!("ponte_active_{table}_{}", operation.to_lowercase());
+    conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE {operation} ON {table} WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.{column}) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END;"))?;
+    Ok(())
+}
+fn create_item_active_guard(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    kind: &str,
+) -> Result<()> {
+    let name = format!("ponte_item_active_{table}");
+    conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE UPDATE ON {table} WHEN EXISTS(SELECT 1 FROM trash WHERE kind='{kind}' AND item_id=NEW.{column}) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END;"))?;
+    Ok(())
+}
+pub(crate) fn restore_task_write_guards(conn: &Connection) -> Result<()> {
+    create_document_active_guard(conn, "tasks", "document_id", "UPDATE")?;
+    create_item_active_guard(conn, "tasks", "id", "task")
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -310,8 +335,7 @@ impl Store {
             ("attachments", "document_id"),
         ] {
             for operation in ["INSERT", "UPDATE"] {
-                let name = format!("ponte_active_{table}_{}", operation.to_lowercase());
-                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE {operation} ON {table} WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.{column}) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END;"))?;
+                create_document_active_guard(&tx, table, column, operation)?;
             }
         }
         for (table, column, kind) in [
@@ -323,8 +347,7 @@ impl Store {
             ("drafts", "capture_id", "capture"),
             ("analyses", "capture_id", "capture"),
         ] {
-            let name = format!("ponte_item_active_{table}");
-            tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE UPDATE ON {table} WHEN EXISTS(SELECT 1 FROM trash WHERE kind='{kind}' AND item_id=NEW.{column}) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END;"))?;
+            create_item_active_guard(&tx, table, column, kind)?;
         }
         for operation in ["INSERT", "UPDATE"] {
             for (table,condition) in [

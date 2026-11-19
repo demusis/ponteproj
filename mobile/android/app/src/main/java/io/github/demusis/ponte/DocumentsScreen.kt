@@ -149,7 +149,7 @@ internal fun DocCard(d: Doc,onClick: () -> Unit, modifier: Modifier = Modifier) 
     PonteCard(modifier, onClick) {
         Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (d.type.isNotEmpty()) Tag(d.type, Tone.ACCENT, Modifier.widthIn(max = 200.dp))
+                if (d.type.isNotEmpty()) Tag(d.type, tone = Tone.ACCENT, modifier = Modifier.widthIn(max = 200.dp))
                 Spacer(Modifier.weight(1f))
                 if (d.date.isNotEmpty()) Text(d.date, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1)
             }
@@ -167,7 +167,7 @@ internal fun DocCard(d: Doc,onClick: () -> Unit, modifier: Modifier = Modifier) 
                     if (d.openTasks > 0) {
                         val n = PhoneWords.plural(d.openTasks, "tarefa", "tarefas")
                         val label = if (d.taskDueLabel.isNotEmpty()) "$n · ${d.taskDueLabel}" else n
-                        Pill(label, if (d.taskOverdue) Tone.ERROR else if (d.taskDueToday) Tone.WARNING else Tone.NEUTRAL, Modifier.widthIn(max = 260.dp))
+                        Pill(label, tone = if (d.taskOverdue) Tone.ERROR else if (d.taskDueToday) Tone.WARNING else Tone.NEUTRAL, modifier = Modifier.widthIn(max = 260.dp))
                     }
                     Spacer(Modifier.weight(1f))
                     if (d.attachments > 0) {

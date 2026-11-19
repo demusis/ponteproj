@@ -148,6 +148,7 @@ pub(crate) fn register_refs(
     }
     Ok(())
 }
+#[derive(Clone)]
 struct TaskNode {
     id: i64,
     document_id: Option<i64>,
@@ -165,19 +166,20 @@ fn all_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
             r.get::<_, Vec<u8>>(2)?,
         ))
     })?;
-    rows.map(|row| {
+    let mut tasks = Vec::new();
+    for row in rows {
         let (id, doc, bytes) = row?;
-        let mut task: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
-        task.id = id;
-        task.document_id = doc;
-        Ok(TaskNode {
+        let Some(task) = crate::tasks::decode_task_or_skip_trashed(conn, id, &bytes)? else {
+            continue;
+        };
+        tasks.push(TaskNode {
             id,
             document_id: doc,
             dependencies: task.dependencies,
             parent_task_id: task.parent_task_id,
-        })
-    })
-    .collect()
+        });
+    }
+    Ok(tasks)
 }
 fn active_tasks(conn: &Connection) -> Result<Vec<TaskNode>> {
     all_tasks(conn)?
@@ -931,8 +933,15 @@ impl Store {
         if let (true, Some(document)) = (target.kind != Kind::Document, document) {
             require_active_document(&tx, document)?;
         }
+        let mut repaired_tasks = Vec::new();
         if !matches!(target.kind, Kind::Capture | Kind::Attachment) {
             let all = all_tasks(&tx)?;
+            // Include unreadable archived rows: they still exist and must not
+            // be mistaken for purged dependencies.
+            let existing: BTreeSet<i64> = tx
+                .prepare("SELECT id FROM tasks")?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
             let mut restoring = BTreeSet::new();
             for task in &all {
                 if (target.kind == Kind::Task && task.id == target.id)
@@ -948,6 +957,14 @@ impl Store {
                 .map(|t| t.id)
                 .collect::<BTreeSet<_>>();
             for task in all.iter().filter(|t| restoring.contains(&t.id)) {
+                let mut task = task.clone();
+                task.dependencies.retain(|id| existing.contains(id));
+                if task
+                    .parent_task_id
+                    .is_some_and(|id| !existing.contains(&id))
+                {
+                    task.parent_task_id = None;
+                }
                 ensure!(
                     task.dependencies
                         .iter()
@@ -957,12 +974,42 @@ impl Store {
                             .is_none_or(|id| active.contains(&id) || restoring.contains(&id)),
                     "Restaure primeiro as tarefas ou documentos usados como dependências."
                 );
+                repaired_tasks.push(task);
             }
         }
         tx.execute(
             "DELETE FROM trash WHERE kind=?1 AND item_id=?2",
             params![target.kind.key(), target.id],
         )?;
+        for task in repaired_tasks {
+            let bytes: Vec<u8> =
+                tx.query_row("SELECT payload FROM tasks WHERE id=?1", [task.id], |r| {
+                    r.get(0)
+                })?;
+            let mut value: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+            if value.dependencies == task.dependencies
+                && value.parent_task_id == task.parent_task_id
+            {
+                continue;
+            }
+            value.dependencies = task.dependencies;
+            value.parent_task_id = task.parent_task_id;
+            let payload = protection::seal(&serde_json::to_vec(&value)?)?;
+            tx.execute(
+                "UPDATE tasks SET payload=?1 WHERE id=?2",
+                params![payload, task.id],
+            )?;
+            crate::intranet::record_mutation(
+                &tx,
+                &actor,
+                "task",
+                task.id,
+                None,
+                "repair_task",
+                value.document_id,
+                "Corrigiu refer?ncias de tarefa restaurada",
+            )?;
+        }
         crate::intranet::record_mutation(
             &tx,
             &actor,
@@ -1621,6 +1668,37 @@ mod tests {
         store.import_capture(&capture).unwrap()
     }
     #[test]
+    fn restore_child_with_purged_or_trashed_parent_has_explicit_outcome() {
+        fn replica(path: &std::path::Path) -> (Store, i64, i64) {
+            let mut store = Store::open(path).unwrap();
+            let mut parent = crate::tasks::Task::standalone();
+            parent.title = "Pai".into();
+            let parent_id = store.save_task(&parent).unwrap();
+            let mut child = crate::tasks::Task::standalone();
+            child.title = "Filha".into();
+            child.parent_task_id = Some(parent_id);
+            let child_id = store.save_task(&child).unwrap();
+            store.trash_item(target(Kind::Task, child_id)).unwrap();
+            store.trash_item(target(Kind::Task, parent_id)).unwrap();
+            (store, parent_id, child_id)
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, parent, child) = replica(&dir.path().join("a.sqlite3"));
+        let (mut b, parent_b, child_b) = replica(&dir.path().join("b.sqlite3"));
+        a.purge_trash_item(target(Kind::Task, parent)).unwrap();
+        a.restore_item(target(Kind::Task, child)).unwrap();
+        assert_eq!(a.list_tasks().unwrap()[0].parent_task_id, None);
+        let error = b
+            .restore_item(target(Kind::Task, child_b))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Restaure primeiro"), "{error}");
+        b.purge_trash_item(target(Kind::Task, parent_b)).unwrap();
+        b.restore_item(target(Kind::Task, child_b)).unwrap();
+        assert_eq!(b.list_tasks().unwrap()[0].parent_task_id, None);
+    }
+
+    #[test]
     fn document_trash_preserves_content_blocks_replay_and_restores() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("document.sqlite3");
@@ -1756,6 +1834,34 @@ mod tests {
         assert!(store.restore_item(target(Kind::Task, new_task)).is_ok());
         assert_eq!(store.purge_expired_trash(30).unwrap(), 0);
     }
+    #[test]
+    fn restoring_task_forgets_purged_parent_and_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("purged.sqlite3")).unwrap();
+        let mut parent = Task::standalone();
+        parent.title = "Parent".into();
+        let parent_id = store.save_task(&parent).unwrap();
+        let mut child = Task::standalone();
+        child.title = "Child".into();
+        child.parent_task_id = Some(parent_id);
+        child.dependencies = vec![parent_id];
+        let child_id = store.save_task(&child).unwrap();
+        store.trash_item(target(Kind::Task, child_id)).unwrap();
+        store.trash_item(target(Kind::Task, parent_id)).unwrap();
+        store
+            .purge_trash_item(target(Kind::Task, parent_id))
+            .unwrap();
+        store.restore_item(target(Kind::Task, child_id)).unwrap();
+        let restored = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == child_id)
+            .unwrap();
+        assert_eq!(restored.parent_task_id, None);
+        assert!(restored.dependencies.is_empty());
+    }
+
     #[test]
     fn emptying_the_trash_removes_everything_and_leaves_the_rest_alone() {
         let dir = tempfile::tempdir().unwrap();

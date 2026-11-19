@@ -59,8 +59,8 @@ internal fun SearchScreen(
                     text = "Digite ao menos 2 letras. A busca olha os documentos, as tarefas e os atendimentos.",
                     icon = Icons.Outlined.Search
                 )
-                state.error != null -> Notice(state.error, Tone.ERROR, Modifier.padding(16.dp))
-                result == null -> if (state.loading) LoadingBox("Buscando…") else Unit
+                state.error != null -> Notice(state.error, tone = Tone.ERROR, modifier = Modifier.padding(16.dp))
+                result == null -> if (state.loading) LoadingBox(text = "Buscando…") else Unit
                 result.total == 0 && !state.loading -> EmptyState(
                     "Nada encontrado.", text = "Tente outras palavras.", icon = Icons.Outlined.SearchOff
                 )
@@ -113,7 +113,7 @@ private fun DocumentResult(d: SearchDoc, onClick: () -> Unit) {
     val c = Ponte.colors
     PonteCard(onClick = onClick) {
         Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (d.kind.isNotEmpty()) Tag(d.kind, Tone.ACCENT)
+            if (d.kind.isNotEmpty()) Tag(d.kind, tone = Tone.ACCENT)
             Text(
                 d.title.ifEmpty { "Sem título" }, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = c.text,
                 maxLines = 2, overflow = TextOverflow.Ellipsis
@@ -144,7 +144,7 @@ private fun TaskResult(t: TaskItem, onClick: () -> Unit) {
             }
             if (!t.done && t.dueChip.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
-                Pill(t.dueChip, if (t.overdue) Tone.ERROR else if (t.dueToday) Tone.WARNING else Tone.NEUTRAL)
+                Pill(t.dueChip, tone = if (t.overdue) Tone.ERROR else if (t.dueToday) Tone.WARNING else Tone.NEUTRAL)
             }
         }
     }

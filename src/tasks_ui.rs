@@ -298,7 +298,9 @@ fn planned_end_after_due(end: &str, due: &str) -> bool {
     let Ok(due) = chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d") else {
         return false;
     };
-    end.date() > due
+    end > (due + chrono::Duration::days(1))
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
 }
 
 fn reminder_options(offsets: &[u32]) -> Vec<(u32, String)> {
@@ -329,6 +331,7 @@ fn reminder_options(offsets: &[u32]) -> Vec<(u32, String)> {
 
 /// Counts shown on the chips: what each view would list under the current
 /// document filter and search. Order: Todas, Hoje, Próximos 7 dias, Atrasadas.
+#[cfg(test)]
 fn view_counts(
     tasks: &[Task],
     documents: &DocumentIndex,
@@ -336,8 +339,22 @@ fn view_counts(
     deps: &crate::tasks::Dependencies,
     scope: &Scope,
 ) -> [usize; 4] {
+    view_counts_filtered(tasks, documents, contexts, deps, scope, false)
+}
+
+fn view_counts_filtered(
+    tasks: &[Task],
+    documents: &DocumentIndex,
+    contexts: &Contexts,
+    deps: &crate::tasks::Dependencies,
+    scope: &Scope,
+    unplanned: bool,
+) -> [usize; 4] {
     let mut counts = [0; 4];
     for task in tasks {
+        if unplanned && (task.is_done() || !task.scheduled_start.is_empty()) {
+            continue;
+        }
         let context = task.document_id.and_then(|id| contexts.get(&id));
         if !in_scope(
             task,
@@ -2568,7 +2585,7 @@ impl TaskPanel {
         };
         // The chips count what each view would list right now.
         let [all_count, today_count, week_count, overdue_count] =
-            view_counts(tasks, &index, contexts, &deps, &scope);
+            view_counts_filtered(tasks, &index, contexts, &deps, &scope, self.unplanned_only);
         let visible: Vec<&Task> = tasks
             .iter()
             .filter(|task| {
@@ -3400,9 +3417,9 @@ impl TaskPanel {
                             }
                         }
                         ui.label("Início");
-                        let start_changed = crate::labels::datetime_field(ui, ("task-start", task_id), &mut task.scheduled_start, "09:00").changed();
+                        let start_changed = crate::labels::datetime_field(ui, ("task-start", &task.uid), &mut task.scheduled_start, "09:00").changed();
                         ui.label("Fim");
-                        crate::labels::datetime_field(ui, ("task-end", task_id), &mut task.scheduled_end, "18:00");
+                        crate::labels::datetime_field(ui, ("task-end", &task.uid), &mut task.scheduled_end, "18:00");
                         let mut days = task.estimate_minutes.div_ceil(1440);
                         let estimate_changed = ui.horizontal(|ui| {
                             ui.label("Estimativa em dias (0 = sem estimativa)");
@@ -3410,9 +3427,12 @@ impl TaskPanel {
                         }).inner;
                         if estimate_changed { task.estimate_minutes = days * 1440; }
                         if task.estimate_minutes % 1440 != 0 { widgets::small_muted(ui, format!("Estimativa anterior: {} min", task.estimate_minutes)); }
-                        if (start_changed || estimate_changed) && days > 0 && task.scheduled_end.is_empty() {
+                        let auto_id = ui.make_persistent_id(("task-auto-end", &task.uid));
+                        let last_auto: Option<String> = ui.data(|d| d.get_temp(auto_id));
+                        if (start_changed || estimate_changed) && days > 0 && (task.scheduled_end.is_empty() || last_auto.as_ref() == Some(&task.scheduled_end)) {
                             if let Ok(start) = chrono::NaiveDateTime::parse_from_str(&task.scheduled_start, "%Y-%m-%dT%H:%M") {
                                 task.scheduled_end = crate::projection::work_end(start, days).format("%Y-%m-%dT%H:%M").to_string();
+                                ui.data_mut(|d| d.insert_temp(auto_id, task.scheduled_end.clone()));
                             }
                         }
                         if planned_end_after_due(&task.scheduled_end, &task.due_date) {
@@ -3934,6 +3954,8 @@ mod navigation_tests {
         use super::*;
         assert!(planned_end_after_due("2026-11-04T18:00", "2026-11-03"));
         assert!(!planned_end_after_due("2026-11-03T18:00", "2026-11-03"));
+        assert!(!planned_end_after_due("2026-11-04T00:00", "2026-11-03"));
+        assert!(planned_end_after_due("2026-11-04T00:01", "2026-11-03"));
         assert!(!planned_end_after_due("invalid", "2026-11-03"));
         let options = reminder_options(&[15, 60, 15, 1440]);
         assert!(options.contains(&(15, "15 min antes (antigo)".into())));
@@ -4000,6 +4022,27 @@ mod navigation_tests {
             week: "2026-11-17",
             categories: &crate::category_ui::NO_CATEGORY_FILTER,
         }
+    }
+
+    #[test]
+    fn chip_counts_respect_unplanned_filter() {
+        let mut planned = task(1, 1, "2026-11-10", "pendente");
+        planned.scheduled_start = "2026-11-10T09:00".into();
+        let tasks = vec![
+            planned,
+            task(2, 1, "2026-11-10", "pendente"),
+            task(3, 1, "2026-11-10", "concluida"),
+        ];
+        let deps = crate::tasks::Dependencies::new(&tasks);
+        let counts = view_counts_filtered(
+            &tasks,
+            &DocumentIndex::new(),
+            &Contexts::new(),
+            &deps,
+            &scope(None, "", true),
+            true,
+        );
+        assert_eq!(counts[0], 1);
     }
 
     #[test]

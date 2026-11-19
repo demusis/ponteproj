@@ -1603,7 +1603,7 @@ pub fn group_uses<'a>(items: &[&'a ResourceUse], today: NaiveDate, now: &str) ->
             UseStatus::InUse => groups.in_use.push(item),
             UseStatus::Reserved => {
                 let (first, last) = (moment_date(&item.start), moment_date(&item.end));
-                if last < today_iso {
+                if last < today_iso || (last == today_iso && item.end.ends_with("T00:00")) {
                     groups.older.push(item);
                 } else if first <= today_iso {
                     groups.today.push(item);
@@ -1721,6 +1721,19 @@ mod tests {
             .into_iter()
             .find(|u| u.uid == uid)
             .unwrap()
+    }
+
+    #[test]
+    fn reservation_ending_at_midnight_is_not_today() {
+        let item = ResourceUse {
+            start: "2026-11-17T10:00".into(),
+            end: "2026-11-18T00:00".into(),
+            ..ResourceUse::default()
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let groups = group_uses(&[&item], today, "2026-11-18T09:00");
+        assert!(groups.today.is_empty());
+        assert_eq!(groups.older.len(), 1);
     }
 
     #[test]

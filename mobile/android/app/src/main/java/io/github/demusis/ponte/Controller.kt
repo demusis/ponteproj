@@ -18,6 +18,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.asImageBitmap
@@ -132,6 +133,7 @@ internal sealed class AppDialog {
  * Everything here runs on the UI thread. The passphrase and the mail passwords are never put
  * in the saved state.
  */
+@Suppress("StaticFieldLeak") // Only the application context is retained.
 internal object Controller {
     private const val SERVER_MSG = "Conversando com o servidor de e-mail…"
     private const val PHOTO_FAILED =
@@ -142,6 +144,7 @@ internal object Controller {
     private const val K_SECURE = "secure_screen"
     private const val K_NAME = "person_name"
 
+    @Suppress("StaticFieldLeak") // Assigned ctx.applicationContext in init.
     private lateinit var app: Context
     private val prefs get() = app.getSharedPreferences("ponte", Context.MODE_PRIVATE)
     private val activity: MainActivity? get() = MainActivity.live
@@ -158,7 +161,7 @@ internal object Controller {
 
     val snackbar = SnackbarHostState()
 
-    var tab by mutableStateOf(0)
+    var tab by mutableIntStateOf(0)
         private set
     val stack = mutableStateListOf<Route>()
     var shell by mutableStateOf(ShellState())
@@ -186,7 +189,7 @@ internal object Controller {
         private set
 
     /** 0 Tarefas, 1 Atendimentos: what the Tarefas area shows. */
-    var tasksSegment by mutableStateOf(0)
+    var tasksSegment by mutableIntStateOf(0)
         private set
     var attendances by mutableStateOf(AttendancesState())
         private set
@@ -197,7 +200,7 @@ internal object Controller {
 
     /** What is typed in the search box of the Recursos list (memory only), and which of its two views: 0 Usos, 1 Recursos. */
     var resQuery by mutableStateOf("")
-    var resView by mutableStateOf(0)
+    var resView by mutableIntStateOf(0)
 
     /** What is typed in the search box of the Atendimentos list (memory only). */
     var attQuery by mutableStateOf("")

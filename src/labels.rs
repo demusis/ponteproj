@@ -508,10 +508,18 @@ pub fn date_field(
     response
 }
 
+fn complete_datetime_date(text: &str) -> bool {
+    let parts: Vec<_> = text.trim().split(['/', '-', '.']).collect();
+    parts.len() == 3 && (parts[0].len() == 4 || parts[2].len() == 4)
+}
+
 /// Compose the stored datetime, preserving invalid input for validation.
 pub fn compose_datetime(date_text: &str, time_text: &str, default_time: &str) -> String {
     if date_text.trim().is_empty() {
         return String::new();
+    }
+    if !complete_datetime_date(date_text) {
+        return format!("{}T{}", date_text, time_text);
     }
     let Some(date) = parse_typed_date(date_text) else {
         return format!("{}T{}", date_text, time_text);
@@ -791,6 +799,14 @@ fn calendar_popup(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn datetime_waits_for_four_digit_year() {
+        assert!(!complete_datetime_date("03/11/2"));
+        assert!(!complete_datetime_date("03/11/26"));
+        assert!(complete_datetime_date("03/11/2026"));
+        assert_eq!(compose_datetime("03/11/2", "", "09:00"), "03/11/2T");
+    }
+
     #[test]
     fn datetime_buffers_and_composition() {
         use super::*;

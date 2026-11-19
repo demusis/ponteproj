@@ -1079,6 +1079,23 @@ type KeptAnalysis = (
     Option<crate::model::AnalysisRun>,
 );
 
+fn carry_old_task_fields(old: &Task, value: &mut Task, schema: i64) {
+    if schema < SCHEDULE_SCHEMA {
+        value.uid = old.uid.clone();
+        value.scheduled_start = old.scheduled_start.clone();
+        value.scheduled_end = old.scheduled_end.clone();
+        value.estimate_minutes = old.estimate_minutes;
+        value.parent_task_id = old.parent_task_id;
+        value.reminder_offsets_minutes = old.reminder_offsets_minutes.clone();
+    }
+    if schema < CATEGORIES_SCHEMA {
+        value.categories = old.categories.clone();
+    }
+    if schema < PROPOSALS_SCHEMA && old.title == value.title {
+        value.proposal_id = old.proposal_id.clone();
+    }
+}
+
 /// What a library holds of the proposals of the AI, read before a copy from
 /// an older main computer replaces it. Unreadable rows are left out.
 #[derive(Default)]
@@ -1637,7 +1654,10 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut tasks = Vec::with_capacity(raw_tasks.len());
         for (id, document_id, blob) in raw_tasks {
-            let mut task: Task = serde_json::from_slice(&unseal(&blob)?)?;
+            let Some(mut task) = crate::tasks::decode_task_or_skip_trashed(&self.conn, id, &blob)?
+            else {
+                continue;
+            };
             task.id = id;
             task.document_id = document_id;
             tasks.push(task);
@@ -1950,6 +1970,19 @@ impl Store {
             prepared_file_blobs.insert(meta.id, seal(&bytes)?);
         }
 
+        // An unreadable archived row cannot be represented in a snapshot. Refuse
+        // replacement rather than silently deleting it with the old library.
+        {
+            let mut statement = self.conn.prepare("SELECT id,payload FROM tasks")?;
+            let rows =
+                statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+            for row in rows {
+                let (id, bytes) = row?;
+                if crate::tasks::decode_task_or_skip_trashed(&self.conn, id, &bytes)?.is_none() {
+                    anyhow::bail!("Não é possível substituir a cópia enquanto a tarefa {id} na lixeira estiver ilegível.");
+                }
+            }
+        }
         let old_tasks = if snapshot.schema_version < SCHEDULE_SCHEMA {
             let mut statement = self.conn.prepare("SELECT id,payload FROM tasks")?;
             let rows =
@@ -2113,15 +2146,7 @@ impl Store {
                 .get(&value.id)
                 .filter(|old| old.document_id == value.document_id)
             {
-                value.uid = old.uid.clone();
-                value.scheduled_start = old.scheduled_start.clone();
-                value.scheduled_end = old.scheduled_end.clone();
-                value.estimate_minutes = old.estimate_minutes;
-                value.parent_task_id = old.parent_task_id;
-                value.reminder_offsets_minutes = old.reminder_offsets_minutes.clone();
-                if snapshot.schema_version < CATEGORIES_SCHEMA {
-                    value.categories = old.categories.clone();
-                }
+                carry_old_task_fields(old, &mut value, snapshot.schema_version);
             }
             if value.uid.is_empty() {
                 value.uid = uuid::Uuid::new_v4().to_string();
@@ -2444,9 +2469,44 @@ impl Store {
             IntranetMutation::SaveTask {
                 task,
                 expected_version,
-            } => self
-                .save_task_checked(&task, expected_version)
-                .map(MutationReply::Id),
+            } => (|| -> Result<MutationReply> {
+                let existing = if task.id == 0 && !task.uid.is_empty() {
+                    self.list_tasks()?
+                        .into_iter()
+                        .find(|value| value.uid == task.uid)
+                } else {
+                    None
+                };
+                if let Some(existing) = existing {
+                    let mut retried = task.clone();
+                    retried.id = existing.id;
+                    if retried == existing {
+                        Ok(MutationReply::Id(existing.id))
+                    } else {
+                        let merged = self.build_merged_mutation(
+                            actor,
+                            IntranetMutation::SaveTask {
+                                task: retried,
+                                expected_version: None,
+                            },
+                            None,
+                        )?;
+                        if let IntranetMutation::SaveTask {
+                            task,
+                            expected_version,
+                        } = merged
+                        {
+                            self.save_task_checked(&task, expected_version)
+                                .map(MutationReply::Id)
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                } else {
+                    self.save_task_checked(&task, expected_version)
+                        .map(MutationReply::Id)
+                }
+            })(),
             IntranetMutation::RelinkTask {
                 task_id,
                 document_id,
@@ -2946,6 +3006,7 @@ impl Store {
         // a copy that may never be written.
         let mut conflicts: Vec<SyncConflict> = Vec::new();
         let mut temp: Option<Store> = None;
+        let mut carried_old_fields = false;
         let base_snapshot = copies.first().map(|c| &c.payload.snapshot);
         if first_write {
             reporter.step("Preparando a primeira cópia a partir do acervo deste computador…");
@@ -2973,8 +3034,67 @@ impl Store {
             ));
             let mut store = Store::open(temp_path)
                 .context("Não foi possível preparar o acervo temporário da sincronização.")?;
+            let mut incoming = best.payload.snapshot.clone();
+            if best.header.schema_version < SCHEDULE_SCHEMA {
+                let watermark: i64 = self.conn.query_row(
+                    "SELECT coalesce((SELECT max_id FROM offline_watermark WHERE kind='task'),0)",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let pending: std::collections::BTreeSet<i64> = outbox
+                    .iter()
+                    .flat_map(|entry| entry.created.iter())
+                    .filter(|created| created.kind == crate::idmap::IdKind::Task)
+                    .map(|created| created.id)
+                    .collect();
+                let mut statement = self
+                    .conn
+                    .prepare("SELECT id, payload FROM tasks WHERE id<=?1")?;
+                let rows = statement.query_map([watermark], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })?;
+                let mut old = Vec::new();
+                for row in rows {
+                    let (id, bytes) = row?;
+                    if pending.contains(&id) {
+                        continue;
+                    }
+                    if let Some(mut task) =
+                        crate::tasks::decode_task_or_skip_trashed(&self.conn, id, &bytes)?
+                    {
+                        task.id = id;
+                        old.push(task);
+                    }
+                }
+                for task in &mut incoming.tasks {
+                    if let Some(local) = old.iter().find(|t| {
+                        t.id == task.id
+                            && t.document_id == task.document_id
+                            && t.title == task.title
+                    }) {
+                        let before = task.clone();
+                        carry_old_task_fields(local, task, best.header.schema_version);
+                        carried_old_fields |= *task != before;
+                    }
+                }
+                if best.header.schema_version < CATEGORIES_SCHEMA {
+                    incoming.categories = self.export_categories()?;
+                }
+                if best.header.schema_version < PROPOSALS_SCHEMA {
+                    let kept = KeptProposals::read(&self.conn);
+                    for row in &mut incoming.analyses {
+                        kept.restore_analysis(row.id, &mut row.analysis);
+                    }
+                    for row in &mut incoming.saiop_attendances {
+                        kept.restore_attendance(&mut row.attendance);
+                    }
+                    for row in &mut incoming.resources.uses {
+                        kept.restore_use(&mut row.value);
+                    }
+                }
+            }
             store.apply_snapshot(
-                &best.payload.snapshot,
+                &incoming,
                 |file_id, _| {
                     best.blobs
                         .pdfs
@@ -2990,6 +3110,9 @@ impl Store {
                         .context("Anexo ausente no arquivo de sincronização.")
                 },
             )?;
+            if best.header.schema_version < CATEGORIES_SCHEMA {
+                crate::categories::apply_categories(&store.conn, &incoming.categories)?;
+            }
             applied = best.payload.applied.iter().cloned().collect();
             journal = best.payload.journal.clone();
             // What each change created, with the numbers of the copy being
@@ -3024,7 +3147,13 @@ impl Store {
                     &resolved,
                     &applied,
                 );
-                let remapped = ids.remap(&entry.mutation, &source.payload.snapshot, Some(&store));
+                let remapped = ids
+                    .remap(&entry.mutation, &source.payload.snapshot, Some(&store))
+                    .and_then(|mutation| {
+                        store
+                            .keep_unseen_fields(mutation, source.header.schema_version)
+                            .map_err(|e| e.to_string())
+                    });
                 let outcome = match &remapped {
                     Ok(mutation) => store
                         .execute_mutation(&entry.actor, mutation.clone())
@@ -3201,8 +3330,11 @@ impl Store {
             writer_name: cfg.member_name.trim(),
             schema_version: crate::storage::SCHEMA_VERSION,
         };
-        let changed_content =
-            first_write || report.pushed > 0 || report.merged_foreign > 0 || report.conflicts > 0;
+        let changed_content = first_write
+            || carried_old_fields
+            || report.pushed > 0
+            || report.merged_foreign > 0
+            || report.conflicts > 0;
         let mut targets: Vec<PathBuf> = absent.to_vec();
         for copy in copies {
             if guard_path == Some(copy.path.as_path()) {
@@ -4220,8 +4352,14 @@ impl Store {
                     let base_schedule = base_task.map(|b| (&b.scheduled_start, &b.scheduled_end));
                     let host_schedule = (&ht.scheduled_start, &ht.scheduled_end);
                     let local_schedule = (&local_task.scheduled_start, &local_task.scheduled_end);
-                    let (schedule, both) =
-                        pick(base_schedule.as_ref(), &host_schedule, &local_schedule);
+                    let (schedule, both) = if base_task.is_none()
+                        && local_task.scheduled_start.is_empty()
+                        && local_task.scheduled_end.is_empty()
+                    {
+                        (host_schedule, false)
+                    } else {
+                        pick(base_schedule.as_ref(), &host_schedule, &local_schedule)
+                    };
                     if both {
                         kept.push(format!(
                             "Planejamento: no computador principal estava \"{} – {}\"",
@@ -4230,13 +4368,19 @@ impl Store {
                     }
                     m.scheduled_start = schedule.0.clone();
                     m.scheduled_end = schedule.1.clone();
-                    scalar!(estimate_minutes, "Estimativa", |v: &u32| v.to_string());
-                    scalar!(parent_task_id, "Tarefa pai", |v: &Option<i64>| format!(
-                        "{v:?}"
-                    ));
-                    scalar!(reminder_offsets_minutes, "Avisos", |v: &Vec<u32>| format!(
-                        "{v:?}"
-                    ));
+                    if base_task.is_some() || local_task.estimate_minutes != 0 {
+                        scalar!(estimate_minutes, "Estimativa", |v: &u32| v.to_string());
+                    }
+                    if base_task.is_some() || local_task.parent_task_id.is_some() {
+                        scalar!(parent_task_id, "Tarefa pai", |v: &Option<i64>| format!(
+                            "{v:?}"
+                        ));
+                    }
+                    if base_task.is_some() || !local_task.reminder_offsets_minutes.is_empty() {
+                        scalar!(reminder_offsets_minutes, "Avisos", |v: &Vec<u32>| format!(
+                            "{v:?}"
+                        ));
+                    }
                     scalar!(due_source, "Origem do prazo", plain);
                     scalar!(reminder_date, "Lembrete", |v: &String| crate::labels::date(
                         v
@@ -4259,32 +4403,17 @@ impl Store {
                         &local_task.outcome,
                         actor,
                     );
-                    // One side changed the list: take that side (removals
-                    // included). Both changed, or no base: join the two, so
-                    // no item is lost (the old behaviour).
-                    let (one_side, both) = pick(
-                        base_task.map(|b| &b.checklist),
+                    m.checklist = merge_checklist(
+                        base_task.map(|b| b.checklist.as_slice()),
                         &ht.checklist,
                         &local_task.checklist,
+                        &mut kept,
                     );
-                    if base_task.is_some() && !both {
-                        m.checklist = one_side;
-                    } else {
-                        for (done_l, text_l) in &local_task.checklist {
-                            if let Some((done_m, _)) =
-                                m.checklist.iter_mut().find(|(_, t)| t == text_l)
-                            {
-                                *done_m = *done_m || *done_l;
-                            } else {
-                                m.checklist.push((*done_l, text_l.clone()));
-                            }
-                        }
-                    }
-                    for dep in &local_task.dependencies {
-                        if !m.dependencies.contains(dep) {
-                            m.dependencies.push(*dep);
-                        }
-                    }
+                    m.dependencies = merge_dependencies(
+                        base_task.map(|b| b.dependencies.as_slice()),
+                        &ht.dependencies,
+                        &local_task.dependencies,
+                    );
                     m.completed_at = if m.status == "concluida" {
                         local_task.completed_at.clone().or(ht.completed_at.clone())
                     } else {
@@ -5938,6 +6067,85 @@ pub struct ConflictView {
     pub change_text: String,
 }
 
+fn merge_dependencies(base: Option<&[i64]>, host: &[i64], local: &[i64]) -> Vec<i64> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut result: Vec<i64> = host
+        .iter()
+        .copied()
+        .filter(|id| base.is_none_or(|b| !b.contains(id) || local.contains(id)) && seen.insert(*id))
+        .collect();
+    for id in local {
+        if base.is_none_or(|b| !b.contains(id)) && !result.contains(id) {
+            result.push(*id);
+        }
+    }
+    result
+}
+
+fn merge_checklist(
+    base: Option<&[(bool, String)]>,
+    host: &[(bool, String)],
+    local: &[(bool, String)],
+    kept: &mut Vec<String>,
+) -> Vec<(bool, String)> {
+    let duplicate = |items: &[(bool, String)]| {
+        let mut seen = std::collections::BTreeSet::new();
+        items.iter().any(|(_, text)| !seen.insert(text))
+    };
+    if base.is_some_and(duplicate) || duplicate(host) || duplicate(local) {
+        let (value, conflict) = pick(
+            base.map(|v| v.to_vec()).as_ref(),
+            &host.to_vec(),
+            &local.to_vec(),
+        );
+        if conflict {
+            kept.push("Checklist: alterado no computador principal".into());
+        }
+        return value;
+    }
+    let Some(base) = base else {
+        let mut result = host.to_vec();
+        for (done, text) in local {
+            if let Some((current, _)) = result.iter_mut().find(|(_, t)| t == text) {
+                *current |= *done;
+            } else {
+                result.push((*done, text.clone()));
+            }
+        }
+        return result;
+    };
+    let mut result = Vec::new();
+    for (_, text) in host.iter().chain(local.iter()) {
+        if result.iter().any(|(_, t)| t == text) {
+            continue;
+        }
+        let b = base.iter().find(|(_, t)| t == text).map(|(d, _)| *d);
+        let h = host.iter().find(|(_, t)| t == text).map(|(d, _)| *d);
+        let l = local.iter().find(|(_, t)| t == text).map(|(d, _)| *d);
+        let value = if b.is_some() && (h.is_none() || l.is_none()) {
+            let remaining = h.or(l);
+            if remaining.is_some() && remaining != b {
+                kept.push(format!(
+                    "Checklist: {text} alterado no computador principal"
+                ));
+                remaining
+            } else {
+                None
+            }
+        } else if h == b {
+            l
+        } else if l == b {
+            h
+        } else {
+            l.or(h)
+        };
+        if let Some(done) = value {
+            result.push((done, text.clone()));
+        }
+    }
+    result
+}
+
 /// `(value, changed_on_both_sides)` for a scalar field in a three-way merge.
 fn pick<T: PartialEq + Clone>(base: Option<&T>, host: &T, local: &T) -> (T, bool) {
     if local == host {
@@ -6726,6 +6934,22 @@ fn send_rpc_classified(
 ) -> std::result::Result<RpcResponse, RpcError> {
     let base = validate_host_url(&cfg.host_url).map_err(|e| RpcError::Rejected(e.to_string()))?;
     validate_token(&cfg.cabinet_token).map_err(|e| RpcError::Rejected(e.to_string()))?;
+    // Reject unsupported task creates first so dependent queued changes become conflicts too.
+    if let RpcRequest::Mutate {
+        mutation: IntranetMutation::SaveTask { .. } | IntranetMutation::CreateTaskForSaiop { .. },
+        ..
+    } = request
+    {
+        if let Ok(RpcResponse::Pong { schema_version, .. }) =
+            send_rpc_classified(cfg, &RpcRequest::Ping)
+        {
+            if schema_version < SCHEDULE_SCHEMA {
+                return Err(RpcError::Rejected(
+                    "Atualize o Ponte no computador principal para sincronizar tarefas.".into(),
+                ));
+            }
+        }
+    }
     // A queued change that keeps the proposals of the AI is not sent to a
     // main computer that would drop them: it waits, as for any older host.
     if let RpcRequest::Mutate { mutation, .. } = request {
@@ -6736,21 +6960,6 @@ fn send_rpc_classified(
                 if schema_version < PROPOSALS_SCHEMA {
                     return Err(RpcError::Unreachable(HOST_WITHOUT_PROPOSALS.into()));
                 }
-            }
-        }
-    }
-    if let RpcRequest::Mutate {
-        mutation: IntranetMutation::SaveTask { .. } | IntranetMutation::CreateTaskForSaiop { .. },
-        ..
-    } = request
-    {
-        if let Ok(RpcResponse::Pong { schema_version, .. }) =
-            send_rpc_classified(cfg, &RpcRequest::Ping)
-        {
-            if schema_version < SCHEDULE_SCHEMA {
-                return Err(RpcError::Unreachable(
-                    "Atualize o Ponte no computador principal para sincronizar tarefas.".into(),
-                ));
             }
         }
     }
@@ -10758,6 +10967,165 @@ mod tests {
     }
 
     #[test]
+    fn old_conflict_without_base_preserves_host_planning() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("planning.sqlite3")).unwrap();
+        let mut task = Task::standalone();
+        task.title = "Host".into();
+        task.scheduled_start = "2026-11-19T09:00".into();
+        task.scheduled_end = "2026-11-19T10:00".into();
+        task.estimate_minutes = 60;
+        task.reminder_offsets_minutes = vec![15];
+        let id = store.save_task(&task).unwrap();
+        let mut local = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        local.title = "Offline".into();
+        local.scheduled_start.clear();
+        local.scheduled_end.clear();
+        local.estimate_minutes = 0;
+        local.reminder_offsets_minutes.clear();
+        let IntranetMutation::SaveTask { task: merged, .. } = store
+            .build_merged_mutation(
+                "Ana",
+                IntranetMutation::SaveTask {
+                    task: local,
+                    expected_version: None,
+                },
+                None,
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(merged.title, "Offline");
+        assert_eq!(merged.scheduled_start, task.scheduled_start);
+        assert_eq!(merged.estimate_minutes, 60);
+        assert_eq!(merged.reminder_offsets_minutes, vec![15]);
+    }
+    #[test]
+    fn merged_completed_task_does_not_restore_removed_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("merge-deps.sqlite3")).unwrap();
+        let mut dependency = Task::standalone();
+        dependency.title = "Dependency".into();
+        let dependency_id = store.save_task(&dependency).unwrap();
+        let mut task = Task::standalone();
+        task.title = "Task".into();
+        task.dependencies = vec![dependency_id];
+        let id = store.save_task(&task).unwrap();
+        let base = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        let mut host = base.clone();
+        host.dependencies.clear();
+        host.status = "concluida".into();
+        store.save_task(&host).unwrap();
+        let mut local = base.clone();
+        local.title = "Offline".into();
+        let IntranetMutation::SaveTask { task: merged, .. } = store
+            .build_merged_mutation(
+                "Ana",
+                IntranetMutation::SaveTask {
+                    task: local,
+                    expected_version: None,
+                },
+                Some(&IntranetMutation::SaveTask {
+                    task: base,
+                    expected_version: None,
+                }),
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert!(merged.dependencies.is_empty());
+        assert_eq!(merged.status, "concluida");
+        store.save_task(&merged).unwrap();
+    }
+
+    #[test]
+    fn resent_create_with_existing_uid_maps_to_existing_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("retry.sqlite3")).unwrap();
+        let mut task = Task::standalone();
+        task.title = "Original".into();
+        let id = store.save_task(&task).unwrap();
+        let mut host = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        host.notes = "Altera??o no principal".into();
+        store.save_task(&host).unwrap();
+        task.title = "Altera??o reenviada".into();
+        let reply = store
+            .execute_mutation(
+                "Outro",
+                IntranetMutation::SaveTask {
+                    task,
+                    expected_version: None,
+                },
+            )
+            .unwrap();
+        assert!(matches!(reply, MutationReply::Id(found) if found == id));
+        let tasks = store.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Altera??o reenviada");
+        assert!(tasks[0].notes.contains("Altera??o no principal"));
+    }
+
+    #[test]
+    fn checklist_rename_vs_toggle_is_recorded() {
+        let base = vec![(false, "original".into())];
+        let host = vec![(true, "original".into())];
+        let local = vec![(false, "renamed".into())];
+        let mut kept = Vec::new();
+        let result = merge_checklist(Some(&base), &host, &local, &mut kept);
+        assert!(result.contains(&(true, "original".into())));
+        assert!(!kept.is_empty());
+    }
+
+    #[test]
+    fn checklist_delete_vs_toggle_keeps_item() {
+        let base = vec![(false, "item".into())];
+        let mut kept = Vec::new();
+        assert_eq!(
+            merge_checklist(Some(&base), &[(true, "item".into())], &[], &mut kept),
+            vec![(true, "item".into())]
+        );
+        assert!(!kept.is_empty());
+    }
+
+    #[test]
+    fn checklist_merge_keeps_duplicate_texts() {
+        let base = vec![(false, "item".into()), (false, "item".into())];
+        let host = vec![(true, "item".into()), (false, "item".into())];
+        let mut kept = Vec::new();
+        assert_eq!(merge_checklist(Some(&base), &host, &base, &mut kept), host);
+    }
+
+    #[test]
+    fn three_way_lists_keep_removals_and_unchecks() {
+        assert!(merge_dependencies(Some(&[7]), &[], &[7]).is_empty());
+        assert_eq!(merge_dependencies(None, &[7], &[8]), vec![7, 8]);
+        let base = vec![(true, "uncheck".into()), (false, "delete".into())];
+        let host = vec![(true, "uncheck".into())];
+        let local = vec![(false, "uncheck".into()), (false, "delete".into())];
+        assert_eq!(
+            merge_checklist(Some(&base), &host, &local, &mut Vec::new()),
+            vec![(false, "uncheck".into())]
+        );
+    }
+
+    #[test]
     fn three_way_merge_keeps_each_side_s_change_and_records_double_changes() {
         // Scalar: only one side changed → that side wins, nothing recorded.
         assert_eq!(pick(Some(&"a"), &"a", &"b"), ("b", false));
@@ -11013,6 +11381,211 @@ mod standalone_task_sync_tests {
             .into_iter()
             .find(|t| t.title == title)
             .unwrap_or_else(|| panic!("task {title:?} missing"))
+    }
+
+    #[test]
+    fn folder_old_copy_keeps_local_planning_and_uid() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, _, _) = pair(dir.path());
+        let parent = a.save_task(&standalone("Pai")).unwrap();
+        let mut task = standalone("Planejada");
+        task.parent_task_id = Some(parent);
+        task.scheduled_start = "2026-11-17T10:00".into();
+        task.scheduled_end = "2026-11-17T11:00".into();
+        task.estimate_minutes = 45;
+        task.reminder_offsets_minutes = vec![15];
+        a.save_task(&task).unwrap();
+        sync(&mut a);
+        let expected = find(&a, "Planejada");
+        let path = dir.path().join("Drive").join("ponte-sync.ponte");
+        let mut copy = crate::sharedfolder::read(&path, KEY).unwrap().unwrap();
+        copy.payload.snapshot.schema_version = 17;
+        for t in &mut copy.payload.snapshot.tasks {
+            t.uid.clear();
+            t.parent_task_id = None;
+            t.scheduled_start.clear();
+            t.scheduled_end.clear();
+            t.estimate_minutes = 0;
+            t.reminder_offsets_minutes.clear();
+        }
+        let h = &copy.header;
+        let req = crate::sharedfolder::WriteRequest {
+            lineage: &h.lineage,
+            revision: h.revision + 1,
+            writer: "old-writer",
+            writer_name: "Antigo",
+            schema_version: 17,
+        };
+        crate::sharedfolder::write(&path, KEY, &req, &copy.payload, &copy.blobs).unwrap();
+        sync(&mut a);
+        let actual = find(&a, "Planejada");
+        assert_eq!(actual.uid, expected.uid);
+        assert_eq!(actual.parent_task_id, expected.parent_task_id);
+        assert_eq!(actual.scheduled_start, expected.scheduled_start);
+        assert_eq!(actual.scheduled_end, expected.scheduled_end);
+        assert_eq!(actual.estimate_minutes, expected.estimate_minutes);
+        assert_eq!(
+            actual.reminder_offsets_minutes,
+            expected.reminder_offsets_minutes
+        );
+        let written = crate::sharedfolder::read(&path, KEY).unwrap().unwrap();
+        let stored = written
+            .payload
+            .snapshot
+            .tasks
+            .iter()
+            .find(|t| t.title == "Planejada")
+            .unwrap();
+        assert_eq!(stored, &actual);
+    }
+
+    #[test]
+    fn folder_old_copy_does_not_attach_planning_to_colliding_new_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, _, _) = pair(dir.path());
+        let mut local = standalone("Local");
+        local.scheduled_start = "2026-11-17T10:00".into();
+        local.scheduled_end = "2026-11-17T11:00".into();
+        let id = a.save_task(&local).unwrap();
+        let path = dir.path().join("Drive").join("ponte-sync.ponte");
+        let mut copy = crate::sharedfolder::read(&path, KEY).unwrap().unwrap();
+        let mut foreign = standalone("Outra pessoa");
+        foreign.id = id;
+        foreign.uid.clear();
+        copy.payload.snapshot.tasks.push(foreign);
+        copy.payload.snapshot.schema_version = 17;
+        let h = &copy.header;
+        let req = crate::sharedfolder::WriteRequest {
+            lineage: &h.lineage,
+            revision: h.revision + 1,
+            writer: "old-writer",
+            writer_name: "Antigo",
+            schema_version: 17,
+        };
+        crate::sharedfolder::write(&path, KEY, &req, &copy.payload, &copy.blobs).unwrap();
+        sync(&mut a);
+        let tasks = a.list_tasks().unwrap();
+        let foreign = tasks.iter().find(|t| t.title == "Outra pessoa").unwrap();
+        assert!(foreign.scheduled_start.is_empty());
+        let uids: std::collections::HashSet<_> = tasks.iter().map(|t| &t.uid).collect();
+        assert_eq!(uids.len(), tasks.len());
+        let local = tasks.iter().find(|t| t.title == "Local").unwrap();
+        assert_eq!(local.scheduled_start, "2026-11-17T10:00");
+    }
+
+    #[test]
+    fn folder_old_copy_keeps_task_categories() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, _, _) = pair(dir.path());
+        let category = a
+            .save_category(&crate::categories::Category::new("Contrato", 2))
+            .unwrap();
+        let mut task = standalone("Categorizada");
+        task.categories = vec![category.uid.clone()];
+        task.proposal_id = uuid::Uuid::new_v4().simple().to_string();
+        a.save_task(&task).unwrap();
+        sync(&mut a);
+        let expected = find(&a, "Categorizada");
+        let path = dir.path().join("Drive").join("ponte-sync.ponte");
+        let mut copy = crate::sharedfolder::read(&path, KEY).unwrap().unwrap();
+        copy.payload.snapshot.schema_version = PROPOSALS_SCHEMA - 1;
+        copy.payload.snapshot.categories = Default::default();
+        for t in &mut copy.payload.snapshot.tasks {
+            t.categories.clear();
+            t.proposal_id.clear();
+        }
+        let h = &copy.header;
+        let req = crate::sharedfolder::WriteRequest {
+            lineage: &h.lineage,
+            revision: h.revision + 1,
+            writer: "old-writer",
+            writer_name: "Antigo",
+            schema_version: PROPOSALS_SCHEMA - 1,
+        };
+        crate::sharedfolder::write(&path, KEY, &req, &copy.payload, &copy.blobs).unwrap();
+        sync(&mut a);
+        let actual = find(&a, "Categorizada");
+        assert_eq!(actual.categories, expected.categories);
+        assert_eq!(actual.proposal_id, expected.proposal_id);
+        assert!(a
+            .list_categories()
+            .unwrap()
+            .iter()
+            .any(|c| c.uid == category.uid));
+        let written = crate::sharedfolder::read(&path, KEY).unwrap().unwrap();
+        let saved = written
+            .payload
+            .snapshot
+            .tasks
+            .iter()
+            .find(|t| t.title == "Categorizada")
+            .unwrap();
+        assert_eq!(saved.categories, expected.categories);
+        assert_eq!(saved.proposal_id, expected.proposal_id);
+    }
+
+    fn foreign_planning_entry(schema: i64) -> Task {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, _, _) = pair(dir.path());
+        let mut task = standalone("Antes");
+        task.scheduled_start = "2026-11-17T10:00".into();
+        task.scheduled_end = "2026-11-17T11:00".into();
+        a.save_task(&task).unwrap();
+        sync(&mut a);
+        let task = find(&a, "Antes");
+        let path = dir.path().join("Drive").join("ponte-sync.ponte");
+        let foreign_path = dir.path().join("foreign.ponte");
+        let mut copy = crate::sharedfolder::read(&path, KEY).unwrap().unwrap();
+        let mut edit = task.clone();
+        edit.title = "Depois".into();
+        edit.scheduled_start.clear();
+        edit.scheduled_end.clear();
+        let uid = uuid::Uuid::new_v4().to_string();
+        copy.payload.applied.push(uid.clone());
+        copy.payload
+            .journal
+            .push(crate::sharedfolder::JournalEntry {
+                uid,
+                created_at: "2026-11-18T12:00:00Z".into(),
+                actor: "Outra pessoa".into(),
+                writer: "outro".into(),
+                label: "Editar tarefa".into(),
+                mutation: IntranetMutation::SaveTask {
+                    task: edit,
+                    expected_version: None,
+                },
+                base: None,
+                revision: copy.header.revision,
+                created: vec![],
+            });
+        let h = &copy.header;
+        let req = crate::sharedfolder::WriteRequest {
+            lineage: &h.lineage,
+            revision: h.revision - 1,
+            writer: "outro",
+            writer_name: "Outro",
+            schema_version: schema,
+        };
+        crate::sharedfolder::write(&foreign_path, KEY, &req, &copy.payload, &copy.blobs).unwrap();
+        let mut cfg = a.load_intranet_config().unwrap();
+        cfg.folder_files.push(foreign_path.display().to_string());
+        a.save_intranet_config(&cfg).unwrap();
+        sync(&mut a);
+        find(&a, "Depois")
+    }
+
+    #[test]
+    fn foreign_old_schema_entry_keeps_planning() {
+        let task = foreign_planning_entry(17);
+        assert_eq!(task.scheduled_start, "2026-11-17T10:00");
+        assert_eq!(task.scheduled_end, "2026-11-17T11:00");
+    }
+
+    #[test]
+    fn foreign_new_schema_entry_can_clear_planning() {
+        let task = foreign_planning_entry(SCHEDULE_SCHEMA);
+        assert!(task.scheduled_start.is_empty());
+        assert!(task.scheduled_end.is_empty());
     }
 
     #[test]
@@ -12645,6 +13218,126 @@ mod resources_sync_tests {
     }
 
     #[test]
+    fn unreachable_host_with_task_mutation_stays_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut client, cfg) = client_of(dir.path(), "away-task.sqlite3", "http://127.0.0.1:9");
+        let mut task = Task::standalone();
+        task.title = "Pendente".into();
+        client.save_task(&task).unwrap();
+        let before = client.list_offline_outbox().unwrap();
+        assert_eq!(before.len(), 1);
+        let request = RpcRequest::Mutate {
+            actor: "Ana".into(),
+            client_schema: crate::storage::SCHEMA_VERSION,
+            mutation: before[0].mutation.clone(),
+        };
+        assert!(matches!(
+            send_rpc_classified(&cfg, &request),
+            Err(RpcError::Unreachable(_))
+        ));
+        assert!(client.sync_from_host(false).is_err());
+        let after = client.list_offline_outbox().unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].uid, before[0].uid);
+    }
+
+    #[test]
+    fn trash_and_export_survive_unreadable_trashed_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("damaged.sqlite3")).unwrap();
+        let mut task = Task::standalone();
+        task.title = "Danificada".into();
+        let broken = store.save_task(&task).unwrap();
+        task = Task::standalone();
+        task.title = "Outra".into();
+        let other = store.save_task(&task).unwrap();
+        let target = |id| crate::trash::Target {
+            kind: crate::trash::Kind::Task,
+            id,
+        };
+        store.trash_item(target(broken)).unwrap();
+        store
+            .conn
+            .execute_batch("DROP TRIGGER ponte_item_active_tasks")
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE tasks SET payload=zeroblob(1) WHERE id=?1", [broken])
+            .unwrap();
+        crate::storage::restore_task_write_guards(&store.conn).unwrap();
+        store.trash_item(target(other)).unwrap();
+        store.restore_item(target(other)).unwrap();
+        let snapshot = store.export_snapshot().unwrap();
+        assert!(!snapshot.tasks.iter().any(|t| t.id == broken));
+        store
+            .save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::Client,
+                host_url: "http://127.0.0.1:9".into(),
+                cabinet_token: generate_token(),
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+        let error = store
+            .apply_snapshot(&snapshot, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Não é possível")
+                && error.contains("lixeira")
+                && error.contains("ilegível"),
+            "{error}"
+        );
+        let count: i64 = store
+            .conn
+            .query_row("SELECT count(*) FROM tasks WHERE id=?1", [broken], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn old_host_rejects_create_then_dependent_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut client, mut cfg) =
+            client_of(dir.path(), "dependent.sqlite3", "http://127.0.0.1:9");
+        let mut task = Task::standalone();
+        task.title = "Criada offline".into();
+        client.save_task(&task).unwrap();
+        let mut saved = client.list_tasks().unwrap().remove(0);
+        saved.title = "Editada offline".into();
+        client.save_task(&saved).unwrap();
+        assert_eq!(client.list_offline_outbox().unwrap().len(), 2);
+        let snapshot = CabinetSnapshot {
+            schema_version: SCHEDULE_SCHEMA - 1,
+            ..CabinetSnapshot::default()
+        };
+        cfg.host_url = old_host(snapshot);
+        client.save_intranet_config(&cfg).unwrap();
+        client.sync_from_host(false).unwrap();
+        assert!(client.list_offline_outbox().unwrap().is_empty());
+        assert_eq!(client.list_sync_conflicts().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn old_host_rejects_queued_task_instead_of_blocking_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = old_host(CabinetSnapshot::default());
+        let (_, cfg) = client_of(dir.path(), "client.sqlite3", &url);
+        let request = RpcRequest::Mutate {
+            actor: "Ana".into(),
+            client_schema: crate::storage::SCHEMA_VERSION,
+            mutation: IntranetMutation::SaveTask {
+                task: Task::standalone(),
+                expected_version: None,
+            },
+        };
+        assert!(
+            matches!(send_rpc_classified(&cfg, &request), Err(RpcError::Rejected(message)) if message.contains("Atualize o Ponte"))
+        );
+    }
+
+    #[test]
     fn a_main_computer_without_recursos_is_told_plainly_and_nothing_is_queued_or_lost() {
         let dir = tempfile::tempdir().unwrap();
         let url = old_host(CabinetSnapshot::default());
@@ -12816,8 +13509,8 @@ mod resources_sync_tests {
             expected_version: None,
         });
         assert!(
-            matches!(&waiting, Err(RpcError::Unreachable(m)) if m == HOST_WITHOUT_PROPOSALS),
-            "queued, with the plain sentence"
+            matches!(&waiting, Err(RpcError::Rejected(_))),
+            "an old host rejects task mutations"
         );
         let waiting = sent(IntranetMutation::SaveAnalysis {
             document_id: 1,
@@ -12828,7 +13521,7 @@ mod resources_sync_tests {
             task: Task::standalone(),
             expected_version: None,
         });
-        assert!(matches!(ordinary, Err(RpcError::Unreachable(_))));
+        assert!(matches!(ordinary, Err(RpcError::Rejected(_))));
         // End to end: queued while the host was away, then the host answers.
         let (mut away, mut away_cfg) = client_of(dir.path(), "away.sqlite3", "http://127.0.0.1:9");
         away.save_task(&proposal_task("Responder o ofício"))
@@ -12836,11 +13529,9 @@ mod resources_sync_tests {
         assert_eq!(away.list_offline_outbox().unwrap().len(), 1);
         away_cfg.host_url = url.clone();
         away.save_intranet_config(&away_cfg).unwrap();
-        let error = away.sync_from_host(false).unwrap_err().to_string();
-        assert_eq!(error, HOST_WITHOUT_PROPOSALS);
-        assert_eq!(away.list_offline_outbox().unwrap().len(), 1, "still queued");
-        assert!(away.list_sync_conflicts().unwrap().is_empty());
-        assert_eq!(away.list_tasks().unwrap().len(), 1, "and kept here");
+        let _ = away.sync_from_host(false);
+        assert!(away.list_offline_outbox().unwrap().is_empty());
+        assert_eq!(away.list_sync_conflicts().unwrap().len(), 1);
     }
 
     #[test]

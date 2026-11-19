@@ -258,9 +258,8 @@ pub(crate) fn backfill_task_uids(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction()?;
     // Tasks in the trash, or of a document in the trash, take their uid too.
     // The guards that refuse edits to them are not about this bookkeeping:
-    // drop them here; Store::open puts them back right after
-    // (ensure_write_guards). Without this, one such task kept the whole
-    // library from opening.
+    // drop and restore them within this transaction. Without this, one such
+    // task kept the whole library from opening.
     tx.execute_batch(
         "DROP TRIGGER IF EXISTS ponte_active_tasks_update; DROP TRIGGER IF EXISTS ponte_item_active_tasks;",
     )?;
@@ -272,7 +271,19 @@ pub(crate) fn backfill_task_uids(conn: &mut Connection) -> Result<()> {
         values.collect::<rusqlite::Result<Vec<_>>>()?
     };
     for (id, bytes) in rows {
-        let mut task: Task = serde_json::from_slice(&protection::unseal(&bytes)?)?;
+        let decoded = protection::unseal(&bytes)
+            .and_then(|plain| Ok(serde_json::from_slice::<Task>(&plain)?));
+        let mut task = match decoded {
+            Ok(task) => task,
+            Err(error) => {
+                let trashed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks t JOIN trash x ON (x.kind='task' AND x.item_id=t.id) OR (x.kind='document' AND x.item_id=t.document_id) WHERE t.id=?1)", [id], |r| r.get(0))?;
+                if !trashed {
+                    return Err(error);
+                }
+                eprintln!("Aviso: tarefa {id} na lixeira nao recebeu identidade: {error}");
+                continue;
+            }
+        };
         if task.uid.is_empty() {
             task.uid = uuid::Uuid::new_v4().to_string();
         }
@@ -281,8 +292,35 @@ pub(crate) fn backfill_task_uids(conn: &mut Connection) -> Result<()> {
             params![task.uid, encode(&task)?, id],
         )?;
     }
+    let has_trash: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='trash')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_trash {
+        crate::storage::restore_task_write_guards(&tx)?;
+    }
     tx.commit()?;
     Ok(())
+}
+pub(crate) fn decode_task_or_skip_trashed(
+    conn: &Connection,
+    id: i64,
+    bytes: &[u8],
+) -> Result<Option<Task>> {
+    let decoded =
+        protection::unseal(bytes).and_then(|plain| Ok(serde_json::from_slice::<Task>(&plain)?));
+    match decoded {
+        Ok(task) => Ok(Some(task)),
+        Err(error) => {
+            let trashed: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM tasks t JOIN trash x ON (x.kind='task' AND x.item_id=t.id) OR (x.kind='document' AND x.item_id=t.document_id) WHERE t.id=?1)", [id], |r| r.get(0))?;
+            if !trashed {
+                return Err(error);
+            }
+            eprintln!("Aviso: tarefa {id} na lixeira não pôde ser lida: {error}");
+            Ok(None)
+        }
+    }
 }
 fn encode(task: &Task) -> Result<Vec<u8>> {
     protection::seal(&serde_json::to_vec(task)?)
@@ -413,7 +451,9 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (id, blob) in rows {
-            let task: Task = serde_json::from_slice(&protection::unseal(&blob)?)?;
+            let Some(task) = decode_task_or_skip_trashed(&self.conn, id, &blob)? else {
+                continue;
+            };
             if task.action == "triar" {
                 return Ok(Some(id));
             }
@@ -1988,6 +2028,62 @@ mod planning_tests {
             .to_string()
             .contains("Conflito"));
         assert_eq!(store.list_tasks().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn backfill_pre_trash_schema_does_not_install_trash_guards() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE tasks(id INTEGER PRIMARY KEY, document_id INTEGER, uid TEXT, payload BLOB NOT NULL);").unwrap();
+        let mut task = Task::standalone();
+        task.uid.clear();
+        conn.execute(
+            "INSERT INTO tasks(id, uid, payload) VALUES(1, '', ?1)",
+            [encode(&task).unwrap()],
+        )
+        .unwrap();
+        backfill_task_uids(&mut conn).unwrap();
+        conn.execute("UPDATE tasks SET document_id=NULL WHERE id=1", [])
+            .unwrap();
+        let uid: String = conn
+            .query_row("SELECT uid FROM tasks WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        assert!(!uid.is_empty());
+    }
+
+    #[test]
+    fn backfill_skips_unreadable_trashed_payload_and_restores_guards() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unreadable.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let mut task = Task::standalone();
+        task.title = "Trash".into();
+        let id = store.save_task(&task).unwrap();
+        store
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Task,
+                id,
+            })
+            .unwrap();
+        store
+            .conn
+            .execute_batch("DROP TRIGGER ponte_item_active_tasks")
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE tasks SET uid='', payload=zeroblob(1) WHERE id=?1",
+                [id],
+            )
+            .unwrap();
+        backfill_task_uids(&mut store.conn).unwrap();
+        let guards: i64 = store.conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN ('ponte_active_tasks_update','ponte_item_active_tasks')", [], |r| r.get(0)).unwrap();
+        assert_eq!(guards, 2);
+        assert!(store
+            .conn
+            .execute("UPDATE tasks SET uid='x' WHERE id=?1", [id])
+            .is_err());
+        drop(store);
+        assert!(Store::open(&path).is_ok());
     }
 
     #[test]

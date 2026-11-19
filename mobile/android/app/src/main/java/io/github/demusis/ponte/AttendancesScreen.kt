@@ -130,7 +130,7 @@ internal fun AttendancesScreen(
     val split = remember(state.rows, query) { AttendanceRules.split(state.rows, query) }
 
     if (state.loading && state.rows.isEmpty()) {
-        LoadingBox("Carregando os atendimentos…", Modifier.fillMaxSize())
+        LoadingBox(text = "Carregando os atendimentos…", modifier = Modifier.fillMaxSize())
         return
     }
     LazyColumn(
@@ -220,7 +220,7 @@ internal fun AttendanceCard(a: AttendanceItem, onClick: (() -> Unit)? = null) {
             }
             if (a.open && a.dueChip.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
-                Pill(a.dueChip, if (a.late) Tone.ERROR else if (a.dueToday) Tone.WARNING else Tone.NEUTRAL)
+                Pill(a.dueChip, tone = if (a.late) Tone.ERROR else if (a.dueToday) Tone.WARNING else Tone.NEUTRAL)
             }
         }
     }

@@ -400,6 +400,7 @@ internal object PlannedNotices {
             val plan = TaskReminders.plan(tasks, ledger, now)
             commit = TaskReminders.commit(tasks, ledger, plan, now)
             // Saved BEFORE anything is shown: a crash in between can only lose a notice, never repeat one.
+            @Suppress("ApplySharedPref") // Persist before posting to avoid duplicate notices after process death.
             prefs(app).edit().putString(K_LEDGER, commit.ledger.encode()).commit()
             next = TaskReminders.plan(tasks, commit.ledger, now).next
         }
@@ -485,6 +486,7 @@ internal object PlannedNotices {
             val ledger = TaskReminders.Ledger.decode(prefs(app).getString(K_LEDGER, null))
             id = ledger.entries[key]?.id ?: 0
             val snoozed = TaskReminders.snooze(ledger, key, ZonedDateTime.now())
+            @Suppress("ApplySharedPref") // Persist snooze before dismissing the notification.
             if (snoozed != null) prefs(app).edit().putString(K_LEDGER, snoozed.encode()).commit()
         }
         if (id > 0) app.getSystemService(NotificationManager::class.java)?.cancel(id)

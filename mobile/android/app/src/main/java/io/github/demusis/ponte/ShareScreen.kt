@@ -85,7 +85,7 @@ internal fun ShareScreen(
             when {
                 state.reading -> {
                     ReceivedCard(null, reading = true)
-                    Notice("Recebendo o arquivo…", Tone.NEUTRAL)
+                    Notice("Recebendo o arquivo…", tone = Tone.NEUTRAL)
                 }
                 item == null -> {
                     // The copy failed: nothing arrived. The only way on is to leave.

@@ -529,7 +529,6 @@ pub fn parse_calendar(text: &str) -> Result<CalendarReview> {
             !e.event
                 && e.uid == block.related_to
                 && e.start.is_empty()
-                && e.title == block.title
                 && block.notes.is_empty()
                 && block.due.is_empty()
                 && !block.completed
@@ -553,6 +552,18 @@ pub fn parse_calendar(text: &str) -> Result<CalendarReview> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_export_reimports_scheduled_task_once() {
+        let mut task = Task::standalone();
+        task.title = "Sigilo".into();
+        task.scheduled_start = "2026-11-18T09:00".into();
+        task.scheduled_end = "2026-11-18T10:00".into();
+        let text = export_calendar(&[task], &[], &[], true).unwrap();
+        let entries = parse_calendar(&text).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].start, "2026-11-18T09:00");
+    }
+
     #[test]
     fn export_folds_unicode_escapes_injection_and_rejoins_work() {
         let mut task = Task::standalone();

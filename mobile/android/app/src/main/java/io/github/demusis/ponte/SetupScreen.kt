@@ -264,10 +264,8 @@ private fun StepSync(state: SetupState, onName: (String) -> Unit) {
                 state.noWifi -> Notice(
                     "O celular não está no Wi-Fi, e por padrão o Ponte de bolso só sincroniza no Wi-Fi. " +
                         "Use os dados móveis desta vez, ou conecte-se a um Wi-Fi e toque em Tentar de novo. " +
-                        "Para sempre permitir, ative os dados móveis em Ajustes.",
-                    Tone.WARNING
-                )
-                state.status.isNotEmpty() -> Notice(state.status, if (state.statusError) Tone.ERROR else Tone.WARNING)
+                        "Para sempre permitir, ative os dados móveis em Ajustes.", tone = Tone.WARNING)
+                state.status.isNotEmpty() -> Notice(state.status, tone = if (state.statusError) Tone.ERROR else Tone.WARNING)
                 else -> Body("Falta só trazer o acervo para o celular.")
             }
         }

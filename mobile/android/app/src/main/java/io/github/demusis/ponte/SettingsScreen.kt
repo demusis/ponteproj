@@ -136,7 +136,7 @@ internal fun SettingsScreen(
                     )
 
                     if (state.pending) {
-                        Notice("Há alterações deste aparelho aguardando envio ao Drive. Elas vão na próxima sincronização.", Tone.WARNING)
+                        Notice("Há alterações deste aparelho aguardando envio ao Drive. Elas vão na próxima sincronização.", tone = Tone.WARNING)
                     }
                     if (state.lastStatus.isNotEmpty()) {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -176,7 +176,7 @@ internal fun SettingsScreen(
                         )
                     }
                     if (state.noticeBlocked) {
-                        Notice(NOTICE_BLOCKED, Tone.WARNING)
+                        Notice(NOTICE_BLOCKED, tone = Tone.WARNING)
                         TextButton(
                             onClick = onNoticeSettings, modifier = Modifier.heightIn(min = 48.dp),
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
@@ -227,9 +227,7 @@ internal fun SettingsScreen(
                     if (!state.lockAvailable) {
                         Notice(
                             "Este celular não tem bloqueio de tela. Defina um PIN, padrão ou digital nas " +
-                                "configurações do Android para proteger o Ponte de bolso.",
-                            Tone.WARNING
-                        )
+                                "configurações do Android para proteger o Ponte de bolso.", tone = Tone.WARNING)
                     }
                     SwitchRow(
                         "Bloquear o Ponte de bolso",

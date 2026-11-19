@@ -109,7 +109,7 @@ internal fun ReminderChips(
         )
     }
     if (TaskRules.remindersBlockedShown(offsets, remindersBlocked)) {
-        Notice(TaskRules.REMINDERS_BLOCKED, Tone.WARNING)
+        Notice(TaskRules.REMINDERS_BLOCKED, tone = Tone.WARNING)
     }
 }
 

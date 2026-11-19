@@ -111,8 +111,8 @@ internal fun toneColors(tone: Tone): Pair<Color, Color> {
 }
 
 internal fun formatSize(n: Long): String = when {
-    n >= 1024 * 1024 -> String.format("%.1f MB", n / 1048576.0)
-    n >= 1024 -> String.format("%d KB", n / 1024)
+    n >= 1024 * 1024 -> String.format(java.util.Locale.forLanguageTag("pt-BR"), "%.1f MB", n / 1048576.0)
+    n >= 1024 -> String.format(java.util.Locale.forLanguageTag("pt-BR"), "%d KB", n / 1024)
     else -> "$n bytes"
 }
 
@@ -345,7 +345,7 @@ internal fun SectionLabel(text: String, modifier: Modifier = Modifier, color: Co
 
 /** Rounded pill with short text: due dates, priority, state. */
 @Composable
-internal fun Pill(text: String, tone: Tone = Tone.NEUTRAL, modifier: Modifier = Modifier) {
+internal fun Pill(text: String, modifier: Modifier = Modifier, tone: Tone = Tone.NEUTRAL) {
     val (bg, fg) = toneColors(tone)
     Text(
         text, modifier.background(bg, RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 4.dp),
@@ -355,7 +355,7 @@ internal fun Pill(text: String, tone: Tone = Tone.NEUTRAL, modifier: Modifier = 
 
 /** Squarish tag with the kind of a document ("Ofício", "E-mail"). */
 @Composable
-internal fun Tag(text: String, tone: Tone = Tone.ACCENT, modifier: Modifier = Modifier) {
+internal fun Tag(text: String, modifier: Modifier = Modifier, tone: Tone = Tone.ACCENT) {
     val (bg, fg) = toneColors(tone)
     Text(
         text, modifier.background(bg, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 2.dp),
@@ -414,12 +414,12 @@ internal fun TaskRow(
             }
             // Only what is not the usual: a normal priority says nothing.
             val flag = priorityFlag(task)
-            if (flag != null) Pill(flag.first, flag.second, Modifier.padding(top = 4.dp))
+            if (flag != null) Pill(flag.first, tone = flag.second, modifier = Modifier.padding(top = 4.dp))
             CategoryChips(task.categories, Modifier.padding(top = 4.dp))
         }
         if (!task.done && task.dueChip.isNotEmpty()) {
             Spacer(Modifier.width(8.dp))
-            Pill(task.dueChip, if (task.overdue) Tone.ERROR else if (task.dueToday) Tone.WARNING else Tone.NEUTRAL)
+            Pill(task.dueChip, tone = if (task.overdue) Tone.ERROR else if (task.dueToday) Tone.WARNING else Tone.NEUTRAL)
         }
     }
 }
@@ -552,7 +552,7 @@ internal fun EmptyState(
 
 /** Centered spinner with a caption, while something loads. */
 @Composable
-internal fun LoadingBox(text: String = "Carregando…", modifier: Modifier = Modifier) {
+internal fun LoadingBox(modifier: Modifier = Modifier, text: String = "Carregando…") {
     Column(
         modifier.fillMaxWidth().padding(40.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -564,7 +564,7 @@ internal fun LoadingBox(text: String = "Carregando…", modifier: Modifier = Mod
 
 /** Message band: red for an error, amber for a warning, neutral otherwise. */
 @Composable
-internal fun Notice(text: String, tone: Tone = Tone.ERROR, modifier: Modifier = Modifier) {
+internal fun Notice(text: String, modifier: Modifier = Modifier, tone: Tone = Tone.ERROR) {
     val (bg, fg) = toneColors(tone)
     Text(
         text, modifier.fillMaxWidth().background(bg, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 10.dp),

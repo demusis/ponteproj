@@ -283,6 +283,29 @@ fn items_by_day(
 
 type MonthCache = ((i32, u32), std::collections::BTreeMap<String, Vec<CalItem>>);
 
+pub(super) fn day_time_label(
+    start: chrono::NaiveDateTime,
+    end: chrono::NaiveDateTime,
+    day: chrono::NaiveDate,
+) -> String {
+    let from = day.and_hms_opt(0, 0, 0).unwrap();
+    let to = from + chrono::Duration::days(1);
+    if start < from && end >= to {
+        "o dia todo".to_owned()
+    } else if start < from {
+        format!("até {}", end.format("%H:%M"))
+    } else if end > to {
+        format!("a partir das {}", start.format("%H:%M"))
+    } else {
+        format!("{}–{}", start.format("%H:%M"), end.format("%H:%M"))
+    }
+}
+
+pub(super) fn working_day(day: chrono::NaiveDate) -> bool {
+    use chrono::Datelike;
+    !matches!(day.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun)
+}
+
 /// Combine existing calendar items with open planned tasks for the visible month.
 fn month_items_by_day(
     existing: &std::collections::BTreeMap<String, Vec<CalItem>>,
@@ -300,6 +323,9 @@ fn month_items_by_day(
     while day.month() == month {
         let from = day.and_hms_opt(0, 0, 0).unwrap();
         for (index, task) in tasks.iter().enumerate() {
+            if task.scheduled_start.is_empty() || task.scheduled_end.is_empty() {
+                continue;
+            }
             let (Ok(start), Ok(end)) = (
                 crate::resources::parse_moment(&task.scheduled_start),
                 crate::resources::parse_moment(&task.scheduled_end),
@@ -309,15 +335,7 @@ fn month_items_by_day(
             if task.is_done() || end <= start || start >= from + Duration::days(1) || end <= from {
                 continue;
             }
-            let time = if start < from && end >= from + Duration::days(1) {
-                "o dia todo".to_owned()
-            } else if start < from {
-                format!("até {}", end.format("%H:%M"))
-            } else if end > from + Duration::days(1) {
-                format!("a partir das {}", start.format("%H:%M"))
-            } else {
-                format!("{}–{}", start.format("%H:%M"), end.format("%H:%M"))
-            };
+            let time = day_time_label(start, end, day);
             days.entry(day.to_string()).or_default().push(CalItem {
                 kind: ItemKind::Planned,
                 index,
@@ -332,7 +350,7 @@ fn month_items_by_day(
             let Some(&(start, end)) = projections.get(&task.id) else {
                 continue;
             };
-            if start >= from + Duration::days(1) || end <= from {
+            if !working_day(day) || start >= from + Duration::days(1) || end <= from {
                 continue;
             }
             let title = crate::projection::anchor_title_indexed(task, &by_id, projections)
@@ -343,9 +361,8 @@ fn month_items_by_day(
                 state: DueState::Future,
                 label: task.title.clone(),
                 detail: format!(
-                    "{}–{} · {} (previsto, depois de {})",
-                    start.format("%H:%M"),
-                    end.format("%H:%M"),
+                    "{} · {} (previsto, depois de {})",
+                    day_time_label(start, end, day),
                     task.title,
                     title
                 ),
@@ -484,9 +501,26 @@ impl PonteApp {
         let p = theme::c();
         let now = chrono::Local::now().date_naive();
         let mut asked: Option<Asked> = None;
-        let alarms = self.reminders.individual_tasks();
-        let missed = self.reminders.missed_individual();
-        if !alarms.is_empty() || !missed.is_empty() {
+        let valid = |id: &str| {
+            self.today
+                .planning_tasks
+                .iter()
+                .any(|t| t.uid == id && !t.is_done())
+        };
+        let alarms: Vec<_> = self
+            .reminders
+            .individual_tasks()
+            .into_iter()
+            .filter(|id| valid(id))
+            .collect();
+        let missed: Vec<_> = self
+            .reminders
+            .missed_individual()
+            .into_iter()
+            .filter(|(_, id, _)| valid(id))
+            .collect();
+        let overflow = self.reminders.missed_overflow();
+        if !alarms.is_empty() || !missed.is_empty() || overflow > 0 {
             widgets::card(ui, |ui| {
                 widgets::section(ui, "Avisos agendados");
                 if !missed.is_empty() {
@@ -509,6 +543,14 @@ impl PonteApp {
                             });
                         }
                     }
+                }
+                if overflow > 0 {
+                    ui.horizontal(|ui| {
+                        widgets::small_muted(ui, format!("e mais {overflow} avisos perdidos"));
+                        if ui.button("Dispensar os demais").clicked() {
+                            self.reminders.dismiss_missed_overflow();
+                        }
+                    });
                 }
                 for id in alarms {
                     if let Some(task) = self
@@ -1509,6 +1551,25 @@ mod tests {
         task.due_date = due.to_owned();
         task.status = status.to_owned();
         task
+    }
+
+    #[test]
+    fn per_day_labels_and_weekends() {
+        let start =
+            chrono::NaiveDateTime::parse_from_str("2026-11-13T10:00", "%Y-%m-%dT%H:%M").unwrap();
+        let end =
+            chrono::NaiveDateTime::parse_from_str("2026-11-16T15:00", "%Y-%m-%dT%H:%M").unwrap();
+        assert_eq!(
+            day_time_label(start, end, start.date()),
+            "a partir das 10:00"
+        );
+        assert_eq!(
+            day_time_label(start, end, start.date().succ_opt().unwrap()),
+            "o dia todo"
+        );
+        assert_eq!(day_time_label(start, end, end.date()), "até 15:00");
+        assert!(!working_day(start.date().succ_opt().unwrap()));
+        assert!(working_day(end.date()));
     }
 
     #[test]

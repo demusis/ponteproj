@@ -50,7 +50,7 @@ internal fun AttendanceScreen(
     DetailScaffold(title = "Atendimento", onBack = onBack) {
         when {
             d != null -> AttendanceBody(d, onOpenDocument, onOpenTask, onOpenFile)
-            state.error != null && state.id == routeId -> Notice(state.error, Tone.ERROR, Modifier.padding(16.dp))
+            state.error != null && state.id == routeId -> Notice(state.error, tone = Tone.ERROR, modifier = Modifier.padding(16.dp))
             else -> LoadingBox()
         }
     }
@@ -75,26 +75,22 @@ private fun AttendanceBody(
                 Text(d.subject, style = MaterialTheme.typography.bodyLarge, color = c.secondary)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (d.statusLabel.isNotBlank()) Pill(d.statusLabel, if (d.open) Tone.ACCENT else Tone.NEUTRAL, Modifier.weight(1f, fill = false))
+                if (d.statusLabel.isNotBlank()) Pill(d.statusLabel, tone = if (d.open) Tone.ACCENT else Tone.NEUTRAL, modifier = Modifier.weight(1f, fill = false))
                 if (d.open && d.dueLabel.isNotBlank()) {
                     Pill(
                         when {
                             d.late -> "Vencido em ${d.dueLabel}"
                             d.dueToday -> "Vence hoje"
                             else -> "Prazo ${d.dueLabel}"
-                        },
-                        if (d.late) Tone.ERROR else if (d.dueToday) Tone.WARNING else Tone.NEUTRAL
-                    )
+                        }, tone = if (d.late) Tone.ERROR else if (d.dueToday) Tone.WARNING else Tone.NEUTRAL)
                 }
             }
         }
-        Notice(ATTENDANCE_READ_ONLY, Tone.NEUTRAL)
+        Notice(ATTENDANCE_READ_ONLY, tone = Tone.NEUTRAL)
 
         if (d.reviewFlags.isNotEmpty()) {
             Notice(
-                "Alertas de conferência (${d.reviewFlags.size})\n" + d.reviewFlags.joinToString("\n") { "• $it" },
-                Tone.WARNING
-            )
+                "Alertas de conferência (${d.reviewFlags.size})\n" + d.reviewFlags.joinToString("\n") { "• $it" }, tone = Tone.WARNING)
         }
 
         if (d.fields.isNotEmpty() || d.flags.isNotEmpty()) {
@@ -109,7 +105,7 @@ private fun AttendanceBody(
                     }
                     if (d.flags.isNotEmpty()) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            for (flag in d.flags) Tag(flag, Tone.NEUTRAL)
+                            for (flag in d.flags) Tag(flag, tone = Tone.NEUTRAL)
                         }
                     }
                 }

@@ -230,6 +230,7 @@ class TaskRulesTest {
 
     @Test fun estimativaEmDiasEFimAutomatico() {
         assertEquals(0, TaskRules.estimateDays(0))
+        assertEquals(1491309, TaskRules.estimateDays(Int.MAX_VALUE))
         assertEquals(2, TaskRules.estimateDays(2880))
         assertEquals(1, TaskRules.estimateDays(90))
         assertEquals("Estimativa anterior: 90 min", TaskRules.legacyEstimateNote(90))

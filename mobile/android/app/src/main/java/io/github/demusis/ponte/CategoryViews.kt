@@ -231,7 +231,7 @@ internal fun CategoryPickerContent(
         if (full) {
             Text("No máximo ${CategoryRules.MAX_PER_ITEM} categorias por item.", style = MaterialTheme.typography.bodySmall, color = p.warning, modifier = Modifier.padding(top = 8.dp))
         }
-        if (error.isNotEmpty()) Notice(error, Tone.ERROR, Modifier.padding(top = 8.dp))
+        if (error.isNotEmpty()) Notice(error, tone = Tone.ERROR, modifier = Modifier.padding(top = 8.dp))
         Text(
             "Para renomear, mudar a cor ou arquivar categorias, use o Ponte no computador.",
             style = MaterialTheme.typography.bodySmall, color = p.muted, modifier = Modifier.padding(top = 10.dp, bottom = 12.dp)

@@ -209,7 +209,7 @@ private fun FichaBody(
                                     "média", "media" -> Tone.WARNING
                                     else -> Tone.NEUTRAL
                                 }
-                                Pill("Prioridade ${an.priority.trim().lowercase()}", tone)
+                                Pill("Prioridade ${an.priority.trim().lowercase()}", tone = tone)
                             }
                             if (an.deadline.isNotBlank()) {
                                 Text(

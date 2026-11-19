@@ -67,7 +67,7 @@ internal fun TasksScreen(
     val filtering = categoryFilter.isNotEmpty()
 
     if (state.loading && state.tasks.isEmpty()) {
-        LoadingBox("Carregando as tarefas…", Modifier.fillMaxSize())
+        LoadingBox(text = "Carregando as tarefas…", modifier = Modifier.fillMaxSize())
         return
     }
 

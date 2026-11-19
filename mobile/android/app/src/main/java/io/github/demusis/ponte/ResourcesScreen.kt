@@ -69,7 +69,7 @@ internal fun ResourcesScreen(
     val rows = state.rowResources
 
     if (state.loading && state.uses.isEmpty() && state.resources.isEmpty()) {
-        LoadingBox("Carregando os recursos…", Modifier.fillMaxSize())
+        LoadingBox(text = "Carregando os recursos…", modifier = Modifier.fillMaxSize())
         return
     }
     val usesView = view == 0
@@ -158,10 +158,10 @@ internal fun ResourcesScreen(
 @Composable
 private fun UsePill(u: ResourceUseItem, modifier: Modifier = Modifier) {
     when {
-        u.overdue -> Pill(PhoneWords.RES_OVERDUE, Tone.ERROR, modifier)
-        u.status == ResourceRules.IN_USE -> Pill(u.statusLabel.ifEmpty { "Em uso" }, Tone.ACCENT, modifier)
-        u.status == ResourceRules.RESERVED -> Pill(u.statusLabel.ifEmpty { "Reservado" }, Tone.NEUTRAL, modifier)
-        else -> Pill(u.statusLabel, Tone.NEUTRAL, modifier)
+        u.overdue -> Pill(PhoneWords.RES_OVERDUE, tone = Tone.ERROR, modifier = modifier)
+        u.status == ResourceRules.IN_USE -> Pill(u.statusLabel.ifEmpty { "Em uso" }, tone = Tone.ACCENT, modifier = modifier)
+        u.status == ResourceRules.RESERVED -> Pill(u.statusLabel.ifEmpty { "Reservado" }, tone = Tone.NEUTRAL, modifier = modifier)
+        else -> Pill(u.statusLabel, tone = Tone.NEUTRAL, modifier = modifier)
     }
 }
 
@@ -212,7 +212,7 @@ internal fun ResourceCard(r: ResourceItem, usage: String, onClick: (() -> Unit)?
             }
             if (!r.active) {
                 Spacer(Modifier.width(8.dp))
-                Pill(PhoneWords.RES_INACTIVE, Tone.NEUTRAL)
+                Pill(PhoneWords.RES_INACTIVE, tone = Tone.NEUTRAL)
             }
         }
     }
@@ -287,9 +287,9 @@ internal fun ResourceUseScreen(
     ) {
         when {
             u != null -> ResourceUseBody(u, state, onOpenResource, onOpenDocument, onOpenAttendance, onOpenTask)
-            state.error != null -> Notice(state.error, Tone.ERROR, Modifier.padding(16.dp))
+            state.error != null -> Notice(state.error, tone = Tone.ERROR, modifier = Modifier.padding(16.dp))
             state.loading -> LoadingBox()
-            else -> Notice("Este uso não foi encontrado. Ele pode ter sido apagado em outro aparelho.", Tone.WARNING, Modifier.padding(16.dp))
+            else -> Notice("Este uso não foi encontrado. Ele pode ter sido apagado em outro aparelho.", tone = Tone.WARNING, modifier = Modifier.padding(16.dp))
         }
     }
 }
@@ -319,10 +319,10 @@ private fun ResourceUseBody(
             if (who.isNotEmpty()) Text(who, style = MaterialTheme.typography.bodyLarge, color = c.secondary)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 UsePill(u)
-                if (u.overdue) Pill("Fim previsto ${ResourceRules.momentText(u.end)}", Tone.NEUTRAL, Modifier.weight(1f, fill = false))
+                if (u.overdue) Pill("Fim previsto ${ResourceRules.momentText(u.end)}", tone = Tone.NEUTRAL, modifier = Modifier.weight(1f, fill = false))
             }
         }
-        Notice(RESOURCE_READ_ONLY, Tone.NEUTRAL)
+        Notice(RESOURCE_READ_ONLY, tone = Tone.NEUTRAL)
         DataCard(
             "Dados",
             listOf(
@@ -372,9 +372,9 @@ internal fun ResourceScreen(
     ) {
         when {
             r != null -> ResourceBody(r, state, onOpenUse)
-            state.error != null -> Notice(state.error, Tone.ERROR, Modifier.padding(16.dp))
+            state.error != null -> Notice(state.error, tone = Tone.ERROR, modifier = Modifier.padding(16.dp))
             state.loading -> LoadingBox()
-            else -> Notice("Este recurso não foi encontrado. Ele pode ter sido apagado em outro aparelho.", Tone.WARNING, Modifier.padding(16.dp))
+            else -> Notice("Este recurso não foi encontrado. Ele pode ter sido apagado em outro aparelho.", tone = Tone.WARNING, modifier = Modifier.padding(16.dp))
         }
     }
 }
@@ -391,7 +391,7 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, onOpenUse: (Str
     ) {
         Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(r.name, fontSize = 22.sp, lineHeight = 29.sp, fontWeight = FontWeight.SemiBold, color = c.text)
-            if (!r.active) Pill(PhoneWords.RES_INACTIVE, Tone.NEUTRAL)
+            if (!r.active) Pill(PhoneWords.RES_INACTIVE, tone = Tone.NEUTRAL)
             if (r.active) {
                 Text(
                     r.usageLine + " · " + r.freeText,
@@ -399,7 +399,7 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, onOpenUse: (Str
                 )
             }
         }
-        Notice(RESOURCE_READ_ONLY, Tone.NEUTRAL)
+        Notice(RESOURCE_READ_ONLY, tone = Tone.NEUTRAL)
         DataCard(
             "Dados",
             listOf(

@@ -49,7 +49,7 @@ impl Counts {
     }
 
     /// Reads the library once. Rules of `app/today.rs` (`split_tasks`,
-    /// `due_attendances`) and of the "Com lembrete" view of the tasks.
+    /// `due_attendances`) and of the "Para começar" view of the tasks.
     pub fn from_store(store: &Store, today: NaiveDate) -> Result<Counts> {
         Self::from_store_at(store, today, &crate::resources::now_moment())
     }
@@ -390,6 +390,10 @@ impl Reminders {
             self.open_today = true;
         }
         let now = Local::now();
+        if !self.settings.enabled {
+            ctx.request_repaint_after(std::time::Duration::from_secs(30));
+            return;
+        }
         let (fired, missed) = self.individual.update(store, now.naive_local());
         if self.settings.enabled && missed > 0 && !self.focused {
             crate::windows_ui::show_notification(
@@ -471,6 +475,15 @@ impl Reminders {
             .collect()
     }
 
+    pub fn missed_overflow(&self) -> usize {
+        self.individual.state.missed_overflow
+    }
+
+    pub fn dismiss_missed_overflow(&mut self) {
+        self.individual.state.missed_overflow = 0;
+        self.individual.save();
+    }
+
     pub fn dismiss_missed(&mut self, key: &str) {
         self.individual.state.missed.remove(key);
         self.individual.save();
@@ -542,6 +555,7 @@ struct IndividualState {
     snoozed: std::collections::BTreeMap<String, String>,
     missed: std::collections::BTreeMap<String, MissedReminder>,
     last_checked: Option<chrono::NaiveDateTime>,
+    missed_overflow: usize,
 }
 
 #[derive(Default)]
@@ -631,16 +645,17 @@ impl IndividualReminders {
         candidates.sort();
         let mut added = 0;
         for (moment, key, uid) in candidates {
-            if self.state.missed.len() >= MISSED_LIMIT {
-                break;
-            }
             if self.state.delivered.contains_key(&key) {
                 continue;
             }
             self.state.delivered.insert(key.clone(), now.to_string());
-            self.state
-                .missed
-                .insert(key, MissedReminder { uid, moment });
+            if self.state.missed.len() < MISSED_LIMIT {
+                self.state
+                    .missed
+                    .insert(key, MissedReminder { uid, moment });
+            } else {
+                self.state.missed_overflow += 1;
+            }
             added += 1;
         }
         added
@@ -800,7 +815,9 @@ mod tests {
         let mut engine = IndividualReminders::default();
         engine.state.last_checked = Some(now - Duration::days(1));
         let count = engine.collect_missed(&[task.clone()], now);
-        assert_eq!(count, MISSED_LIMIT);
+        assert_eq!(count, 150);
+        assert_eq!(engine.state.missed_overflow, 50);
+        assert_eq!(engine.state.delivered.len(), 150);
         assert_eq!(engine.state.missed.len(), MISSED_LIMIT);
         assert!(missed_summary(count).unwrap().contains("Abra Hoje"));
         assert!(missed_summary(0).is_none());

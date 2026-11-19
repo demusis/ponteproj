@@ -125,7 +125,7 @@ internal object TaskRules {
     }
 
     /** Whole days of an estimate, rounded up: 0 for none. */
-    fun estimateDays(minutes: Int): Int = if (minutes <= 0) 0 else (minutes + MINUTES_PER_DAY - 1) / MINUTES_PER_DAY
+    fun estimateDays(minutes: Int): Int = if (minutes <= 0) 0 else 1 + (minutes - 1) / MINUTES_PER_DAY
 
     /** "Estimativa anterior: N min" for a stored estimate that is not a whole number of days; else "". */
     fun legacyEstimateNote(minutes: Int): String =

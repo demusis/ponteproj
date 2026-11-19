@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.getValue
@@ -80,11 +81,13 @@ internal fun TaskScreen(
     if (task == null) {
         DetailScaffold(title = "Tarefa", onBack = onBack, close = true) {
             val error = state.error.takeIf { state.id == routeId }
-            if (error != null) Notice(error, Tone.ERROR, Modifier.padding(16.dp)) else LoadingBox()
+            if (error != null) Notice(error, tone = Tone.ERROR, modifier = Modifier.padding(16.dp)) else LoadingBox()
         }
         return
     }
-    TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory, remindersBlocked, onRemindersChosen, relations, onOpenTask)
+    key(task.id) {
+        TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory, remindersBlocked, onRemindersChosen, relations, onOpenTask)
+    }
 }
 
 private val DraftSaver = Saver<TaskDraft, List<Any>>(save = { it.toList() }, restore = { TaskDraft.fromList(it) })
@@ -145,7 +148,7 @@ private fun TaskLoaded(
         title = "Tarefa", onBack = leave, close = true,
         footer = {
             if (message.isNotEmpty()) {
-                Notice(message, Tone.ERROR, Modifier.padding(bottom = if (conflict) 4.dp else 12.dp))
+                Notice(message, tone = Tone.ERROR, modifier = Modifier.padding(bottom = if (conflict) 4.dp else 12.dp))
             }
             if (conflict) {
                 TextButton(onClick = onReload, modifier = Modifier.padding(bottom = 8.dp)) {
@@ -196,7 +199,7 @@ private fun TaskLoaded(
             Text(if (form.parentTaskId == null) "Sem tarefa pai" else parentTitle ?: "Tarefa pai #${form.parentTaskId}")
             SecondaryButton("Escolher tarefa pai…", onClick = { parentPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
             if (relations.loading) Text("Carregando tarefas…")
-            relations.error?.let { Notice(it, Tone.ERROR) }
+            relations.error?.let { Notice(it, tone = Tone.ERROR) }
             ReminderChips(
                 form.reminderOffsetsMinutes, { v -> edit { it.copy(reminderOffsetsMinutes = v) } },
                 remindersBlocked, onRemindersChosen

@@ -268,7 +268,7 @@ private fun RouteScreen(route: Route) {
 private fun Waiting(title: String, state: DocumentState, onBack: () -> Unit) {
     DetailScaffold(title = title, onBack = onBack) {
         val error = state.error
-        if (error != null) Notice(error, Tone.ERROR, Modifier.padding(16.dp)) else LoadingBox()
+        if (error != null) Notice(error, tone = Tone.ERROR, modifier = Modifier.padding(16.dp)) else LoadingBox()
     }
 }
 
@@ -289,7 +289,7 @@ private fun Dialogs() {
                 ) {
                     Text(d.text, style = MaterialTheme.typography.bodyMedium, color = if (d.error) colors.error else colors.text)
                     if (d.pending) {
-                        Notice("Há alterações deste aparelho aguardando envio ao Drive. Elas vão na próxima sincronização.", Tone.WARNING)
+                        Notice("Há alterações deste aparelho aguardando envio ao Drive. Elas vão na próxima sincronização.", tone = Tone.WARNING)
                     }
                 }
             },

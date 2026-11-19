@@ -74,6 +74,7 @@ internal data class ShareState(
  *  - What arrives from other apps is untrusted: see [ShareRules] and [stage].
  *  - Everything runs on the UI thread except the copy and the core calls.
  */
+@Suppress("StaticFieldLeak") // Only the application context is retained.
 internal object Intake {
     /** Folder of the working copies, inside the cache folder (not backed up, not served by the provider). */
     const val DIR = "entrada"
@@ -85,6 +86,7 @@ internal object Intake {
     private const val IMAGE_INPUT_CAP = 40L * 1024 * 1024
     private const val OFFER_LIFETIME_MS = 5L * 60 * 1000
 
+    @Suppress("StaticFieldLeak") // Assigned ctx.applicationContext in init.
     private lateinit var app: Context
     private val main = Handler(Looper.getMainLooper())
 

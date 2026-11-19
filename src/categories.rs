@@ -351,7 +351,7 @@ impl Store {
             IntranetMutation::SaveTask {
                 mut task,
                 expected_version,
-            } if task.id > 0 && client_schema < 18 => {
+            } if task.id > 0 && client_schema < crate::intranet::SCHEDULE_SCHEMA => {
                 if let Some(stored) = self.list_tasks()?.into_iter().find(|t| t.id == task.id) {
                     task.uid = stored.uid;
                     task.scheduled_start = stored.scheduled_start;

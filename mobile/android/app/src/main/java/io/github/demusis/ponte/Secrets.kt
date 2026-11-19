@@ -1,5 +1,7 @@
 package io.github.demusis.ponte
 
+import androidx.annotation.RequiresApi
+import androidx.annotation.ChecksSdkIntAtLeast
 import android.app.Activity
 import android.content.Context
 import android.hardware.biometrics.BiometricManager
@@ -34,6 +36,7 @@ internal object Secrets {
     var lastCancelled = false
         private set
 
+    @ChecksSdkIntAtLeast(api = 28)
     fun supported() = Build.VERSION.SDK_INT >= 28
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("ponte", Context.MODE_PRIVATE)
@@ -44,7 +47,7 @@ internal object Secrets {
     private fun keyStore() = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
     fun forget(ctx: Context) {
-        prefs(ctx).edit().remove(CT).remove(IV).commit()
+        prefs(ctx).edit().remove(CT).remove(IV).apply()
         try {
             val ks = keyStore()
             if (ks.containsAlias(ALIAS)) ks.deleteEntry(ALIAS)
@@ -72,6 +75,7 @@ internal object Secrets {
         gen.generateKey()
     }
 
+    @RequiresApi(28)
     private fun prompt(
         activity: Activity, cipher: Cipher, title: String,
         onOk: (Cipher) -> Unit, onErr: (String) -> Unit
@@ -145,7 +149,7 @@ internal object Secrets {
     fun unlock(
         activity: Activity, title: String = "Liberar a senha de sincronização", result: (String?, String?) -> Unit
     ) {
-        if (!isRemembered(activity)) { result(null, "Nenhuma senha de sincronização guardada."); return }
+        if (!supported() || !isRemembered(activity)) { result(null, "Nenhuma senha de sincronização guardada."); return }
         if (busy) { result(null, "Aguarde a verificação em andamento."); return }
         busy = true
         lastCancelled = false

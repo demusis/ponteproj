@@ -273,7 +273,7 @@ private fun MessageRow(m: MailMessage, checked: Boolean, enabled: Boolean, onCli
                 Text(m.error, fontSize = 12.sp, lineHeight = 16.sp, color = c.error)
             }
             if (m.imported) {
-                Pill("Já no acervo", Tone.SUCCESS, Modifier.padding(top = 2.dp))
+                Pill("Já no acervo", tone = Tone.SUCCESS, modifier = Modifier.padding(top = 2.dp))
             }
         }
     }

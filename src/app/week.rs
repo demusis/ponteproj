@@ -1,5 +1,5 @@
 //! A week of work: execution blocks and bookings, with deadlines kept separate.
-use super::today::{Asked, TodayData};
+use super::today::{day_time_label, working_day, Asked, TodayData};
 use crate::resources::parse_moment;
 use crate::theme::{self, S1, S2};
 use crate::widgets::{self, Tone};
@@ -77,6 +77,9 @@ fn monday(day: NaiveDate) -> NaiveDate {
 }
 
 fn touches(start: &str, end: &str, day: NaiveDate) -> bool {
+    if start.is_empty() || end.is_empty() {
+        return false;
+    }
     let (Ok(start), Ok(end)) = (parse_moment(start), parse_moment(end)) else {
         return false;
     };
@@ -109,7 +112,8 @@ fn build_week_cache(data: &TodayData, start: NaiveDate) -> WeekCache {
                     let day = start + Duration::days(offset);
                     touches(&task.scheduled_start, &task.scheduled_end, day)
                         || projections.get(&task.id).is_some_and(|(a, b)| {
-                            *a < (day + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap()
+                            working_day(day)
+                                && *a < (day + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap()
                                 && *b > day.and_hms_opt(0, 0, 0).unwrap()
                         })
                 })
@@ -150,9 +154,13 @@ fn build_week_cache(data: &TodayData, start: NaiveDate) -> WeekCache {
                     rows.push((
                         task.scheduled_start.clone(),
                         format!(
-                            "{}–{} · {}",
-                            task.scheduled_start.get(11..).unwrap_or(""),
-                            task.scheduled_end.get(11..).unwrap_or(""),
+                            "{}{} · {}",
+                            if task.is_done() { "✓ " } else { "" },
+                            day_time_label(
+                                parse_moment(&task.scheduled_start).unwrap(),
+                                parse_moment(&task.scheduled_end).unwrap(),
+                                day
+                            ),
                             task.title
                         ),
                         Asked::OpenTask(task.clone()),
@@ -160,13 +168,12 @@ fn build_week_cache(data: &TodayData, start: NaiveDate) -> WeekCache {
                 }
                 if let Some(&(a, b)) = projections.get(&task.id) {
                     let from = day.and_hms_opt(0, 0, 0).unwrap();
-                    if a < from + Duration::days(1) && b > from {
+                    if working_day(day) && a < from + Duration::days(1) && b > from {
                         rows.push((
                             a.format("%Y-%m-%dT%H:%M").to_string(),
                             format!(
-                                "{}–{} · ⇢ {} (previsto)",
-                                a.format("%H:%M"),
-                                b.format("%H:%M"),
+                                "{} · ⇢ {} (previsto)",
+                                day_time_label(a, b, day),
                                 task.title
                             ),
                             Asked::OpenTask(task.clone()),
@@ -184,9 +191,12 @@ fn build_week_cache(data: &TodayData, start: NaiveDate) -> WeekCache {
                     rows.push((
                         item.start.clone(),
                         format!(
-                            "{}–{} · {} · {}",
-                            item.start.get(11..).unwrap_or(""),
-                            item.end.get(11..).unwrap_or(""),
+                            "{} · {} · {}",
+                            day_time_label(
+                                parse_moment(&item.start).unwrap(),
+                                parse_moment(&item.end).unwrap(),
+                                day
+                            ),
                             resource,
                             item.purpose
                         ),
@@ -269,7 +279,8 @@ pub(super) fn show(
             if rows.is_empty() { widgets::muted(ui, "Sem trabalho agendado nem reservas."); }
             for (_, label, action) in rows {
                 let task_id = if let Asked::OpenTask(task) = action { Some(task.id) } else { None };
-                let response = ui.add(widgets::quiet(label));
+                let done = matches!(action, Asked::OpenTask(task) if task.is_done());
+                let response = if done { ui.add(egui::Button::new(egui::RichText::new(label).color(theme::c().muted)).frame(false)) } else { ui.add(widgets::quiet(label)) };
                 if let Some(id) = task_id {
                     blocks.entry(id).or_default().push(response.rect);
                 }
@@ -354,7 +365,24 @@ pub(super) fn show(
     if unscheduled.is_empty() {
         widgets::muted(ui, "Todas as tarefas abertas têm um horário reservado.");
     }
-    for &index in unscheduled {
+    let toggle_id = egui::Id::unique("week-show-all-unscheduled");
+    let mut show_all = ui.data(|d| d.get_temp::<bool>(toggle_id)).unwrap_or(false);
+    if unscheduled.len() > 30
+        && ui
+            .button(if show_all {
+                "Mostrar menos".to_owned()
+            } else {
+                format!("Mostrar todas ({})", unscheduled.len())
+            })
+            .clicked()
+    {
+        show_all = !show_all;
+        ui.data_mut(|d| d.insert_temp(toggle_id, show_all));
+    }
+    for &index in unscheduled
+        .iter()
+        .take(if show_all { usize::MAX } else { 30 })
+    {
         let task = &data.planning_tasks[index];
         let due = if task.due_date.is_empty() {
             "sem prazo".to_owned()
