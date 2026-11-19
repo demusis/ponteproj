@@ -215,11 +215,16 @@ internal object NoticeCounts {
     }
 
     fun read(ctx: Context): Counts? {
+        // With the app running, the holidays are already the library's. Opened only for this notice, the core
+        // takes them from the library now (the phone's own text only fills a library that has none).
+        val cold = !SyncRunner.ready
         if (!openCore(ctx)) return null
+        if (cold) {
+            val prefs = ctx.getSharedPreferences("ponte", Context.MODE_PRIVATE)
+            SyncRunner.core.adoptHolidays(prefs.getString(SyncRunner.HOLIDAYS_KEY, "") ?: "")
+        }
         val today = JSONObject(SyncRunner.core.today())
         if (!today.optBoolean("ok")) return null
-        val prefs = ctx.getSharedPreferences("ponte", Context.MODE_PRIVATE)
-        SyncRunner.core.setHolidays(prefs.getString(SyncRunner.HOLIDAYS_KEY, "") ?: "")
         val follow = JSONObject(SyncRunner.core.listFollowUps())
         val risks = JSONObject(SyncRunner.core.atRisk())
         if (!follow.optBoolean("ok") || !risks.optBoolean("ok")) return null
