@@ -254,7 +254,8 @@ private fun RouteScreen(route: Route) {
             onName = c::changePersonName, onNotice = c::setNoticeEnabled, onNoticeTime = c::setNoticeTime,
             onNoticeSettings = c::openNoticeSettings,
             onHolidayState = c::setHolidayState, onAddHolidayDay = c::addHolidayDay,
-            onRemoveHolidayDay = c::removeHolidayDay
+            onRemoveHolidayDay = c::removeHolidayDay,
+            onCalendar = c::setCalendarEnabled, onCalendarChoice = c::chooseCalendar
         )
         is Route.Account -> AccountFormScreen(
             state = c.accountForm, onBack = c::back, onSave = c::saveAccount, onDelete = c::askDeleteAccount
@@ -319,6 +320,18 @@ private fun Dialogs() {
             },
             confirmButton = { TextButton(onClick = c::reset) { Text("Recomeçar", color = colors.error) } },
             dismissButton = { TextButton(onClick = close) { Text("Cancelar") } }
+        )
+        AppDialog.CalendarOff -> AlertDialog(
+            onDismissRequest = close,
+            title = { Text("Desligar a agenda") },
+            text = {
+                Text(
+                    "Remover da agenda os eventos que o Ponte criou? As tarefas não mudam.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = { TextButton(onClick = { c.calendarOff(true) }) { Text("Remover os eventos", color = colors.error) } },
+            dismissButton = { TextButton(onClick = { c.calendarOff(false) }) { Text("Deixar na agenda") } }
         )
         is AppDialog.DeleteAccount -> AlertDialog(
             onDismissRequest = close,

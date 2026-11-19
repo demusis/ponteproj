@@ -7,6 +7,9 @@
     <!-- The daily deadline notice (off until the person turns it on) and the notices of each task; neither uses exact alarms. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- The optional two-way sync of the tasks with one calendar of the phone (off until the person turns it on). -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <!-- The camera permission is NOT declared: the photo is taken by the camera app. -->
 
     <queries>

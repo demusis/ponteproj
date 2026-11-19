@@ -772,7 +772,17 @@ internal data class SettingsState(
     /** State code of "Feriados", or empty for none. */
     val holidayUf: String = "",
     /** The extra days off the person registered. */
-    val holidayDays: List<CustomDay> = emptyList()
+    val holidayDays: List<CustomDay> = emptyList(),
+    /** "Sincronizar tarefas com a agenda" is on. */
+    val calendarOn: Boolean = false,
+    /** The calendars the person can choose from (key: the calendar's id as text). */
+    val calendars: List<Choice> = emptyList(),
+    /** Key of the chosen calendar, or empty. */
+    val calendarChosen: String = "",
+    /** "Última conferência: …", or empty. */
+    val calendarStatus: String = "",
+    /** The last warning of the calendar sync, or empty. */
+    val calendarWarning: String = ""
 )
 
 internal data class AccountFormState(

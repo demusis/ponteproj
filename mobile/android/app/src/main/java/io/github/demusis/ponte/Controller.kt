@@ -123,6 +123,9 @@ internal sealed class AppDialog {
     object Reset : AppDialog()
     data class DeleteAccount(val account: MailAccount) : AppDialog()
     data class MailPassword(val account: MailAccount) : AppDialog()
+
+    /** Turning off the calendar sync: what to do with the events already there. */
+    object CalendarOff : AppDialog()
 }
 
 /**
@@ -143,6 +146,9 @@ internal object Controller {
     private const val K_LOCK_AFTER = "lock_after"
     private const val K_SECURE = "secure_screen"
     private const val K_NAME = "person_name"
+    private const val CALENDAR_WAIT_MS = 2000L
+    private const val CALENDAR_DENIED =
+        "Sem a permissão da agenda, as tarefas não podem ser sincronizadas com ela. Permita-a quando o telefone perguntar, ou nas configurações do telefone."
 
     @Suppress("StaticFieldLeak") // Assigned ctx.applicationContext in init.
     private lateinit var app: Context
@@ -462,6 +468,9 @@ internal object Controller {
 
     /** The Activity came to the front (not for a rotation: it is not stopped then). */
     fun onActivityStart() {
+        // Edits made in the calendar app while away are picked up now, and the ones made from here on as they happen.
+        watchCalendar(true)
+        if (calendarOn()) main.postDelayed(calDebounce, CALENDAR_WAIT_MS)
         val t = backgroundAt
         backgroundAt = -1L
         if (externalStopped) {
@@ -514,6 +523,7 @@ internal object Controller {
      */
     fun onActivityStop(changingConfiguration: Boolean) {
         if (changingConfiguration) return
+        watchCalendar(false)
         if (openedExternally) externalStopped = true
         backgroundAt = SystemClock.elapsedRealtime()
         autoPrompted = false
@@ -1070,6 +1080,8 @@ internal object Controller {
         SyncRunner.background({ Api.tasks().map { it.toTask() } }, { read ->
             val list = read.map { it.withPending() }
             tasks = TasksState(loading = false, error = null, tasks = list)
+            // The tasks changed here or in a sync: the calendar follows.
+            calendarSyncSoon()
             // The list changed (a save, a conclusion, a sync): arm the task notices again, so a
             // notice set a moment ago is not left waiting for the next time the app opens.
             if (::app.isInitialized) PlannedNotices.refreshAsync(app)
@@ -2170,6 +2182,7 @@ internal object Controller {
         noticeDenied = false
         updateSettings()
         loadFileInfo()
+        loadCalendars()
         if (!mailLoaded) loadAccounts()
     }
 
@@ -2202,8 +2215,143 @@ internal object Controller {
             holidayDays = Holidays.current().custom,
             noticeOn = NoticeScheduler.isOn(app),
             noticeTime = NoticeScheduler.time(app).key,
-            noticeBlocked = noticeDenied || (NoticeScheduler.isOn(app) && !NoticeScheduler.allowed(app))
+            noticeBlocked = noticeDenied || (NoticeScheduler.isOn(app) && !NoticeScheduler.allowed(app)),
+            calendarOn = calendarOn(),
+            calendars = calendarChoices.map { Choice(it.id.toString(), it.label) },
+            calendarChosen = calendarChosenId().let { if (it >= 0) it.toString() else "" },
+            calendarStatus = calendarStatusText(),
+            calendarWarning = prefs.getString(CalendarSyncRunner.K_WARN, "") ?: ""
         )
+    }
+
+    // ---- the calendar of the phone
+
+    /** The calendars the person can choose from; read again whenever Ajustes opens. */
+    private var calendarChoices: List<CalInfo> = emptyList()
+
+    /** A calendar sync is already waiting for the worker: more requests join it. */
+    private val calQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var calObserver: android.database.ContentObserver? = null
+
+    /** The calendar changed (or the app came back): a short wait lets a burst of edits end first. */
+    private val calDebounce = Runnable { if (!locked) calendarSyncSoon() }
+
+    private fun calendarOn() = prefs.getBoolean(CalendarSyncRunner.K_ON, false)
+    private fun calendarChosenId() = prefs.getLong(CalendarSyncRunner.K_ID, -1L)
+
+    /** The switch "Sincronizar tarefas com a agenda". Turning it on asks for the calendar permission first. */
+    fun setCalendarEnabled(on: Boolean) {
+        if (on) {
+            if (DeviceCalendar.hasPermission(app)) {
+                calendarOnNow()
+            } else {
+                val a = activity
+                if (a != null) a.askCalendarPermission() else onCalendarPermission(false)
+            }
+            return
+        }
+        // Events already in the calendar: ask what to do with them.
+        if (calendarChosenId() >= 0) dialog = AppDialog.CalendarOff else calendarOff(false)
+    }
+
+    /** The answer of the system's permission question for the calendar. */
+    fun onCalendarPermission(granted: Boolean) {
+        if (granted) {
+            calendarOnNow()
+        } else {
+            prefs.edit().putString(CalendarSyncRunner.K_WARN, CALENDAR_DENIED).apply()
+            updateSettings()
+            say(CALENDAR_DENIED, long = true)
+        }
+    }
+
+    private fun calendarOnNow() {
+        prefs.edit().putBoolean(CalendarSyncRunner.K_ON, true).remove(CalendarSyncRunner.K_WARN).apply()
+        loadCalendars()
+        watchCalendar(true)
+        calendarSyncSoon()
+        updateSettings()
+    }
+
+    /** Turns the sync off; [remove] takes the Ponte events out of the calendar too. */
+    fun calendarOff(remove: Boolean) {
+        dialog = null
+        prefs.edit().putBoolean(CalendarSyncRunner.K_ON, false).remove(CalendarSyncRunner.K_WARN).apply()
+        watchCalendar(false)
+        SyncRunner.background({ CalendarSyncRunner.finishOff(app, remove) }, { updateSettings() })
+        updateSettings()
+    }
+
+    /** The person chose a calendar (key: its id as text). The events of a calendar chosen before are moved by the next run. */
+    fun chooseCalendar(key: String) {
+        val id = key.toLongOrNull() ?: return
+        if (id == calendarChosenId()) return
+        prefs.edit().putLong(CalendarSyncRunner.K_ID, id).remove(CalendarSyncRunner.K_WARN).apply()
+        updateSettings()
+        calendarSyncSoon()
+    }
+
+    private fun loadCalendars() {
+        SyncRunner.background({ CalendarSyncRunner.calendars(app) }, { list ->
+            calendarChoices = list
+            updateSettings()
+        })
+    }
+
+    /** Asks for a reconcile on the worker (behind a sync, if one runs). Cheap when nothing changed. */
+    fun calendarSyncSoon() {
+        if (!::app.isInitialized || !calendarOn() || !SyncRunner.ready || calendarChosenId() < 0) return
+        if (!calQueued.compareAndSet(false, true)) return
+        SyncRunner.background({
+            calQueued.set(false)
+            CalendarSyncRunner.run(app)
+        }, { calendarDone(it) }, { updateSettings() })
+    }
+
+    private fun calendarDone(o: CalendarSyncRunner.Outcome?) {
+        updateSettings()
+        if (o == null) return
+        if (o.turnedOff != null) {
+            watchCalendar(false)
+            say(o.turnedOff, long = true)
+            return
+        }
+        if (o.tasksChanged) {
+            // The calendar moved or renamed tasks: show them and send them to the Drive like any other change.
+            takeDocs()
+            refreshTasks()
+            reloadDocument()
+            refreshOpenTask()
+            requestSync(null, auto = true)
+        }
+        if (o.notify.isNotEmpty()) say(o.notify.first(), long = true)
+    }
+
+    /** While the app is in front, a change in the calendar's events starts a reconcile (after a short wait). */
+    private fun watchCalendar(on: Boolean) {
+        main.removeCallbacks(calDebounce)
+        calObserver?.let { try { app.contentResolver.unregisterContentObserver(it) } catch (_: Throwable) { } }
+        calObserver = null
+        if (!on || !calendarOn() || !DeviceCalendar.hasPermission(app)) return
+        val o = object : android.database.ContentObserver(main) {
+            override fun onChange(selfChange: Boolean) {
+                main.removeCallbacks(calDebounce)
+                main.postDelayed(calDebounce, CALENDAR_WAIT_MS)
+            }
+        }
+        try {
+            app.contentResolver.registerContentObserver(android.provider.CalendarContract.Events.CONTENT_URI, true, o)
+            calObserver = o
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun calendarStatusText(): String {
+        val at = prefs.getLong(CalendarSyncRunner.K_LAST, 0L)
+        if (at <= 0L || !calendarOn()) return ""
+        val t = Instant.ofEpochMilli(at).atZone(ZoneId.systemDefault())
+        val pattern = if (t.toLocalDate() == LocalDate.now()) "HH:mm" else "dd/MM HH:mm"
+        return "Última conferência: " + t.format(DateTimeFormatter.ofPattern(pattern))
     }
 
     // ---- the person's name and the daily notice
@@ -2430,6 +2578,7 @@ internal object Controller {
 
     fun reset() {
         dialog = null
+        watchCalendar(false)
         if (!SyncRunner.startInit(app, true)) {
             say("Aguarde: há uma operação em andamento.")
         } else {

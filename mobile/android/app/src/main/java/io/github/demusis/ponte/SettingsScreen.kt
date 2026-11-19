@@ -75,7 +75,9 @@ internal fun SettingsScreen(
     onNoticeSettings: () -> Unit = {},
     onHolidayState: (String) -> Unit = {},
     onAddHolidayDay: (String, String, Boolean) -> Unit = { _, _, _ -> },
-    onRemoveHolidayDay: (CustomDay) -> Unit = {}
+    onRemoveHolidayDay: (CustomDay) -> Unit = {},
+    onCalendar: (Boolean) -> Unit = {},
+    onCalendarChoice: (String) -> Unit = {}
 ) {
     val c = Ponte.colors
     DetailScaffold(title = "Ajustes", onBack = onBack) {
@@ -195,6 +197,9 @@ internal fun SettingsScreen(
                 }
             }
 
+            SectionLabel("Agenda do celular", Modifier.padding(top = 8.dp))
+            CalendarCard(state, onCalendar, onCalendarChoice)
+
             SectionLabel("Feriados", Modifier.padding(top = 8.dp))
             HolidaysCard(state, onHolidayState, onAddHolidayDay, onRemoveHolidayDay)
 
@@ -285,6 +290,45 @@ internal fun SettingsScreen(
                 }
             }
             Box(Modifier.height(16.dp))
+        }
+    }
+}
+
+/** Said under the calendar switch. */
+internal const val CALENDAR_HINT =
+    "Crie no Google Agenda uma agenda só para o Ponte (por exemplo, \"Ponte\") e escolha-a aqui. " +
+        "Mudanças de data feitas na agenda voltam para a tarefa. Use em um só celular por agenda."
+
+/** Said when the phone has no calendar the Ponte can write to. */
+internal const val CALENDAR_NONE =
+    "Nenhuma agenda que aceite novos eventos foi encontrada neste celular. Crie uma no Google Agenda."
+
+/** The switch, the calendar to use and how the last conference went. */
+@Composable
+private fun CalendarCard(state: SettingsState, onSwitch: (Boolean) -> Unit, onChoice: (String) -> Unit) {
+    val c = Ponte.colors
+    PonteCard {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SwitchRow(
+                "Sincronizar tarefas com a agenda",
+                "Mostra na agenda o prazo e o período planejado das tarefas abertas. Os atendimentos não vão.",
+                state.calendarOn, onSwitch
+            )
+            if (state.calendarOn) {
+                if (state.calendars.isEmpty()) {
+                    Notice(CALENDAR_NONE, tone = Tone.WARNING)
+                } else {
+                    ChoiceField(
+                        "Agenda", listOf(Choice("", "Escolher a agenda…")) + state.calendars,
+                        state.calendarChosen, onChoice
+                    )
+                }
+                Text(CALENDAR_HINT, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                if (state.calendarStatus.isNotEmpty()) {
+                    Text(state.calendarStatus, fontSize = 14.sp, lineHeight = 20.sp, color = c.text)
+                }
+            }
+            if (state.calendarWarning.isNotEmpty()) Notice(state.calendarWarning, tone = Tone.WARNING)
         }
     }
 }

@@ -132,6 +132,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** The system asks for the permission to read and write the calendar. */
+    fun askCalendarPermission() {
+        requestPermissions(
+            arrayOf(android.Manifest.permission.READ_CALENDAR, android.Manifest.permission.WRITE_CALENDAR), REQ_CALENDAR
+        )
+    }
+
     @Deprecated("The classic permission callback, as for the results above.")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         @Suppress("DEPRECATION")
@@ -139,6 +146,9 @@ class MainActivity : ComponentActivity() {
         val granted = grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (requestCode == REQ_NOTICE) Controller.onNoticePermission(granted)
         if (requestCode == REQ_TASK_NOTICE) Controller.onTaskNoticePermission(granted)
+        if (requestCode == REQ_CALENDAR) {
+            Controller.onCalendarPermission(grantResults.size >= 2 && grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED })
+        }
     }
 
     @Deprecated("The classic result callback: no extra library needed.")
@@ -162,6 +172,7 @@ class MainActivity : ComponentActivity() {
         const val REQ_ATTACH_PHOTO = 5
         const val REQ_ATTACH_FILE = 6
         const val REQ_TASK_NOTICE = 7
+        const val REQ_CALENDAR = 8
 
         /** The Activity on screen, for what needs one (pickers, fingerprint prompt). */
         @Volatile
