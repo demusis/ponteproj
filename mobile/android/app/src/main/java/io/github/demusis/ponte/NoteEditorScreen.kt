@@ -25,18 +25,33 @@ import androidx.compose.ui.unit.sp
 
 /** Full-screen editor of the note of a document. */
 @Composable
-internal fun NoteEditorScreen(title: String, initial: String, onBack: () -> Unit, onSave: (String) -> Unit) {
+internal fun NoteEditorScreen(
+    title: String, initial: String, onBack: () -> Unit,
+    onSave: (String) -> Unit, saving: Boolean = false, saveError: String = ""
+) {
     val c = Ponte.colors
     var text by rememberSaveable { mutableStateOf(initial) }
     var asking by rememberSaveable { mutableStateOf(false) }
     val changed = text != initial
-    val leave = { if (changed) asking = true else onBack() }
+    val leave: () -> Unit = {
+        if (!saving) {
+            if (changed) asking = true else onBack()
+        }
+    }
 
     SafeBackHandler(onBack = leave)
 
     DetailScaffold(
         title = "Nota", onBack = leave, close = true,
-        footer = { PrimaryButton("Salvar nota", onClick = { onSave(text) }) }
+        footer = {
+            if (saveError.isNotEmpty()) {
+                Text(
+                    saveError, Modifier.padding(bottom = 8.dp),
+                    style = MaterialTheme.typography.bodySmall, color = c.error
+                )
+            }
+            PrimaryButton("Salvar nota", loading = saving, onClick = { onSave(text) })
+        }
     ) {
         Column(Modifier.fillMaxSize().padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 16.dp)) {
             if (title.isNotBlank()) {
@@ -47,7 +62,7 @@ internal fun NoteEditorScreen(title: String, initial: String, onBack: () -> Unit
                 )
             }
             OutlinedTextField(
-                value = text, onValueChange = { text = it },
+                value = text, onValueChange = { text = it }, readOnly = saving,
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp),
                 placeholder = { Text("Escreva a nota deste documento", color = c.muted) },

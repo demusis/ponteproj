@@ -859,6 +859,46 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_today<'local>(
     })
 }
 
+/// The deliveries at risk as of the current day (`ponteproj::risk`):
+/// `{"items":[{"task_id","title","due_date","kind","end","cause_id","cause_title"}]}`.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_atRisk<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| at_risk(store, chrono::Local::now().date_naive()))
+    })
+}
+
+/// `kind` is `late_planned`, `late_projected`, `missing_plan` or
+/// `missing_estimate`; `end` is `AAAA-MM-DDTHH:MM` for the late kinds, "" for
+/// the others. The task to open is `cause_id`.
+fn at_risk(store: &Store, today: chrono::NaiveDate) -> Result<Value> {
+    use ponteproj::risk::RiskKind;
+    let items = ponteproj::risk::deliveries_at_risk(&store.list_tasks()?, today)
+        .into_iter()
+        .map(|risk| {
+            let kind = match risk.kind {
+                RiskKind::LatePlanned => "late_planned",
+                RiskKind::LateProjected => "late_projected",
+                RiskKind::MissingPlan => "missing_plan",
+                RiskKind::MissingEstimate => "missing_estimate",
+            };
+            json!({
+                "task_id": risk.task_id,
+                "title": risk.title,
+                "due_date": risk.due_date,
+                "kind": kind,
+                "end": risk.end.map(|end| end.format("%Y-%m-%dT%H:%M").to_string()).unwrap_or_default(),
+                "cause_id": risk.cause_id,
+                "cause_title": risk.cause_title,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "items": items }))
+}
+
 /// The counts of "Hoje" from its lists.
 fn today_counts_of(lists: &Value) -> ponteproj::labels::TodayCounts {
     let n = |v: &Value| v.as_array().map_or(0, Vec::len);
@@ -2233,6 +2273,53 @@ mod tests {
         assert_eq!(task.assignee, "");
         assert!(create_task(&mut store, &json!({"title": ""})).is_err());
         assert!(create_task(&mut store, &json!({"title": "x", "due_date": "31/12"})).is_err());
+    }
+
+    #[test]
+    fn at_risk_json_shape_for_projected_and_missing_deliveries() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _doc) = library(&dir.0);
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        assert_eq!(at_risk(&store, today).unwrap(), json!({"items": []}));
+
+        let mut step = ponteproj::tasks::Task::blank(None);
+        step.title = "Etapa".into();
+        step.scheduled_start = "2026-11-25T09:00".into();
+        step.scheduled_end = "2026-11-25T18:00".into();
+        let step_id = store.save_task(&step).unwrap();
+        let mut late = ponteproj::tasks::Task::blank(None);
+        late.title = "Entrega".into();
+        late.due_date = "2026-11-25".into();
+        late.estimate_minutes = 1440;
+        late.dependencies = vec![step_id];
+        let late_id = store.save_task(&late).unwrap();
+        let mut blocked = ponteproj::tasks::Task::blank(None);
+        blocked.title = "Bloqueada".into();
+        blocked.due_date = "2026-12-01".into();
+        blocked.estimate_minutes = 1440;
+        let mut loose = ponteproj::tasks::Task::blank(None);
+        loose.title = "Solta".into();
+        let loose_id = store.save_task(&loose).unwrap();
+        blocked.dependencies = vec![loose_id];
+        let blocked_id = store.save_task(&blocked).unwrap();
+
+        let shown = at_risk(&store, today).unwrap();
+        assert_eq!(
+            shown,
+            json!({"items": [
+                {
+                    "task_id": late_id, "title": "Entrega", "due_date": "2026-11-25",
+                    "kind": "late_projected", "end": "2026-11-26T18:00",
+                    "cause_id": step_id, "cause_title": "Etapa"
+                },
+                {
+                    "task_id": blocked_id, "title": "Bloqueada", "due_date": "2026-12-01",
+                    "kind": "missing_plan", "end": "",
+                    "cause_id": loose_id, "cause_title": "Solta"
+                },
+            ]})
+        );
     }
 
     #[test]

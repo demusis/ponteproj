@@ -73,6 +73,16 @@ internal object Api {
 
     fun today(): JSONObject = c(core.today())
 
+    /** Deliveries at risk; an unknown kind is skipped. */
+    fun atRisk(): List<RiskItem> = c(core.atRisk()).optJSONArray("items").objs().mapNotNull {
+        val kind = it.s("kind")
+        if (kind !in RiskRules.KINDS) null
+        else RiskItem(
+            taskId = it.optLong("task_id"), title = it.s("title"), dueDate = it.s("due_date"), kind = kind,
+            end = it.s("end"), causeId = it.optLong("cause_id"), causeTitle = it.s("cause_title")
+        )
+    }
+
     fun task(id: Long): TaskDetail = c(core.getTask(id)).toTaskDetail()
 
     /** Sends only [changes] (field to value); [version] is the one the form started from. Answers the new version. */

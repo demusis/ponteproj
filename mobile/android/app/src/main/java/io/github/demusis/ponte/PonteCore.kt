@@ -116,6 +116,9 @@ class PonteCore {
     external fun listMailMessages(uid: String, password: String, folderRaw: String, filter: String): String
     external fun importMail(uid: String, password: String, folderRaw: String, uidsJson: String): String
 
+    /** Deliveries at risk: {items:[{task_id,title,due_date,kind,end,cause_id,cause_title}]}. */
+    external fun atRisk(): String
+
     companion object {
         init {
             System.loadLibrary("ponte_mobile")

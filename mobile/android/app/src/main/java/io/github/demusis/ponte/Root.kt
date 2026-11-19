@@ -95,7 +95,8 @@ internal fun AppRoot() {
                         0 -> TodayScreen(
                             c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
                             onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources, week = c.week,
-                            weekStart = c.weekStart, onMoveWeek = c::moveWeek, onOpenWeekEntry = c::openWeekEntry
+                            weekStart = c.weekStart, onMoveWeek = c::moveWeek, onOpenWeekEntry = c::openWeekEntry,
+                            risks = c.risks, onOpenTask = c::openTask
                         )
                         // Tarefas | Atendimentos | Recursos: they have no tab of their own (four is the limit).
                         1 -> Column(Modifier.fillMaxSize()) {
@@ -206,14 +207,16 @@ private fun RouteScreen(route: Route) {
             else TextReaderScreen(title = docName, text = doc.text, onBack = c::back)
         is Route.Note ->
             if (doc == null) Waiting("Nota", c.document, c::back)
-            else NoteEditorScreen(title = docName, initial = doc.note, onBack = c::back, onSave = c::saveNote)
+            else NoteEditorScreen(title = docName, initial = doc.note, onBack = c::back, onSave = c::saveNote,
+                saving = c.noteSave.busy, saveError = c.noteSave.error)
         is Route.NewTask -> NewTaskScreen(
             document = if (route.id > 0) docName else "",
             // A task without document has nothing to triage.
             actions = if (route.id > 0) c.actions else c.actions.filter { it.key != "triar" },
             onBack = c::back, onCreate = c::createTask, withoutDocument = route.id <= 0,
             assignees = c.assignees, myName = c.personName, onCreateCategory = c::createCategory,
-            remindersBlocked = c.taskNoticeBlocked, onRemindersChosen = c::taskRemindersChosen
+            remindersBlocked = c.taskNoticeBlocked, onRemindersChosen = c::taskRemindersChosen,
+            saving = c.newTaskSave.busy, saveError = c.newTaskSave.error
         )
         Route.Share -> {
             val sh = Intake.share

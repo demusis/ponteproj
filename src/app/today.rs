@@ -22,6 +22,8 @@ const RECENT_LIMIT: usize = 6;
 pub(super) struct TodayData {
     pub planning_tasks: Vec<Task>,
     pub projections: std::collections::HashMap<i64, (chrono::NaiveDateTime, chrono::NaiveDateTime)>,
+    /// Deliveries whose deadline the plan does not meet, computed once per refresh.
+    pub at_risk: Vec<crate::risk::Risk>,
     month_cache: std::cell::RefCell<Option<MonthCache>>,
     pub(super) week_cache: std::cell::RefCell<Option<super::week::WeekCache>>,
     pub planning_uses: Vec<crate::resources::ResourceUse>,
@@ -108,6 +110,10 @@ impl TodayData {
             Err(error) => data.error = Some(error.to_string()),
         }
         data.projections = crate::projection::project(&data.planning_tasks);
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d") {
+            data.at_risk =
+                crate::risk::deliveries_at_risk_with(&data.planning_tasks, date, &data.projections);
+        }
         data.categories = store.list_categories().unwrap_or_default();
         data.by_day = items_by_day(&data.dated_tasks, &data.dated_attendances, today);
         // Resources: the lists are memoized by the library, read once here.
@@ -670,12 +676,14 @@ impl PonteApp {
                 }
                 if calendar {
                     ui.set_max_width(ui.available_width() - 14.0);
+                    risk_group(ui, &self.today, false, &mut asked);
                     calendar_view(ui, &self.today, now, grid_height, &mut asked);
                     ui.add_space(S4);
                     return;
                 }
                 // Room for the scroll bar, so the cards keep their right edge.
                 ui.set_max_width(ui.available_width() - 14.0);
+                risk_group(ui, &self.today, true, &mut asked);
                 let wide = ui.available_width() >= 860.0;
                 let documents = &self.today.index;
                 let title_of = |id: i64| {
@@ -1154,8 +1162,19 @@ fn row(
     last: bool,
     add: impl FnOnce(&mut egui::Ui),
 ) -> bool {
+    row_with_hover(ui, id, last, None, add)
+}
+
+/// [`row`] with a text shown when the pointer rests on it.
+fn row_with_hover(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    last: bool,
+    hover: Option<&str>,
+    add: impl FnOnce(&mut egui::Ui),
+) -> bool {
     let p = theme::c();
-    let inner = ui
+    let mut inner = ui
         .scope_builder(
             egui::UiBuilder::new()
                 .id_salt(id)
@@ -1171,6 +1190,9 @@ fn row(
         )
         .response
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if let Some(text) = hover {
+        inner = inner.on_hover_text(text);
+    }
     if !last {
         ui.painter().hline(
             inner.rect.x_range(),
@@ -1179,6 +1201,83 @@ fn row(
         );
     }
     inner.clicked()
+}
+
+/// The second line of a delivery at risk: why it is at risk.
+fn risk_reason(risk: &crate::risk::Risk) -> String {
+    use crate::risk::RiskKind;
+    let due = day_month(&risk.due_date);
+    let end = risk
+        .end
+        .map(|end| end.format("%d/%m").to_string())
+        .unwrap_or_default();
+    match risk.kind {
+        RiskKind::LatePlanned => format!("fim planejado {end} passa do prazo {due}"),
+        RiskKind::LateProjected => format!(
+            "previsto até {end}, depois do prazo {due} · por causa de {}",
+            risk.cause_title
+        ),
+        RiskKind::MissingPlan => format!("sem previsão: falta planejar {}", risk.cause_title),
+        RiskKind::MissingEstimate => format!("sem previsão: falta estimar {}", risk.cause_title),
+    }
+}
+
+/// "Entregas em risco · N": the deliveries whose deadline the plan does not
+/// meet, each opening the task that needs attention. Nothing when none.
+fn risk_group(ui: &mut egui::Ui, data: &TodayData, open: bool, asked: &mut Option<Asked>) {
+    if data.at_risk.is_empty() {
+        return;
+    }
+    let p = theme::c();
+    let title = format!("Entregas em risco · {}", data.at_risk.len());
+    egui::CollapsingHeader::new(
+        RichText::new(title.to_uppercase())
+            .font(theme::font_strong(12.0))
+            .color(p.warn),
+    )
+    .id_salt(("today-risk", open))
+    .default_open(open)
+    .show(ui, |ui| {
+        ui.add_space(S1);
+        list_card(ui, |ui| {
+            for (index, risk) in data.at_risk.iter().enumerate() {
+                let clicked = row_with_hover(
+                    ui,
+                    ("today-risk-row", risk.task_id),
+                    index + 1 == data.at_risk.len(),
+                    Some("Abrir a etapa que precisa de atenção"),
+                    |ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&risk.title)
+                                        .font(theme::font_strong(theme::SIZE_BODY)),
+                                )
+                                .selectable(false)
+                                .truncate(),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(risk_reason(risk))
+                                        .size(theme::SIZE_SMALL)
+                                        .color(p.muted),
+                                )
+                                .selectable(false)
+                                .truncate(),
+                            );
+                        });
+                    },
+                );
+                if clicked {
+                    if let Some(task) = data.planning_tasks.iter().find(|t| t.id == risk.cause_id) {
+                        *asked = Some(Asked::OpenTask(task.clone()));
+                    }
+                }
+            }
+        });
+    });
+    ui.add_space(S3);
 }
 
 fn list_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -1592,6 +1691,59 @@ mod tests {
             data.projections,
             crate::projection::project(&data.planning_tasks)
         );
+    }
+
+    #[test]
+    fn risk_reasons_are_written_in_portuguese() {
+        use crate::risk::{Risk, RiskKind};
+        let risk = |kind, end: Option<&str>| Risk {
+            task_id: 1,
+            title: "Entrega".into(),
+            due_date: "2026-11-25".into(),
+            kind,
+            end: end.map(|e| crate::resources::parse_moment(e).unwrap()),
+            cause_id: 2,
+            cause_title: "Etapa".into(),
+        };
+        assert_eq!(
+            risk_reason(&risk(RiskKind::LatePlanned, Some("2026-11-26T18:00"))),
+            "fim planejado 26/11 passa do prazo 25/11"
+        );
+        assert_eq!(
+            risk_reason(&risk(RiskKind::LateProjected, Some("2026-11-26T18:00"))),
+            "previsto até 26/11, depois do prazo 25/11 · por causa de Etapa"
+        );
+        assert_eq!(
+            risk_reason(&risk(RiskKind::MissingPlan, None)),
+            "sem previsão: falta planejar Etapa"
+        );
+        assert_eq!(
+            risk_reason(&risk(RiskKind::MissingEstimate, None)),
+            "sem previsão: falta estimar Etapa"
+        );
+    }
+
+    #[test]
+    fn today_load_lists_deliveries_at_risk_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut first = Task::standalone();
+        first.title = "Etapa".into();
+        first.scheduled_start = "2026-11-25T09:00".into();
+        first.scheduled_end = "2026-11-25T18:00".into();
+        let id = store.save_task(&first).unwrap();
+        let mut second = Task::standalone();
+        second.title = "Entrega".into();
+        second.dependencies = vec![id];
+        second.estimate_minutes = 1440;
+        second.due_date = "2026-11-25".into();
+        store.save_task(&second).unwrap();
+        let data = TodayData::load(&store, "2026-11-18");
+        assert_eq!(data.at_risk.len(), 1);
+        assert_eq!(data.at_risk[0].title, "Entrega");
+        assert_eq!(data.at_risk[0].cause_id, id);
+        let clean = TodayData::load(&store, "2026-11-26");
+        assert!(clean.at_risk.is_empty());
     }
 
     #[test]

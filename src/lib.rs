@@ -35,6 +35,7 @@ pub mod prompting;
 pub mod protection;
 /// A record with its attachments created in one operation (all or nothing).
 pub mod record_import;
+pub mod risk;
 pub mod sharedfolder;
 pub mod storage;
 pub mod suggestion;

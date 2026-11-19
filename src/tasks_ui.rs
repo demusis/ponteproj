@@ -291,17 +291,7 @@ fn in_view(
     }
 }
 
-fn planned_end_after_due(end: &str, due: &str) -> bool {
-    let Ok(end) = chrono::NaiveDateTime::parse_from_str(end, "%Y-%m-%dT%H:%M") else {
-        return false;
-    };
-    let Ok(due) = chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d") else {
-        return false;
-    };
-    end > (due + chrono::Duration::days(1))
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-}
+use crate::risk::planned_end_after_due;
 
 fn reminder_options(offsets: &[u32]) -> Vec<(u32, String)> {
     let mut options = vec![

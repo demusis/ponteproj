@@ -66,7 +66,10 @@ internal fun TodayScreen(
     weekStart: java.time.LocalDate? = null,
     /** -1 earlier, +1 later, 0 this week. */
     onMoveWeek: (Int) -> Unit = {},
-    onOpenWeekEntry: (WeekEntry) -> Unit = {}
+    onOpenWeekEntry: (WeekEntry) -> Unit = {},
+    /** Deliveries at risk; empty: no card. A tap opens the cause ([onOpenTask] gets its id). */
+    risks: List<RiskItem> = emptyList(),
+    onOpenTask: (Long) -> Unit = {}
 ) {
     val c = Ponte.colors
     if (state.loading && state.isEmpty) {
@@ -78,7 +81,7 @@ internal fun TodayScreen(
     val currentWeek = weekStart != null && weekStart == WeekPlan.mondayOf(java.time.LocalDate.now())
     val weekDeadlines = if (currentWeek) week.sumOf { it.deadlines.size } else 0
     // Items before the "Atrasadas" header: error, summary, alert, week module.
-    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (state.late.isNotEmpty()) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
+    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (state.late.isNotEmpty()) 1 else 0) + (if (risks.isNotEmpty()) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
     LazyColumn(
         Modifier.fillMaxSize(),
         state = listState,
@@ -116,6 +119,7 @@ internal fun TodayScreen(
                 }
             }
         }
+        if (risks.isNotEmpty()) item(key = "risks") { RiskCard(risks, onOpenTask) }
         if (week.isNotEmpty()) {
             item(key = "week") { WeekModule(week, weekStart, onMoveWeek, onOpenWeekEntry) }
         }
@@ -153,6 +157,41 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
         SectionLabel("$title · ${list.size}", Modifier.padding(top = 8.dp), color = if (late) Ponte.colors.error else Ponte.colors.muted)
     }
     items(list, key = { "t-${it.id}" }) { t -> TaskCard(t, onToggle, onOpen) }
+}
+
+/** "Entregas em risco · N": three rows, the rest behind "ver todas". Full-width rows, so 360dp never clips. */
+@Composable
+internal fun RiskCard(risks: List<RiskItem>, onOpen: (Long) -> Unit) {
+    val c = Ponte.colors
+    var all by rememberSaveable { mutableStateOf(false) }
+    val shown = if (all) risks else risks.take(3)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SectionLabel("Entregas em risco · ${risks.size}", Modifier.padding(top = 4.dp), color = c.warning)
+        PonteCard {
+            Column {
+                shown.forEachIndexed { i, r ->
+                    Column(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onOpen(RiskRules.openTarget(r)) }
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(r.title, fontSize = 15.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(RiskRules.riskLine(r), fontSize = 13.sp, color = c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (i < shown.size - 1) HorizontalDivider(color = c.divider)
+                }
+                if (risks.size > 3) {
+                    HorizontalDivider(color = c.divider)
+                    Text(
+                        if (all) "ver menos" else "ver todas (${risks.size})",
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { all = !all }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        fontSize = 14.sp, color = c.accent
+                    )
+                }
+            }
+        }
+    }
 }
 
 private val WEEKDAYS = listOf("seg", "ter", "qua", "qui", "sex", "sáb", "dom")

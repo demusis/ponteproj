@@ -108,6 +108,16 @@ pub(crate) fn anchor_title_indexed<'a>(
     by_id: &HashMap<i64, &'a Task>,
     projections: &HashMap<i64, (NaiveDateTime, NaiveDateTime)>,
 ) -> Option<&'a str> {
+    anchor_indexed(task, by_id, projections).map(|t| t.title.as_str())
+}
+
+/// The open prerequisite (planned or projected) that ends last: the one
+/// the projection of `task` starts after.
+pub(crate) fn anchor_indexed<'a>(
+    task: &Task,
+    by_id: &HashMap<i64, &'a Task>,
+    projections: &HashMap<i64, (NaiveDateTime, NaiveDateTime)>,
+) -> Option<&'a Task> {
     task.dependencies
         .iter()
         .filter_map(|id| by_id.get(id).copied().filter(|t| !t.is_done()))
@@ -119,10 +129,10 @@ pub(crate) fn anchor_title_indexed<'a>(
                 (Ok(start), Ok(end)) if end > start => Some(end),
                 _ => projections.get(&t.id).map(|p| p.1),
             }?;
-            Some((end, t.title.as_str()))
+            Some((end, t))
         })
         .max_by_key(|(end, _)| *end)
-        .map(|(_, title)| title)
+        .map(|(_, t)| t)
 }
 
 #[cfg(test)]

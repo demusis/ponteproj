@@ -13,9 +13,9 @@ private fun previewWeek(entries: List<WeekEntry>) =
     WeekPlan.days(WeekPlan.mondayOf(LocalDate.now()), entries)
 
 @Composable
-private fun PreviewHost(state: TodayState, week: List<WeekDay>) {
+private fun PreviewHost(state: TodayState, week: List<WeekDay>, risks: List<RiskItem> = emptyList()) {
     PonteTheme {
-        TodayScreen(state, onToggle = {}, onOpen = {}, week = week, weekStart = WeekPlan.mondayOf(LocalDate.now()))
+        TodayScreen(state, onToggle = {}, onOpen = {}, week = week, weekStart = WeekPlan.mondayOf(LocalDate.now()), risks = risks)
     }
 }
 
@@ -46,5 +46,9 @@ private fun TodayBusyPreview() {
         loading = false, late = listOf(previewTask(1, "Responder o ofício")),
         summary = "1 atrasada · 1 para hoje"
     )
-    PreviewHost(state, previewWeek(entries))
+    val risks = listOf(
+        RiskItem(1, "Entregar o laudo pericial", "2026-11-25", "late_projected", "2026-11-26T18:00", 2, "Reunir documentos"),
+        RiskItem(3, "Responder o ofício", "2026-11-30", "missing_estimate", "", 4, "Levantar os valores")
+    )
+    PreviewHost(state, previewWeek(entries), risks)
 }

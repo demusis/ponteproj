@@ -36,7 +36,9 @@ internal fun NewTaskScreen(
     myName: String = "",
     onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") },
     remindersBlocked: Boolean = false,
-    onRemindersChosen: () -> Unit = {}
+    onRemindersChosen: () -> Unit = {},
+    saving: Boolean = false,
+    saveError: String = ""
 ) {
     var title by rememberSaveable { mutableStateOf("") }
     var action by rememberSaveable { mutableStateOf(actions.firstOrNull()?.key ?: "") }
@@ -56,15 +58,21 @@ internal fun NewTaskScreen(
     val planningProblem = planning.problem()
 
     DetailScaffold(
-        title = "Nova tarefa", onBack = onBack, close = true,
+        title = "Nova tarefa", onBack = { if (!saving) onBack() }, close = true,
         footer = {
+            if (saveError.isNotEmpty()) {
+                Text(
+                    saveError, Modifier.padding(bottom = 8.dp),
+                    style = MaterialTheme.typography.bodySmall, color = Ponte.colors.error
+                )
+            }
             if (planningProblem.isNotEmpty()) {
                 Text(
                     planningProblem, Modifier.padding(bottom = 8.dp),
                     style = MaterialTheme.typography.bodySmall, color = Ponte.colors.error
                 )
             }
-            PrimaryButton("Criar tarefa", enabled = !hourInvalid && planningProblem.isEmpty(), onClick = {
+            PrimaryButton("Criar tarefa", enabled = !hourInvalid && planningProblem.isEmpty(), loading = saving, onClick = {
                 if (title.isBlank()) tried = true else onCreate(title.trim(), action, due, assignee.trim(), categories, planning)
             })
         }

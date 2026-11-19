@@ -829,6 +829,9 @@ internal object Controller {
             Route.Setup -> setupBack()
             is Route.Account -> if (!accountForm.busy) pop()
             is Route.EditTask, is Route.Pick -> if (!taskEdit.busy) pop()
+            // While the library is saving, leaving would hide the answer (and lose the form on a refusal).
+            is Route.NewTask -> if (!newTaskSave.busy) pop()
+            is Route.Note -> if (!noteSave.busy) pop()
             Route.Search -> closeSearch()
             else -> {
                 pop()
@@ -1265,8 +1268,18 @@ internal object Controller {
             fail = "Não foi possível carregar a semana.")
     }
 
+    /** Deliveries at risk shown on Hoje (see [RiskRules]). */
+    var risks by mutableStateOf<List<RiskItem>>(emptyList())
+        private set
+
+    private fun refreshRisks() {
+        SyncRunner.background({ Api.atRisk() }, { risks = it }, { risks = emptyList() },
+            fail = "Não foi possível verificar as entregas em risco.")
+    }
+
     private fun refreshToday() {
         refreshWeek()
+        refreshRisks()
         SyncRunner.background({
             val o = Api.today()
             val tasksOf = { key: String -> o.optJSONArray(key).objs().map { it.toTask() } }
@@ -1332,12 +1345,14 @@ internal object Controller {
     fun openNewTask() {
         if (documentId < 0) return
         if (actions.isEmpty()) loadChoices()
+        if (!newTaskSave.busy) newTaskSave = SaveState()
         push(Route.NewTask(documentId))
     }
 
     /** From Tarefas: a task without document (it can be linked to one later). */
     fun openNewTaskWithoutDocument() {
         if (actions.isEmpty()) loadChoices()
+        if (!newTaskSave.busy) newTaskSave = SaveState()
         push(Route.NewTask(0))
     }
 
@@ -1524,19 +1539,31 @@ internal object Controller {
     }
 
     fun createTask(title: String, action: String, due: String, assignee: String = "", categories: List<String> = emptyList(), planning: NewPlanning = NewPlanning()) {
-        val id = (stack.lastOrNull() as? Route.NewTask)?.id ?: return
+        val route = stack.lastOrNull() as? Route.NewTask ?: return
         if (title.isBlank() || planning.problem().isNotEmpty()) return
-        pop()
+        // A second tap (or a tap while the first is still being saved) starts nothing.
+        newTaskSave = SaveGate.begin(newTaskSave) ?: return
         SyncRunner.background({
-            Api.createTask(id, title.trim(), action, due, assignee.trim(), categories, planning)
+            Api.createTask(route.id, title.trim(), action, due, assignee.trim(), categories, planning)
+            // The task exists locally from here on: a failure below must not offer to create it again.
             SyncRunner.refreshDocs()
         }, {
+            newTaskSave = SaveGate.done()
+            SaveGate.close(stack, route)
             takeDocs()
             refreshTasks()
             reloadDocument()
             say("Tarefa criada.")
+            // A refusal or failure of the sync is told by the sync itself; the task is already kept.
             requestSync(null, auto = true)
-        }, { status(it, true) }, fail = "Não foi possível criar a tarefa. Tente de novo.")
+        }, {
+            if (stack.contains(route)) {
+                newTaskSave = SaveGate.failed(it)
+            } else {
+                newTaskSave = SaveGate.done()
+                status(it, true)
+            }
+        }, fail = "Não foi possível criar a tarefa. Seus dados continuam na tela; tente de novo.")
     }
 
     // ---------------------------------------------------------------- documents
@@ -1583,20 +1610,51 @@ internal object Controller {
     }
 
     fun openNote() {
-        if (documentId >= 0 && document.doc != null) push(Route.Note(documentId))
+        if (documentId >= 0 && document.doc != null) {
+            if (!noteSave.busy) noteSave = SaveState()
+            push(Route.Note(documentId))
+        }
     }
 
+    /** Progress of "Criar tarefa" (the form stays open until the library confirms). */
+    var newTaskSave by mutableStateOf(SaveState())
+        private set
+
+    /** Progress of "Salvar nota". */
+    var noteSave by mutableStateOf(SaveState())
+        private set
+
     /**
-     * Keeps the note on the phone at once (before any fingerprint prompt, so it cannot be
-     * lost) and then sends it; the sync runs on the same worker, after the note is saved.
+     * Keeps the note on the phone and closes the editor only once that is confirmed; a refusal
+     * leaves the text on screen to be sent again. The sync that follows is separate: its trouble
+     * never says the note was not saved.
      */
     fun saveNote(text: String) {
-        val id = (stack.lastOrNull() as? Route.Note)?.id ?: return
-        pop()
-        document = document.copy(doc = document.doc?.takeIf { it.id == id }?.copy(note = text) ?: document.doc)
-        say("Nota salva.")
-        saveNoteOnly(Pair(id, text))
-        requestSync(null, auto = true)
+        val route = stack.lastOrNull() as? Route.Note ?: return
+        val id = route.id
+        noteSave = SaveGate.begin(noteSave) ?: return
+        SyncRunner.background({
+            val o = JSONObject(SyncRunner.core.saveNote(id, text))
+            if (!o.optBoolean("ok")) {
+                throw CoreException(PhoneWords.adapt(o.s("error", "Não foi possível guardar a nota.")))
+            }
+            SyncRunner.refreshDocs()
+        }, {
+            noteSave = SaveGate.done()
+            SaveGate.close(stack, route)
+            document = document.copy(doc = document.doc?.takeIf { it.id == id }?.copy(note = text) ?: document.doc)
+            takeDocs()
+            reloadDocument()
+            say("Nota salva.")
+            requestSync(null, auto = true)
+        }, {
+            if (stack.contains(route)) {
+                noteSave = SaveGate.failed(it)
+            } else {
+                noteSave = SaveGate.done()
+                status(it, true)
+            }
+        }, fail = "Não foi possível guardar a nota neste aparelho. O texto continua na tela; tente salvar de novo.")
     }
 
     fun openFile(f: FileItem) {
