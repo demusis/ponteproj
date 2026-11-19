@@ -768,7 +768,11 @@ internal data class SettingsState(
     /** [DeadlineNotice.Time.key] of the chosen time. */
     val noticeTime: String = DeadlineNotice.DEFAULT.key,
     /** The notice is on or was asked for, but the phone does not let the app show notifications. */
-    val noticeBlocked: Boolean = false
+    val noticeBlocked: Boolean = false,
+    /** State code of "Feriados", or empty for none. */
+    val holidayUf: String = "",
+    /** The extra days off the person registered. */
+    val holidayDays: List<CustomDay> = emptyList()
 )
 
 internal data class AccountFormState(

@@ -173,6 +173,21 @@ mod tests {
         assert_eq!(work_end(dt("2026-11-20T09:00"), 2), dt("2026-11-24T18:00"));
     }
     #[test]
+    fn a_state_holiday_is_skipped_only_with_the_state_chosen() {
+        let _lock = crate::holidays::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // 9/7/2026 (SP) is a Thursday.
+        crate::holidays::set_config(crate::holidays::HolidayConfig::new());
+        assert_eq!(work_end(dt("2026-07-08T09:00"), 2), dt("2026-07-09T18:00"));
+        crate::holidays::set_config(crate::holidays::HolidayConfig::parse(
+            "uf SP
+",
+        ));
+        assert_eq!(work_end(dt("2026-07-08T09:00"), 2), dt("2026-07-10T18:00"));
+        crate::holidays::set_config(crate::holidays::HolidayConfig::new());
+    }
+    #[test]
     fn chain_across_carnaval() {
         // Carnaval 2026: Mon 16 and Tue 17 February.
         let mut a = task(1, &[]);

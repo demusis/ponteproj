@@ -42,6 +42,9 @@ internal object Api {
         return c(core.createTask(o.toString())).optLong("id")
     }
 
+    /** Hands the core the phone's holiday choices (the text saved in the preferences). */
+    fun setHolidays(text: String) { c(core.setHolidays(text)) }
+
     /** Every category (archived ones too), by name. */
     fun categories(): List<Category> = c(core.listCategories()).optJSONArray("categories").objs().map { it.toCategory() }
 

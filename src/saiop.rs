@@ -4095,6 +4095,18 @@ impl SaiopPanel {
         self.queue = SaiopQueue::All;
     }
 
+    /// Dias parados que a tela usa para as cobranças (o mesmo valor que
+    /// "Hoje" usa para contar as cobranças de hoje).
+    pub fn stale_days(&self) -> i64 {
+        self.stale_days_threshold
+    }
+
+    /// Mostra a fila "Cobranças de hoje", sem busca nem filtros que a escondam.
+    pub fn show_follow_ups(&mut self) {
+        self.clear_filters();
+        self.queue = SaiopQueue::FollowUps;
+    }
+
     /// The setting "Criar atendimento ao importar do SIGADOC", for Ajustes.
     /// Saves on change.
     pub fn auto_attendance_setting(ui: &mut egui::Ui, store: &mut Store) {

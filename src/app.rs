@@ -658,6 +658,7 @@ enum SettingsSection {
     Mail,
     Import,
     Reminders,
+    Holidays,
     Ai,
     Backup,
     Trash,
@@ -667,11 +668,12 @@ enum SettingsSection {
 }
 
 impl SettingsSection {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Team,
         Self::Mail,
         Self::Import,
         Self::Reminders,
+        Self::Holidays,
         Self::Ai,
         Self::Backup,
         Self::Categories,
@@ -686,6 +688,7 @@ impl SettingsSection {
             Self::Mail => "E-mail",
             Self::Import => "Importação do SIGADOC",
             Self::Reminders => "Lembretes",
+            Self::Holidays => "Feriados",
             Self::Ai => "Inteligência artificial",
             Self::Backup => "Cópia de segurança e exportação",
             Self::Categories => "Categorias",
@@ -703,6 +706,7 @@ impl SettingsSection {
             Self::Mail => "Contas de e-mail para importar mensagens como registros.",
             Self::Import => "O que o Ponte faz quando um documento é importado pelo navegador.",
             Self::Reminders => "Um aviso do Windows, uma vez por dia, com o que vence.",
+            Self::Holidays => "Dias em que não há expediente, para o planejamento do trabalho.",
             Self::Ai => "Opcional. Onde a análise e as minutas são geradas.",
             Self::Backup => "Guardar uma cópia do acervo e levar os dados para planilhas.",
             Self::Categories => "Palavras suas para organizar tarefas e documentos.",
@@ -718,6 +722,7 @@ impl SettingsSection {
             Self::Mail => icon::MAIL,
             Self::Import => icon::DOWNLOAD,
             Self::Reminders => icon::BELL,
+            Self::Holidays => icon::CALENDAR,
             Self::Ai => icon::AI,
             Self::Backup => icon::DATABASE,
             Self::Categories => icon::TAG,
@@ -1176,6 +1181,8 @@ struct PonteApp {
     today: today::TodayData,
     /// The once-a-day Windows notice of what is due.
     reminders: crate::reminders::Reminders,
+    /// The state and the extra days off, as edited in Ajustes.
+    holiday_draft: settings::HolidayDraft,
     /// The way back offered on the ficha, and the one waiting for the next
     /// document to be opened.
     return_to: Option<ReturnTo>,
@@ -1297,6 +1304,8 @@ impl PonteApp {
             // The welcome screen (or the opened document) is the first thing seen.
             area: Area::Today,
             reminders: crate::reminders::Reminders::load(),
+            // Reads feriados.txt and puts it to work before the first projection.
+            holiday_draft: settings::HolidayDraft::load(),
             today: Default::default(),
             return_to: None,
             return_after_select: None,
@@ -1671,6 +1680,9 @@ impl PonteApp {
     /// then the question "save, discard or stay?" is shown first and the
     /// move happens after the answer.
     fn navigate(&mut self, leave: Leave) {
+        if self.area == Area::Settings && self.settings_section == SettingsSection::Holidays {
+            self.apply_holiday_draft();
+        }
         // Leaving the AI section of Ajustes saves it; an invalid
         // configuration keeps the person there.
         if self.area == Area::Settings
@@ -1924,7 +1936,7 @@ impl PonteApp {
             )),
         }
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        self.today = today::TodayData::load(&self.store, &today);
+        self.today = today::TodayData::load_with(&self.store, &today, self.saiop.stale_days());
         self.task_badge = self.today.pending_tasks();
         self.resources_overdue = self.overdue_returns();
         if let Some(id) = self.selected_id {
@@ -3535,6 +3547,7 @@ impl PonteApp {
 
 impl eframe::App for PonteApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.apply_holiday_draft();
         crate::attachments::clear_temp_dir();
         self.reminders.shutdown();
     }

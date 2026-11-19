@@ -24,6 +24,9 @@ pub(super) struct TodayData {
     pub projections: std::collections::HashMap<i64, (chrono::NaiveDateTime, chrono::NaiveDateTime)>,
     /// Deliveries whose deadline the plan does not meet, computed once per refresh.
     pub at_risk: Vec<crate::risk::Risk>,
+    /// How many atendimentos have a follow-up due today, counted once per
+    /// refresh with the quiet days of the Atendimentos screen.
+    pub follow_ups_due: usize,
     month_cache: std::cell::RefCell<Option<MonthCache>>,
     pub(super) week_cache: std::cell::RefCell<Option<super::week::WeekCache>>,
     pub planning_uses: Vec<crate::resources::ResourceUse>,
@@ -69,7 +72,14 @@ pub(super) struct UseRow {
 }
 
 impl TodayData {
+    #[cfg(test)]
     pub fn load(store: &Store, today: &str) -> Self {
+        Self::load_with(store, today, crate::saiop::DEFAULT_FOLLOW_UP_QUIET_DAYS)
+    }
+
+    /// As [`TodayData::load`], counting the follow-ups with `quiet_days`
+    /// (the threshold the Atendimentos screen is using).
+    pub fn load_with(store: &Store, today: &str, quiet_days: i64) -> Self {
         let mut data = Self::default();
         match store.list_tasks() {
             Ok(tasks) => {
@@ -93,6 +103,10 @@ impl TodayData {
                     .filter(|a| is_open_dated_attendance(a))
                     .cloned()
                     .collect();
+                if let Ok(date) = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d") {
+                    data.follow_ups_due =
+                        crate::saiop::follow_ups_due_today(&list, date, quiet_days).len();
+                }
                 data.attendances = due_attendances(list, today);
             }
             Err(error) => data.error = Some(error.to_string()),
@@ -499,6 +513,8 @@ pub(super) enum Asked {
     OpenUse(String),
     /// The Recursos area (from the card of today's resources).
     OpenResources,
+    /// The queue "Cobranças de hoje" of Atendimentos.
+    OpenFollowUps,
 }
 
 impl PonteApp {
@@ -675,6 +691,7 @@ impl PonteApp {
                 }
                 if calendar {
                     ui.set_max_width(ui.available_width() - 14.0);
+                    follow_ups_card(ui, self.today.follow_ups_due, &mut asked);
                     risk_group(ui, &self.today, false, &mut asked);
                     calendar_view(ui, &self.today, now, grid_height, &mut asked);
                     ui.add_space(S4);
@@ -682,6 +699,7 @@ impl PonteApp {
                 }
                 // Room for the scroll bar, so the cards keep their right edge.
                 ui.set_max_width(ui.available_width() - 14.0);
+                follow_ups_card(ui, self.today.follow_ups_due, &mut asked);
                 risk_group(ui, &self.today, true, &mut asked);
                 let wide = ui.available_width() >= 860.0;
                 let documents = &self.today.index;
@@ -811,6 +829,10 @@ impl PonteApp {
             }
             Some(Asked::OpenUse(uid)) => self.open_use(&uid),
             Some(Asked::OpenResources) => self.navigate(Leave::Resources),
+            Some(Asked::OpenFollowUps) => {
+                self.saiop.show_follow_ups();
+                self.area = Area::Saiop;
+            }
         }
     }
 
@@ -1291,6 +1313,39 @@ fn risk_group(ui: &mut egui::Ui, data: &TodayData, open: bool, asked: &mut Optio
     ui.add_space(S3);
 }
 
+/// "3 cobranças para hoje": the line of the card; nothing when none is due.
+fn follow_ups_line(count: usize) -> Option<String> {
+    (count > 0).then(|| crate::labels::count(count, "cobrança para hoje", "cobranças para hoje"))
+}
+
+/// A compact card with the follow-ups due today and the button that opens
+/// them in Atendimentos. Nothing when none is due.
+fn follow_ups_card(ui: &mut egui::Ui, count: usize, asked: &mut Option<Asked>) {
+    let Some(line) = follow_ups_line(count) else {
+        return;
+    };
+    let p = theme::c();
+    list_card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.add_space(S3);
+            ui.add_space(S1);
+            ui.label(
+                RichText::new("COBRANÇAS DE HOJE")
+                    .font(theme::font_strong(12.0))
+                    .color(p.warn),
+            );
+            ui.label(RichText::new(line).size(theme::SIZE_SMALL).color(p.muted));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(S3);
+                if ui.add(widgets::quiet("Abrir")).clicked() {
+                    *asked = Some(Asked::OpenFollowUps);
+                }
+            });
+        });
+    });
+    ui.add_space(S3);
+}
+
 fn list_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     widgets::card_frame()
         .inner_margin(egui::Margin::ZERO)
@@ -1732,6 +1787,13 @@ mod tests {
             risk_reason(&risk(RiskKind::MissingEstimate, None)),
             "sem previsão: falta estimar Etapa"
         );
+    }
+
+    #[test]
+    fn follow_ups_line_is_written_in_portuguese() {
+        assert_eq!(follow_ups_line(0), None);
+        assert_eq!(follow_ups_line(1).as_deref(), Some("1 cobrança para hoje"));
+        assert_eq!(follow_ups_line(3).as_deref(), Some("3 cobranças para hoje"));
     }
 
     #[test]

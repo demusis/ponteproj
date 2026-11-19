@@ -4,11 +4,91 @@ use crate::ai::{self, AiProvider, ModelInfo};
 use crate::chatgpt;
 use crate::theme::{self, icon, S1, S2, S3};
 use crate::widgets::{self, Tone};
+use chrono::Datelike;
 use eframe::egui::{self, RichText};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// One line of "Outros dias sem expediente" while it is being edited.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DayRow {
+    /// ISO date (or the raw text while it is not a valid date).
+    date: String,
+    /// Every year: only the day and the month count.
+    yearly: bool,
+    name: String,
+}
+
+/// The state and the extra days off as shown in Ajustes. What is complete
+/// (a state, valid dates) goes to `feriados.txt` and to the planning.
+#[derive(Default)]
+pub(super) struct HolidayDraft {
+    uf: Option<&'static str>,
+    rows: Vec<DayRow>,
+}
+
+impl HolidayDraft {
+    /// Reads `feriados.txt` and makes it the configuration in use.
+    pub(super) fn load() -> Self {
+        // Tests build the app too: they must neither read this machine's
+        // file nor change the configuration other tests are using.
+        #[cfg(test)]
+        let config = crate::holidays::config();
+        #[cfg(not(test))]
+        let config = {
+            let config = crate::holidays::HolidayConfig::load();
+            crate::holidays::set_config(config.clone());
+            config
+        };
+        let year = chrono::Local::now().year();
+        let rows = config
+            .custom
+            .iter()
+            .map(|day| {
+                let shown_year = match day.year {
+                    Some(year) => year,
+                    // 29/02 needs a leap year to be a valid date.
+                    None if chrono::NaiveDate::from_ymd_opt(year, day.month, day.day).is_some() => {
+                        year
+                    }
+                    None => 2028,
+                };
+                DayRow {
+                    date: format!("{shown_year:04}-{:02}-{:02}", day.month, day.day),
+                    yearly: day.year.is_none(),
+                    name: day.name.clone(),
+                }
+            })
+            .collect();
+        Self {
+            uf: config.uf,
+            rows,
+        }
+    }
+
+    /// What goes to the planning: rows with a valid date only.
+    fn config(&self) -> crate::holidays::HolidayConfig {
+        let custom = self
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let date = chrono::NaiveDate::parse_from_str(&row.date, "%Y-%m-%d").ok()?;
+                Some(crate::holidays::CustomDay {
+                    year: (!row.yearly).then_some(date.year()),
+                    month: date.month(),
+                    day: date.day(),
+                    name: row.name.replace(['\n', '\r'], " ").trim().to_owned(),
+                })
+            })
+            .collect();
+        crate::holidays::HolidayConfig {
+            uf: self.uf,
+            custom,
+        }
+    }
+}
 
 impl PonteApp {
     /// One block of the Ajustes area: what it is for, and its buttons.
@@ -77,6 +157,97 @@ impl PonteApp {
         });
     }
 
+    /// The state and the extra days off. Local to this computer: the library
+    /// and the shared folder do not carry them.
+    fn holidays_card(&mut self, ui: &mut egui::Ui) {
+        let mut remove: Option<usize> = None;
+        widgets::card(ui, |ui| {
+            widgets::section(ui, "Feriados");
+            widgets::small_muted(
+                ui,
+                "Os feriados nacionais já contam. Estaduais e os dias que você cadastrar valem só neste computador.",
+            );
+            ui.add_space(S1);
+            ui.horizontal(|ui| {
+                ui.label("Estado");
+                let shown = self
+                    .holiday_draft
+                    .uf
+                    .and_then(crate::holidays::state_name)
+                    .unwrap_or("(nenhum)");
+                egui::ComboBox::from_id_salt("holiday-state")
+                    .width(220.0)
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.holiday_draft.uf, None, "(nenhum)");
+                        for (code, full) in crate::holidays::STATES {
+                            ui.selectable_value(&mut self.holiday_draft.uf, Some(code), full);
+                        }
+                    });
+            });
+            if let Some(uf) = self.holiday_draft.uf {
+                let lines = crate::holidays::state_holiday_lines(uf);
+                if lines.is_empty() {
+                    widgets::small_muted(
+                        ui,
+                        "Este estado não tem feriado estadual além dos nacionais.",
+                    );
+                }
+                for (when, name) in lines {
+                    widgets::small_muted(ui, format!("{when}  {name}"));
+                }
+            }
+            ui.add_space(S2);
+            widgets::section(ui, "Outros dias sem expediente");
+            widgets::small_muted(
+                ui,
+                "Recesso, ponto facultativo, feriado da cidade. Com “Todo ano”, só o dia e o mês contam.",
+            );
+            for (i, row) in self.holiday_draft.rows.iter_mut().enumerate() {
+                ui.horizontal_wrapped(|ui| {
+                    crate::labels::date_field(ui, ("holiday-date", i), &mut row.date);
+                    ui.checkbox(&mut row.yearly, "Todo ano");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut row.name)
+                            .hint_text("Nome")
+                            .desired_width(200.0),
+                    );
+                    if widgets::icon_button(ui, icon::TRASH, "Remover este dia").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            ui.add_space(S1);
+            if ui
+                .add(widgets::quiet(format!("{} Adicionar um dia", icon::PLUS)))
+                .clicked()
+            {
+                self.holiday_draft.rows.push(DayRow::default());
+            }
+        });
+        if let Some(i) = remove {
+            self.holiday_draft.rows.remove(i);
+        }
+        // Applied once nothing is being typed, so that a name is not
+        // reprocessed at every letter.
+        if !ui.ctx().egui_wants_keyboard_input() {
+            self.apply_holiday_draft();
+        }
+    }
+
+    /// Saves and uses the edited state and days, when they changed. Also
+    /// called when the section is left or the app closes, so that a field
+    /// still focused at that moment is not lost.
+    pub(super) fn apply_holiday_draft(&mut self) {
+        let wanted = self.holiday_draft.config();
+        if wanted != crate::holidays::config() {
+            wanted.save();
+            crate::holidays::set_config(wanted);
+            // Projections, Semana and Calendário are rebuilt from the library.
+            self.refresh();
+        }
+    }
+
     /// One line of the list of sections, on the left of Ajustes.
     fn settings_nav_item(ui: &mut egui::Ui, glyph: &str, label: &str, selected: bool) -> bool {
         let p = theme::c();
@@ -120,6 +291,9 @@ impl PonteApp {
             && section != SettingsSection::Ai;
         if leaving_ai && !self.leave_ai_settings() {
             return;
+        }
+        if self.settings_section == SettingsSection::Holidays {
+            self.apply_holiday_draft();
         }
         self.settings_section = section;
         if self.area != Area::Settings {
@@ -273,6 +447,7 @@ impl PonteApp {
                 });
             }
             SettingsSection::Reminders => self.reminders_card(ui),
+            SettingsSection::Holidays => self.holidays_card(ui),
             SettingsSection::Ai => self.ai_settings(ui),
             SettingsSection::Backup => {
                 let idle = self.worker.is_none();

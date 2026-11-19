@@ -135,6 +135,12 @@ class PonteCore {
     /** Deliveries at risk: {items:[{task_id,title,due_date,kind,end,cause_id,cause_title}]}. */
     external fun atRisk(): String
 
+    /**
+     * The phone's own holiday choices as the text of [HolidayConfig.toText] (a state, extra days off); the
+     * planning of the core uses them from now on. Kept on this device only.
+     */
+    external fun setHolidays(text: String): String
+
     companion object {
         init {
             System.loadLibrary("ponte_mobile")

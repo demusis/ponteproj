@@ -795,6 +795,24 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_setDocumentCategor
     })
 }
 
+/// Makes the phone's own holiday choices (a state, extra days off) the ones the
+/// planning uses. Kept on this device only; the library does not carry them.
+fn apply_holidays(text: &str) {
+    ponteproj::holidays::set_config(ponteproj::holidays::HolidayConfig::parse(text));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_setHolidays<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    text_lines: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        apply_holidays(&text(env, &text_lines)?);
+        Ok(json!({}))
+    })
+}
+
 /// Moves a task to `document_id`, or (0) takes it out of its document.
 fn relink_task(store: &mut Store, task_id: i64, document_id: i64, version: i64) -> Result<Value> {
     anyhow::ensure!(document_id >= 0, "Documento inválido.");
@@ -3530,5 +3548,19 @@ mod tests {
         let number = store.list_documents("").unwrap().remove(0).document_number;
         let shouted = number.to_uppercase();
         assert_eq!(document_ids(&store, &format!(" {shouted} ")).unwrap()["ids"], json!([doc]));
+    }
+
+    #[test]
+    fn holidays_text_reaches_the_planning() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // A date no other test uses (a Monday).
+        let date = chrono::NaiveDate::from_ymd_opt(2031, 3, 17).unwrap();
+        assert_eq!(ponteproj::holidays::holiday(date), None);
+        apply_holidays("uf SP\ndia 2031-03-17 Recesso do órgão\nlixo\n");
+        assert_eq!(ponteproj::holidays::holiday(date), Some("Recesso do órgão"));
+        assert!(!ponteproj::holidays::is_working_day(date));
+        apply_holidays("");
+        assert_eq!(ponteproj::holidays::holiday(date), None);
+        assert!(ponteproj::holidays::is_working_day(date));
     }
 }

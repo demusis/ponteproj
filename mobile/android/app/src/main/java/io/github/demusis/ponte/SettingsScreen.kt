@@ -21,6 +21,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -66,7 +72,10 @@ internal fun SettingsScreen(
     onName: (String) -> Unit = {},
     onNotice: (Boolean) -> Unit = {},
     onNoticeTime: (String) -> Unit = {},
-    onNoticeSettings: () -> Unit = {}
+    onNoticeSettings: () -> Unit = {},
+    onHolidayState: (String) -> Unit = {},
+    onAddHolidayDay: (String, String, Boolean) -> Unit = { _, _, _ -> },
+    onRemoveHolidayDay: (CustomDay) -> Unit = {}
 ) {
     val c = Ponte.colors
     DetailScaffold(title = "Ajustes", onBack = onBack) {
@@ -186,6 +195,9 @@ internal fun SettingsScreen(
                 }
             }
 
+            SectionLabel("Feriados", Modifier.padding(top = 8.dp))
+            HolidaysCard(state, onHolidayState, onAddHolidayDay, onRemoveHolidayDay)
+
             SectionLabel("Contas de e-mail", Modifier.padding(top = 8.dp))
             PonteCard {
                 Column {
@@ -298,5 +310,76 @@ private fun SwitchRow(
                 uncheckedThumbColor = c.secondary, uncheckedTrackColor = c.chip, uncheckedBorderColor = c.outline
             )
         )
+    }
+}
+
+/** Said under "Feriados" in Ajustes. */
+internal const val HOLIDAYS_NOTE =
+    "Os feriados nacionais já contam. Estaduais e os dias que você cadastrar valem só neste celular."
+internal const val HOLIDAYS_NO_STATE_DAYS = "Este estado não tem feriado estadual além dos nacionais."
+internal const val HOLIDAYS_OTHER_HINT =
+    "Recesso, ponto facultativo, feriado da cidade. Com “Todo ano”, só o dia e o mês contam."
+
+/** How a registered day is shown: "19/03/2026" or, every year, "19/03 · todo ano". */
+internal fun holidayDayText(day: CustomDay): String =
+    if (day.year == null) "%02d/%02d · todo ano".format(day.day, day.month)
+    else "%02d/%02d/%d".format(day.day, day.month, day.year)
+
+/** The state, its holidays (read only) and the extra days off. */
+@Composable
+private fun HolidaysCard(
+    state: SettingsState,
+    onState: (String) -> Unit,
+    onAdd: (String, String, Boolean) -> Unit,
+    onRemove: (CustomDay) -> Unit
+) {
+    val c = Ponte.colors
+    var date by rememberSaveable { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf("") }
+    var yearly by rememberSaveable { mutableStateOf(false) }
+    PonteCard {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(HOLIDAYS_NOTE, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+            ChoiceField(
+                "Estado", listOf(Choice("", "Nenhum")) + Holidays.STATES.map { Choice(it.first, it.second) },
+                state.holidayUf, onState
+            )
+            if (state.holidayUf.isNotEmpty()) {
+                val lines = Holidays.stateHolidayLines(state.holidayUf)
+                if (lines.isEmpty()) Text(HOLIDAYS_NO_STATE_DAYS, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                for ((whenText, holidayName) in lines) {
+                    Text("$whenText  $holidayName", fontSize = 14.sp, lineHeight = 20.sp, color = c.secondary)
+                }
+            }
+
+            Text("Outros dias sem expediente", style = FieldLabelStyle, color = c.secondary)
+            Text(HOLIDAYS_OTHER_HINT, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+            for (day in state.holidayDays) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(holidayDayText(day), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
+                        Text(day.label, fontSize = 13.sp, color = c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    IconButton(onClick = { onRemove(day) }, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Outlined.Delete, contentDescription = "Remover este dia", tint = c.secondary)
+                    }
+                }
+            }
+            DateField("Dia", date, { date = it }, emptyText = "Escolher a data")
+            LabeledField(
+                "Nome", name, { name = it }, placeholder = "Nome (opcional)",
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
+            )
+            SwitchRow("Todo ano", "Só o dia e o mês contam.", yearly, { yearly = it })
+            TextButton(
+                onClick = { onAdd(date, name, yearly); date = ""; name = ""; yearly = false },
+                enabled = date.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                colors = ButtonDefaults.textButtonColors(contentColor = c.accent)
+            ) {
+                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                Text("Adicionar um dia", Modifier.padding(start = 8.dp).weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            }
+        }
     }
 }

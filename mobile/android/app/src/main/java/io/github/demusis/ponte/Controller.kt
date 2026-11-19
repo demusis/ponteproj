@@ -251,6 +251,7 @@ internal object Controller {
     fun attach(a: MainActivity, saved: Bundle?) {
         app = a.applicationContext
         Intake.init(app)
+        Holidays.configure(prefs.getString(SyncRunner.HOLIDAYS_KEY, "") ?: "")
         personName = Assignees.cleanName(prefs.getString(K_NAME, "") ?: "")
         // The deadline notice's alarm is set again whenever the app opens (cheap, and it heals a lost one).
         NoticeScheduler.arm(app)
@@ -642,6 +643,38 @@ internal object Controller {
         prefs.edit().putBoolean(K_SECURE, on).apply()
         activity?.applySecure(on)
         updateSettings()
+    }
+
+    // ---- holidays of this phone (a state and extra days off)
+
+    /** Keeps [config], uses it in the phone's rules, hands it to the core and reads the planning again. */
+    private fun applyHolidays(config: HolidayConfig) {
+        val text = config.toText()
+        prefs.edit().putString(SyncRunner.HOLIDAYS_KEY, text).apply()
+        Holidays.configure(text)
+        updateSettings()
+        // Hoje, Semana and the planning are worked out by the core: read them again with the new days.
+        // Always queued: the worker is serial, so a change made while the core is still opening
+        // lands after its startup read of the preferences instead of being lost.
+        SyncRunner.background({ Api.setHolidays(text) }, { if (SyncRunner.ready) refreshTasks() })
+    }
+
+    /** [uf] is a state code, or empty for none. */
+    fun setHolidayState(uf: String) =
+        applyHolidays(Holidays.current().copy(uf = Holidays.STATES.firstOrNull { it.first == uf }?.first))
+
+    /** A day off: [iso] is AAAA-MM-DD; with [yearly] only the day and the month count. */
+    fun addHolidayDay(iso: String, name: String, yearly: Boolean) {
+        val d = try { LocalDate.parse(iso) } catch (_: Throwable) { return }
+        val day = CustomDay(if (yearly) null else d.year, d.monthValue, d.dayOfMonth, name.replace('\n', ' ').trim())
+        val now = Holidays.current()
+        if (day in now.custom) return
+        applyHolidays(now.copy(custom = now.custom + day))
+    }
+
+    fun removeHolidayDay(day: CustomDay) {
+        val now = Holidays.current()
+        applyHolidays(now.copy(custom = now.custom - day))
     }
 
     /** An exported file was handed to a viewer: when the person is back, it is deleted. */
@@ -2165,6 +2198,8 @@ internal object Controller {
             lockDelay = lockDelay().key,
             secureScreen = secureScreen(),
             personName = nameField ?: personName,
+            holidayUf = Holidays.current().uf ?: "",
+            holidayDays = Holidays.current().custom,
             noticeOn = NoticeScheduler.isOn(app),
             noticeTime = NoticeScheduler.time(app).key,
             noticeBlocked = noticeDenied || (NoticeScheduler.isOn(app) && !NoticeScheduler.allowed(app))

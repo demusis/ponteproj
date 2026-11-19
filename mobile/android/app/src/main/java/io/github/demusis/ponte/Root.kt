@@ -252,7 +252,9 @@ private fun RouteScreen(route: Route) {
             onAddAccount = { c.openAccount(null) }, onEditAccount = { c.openAccount(it) },
             onReset = c::askReset,
             onName = c::changePersonName, onNotice = c::setNoticeEnabled, onNoticeTime = c::setNoticeTime,
-            onNoticeSettings = c::openNoticeSettings
+            onNoticeSettings = c::openNoticeSettings,
+            onHolidayState = c::setHolidayState, onAddHolidayDay = c::addHolidayDay,
+            onRemoveHolidayDay = c::removeHolidayDay
         )
         is Route.Account -> AccountFormScreen(
             state = c.accountForm, onBack = c::back, onSave = c::saveAccount, onDelete = c::askDeleteAccount

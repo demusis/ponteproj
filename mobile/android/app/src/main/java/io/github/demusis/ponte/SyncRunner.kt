@@ -150,6 +150,9 @@ internal object SyncRunner {
 
     // ------------------------------------------------------------ init / reset
 
+    /** Preference that keeps the text of [HolidayConfig.toText]. */
+    const val HOLIDAYS_KEY = "holidays"
+
     fun startInit(ctx: Context, reset: Boolean): Boolean {
         val app = ctx.applicationContext
         setStatus("Preparando…", false)
@@ -159,6 +162,8 @@ internal object SyncRunner {
                 val key = loadOrCreateLibraryKey(app)
                 val name = phoneMemberName()
                 check(core.init(app.filesDir.absolutePath, key, name))
+                // The phone's own holidays (a state, days off) are not in the library: hand them over now.
+                core.setHolidays(prefsOf(app).getString(HOLIDAYS_KEY, "") ?: "")
                 ready = true
                 keyBroken = false
                 val e = refreshDocs()
