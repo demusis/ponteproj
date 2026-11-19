@@ -136,13 +136,8 @@ private fun TaskLoaded(
     var startHour by rememberSaveable(state.epoch, task.version) { mutableStateOf(TaskRules.splitMoment(form.scheduledStart).second) }
     var endHour by rememberSaveable(state.epoch, task.version) { mutableStateOf(TaskRules.splitMoment(form.scheduledEnd).second) }
     var daysText by rememberSaveable(state.epoch, task.version) { mutableStateOf(TaskRules.estimateDays(form.estimateMinutes).toString()) }
-    val startDate = TaskRules.splitMoment(form.scheduledStart).first
-    val endDate = TaskRules.splitMoment(form.scheduledEnd).first
     // The form only takes a valid hour; Salvar waits for the one that is not.
-    val startMoment = { date: String, hour: String -> TaskRules.composeMoment(date, hour, TaskRules.START_HOUR) }
-    val endMoment = { date: String, hour: String -> TaskRules.composeMoment(date, hour, TaskRules.END_HOUR) }
-    val hourInvalid = (startDate.isNotEmpty() && startMoment(startDate, startHour) == null) ||
-        (endDate.isNotEmpty() && endMoment(endDate, endHour) == null)
+    val hourInvalid = planningHourInvalid(form.scheduledStart, form.scheduledEnd, startHour, endHour)
 
     SafeBackHandler(onBack = leave)
 
@@ -187,53 +182,11 @@ private fun TaskLoaded(
             if (shownActions.isNotEmpty()) ChoiceField("Ação", shownActions, form.action, { v -> edit { it.copy(action = v) } })
             ChoiceField("Prioridade", priorities.ifEmpty { DefaultPriorities }, form.priority, { v -> edit { it.copy(priority = v) } })
             DateField("Prazo", form.dueDate, { v -> edit { it.copy(dueDate = v) } }, emptyText = "Sem prazo")
-            val applyAutoEnd = { f: TaskForm, days: Int ->
-                TaskRules.autoEnd(f.scheduledStart, days, f.scheduledEnd)?.let { e ->
-                    endHour = TaskRules.END_HOUR
-                    f.copy(scheduledEnd = e)
-                } ?: f
-            }
-            val currentDays = TaskRules.parseDays(daysText) ?: 0
-            SectionLabel("Planejamento")
-            Text(TaskRules.PLANNING_HINT, style = MaterialTheme.typography.bodySmall, color = c.muted)
-            PlanningMoment(
-                "Início", "09:00", startDate, startHour,
-                onDate = { d ->
-                    if (d.isEmpty()) startHour = ""
-                    val m = startMoment(d, startHour) ?: startMoment(d, "") ?: ""
-                    edit { applyAutoEnd(it.copy(scheduledStart = m), currentDays) }
-                },
-                onHour = { h ->
-                    startHour = h
-                    startMoment(startDate, h)?.let { m -> edit { applyAutoEnd(it.copy(scheduledStart = m), currentDays) } }
-                },
-                error = if (startDate.isNotEmpty() && startMoment(startDate, startHour) == null) TaskRules.HOUR_INVALID else ""
-            )
-            PlanningMoment(
-                "Fim", "18:00", endDate, endHour,
-                onDate = { d ->
-                    if (d.isEmpty()) endHour = ""
-                    val m = endMoment(d, endHour) ?: endMoment(d, "") ?: ""
-                    edit { it.copy(scheduledEnd = m) }
-                },
-                onHour = { h ->
-                    endHour = h
-                    endMoment(endDate, h)?.let { m -> edit { it.copy(scheduledEnd = m) } }
-                },
-                error = if (endDate.isNotEmpty() && endMoment(endDate, endHour) == null) TaskRules.HOUR_INVALID else ""
-            )
-            TaskRules.overDueWarning(form.dueDate, form.scheduledEnd).takeIf { it.isNotEmpty() }?.let {
-                Text(it, style = MaterialTheme.typography.bodyMedium, color = c.warning)
-            }
-            LabeledField(
-                "Estimativa em dias (0 = sem estimativa)", daysText,
-                { v ->
-                    TaskRules.parseDays(v)?.let { n ->
-                        daysText = v
-                        edit { applyAutoEnd(it.copy(estimateMinutes = n * TaskRules.MINUTES_PER_DAY), n) }
-                    }
-                },
-                keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+            PlanningFields(
+                form.dueDate, form.scheduledStart, form.scheduledEnd, form.estimateMinutes,
+                startHour, endHour, daysText,
+                onStartHour = { startHour = it }, onEndHour = { endHour = it }, onDaysText = { daysText = it },
+                onChange = { st, en, min -> edit { it.copy(scheduledStart = st, scheduledEnd = en, estimateMinutes = min) } }
             )
             TaskRules.legacyEstimateNote(form.estimateMinutes).takeIf { it.isNotEmpty() }?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = c.muted)
@@ -244,23 +197,10 @@ private fun TaskLoaded(
             SecondaryButton("Escolher tarefa pai…", onClick = { parentPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
             if (relations.loading) Text("Carregando tarefas…")
             relations.error?.let { Notice(it, Tone.ERROR) }
-            Text("Avisos antes do início planejado")
-            TaskRules.reminderOptions(form.reminderOffsetsMinutes).forEach { (minutes, label) ->
-                androidx.compose.material3.FilterChip(
-                    selected = minutes in form.reminderOffsetsMinutes,
-                    onClick = {
-                        val before = form.reminderOffsetsMinutes
-                        val after = if (minutes in before) before - minutes else before + minutes
-                        edit { it.copy(reminderOffsetsMinutes = after) }
-                        // Without the permission the notices stay mute: ask now, as Ajustes does.
-                        if (TaskRules.offsetAdded(before, after)) onRemindersChosen()
-                    },
-                    label = { Text(label) }
-                )
-            }
-            if (TaskRules.remindersBlockedShown(form.reminderOffsetsMinutes, remindersBlocked)) {
-                Notice(TaskRules.REMINDERS_BLOCKED, Tone.WARNING)
-            }
+            ReminderChips(
+                form.reminderOffsetsMinutes, { v -> edit { it.copy(reminderOffsetsMinutes = v) } },
+                remindersBlocked, onRemindersChosen
+            )
             // "Eu" and the suggestions only fill the typed form: the draft rules above stay as they are.
             AssigneeField(form.assignee, { v -> edit { it.copy(assignee = v) } }, assignees, myName)
             // Part of the draft like the other fields: saved with Salvar, refused with the rest on a conflict.
@@ -323,24 +263,6 @@ private fun TaskLoaded(
             confirmButton = { TextButton(onClick = { unlinking = false; onUnlink() }) { Text("Desvincular", color = c.error) } },
             dismissButton = { TextButton(onClick = { unlinking = false }) { Text("Cancelar") } }
         )
-    }
-}
-
-/** A planned moment like Prazo (date chooser) plus a small optional hour box; [error] shows under them. */
-@Composable
-private fun PlanningMoment(
-    label: String, hourHint: String, date: String, hour: String,
-    onDate: (String) -> Unit, onHour: (String) -> Unit, error: String
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
-            DateField(label, date, onDate, Modifier.weight(1f), emptyText = "Sem data")
-            LabeledField(
-                "Hora", hour, onHour, Modifier.width(112.dp), placeholder = hourHint,
-                error = "", keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Text)
-            )
-        }
-        if (error.isNotEmpty()) Text(error, style = MaterialTheme.typography.bodySmall, color = Ponte.colors.error)
     }
 }
 

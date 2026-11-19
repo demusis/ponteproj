@@ -33,11 +33,12 @@ internal object Api {
 
     fun createTask(
         documentId: Long, title: String, action: String, due: String, assignee: String = "",
-        categories: List<String> = emptyList()
+        categories: List<String> = emptyList(), planning: NewPlanning = NewPlanning()
     ): Long {
         val o = JSONObject().put("document_id", documentId).put("title", title)
             .put("action", action).put("due_date", due).put("assignee", assignee)
             .put("categories", JSONArray(categories))
+        planning.fields().forEach { (k, v) -> o.put(k, if (v is List<*>) JSONArray(v) else v) }
         return c(core.createTask(o.toString())).optLong("id")
     }
 

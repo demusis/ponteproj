@@ -46,6 +46,26 @@ internal fun TaskForm.toList(): List<String> =
 internal fun TaskForm.Companion.fromList(l: List<String>) =
     TaskForm(l[0], l[1], l[2], l[3], l[4], l[5], l[6].split(",").filter { it.isNotEmpty() }, l.getOrElse(7) { "" }, l.getOrElse(8) { "" }, l.getOrNull(9)?.toIntOrNull() ?: 0, l.getOrNull(10)?.toLongOrNull(), l.getOrNull(11)?.split(",")?.mapNotNull { it.toIntOrNull() } ?: emptyList(), l.getOrNull(12)?.split(",")?.mapNotNull { it.toLongOrNull() } ?: emptyList())
 
+/** The planning typed on Nova tarefa; empty (the default) sends nothing, as before. */
+internal data class NewPlanning(
+    val start: String = "", val end: String = "", val estimateMinutes: Int = 0, val reminders: List<Int> = emptyList()
+) {
+    /** What the create call carries: only what is set, under the core's own keys. */
+    fun fields(): Map<String, Any> = buildMap {
+        if (start.isNotEmpty()) put("scheduled_start", start)
+        if (end.isNotEmpty()) put("scheduled_end", end)
+        if (estimateMinutes > 0) put("estimate_minutes", estimateMinutes)
+        if (reminders.isNotEmpty()) put("reminder_offsets_minutes", reminders)
+    }
+
+    /** Why Criar must wait: only one of start and end is filled (the core wants both or neither); else "". */
+    fun problem(): String = if ((start.isEmpty()) != (end.isEmpty())) NewPlanning.BOTH else ""
+
+    companion object {
+        const val BOTH = "Preencha o início e o fim do planejamento, ou deixe os dois em branco."
+    }
+}
+
 /** Decisions of the task screen. */
 internal object TaskRules {
     fun prerequisites(ids: List<Long>, tasks: List<TaskItem>): List<TaskItem> {

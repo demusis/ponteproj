@@ -29,11 +29,13 @@ internal fun NewTaskScreen(
     document: String,
     actions: List<Choice>,
     onBack: () -> Unit,
-    onCreate: (String, String, String, String, List<String>) -> Unit,
+    onCreate: (String, String, String, String, List<String>, NewPlanning) -> Unit,
     withoutDocument: Boolean = false,
     assignees: List<String> = emptyList(),
     myName: String = "",
-    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") }
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") },
+    remindersBlocked: Boolean = false,
+    onRemindersChosen: () -> Unit = {}
 ) {
     var title by rememberSaveable { mutableStateOf("") }
     var action by rememberSaveable { mutableStateOf(actions.firstOrNull()?.key ?: "") }
@@ -41,12 +43,28 @@ internal fun NewTaskScreen(
     var assignee by rememberSaveable { mutableStateOf(myName) }
     var categories by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var tried by rememberSaveable { mutableStateOf(false) }
+    var start by rememberSaveable { mutableStateOf("") }
+    var end by rememberSaveable { mutableStateOf("") }
+    var startHour by rememberSaveable { mutableStateOf("") }
+    var endHour by rememberSaveable { mutableStateOf("") }
+    var daysText by rememberSaveable { mutableStateOf("") }
+    var estimate by rememberSaveable { mutableStateOf(0) }
+    var reminders by rememberSaveable { mutableStateOf(emptyList<Int>()) }
+    val planning = NewPlanning(start, end, estimate, reminders)
+    val hourInvalid = planningHourInvalid(start, end, startHour, endHour)
+    val planningProblem = planning.problem()
 
     DetailScaffold(
         title = "Nova tarefa", onBack = onBack, close = true,
         footer = {
-            PrimaryButton("Criar tarefa", onClick = {
-                if (title.isBlank()) tried = true else onCreate(title.trim(), action, due, assignee.trim(), categories)
+            if (planningProblem.isNotEmpty()) {
+                Text(
+                    planningProblem, Modifier.padding(bottom = 8.dp),
+                    style = MaterialTheme.typography.bodySmall, color = Ponte.colors.error
+                )
+            }
+            PrimaryButton("Criar tarefa", enabled = !hourInvalid && planningProblem.isEmpty(), onClick = {
+                if (title.isBlank()) tried = true else onCreate(title.trim(), action, due, assignee.trim(), categories, planning)
             })
         }
     ) {
@@ -75,6 +93,12 @@ internal fun NewTaskScreen(
             )
             if (actions.isNotEmpty()) ChoiceField("Ação", actions, action, { action = it })
             DateField("Prazo (opcional)", due, { due = it }, emptyText = "Sem prazo")
+            PlanningFields(
+                due, start, end, estimate, startHour, endHour, daysText,
+                onStartHour = { startHour = it }, onEndHour = { endHour = it }, onDaysText = { daysText = it },
+                onChange = { s, e, m -> start = s; end = e; estimate = m }
+            )
+            ReminderChips(reminders, { reminders = it }, remindersBlocked, onRemindersChosen)
             AssigneeField(assignee, { assignee = it }, assignees, myName)
             CategoryField(categories, { categories = it }, onCreateCategory)
         }

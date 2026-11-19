@@ -85,7 +85,7 @@ class CategoriasTelasTest {
     @Test fun novaTarefaComCategorias() {
         paparazzi.tall(2600)
         paparazzi.shot("nova") {
-            withCategories { NewTaskScreen("", Samples.actions, {}, { _, _, _, _, _ -> }, withoutDocument = true) }()
+            withCategories { NewTaskScreen("", Samples.actions, {}, { _, _, _, _, _, _ -> }, withoutDocument = true) }()
         }
     }
 

@@ -260,4 +260,35 @@ class TaskRulesTest {
         assertEquals(listOf("15 min antes (antigo)", "1 hora antes (antigo)", "2 dias antes (antigo)"), o.drop(3).map { it.label })
         assertTrue(o.drop(3).all { it.legacy })
     }
+
+    @Test fun planejamentoVazioDeNovaTarefaNaoEnviaNada() {
+        assertTrue(NewPlanning().fields().isEmpty())
+        assertEquals("", NewPlanning().problem())
+    }
+
+    @Test fun planejamentoDeNovaTarefaEnviaSoOQueFoiPreenchido() {
+        val p = NewPlanning("2026-11-20T09:00", "2026-11-22T18:00", 2880, listOf(0, 1440))
+        assertEquals(
+            mapOf(
+                "scheduled_start" to "2026-11-20T09:00", "scheduled_end" to "2026-11-22T18:00",
+                "estimate_minutes" to 2880, "reminder_offsets_minutes" to listOf(0, 1440)
+            ),
+            p.fields()
+        )
+        assertEquals(setOf("estimate_minutes"), NewPlanning(estimateMinutes = 1440).fields().keys)
+        assertEquals("", p.problem())
+    }
+
+    @Test fun inicioEFimJuntosOuNenhum() {
+        assertEquals(NewPlanning.BOTH, NewPlanning(start = "2026-11-20T09:00").problem())
+        assertEquals(NewPlanning.BOTH, NewPlanning(end = "2026-11-20T18:00").problem())
+        assertEquals("", NewPlanning(estimateMinutes = 1440, reminders = listOf(0)).problem())
+    }
+
+    @Test fun horaInvalidaBloqueia() {
+        assertTrue(planningHourInvalid("2026-11-20T09:00", "", "25:00", ""))
+        assertTrue(planningHourInvalid("", "2026-11-20T18:00", "", "abc"))
+        assertFalse(planningHourInvalid("2026-11-20T09:00", "2026-11-20T18:00", "9h", ""))
+        assertFalse(planningHourInvalid("", "", "xx", "yy"))
+    }
 }

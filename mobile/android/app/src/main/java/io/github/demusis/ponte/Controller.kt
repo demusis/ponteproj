@@ -1520,12 +1520,12 @@ internal object Controller {
         }, fail = "Não foi possível trocar o documento da tarefa. Tente de novo.")
     }
 
-    fun createTask(title: String, action: String, due: String, assignee: String = "", categories: List<String> = emptyList()) {
+    fun createTask(title: String, action: String, due: String, assignee: String = "", categories: List<String> = emptyList(), planning: NewPlanning = NewPlanning()) {
         val id = (stack.lastOrNull() as? Route.NewTask)?.id ?: return
-        if (title.isBlank()) return
+        if (title.isBlank() || planning.problem().isNotEmpty()) return
         pop()
         SyncRunner.background({
-            Api.createTask(id, title.trim(), action, due, assignee.trim(), categories)
+            Api.createTask(id, title.trim(), action, due, assignee.trim(), categories, planning)
             SyncRunner.refreshDocs()
         }, {
             takeDocs()

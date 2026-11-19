@@ -212,7 +212,8 @@ private fun RouteScreen(route: Route) {
             // A task without document has nothing to triage.
             actions = if (route.id > 0) c.actions else c.actions.filter { it.key != "triar" },
             onBack = c::back, onCreate = c::createTask, withoutDocument = route.id <= 0,
-            assignees = c.assignees, myName = c.personName, onCreateCategory = c::createCategory
+            assignees = c.assignees, myName = c.personName, onCreateCategory = c::createCategory,
+            remindersBlocked = c.taskNoticeBlocked, onRemindersChosen = c::taskRemindersChosen
         )
         Route.Share -> {
             val sh = Intake.share

@@ -124,7 +124,7 @@ class AtendimentosBuscaTest {
 
     @Test fun novaTarefaComNome() = paparazzi.shot("claro") {
         NewTaskScreen(
-            "", Samples.actions.filter { it.key != "triar" }, {}, { _, _, _, _, _ -> }, withoutDocument = true,
+            "", Samples.actions.filter { it.key != "triar" }, {}, { _, _, _, _, _, _ -> }, withoutDocument = true,
             assignees = MoreSamples.names, myName = "Servidor A"
         )
     }
