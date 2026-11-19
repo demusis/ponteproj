@@ -1060,10 +1060,36 @@ internal object Controller {
 
     /** Reads the Atendimentos list (it is also what the search of this list filters). */
     private fun refreshAttendances() {
-        SyncRunner.background({ Api.attendances() }, { rows ->
-            attendances = AttendancesState(loading = false, error = null, rows = rows)
+        SyncRunner.background({ Api.attendances() to Api.followUps() }, { (rows, chase) ->
+            attendances = AttendancesState(
+                loading = false, error = null, rows = rows, followUps = chase.rows, channels = chase.channels
+            )
         }, { attendances = attendances.copy(loading = false, error = it) },
             fail = "Não foi possível ler os atendimentos. Toque em Sincronizar agora e tente de novo.")
+    }
+
+    /**
+     * "Registrar cobrança": a contact in the timeline of the atendimento (the way and the note in
+     * [contact]) and, when [nextDate] (AAAA-MM-DD) is not empty, the next cobrança. The deadline is
+     * not touched. Then the lists are read again and the change goes out with the next sync.
+     */
+    fun registerFollowUp(id: Long, contact: String, nextDate: String) = changeFollowUp(
+        { Api.registerFollowUp(id, contact, nextDate) }, FollowUpRules.registeredMessage(nextDate)
+    )
+
+    /** "Próxima cobrança em…": only the date ([nextDate] AAAA-MM-DD). */
+    fun scheduleFollowUp(id: Long, nextDate: String) = changeFollowUp(
+        { Api.scheduleFollowUp(id, nextDate) }, FollowUpRules.scheduledMessage(nextDate)
+    )
+
+    private fun changeFollowUp(write: () -> Unit, done: String) {
+        SyncRunner.background({ write() }, {
+            refreshAttendances()
+            refreshOpenAttendance()
+            say(done)
+            requestSync(null, auto = true)
+        }, { say(it, long = true) },
+            fail = "Não foi possível registrar a cobrança. Tente de novo.")
     }
 
     /**

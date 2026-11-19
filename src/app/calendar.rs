@@ -214,7 +214,7 @@ pub(crate) fn month_grid(
             let iso = date.to_string();
             let has_items = in_month && clickable(&iso);
             // Weekends sunken; the open day tinted.
-            let weekend = c == 0 || c == 6;
+            let weekend = c == 0 || c == 6 || crate::holidays::holiday(*date).is_some();
             let fill = if has_items && selected == iso {
                 Some(p.primary_soft)
             } else if weekend {

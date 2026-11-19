@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /** The note at the head of the ficha: nothing here can be changed on the phone. */
-internal const val ATTENDANCE_READ_ONLY = "Para alterar um atendimento, use o Ponte no computador."
+internal const val ATTENDANCE_READ_ONLY = "Para alterar os dados do atendimento, use o Ponte no computador. Cobranças se registram em Cobranças de hoje."
 
 /**
  * One atendimento, to read. Every field the computer's ficha shows that is stored, the document it is

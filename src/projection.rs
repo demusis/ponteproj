@@ -1,22 +1,17 @@
 //! Working-day projections derived from task dependencies; never persisted.
-use crate::{resources::parse_moment, tasks::Task};
-use chrono::{Datelike, NaiveDateTime, Timelike, Weekday};
+use crate::{holidays::is_working_day, resources::parse_moment, tasks::Task};
+use chrono::{NaiveDateTime, Timelike};
 use std::collections::{HashMap, HashSet};
-
-fn weekday(t: NaiveDateTime) -> bool {
-    !matches!(t.weekday(), Weekday::Sat | Weekday::Sun)
-}
 
 pub fn next_work_start(after: NaiveDateTime) -> NaiveDateTime {
     let mut date = after.date();
-    if weekday(after) && after.time().num_seconds_from_midnight() < 18 * 3600 {
+    if is_working_day(date) && after.time().num_seconds_from_midnight() < 18 * 3600 {
         return after.max(date.and_hms_opt(9, 0, 0).unwrap());
     }
     loop {
         date = date.succ_opt().unwrap();
-        let next = date.and_hms_opt(9, 0, 0).unwrap();
-        if weekday(next) {
-            return next;
+        if is_working_day(date) {
+            return date.and_hms_opt(9, 0, 0).unwrap();
         }
     }
 }
@@ -24,13 +19,13 @@ pub fn next_work_start(after: NaiveDateTime) -> NaiveDateTime {
 pub fn work_end(start: NaiveDateTime, days: u32) -> NaiveDateTime {
     assert!(days >= 1);
     let mut date = start.date();
-    while !weekday(date.and_hms_opt(9, 0, 0).unwrap()) {
+    while !is_working_day(date) {
         date = date.succ_opt().unwrap();
     }
     for _ in 1..days {
         loop {
             date = date.succ_opt().unwrap();
-            if weekday(date.and_hms_opt(9, 0, 0).unwrap()) {
+            if is_working_day(date) {
                 break;
             }
         }
@@ -162,7 +157,32 @@ mod tests {
             next_work_start(dt("2026-11-21T10:00")),
             dt("2026-11-23T09:00")
         );
-        assert_eq!(work_end(dt("2026-11-20T09:00"), 2), dt("2026-11-23T18:00"));
+        assert_eq!(work_end(dt("2026-11-19T09:00"), 2), dt("2026-11-23T18:00"));
+    }
+    #[test]
+    fn holidays_are_not_working_days() {
+        // 21/4/2026 (Tiradentes) is a Tuesday.
+        assert_eq!(
+            next_work_start(dt("2026-04-20T18:00")),
+            dt("2026-04-22T09:00")
+        );
+        assert_eq!(work_end(dt("2026-04-20T09:00"), 2), dt("2026-04-22T18:00"));
+        // A start on a holiday moves to the next working day.
+        assert_eq!(work_end(dt("2026-04-21T09:00"), 1), dt("2026-04-22T18:00"));
+        // 20/11/2026 is Consciência Negra (Friday).
+        assert_eq!(work_end(dt("2026-11-20T09:00"), 2), dt("2026-11-24T18:00"));
+    }
+    #[test]
+    fn chain_across_carnaval() {
+        // Carnaval 2026: Mon 16 and Tue 17 February.
+        let mut a = task(1, &[]);
+        a.scheduled_start = "2026-02-13T09:00".into();
+        a.scheduled_end = "2026-02-13T18:00".into();
+        let b = task(2, &[1]);
+        let c = task(3, &[2]);
+        let result = project(&[a, b, c]);
+        assert_eq!(result[&2], (dt("2026-02-18T09:00"), dt("2026-02-18T18:00")));
+        assert_eq!(result[&3], (dt("2026-02-19T09:00"), dt("2026-02-19T18:00")));
     }
     #[test]
     fn chain_and_exclusions() {

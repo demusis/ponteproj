@@ -239,8 +239,17 @@ class TaskRulesTest {
         assertEquals(0, TaskRules.parseDays(""))
         assertNull(TaskRules.parseDays("x"))
         assertNull(TaskRules.parseDays("-1"))
-        assertEquals("2026-11-22T18:00", TaskRules.autoEnd("2026-11-20T09:00", 3, ""))
-        assertEquals("2026-11-20T18:00", TaskRules.autoEnd("2026-11-20T09:00", 1, ""))
+        // 20/11/2026 (Friday) is Consciência Negra: the start moves to Monday 23.
+        assertEquals("2026-11-25T18:00", TaskRules.autoEnd("2026-11-20T09:00", 3, ""))
+        assertEquals("2026-11-23T18:00", TaskRules.autoEnd("2026-11-20T09:00", 1, ""))
+        // Thursday 19, then Monday 23 (Friday 20 is a holiday), then Tuesday 24.
+        assertEquals("2026-11-24T18:00", TaskRules.autoEnd("2026-11-19T09:00", 3, ""))
+        assertEquals("2026-11-19T18:00", TaskRules.autoEnd("2026-11-19T09:00", 1, ""))
+        // Across Tiradentes (Tuesday 21/4/2026).
+        assertEquals("2026-04-22T18:00", TaskRules.autoEnd("2026-04-20T09:00", 2, ""))
+        assertEquals("2026-04-23T18:00", TaskRules.autoEnd("2026-04-20T09:00", 3, ""))
+        // Across a plain weekend: Friday 24/7/2026 + 2 = Monday 27.
+        assertEquals("2026-07-27T18:00", TaskRules.autoEnd("2026-07-24T09:00", 2, ""))
         assertNull(TaskRules.autoEnd("2026-11-20T09:00", 3, "2026-11-21T18:00"))
         assertNull(TaskRules.autoEnd("", 3, ""))
         assertNull(TaskRules.autoEnd("2026-11-20T09:00", 0, ""))

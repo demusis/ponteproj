@@ -123,11 +123,29 @@ internal fun AttendancesScreen(
     state: AttendancesState,
     query: String,
     onQuery: (String) -> Unit,
-    onOpen: (AttendanceItem) -> Unit
+    onOpen: (AttendanceItem) -> Unit,
+    /** (atendimento id, contact text, next date AAAA-MM-DD or empty). */
+    onRegisterFollowUp: (Long, String, String) -> Unit = { _, _, _ -> },
+    /** (atendimento id, next date AAAA-MM-DD). */
+    onScheduleFollowUp: (Long, String) -> Unit = { _, _ -> }
 ) {
     val c = Ponte.colors
     var showClosed by rememberSaveable { mutableStateOf(false) }
     val split = remember(state.rows, query) { AttendanceRules.split(state.rows, query) }
+    val chase = remember(state.followUps, query) { state.followUps.filter { AttendanceRules.matches(it, query) } }
+    // The window of "Registrar cobrança" / "Próxima cobrança" is for this atendimento (0: none open).
+    var dialogId by rememberSaveable { mutableStateOf(0L) }
+    var dialogContact by rememberSaveable { mutableStateOf(true) }
+    state.followUps.firstOrNull { it.id == dialogId }?.let { target ->
+        FollowUpDialog(
+            target, contact = dialogContact, channels = state.channels,
+            onDismiss = { dialogId = 0 },
+            onConfirm = { text, next ->
+                dialogId = 0
+                if (dialogContact) onRegisterFollowUp(target.id, text, next) else onScheduleFollowUp(target.id, next)
+            }
+        )
+    }
 
     if (state.loading && state.rows.isEmpty()) {
         LoadingBox(text = "Carregando os atendimentos…", modifier = Modifier.fillMaxSize())
@@ -142,6 +160,16 @@ internal fun AttendancesScreen(
         if (state.rows.isNotEmpty()) {
             item(key = "search") {
                 SearchBox(query, onQuery, "Buscar por referência, assunto ou responsável")
+            }
+        }
+        if (chase.isNotEmpty()) {
+            item(key = "h-chase") { SectionLabel(FollowUpRules.title(chase.size), Modifier.padding(top = 4.dp)) }
+            items(chase, key = { "f-${it.id}" }) { a ->
+                FollowUpCard(
+                    a, onOpen = { onOpen(a) },
+                    onRegister = { dialogContact = true; dialogId = a.id },
+                    onSchedule = { dialogContact = false; dialogId = a.id }
+                )
             }
         }
         if (state.rows.isEmpty()) {

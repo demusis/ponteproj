@@ -308,8 +308,7 @@ pub(super) fn day_time_label(
 }
 
 pub(super) fn working_day(day: chrono::NaiveDate) -> bool {
-    use chrono::Datelike;
-    !matches!(day.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun)
+    crate::holidays::is_working_day(day)
 }
 
 /// Combine existing calendar items with open planned tasks for the visible month.
@@ -983,15 +982,27 @@ fn calendar_view(
                 &[]
             };
             let mut more_clicked = false;
+            // A national holiday: its name, muted, as the first line.
+            let holiday = if cell.in_month {
+                chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d")
+                    .ok()
+                    .and_then(crate::holidays::holiday)
+            } else {
+                None
+            };
+            if let Some(name) = holiday {
+                paint_line(painter, line_rect(cell.rect, cell.col_w, 0), name, p.muted);
+            }
+            let skip = usize::from(holiday.is_some());
             // The deadlines: as many lines as fit, then "+N".
-            let lines = lines_that_fit(cell.row_h);
+            let lines = lines_that_fit(cell.row_h).saturating_sub(skip);
             let shown = if items.len() > lines {
                 lines.saturating_sub(1)
             } else {
                 items.len()
             };
             for (i, item) in items.iter().take(shown).enumerate() {
-                let line = line_rect(cell.rect, cell.col_w, i);
+                let line = line_rect(cell.rect, cell.col_w, i + skip);
                 let (fg, bg) = due_tone(item.state).colors();
                 if matches!(item.kind, ItemKind::Planned | ItemKind::Projected) {
                     let color = if item.kind == ItemKind::Projected {
@@ -1029,7 +1040,7 @@ fn calendar_view(
                 }
             }
             if items.len() > shown {
-                let line = line_rect(cell.rect, cell.col_w, shown);
+                let line = line_rect(cell.rect, cell.col_w, shown + skip);
                 let rest = &items[shown..];
                 paint_line(painter, line, &format!("+{}", rest.len()), p.muted);
                 let list = rest

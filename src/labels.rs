@@ -258,6 +258,8 @@ pub fn saiop_event_kind(kind: &str) -> &str {
         "anotacao" => "Anotação",
         "importacao_planilha" => "Importação de planilha",
         "tarefa" => "Tarefa",
+        "cobranca" => "Cobrança",
+        "proxima_cobranca" => "Próxima cobrança",
         "mesclagem" => "Mesclagem de versões",
         other => other,
     }

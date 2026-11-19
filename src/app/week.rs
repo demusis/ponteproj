@@ -273,7 +273,14 @@ pub(super) fn show(
         let card = widgets::card_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             let arrow_slot = ui.painter().add(egui::Shape::Noop);
-            widgets::section(ui, super::calendar::long_date(day));
+            ui.horizontal(|ui| {
+                widgets::section(ui, super::calendar::long_date(day));
+                if let Some(name) = crate::holidays::holiday(day) {
+                    ui.label(
+                        egui::RichText::new(format!("· feriado: {name}")).color(theme::c().warn),
+                    );
+                }
+            });
             if day == today { widgets::pill(ui, "Hoje", Tone::Info); }
             let rows = &cache.rows[offset as usize];
             if rows.is_empty() { widgets::muted(ui, "Sem trabalho agendado nem reservas."); }

@@ -79,6 +79,22 @@ class PonteCore {
     external fun getAttendance(attendanceId: Long): String
 
     /**
+     * The cobranças of today (open atendimentos whose follow-up is due today or before, most overdue
+     * first): {count, channels: [String], follow_ups: [row of listAttendances + follow_up (why) +
+     * follow_up_days (days overdue, 0 is today)]}.
+     */
+    external fun listFollowUps(): String
+
+    /**
+     * Registers a contact in the timeline: {"id", "contact" (empty: "Cobrado por telefone"),
+     * "next_date" (AAAA-MM-DD, optional)}. The deadline of the atendimento never changes.
+     */
+    external fun registerFollowUp(json: String): String
+
+    /** Only sets the next follow-up: {"id", "next_date" (AAAA-MM-DD, after today)}. */
+    external fun scheduleFollowUp(json: String): String
+
+    /**
      * The Recursos screens for a text (empty: all), decided by the core as of now: {uses: [...every use, with
      * period and overdue], resources: [...every resource, with in_use_now, free_now, usage_line, free_text,
      * today and next (uids of uses)], groups: [{key, title, late, uids}] of the uses that match, rows: [uids

@@ -62,6 +62,26 @@ internal object Api {
 
     fun attendance(id: Long): AttendanceDetail = c(core.getAttendance(id)).toAttendanceDetail()
 
+    /** The cobranças of today, and the contacts the computer offers for registering one. */
+    fun followUps(): FollowUps {
+        val o = c(core.listFollowUps())
+        val channels = o.optJSONArray("channels")
+        return FollowUps(
+            rows = o.optJSONArray("follow_ups").objs().map { it.toAttendance() },
+            channels = (0 until (channels?.length() ?: 0)).map { channels!!.optString(it) }.filter { it.isNotBlank() }
+        )
+    }
+
+    /** A contact in the timeline, and maybe the next date ([nextDate] AAAA-MM-DD, or empty). */
+    fun registerFollowUp(id: Long, contact: String, nextDate: String) {
+        c(core.registerFollowUp(JSONObject().put("id", id).put("contact", contact).put("next_date", nextDate).toString()))
+    }
+
+    /** Only the next date, AAAA-MM-DD. */
+    fun scheduleFollowUp(id: Long, nextDate: String) {
+        c(core.scheduleFollowUp(JSONObject().put("id", id).put("next_date", nextDate).toString()))
+    }
+
     fun resourceView(query: String): ResourcesState = c(core.resourceView(query)).toResourcesState()
 
     /** The ids of the documents the core's search finds for [query]. */

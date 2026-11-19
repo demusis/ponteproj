@@ -354,6 +354,310 @@ impl SaiopAttendance {
     }
 }
 
+// ---- Cobranças de retorno -------------------------------------------------
+//
+// Nada aqui muda o formato dos dados: a cobrança vive na linha do tempo do
+// atendimento (`events`), que já é gravada, sincronizada e mesclada. Dois tipos
+// de evento, como `tarefa` ou `mesclagem` foram um dia:
+//
+// * `cobranca`: um contato feito ("Cobrado por telefone"), na data do evento;
+// * `proxima_cobranca`: a data da próxima cobrança (`dd/mm/aaaa` no detalhe).
+//
+// O prazo oficial (`due_date` e `due_kind`) nunca é lido como data de cobrança
+// nem alterado, a não ser que o próprio prazo seja do tipo "Cobrança de retorno".
+
+/// Tipo do evento de um contato de cobrança.
+pub const FOLLOW_UP_CONTACT_KIND: &str = "cobranca";
+/// Tipo do evento que marca a data da próxima cobrança.
+pub const FOLLOW_UP_NEXT_KIND: &str = "proxima_cobranca";
+/// O que o contato registra quando a pessoa não escolhe outro.
+pub const DEFAULT_FOLLOW_UP_CHANNEL: &str = "Cobrado por telefone";
+/// Formas de contato oferecidas ao registrar a cobrança.
+pub const FOLLOW_UP_CHANNELS: &[&str] = &[
+    DEFAULT_FOLLOW_UP_CHANNEL,
+    "Cobrado por e-mail",
+    "Cobrado por mensagem",
+    "Cobrado pessoalmente",
+    "Cobrado pelo SIGADOC",
+];
+/// Dias sem retorno (e sem cobrança) que fazem um atendimento "Aguardando
+/// resposta" entrar nas cobranças, se a pessoa não ajustou o período.
+pub const DEFAULT_FOLLOW_UP_QUIET_DAYS: i64 = 15;
+/// Atalho de data para a próxima cobrança, em dias.
+pub const DEFAULT_NEXT_FOLLOW_UP_DAYS: i64 = 3;
+
+/// De onde vem a data de uma cobrança.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FollowUpSource {
+    /// Uma data marcada por "Próxima cobrança em…" (ou ao registrar o contato).
+    Scheduled,
+    /// O prazo do atendimento é do tipo "Cobrança de retorno".
+    ReturnDeadline,
+    /// Aguardando resposta, sem cobrança nem atualização no período.
+    SilentWait,
+}
+
+/// Uma cobrança que pede ação hoje.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FollowUp {
+    pub attendance_id: i64,
+    /// A data em que a cobrança era devida.
+    pub due: NaiveDate,
+    /// Dias de atraso (`0` é hoje).
+    pub overdue_days: i64,
+    pub source: FollowUpSource,
+    /// Por que está na lista, em palavras.
+    pub reason: String,
+}
+
+fn iso_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()
+}
+
+/// A data de um evento, no fuso local.
+fn event_date(event: &SaiopEvent) -> Option<NaiveDate> {
+    chrono::DateTime::parse_from_rfc3339(event.when.trim())
+        .ok()
+        .map(|t| t.with_timezone(&Local).date_naive())
+        .or_else(|| iso_date(&event.when))
+}
+
+fn br_date(date: NaiveDate) -> String {
+    date.format("%d/%m/%Y").to_string()
+}
+
+impl SaiopAttendance {
+    /// A data do último contato de cobrança registrado.
+    pub fn last_follow_up_contact(&self) -> Option<NaiveDate> {
+        self.events
+            .iter()
+            .filter(|e| e.kind == FOLLOW_UP_CONTACT_KIND)
+            .filter_map(event_date)
+            .next_back()
+    }
+
+    /// A data marcada para a próxima cobrança: a do último `proxima_cobranca`,
+    /// desde que nenhum contato tenha sido registrado depois dela (o contato
+    /// "dá baixa" na data marcada; quem quer outra, marca de novo).
+    pub fn scheduled_follow_up(&self) -> Option<NaiveDate> {
+        let mut scheduled = None;
+        for event in &self.events {
+            match event.kind.as_str() {
+                FOLLOW_UP_NEXT_KIND => {
+                    if let Ok(d) = NaiveDate::parse_from_str(event.detail.trim(), "%d/%m/%Y") {
+                        scheduled = Some(d);
+                    }
+                }
+                FOLLOW_UP_CONTACT_KIND => scheduled = None,
+                _ => {}
+            }
+        }
+        scheduled
+    }
+
+    /// A cobrança que este atendimento pede hoje, se pede. Só os abertos. A
+    /// data vem, nesta ordem: da cobrança marcada; do prazo, quando ele é do
+    /// tipo "Cobrança de retorno" e nenhum contato foi registrado desde então;
+    /// de "Aguardando resposta" sem cobrança nem mudança há `quiet_days` dias.
+    pub fn follow_up_due(&self, today: NaiveDate, quiet_days: i64) -> Option<FollowUp> {
+        if !self.is_open() {
+            return None;
+        }
+        let contact = self.last_follow_up_contact();
+        let (due, source) = if let Some(d) = self.scheduled_follow_up() {
+            (d, FollowUpSource::Scheduled)
+        } else if let Some(d) = Some(self.due_kind.as_str())
+            .filter(|k| *k == "cobranca_retorno")
+            .and_then(|_| iso_date(&self.due_date))
+            .filter(|d| contact.is_none_or(|c| c < *d))
+        {
+            (d, FollowUpSource::ReturnDeadline)
+        } else if self.status == "aguardando_resposta" {
+            // O contato mais recente conta; sem contato, o dia do envio ou o início da etapa.
+            let base = iso_date(&self.exit_date)
+                .or_else(|| iso_date(&self.stage_changed_at))
+                .or_else(|| iso_date(&self.entry_date));
+            let since = match (contact, base) {
+                (Some(c), Some(b)) => c.max(b),
+                (Some(d), None) | (None, Some(d)) => d,
+                (None, None) => return None,
+            };
+            (
+                since + ChronoDuration::days(quiet_days.max(1)),
+                FollowUpSource::SilentWait,
+            )
+        } else {
+            return None;
+        };
+        let overdue_days = (today - due).num_days();
+        if overdue_days < 0 {
+            return None;
+        }
+        let reason = match source {
+            FollowUpSource::Scheduled if overdue_days == 0 => {
+                "Cobrança marcada para hoje".to_owned()
+            }
+            FollowUpSource::Scheduled => format!(
+                "Cobrança marcada para {} ({} em atraso)",
+                br_date(due),
+                crate::labels::count(overdue_days as usize, "dia", "dias")
+            ),
+            FollowUpSource::ReturnDeadline if overdue_days == 0 => {
+                "Prazo de cobrança de retorno: hoje".to_owned()
+            }
+            FollowUpSource::ReturnDeadline => format!(
+                "Prazo de cobrança de retorno vencido em {} ({} em atraso)",
+                br_date(due),
+                crate::labels::count(overdue_days as usize, "dia", "dias")
+            ),
+            FollowUpSource::SilentWait => match contact {
+                Some(c) => format!(
+                    "Aguardando resposta; última cobrança em {} ({} atrás)",
+                    br_date(c),
+                    crate::labels::count((today - c).num_days().max(0) as usize, "dia", "dias")
+                ),
+                None => {
+                    let waiting = self.external_wait_days(today).unwrap_or(quiet_days);
+                    format!(
+                        "Aguardando resposta há {}, sem cobrança registrada",
+                        crate::labels::count(waiting.max(0) as usize, "dia", "dias")
+                    )
+                }
+            },
+        };
+        Some(FollowUp {
+            attendance_id: self.id,
+            due,
+            overdue_days,
+            source,
+            reason,
+        })
+    }
+
+    /// Registra, na linha do tempo, um contato de cobrança feito hoje e/ou a
+    /// data da próxima cobrança. Não toca no prazo, na situação nem em nenhum
+    /// outro campo. Os eventos entram na ordem contato, próxima cobrança.
+    pub fn record_follow_up(
+        &mut self,
+        actor: &str,
+        now: chrono::DateTime<Utc>,
+        today: NaiveDate,
+        contact: Option<&str>,
+        next: Option<NaiveDate>,
+    ) -> Result<()> {
+        ensure!(
+            contact.is_some() || next.is_some(),
+            "Informe o contato feito ou a data da próxima cobrança."
+        );
+        if let Some(next) = next {
+            ensure!(
+                next > today,
+                "A próxima cobrança precisa ser depois de hoje."
+            );
+        }
+        let when = now.to_rfc3339();
+        if let Some(text) = contact {
+            let text = text.trim();
+            self.events.push(SaiopEvent {
+                when: when.clone(),
+                actor: actor.to_owned(),
+                kind: FOLLOW_UP_CONTACT_KIND.into(),
+                detail: if text.is_empty() {
+                    DEFAULT_FOLLOW_UP_CHANNEL.into()
+                } else {
+                    text.to_owned()
+                },
+            });
+        }
+        if let Some(next) = next {
+            self.events.push(SaiopEvent {
+                when,
+                actor: actor.to_owned(),
+                kind: FOLLOW_UP_NEXT_KIND.into(),
+                detail: br_date(next),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// As cobranças de hoje: os atendimentos abertos cuja próxima cobrança é hoje
+/// ou já passou (ver [`SaiopAttendance::follow_up_due`]), as mais atrasadas
+/// primeiro e, em empate, pela referência.
+pub fn follow_ups_due_today<'a>(
+    attendances: impl IntoIterator<Item = &'a SaiopAttendance>,
+    today: NaiveDate,
+    quiet_days: i64,
+) -> Vec<FollowUp> {
+    let mut list: Vec<(String, FollowUp)> = attendances
+        .into_iter()
+        .filter_map(|a| {
+            a.follow_up_due(today, quiet_days)
+                .map(|f| (a.reference_norm.clone(), f))
+        })
+        .collect();
+    list.sort_by(|(ra, a), (rb, b)| {
+        a.due
+            .cmp(&b.due)
+            .then_with(|| ra.cmp(rb))
+            .then_with(|| a.attendance_id.cmp(&b.attendance_id))
+    });
+    list.into_iter().map(|(_, f)| f).collect()
+}
+
+impl Store {
+    /// "Registrar cobrança…": acrescenta à linha do tempo do atendimento o
+    /// contato (`contact`, vazio = "Cobrado por telefone") e, se `next` vier,
+    /// a data da próxima cobrança. Passa pelo mesmo caminho de gravação da
+    /// ficha (versão conferida, diário, sincronização); o prazo não muda.
+    pub fn register_follow_up_contact(
+        &mut self,
+        attendance_id: i64,
+        contact: &str,
+        next: Option<NaiveDate>,
+    ) -> Result<()> {
+        self.write_follow_up(attendance_id, Some(contact), next)
+    }
+
+    /// "Próxima cobrança em…": só marca a data, sem registrar contato.
+    pub fn schedule_next_follow_up(&mut self, attendance_id: i64, next: NaiveDate) -> Result<()> {
+        self.write_follow_up(attendance_id, None, Some(next))
+    }
+
+    fn write_follow_up(
+        &mut self,
+        attendance_id: i64,
+        contact: Option<&str>,
+        next: Option<NaiveDate>,
+    ) -> Result<()> {
+        // The version is read before the record: a change in between is a conflict, never a silent overwrite.
+        let version = self
+            .item_version("saiop", attendance_id)
+            .ok()
+            .map(|v| v.version);
+        let mut attendance = self
+            .list_saiop_attendances()?
+            .into_iter()
+            .find(|a| a.id == attendance_id)
+            .context(
+                "Atendimento não encontrado. Ele pode ter sido excluído em outro computador.",
+            )?;
+        ensure!(
+            attendance.is_open(),
+            "O atendimento está encerrado: não há o que cobrar."
+        );
+        attendance.record_follow_up(
+            &self.active_actor(),
+            Utc::now(),
+            Local::now().date_naive(),
+            contact,
+            next,
+        )?;
+        self.save_saiop_attendance(&attendance, version)?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaiopImportBatch {
     pub id: i64,
@@ -2773,6 +3077,7 @@ fn notice_line(ui: &mut egui::Ui, text: &str, tone: Tone) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SaiopQueue {
     All,
+    FollowUps,
     MyPending,
     Unassigned,
     Overdue,
@@ -2790,6 +3095,7 @@ impl SaiopQueue {
     fn label(self) -> &'static str {
         match self {
             Self::All => "Todos",
+            Self::FollowUps => "Cobranças de hoje",
             Self::MyPending => "Minhas pendências",
             Self::Unassigned => "Sem responsável",
             Self::Overdue => "Prazo vencido",
@@ -2802,6 +3108,25 @@ impl SaiopQueue {
             Self::NeedsReview => "Com alerta de revisão",
         }
     }
+}
+
+#[cfg(feature = "desktop")]
+/// What the window of "Registrar cobrança…" / "Próxima cobrança em…" holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FollowUpDialog {
+    id: i64,
+    /// What the atendimento is called in the window.
+    reference: String,
+    /// "Registrar cobrança…" (a contact, and maybe the next date) or only
+    /// "Próxima cobrança em…".
+    contact: bool,
+    channel: String,
+    note: String,
+    /// With a contact: also mark the next follow-up.
+    set_next: bool,
+    /// The next follow-up, `AAAA-MM-DD` as the date field keeps it.
+    next: String,
+    error: String,
 }
 
 #[cfg(feature = "desktop")]
@@ -2976,6 +3301,8 @@ pub struct SaiopPanel {
     attachments: crate::attachments::AttachmentsPanel,
     /// "Excluir…" was clicked for this atendimento; waiting for confirmation.
     confirm_delete: Option<i64>,
+    /// "Registrar cobrança…" or "Próxima cobrança em…" is open for an atendimento.
+    follow_up_dialog: Option<FollowUpDialog>,
     /// Task the person asked to open in the Tarefas panel.
     open_task: Option<Task>,
     /// A use of a resource to open, or a new one to start, in Recursos.
@@ -2996,9 +3323,10 @@ impl Default for SaiopPanel {
             dest_filter: String::new(),
             queue: SaiopQueue::All,
             due_soon_days: 5,
-            stale_days_threshold: 15,
+            stale_days_threshold: DEFAULT_FOLLOW_UP_QUIET_DAYS,
             filters_open: false,
             import_open: false,
+            follow_up_dialog: None,
             sort: SaiopSort::Entry,
             sort_ascending: false,
             link_picker: Default::default(),
@@ -3408,6 +3736,354 @@ impl SaiopPanel {
         true
     }
 
+    /// The ficha has unsaved changes of this very atendimento: an action that
+    /// writes it behind the ficha's back would be lost or would collide.
+    fn ficha_unsaved_for(&self, id: i64) -> bool {
+        self.dirty() && self.editor.as_ref().is_some_and(|e| e.id == id)
+    }
+
+    /// "Registrar cobrança…" (`contact`) or "Próxima cobrança em…" for `att`:
+    /// opens the window, unless this atendimento's ficha has unsaved changes.
+    fn start_follow_up(&mut self, att: &SaiopAttendance, contact: bool, today: NaiveDate) {
+        if self.ficha_unsaved_for(att.id) {
+            self.set_notice(
+                "Salve ou descarte as alterações da ficha deste atendimento antes de registrar a cobrança.",
+                true,
+            );
+            return;
+        }
+        let next = today + ChronoDuration::days(DEFAULT_NEXT_FOLLOW_UP_DAYS);
+        let reference = if !att.reference_raw.is_empty() {
+            att.reference_raw.clone()
+        } else if !att.subject.is_empty() {
+            att.subject.clone()
+        } else {
+            "Atendimento sem referência".to_owned()
+        };
+        self.follow_up_dialog = Some(FollowUpDialog {
+            id: att.id,
+            reference,
+            contact,
+            channel: DEFAULT_FOLLOW_UP_CHANNEL.to_owned(),
+            note: String::new(),
+            set_next: true,
+            next: next.format("%Y-%m-%d").to_string(),
+            error: String::new(),
+        });
+    }
+
+    /// Does what the window asks, through the same save path as the ficha (so
+    /// the journal and the sync see it) and without touching the deadline.
+    /// The message to show, or why it could not be done.
+    fn apply_follow_up(
+        &mut self,
+        store: &mut Store,
+        dialog: &FollowUpDialog,
+    ) -> std::result::Result<String, String> {
+        if self.ficha_unsaved_for(dialog.id) {
+            return Err(
+                "Salve ou descarte as alterações da ficha deste atendimento antes de registrar a cobrança."
+                    .to_owned(),
+            );
+        }
+        let next = if !dialog.contact || dialog.set_next {
+            match NaiveDate::parse_from_str(dialog.next.trim(), "%Y-%m-%d") {
+                Ok(d) => Some(d),
+                Err(_) => return Err("Informe a data da próxima cobrança (dd/mm/aaaa).".to_owned()),
+            }
+        } else {
+            None
+        };
+        let done = if dialog.contact {
+            let text = match dialog.note.trim() {
+                "" => dialog.channel.clone(),
+                note => format!("{}: {note}", dialog.channel),
+            };
+            store.register_follow_up_contact(dialog.id, &text, next)
+        } else {
+            store.schedule_next_follow_up(dialog.id, next.expect("date checked above"))
+        };
+        done.map_err(|e| format!("{e:#}"))?;
+        // The ficha, when it shows this atendimento, follows what was saved (and its version).
+        if self.selected_id == Some(dialog.id) {
+            if let Some(fresh) = store
+                .list_saiop_attendances()
+                .ok()
+                .and_then(|list| list.into_iter().find(|a| a.id == dialog.id))
+            {
+                self.load_into_editor(store, fresh);
+                self.focus_ficha = false;
+            }
+        }
+        Ok(match (dialog.contact, next) {
+            (true, Some(d)) => format!(
+                "Cobrança registrada em {}. Próxima cobrança: {}.",
+                dialog.reference,
+                br_date(d)
+            ),
+            (true, None) => format!("Cobrança registrada em {}.", dialog.reference),
+            (false, d) => format!(
+                "Próxima cobrança de {} marcada para {}.",
+                dialog.reference,
+                d.map(br_date).unwrap_or_default()
+            ),
+        })
+    }
+
+    /// The window of the follow-up actions.
+    fn follow_up_window(&mut self, ui: &mut egui::Ui, store: &mut Store, today: NaiveDate) {
+        let Some(mut dialog) = self.follow_up_dialog.clone() else {
+            return;
+        };
+        let mut confirm = false;
+        let mut cancel = false;
+        let title = if dialog.contact {
+            "Registrar cobrança"
+        } else {
+            "Próxima cobrança"
+        };
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.spacing_mut().item_spacing.y = S2;
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&dialog.reference).font(theme::font_strong(theme::SIZE_BODY)),
+                    )
+                    .truncate(),
+                );
+                widgets::small_muted(
+                    ui,
+                    "Fica no histórico do atendimento. O prazo do atendimento não muda.",
+                );
+                if dialog.contact {
+                    labeled(ui, "Contato", |ui| {
+                        pick(
+                            ui,
+                            "saiop-follow-up-channel",
+                            dialog.channel.clone(),
+                            |ui| {
+                                for channel in FOLLOW_UP_CHANNELS {
+                                    ui.selectable_value(
+                                        &mut dialog.channel,
+                                        (*channel).to_owned(),
+                                        *channel,
+                                    );
+                                }
+                            },
+                        );
+                    });
+                    labeled(ui, "Observação (opcional)", |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut dialog.note)
+                                .hint_text("ex.: ficaram de responder até sexta")
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                    ui.checkbox(&mut dialog.set_next, "Marcar a próxima cobrança");
+                }
+                if !dialog.contact || dialog.set_next {
+                    labeled(ui, "Próxima cobrança em", |ui| {
+                        crate::labels::date_field(ui, "saiop-follow-up-next", &mut dialog.next);
+                    });
+                    ui.horizontal(|ui| {
+                        for (label, days) in [("Amanhã", 1), ("Em 3 dias", 3), ("Em 1 semana", 7)]
+                        {
+                            if ui.add(widgets::quiet(label)).clicked() {
+                                dialog.next = (today + ChronoDuration::days(days))
+                                    .format("%Y-%m-%d")
+                                    .to_string();
+                            }
+                        }
+                    });
+                }
+                if !dialog.error.is_empty() {
+                    let (fg, _) = Tone::Danger.colors();
+                    ui.add(egui::Label::new(RichText::new(&dialog.error).color(fg)).wrap());
+                }
+                ui.add_space(S1);
+                ui.horizontal(|ui| {
+                    confirm = ui
+                        .add(widgets::primary(if dialog.contact {
+                            "Registrar"
+                        } else {
+                            "Marcar"
+                        }))
+                        .clicked();
+                    cancel = ui.add(widgets::secondary("Cancelar")).clicked();
+                });
+            });
+        if cancel {
+            self.follow_up_dialog = None;
+        } else if confirm {
+            match self.apply_follow_up(store, &dialog) {
+                Ok(message) => {
+                    self.follow_up_dialog = None;
+                    self.set_notice(message, false);
+                }
+                Err(error) => {
+                    dialog.error = error;
+                    self.follow_up_dialog = Some(dialog);
+                }
+            }
+        } else {
+            self.follow_up_dialog = Some(dialog);
+        }
+    }
+
+    /// The list of "Cobranças de hoje", in place of the table: each
+    /// atendimento with why it is here and what to do about it.
+    fn follow_up_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &Store,
+        filtered: &[&SaiopAttendance],
+        today: NaiveDate,
+        height: f32,
+    ) {
+        let list = follow_ups_due_today(filtered.iter().copied(), today, self.stale_days_threshold);
+        let p = c();
+        let mut open: Option<i64> = None;
+        let mut start: Option<(i64, bool)> = None;
+        egui::ScrollArea::vertical()
+            .id_salt("saiop-follow-ups-scroll")
+            .auto_shrink([false, true])
+            .max_height(height)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = S2;
+                if list.is_empty() {
+                    widgets::card(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            RichText::new("Nenhuma cobrança para hoje.")
+                                .font(theme::font_strong(theme::SIZE_BODY)),
+                        );
+                        widgets::small_muted(
+                            ui,
+                            "Entram aqui os atendimentos com cobrança marcada para hoje ou antes, com prazo do tipo “Cobrança de retorno” e os que aguardam resposta há muito tempo.",
+                        );
+                    });
+                }
+                for follow_up in &list {
+                    let Some(att) = filtered.iter().find(|a| a.id == follow_up.attendance_id)
+                    else {
+                        continue;
+                    };
+                    widgets::card(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = S1;
+                        ui.horizontal(|ui| {
+                            let (label, color) = if att.reference_raw.is_empty() {
+                                ("(sem referência)".to_owned(), p.muted)
+                            } else {
+                                (att.reference_raw.clone(), p.text)
+                            };
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(label)
+                                        .font(theme::font_strong(theme::SIZE_BODY))
+                                        .color(color),
+                                )
+                                .selectable(false),
+                            );
+                            widgets::pill(ui, status_label(&att.status), status_tone(&att.status));
+                            if follow_up.overdue_days > 0 {
+                                widgets::pill(
+                                    ui,
+                                    format!(
+                                        "Atrasada {}",
+                                        crate::labels::count(
+                                            follow_up.overdue_days as usize,
+                                            "dia",
+                                            "dias"
+                                        )
+                                    ),
+                                    Tone::Danger,
+                                );
+                            } else {
+                                widgets::pill(ui, "Hoje", Tone::Warn);
+                            }
+                        });
+                        if !att.subject.is_empty() {
+                            ui.add(
+                                egui::Label::new(RichText::new(&att.subject).color(p.text))
+                                    .truncate()
+                                    .selectable(false),
+                            );
+                        }
+                        let (fg, _) = if follow_up.overdue_days > 0 {
+                            Tone::Danger.colors()
+                        } else {
+                            Tone::Warn.colors()
+                        };
+                        ui.add(
+                            egui::Label::new(RichText::new(&follow_up.reason).color(fg)).wrap(),
+                        );
+                        let mut line = Vec::new();
+                        if let Some(last) = att.last_follow_up_contact() {
+                            line.push(format!("Última cobrança: {}", br_date(last)));
+                        }
+                        if !att.due_date.is_empty() {
+                            line.push(format!(
+                                "{}: {}",
+                                due_kind_label(&att.due_kind),
+                                crate::labels::date(&att.due_date)
+                            ));
+                        }
+                        if !att.assignee.is_empty() {
+                            line.push(format!("Responsável: {}", att.assignee));
+                        }
+                        if !line.is_empty() {
+                            widgets::small_muted(ui, line.join(" · "));
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .add(widgets::primary("Registrar cobrança…"))
+                                .on_hover_text("Anota o contato no histórico (por padrão, “Cobrado por telefone”, hoje) e deixa marcar a próxima cobrança.")
+                                .clicked()
+                            {
+                                start = Some((att.id, true));
+                            }
+                            if ui
+                                .add(widgets::secondary("Próxima cobrança em…"))
+                                .on_hover_text("Só muda a data da próxima cobrança. O prazo do atendimento não muda.")
+                                .clicked()
+                            {
+                                start = Some((att.id, false));
+                            }
+                            if ui
+                                .add(widgets::quiet("Abrir"))
+                                .on_hover_text("Abre a ficha do atendimento.")
+                                .clicked()
+                            {
+                                open = Some(att.id);
+                            }
+                        });
+                    });
+                }
+            });
+        if let Some((id, contact)) = start {
+            if let Some(att) = filtered.iter().find(|a| a.id == id) {
+                self.start_follow_up(att, contact, today);
+            }
+        }
+        if let Some(id) = open {
+            if self.dirty() {
+                if self.selected_id != Some(id) {
+                    self.set_notice(
+                        "Salve ou descarte as alterações na ficha antes de abrir outro atendimento.",
+                        true,
+                    );
+                }
+            } else if let Some(att) = filtered.iter().find(|a| a.id == id) {
+                self.load_into_editor(store, (*att).clone());
+            }
+        }
+    }
+
     /// Clears the search, the filters and the queue (not the narrowing to a
     /// document: that has its own "Ver todos").
     fn clear_filters(&mut self) {
@@ -3643,6 +4319,7 @@ impl SaiopPanel {
         let stale_days_threshold = self.stale_days_threshold;
         let in_queue = |att: &SaiopAttendance, queue: SaiopQueue| match queue {
             SaiopQueue::All => true,
+            SaiopQueue::FollowUps => att.follow_up_due(today, stale_days_threshold).is_some(),
             SaiopQueue::MyPending => {
                 att.is_open()
                     && !current_member.is_empty()
@@ -3667,6 +4344,7 @@ impl SaiopPanel {
         };
         let queues = [
             SaiopQueue::All,
+            SaiopQueue::FollowUps,
             SaiopQueue::MyPending,
             SaiopQueue::Unassigned,
             SaiopQueue::Overdue,
@@ -3714,8 +4392,15 @@ impl SaiopPanel {
                         .suffix(" dias"),
                 );
                 reserve += 110.0;
-            } else if self.queue == SaiopQueue::StaleDays {
-                widgets::muted(ui, "parado há");
+            } else if matches!(self.queue, SaiopQueue::StaleDays | SaiopQueue::FollowUps) {
+                widgets::muted(
+                    ui,
+                    if self.queue == SaiopQueue::FollowUps {
+                        "sem retorno há"
+                    } else {
+                        "parado há"
+                    },
+                );
                 ui.add(
                     egui::DragValue::new(&mut self.stale_days_threshold)
                         .range(1..=365)
@@ -3974,6 +4659,15 @@ impl SaiopPanel {
         };
         let below = 30.0;
         let table_height = (ui.available_height() - below).max(120.0);
+        self.follow_up_window(ui, store, today);
+        if self.queue == SaiopQueue::FollowUps {
+            self.follow_up_list(ui, store, &filtered, today, table_height);
+            widgets::small_muted(
+                ui,
+                "As cobranças ficam no histórico do atendimento; o prazo do atendimento não muda.",
+            );
+            return open_document;
+        }
         self.table(ui, store, &filtered, &columns, &empty, today, table_height);
 
         let count_text = if filtered.len() != all_items.len() {
@@ -6167,5 +6861,472 @@ mod proposal_tests {
         panel.editor = panel.saved_snapshot.clone();
         assert!(!panel.dirty());
         assert!(!SaiopPanel::default().open_with_changes(&store, id + 100, &proposal()));
+    }
+}
+
+#[cfg(test)]
+mod follow_up_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn day(iso: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(iso, "%Y-%m-%d").unwrap()
+    }
+
+    fn event(kind: &str, iso: &str, detail: &str) -> SaiopEvent {
+        SaiopEvent {
+            when: format!("{iso}T12:00:00+00:00"),
+            actor: "Ana".into(),
+            kind: kind.into(),
+            detail: detail.into(),
+        }
+    }
+
+    fn attendance(id: i64, reference: &str) -> SaiopAttendance {
+        let mut a = SaiopAttendance::new_manual();
+        a.id = id;
+        a.reference_raw = reference.into();
+        a.reference_norm = reference.into();
+        a.status = "em_analise".into();
+        a.entry_date = "2026-10-01".into();
+        a.stage_changed_at = "2026-10-01".into();
+        a
+    }
+
+    const TODAY: &str = "2026-11-19";
+
+    #[test]
+    fn a_scheduled_follow_up_is_due_from_its_date_on() {
+        let today = day(TODAY);
+        let mut a = attendance(1, "A");
+        a.events
+            .push(event(FOLLOW_UP_NEXT_KIND, "2026-11-10", "19/11/2026"));
+        let due = a.follow_up_due(today, 15).unwrap();
+        assert_eq!(due.source, FollowUpSource::Scheduled);
+        assert_eq!(due.overdue_days, 0);
+        assert_eq!(due.reason, "Cobrança marcada para hoje");
+
+        let mut late = attendance(2, "B");
+        late.events
+            .push(event(FOLLOW_UP_NEXT_KIND, "2026-11-10", "16/11/2026"));
+        let due = late.follow_up_due(today, 15).unwrap();
+        assert_eq!(due.overdue_days, 3);
+        assert_eq!(
+            due.reason,
+            "Cobrança marcada para 16/11/2026 (3 dias em atraso)"
+        );
+
+        let mut future = attendance(3, "C");
+        future
+            .events
+            .push(event(FOLLOW_UP_NEXT_KIND, "2026-11-10", "20/11/2026"));
+        assert!(future.follow_up_due(today, 15).is_none());
+    }
+
+    #[test]
+    fn a_contact_after_the_scheduled_date_settles_it_and_a_new_date_replaces_it() {
+        let today = day(TODAY);
+        let mut a = attendance(1, "A");
+        a.events
+            .push(event(FOLLOW_UP_NEXT_KIND, "2026-11-10", "17/11/2026"));
+        assert!(a.follow_up_due(today, 15).is_some());
+        a.events
+            .push(event(FOLLOW_UP_CONTACT_KIND, TODAY, "Cobrado por telefone"));
+        assert_eq!(a.scheduled_follow_up(), None);
+        assert!(a.follow_up_due(today, 15).is_none());
+        a.events
+            .push(event(FOLLOW_UP_NEXT_KIND, TODAY, "22/11/2026"));
+        assert_eq!(a.scheduled_follow_up(), Some(day("2026-11-22")));
+        assert!(a.follow_up_due(today, 15).is_none());
+        assert!(a.follow_up_due(day("2026-11-22"), 15).is_some());
+        // An unreadable date never schedules anything.
+        let mut broken = attendance(2, "B");
+        broken
+            .events
+            .push(event(FOLLOW_UP_NEXT_KIND, TODAY, "amanhã"));
+        assert_eq!(broken.scheduled_follow_up(), None);
+    }
+
+    #[test]
+    fn closed_atendimentos_are_never_listed() {
+        let today = day(TODAY);
+        for status in ["encerrado", "cancelado"] {
+            let mut a = attendance(1, "A");
+            a.status = status.into();
+            a.events
+                .push(event(FOLLOW_UP_NEXT_KIND, "2026-11-10", "17/11/2026"));
+            a.due_kind = "cobranca_retorno".into();
+            a.due_date = "2026-11-17".into();
+            assert!(a.follow_up_due(today, 15).is_none(), "{status}");
+        }
+    }
+
+    #[test]
+    fn a_return_deadline_is_a_follow_up_but_an_official_one_is_not() {
+        let today = day(TODAY);
+        let mut a = attendance(1, "A");
+        a.due_kind = "cobranca_retorno".into();
+        a.due_date = TODAY.into();
+        let due = a.follow_up_due(today, 15).unwrap();
+        assert_eq!(due.source, FollowUpSource::ReturnDeadline);
+        assert_eq!(due.reason, "Prazo de cobrança de retorno: hoje");
+        a.due_date = "2026-11-16".into();
+        assert_eq!(
+            a.follow_up_due(today, 15).unwrap().reason,
+            "Prazo de cobrança de retorno vencido em 16/11/2026 (3 dias em atraso)"
+        );
+        a.due_date = "2026-11-25".into();
+        assert!(a.follow_up_due(today, 15).is_none());
+        // A contact made since the date settles it.
+        a.due_date = "2026-11-16".into();
+        a.events.push(event(
+            FOLLOW_UP_CONTACT_KIND,
+            "2026-11-18",
+            "Cobrado por e-mail",
+        ));
+        assert!(a.follow_up_due(today, 15).is_none());
+
+        // An official deadline, even overdue, is not a follow-up date.
+        let mut official = attendance(2, "B");
+        official.due_kind = "oficial".into();
+        official.due_date = "2026-11-10".into();
+        assert!(official.follow_up_due(today, 15).is_none());
+    }
+
+    #[test]
+    fn waiting_for_an_answer_without_news_is_a_follow_up_after_the_quiet_period() {
+        let today = day(TODAY);
+        let mut a = attendance(1, "A");
+        a.status = "aguardando_resposta".into();
+        a.exit_date = "2026-11-04".into();
+        // 15 days after the 4th: due today.
+        let due = a.follow_up_due(today, 15).unwrap();
+        assert_eq!(due.source, FollowUpSource::SilentWait);
+        assert_eq!(due.due, today);
+        assert_eq!(
+            due.reason,
+            "Aguardando resposta há 15 dias, sem cobrança registrada"
+        );
+        // Not yet with a longer period.
+        assert!(a.follow_up_due(today, 20).is_none());
+        // A recent contact restarts the count; an old one does not.
+        a.events.push(event(
+            FOLLOW_UP_CONTACT_KIND,
+            "2026-11-15",
+            "Cobrado por telefone",
+        ));
+        assert!(a.follow_up_due(today, 15).is_none());
+        let due = a.follow_up_due(day("2026-11-30"), 15).unwrap();
+        assert_eq!(
+            due.reason,
+            "Aguardando resposta; última cobrança em 15/11/2026 (15 dias atrás)"
+        );
+        // Another situation does not wait for an answer.
+        let mut other = attendance(2, "B");
+        other.exit_date = "2026-10-01".into();
+        assert!(other.follow_up_due(today, 15).is_none());
+    }
+
+    #[test]
+    fn the_list_has_the_most_overdue_first_and_only_what_is_due() {
+        let today = day(TODAY);
+        let mut older = attendance(1, "Z-1");
+        older
+            .events
+            .push(event(FOLLOW_UP_NEXT_KIND, "2026-11-01", "10/11/2026"));
+        let mut newer = attendance(2, "A-1");
+        newer
+            .events
+            .push(event(FOLLOW_UP_NEXT_KIND, "2026-11-01", "18/11/2026"));
+        let mut same_day = attendance(3, "A-0");
+        same_day
+            .events
+            .push(event(FOLLOW_UP_NEXT_KIND, "2026-11-01", "18/11/2026"));
+        let mut later = attendance(4, "L");
+        later
+            .events
+            .push(event(FOLLOW_UP_NEXT_KIND, "2026-11-01", "25/11/2026"));
+        let plain = attendance(5, "P");
+        let list = follow_ups_due_today(&[newer, later, same_day, plain, older], today, 15);
+        let ids: Vec<i64> = list.iter().map(|f| f.attendance_id).collect();
+        assert_eq!(ids, [1, 3, 2]);
+    }
+
+    #[test]
+    fn recording_a_follow_up_adds_history_and_changes_nothing_else() {
+        let today = day(TODAY);
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-19T15:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut a = attendance(1, "A");
+        a.due_kind = "oficial".into();
+        a.due_date = "2026-11-25".into();
+        a.status = "aguardando_resposta".into();
+        let before = a.clone();
+
+        a.record_follow_up("Ana", now, today, Some("  "), Some(day("2026-11-22")))
+            .unwrap();
+        assert_eq!(a.events.len(), 2);
+        assert_eq!(a.events[0].kind, FOLLOW_UP_CONTACT_KIND);
+        assert_eq!(a.events[0].detail, DEFAULT_FOLLOW_UP_CHANNEL);
+        assert_eq!(a.events[0].actor, "Ana");
+        assert_eq!(a.events[1].kind, FOLLOW_UP_NEXT_KIND);
+        assert_eq!(a.events[1].detail, "22/11/2026");
+        assert_eq!(a.scheduled_follow_up(), Some(day("2026-11-22")));
+
+        // Everything but the history is what it was, the official deadline included.
+        a.events.clear();
+        assert_eq!(a, before);
+    }
+
+    #[test]
+    fn recording_a_follow_up_refuses_nothing_to_record_and_dates_that_are_not_ahead() {
+        let today = day(TODAY);
+        let now = Utc::now();
+        let mut a = attendance(1, "A");
+        assert!(a.record_follow_up("Ana", now, today, None, None).is_err());
+        assert!(a
+            .record_follow_up("Ana", now, today, Some("Cobrado"), Some(today))
+            .is_err());
+        assert!(a
+            .record_follow_up("Ana", now, today, None, Some(day("2026-11-18")))
+            .is_err());
+        assert!(a.events.is_empty(), "a refusal records nothing");
+        a.record_follow_up("Ana", now, today, None, Some(day("2026-11-20")))
+            .unwrap();
+        assert_eq!(a.events.len(), 1);
+        assert_eq!(a.events[0].kind, FOLLOW_UP_NEXT_KIND);
+    }
+
+    fn store_with(att: &SaiopAttendance) -> (TempDir, Store, i64) {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let id = store.save_saiop_attendance(att, None).unwrap();
+        (dir, store, id)
+    }
+
+    fn stored(store: &Store, id: i64) -> SaiopAttendance {
+        store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_store_appends_the_contact_and_keeps_the_official_deadline() {
+        let mut att = attendance(0, "ORG-OFI-2026/00042");
+        att.due_kind = "oficial".into();
+        att.due_date = "2026-12-01".into();
+        att.status = "aguardando_resposta".into();
+        let (_dir, mut store, id) = store_with(&att);
+        let before = stored(&store, id);
+        let events_before = before.events.len();
+        let next = Local::now().date_naive() + ChronoDuration::days(3);
+
+        store
+            .register_follow_up_contact(id, "Cobrado por telefone", Some(next))
+            .unwrap();
+        let after = stored(&store, id);
+        assert_eq!(after.events.len(), events_before + 2);
+        let contact = &after.events[events_before];
+        assert_eq!(contact.kind, FOLLOW_UP_CONTACT_KIND);
+        assert_eq!(contact.detail, "Cobrado por telefone");
+        assert_eq!(after.events[events_before + 1].kind, FOLLOW_UP_NEXT_KIND);
+        assert_eq!(after.events[events_before + 1].detail, br_date(next));
+        assert_eq!(after.scheduled_follow_up(), Some(next));
+        assert_eq!(
+            after.last_follow_up_contact(),
+            Some(Local::now().date_naive())
+        );
+        assert_eq!(after.due_date, "2026-12-01");
+        assert_eq!(after.due_kind, "oficial");
+        assert_eq!(after.status, "aguardando_resposta");
+
+        // "Próxima cobrança em…" alone: one event, no contact, deadline still the same.
+        let later = next + ChronoDuration::days(4);
+        store.schedule_next_follow_up(id, later).unwrap();
+        let again = stored(&store, id);
+        assert_eq!(again.events.len(), events_before + 3);
+        assert_eq!(again.events.last().unwrap().kind, FOLLOW_UP_NEXT_KIND);
+        assert_eq!(again.scheduled_follow_up(), Some(later));
+        assert_eq!(again.due_date, "2026-12-01");
+        assert_eq!(again.due_kind, "oficial");
+    }
+
+    #[test]
+    fn the_store_refuses_closed_missing_and_past_follow_ups() {
+        let mut att = attendance(0, "ORG-1");
+        att.status = "encerrado".into();
+        let (_dir, mut store, id) = store_with(&att);
+        let next = Local::now().date_naive() + ChronoDuration::days(2);
+        assert!(store.schedule_next_follow_up(id, next).is_err());
+        assert!(store.schedule_next_follow_up(id + 50, next).is_err());
+
+        let open = attendance(0, "ORG-2");
+        let open_id = store.save_saiop_attendance(&open, None).unwrap();
+        let count = stored(&store, open_id).events.len();
+        assert!(store
+            .schedule_next_follow_up(open_id, Local::now().date_naive())
+            .is_err());
+        assert_eq!(stored(&store, open_id).events.len(), count);
+    }
+
+    #[test]
+    fn the_new_event_kinds_have_names_for_the_timeline() {
+        assert_eq!(
+            crate::labels::saiop_event_kind(FOLLOW_UP_CONTACT_KIND),
+            "Cobrança"
+        );
+        assert_eq!(
+            crate::labels::saiop_event_kind(FOLLOW_UP_NEXT_KIND),
+            "Próxima cobrança"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod follow_up_panel_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn setup() -> (TempDir, Store, i64) {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut att = SaiopAttendance::new_manual();
+        att.reference_raw = "ORG-OFI-2026/00042".into();
+        att.due_kind = "oficial".into();
+        att.due_date = "2026-12-01".into();
+        let id = store.save_saiop_attendance(&att, None).unwrap();
+        (dir, store, id)
+    }
+
+    fn find(store: &Store, id: i64) -> SaiopAttendance {
+        store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap()
+    }
+
+    fn dialog(id: i64, contact: bool) -> FollowUpDialog {
+        let next = Local::now().date_naive() + ChronoDuration::days(3);
+        FollowUpDialog {
+            id,
+            reference: "ORG-OFI-2026/00042".into(),
+            contact,
+            channel: DEFAULT_FOLLOW_UP_CHANNEL.into(),
+            note: String::new(),
+            set_next: true,
+            next: next.format("%Y-%m-%d").to_string(),
+            error: String::new(),
+        }
+    }
+
+    #[test]
+    fn registering_from_the_window_writes_history_and_leaves_the_deadline() {
+        let (_dir, mut store, id) = setup();
+        let mut panel = SaiopPanel::default();
+        let mut d = dialog(id, true);
+        d.note = "ficaram de responder".into();
+        let message = panel.apply_follow_up(&mut store, &d).unwrap();
+        assert!(message.starts_with("Cobrança registrada em ORG-OFI-2026/00042."));
+        let saved = find(&store, id);
+        let contact = saved
+            .events
+            .iter()
+            .find(|e| e.kind == FOLLOW_UP_CONTACT_KIND)
+            .unwrap();
+        assert_eq!(contact.detail, "Cobrado por telefone: ficaram de responder");
+        assert!(saved.scheduled_follow_up().is_some());
+        assert_eq!(saved.due_date, "2026-12-01");
+        assert_eq!(saved.due_kind, "oficial");
+
+        // Without "próxima cobrança": only the contact (and it settles the date marked before).
+        let mut only = dialog(id, true);
+        only.set_next = false;
+        only.next = "lixo".into();
+        let events = saved.events.len();
+        panel.apply_follow_up(&mut store, &only).unwrap();
+        let after = find(&store, id);
+        assert_eq!(after.events.len(), events + 1);
+        assert_eq!(after.scheduled_follow_up(), None);
+    }
+
+    #[test]
+    fn a_next_date_that_cannot_be_read_saves_nothing_and_says_so() {
+        let (_dir, mut store, id) = setup();
+        let mut panel = SaiopPanel::default();
+        let before = find(&store, id).events.len();
+        let mut d = dialog(id, false);
+        d.next = "amanhã".into();
+        let error = panel.apply_follow_up(&mut store, &d).unwrap_err();
+        assert!(error.contains("dd/mm/aaaa"));
+        assert_eq!(find(&store, id).events.len(), before);
+    }
+
+    #[test]
+    fn unsaved_changes_of_the_same_ficha_stop_the_action_but_other_ones_do_not() {
+        let (_dir, mut store, id) = setup();
+        let mut other = SaiopAttendance::new_manual();
+        other.reference_raw = "ORG-2".into();
+        let other_id = store.save_saiop_attendance(&other, None).unwrap();
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&store, find(&store, id));
+        panel.editor.as_mut().unwrap().subject = "Alterado e não salvo".into();
+        assert!(panel.dirty());
+
+        panel.start_follow_up(&find(&store, id), true, Local::now().date_naive());
+        assert!(panel.follow_up_dialog.is_none(), "the window does not open");
+        assert!(panel.error && panel.message.contains("Salve ou descarte"));
+        let error = panel
+            .apply_follow_up(&mut store, &dialog(id, true))
+            .unwrap_err();
+        assert!(error.contains("Salve ou descarte"));
+        assert!(!find(&store, id)
+            .events
+            .iter()
+            .any(|e| e.kind == FOLLOW_UP_CONTACT_KIND));
+
+        // Another atendimento is not the one being edited: it goes through and the ficha is left alone.
+        panel
+            .apply_follow_up(&mut store, &dialog(other_id, true))
+            .unwrap();
+        assert!(panel.dirty(), "the unsaved ficha is untouched");
+        assert_eq!(
+            panel.editor.as_ref().unwrap().subject,
+            "Alterado e não salvo"
+        );
+    }
+
+    #[test]
+    fn a_clean_ficha_of_the_same_atendimento_follows_what_was_saved() {
+        let (_dir, mut store, id) = setup();
+        let mut panel = SaiopPanel::default();
+        panel.load_into_editor(&store, find(&store, id));
+        panel
+            .apply_follow_up(&mut store, &dialog(id, true))
+            .unwrap();
+        assert!(!panel.dirty());
+        let shown = panel.editor.clone().unwrap();
+        assert!(shown
+            .events
+            .iter()
+            .any(|e| e.kind == FOLLOW_UP_CONTACT_KIND));
+        // The ficha was reloaded at the new version: saving it now is not a conflict.
+        let edited = SaiopAttendance {
+            subject: "Depois".into(),
+            ..shown
+        };
+        store
+            .save_saiop_attendance(&edited, panel.base_version)
+            .unwrap();
+    }
+
+    #[test]
+    fn the_queue_is_named_for_the_person() {
+        assert_eq!(SaiopQueue::FollowUps.label(), "Cobranças de hoje");
     }
 }

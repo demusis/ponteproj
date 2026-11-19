@@ -118,7 +118,8 @@ internal fun AppRoot() {
                                 } else {
                                     AttendancesScreen(
                                         c.attendances, query = c.attQuery, onQuery = { c.attQuery = it },
-                                        onOpen = { c.openAttendance(it.id) }
+                                        onOpen = { c.openAttendance(it.id) },
+                                        onRegisterFollowUp = c::registerFollowUp, onScheduleFollowUp = c::scheduleFollowUp
                                     )
                                 }
                             }

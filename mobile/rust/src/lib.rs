@@ -1267,27 +1267,121 @@ fn attendance_rows(store: &Store, today: &str) -> Result<Value> {
     let rows = open
         .iter()
         .chain(closed.iter())
-        .map(|a| {
-            let is_open = a.is_open();
-            let due = a.due_date.trim();
-            json!({
-                "id": a.id,
-                "reference": attendance_reference(a),
-                "subject": a.subject,
-                "status": a.status,
-                "status_label": ponteproj::saiop::status_label(&a.status),
-                "open": is_open,
-                "due_date": due,
-                "due_label": ponteproj::labels::date(due),
-                "due_chip": if due.is_empty() { String::new() } else { ponteproj::labels::due_relative(due, today) },
-                "late": is_open && !due.is_empty() && due < today,
-                "due_today": is_open && due == today,
-                "assignee": a.assignee,
-                "observation": a.observation,
-            })
-        })
+        .map(|a| attendance_item_json(a, today))
         .collect::<Vec<_>>();
     Ok(json!({ "attendances": rows, "open": open_count }))
+}
+
+/// An atendimento as a row of a list.
+fn attendance_item_json(a: &ponteproj::saiop::SaiopAttendance, today: &str) -> Value {
+    let is_open = a.is_open();
+    let due = a.due_date.trim();
+    json!({
+        "id": a.id,
+        "reference": attendance_reference(a),
+        "subject": a.subject,
+        "status": a.status,
+        "status_label": ponteproj::saiop::status_label(&a.status),
+        "open": is_open,
+        "due_date": due,
+        "due_label": ponteproj::labels::date(due),
+        "due_chip": if due.is_empty() { String::new() } else { ponteproj::labels::due_relative(due, today) },
+        "late": is_open && !due.is_empty() && due < today,
+        "due_today": is_open && due == today,
+        "assignee": a.assignee,
+        "observation": a.observation,
+    })
+}
+
+/// The follow-ups ("cobranças") to make today, the most overdue first: each row is an atendimento
+/// row plus `follow_up` (why it is here) and `follow_up_days` (days overdue, 0 is today). `channels`
+/// are the contacts the computer offers when registering one. Nothing here reads or changes the deadline.
+fn follow_up_rows(store: &Store, today: &str) -> Result<Value> {
+    use ponteproj::saiop as s;
+    let day = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d").context("Data inválida.")?;
+    let all = store.list_saiop_attendances()?;
+    let rows = s::follow_ups_due_today(all.iter(), day, s::DEFAULT_FOLLOW_UP_QUIET_DAYS)
+        .into_iter()
+        .filter_map(|f| {
+            let a = all.iter().find(|a| a.id == f.attendance_id)?;
+            let mut row = attendance_item_json(a, today);
+            row["follow_up"] = json!(f.reason);
+            row["follow_up_days"] = json!(f.overdue_days);
+            Some(row)
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "count": rows.len(), "channels": s::FOLLOW_UP_CHANNELS, "follow_ups": rows }))
+}
+
+/// The atendimentos to chase today (see [`follow_up_rows`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listFollowUps<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            follow_up_rows(store, &today)
+        })
+    })
+}
+
+/// A date `AAAA-MM-DD` of the input, when there is one.
+fn optional_follow_up_date(input: &Value, key: &str) -> Result<Option<chrono::NaiveDate>> {
+    match input[key].as_str().map(str::trim).filter(|d| !d.is_empty()) {
+        None => Ok(None),
+        Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+            .map(Some)
+            .context("Informe a data da próxima cobrança."),
+    }
+}
+
+fn follow_up_id(input: &Value) -> Result<i64> {
+    input["id"].as_i64().filter(|id| *id > 0).context("Atendimento inválido.")
+}
+
+/// Registers a contact in the atendimento's timeline: `{"id":1,"contact":"Cobrado por telefone",
+/// "next_date":"AAAA-MM-DD"}` (`contact` empty: "Cobrado por telefone"; `next_date` optional).
+fn register_follow_up(store: &mut Store, input: &Value) -> Result<Value> {
+    let id = follow_up_id(input)?;
+    let next = optional_follow_up_date(input, "next_date")?;
+    store.register_follow_up_contact(id, input["contact"].as_str().unwrap_or(""), next)?;
+    Ok(json!({}))
+}
+
+/// Only sets the next follow-up: `{"id":1,"next_date":"AAAA-MM-DD"}` (required).
+fn schedule_follow_up(store: &mut Store, input: &Value) -> Result<Value> {
+    let id = follow_up_id(input)?;
+    let next = optional_follow_up_date(input, "next_date")?.context("Informe a data da próxima cobrança.")?;
+    store.schedule_next_follow_up(id, next)?;
+    Ok(json!({}))
+}
+
+/// "Registrar cobrança": a contact in the timeline, and maybe the next date (see [`register_follow_up`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_registerFollowUp<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    json_text: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = json_arg(env, &json_text)?;
+        with_store(|store| register_follow_up(store, &input))
+    })
+}
+
+/// "Próxima cobrança em…": only the date (see [`schedule_follow_up`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_scheduleFollowUp<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    json_text: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = json_arg(env, &json_text)?;
+        with_store(|store| schedule_follow_up(store, &input))
+    })
 }
 
 /// All the atendimentos, ordered for the list (see [`attendance_rows`]).
@@ -2684,6 +2778,104 @@ mod tests {
         // A closed one is never late or due today, even with a past deadline.
         let closed = rows.iter().find(|r| r["reference"] == json!("ENCERRADO")).unwrap();
         assert_eq!((closed["open"].clone(), closed["late"].clone()), (json!(false), json!(false)));
+    }
+
+    /// An atendimento with a follow-up marked for `next` (`dd/mm/aaaa`) and an official deadline.
+    fn add_chase(store: &mut Store, reference: &str, status: &str, next: &str) -> i64 {
+        let mut a = ponteproj::saiop::SaiopAttendance::new_manual();
+        a.reference_raw = reference.into();
+        a.status = status.into();
+        a.due_kind = "oficial".into();
+        a.due_date = "2026-12-31".into();
+        a.events.push(ponteproj::saiop::SaiopEvent {
+            when: "2026-11-01T12:00:00+00:00".into(),
+            actor: "Ana".into(),
+            kind: "proxima_cobranca".into(),
+            detail: next.into(),
+        });
+        store.save_saiop_attendance(&a, None).unwrap()
+    }
+
+    #[test]
+    fn follow_ups_of_the_day_are_the_open_ones_due_today_or_before_most_overdue_first() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        add_chase(&mut store, "HOJE", "em_analise", "10/11/2026");
+        add_chase(&mut store, "ATRASADA", "aguardando_resposta", "05/11/2026");
+        add_chase(&mut store, "AMANHA", "em_analise", "11/11/2026");
+        add_chase(&mut store, "ENCERRADA", "encerrado", "01/11/2026");
+        // Only an official deadline, overdue: not a follow-up.
+        add_attendance(&mut store, "SO-PRAZO", "s", "em_analise", "2026-11-01", "");
+
+        let out = follow_up_rows(&store, "2026-11-10").unwrap();
+        let rows = out["follow_ups"].as_array().unwrap();
+        let refs: Vec<&str> = rows.iter().map(|r| r["reference"].as_str().unwrap()).collect();
+        assert_eq!(refs, ["ATRASADA", "HOJE"]);
+        assert_eq!(out["count"], json!(2));
+        assert_eq!(rows[0]["follow_up_days"], json!(5));
+        assert_eq!(rows[0]["follow_up"], json!("Cobrança marcada para 05/11/2026 (5 dias em atraso)"));
+        assert_eq!(rows[1]["follow_up_days"], json!(0));
+        assert_eq!(rows[1]["follow_up"], json!("Cobrança marcada para hoje"));
+        // The row is the list's row: the official deadline is shown as it is.
+        assert_eq!(rows[0]["due_date"], json!("2026-12-31"));
+        assert_eq!(rows[0]["status_label"], json!("Aguardando resposta"));
+        assert_eq!(out["channels"][0], json!("Cobrado por telefone"));
+    }
+
+    #[test]
+    fn registering_and_scheduling_a_follow_up_add_history_and_keep_the_deadline() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let id = add_chase(&mut store, "ORG-1", "aguardando_resposta", "10/11/2026");
+        let stored = |store: &Store| store.list_saiop_attendances().unwrap().into_iter().find(|a| a.id == id).unwrap();
+        let before = stored(&store).events.len();
+        let tomorrow = (chrono::Local::now().date_naive() + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+        let in_a_week = (chrono::Local::now().date_naive() + chrono::Duration::days(7)).format("%Y-%m-%d").to_string();
+
+        register_follow_up(&mut store, &json!({"id": id, "contact": "Cobrado por e-mail: sem resposta", "next_date": tomorrow})).unwrap();
+        let after = stored(&store);
+        assert_eq!(after.events.len(), before + 2);
+        assert_eq!(after.events[before].kind, "cobranca");
+        assert_eq!(after.events[before].detail, "Cobrado por e-mail: sem resposta");
+        assert_eq!(after.events[before + 1].kind, "proxima_cobranca");
+        assert_eq!((after.due_date.as_str(), after.due_kind.as_str()), ("2026-12-31", "oficial"));
+        assert_eq!(after.status, "aguardando_resposta");
+
+        // No contact text: the computer's default; no date: just the contact.
+        register_follow_up(&mut store, &json!({"id": id, "contact": "", "next_date": ""})).unwrap();
+        let again = stored(&store);
+        assert_eq!(again.events.len(), before + 3);
+        assert_eq!(again.events.last().unwrap().detail, "Cobrado por telefone");
+
+        schedule_follow_up(&mut store, &json!({"id": id, "next_date": in_a_week})).unwrap();
+        let last = stored(&store);
+        assert_eq!(last.events.len(), before + 4);
+        assert_eq!(last.events.last().unwrap().kind, "proxima_cobranca");
+        assert_eq!(last.due_date, "2026-12-31");
+    }
+
+    #[test]
+    fn a_follow_up_that_cannot_be_recorded_says_why_and_records_nothing() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let id = add_chase(&mut store, "ORG-1", "em_analise", "10/11/2026");
+        let closed = add_chase(&mut store, "ORG-2", "encerrado", "10/11/2026");
+        let events = |store: &Store, id: i64| store.list_saiop_attendances().unwrap().into_iter().find(|a| a.id == id).unwrap().events.len();
+        let (a, b) = (events(&store, id), events(&store, closed));
+        let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let tomorrow = (chrono::Local::now().date_naive() + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+        let message = |r: Result<Value>| r.unwrap_err().to_string();
+
+        assert!(message(register_follow_up(&mut store, &json!({"id": 0, "contact": "x"}))).contains("inválido"));
+        assert!(message(register_follow_up(&mut store, &json!({"id": id, "next_date": "amanhã"}))).contains("próxima cobrança"));
+        assert!(message(schedule_follow_up(&mut store, &json!({"id": id}))).contains("próxima cobrança"));
+        assert!(message(schedule_follow_up(&mut store, &json!({"id": id, "next_date": today}))).contains("depois de hoje"));
+        assert!(message(schedule_follow_up(&mut store, &json!({"id": closed, "next_date": tomorrow}))).contains("encerrado"));
+        assert!(message(schedule_follow_up(&mut store, &json!({"id": id + 1000, "next_date": tomorrow}))).contains("não encontrado"));
+        assert_eq!((events(&store, id), events(&store, closed)), (a, b));
     }
 
     #[test]

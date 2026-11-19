@@ -135,14 +135,21 @@ internal object TaskRules {
     fun parseDays(text: String): Int? = if (text.isBlank()) 0 else text.trim().toIntOrNull()?.takeIf { it in 0..3650 }
 
     /**
-     * The end to fill in after the start or the days changed: start date + (days - 1) at 18:00, only
-     * with a start, days above zero and no end yet. Null when nothing should be filled.
+     * The end to fill in after the start or the days changed: 18:00 of the days-th working day (Monday
+     * to Friday, no national holiday), the start day being day 1 (a start on a non-working day moves to
+     * the next working one first); same rule as the desktop's `projection::work_end`. Only with a
+     * start, days above zero and no end yet. Null when nothing should be filled.
      */
     fun autoEnd(start: String, days: Int, end: String): String? {
         if (days <= 0 || end.isNotBlank()) return null
         val (date, _) = splitMoment(start)
         if (date.isEmpty()) return null
-        return "${java.time.LocalDate.parse(date).plusDays(days - 1L)}T$END_HOUR"
+        var day = java.time.LocalDate.parse(date)
+        while (!Holidays.isWorkingDay(day)) day = day.plusDays(1)
+        repeat(days - 1) {
+            do day = day.plusDays(1) while (!Holidays.isWorkingDay(day))
+        }
+        return "${day}T$END_HOUR"
     }
 
     /** "⚠ O fim planejado passa do prazo (dd/mm/aaaa)." when the planned end is after a valid due date; else "". */

@@ -19,6 +19,8 @@ pub mod files;
 pub mod guide;
 #[cfg(feature = "desktop")]
 pub mod help_ui;
+/// Brazilian national holidays (non-working days of the planning).
+pub mod holidays;
 pub mod idmap;
 pub mod imap;
 pub mod mail;

@@ -103,7 +103,11 @@ internal data class AttendanceItem(
     val observation: String = "",
     /** Not encerrado nor cancelado. */
     val open: Boolean = true,
-    val dueToday: Boolean = false
+    val dueToday: Boolean = false,
+    /** Why it is among today's cobranças; empty for an atendimento that is not. */
+    val followUp: String = "",
+    /** Days the cobrança is overdue (0: due today). */
+    val followUpDays: Int = 0
 )
 
 internal fun JSONObject.toAttendance() = AttendanceItem(
@@ -111,8 +115,12 @@ internal fun JSONObject.toAttendance() = AttendanceItem(
     statusLabel = s("status_label"), dueDate = s("due_date"),
     dueChip = s("due_chip"), late = optBoolean("late"),
     assignee = s("assignee"), observation = s("observation"), open = optBoolean("open", true),
-    dueToday = optBoolean("due_today")
+    dueToday = optBoolean("due_today"),
+    followUp = s("follow_up"), followUpDays = optInt("follow_up_days")
 )
+
+/** The cobranças of today and the contacts offered when registering one. */
+internal data class FollowUps(val rows: List<AttendanceItem> = emptyList(), val channels: List<String> = emptyList())
 
 /** A fact of an atendimento's ficha: the desktop's label and its text. */
 internal data class AttendanceField(val label: String, val value: String)
@@ -480,7 +488,11 @@ internal data class TasksState(
 internal data class AttendancesState(
     val loading: Boolean = true,
     val error: String? = null,
-    val rows: List<AttendanceItem> = emptyList()
+    val rows: List<AttendanceItem> = emptyList(),
+    /** "Cobranças de hoje": the ones to chase, most overdue first. */
+    val followUps: List<AttendanceItem> = emptyList(),
+    /** The contacts offered when registering a cobrança (the computer's). */
+    val channels: List<String> = emptyList()
 )
 
 /** The atendimento screen: the atendimento as stored. [id] is the one the screen was opened for. */
