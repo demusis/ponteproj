@@ -6572,6 +6572,8 @@ pub const SHOTS: &[&str] = &[
     "ligar",
     "estreita",
     "com-recursos",
+    "cobrancas",
+    "cobranca-janela",
 ];
 
 #[cfg(feature = "shots")]
@@ -6579,6 +6581,23 @@ impl SaiopPanel {
     /// Puts the panel in the state called `view` (see `SHOTS`).
     pub fn shots_open(&mut self, store: &mut crate::storage::Store, view: &str) {
         match view {
+            "cobrancas" | "cobranca-janela" => {
+                if let Err(error) = crate::shots_data::follow_ups_scenario(store) {
+                    eprintln!("amostra das cobranças: {error:#}");
+                }
+                self.show_follow_ups();
+                if view == "cobranca-janela" {
+                    let today = Local::now().date_naive();
+                    if let Ok(list) = store.list_saiop_attendances() {
+                        if let Some(att) = list.into_iter().find(|a| {
+                            a.follow_up_due(today, DEFAULT_FOLLOW_UP_QUIET_DAYS)
+                                .is_some()
+                        }) {
+                            self.start_follow_up(&att, true, today);
+                        }
+                    }
+                }
+            }
             "aberto" => {
                 if let Ok(list) = store.list_saiop_attendances() {
                     if let Some(first) = list.into_iter().next() {

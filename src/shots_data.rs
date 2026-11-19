@@ -1524,6 +1524,56 @@ fn draft(store: &mut Store, ids: &Ids) -> Result<()> {
     Ok(())
 }
 
+/// Puts "Cobranças de hoje" on the sample: one cobrança marked for three
+/// days ago, one for today, and a new atendimento with a long subject and a
+/// long name of the person. Run after `seed`; does nothing when already done.
+pub fn follow_ups_scenario(store: &mut Store) -> Result<()> {
+    let list = store.list_saiop_attendances()?;
+    if list.iter().any(|a| {
+        a.events
+            .iter()
+            .any(|e| e.kind == crate::saiop::FOLLOW_UP_NEXT_KIND)
+    }) {
+        return Ok(());
+    }
+    let mark = |store: &mut Store, mut a: SaiopAttendance, offset: i64| -> Result<()> {
+        a.events.push(SaiopEvent {
+            when: Utc::now().to_rfc3339(),
+            actor: "Servidor A".into(),
+            kind: crate::saiop::FOLLOW_UP_NEXT_KIND.into(),
+            detail: day(offset).format("%d/%m/%Y").to_string(),
+        });
+        store.save_saiop_attendance(&a, None)?;
+        Ok(())
+    };
+    for (reference, offset) in [("ORG-MEM-2026/01207", -3), ("ORG-OFI-2026/00431", 0)] {
+        if let Some(a) = list.iter().find(|a| a.reference_raw == reference) {
+            mark(store, a.clone(), offset)?;
+        }
+    }
+    let mut long = attendance(
+        "ORG-OFI-2026/00502-A",
+        "Pedido de apoio logístico e de pessoal para o evento de encerramento do exercício com as delegações estaduais e municipais",
+        None,
+        "Coordenação-Geral de Planejamento, Orçamento e Modernização Administrativa",
+        "Maria Aparecida dos Santos Oliveira",
+        "aguardando_resposta",
+        "normal",
+        None,
+        20,
+    );
+    long.sent_to = "Secretaria Executiva".into();
+    let id = store.save_saiop_attendance(&long, None)?;
+    if let Some(saved) = store
+        .list_saiop_attendances()?
+        .into_iter()
+        .find(|a| a.id == id)
+    {
+        mark(store, saved, -8)?;
+    }
+    Ok(())
+}
+
 /// Conflicts and Lixeira items for the pictures of "Edições em conflito" and
 /// of the Lixeira: an ordinary conflict, two about the same task and one
 /// whose document is in the Lixeira, plus a few items of different kinds in

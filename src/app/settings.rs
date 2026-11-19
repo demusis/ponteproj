@@ -268,7 +268,7 @@ impl PonteApp {
                     );
                 }
                 for (when, name) in lines {
-                    widgets::small_muted(ui, format!("{when}  {name}"));
+                    widgets::small_muted(ui, format!("{when} · {name}"));
                 }
             }
             ui.add_space(S2);

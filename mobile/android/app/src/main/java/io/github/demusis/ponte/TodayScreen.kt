@@ -280,7 +280,7 @@ internal fun WeekModule(
                             val line = WeekPlan.label(b) + (if (e.kind == WeekKind.USE) " · reserva" else "")
                             Text(line, fontSize = 13.sp, color = c.muted)
                             e.dependencyNotice?.let {
-                                Text(it, fontSize = 13.sp, color = if (e.dependencyWarning) c.warning else c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(it, fontSize = 13.sp, lineHeight = 18.sp, color = if (e.dependencyWarning) c.warning else c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             }
                         }
                         if (++n < rows) HorizontalDivider(color = c.divider)

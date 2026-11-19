@@ -159,7 +159,7 @@ internal fun AttendancesScreen(
         state.error?.let { item(key = "error") { Notice(it) } }
         if (state.rows.isNotEmpty()) {
             item(key = "search") {
-                SearchBox(query, onQuery, "Buscar por referência, assunto ou responsável")
+                SearchBox(query, onQuery, "Referência, assunto, responsável")
             }
         }
         if (chase.isNotEmpty()) {

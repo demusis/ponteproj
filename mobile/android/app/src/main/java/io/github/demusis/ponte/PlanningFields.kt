@@ -2,6 +2,8 @@ package io.github.demusis.ponte
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
@@ -90,26 +92,31 @@ internal fun planningHourInvalid(start: String, end: String, startHour: String, 
         (e.isNotEmpty() && TaskRules.composeMoment(e, endHour, TaskRules.END_HOUR) == null)
 }
 
-/** "Avisos antes do início planejado": the chips, and the permission line when the phone blocks them. */
+/** "Avisos antes do início planejado": the chips (wrapping onto lines), and the permission line when the phone blocks them. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ReminderChips(
     offsets: List<Int>, onChange: (List<Int>) -> Unit, remindersBlocked: Boolean, onRemindersChosen: () -> Unit
 ) {
-    Text("Avisos antes do início planejado")
-    TaskRules.reminderOptions(offsets).forEach { (minutes, label) ->
-        FilterChip(
-            selected = minutes in offsets,
-            onClick = {
-                val after = if (minutes in offsets) offsets - minutes else offsets + minutes
-                onChange(after)
-                // Without the permission the notices stay mute: ask now, as Ajustes does.
-                if (TaskRules.offsetAdded(offsets, after)) onRemindersChosen()
-            },
-            label = { Text(label) }
-        )
-    }
-    if (TaskRules.remindersBlockedShown(offsets, remindersBlocked)) {
-        Notice(TaskRules.REMINDERS_BLOCKED, tone = Tone.WARNING)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Avisos antes do início planejado", style = FieldLabelStyle, color = Ponte.colors.secondary)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            TaskRules.reminderOptions(offsets).forEach { (minutes, label) ->
+                FilterChip(
+                    selected = minutes in offsets,
+                    onClick = {
+                        val after = if (minutes in offsets) offsets - minutes else offsets + minutes
+                        onChange(after)
+                        // Without the permission the notices stay mute: ask now, as Ajustes does.
+                        if (TaskRules.offsetAdded(offsets, after)) onRemindersChosen()
+                    },
+                    label = { Text(label) }
+                )
+            }
+        }
+        if (TaskRules.remindersBlockedShown(offsets, remindersBlocked)) {
+            Notice(TaskRules.REMINDERS_BLOCKED, tone = Tone.WARNING)
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 //! Development only: the guided tour of screens taken by `--shots`.
 use super::{Area, Leave, PonteApp, Tab};
+use chrono::Datelike;
 use eframe::egui;
 
 /// Development only: the screens pictured by `--shots`, in order. Each step
@@ -13,6 +14,9 @@ impl PonteApp {
         "busca-sala",
         "busca-projetor",
         "hoje-calendario",
+        "hoje-cobrancas",
+        "hoje-semana-feriados",
+        "hoje-calendario-feriados",
         "documentos-inicio",
         "documentos-filtros",
         "ficha-resumo",
@@ -63,6 +67,8 @@ impl PonteApp {
         "ajustes-aparencia",
         "ajustes-importacao",
         "ajustes-lembretes",
+        "ajustes-feriados",
+        "ajustes-feriados-vazio",
         "ajustes-categorias",
         "ajustes-categorias-apagar",
         "ficha-categorias",
@@ -206,6 +212,42 @@ impl PonteApp {
         }
     }
 
+    /// The state and the extra days off of the sample (`on`), or none: the
+    /// state with a holiday in this month and week, a recesso, a very long name.
+    fn tour_holidays(&mut self, on: bool) {
+        use crate::holidays::{CustomDay, HolidayConfig};
+        let today = chrono::Local::now().date_naive();
+        let config = if on {
+            HolidayConfig {
+                uf: Some("AC"),
+                custom: vec![
+                    CustomDay {
+                        year: None,
+                        month: 12,
+                        day: 24,
+                        name: "Recesso".to_owned(),
+                    },
+                    CustomDay {
+                        year: Some(today.year()),
+                        month: 11,
+                        day: 25,
+                        name: "Ponto facultativo de aniversário da cidade para todos os servidores da Coordenação-Geral de Planejamento e Orçamento".to_owned(),
+                    },
+                    CustomDay {
+                        year: Some(today.year()),
+                        month: 12,
+                        day: 31,
+                        name: String::new(),
+                    },
+                ],
+            }
+        } else {
+            HolidayConfig::default()
+        };
+        crate::holidays::set_config(config.clone());
+        self.holiday_draft = super::settings::HolidayDraft::from_config(&config);
+    }
+
     pub(super) fn tour_document(&self) -> Option<i64> {
         self.store
             .list_documents("")
@@ -245,6 +287,8 @@ impl PonteApp {
         self.saiop = Default::default();
         self.resources = Default::default();
         super::today::shots_calendar(ctx, false);
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("today-week-view"), false));
+        self.tour_holidays(false);
         let dark = name.starts_with("escuro-");
         crate::theme::set_appearance(
             ctx,
@@ -732,6 +776,28 @@ impl PonteApp {
                 self.refresh();
                 self.area = Area::Today;
                 super::today::shots_calendar(ctx, true);
+            }
+            "hoje-cobrancas" | "hoje-semana-feriados" | "hoje-calendario-feriados" => {
+                if let Err(error) = crate::shots_data::follow_ups_scenario(&mut self.store) {
+                    eprintln!("amostra das cobranças: {error:#}");
+                }
+                if name != "hoje-cobrancas" {
+                    self.tour_holidays(true);
+                }
+                self.refresh();
+                self.area = Area::Today;
+                match name {
+                    "hoje-semana-feriados" => ctx.data_mut(|d| {
+                        d.insert_temp(egui::Id::unique("today-week-view"), true);
+                    }),
+                    "hoje-calendario-feriados" => super::today::shots_calendar(ctx, true),
+                    _ => {}
+                }
+            }
+            "ajustes-feriados" | "ajustes-feriados-vazio" => {
+                self.tour_holidays(name == "ajustes-feriados");
+                self.area = Area::Settings;
+                self.settings_section = super::SettingsSection::Holidays;
             }
             "documentos-inicio" => {
                 self.area = Area::Documents;

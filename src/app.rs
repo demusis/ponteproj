@@ -646,7 +646,7 @@ enum Area {
 fn window_size() -> [f32; 2] {
     #[cfg(feature = "shots")]
     if crate::shots::active() {
-        return crate::shots::SIZE;
+        return crate::shots::size();
     }
     [1240.0, 820.0]
 }

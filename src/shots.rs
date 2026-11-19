@@ -14,8 +14,17 @@ struct Request {
 
 static REQUEST: OnceLock<Request> = OnceLock::new();
 
-/// Size of the window while the pictures are taken.
-pub const SIZE: [f32; 2] = [1280.0, 800.0];
+/// Size of the window while the pictures are taken; `PONTEPROJ_SHOTS_SIZE=900x700`
+/// takes them in another size (a narrow window, for instance).
+pub fn size() -> [f32; 2] {
+    std::env::var("PONTEPROJ_SHOTS_SIZE")
+        .ok()
+        .and_then(|text| {
+            let (w, h) = text.split_once('x')?;
+            Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
+        })
+        .unwrap_or([1280.0, 800.0])
+}
 
 pub fn active() -> bool {
     REQUEST.get().is_some()

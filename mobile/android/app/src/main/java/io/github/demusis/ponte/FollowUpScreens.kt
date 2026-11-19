@@ -64,7 +64,7 @@ internal fun FollowUpCard(
                 a.statusLabel, a.assignee, if (a.dueDate.isNotEmpty()) "Prazo ${formatDocDate(a.dueDate)}" else ""
             ).filter { it.isNotEmpty() }.joinToString(" · ")
             if (line.isNotEmpty()) {
-                Text(line, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(line, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(

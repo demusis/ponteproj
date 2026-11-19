@@ -1013,7 +1013,11 @@ fn calendar_view(
                 None
             };
             if let Some(name) = holiday {
-                paint_line(painter, line_rect(cell.rect, cell.col_w, 0), name, p.muted);
+                let line = line_rect(cell.rect, cell.col_w, 0);
+                paint_line(painter, line, name, p.muted);
+                // A long name is cut to the cell: the whole of it is one hover away.
+                ui.interact(line, base.with(("cal-holiday", iso)), egui::Sense::hover())
+                    .on_hover_text(name);
             }
             let skip = usize::from(holiday.is_some());
             // The deadlines: as many lines as fit, then "+N".

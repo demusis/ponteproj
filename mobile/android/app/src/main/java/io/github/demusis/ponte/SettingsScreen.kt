@@ -302,7 +302,7 @@ internal fun SettingsScreen(
 
 /** Said under the calendar switch. */
 internal const val CALENDAR_HINT =
-    "Use uma agenda só para o Ponte (por exemplo, \"Ponte\"). Mudanças de data feitas na agenda voltam para a tarefa. " +
+    "Use uma agenda só para o Ponte (por exemplo, “Ponte”). Mudanças de data feitas na agenda voltam para a tarefa. " +
         "Use em um só celular por agenda."
 
 /** Said when the phone has no calendar the Ponte can write to. */
@@ -328,13 +328,14 @@ private fun CalendarCard(
             )
             if (state.calendarOn) {
                 Text(CALENDAR_HINT, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
-                if (state.calendarChosen.isEmpty()) {
+                val groups = CalendarChoices.grouped(state.calendars)
+                if (state.calendarChosen.isEmpty() && groups.isNotEmpty()) {
                     Text("Escolha uma agenda", style = FieldLabelStyle, color = c.secondary)
                 }
-                val groups = CalendarChoices.grouped(state.calendars)
                 if (groups.isEmpty()) Notice(CALENDAR_NONE, tone = Tone.WARNING)
                 for ((header, items) in groups) {
-                    Text(header.uppercase(), fontSize = 12.sp, letterSpacing = 0.8.sp, fontWeight = FontWeight.Medium, color = c.muted)
+                    // An account is an e-mail address: shown as it is (upper case would break it into pieces).
+                    Text(header, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium, color = c.secondary)
                     Column {
                         for (cal in items) CalendarRow(cal, cal.id.toString() == state.calendarChosen) { onChoice(cal.id.toString()) }
                     }
@@ -408,7 +409,7 @@ internal const val HOLIDAYS_NOTE =
     "Os feriados nacionais já contam. Estaduais e os dias que você cadastrar valem para todos os aparelhos que sincronizam este acervo."
 internal const val HOLIDAYS_NO_STATE_DAYS = "Este estado não tem feriado estadual além dos nacionais."
 internal const val HOLIDAYS_OTHER_HINT =
-    "Recesso, ponto facultativo, feriado da cidade. Com “Todo ano”, só o dia e o mês contam."
+    "Recesso, ponto facultativo, feriado da cidade."
 
 /** How a registered day is shown: "19/03/2026" or, every year, "19/03 · todo ano". */
 internal fun holidayDayText(day: CustomDay): String =
@@ -438,7 +439,7 @@ private fun HolidaysCard(
                 val lines = Holidays.stateHolidayLines(state.holidayUf)
                 if (lines.isEmpty()) Text(HOLIDAYS_NO_STATE_DAYS, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
                 for ((whenText, holidayName) in lines) {
-                    Text("$whenText  $holidayName", fontSize = 14.sp, lineHeight = 20.sp, color = c.secondary)
+                    Text("$whenText · $holidayName", fontSize = 14.sp, lineHeight = 20.sp, color = c.secondary)
                 }
             }
 
@@ -448,7 +449,7 @@ private fun HolidaysCard(
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(holidayDayText(day), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
-                        Text(day.label, fontSize = 13.sp, color = c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(day.label, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                     IconButton(onClick = { onRemove(day) }, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.Outlined.Delete, contentDescription = "Remover este dia", tint = c.secondary)
