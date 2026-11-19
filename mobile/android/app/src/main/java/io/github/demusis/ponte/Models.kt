@@ -776,7 +776,9 @@ internal data class SettingsState(
     /** "Sincronizar tarefas com a agenda" is on. */
     val calendarOn: Boolean = false,
     /** The calendars the person can choose from (key: the calendar's id as text). */
-    val calendars: List<Choice> = emptyList(),
+    val calendars: List<CalInfo> = emptyList(),
+    /** "Atualizar a lista" is waiting for the phone. */
+    val calendarRefreshing: Boolean = false,
     /** Key of the chosen calendar, or empty. */
     val calendarChosen: String = "",
     /** "Última conferência: …", or empty. */

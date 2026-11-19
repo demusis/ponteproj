@@ -11,17 +11,14 @@ import org.json.JSONObject
 import java.io.File
 import java.time.ZoneId
 
-/** A calendar of the device the person can write to. */
-internal data class CalInfo(val id: Long, val name: String, val account: String) {
-    /** "Ponte · fulano@gmail.com". */
-    val label: String get() = if (account.isBlank() || account == name) name else "$name · $account"
-}
-
 /** The CalendarContract side of the sync: a thin adapter, all the decisions are in [CalendarRules]. */
 internal class DeviceCalendar(private val ctx: Context) : CalendarGateway {
     private val resolver get() = ctx.contentResolver
 
-    /** The visible calendars that accept new events (contributor level or better). */
+    /**
+     * Every calendar that accepts new events (contributor level or better), visible or not: a calendar just
+     * created on Google often arrives hidden and not synced until it is switched on.
+     */
     fun calendars(): List<CalInfo> {
         requirePermission()
         val out = ArrayList<CalInfo>()
@@ -30,18 +27,64 @@ internal class DeviceCalendar(private val ctx: Context) : CalendarGateway {
                 CalendarContract.Calendars.CONTENT_URI,
                 arrayOf(
                     CalendarContract.Calendars._ID, CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
-                    CalendarContract.Calendars.ACCOUNT_NAME
+                    CalendarContract.Calendars.ACCOUNT_NAME, CalendarContract.Calendars.ACCOUNT_TYPE,
+                    CalendarContract.Calendars.OWNER_ACCOUNT, CalendarContract.Calendars.CALENDAR_COLOR,
+                    CalendarContract.Calendars.SYNC_EVENTS, CalendarContract.Calendars.VISIBLE
                 ),
-                "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ? AND ${CalendarContract.Calendars.VISIBLE} = 1",
+                "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ?",
                 arrayOf(CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR.toString()),
                 "${CalendarContract.Calendars.ACCOUNT_NAME}, ${CalendarContract.Calendars.CALENDAR_DISPLAY_NAME}"
             )?.use { c ->
-                while (c.moveToNext()) out += CalInfo(c.getLong(0), c.getString(1).orEmpty(), c.getString(2).orEmpty())
+                while (c.moveToNext()) {
+                    out += CalInfo(
+                        c.getLong(0), c.getString(1).orEmpty(), c.getString(2).orEmpty(), c.getString(3).orEmpty(),
+                        c.getString(4).orEmpty(), c.getInt(5), c.getInt(6) == 1, c.getInt(7) == 1
+                    )
+                }
             }
         } catch (e: SecurityException) {
             throw e
         }
-        return out
+        return CalendarChoices.offered(out)
+    }
+
+    /** Turns on VISIBLE and SYNC_EVENTS of a calendar; false when the phone refuses. */
+    fun enable(calendarId: Long): Boolean {
+        requirePermission()
+        return try {
+            val v = ContentValues().apply {
+                put(CalendarContract.Calendars.VISIBLE, 1)
+                put(CalendarContract.Calendars.SYNC_EVENTS, 1)
+            }
+            resolver.update(ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI, calendarId), v, null, null) > 0
+        } catch (e: SecurityException) {
+            throw e
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** Asks Android to pull the Google calendars now. Never throws: a refusal only means the list stays as it is. */
+    fun requestGoogleSync() {
+        try {
+            val accounts = LinkedHashSet<Pair<String, String>>()
+            resolver.query(
+                CalendarContract.Calendars.CONTENT_URI,
+                arrayOf(CalendarContract.Calendars.ACCOUNT_NAME, CalendarContract.Calendars.ACCOUNT_TYPE),
+                "${CalendarContract.Calendars.ACCOUNT_TYPE} = ?", arrayOf("com.google"), null
+            )?.use { c -> while (c.moveToNext()) accounts += c.getString(0).orEmpty() to c.getString(1).orEmpty() }
+            val extras = android.os.Bundle().apply {
+                putBoolean(android.content.ContentResolver.SYNC_EXTRAS_MANUAL, true)
+                putBoolean(android.content.ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
+            }
+            for ((name, type) in accounts) {
+                try {
+                    android.content.ContentResolver.requestSync(android.accounts.Account(name, type), CalendarContract.AUTHORITY, extras)
+                } catch (_: Throwable) {
+                }
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     /** The calendar still exists and accepts events, hidden or not. */
@@ -252,6 +295,23 @@ internal object CalendarSyncRunner {
 
     fun isOn(ctx: Context) = prefs(ctx).getBoolean(K_ON, false)
     fun chosen(ctx: Context) = prefs(ctx).getLong(K_ID, -1L)
+
+    /** Asks for a fresh copy of the Google calendars, waits a few seconds, then reads the list again. */
+    fun refresh(ctx: Context): List<CalInfo> {
+        if (!DeviceCalendar.hasPermission(ctx)) return emptyList()
+        DeviceCalendar(ctx).requestGoogleSync()
+        try { Thread.sleep(REFRESH_WAIT_MS) } catch (_: InterruptedException) { }
+        return calendars(ctx)
+    }
+
+    /** Switches the chosen calendar on (visible, syncing); false when the phone refuses. */
+    fun enable(ctx: Context, id: Long): Boolean = try {
+        DeviceCalendar(ctx).enable(id)
+    } catch (_: Throwable) {
+        false
+    }
+
+    private const val REFRESH_WAIT_MS = 4000L
 
     /** The writable calendars; an empty list without the permission. */
     fun calendars(ctx: Context): List<CalInfo> = try {

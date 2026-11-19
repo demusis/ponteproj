@@ -557,4 +557,40 @@ class AgendaSyncTest {
         assertEquals(1, plan.update.size)
         assertEquals(LocalDateTime.parse("2026-11-25T09:00").atZone(utc).toInstant().toEpochMilli(), plan.update[0].second.start)
     }
+
+    private fun cal(id: Long, name: String, account: String = "eu@gmail.com", type: String = "com.google", owner: String = account, sync: Boolean = true, visible: Boolean = true) =
+        CalInfo(id, name, account, type, owner, 0, sync, visible)
+
+    @Test fun holidayAndBirthdayCalendarsAreNotOffered() {
+        val list = listOf(
+            cal(1, "Ponte"),
+            cal(2, "Feriados no Brasil", owner = "pt.brazilian#holiday@group.v.calendar.google.com"),
+            cal(3, "Aniversários", owner = "addressbook#contacts@group.v.calendar.google.com")
+        )
+        assertEquals(listOf(1L), CalendarChoices.offered(list).map { it.id })
+    }
+
+    @Test fun calendarsAreGroupedByAccountWithLocalOnesLastAndSortedByName() {
+        val list = listOf(
+            cal(1, "Trabalho", account = "b@gmail.com"), cal(2, "Ponte", account = "a@gmail.com"),
+            cal(3, "Meu celular", account = "Celular", type = "LOCAL"), cal(4, "Casa", account = "b@gmail.com")
+        )
+        val g = CalendarChoices.grouped(list)
+        assertEquals(listOf("a@gmail.com", "b@gmail.com", "Só neste celular"), g.map { it.first })
+        assertEquals(listOf("Casa", "Trabalho"), g[1].second.map { it.name })
+    }
+
+    @Test fun hiddenOrUnsyncedCalendarsStayInTheListAndSayTheyWillBeSwitchedOn() {
+        val hidden = cal(1, "Ponte", visible = false)
+        val unsynced = cal(2, "Ponte 2", sync = false)
+        val ok = cal(3, "Ok")
+        val local = cal(4, "Local", account = "Celular", type = "LOCAL", sync = false, visible = false)
+        assertEquals(listOf(1L, 2L, 3L, 4L), CalendarChoices.offered(listOf(hidden, unsynced, ok, local)).map { it.id })
+        assertTrue(hidden.needsEnabling && unsynced.needsEnabling)
+        assertEquals("não sincronizada — será ligada ao escolher", hidden.note)
+        assertEquals("", ok.note)
+        assertFalse(ok.needsEnabling)
+        assertEquals("só neste celular", local.note)
+        assertFalse(local.needsEnabling) // a local calendar has nothing to sync
+    }
 }

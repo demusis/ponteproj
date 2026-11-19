@@ -13,7 +13,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -77,7 +82,8 @@ internal fun SettingsScreen(
     onAddHolidayDay: (String, String, Boolean) -> Unit = { _, _, _ -> },
     onRemoveHolidayDay: (CustomDay) -> Unit = {},
     onCalendar: (Boolean) -> Unit = {},
-    onCalendarChoice: (String) -> Unit = {}
+    onCalendarChoice: (String) -> Unit = {},
+    onCalendarRefresh: () -> Unit = {}
 ) {
     val c = Ponte.colors
     DetailScaffold(title = "Ajustes", onBack = onBack) {
@@ -198,7 +204,7 @@ internal fun SettingsScreen(
             }
 
             SectionLabel("Agenda do celular", Modifier.padding(top = 8.dp))
-            CalendarCard(state, onCalendar, onCalendarChoice)
+            CalendarCard(state, onCalendar, onCalendarChoice, onCalendarRefresh)
 
             SectionLabel("Feriados", Modifier.padding(top = 8.dp))
             HolidaysCard(state, onHolidayState, onAddHolidayDay, onRemoveHolidayDay)
@@ -296,16 +302,22 @@ internal fun SettingsScreen(
 
 /** Said under the calendar switch. */
 internal const val CALENDAR_HINT =
-    "Crie no Google Agenda uma agenda só para o Ponte (por exemplo, \"Ponte\") e escolha-a aqui. " +
-        "Mudanças de data feitas na agenda voltam para a tarefa. Use em um só celular por agenda."
+    "Use uma agenda só para o Ponte (por exemplo, \"Ponte\"). Mudanças de data feitas na agenda voltam para a tarefa. " +
+        "Use em um só celular por agenda."
 
 /** Said when the phone has no calendar the Ponte can write to. */
-internal const val CALENDAR_NONE =
-    "Nenhuma agenda que aceite novos eventos foi encontrada neste celular. Crie uma no Google Agenda."
+internal const val CALENDAR_NONE = "Nenhuma agenda que aceite novos eventos foi encontrada neste celular."
+
+/** Said under the list: where a calendar that does not show up is usually stuck. */
+internal const val CALENDAR_FIND =
+    "Não achou a agenda? Ela precisa ser da mesma conta Google deste celular. Crie-a no Google Agenda, toque em " +
+        "Atualizar a lista e espere alguns segundos. No app Google Agenda, em Configurações ▸ a agenda, deixe Sincronizar ligado."
 
 /** The switch, the calendar to use and how the last conference went. */
 @Composable
-private fun CalendarCard(state: SettingsState, onSwitch: (Boolean) -> Unit, onChoice: (String) -> Unit) {
+private fun CalendarCard(
+    state: SettingsState, onSwitch: (Boolean) -> Unit, onChoice: (String) -> Unit, onRefresh: () -> Unit
+) {
     val c = Ponte.colors
     PonteCard {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -315,20 +327,54 @@ private fun CalendarCard(state: SettingsState, onSwitch: (Boolean) -> Unit, onCh
                 state.calendarOn, onSwitch
             )
             if (state.calendarOn) {
-                if (state.calendars.isEmpty()) {
-                    Notice(CALENDAR_NONE, tone = Tone.WARNING)
-                } else {
-                    ChoiceField(
-                        "Agenda", listOf(Choice("", "Escolher a agenda…")) + state.calendars,
-                        state.calendarChosen, onChoice
-                    )
-                }
                 Text(CALENDAR_HINT, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+                if (state.calendarChosen.isEmpty()) {
+                    Text("Escolha uma agenda", style = FieldLabelStyle, color = c.secondary)
+                }
+                val groups = CalendarChoices.grouped(state.calendars)
+                if (groups.isEmpty()) Notice(CALENDAR_NONE, tone = Tone.WARNING)
+                for ((header, items) in groups) {
+                    Text(header.uppercase(), fontSize = 12.sp, letterSpacing = 0.8.sp, fontWeight = FontWeight.Medium, color = c.muted)
+                    Column {
+                        for (cal in items) CalendarRow(cal, cal.id.toString() == state.calendarChosen) { onChoice(cal.id.toString()) }
+                    }
+                }
+                TextButton(
+                    onClick = onRefresh, enabled = !state.calendarRefreshing,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                    colors = ButtonDefaults.textButtonColors(contentColor = c.accent)
+                ) { Text(if (state.calendarRefreshing) "Atualizando…" else "Atualizar a lista", fontSize = 15.sp) }
+                Text(CALENDAR_FIND, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
                 if (state.calendarStatus.isNotEmpty()) {
                     Text(state.calendarStatus, fontSize = 14.sp, lineHeight = 20.sp, color = c.text)
                 }
             }
             if (state.calendarWarning.isNotEmpty()) Notice(state.calendarWarning, tone = Tone.WARNING)
+        }
+    }
+}
+
+/** One calendar: its colour dot, its name, a muted line when it needs one, and the radio mark. */
+@Composable
+private fun CalendarRow(cal: CalInfo, selected: Boolean, onClick: () -> Unit) {
+    val c = Ponte.colors
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        RadioButton(
+            selected = selected, onClick = null,
+            colors = RadioButtonDefaults.colors(selectedColor = c.accent, unselectedColor = c.secondary)
+        )
+        Box(
+            Modifier.size(12.dp).clip(CircleShape)
+                .background(if (cal.color == 0) c.muted else androidx.compose.ui.graphics.Color(cal.color or 0xFF000000.toInt()))
+        )
+        Column(Modifier.weight(1f).padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(cal.name, fontSize = 15.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (cal.note.isNotEmpty()) Text(cal.note, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
         }
     }
 }

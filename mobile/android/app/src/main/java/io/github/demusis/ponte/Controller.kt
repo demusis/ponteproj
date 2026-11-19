@@ -147,6 +147,8 @@ internal object Controller {
     private const val K_SECURE = "secure_screen"
     private const val K_NAME = "person_name"
     private const val CALENDAR_WAIT_MS = 2000L
+    private const val CALENDAR_NOT_ENABLED =
+        "Não foi possível ligar a sincronização desta agenda. No app Google Agenda, em Configurações, abra a agenda e deixe Sincronizar ligado."
     private const val CALENDAR_DENIED =
         "Sem a permissão da agenda, as tarefas não podem ser sincronizadas com ela. Permita-a quando o telefone perguntar, ou nas configurações do telefone."
 
@@ -471,6 +473,8 @@ internal object Controller {
         // Edits made in the calendar app while away are picked up now, and the ones made from here on as they happen.
         watchCalendar(true)
         if (calendarOn()) main.postDelayed(calDebounce, CALENDAR_WAIT_MS)
+        // Back from the Google Agenda app: a calendar switched on there shows up in the list.
+        if (Route.Settings in stack && calendarOn()) loadCalendars()
         val t = backgroundAt
         backgroundAt = -1L
         if (externalStopped) {
@@ -2217,7 +2221,8 @@ internal object Controller {
             noticeTime = NoticeScheduler.time(app).key,
             noticeBlocked = noticeDenied || (NoticeScheduler.isOn(app) && !NoticeScheduler.allowed(app)),
             calendarOn = calendarOn(),
-            calendars = calendarChoices.map { Choice(it.id.toString(), it.label) },
+            calendars = calendarChoices,
+            calendarRefreshing = calendarRefreshing,
             calendarChosen = calendarChosenId().let { if (it >= 0) it.toString() else "" },
             calendarStatus = calendarStatusText(),
             calendarWarning = prefs.getString(CalendarSyncRunner.K_WARN, "") ?: ""
@@ -2228,6 +2233,7 @@ internal object Controller {
 
     /** The calendars the person can choose from; read again whenever Ajustes opens. */
     private var calendarChoices: List<CalInfo> = emptyList()
+    private var calendarRefreshing = false
 
     /** A calendar sync is already waiting for the worker: more requests join it. */
     private val calQueued = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -2288,7 +2294,32 @@ internal object Controller {
         if (id == calendarChosenId()) return
         prefs.edit().putLong(CalendarSyncRunner.K_ID, id).remove(CalendarSyncRunner.K_WARN).apply()
         updateSettings()
-        calendarSyncSoon()
+        // A calendar that is hidden or not synced is switched on first, so its events reach Google.
+        val needs = calendarChoices.firstOrNull { it.id == id }?.needsEnabling == true
+        if (!needs) {
+            calendarSyncSoon()
+            return
+        }
+        SyncRunner.background({ CalendarSyncRunner.enable(app, id) }, { ok ->
+            if (!ok) say(CALENDAR_NOT_ENABLED, long = true)
+            loadCalendars()
+            calendarSyncSoon()
+        })
+    }
+
+    /** "Atualizar a lista": asks Android to pull the Google calendars, waits a moment and reads the list again. */
+    fun refreshCalendars() {
+        if (calendarRefreshing) return
+        calendarRefreshing = true
+        updateSettings()
+        SyncRunner.background({ CalendarSyncRunner.refresh(app) }, { list ->
+            calendarRefreshing = false
+            calendarChoices = list
+            updateSettings()
+        }, {
+            calendarRefreshing = false
+            updateSettings()
+        })
     }
 
     private fun loadCalendars() {

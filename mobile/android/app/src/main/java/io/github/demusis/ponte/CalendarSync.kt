@@ -333,6 +333,51 @@ internal object CalendarRules {
     }
 }
 
+/** A calendar of the device the person can write to. */
+internal data class CalInfo(
+    val id: Long,
+    val name: String,
+    val account: String,
+    /** "com.google", "LOCAL"… */
+    val accountType: String = "com.google",
+    val owner: String = "",
+    /** The calendar's colour as ARGB, or 0. */
+    val color: Int = 0,
+    val syncEvents: Boolean = true,
+    val visible: Boolean = true
+) {
+    val local: Boolean get() = accountType.equals("LOCAL", ignoreCase = true)
+
+    /** Needs VISIBLE and SYNC_EVENTS turned on before its events reach Google. */
+    val needsEnabling: Boolean get() = !local && (!syncEvents || !visible)
+
+    /** The muted second line of its row; empty when there is nothing to say. */
+    val note: String
+        get() = when {
+            local -> "só neste celular"
+            needsEnabling -> "não sincronizada — será ligada ao escolher"
+            else -> ""
+        }
+
+    /** The header it is listed under. */
+    val group: String get() = if (local) "Só neste celular" else account
+}
+
+/** Which calendars are offered and how the list is laid out (pure, so it is tested). */
+internal object CalendarChoices {
+    private val hiddenOwners = listOf("#holiday@group.v.calendar.google.com", "#contacts@group.v.calendar.google.com")
+
+    /** Birthdays and holidays of Google are not offered. */
+    fun offered(list: List<CalInfo>): List<CalInfo> = list.filterNot { c ->
+        c.accountType.equals("com.google", ignoreCase = true) && hiddenOwners.any { c.owner.endsWith(it) }
+    }
+
+    /** By account (Google ones first, the local ones last), each group by name. */
+    fun grouped(list: List<CalInfo>): List<Pair<String, List<CalInfo>>> =
+        offered(list).groupBy { it.group }.map { (g, items) -> g to items.sortedBy { it.name.lowercase() } }
+            .sortedWith(compareBy({ it.second.first().local }, { it.first.lowercase() }))
+}
+
 /** What the engine needs from the calendar of the device. Throws SecurityException when the permission is gone. */
 internal interface CalendarGateway {
     /** Every event of the calendar that is not deleted. */
