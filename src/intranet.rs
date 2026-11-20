@@ -1069,6 +1069,75 @@ struct StoredDraftPayload {
 /// went back to an older copy); the window shows what follows it.
 const CONFIRM_REPLACE: &str = "[confirmar-substituicao]";
 
+/// The note kept beside the library file by [`Store::host_generation`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct GenerationNote {
+    generation: String,
+    /// The highest revision answered under `generation`.
+    revision: i64,
+    /// Ids this library had before (the last ones), so a file that still
+    /// carries one of them is recognized as an older file.
+    #[serde(default)]
+    previous: Vec<String>,
+}
+
+enum GenerationVerdict {
+    Keep,
+    Adopt,
+    Rotate,
+}
+
+/// Whether the library is still the one the note was written for. `fresh` reads
+/// the revision once more, only when the first reading is below the note's.
+fn judge_generation(
+    stored: Option<&str>,
+    note: Option<&GenerationNote>,
+    revision: i64,
+    fresh: impl FnOnce() -> i64,
+) -> GenerationVerdict {
+    match (stored, note) {
+        (None, _) => GenerationVerdict::Rotate,
+        (Some(_), None) => GenerationVerdict::Keep,
+        (Some(own), Some(n)) if own == n.generation => {
+            if revision >= n.revision || fresh() >= n.revision {
+                GenerationVerdict::Keep
+            } else {
+                GenerationVerdict::Rotate
+            }
+        }
+        (Some(own), Some(n)) if n.previous.iter().any(|p| p == own) => GenerationVerdict::Rotate,
+        (Some(_), Some(_)) => GenerationVerdict::Adopt,
+    }
+}
+
+/// One lock per library file (the notes of two libraries never wait for each
+/// other).
+fn generation_lock(path: Option<&std::path::Path>) -> Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::Mutex<BTreeMap<String, Arc<std::sync::Mutex<()>>>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let key = path.map(|p| p.display().to_string()).unwrap_or_default();
+    let mut locks = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    locks.entry(key).or_default().clone()
+}
+
+/// Writes the note beside its place and renames it over: a reader sees the
+/// old note or the new one, never half of one.
+fn write_generation_note(path: &std::path::Path, note: &GenerationNote) -> bool {
+    let Ok(text) = serde_json::to_vec(note) else {
+        return false;
+    };
+    let temp = PathBuf::from(format!(
+        "{}.tmp-{}",
+        path.display(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let done = std::fs::write(&temp, text).is_ok() && std::fs::rename(&temp, path).is_ok();
+    if !done {
+        let _ = std::fs::remove_file(&temp);
+    }
+    done
+}
+
 /// What the main computer keeps of an applied change: the answer it gave and
 /// what the change created, with its own numbers at that moment.
 #[derive(Serialize, Deserialize)]
@@ -1677,12 +1746,29 @@ impl Store {
     /// older one (a restored backup), so a client can tell "the same library,
     /// moved forward" from "another history that reuses the same numbers".
     ///
-    /// It is kept in the library and, beside the library file, together with
-    /// the highest revision answered so far. A library that no longer matches
-    /// that note (another id, no id, or a lower revision) was replaced: it
-    /// gets a new id. Best effort by nature: a note that cannot be written
-    /// only weakens the detection; the clients also compare revisions.
+    /// It is kept in the library and, beside the library file, in a note with
+    /// the highest revision answered so far and the ids it replaced. The
+    /// comparison and the update of the two are done one at a time per
+    /// library file (a second opening of the same file, a backup for
+    /// instance, waits), the note is read before the revision (so a revision
+    /// is never older than the note only because it was read first) and it is
+    /// written whole or not at all. A library whose id is one the note
+    /// replaced, or whose revision is below the note's even when read again,
+    /// was replaced by an older file: it gets a new id. An id the note never
+    /// heard of (a stale copy of the note brought by the cloud) is adopted,
+    /// and a note that cannot be written never rotates the id: it only
+    /// weakens the detection, the clients also compare revisions.
     pub(crate) fn host_generation(&mut self) -> Result<String> {
+        let note_path = self
+            .conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(|db| PathBuf::from(format!("{db}-geracao.json")));
+        let lock = generation_lock(note_path.as_deref());
+        let _turn = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let note: Option<GenerationNote> = note_path
+            .as_ref()
+            .and_then(|path| serde_json::from_slice(&std::fs::read(path).ok()?).ok());
         let revision = self.cabinet_revision()?;
         let stored: Option<String> = self
             .conn
@@ -1690,41 +1776,64 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        let note_path = self
-            .conn
-            .path()
-            .filter(|p| !p.is_empty())
-            .map(|db| PathBuf::from(format!("{db}-geracao.json")));
-        let note: Option<(String, i64)> = note_path.as_ref().and_then(|path| {
-            let value: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-            Some((
-                value.get("generation")?.as_str()?.to_owned(),
-                value.get("revision")?.as_i64()?,
-            ))
+        let verdict = judge_generation(stored.as_deref(), note.as_ref(), revision, || {
+            self.cabinet_revision().unwrap_or(revision)
         });
-        let kept = match (&stored, &note) {
-            (Some(own), None) => Some(own.clone()),
-            (Some(own), Some((noted, highest))) if own == noted && revision >= *highest => {
-                Some(own.clone())
+        let mut previous = note
+            .as_ref()
+            .map(|n| n.previous.clone())
+            .unwrap_or_default();
+        let mut remember = |old: &str| {
+            if !old.is_empty() && !previous.iter().any(|p| p == old) {
+                previous.push(old.to_owned());
             }
-            _ => None,
         };
-        let generation = kept
-            .clone()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
-        if kept.is_none() || stored.is_none() {
+        let adopted = matches!(verdict, GenerationVerdict::Adopt);
+        let (generation, rotated) = match (verdict, &stored) {
+            (GenerationVerdict::Rotate, old) => {
+                if let Some(old) = old {
+                    remember(old);
+                }
+                if let Some(n) = &note {
+                    remember(&n.generation);
+                }
+                (uuid::Uuid::new_v4().simple().to_string(), true)
+            }
+            (GenerationVerdict::Adopt, Some(own)) => {
+                if let Some(n) = &note {
+                    remember(&n.generation);
+                }
+                (own.clone(), false)
+            }
+            (_, Some(own)) => (own.clone(), false),
+            (_, None) => (uuid::Uuid::new_v4().simple().to_string(), true),
+        };
+        let skip = previous.len().saturating_sub(16);
+        let wanted = GenerationNote {
+            generation: generation.clone(),
+            revision: if rotated || adopted {
+                revision
+            } else {
+                revision.max(note.as_ref().map_or(0, |n| n.revision))
+            },
+            previous: previous.split_off(skip),
+        };
+        let wrote = match &note_path {
+            Some(path) if note.as_ref() != Some(&wanted) => write_generation_note(path, &wanted),
+            Some(_) => true,
+            None => true,
+        };
+        if rotated && stored.is_some() && !wrote {
+            // The note could not be kept: rotating now would repeat at every
+            // opening. The library keeps its id until the note can be written.
+            return Ok(stored.unwrap_or(generation));
+        }
+        if rotated || stored.is_none() {
             self.conn.execute(
                 "INSERT INTO host_generation(id,value) VALUES(1,?1)
                  ON CONFLICT(id) DO UPDATE SET value=excluded.value",
                 [&generation],
             )?;
-        }
-        if let Some(path) = note_path {
-            if note.as_ref() != Some(&(generation.clone(), revision)) {
-                let text = serde_json::json!({"generation": generation, "revision": revision});
-                let _ = std::fs::write(path, text.to_string());
-            }
         }
         Ok(generation)
     }
@@ -16033,6 +16142,111 @@ mod host_history_tests {
             !rig.client.sync_from_host(false).unwrap(),
             "up to date again"
         );
+    }
+
+    #[test]
+    fn a_revision_read_too_early_is_not_taken_for_a_rollback_and_a_stale_note_is_not_either() {
+        let note = |generation: &str, revision: i64, previous: &[&str]| GenerationNote {
+            generation: generation.into(),
+            revision,
+            previous: previous.iter().map(|p| p.to_string()).collect(),
+        };
+        let judge = |stored: Option<&str>, note: Option<&GenerationNote>, now: i64, again: i64| {
+            match judge_generation(stored, note, now, || again) {
+                GenerationVerdict::Keep => "keep",
+                GenerationVerdict::Adopt => "adopt",
+                GenerationVerdict::Rotate => "rotate",
+            }
+        };
+        let n = note("g2", 12, &["g1"]);
+        // Another opening noted 12 while this one still read 10: read again.
+        assert_eq!(judge(Some("g2"), Some(&n), 10, 12), "keep");
+        // Still 10 when read again: a real rollback.
+        assert_eq!(judge(Some("g2"), Some(&n), 10, 10), "rotate");
+        assert_eq!(judge(Some("g2"), Some(&n), 12, 0), "keep");
+        // A file that still carries an id the note replaced is an older file.
+        assert_eq!(judge(Some("g1"), Some(&n), 20, 20), "rotate");
+        // An id the note never heard of (a stale copy of the note): adopted.
+        assert_eq!(judge(Some("g9"), Some(&n), 5, 5), "adopt");
+        assert_eq!(judge(None, Some(&n), 20, 20), "rotate");
+        assert_eq!(judge(Some("g2"), None, 3, 3), "keep");
+    }
+
+    #[test]
+    fn a_note_that_cannot_be_written_never_rotates_the_generation_at_every_opening() {
+        let mut rig = rig();
+        let first = rig.host().host_generation().unwrap();
+        rig.server.stop();
+        let note = format!("{}-geracao.json", rig.host_path.display());
+        let mut permissions = std::fs::metadata(&note).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&note, permissions.clone()).unwrap();
+        // The library goes back to the backup (a lower revision than noted)
+        // while the note cannot be replaced.
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", rig.host_path.display()));
+        }
+        std::fs::copy(&rig.backup, &rig.host_path).unwrap();
+        let seen: Vec<String> = (0..3)
+            .map(|_| {
+                Store::open(&rig.host_path)
+                    .unwrap()
+                    .host_generation()
+                    .unwrap()
+            })
+            .collect();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&note, permissions).unwrap();
+        assert!(seen.iter().all(|g| *g == first), "{seen:?} against {first}");
+        // Once the note can be written the rollback is noted, once.
+        let rotated = Store::open(&rig.host_path)
+            .unwrap()
+            .host_generation()
+            .unwrap();
+        assert_ne!(rotated, first);
+        assert_eq!(
+            Store::open(&rig.host_path)
+                .unwrap()
+                .host_generation()
+                .unwrap(),
+            rotated
+        );
+        let leftovers = std::fs::read_dir(rig._dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .count();
+        assert_eq!(leftovers, 0, "the note is written whole and renamed");
+    }
+
+    #[test]
+    fn openings_of_the_same_library_at_the_same_time_never_rotate_the_generation() {
+        let rig = rig();
+        let mut host = rig.host();
+        let first = host.host_generation().unwrap();
+        let path = rig.host_path.clone();
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut seen = Vec::new();
+                    for _ in 0..15 {
+                        let mut second = Store::open(&path).unwrap();
+                        seen.push(second.host_generation().unwrap());
+                    }
+                    seen
+                })
+            })
+            .collect();
+        for round in 0..15 {
+            let mut task = Task::new(rig.document);
+            task.title = format!("Rodada {round}");
+            host.save_task(&task).unwrap();
+            host.host_generation().unwrap();
+        }
+        for reader in readers {
+            assert!(reader.join().unwrap().iter().all(|g| *g == first));
+        }
     }
 
     #[test]
