@@ -1770,8 +1770,8 @@ impl Store {
     /// replaced, or whose revision is below the note's even when read again,
     /// was replaced by an older file: it gets a new id. An id the note never
     /// heard of (a stale copy of the note brought by the cloud) is adopted,
-    /// and a note that cannot be written never rotates the id: it only
-    /// weakens the detection, the clients also compare revisions.
+    /// and a rotation is kept in the library even when the note cannot be
+    /// written (the next opening adopts it).
     pub(crate) fn host_generation(&mut self) -> Result<String> {
         let note_path = self
             .conn
@@ -1832,16 +1832,16 @@ impl Store {
             },
             previous: previous.split_off(skip),
         };
-        let wrote = match &note_path {
-            Some(path) if note.as_ref() != Some(&wanted) => write_generation_note(path, &wanted),
-            Some(_) => true,
-            None => true,
-        };
-        if rotated && stored.is_some() && !wrote {
-            // The note could not be kept: rotating now would repeat at every
-            // opening. The library keeps its id until the note can be written.
-            return Ok(stored.unwrap_or(generation));
+        if let Some(path) = &note_path {
+            if note.as_ref() != Some(&wanted) {
+                let _ = write_generation_note(path, &wanted);
+            }
         }
+        // A rotation is a detected rollback: it is kept in the library whether
+        // or not the note could be written. The next opening finds an id the
+        // note never heard of and adopts it (see `judge_generation`), so a
+        // note that cannot be written neither repeats the rotation at every
+        // opening nor lets the rollback vanish once the revision catches up.
         if rotated || stored.is_none() {
             self.conn.execute(
                 "INSERT INTO host_generation(id,value) VALUES(1,?1)
@@ -16336,7 +16336,7 @@ mod host_history_tests {
     #[test]
     // Windows files: read-only is only ever set back to writable here.
     #[allow(clippy::permissions_set_readonly_false)]
-    fn a_note_that_cannot_be_written_never_rotates_the_generation_at_every_opening() {
+    fn a_note_that_cannot_be_written_never_rotates_at_every_opening_nor_loses_the_rollback() {
         let mut rig = rig();
         let first = rig.host().host_generation().unwrap();
         rig.server.stop();
@@ -16358,21 +16358,37 @@ mod host_history_tests {
                     .unwrap()
             })
             .collect();
+        assert_ne!(
+            seen[0], first,
+            "the rollback is detected and kept in the library"
+        );
+        assert!(
+            seen.iter().all(|g| *g == seen[0]),
+            "once, not at every opening: {seen:?}"
+        );
+        // The history grows past the old revision: the rollback is not forgotten.
+        let mut host = Store::open(&rig.host_path).unwrap();
+        while host.cabinet_revision().unwrap() <= rig.synced_after_backup + 1 {
+            let mut task = Task::new(rig.document);
+            task.title = "Crescendo".into();
+            host.save_task(&task).unwrap();
+        }
+        assert_eq!(host.host_generation().unwrap(), seen[0]);
+        drop(host);
         permissions.set_readonly(false);
         std::fs::set_permissions(&note, permissions).unwrap();
-        assert!(seen.iter().all(|g| *g == first), "{seen:?} against {first}");
-        // Once the note can be written the rollback is noted, once.
-        let rotated = Store::open(&rig.host_path)
+        // Once the note can be written the library's id is adopted, as it is.
+        let adopted = Store::open(&rig.host_path)
             .unwrap()
             .host_generation()
             .unwrap();
-        assert_ne!(rotated, first);
+        assert_eq!(adopted, seen[0]);
         assert_eq!(
             Store::open(&rig.host_path)
                 .unwrap()
                 .host_generation()
                 .unwrap(),
-            rotated
+            adopted
         );
         let leftovers = std::fs::read_dir(rig._dir.path())
             .unwrap()
