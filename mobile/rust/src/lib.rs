@@ -176,6 +176,8 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
         // False when a copy with work the exchange could not merge was left
         // as it is: the app must keep the pending copy then.
         "pending_settled": report.preserve_failed.is_empty(),
+        // How many copies could not be rewritten (also in the summary).
+        "unwritten": report.unwritten.len(),
     });
     // The holidays are the library's: what another device saved is now in
     // force here, and the app refreshes its own copy from this.

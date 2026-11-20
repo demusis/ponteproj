@@ -4400,6 +4400,7 @@ impl Store {
                             path.display()
                         ));
                         report.preserve_failed.push(path.display().to_string());
+                        report.unwritten.push(path.display().to_string());
                         continue;
                     }
                 }
@@ -4410,6 +4411,7 @@ impl Store {
                     if preserve.contains(path) {
                         report.preserve_failed.push(path.display().to_string());
                     }
+                    report.unwritten.push(path.display().to_string());
                     failures.push(error.to_string());
                 }
             }
@@ -8143,6 +8145,10 @@ pub struct FolderSyncReport {
     /// were left as they are because they could not be kept aside (or
     /// rewritten after it): whoever deletes such a copy loses that work.
     pub preserve_failed: Vec<String>,
+    /// Copies that had to be rewritten and could not be (a mirror locked by
+    /// the cloud client, a full disk): they stay as they were and the next
+    /// exchange tries again.
+    pub unwritten: Vec<String>,
 }
 
 impl FolderSyncReport {
@@ -8196,6 +8202,12 @@ impl FolderSyncReport {
             parts.push(format!(
                 "{} fora de alcance",
                 plural(self.unreachable.len(), "pasta", "pastas")
+            ));
+        }
+        if !self.unwritten.is_empty() {
+            parts.push(format!(
+                "⚠ {} não regravada",
+                plural(self.unwritten.len(), "pasta", "pastas")
             ));
         }
         if parts.is_empty() {
@@ -17080,6 +17092,68 @@ mod tied_mirror_tests {
             (&results[1].0, results[1].1),
             "the same base whatever the order of the folders"
         );
+    }
+
+    #[test]
+    fn a_copy_kept_aside_is_reused_on_a_retry_and_a_mirror_that_cannot_be_written_is_reported() {
+        let dir = diverged(
+            |a, _| {
+                let mut task = a.list_tasks().unwrap().remove(0);
+                task.title = "Título de A".into();
+                a.save_task(&task).unwrap();
+            },
+            |b, _| {
+                let mut task = b.list_tasks().unwrap().remove(0);
+                task.title = "Título de B".into();
+                b.save_task(&task).unwrap();
+            },
+            false,
+        );
+        // Kept aside twice: one archive, the same name; something else under
+        // that name is refused, not mistaken for it.
+        let pen = dir.path().join("pen").join("ponte-sync.ponte");
+        let drive = dir.path().join("drive").join("ponte-sync.ponte");
+        let first = sharedfolder::keep_aside(&pen).unwrap();
+        assert_eq!(sharedfolder::keep_aside(&pen).unwrap(), first);
+        let archives = |folder: &str| {
+            std::fs::read_dir(dir.path().join(folder))
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .contains("divergente")
+                })
+                .count()
+        };
+        assert_eq!(archives("pen"), 1);
+        let taken = sharedfolder::aside_path(&drive).unwrap();
+        std::fs::write(&taken, b"outra coisa").unwrap();
+        assert!(sharedfolder::keep_aside(&drive).is_err());
+        std::fs::remove_file(&taken).unwrap();
+
+        // A mirror the cloud client holds: the exchange reports it, in the
+        // summary too, and the other mirror is written.
+        let mut permissions = std::fs::metadata(&pen).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&pen, permissions.clone()).unwrap();
+        let both = [pen.as_path(), drive.as_path()];
+        let mut b = open(dir.path(), "b.sqlite3", "Celular", &both);
+        let report = sync(&mut b, &both);
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&pen, permissions).unwrap();
+        assert_eq!(
+            report.unwritten,
+            vec![pen.display().to_string()],
+            "{report:?}"
+        );
+        assert!(
+            report.summary().contains("não regravada"),
+            "{}",
+            report.summary()
+        );
+        assert_eq!(archives("pen"), 1, "the retry made no second archive");
     }
 
     #[test]

@@ -199,11 +199,19 @@ pub fn aside_path(path: &Path) -> Result<PathBuf> {
 /// a name that says it diverged. Returns where it went.
 pub fn keep_aside(path: &Path) -> Result<PathBuf> {
     let aside = aside_path(path)?;
-    ensure!(
-        !aside.exists(),
-        "Já existe um arquivo em {}.",
-        aside.display()
-    );
+    if aside.exists() {
+        // Kept by an earlier attempt (the folder could not be rewritten and
+        // the exchange came back): the same content, so there is one archive
+        // however many times it is retried. Anything else under that name is
+        // not touched and is not taken for the archive.
+        let same = aside.is_file()
+            && std::fs::read(&aside)
+                .ok()
+                .zip(std::fs::read(path).ok())
+                .is_some_and(|(a, b)| a == b);
+        ensure!(same, "Já existe um arquivo em {}.", aside.display());
+        return Ok(aside);
+    }
     std::fs::copy(path, &aside)
         .with_context(|| format!("Não foi possível guardar uma cópia de {}.", path.display()))?;
     Ok(aside)
