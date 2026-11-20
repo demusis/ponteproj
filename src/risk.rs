@@ -35,6 +35,27 @@ pub struct Risk {
     pub cause_title: String,
 }
 
+/// The second line of a delivery at risk: why it is at risk.
+pub fn reason(risk: &Risk) -> String {
+    let due = match (risk.due_date.get(8..10), risk.due_date.get(5..7)) {
+        (Some(day), Some(month)) => format!("{day}/{month}"),
+        _ => risk.due_date.clone(),
+    };
+    let end = risk
+        .end
+        .map(|end| end.format("%d/%m").to_string())
+        .unwrap_or_default();
+    match risk.kind {
+        RiskKind::LatePlanned => format!("fim planejado {end} passa do prazo {due}"),
+        RiskKind::LateProjected => format!(
+            "previsto até {end}, depois do prazo {due} · por causa de {}",
+            risk.cause_title
+        ),
+        RiskKind::MissingPlan => format!("sem previsão: falta planejar {}", risk.cause_title),
+        RiskKind::MissingEstimate => format!("sem previsão: falta estimar {}", risk.cause_title),
+    }
+}
+
 /// Whether an end falls after the day of the deadline. An end at exactly
 /// 00:00 counts as the previous day.
 pub fn end_after_due(end: NaiveDateTime, due: NaiveDate) -> bool {
