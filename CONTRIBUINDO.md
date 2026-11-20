@@ -172,13 +172,14 @@ Hoje: **acervo 21** (`SCHEMA_VERSION`, em `src/storage.rs`) e **arquivo da pasta
 
 | Acervo / pasta | Versão do Ponte | O que passou a fazer parte |
 |---|---|---|
-| 16 / 4 | 0.34.0 | `facts` e `proposals` da análise (propostas da IA); Ponte de bolso 0.7.2 |
-| 17 / 5 | 0.37.0 | Categorias |
-| 19 / 6 | 0.39.0 | Planejamento das tarefas (início, fim, estimativa, tarefa pai, avisos) |
-| 20 / 7 | 0.47.0 | Feriados do acervo (`library_settings`); Ponte de bolso 0.20.0 |
-| 21 / 8 | 0.48.0 | Projetos; Ponte de bolso 0.21.0 |
+| 15 | não documentada aqui | Recursos e usos (`RESOURCES_SCHEMA`); Ponte de bolso 0.7.0 |
+| 16 / 4 | 0.34.0 | `facts` e `proposals` da análise (propostas da IA, `PROPOSALS_SCHEMA`); Ponte de bolso 0.7.2 |
+| 17 / 5 | 0.37.0 | Categorias (`CATEGORIES_SCHEMA`) |
+| 19 / 6 | 0.39.0 | Planejamento das tarefas: início, fim, estimativa, tarefa pai e avisos (`SCHEDULE_SCHEMA`, no código, é 18, o primeiro esquema que os guarda) |
+| 20 / 7 | 0.47.0 | Feriados do acervo (`SETTINGS_SCHEMA`, `library_settings`); Ponte de bolso 0.20.0 |
+| 21 / 8 | 0.48.0 | Projetos (`PROJECTS_SCHEMA`); Ponte de bolso 0.21.0 |
 
-Os formatos 18 (e os anteriores ao 16) não estão descritos aqui porque o histórico do repositório não os documenta. O texto para a pessoa usuária está em [`README.md`](README.md), seção 6.11.
+As constantes `*_SCHEMA` ficam em `src/intranet.rs` e dizem a partir de que esquema cada coisa é guardada; uma cópia escrita por um esquema mais antigo não apaga o que este acervo já tem. O texto para a pessoa usuária está em [`README.md`](README.md), seção 6.11.
 
 ## 5. Compilar e testar
 
