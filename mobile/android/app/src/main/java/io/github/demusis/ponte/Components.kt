@@ -138,6 +138,7 @@ internal fun MainShell(
     val heading = when {
         state.tab == 1 && state.attendances -> "Atendimentos"
         state.tab == 1 && state.resources -> PhoneWords.RES_AREA
+        state.tab == 1 && state.projects -> "Projetos"
         else -> titles.getOrElse(state.tab) { "" }
     }
     Column(Modifier.fillMaxSize().background(c.ground)) {
@@ -269,6 +270,26 @@ internal object NavLabel {
         val fits = room / (longest * LETTER)
         return wantedDp.coerceAtMost(fits).coerceAtLeast(SMALLEST_DP)
     }
+
+    /**
+     * The relative width of each of [titles] in a row of segments: equal for up to three (as always), and for
+     * more, in proportion to the length of the word (plus a little for the sides).
+     */
+    fun shares(titles: List<String>): List<Float> =
+        if (titles.size <= 3) titles.map { 1f } else titles.map { it.length + 2f }
+
+    /** Like the plain [sizeDp], with the room of each word given by [shares] instead of an equal part. */
+    fun sizeDp(screenWidthDp: Int, titles: List<String>, wantedDp: Float, shares: List<Float>): Float {
+        if (titles.isEmpty() || titles.size != shares.size) return wantedDp
+        val total = shares.sum()
+        var size = wantedDp
+        titles.forEachIndexed { i, title ->
+            if (title.isEmpty()) return@forEachIndexed
+            val room = screenWidthDp * shares[i] / total - 2 * SIDE_DP
+            size = minOf(size, room / (title.length * LETTER))
+        }
+        return size.coerceAtLeast(SMALLEST_DP)
+    }
 }
 
 /**
@@ -391,7 +412,9 @@ internal fun TaskRow(
     secondLine: String,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
-    onOpen: (() -> Unit)? = null
+    onOpen: (() -> Unit)? = null,
+    /** The project chip is left out where the project is the screen itself. */
+    showProject: Boolean = true
 ) {
     val c = Ponte.colors
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -416,6 +439,7 @@ internal fun TaskRow(
             val flag = priorityFlag(task)
             if (flag != null) Pill(flag.first, tone = flag.second, modifier = Modifier.padding(top = 4.dp))
             CategoryChips(task.categories, Modifier.padding(top = 4.dp))
+            if (showProject && task.projectName.isNotEmpty()) ProjectChip(task.projectName, Modifier.padding(top = 4.dp))
         }
         if (!task.done && task.dueChip.isNotEmpty()) {
             Spacer(Modifier.width(8.dp))
@@ -449,19 +473,26 @@ internal fun FilterChips(
         modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(contentPadding),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically
     ) {
-        for ((key, label) in options) {
-            val on = key == selected
-            Surface(
-                onClick = { onSelect(key) },
-                shape = RoundedCornerShape(50),
-                color = if (on) c.accent else c.surface,
-                border = if (on) null else BorderStroke(1.dp, c.outline),
-                modifier = Modifier.height(32.dp)
-            ) {
-                Box(Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
-                    Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = if (on) c.onAccent else c.secondary)
-                }
-            }
+        for ((key, label) in options) FilterPill(label, key == selected) { onSelect(key) }
+    }
+}
+
+/** One filter pill: filled when [on], outlined otherwise. Give it a width limit in [modifier] to cut a long [label]. */
+@Composable
+internal fun FilterPill(label: String, on: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val c = Ponte.colors
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (on) c.accent else c.surface,
+        border = if (on) null else BorderStroke(1.dp, c.outline),
+        modifier = modifier.height(32.dp)
+    ) {
+        Box(Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+            Text(
+                label, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = if (on) c.onAccent else c.secondary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

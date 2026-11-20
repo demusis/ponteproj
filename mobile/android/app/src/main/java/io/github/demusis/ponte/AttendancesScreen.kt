@@ -60,7 +60,10 @@ internal fun SegmentedTabs(options: List<String>, selected: Int, onSelect: (Int)
     val density = androidx.compose.ui.platform.LocalDensity.current
     // The row loses 16 dp at each side and its own 3 dp padding.
     val room = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp - 38
-    val size = with(density) { NavLabel.sizeDp(room, options, 15f * density.fontScale).dp.toSp() }
+    // With more than three words, each gets room in proportion to its length (a short "Tarefas" does not take
+    // as much as "Atendimentos"), so the size stays readable on a narrow screen.
+    val shares = NavLabel.shares(options)
+    val size = with(density) { NavLabel.sizeDp(room, options, 15f * density.fontScale, shares).dp.toSp() }
     Row(
         modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
             .background(c.chip, RoundedCornerShape(24.dp)).padding(3.dp)
@@ -68,7 +71,7 @@ internal fun SegmentedTabs(options: List<String>, selected: Int, onSelect: (Int)
         options.forEachIndexed { i, label ->
             val on = i == selected
             Box(
-                Modifier.weight(1f).heightIn(min = 44.dp)
+                Modifier.weight(shares[i]).heightIn(min = 44.dp)
                     .background(if (on) c.surface else Color.Transparent, RoundedCornerShape(21.dp))
                     .selectable(selected = on, role = Role.Tab, onClick = { onSelect(i) }),
                 contentAlignment = Alignment.Center

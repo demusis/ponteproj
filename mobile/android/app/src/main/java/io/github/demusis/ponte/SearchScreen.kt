@@ -40,7 +40,10 @@ internal fun SearchScreen(
     onBack: () -> Unit,
     onOpenDocument: (Long) -> Unit,
     onOpenTask: (Long) -> Unit,
-    onOpenAttendance: (Long) -> Unit
+    onOpenAttendance: (Long) -> Unit,
+    /** The projects that match the text (name or objective), read from the list the phone already has. */
+    projects: List<ProjectItem> = emptyList(),
+    onOpenProject: (String) -> Unit = {}
 ) {
     val c = Ponte.colors
     val focus = remember { FocusRequester() }
@@ -60,11 +63,14 @@ internal fun SearchScreen(
                     icon = Icons.Outlined.Search
                 )
                 state.error != null -> Notice(state.error, tone = Tone.ERROR, modifier = Modifier.padding(16.dp))
-                result == null -> if (state.loading) LoadingBox(text = "Buscando…") else Unit
-                result.total == 0 && !state.loading -> EmptyState(
+                result == null && projects.isEmpty() -> if (state.loading) LoadingBox(text = "Buscando…") else Unit
+                (result?.total ?: 0) == 0 && projects.isEmpty() && !state.loading -> EmptyState(
                     "Nada encontrado.", text = "Tente outras palavras.", icon = Icons.Outlined.SearchOff
                 )
-                else -> Results(result, onOpenDocument, onOpenTask, onOpenAttendance)
+                else -> Results(
+                    result ?: SearchResult(SearchGroup.none(), SearchGroup.none(), SearchGroup.none()),
+                    projects, onOpenDocument, onOpenTask, onOpenAttendance, onOpenProject
+                )
             }
         }
     }
@@ -73,9 +79,11 @@ internal fun SearchScreen(
 @Composable
 private fun Results(
     r: SearchResult,
+    projects: List<ProjectItem>,
     onOpenDocument: (Long) -> Unit,
     onOpenTask: (Long) -> Unit,
-    onOpenAttendance: (Long) -> Unit
+    onOpenAttendance: (Long) -> Unit,
+    onOpenProject: (String) -> Unit
 ) {
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -85,6 +93,10 @@ private fun Results(
         group("d", "Documentos", r.documents, { it.id }) { d -> DocumentResult(d) { onOpenDocument(d.id) } }
         group("t", "Tarefas", r.tasks, { it.id }) { t -> TaskResult(t) { onOpenTask(t.id) } }
         group("a", "Atendimentos", r.attendances, { it.id }) { a -> AttendanceCard(a, onClick = { onOpenAttendance(a.id) }) }
+        if (projects.isNotEmpty()) {
+            item(key = "h-p") { SectionLabel("Projetos · ${projects.size}", Modifier.padding(top = 8.dp)) }
+            items(projects, key = { "p-${it.uid}" }) { p -> ProjectResult(p) { onOpenProject(p.uid) } }
+        }
     }
 }
 
@@ -121,6 +133,27 @@ private fun DocumentResult(d: SearchDoc, onClick: () -> Unit) {
             if (d.number.isNotEmpty()) {
                 Text(d.number, style = MaterialTheme.typography.bodySmall, color = c.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+        }
+    }
+}
+
+@Composable
+private fun ProjectResult(p: ProjectItem, onClick: () -> Unit) {
+    val c = Ponte.colors
+    PonteCard(onClick = onClick) {
+        Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    p.name, Modifier.weight(1f), fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = c.text,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(8.dp))
+                ProjectStatusPill(p)
+            }
+            Text(
+                ProjectRules.progressLine(p.progress), style = MaterialTheme.typography.bodySmall, color = c.muted,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

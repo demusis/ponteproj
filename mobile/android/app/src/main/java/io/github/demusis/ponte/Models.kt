@@ -41,7 +41,10 @@ internal data class TaskItem(
     val estimateMinutes: Int = 0,
     val parentTaskId: Long? = null,
     val reminderOffsetsMinutes: List<Int> = emptyList(),
-    val dependencies: List<Long> = emptyList()
+    val dependencies: List<Long> = emptyList(),
+    /** Uid and name of the project of the task; empty for none. */
+    val projectUid: String = "",
+    val projectName: String = ""
 ) {
     /** The group while open: the core's, or, for a task reopened here and not yet reloaded, from its flags. */
     val openBucket: String
@@ -83,7 +86,8 @@ internal fun JSONObject.toTask(): TaskItem {
         estimateMinutes = optInt("estimate_minutes"),
         parentTaskId = if (isNull("parent_task_id")) null else optLong("parent_task_id"),
         dependencies = optJSONArray("dependencies")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList(),
-        reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList()
+        reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList(),
+        projectUid = s("project_uid"), projectName = s("project_name")
     )
 }
 
@@ -226,7 +230,9 @@ internal data class TaskForm(
     val estimateMinutes: Int = 0,
     val parentTaskId: Long? = null,
     val reminderOffsetsMinutes: List<Int> = emptyList(),
-    val dependencies: List<Long> = emptyList()
+    val dependencies: List<Long> = emptyList(),
+    /** Uid of the project; empty for "Sem projeto". */
+    val projectUid: String = ""
 ) {
     companion object
 
@@ -249,6 +255,7 @@ internal data class TaskForm(
         if (assignee.trim() != saved.assignee.trim()) out["assignee"] = assignee.trim()
         if (notes != saved.notes) out["notes"] = notes
         if (categories.toSet() != saved.categories.toSet()) out["categories"] = categories
+        if (projectUid != saved.projectUid) out["project_uid"] = projectUid
         return out
     }
 }
@@ -265,7 +272,9 @@ internal data class TaskDetail(
     val version: Long,
     val checklist: List<ChecklistItem>,
     val uid: String = "",
-    val dependencies: List<Long> = emptyList()
+    val dependencies: List<Long> = emptyList(),
+    /** Name of the project the form's [TaskForm.projectUid] was read with (shown when the project is not in the list). */
+    val projectName: String = ""
 ) {
     val scheduledStart: String get() = form.scheduledStart
     val scheduledEnd: String get() = form.scheduledEnd
@@ -288,7 +297,7 @@ internal data class TaskDetail(
 
 internal fun JSONObject.toTaskDetail() = TaskDetail(
     id = optLong("id"), documentId = optLong("document_id"), documentNumber = s("document_number"),
-    documentTitle = s("document_title"), uid = s("uid"),
+    documentTitle = s("document_title"), uid = s("uid"), projectName = s("project_name"),
     dependencies = optJSONArray("dependencies")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList(),
     form = TaskForm(
         title = s("title"), action = s("action"), priority = s("priority", "normal").ifEmpty { "normal" },
@@ -298,7 +307,8 @@ internal fun JSONObject.toTaskDetail() = TaskDetail(
         estimateMinutes = optInt("estimate_minutes"),
         parentTaskId = if (isNull("parent_task_id")) null else optLong("parent_task_id"),
         reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList(),
-        dependencies = optJSONArray("dependencies")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList()
+        dependencies = optJSONArray("dependencies")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList(),
+        projectUid = s("project_uid")
     ),
     done = s("status") == "concluida", version = optLong("version"),
     checklist = optJSONArray("checklist").objs().map { ChecklistItem(it.optBoolean("done"), it.s("text")) }
@@ -475,7 +485,9 @@ internal data class ShellState(
     /** The Tarefas area shows its Atendimentos list (the title says so). */
     val attendances: Boolean = false,
     /** The Tarefas area shows its Recursos list (the title says so). */
-    val resources: Boolean = false
+    val resources: Boolean = false,
+    /** The Tarefas area shows its Projetos list (the title says so). */
+    val projects: Boolean = false
 )
 
 internal data class TasksState(
