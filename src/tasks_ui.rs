@@ -8,6 +8,14 @@ struct FormProjectionCache {
     title: String,
 }
 
+#[derive(Clone)]
+struct FormImpactCache {
+    stamp: Option<(i64, i64)>,
+    task: crate::tasks::Task,
+    today: chrono::NaiveDate,
+    impact: crate::impact::Impact,
+}
+
 use crate::category_ui::CategoryFilter;
 use crate::theme::{self, c, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
@@ -3427,6 +3435,35 @@ impl TaskPanel {
                         }
                         if planned_end_after_due(&task.scheduled_end, &task.due_date) {
                             ui.label(RichText::new(format!("⚠ O fim planejado passa do prazo ({}).", crate::labels::date(&task.due_date))).color(c().warn));
+                        }
+                        let impact_id = egui::Id::unique("task-form-impact");
+                        let stamp = store.library_stamp();
+                        let today = chrono::Local::now().date_naive();
+                        let cached = ui.data(|d| d.get_temp::<FormImpactCache>(impact_id));
+                        let result = cached.filter(|cached| stamp.is_some() && cached.stamp == stamp && cached.task == *task && cached.today == today).unwrap_or_else(|| {
+                            let result = FormImpactCache { stamp, task: task.clone(), today, impact: crate::impact::impact(tasks, task, today) };
+                            ui.data_mut(|d| d.insert_temp(impact_id, result.clone()));
+                            result
+                        });
+                        let impact = &result.impact;
+                        if !impact.is_empty() {
+                            ui.add(egui::Label::new(RichText::new("Efeito desta mudança (ainda não salva)").small().strong()).truncate());
+                            let period = |value: Option<(chrono::NaiveDateTime, chrono::NaiveDateTime)>| match value {
+                                Some((start, end)) => format!("previsto {} – {}", start.format("%d/%m"), end.format("%d/%m")),
+                                None => "sem previsão".to_owned(),
+                            };
+                            for moved in impact.moved.iter().take(4) {
+                                ui.add(egui::Label::new(RichText::new(format!("{}: {} → {}", moved.title, period(moved.before), period(moved.after))).small().weak()).truncate());
+                            }
+                            if impact.moved.len() > 4 { widgets::small_muted(ui, format!("e mais {} tarefas", impact.moved.len() - 4)); }
+                            for risk in impact.new_risks.iter().take(3) {
+                                ui.add(egui::Label::new(RichText::new(format!("⚠ Entra em risco: {} — {}", risk.title, crate::risk::reason(risk))).small().color(c().warn)).truncate());
+                            }
+                            if impact.new_risks.len() > 3 { widgets::small_muted(ui, format!("e mais {}", impact.new_risks.len() - 3)); }
+                            for risk in impact.cleared_risks.iter().take(3) {
+                                ui.add(egui::Label::new(RichText::new(format!("Sai do risco: {}", risk.title)).small().weak()).truncate());
+                            }
+                            if impact.cleared_risks.len() > 3 { widgets::small_muted(ui, format!("e mais {}", impact.cleared_risks.len() - 3)); }
                         }
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Avisos antes do início planejado:");

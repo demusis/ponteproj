@@ -1240,25 +1240,6 @@ fn row_with_hover(
     inner.clicked()
 }
 
-/// The second line of a delivery at risk: why it is at risk.
-fn risk_reason(risk: &crate::risk::Risk) -> String {
-    use crate::risk::RiskKind;
-    let due = day_month(&risk.due_date);
-    let end = risk
-        .end
-        .map(|end| end.format("%d/%m").to_string())
-        .unwrap_or_default();
-    match risk.kind {
-        RiskKind::LatePlanned => format!("fim planejado {end} passa do prazo {due}"),
-        RiskKind::LateProjected => format!(
-            "previsto até {end}, depois do prazo {due} · por causa de {}",
-            risk.cause_title
-        ),
-        RiskKind::MissingPlan => format!("sem previsão: falta planejar {}", risk.cause_title),
-        RiskKind::MissingEstimate => format!("sem previsão: falta estimar {}", risk.cause_title),
-    }
-}
-
 /// "Entregas em risco · N": the deliveries whose deadline the plan does not
 /// meet, each opening the task that needs attention. Nothing when none.
 fn risk_group(ui: &mut egui::Ui, data: &TodayData, open: bool, asked: &mut Option<Asked>) {
@@ -1296,7 +1277,7 @@ fn risk_group(ui: &mut egui::Ui, data: &TodayData, open: bool, asked: &mut Optio
                             );
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(risk_reason(risk))
+                                    RichText::new(crate::risk::reason(risk))
                                         .size(theme::SIZE_SMALL)
                                         .color(p.muted),
                                 )
@@ -1780,19 +1761,19 @@ mod tests {
             cause_title: "Etapa".into(),
         };
         assert_eq!(
-            risk_reason(&risk(RiskKind::LatePlanned, Some("2026-11-26T18:00"))),
+            crate::risk::reason(&risk(RiskKind::LatePlanned, Some("2026-11-26T18:00"))),
             "fim planejado 26/11 passa do prazo 25/11"
         );
         assert_eq!(
-            risk_reason(&risk(RiskKind::LateProjected, Some("2026-11-26T18:00"))),
+            crate::risk::reason(&risk(RiskKind::LateProjected, Some("2026-11-26T18:00"))),
             "previsto até 26/11, depois do prazo 25/11 · por causa de Etapa"
         );
         assert_eq!(
-            risk_reason(&risk(RiskKind::MissingPlan, None)),
+            crate::risk::reason(&risk(RiskKind::MissingPlan, None)),
             "sem previsão: falta planejar Etapa"
         );
         assert_eq!(
-            risk_reason(&risk(RiskKind::MissingEstimate, None)),
+            crate::risk::reason(&risk(RiskKind::MissingEstimate, None)),
             "sem previsão: falta estimar Etapa"
         );
     }

@@ -23,6 +23,7 @@ pub mod help_ui;
 pub mod holidays;
 pub mod idmap;
 pub mod imap;
+pub mod impact;
 pub mod mail;
 #[cfg(feature = "desktop")]
 pub mod mail_ui;
