@@ -733,6 +733,7 @@ fn old_request(mutation: IntranetMutation) -> RpcRequest {
         mutation,
         client_schema: crate::intranet::PROJECTS_SCHEMA - 1,
         expected_generation: String::new(),
+        mutation_uid: String::new(),
     }
 }
 
@@ -773,6 +774,7 @@ fn an_older_client_saving_a_task_keeps_the_project_it_cannot_see() {
             },
             client_schema: crate::storage::SCHEMA_VERSION,
             expected_generation: String::new(),
+            mutation_uid: String::new(),
         },
     )
     .unwrap();
@@ -1286,6 +1288,7 @@ fn only_an_explicit_removal_takes_the_project_off_a_task_through_the_main_comput
                 },
                 client_schema: crate::storage::SCHEMA_VERSION,
                 expected_generation: String::new(),
+                mutation_uid: String::new(),
             },
         )
         .unwrap();

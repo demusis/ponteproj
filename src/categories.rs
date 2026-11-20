@@ -1135,6 +1135,7 @@ mod tests {
             mutation,
             client_schema: 16,
             expected_generation: String::new(),
+            mutation_uid: String::new(),
         })
         .unwrap();
         json["Mutate"]
@@ -1220,6 +1221,7 @@ mod tests {
                 },
                 client_schema: crate::storage::SCHEMA_VERSION,
                 expected_generation: String::new(),
+                mutation_uid: String::new(),
             },
         )
         .unwrap();

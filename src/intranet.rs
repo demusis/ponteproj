@@ -908,6 +908,11 @@ pub struct OutboxEntry {
     /// later changes can be translated to the numbers it gets elsewhere.
     #[serde(default)]
     pub created: Vec<crate::idmap::CreatedId>,
+    /// A send of this change may have reached the main computer (its answer
+    /// did not come back): it keeps its `uid` for the next send and later
+    /// edits of the same item are queued after it, not merged into it.
+    #[serde(default)]
+    pub attempted: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -990,6 +995,12 @@ pub enum RpcRequest {
         /// a Ponte that does not send it (never refused).
         #[serde(default, skip_serializing_if = "String::is_empty")]
         expected_generation: String,
+        /// Identity of this change, made before the first attempt to send
+        /// it and kept by the queue. The main computer records it with the
+        /// answer, so a change whose answer was lost is not applied twice
+        /// when it is sent again. Empty from a Ponte that does not send it.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        mutation_uid: String,
     },
 }
 
@@ -1045,6 +1056,16 @@ struct StoredDraftPayload {
 /// replaced by another history (a folder being joined, a main computer that
 /// went back to an older copy); the window shows what follows it.
 const CONFIRM_REPLACE: &str = "[confirmar-substituicao]";
+
+/// How long, and how many, answers to applied changes the main computer keeps.
+const RECEIPT_DAYS: i64 = 30;
+const RECEIPT_LIMIT: i64 = 5000;
+
+/// Whether a change identity sent by a client is one the main computer keeps
+/// answers for (a uuid, as the queue makes them).
+fn valid_mutation_uid(uid: &str) -> bool {
+    (8..=64).contains(&uid.len()) && uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
 
 /// What the main computer answers to a change made against another history
 /// (its library was replaced by a backup): the change is kept in the sender's
@@ -1579,6 +1600,11 @@ impl Store {
                 created_at TEXT NOT NULL,
                 payload BLOB NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS mutation_receipts(
+                uid TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                reply BLOB NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS host_generation(
                 id INTEGER PRIMARY KEY CHECK(id=1),
                 value TEXT NOT NULL
@@ -1680,6 +1706,40 @@ impl Store {
             }
         }
         Ok(generation)
+    }
+
+    /// The answer given to a change already applied here under `uid`.
+    fn mutation_receipt(&self, uid: &str) -> Result<Option<MutationReply>> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT reply FROM mutation_receipts WHERE uid=?1",
+                [uid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match blob {
+            Some(bytes) => Ok(Some(serde_json::from_slice(&unseal(&bytes)?)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Keeps the answer given to the change `uid`, so sending it again gets
+    /// the same answer instead of applying it again. Old receipts go away:
+    /// a lost answer is retried within days, not months.
+    fn record_mutation_receipt(&self, uid: &str, reply: &MutationReply) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO mutation_receipts(uid,created_at,reply) VALUES(?1,?2,?3)",
+            params![uid, now_iso(), seal(&serde_json::to_vec(reply)?)?],
+        )?;
+        let cutoff = (Utc::now() - chrono::Duration::days(RECEIPT_DAYS))
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        self.conn.execute(
+            "DELETE FROM mutation_receipts WHERE created_at<?1
+             OR rowid NOT IN (SELECT rowid FROM mutation_receipts ORDER BY rowid DESC LIMIT ?2)",
+            params![cutoff, RECEIPT_LIMIT],
+        )?;
+        Ok(())
     }
 
     /// Notes the history (see [`Store::host_generation`]) when this library
@@ -3039,14 +3099,17 @@ impl Store {
                         continue;
                     }
                 };
-                match send_rpc_classified(
+                let mut reached = false;
+                match send_rpc_tracked(
                     &cfg,
                     &RpcRequest::Mutate {
                         actor: sent.actor.clone(),
                         mutation: sent.mutation.clone(),
                         client_schema: crate::storage::SCHEMA_VERSION,
                         expected_generation: cfg.host_generation.clone(),
+                        mutation_uid: sent.uid.clone(),
                     },
+                    &mut reached,
                 ) {
                     Ok(RpcResponse::Mutated {
                         reply, snapshot, ..
@@ -3069,6 +3132,11 @@ impl Store {
                         );
                     }
                     Err(RpcError::Unreachable(msg)) => {
+                        if reached {
+                            // It may have been applied: it keeps its identity
+                            // and stands alone until the next exchange.
+                            self.mark_outbox_attempted(entry.id)?;
+                        }
                         bail!("{msg}");
                     }
                 }
@@ -3806,6 +3874,7 @@ impl Store {
                             }),
                             uid: entry.uid.clone(),
                             created: Vec::new(),
+                            attempted: false,
                         };
                         conflicts.push(conflict_for(
                             &as_entry,
@@ -4137,6 +4206,26 @@ impl Store {
         Ok(())
     }
 
+    /// Marks a queued change as possibly applied by the main computer.
+    fn mark_outbox_attempted(&mut self, entry_id: i64) -> Result<()> {
+        let Some(mut entry) = self
+            .list_offline_outbox()?
+            .into_iter()
+            .find(|e| e.id == entry_id)
+        else {
+            return Ok(());
+        };
+        if entry.attempted {
+            return Ok(());
+        }
+        entry.attempted = true;
+        self.conn.execute(
+            "UPDATE offline_outbox SET payload=?1 WHERE id=?2",
+            params![seal(&serde_json::to_vec(&entry)?)?, entry_id],
+        )?;
+        Ok(())
+    }
+
     fn version_map(&self) -> Result<BTreeMap<(String, i64), i64>> {
         let mut statement = self
             .conn
@@ -4195,19 +4284,26 @@ impl Store {
             // synchronization.
             return self.queue_locally(&actor, mutation);
         }
+        // The identity is made before the first attempt: if the answer is
+        // lost, the queue sends the very same change under the same identity
+        // and the main computer recognizes it.
+        let uid = uuid::Uuid::new_v4().simple().to_string();
+        let mut reached = false;
         let attempt = if self.host_known_unreachable() {
             Err(RpcError::Unreachable(
                 "Computador principal fora de alcance (verificado há instantes).".into(),
             ))
         } else {
-            send_rpc_classified(
+            send_rpc_tracked(
                 cfg,
                 &RpcRequest::Mutate {
                     actor: actor.clone(),
                     mutation: mutation.clone(),
                     client_schema: crate::storage::SCHEMA_VERSION,
                     expected_generation: cfg.host_generation.clone(),
+                    mutation_uid: uid.clone(),
                 },
+                &mut reached,
             )
         };
         match attempt {
@@ -4239,7 +4335,7 @@ impl Store {
             Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message))
                 if message == HISTORY_CHANGED =>
             {
-                self.queue_locally(&actor, mutation)
+                self.queue_locally_as(&actor, mutation, Some((uid, false)))
             }
             Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
                 bail!("{message}")
@@ -4248,8 +4344,10 @@ impl Store {
             Err(RpcError::Unreachable(_)) => {
                 // O computador anfitrião está desligado ou inacessível:
                 // aplica a alteração localmente e enfileira na caixa de saída offline para sincronização mútua posterior!
+                // Se o pedido pode ter chegado (a resposta é que se perdeu), a
+                // fila guarda a mesma identidade para o envio seguinte.
                 self.note_host_reachability(false);
-                self.queue_locally(&actor, mutation)
+                self.queue_locally_as(&actor, mutation, Some((uid, reached)))
             }
         }
     }
@@ -4323,11 +4421,23 @@ impl Store {
     /// Applies the change here and queues it, keeping the state before the
     /// change as the common ancestor for a field-by-field merge later.
     fn queue_locally(&mut self, actor: &str, mutation: IntranetMutation) -> Result<MutationReply> {
+        self.queue_locally_as(actor, mutation, None)
+    }
+
+    /// [`Store::queue_locally`] for a change that was already given its
+    /// identity (`uid`) and, when `attempted`, may have reached the main
+    /// computer without the answer coming back.
+    fn queue_locally_as(
+        &mut self,
+        actor: &str,
+        mutation: IntranetMutation,
+        identity: Option<(String, bool)>,
+    ) -> Result<MutationReply> {
         let queued_mutation = self.prepare_mutation_for_outbox(mutation.clone());
         let base = self.snapshot_for_mutation(&queued_mutation);
         let reply = self.execute_mutation(actor, mutation)?;
         let created = crate::idmap::created_ids(&*self, &queued_mutation, &reply)?;
-        self.enqueue_offline_mutation(actor, queued_mutation, base, created)?;
+        self.enqueue_offline_mutation(actor, queued_mutation, base, created, identity)?;
         self.offline_queued += 1;
         Ok(reply)
     }
@@ -4687,6 +4797,7 @@ impl Store {
         mutation: IntranetMutation,
         base: Option<IntranetMutation>,
         created: Vec<crate::idmap::CreatedId>,
+        identity: Option<(String, bool)>,
     ) -> Result<()> {
         let existing = self.list_offline_outbox()?;
         // A relink is never merged into another change, and nothing is merged
@@ -4702,6 +4813,9 @@ impl Store {
                 .rev()
                 .find(|e| mutation_target_key(&e.mutation).as_deref() == Some(key.as_str()))
                 .filter(|e| !matches!(e.mutation, IntranetMutation::RelinkTask { .. }))
+                // A change that may already be on the main computer is not
+                // rewritten: its identity must stay what was sent.
+                .filter(|e| !e.attempted)
                 .cloned()
             {
                 // The merged edit keeps the place of the first one (later
@@ -4753,7 +4867,7 @@ impl Store {
                             _ => None,
                         };
                     }
-                    self.insert_outbox_entry(actor, mutation, base, Vec::new())?;
+                    self.insert_outbox_entry(actor, mutation, base, Vec::new(), None)?;
                     return Ok(());
                 }
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
@@ -4770,6 +4884,7 @@ impl Store {
                     uid: uuid::Uuid::new_v4().simple().to_string(),
                     // Edits create nothing: what the first one recorded stays.
                     created: prev.created,
+                    attempted: false,
                 };
                 let payload = seal(&serde_json::to_vec(&updated)?)?;
                 if must_move {
@@ -4789,7 +4904,7 @@ impl Store {
                 return Ok(());
             }
         }
-        self.insert_outbox_entry(actor, mutation, base, created)
+        self.insert_outbox_entry(actor, mutation, base, created, identity)
     }
 
     fn insert_outbox_entry(
@@ -4798,7 +4913,10 @@ impl Store {
         mutation: IntranetMutation,
         base: Option<IntranetMutation>,
         created: Vec<crate::idmap::CreatedId>,
+        identity: Option<(String, bool)>,
     ) -> Result<()> {
+        let (uid, attempted) =
+            identity.unwrap_or_else(|| (uuid::Uuid::new_v4().simple().to_string(), false));
         let entry = OutboxEntry {
             id: 0,
             created_at: now_iso(),
@@ -4806,8 +4924,9 @@ impl Store {
             label: mutation_label(&mutation),
             mutation,
             base,
-            uid: uuid::Uuid::new_v4().simple().to_string(),
+            uid,
             created,
+            attempted,
         };
         self.conn.execute(
             "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
@@ -7955,6 +8074,17 @@ fn send_rpc_classified(
     cfg: &IntranetConfig,
     request: &RpcRequest,
 ) -> std::result::Result<RpcResponse, RpcError> {
+    send_rpc_tracked(cfg, request, &mut false)
+}
+
+/// [`send_rpc_classified`] that also says, in `reached`, whether the request
+/// may have got to the main computer when it fails as unreachable: a refused
+/// connection cannot have, a cut answer can.
+fn send_rpc_tracked(
+    cfg: &IntranetConfig,
+    request: &RpcRequest,
+    reached: &mut bool,
+) -> std::result::Result<RpcResponse, RpcError> {
     let base = validate_host_url(&cfg.host_url).map_err(|e| RpcError::Rejected(e.to_string()))?;
     validate_token(&cfg.cabinet_token).map_err(|e| RpcError::Rejected(e.to_string()))?;
     // Reject unsupported task creates first so dependent queued changes become conflicts too.
@@ -8042,12 +8172,14 @@ fn send_rpc_classified(
         .json(request)
         .send()
         .map_err(|e| {
+            *reached = !e.is_connect();
             RpcError::Unreachable(format!(
                 "Sem conexão com o computador principal em {base}: {e}"
             ))
         })?;
     let status = response.status();
     if status.is_server_error() {
+        *reached = true;
         // Busy or failing for a moment (library locked, too many
         // connections), whatever the body says or even if it was cut off:
         // the change waits and is sent again later; it is not a refusal of
@@ -8063,9 +8195,16 @@ fn send_rpc_classified(
         ));
     }
     let rpc: RpcResponse = response.json().map_err(|e| {
-        RpcError::Rejected(format!(
-            "Resposta inválida recebida do computador principal: {e}"
-        ))
+        let message = format!("Resposta inválida recebida do computador principal: {e}");
+        if status.is_success() {
+            // The main computer accepted the request and the answer was cut
+            // off or garbled: the change may be applied there, so it is not
+            // a refusal; it waits and is sent again under the same identity.
+            *reached = true;
+            RpcError::Unreachable(message)
+        } else {
+            RpcError::Rejected(message)
+        }
     })?;
     if let RpcResponse::Error { message } = &rpc {
         if message == HOST_TOO_OLD {
@@ -8527,6 +8666,7 @@ pub(crate) fn process_rpc(
             mutation,
             client_schema,
             expected_generation,
+            mutation_uid,
         } => {
             ensure!(
                 !actor.trim().is_empty()
@@ -8539,8 +8679,28 @@ pub(crate) fn process_rpc(
                 expected_generation.is_empty() || expected_generation == generation,
                 "{HISTORY_CHANGED}"
             );
+            let receipted = valid_mutation_uid(&mutation_uid);
+            if receipted {
+                // Already applied (its answer was lost on the way back): the
+                // same answer, and nothing is applied again, whatever
+                // happened to the item since.
+                if let Some(reply) = store.mutation_receipt(&mutation_uid)? {
+                    let mut snapshot = store.export_snapshot()?;
+                    snapshot.generation = generation;
+                    return Ok(RpcResponse::Mutated {
+                        revision: snapshot.revision,
+                        reply,
+                        snapshot: Box::new(snapshot),
+                    });
+                }
+            }
             let mutation = store.keep_unseen_fields(mutation, client_schema)?;
             let reply = store.execute_mutation(&actor, mutation)?;
+            if receipted {
+                // Without it a repeated send would only be applied again,
+                // as before: the change itself is already done.
+                let _ = store.record_mutation_receipt(&mutation_uid, &reply);
+            }
             let mut snapshot = store.export_snapshot()?;
             snapshot.generation = generation;
             Ok(RpcResponse::Mutated {
@@ -14603,6 +14763,7 @@ mod resources_sync_tests {
             actor: "Ana".into(),
             client_schema: crate::storage::SCHEMA_VERSION,
             expected_generation: String::new(),
+            mutation_uid: String::new(),
             mutation: before[0].mutation.clone(),
         };
         assert!(matches!(
@@ -14702,6 +14863,7 @@ mod resources_sync_tests {
             actor: "Ana".into(),
             client_schema: crate::storage::SCHEMA_VERSION,
             expected_generation: String::new(),
+            mutation_uid: String::new(),
             mutation: IntranetMutation::SaveTask {
                 task: Task::standalone(),
                 expected_version: None,
@@ -14801,6 +14963,7 @@ mod resources_sync_tests {
                     actor: "Servidor B".into(),
                     client_schema: crate::storage::SCHEMA_VERSION,
                     expected_generation: String::new(),
+                    mutation_uid: String::new(),
                     mutation,
                 },
             );
@@ -14817,6 +14980,7 @@ mod resources_sync_tests {
                 actor: "Servidor B".into(),
                 client_schema: crate::storage::SCHEMA_VERSION,
                 expected_generation: String::new(),
+                mutation_uid: String::new(),
                 mutation: IntranetMutation::SaveTask {
                     task: task.clone(),
                     expected_version: None,
@@ -14831,6 +14995,7 @@ mod resources_sync_tests {
                 actor: "Servidor B".into(),
                 client_schema: crate::storage::SCHEMA_VERSION,
                 expected_generation: String::new(),
+                mutation_uid: String::new(),
                 mutation: IntranetMutation::SaveTask {
                     task: Task::standalone(),
                     expected_version: None,
@@ -14935,6 +15100,7 @@ mod resources_sync_tests {
                 actor: "Servidor B".into(),
                 client_schema: crate::storage::SCHEMA_VERSION,
                 expected_generation: String::new(),
+                mutation_uid: String::new(),
                 mutation,
             },
         );
@@ -14949,6 +15115,7 @@ mod resources_sync_tests {
                 actor: "Servidor B".into(),
                 client_schema: crate::storage::SCHEMA_VERSION,
                 expected_generation: String::new(),
+                mutation_uid: String::new(),
                 mutation: IntranetMutation::SaveNote {
                     document_id: 1,
                     note: "x".into(),
@@ -15059,6 +15226,7 @@ mod resources_sync_tests {
                     actor: "Servidor B".into(),
                     client_schema: crate::storage::SCHEMA_VERSION,
                     expected_generation: String::new(),
+                    mutation_uid: String::new(),
                     mutation,
                 },
             )
@@ -15624,5 +15792,314 @@ mod host_history_tests {
             rig.client.load_intranet_config().unwrap().host_generation,
             before.host_generation
         );
+    }
+}
+
+#[cfg(test)]
+mod lost_reply_tests {
+    use super::*;
+    use crate::model::sample_capture;
+    use crate::resources::Resource;
+    use crate::tasks::Task;
+    use std::io::Read;
+    use std::sync::Mutex;
+
+    /// Stands between a client and the main computer: it forwards each
+    /// request, waits for the main computer to finish it (so the change is
+    /// committed) and, while `drop_replies` is above zero, closes the
+    /// connection without handing the answer back.
+    struct LossyLine {
+        addr: SocketAddr,
+        drop_replies: Arc<Mutex<usize>>,
+    }
+
+    impl LossyLine {
+        fn to(host: SocketAddr) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let drop_replies = Arc::new(Mutex::new(0_usize));
+            let counter = drop_replies.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut client) = stream else { continue };
+                    let counter = counter.clone();
+                    std::thread::spawn(move || {
+                        let mut request = Vec::new();
+                        let mut chunk = [0_u8; 4096];
+                        loop {
+                            let Ok(read) = client.read(&mut chunk) else {
+                                return;
+                            };
+                            if read == 0 {
+                                return;
+                            }
+                            request.extend_from_slice(&chunk[..read]);
+                            let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n")
+                            else {
+                                continue;
+                            };
+                            let head = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                            let length = head
+                                .lines()
+                                .find_map(|l| l.strip_prefix("content-length:"))
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                                .unwrap_or(0);
+                            if request.len() >= end + 4 + length {
+                                break;
+                            }
+                        }
+                        let Ok(mut host) = std::net::TcpStream::connect(host) else {
+                            return;
+                        };
+                        host.write_all(&request).unwrap();
+                        let mut answer = Vec::new();
+                        let _ = host.read_to_end(&mut answer);
+                        // Only the answers to changes are lost (a ping before
+                        // the change must get through).
+                        let is_change = String::from_utf8_lossy(&request).contains("\"Mutate\"");
+                        let lose = is_change && {
+                            let mut left = counter.lock().unwrap();
+                            let lose = *left > 0;
+                            *left = left.saturating_sub(1);
+                            lose
+                        };
+                        if !lose {
+                            let _ = client.write_all(&answer);
+                        }
+                    });
+                }
+            });
+            Self { addr, drop_replies }
+        }
+
+        fn lose_next_replies(&self, count: usize) {
+            *self.drop_replies.lock().unwrap() = count;
+        }
+    }
+
+    struct Pair {
+        _dir: tempfile::TempDir,
+        host: Store,
+        client: Store,
+        line: LossyLine,
+        _server: HostServer,
+        document: i64,
+        capture: i64,
+    }
+
+    fn pair() -> Pair {
+        let dir = tempfile::tempdir().unwrap();
+        let host_path = dir.path().join("host.sqlite3");
+        let token = generate_token();
+        let mut host = Store::open(&host_path).unwrap();
+        host.save_intranet_config(&IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "ANFITRIAO".into(),
+            bind_addr: "127.0.0.1:0".into(),
+            cabinet_token: token.clone(),
+            ..IntranetConfig::default()
+        })
+        .unwrap();
+        let receipt = host.import_capture(&sample_capture()).unwrap();
+        let server = HostServer::start(host_path, "127.0.0.1:0").unwrap();
+        let line = LossyLine::to(server.local_addr());
+        let mut client = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        client
+            .save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::Client,
+                member_name: "CLIENTE".into(),
+                host_url: format!("http://{}", line.addr),
+                cabinet_token: token,
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+        client.sync_from_host(false).unwrap();
+        Pair {
+            _dir: dir,
+            host,
+            client,
+            line,
+            _server: server,
+            document: receipt.document_id,
+            capture: receipt.capture_id,
+        }
+    }
+
+    #[test]
+    fn a_created_resource_whose_reply_was_lost_is_applied_once_and_a_later_host_edit_survives() {
+        let mut pair = pair();
+        pair.line.lose_next_replies(1);
+        let uid = pair
+            .client
+            .save_resource(
+                &Resource {
+                    name: "Sala 1".into(),
+                    kind: "sala".into(),
+                    ..Resource::default()
+                },
+                None,
+            )
+            .unwrap();
+        // The main computer committed it; this computer only knows the line
+        // dropped, so it kept the change in its queue.
+        assert_eq!(pair.host.list_resources().unwrap().len(), 1);
+        let queued = pair.client.list_offline_outbox().unwrap();
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].attempted && !queued[0].uid.is_empty());
+
+        // Meanwhile somebody edits it on the main computer.
+        let mut edited = pair.host.list_resources().unwrap().remove(0);
+        edited.name = "Sala 1 (reformada)".into();
+        let version = pair.host.uid_version("resource", &uid);
+        pair.host.save_resource(&edited, version).unwrap();
+
+        // The queue goes again: the same change, recognized, not applied.
+        pair.client.sync_from_host(false).unwrap();
+        assert!(pair.client.list_offline_outbox().unwrap().is_empty());
+        assert!(
+            pair.client.list_sync_conflicts().unwrap().is_empty(),
+            "{:?}",
+            pair.client.list_sync_conflicts().unwrap()
+        );
+        for store in [&pair.host, &pair.client] {
+            let all = store.list_resources().unwrap();
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].name, "Sala 1 (reformada)", "the later edit is kept");
+        }
+    }
+
+    #[test]
+    fn a_draft_whose_reply_was_lost_is_not_inserted_twice() {
+        let mut pair = pair();
+        pair.line.lose_next_replies(1);
+        pair.client
+            .save_draft(pair.document, pair.capture, "resposta", "Corpo da minuta")
+            .unwrap();
+        let drafts = |store: &Store| store.load_document(pair.document).unwrap().drafts.len();
+        assert_eq!(drafts(&pair.host), 1, "the main computer committed it");
+        assert_eq!(pair.client.list_offline_outbox().unwrap().len(), 1);
+        pair.client.sync_from_host(false).unwrap();
+        assert!(pair.client.list_offline_outbox().unwrap().is_empty());
+        assert_eq!(drafts(&pair.host), 1, "applied once");
+        assert_eq!(drafts(&pair.client), 1);
+    }
+
+    #[test]
+    fn a_task_created_while_the_reply_was_lost_is_not_created_twice_and_the_replay_may_be_cut_too()
+    {
+        let mut pair = pair();
+        pair.line.lose_next_replies(1);
+        let mut task = Task::new(pair.document);
+        task.title = "Tarefa única".into();
+        pair.client.save_task(&task).unwrap();
+        let titled = |store: &Store| {
+            store
+                .list_tasks()
+                .unwrap()
+                .into_iter()
+                .filter(|t| t.title == "Tarefa única")
+                .count()
+        };
+        assert_eq!(titled(&pair.host), 1);
+        // A later edit does not rewrite the change that may be on the main
+        // computer: it queues after it.
+        let mut again = pair
+            .client
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Tarefa única")
+            .unwrap();
+        again.notes = "Revista".into();
+        pair.client.save_task(&again).unwrap();
+        let queue = pair.client.list_offline_outbox().unwrap();
+        assert_eq!(queue.len(), 2, "{queue:?}");
+        let first_uid = queue[0].uid.clone();
+        // The replay is cut as well: still the same identity afterwards.
+        pair.line.lose_next_replies(1);
+        assert!(pair.client.sync_from_host(false).is_err());
+        let queue = pair.client.list_offline_outbox().unwrap();
+        assert_eq!(queue[0].uid, first_uid);
+        assert!(queue[0].attempted);
+        pair.client.sync_from_host(false).unwrap();
+        assert!(pair.client.list_offline_outbox().unwrap().is_empty());
+        assert_eq!(titled(&pair.host), 1, "created once");
+        assert_eq!(titled(&pair.client), 1);
+        let on_host = pair
+            .host
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Tarefa única")
+            .unwrap();
+        assert_eq!(on_host.notes, "Revista");
+        assert!(pair.client.list_sync_conflicts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_main_computer_answers_a_repeated_identity_with_the_first_answer_and_old_changes_keep_working(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Store::open(&dir.path().join("host.sqlite3")).unwrap();
+        let cfg = IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "ANFITRIAO".into(),
+            ..IntranetConfig::default()
+        };
+        host.save_intranet_config(&cfg).unwrap();
+        let document = host.import_capture(&sample_capture()).unwrap().document_id;
+        let create = |uid: &str, title: &str| {
+            let mut task = Task::new(document);
+            task.title = title.into();
+            RpcRequest::Mutate {
+                actor: "Ana".into(),
+                mutation: IntranetMutation::SaveTask {
+                    task,
+                    expected_version: None,
+                    no_project: false,
+                },
+                client_schema: crate::storage::SCHEMA_VERSION,
+                expected_generation: String::new(),
+                mutation_uid: uid.into(),
+            }
+        };
+        let id_of = |response: RpcResponse| match response {
+            RpcResponse::Mutated {
+                reply: MutationReply::Id(id),
+                ..
+            } => id,
+            other => panic!("unexpected {other:?}"),
+        };
+        let first = id_of(process_rpc(&mut host, &cfg, create("aaaaaaaa-1", "Uma")).unwrap());
+        let again = id_of(process_rpc(&mut host, &cfg, create("aaaaaaaa-1", "Uma")).unwrap());
+        assert_eq!(first, again, "the first answer, again");
+        assert_eq!(
+            host.list_tasks()
+                .unwrap()
+                .iter()
+                .filter(|t| t.title == "Uma")
+                .count(),
+            1
+        );
+        // Another identity is another change; no identity is today's behaviour.
+        let other = id_of(process_rpc(&mut host, &cfg, create("aaaaaaaa-2", "Duas")).unwrap());
+        assert_ne!(other, first);
+        let plain_a = id_of(process_rpc(&mut host, &cfg, create("", "Sem uid")).unwrap());
+        let plain_b = id_of(process_rpc(&mut host, &cfg, create("", "Sem uid")).unwrap());
+        assert_ne!(
+            plain_a, plain_b,
+            "without identity a resend is applied again"
+        );
+        // An entry written before identities existed reads with none, and an
+        // older main computer ignores the field it does not know.
+        let old: OutboxEntry = serde_json::from_str(
+            r#"{"id":1,"created_at":"x","actor":"a","label":"l","mutation":{"SaveNote":{"document_id":1,"note":"n","expected_version":null}}}"#,
+        )
+        .unwrap();
+        assert!(old.uid.is_empty() && !old.attempted);
+        let wire = serde_json::to_string(&create("", "x")).unwrap();
+        assert!(!wire.contains("mutation_uid") && !wire.contains("expected_generation"));
+        let with: RpcRequest = serde_json::from_str(&wire).unwrap();
+        assert!(matches!(with, RpcRequest::Mutate { mutation_uid, .. } if mutation_uid.is_empty()));
     }
 }
