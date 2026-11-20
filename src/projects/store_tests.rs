@@ -1292,6 +1292,107 @@ fn the_queue_of_a_client_puts_a_project_before_the_task_that_names_it() {
     server.stop();
 }
 
+#[test]
+fn clearing_the_project_on_purpose_is_queued_even_when_the_copy_had_none() {
+    let (_dir, mut host, _cfg, mut server, mut client) = host_with_server();
+    let live = live_url(&server);
+    let project = make(&mut host, "Reforma");
+    let id = task_in(&mut client, "Alvo", "");
+    let other = task_in(&mut client, "Outra", "");
+    point_at(&mut client, DEAD_HOST);
+    let flag_of = |store: &Store, id: i64| {
+        store
+            .list_offline_outbox()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|e| match &e.mutation {
+                IntranetMutation::SaveTask {
+                    task, no_project, ..
+                } if task.id == id => Some(*no_project),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // The cached copy has no link: a plain save says nothing about it, the
+    // explicit one says "none".
+    let mut plain = stored(&client, other);
+    plain.notes = "Só a anotação".into();
+    client.save_task(&plain).unwrap();
+    assert!(!flag_of(&client, other));
+    let mut cleared = stored(&client, id);
+    cleared.notes = "Tirada do projeto".into();
+    let version = client.item_version("task", id).unwrap().version;
+    client
+        .save_task_clearing_project(&cleared, Some(version))
+        .unwrap();
+    assert!(flag_of(&client, id));
+    // Meanwhile another computer put the task in a project: the explicit
+    // removal still wins when the queue is replayed, the plain one does not.
+    let mut linked = stored(&host, id);
+    linked.project_uid = project.uid.clone();
+    host.save_task(&linked).unwrap();
+    let mut linked = stored(&host, other);
+    linked.project_uid = project.uid.clone();
+    host.save_task(&linked).unwrap();
+    point_at(&mut client, &live);
+    client.sync_from_host(false).unwrap();
+    // Both saves hit a newer task: each waits for the person, who merges.
+    for conflict in client.list_sync_conflicts().unwrap() {
+        client
+            .resolve_sync_conflict(conflict.id, crate::intranet::ConflictResolution::Merge)
+            .unwrap();
+    }
+    assert!(stored(&host, id).project_uid.is_empty(), "explicit removal");
+    assert_eq!(
+        stored(&host, id).notes.lines().next(),
+        Some("Tirada do projeto")
+    );
+    assert_eq!(stored(&host, other).project_uid, project.uid, "plain save");
+    server.stop();
+}
+
+#[test]
+fn an_explicit_removal_survives_the_merge_with_a_link_given_meanwhile_in_the_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, mut b, _) = pair(dir.path());
+    let id = task_in(&mut a, "Alvo", "");
+    let other = task_in(&mut a, "Outra", "");
+    sync(&mut a);
+    sync(&mut b);
+    let project = make(&mut b, "Reforma");
+    // A, with the copy that has no link, takes the project off one task on
+    // purpose and only edits the notes of the other.
+    let mut cleared = stored(&a, id);
+    cleared.notes = "Tirada do projeto".into();
+    let version = a.item_version("task", id).unwrap().version;
+    a.save_task_clearing_project(&cleared, Some(version))
+        .unwrap();
+    let mut plain = stored(&a, other);
+    plain.notes = "Só a anotação".into();
+    a.save_task(&plain).unwrap();
+    // Meanwhile B puts both in the project.
+    for target in [id, other] {
+        let mut linked = stored(&b, target);
+        linked.project_uid = project.uid.clone();
+        b.save_task(&linked).unwrap();
+    }
+    sync(&mut b);
+    sync(&mut a);
+    // Both of A's saves meet a newer task: A merges them.
+    for conflict in a.list_sync_conflicts().unwrap() {
+        a.resolve_sync_conflict(conflict.id, crate::intranet::ConflictResolution::Merge)
+            .unwrap();
+    }
+    sync(&mut a);
+    sync(&mut b);
+    for store in [&a, &b] {
+        assert!(stored(store, id).project_uid.is_empty(), "explicit removal");
+        assert_eq!(stored(store, other).project_uid, project.uid, "plain save");
+        assert_eq!(stored(store, other).notes, "Só a anotação");
+    }
+}
+
 /// A task and one that depends on it, both open.
 fn chained(store: &mut Store) -> (i64, i64) {
     let a = task_in(store, "Primeira", "");

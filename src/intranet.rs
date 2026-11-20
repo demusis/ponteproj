@@ -4975,6 +4975,27 @@ impl Store {
                         .flatten()
                         .map(|p| p.name)
                         .unwrap_or_default());
+                    // The writer took the task out of its project on purpose:
+                    // an empty link equal to the ancestor's is then a choice,
+                    // not "untouched", and a link the other copy gave the task
+                    // meanwhile does not survive it.
+                    if local_no_project
+                        && local_task.project_uid.is_empty()
+                        && !m.project_uid.is_empty()
+                    {
+                        let base_link = base_task.map(|b| b.project_uid.as_str());
+                        if base_link != Some(m.project_uid.as_str()) {
+                            kept.push(format!(
+                                "Projeto: no computador principal estava \"{}\"",
+                                self.get_project(&m.project_uid)
+                                    .ok()
+                                    .flatten()
+                                    .map(|p| p.name)
+                                    .unwrap_or_default()
+                            ));
+                        }
+                        m.project_uid.clear();
+                    }
                     m.categories = crate::categories::merge_uids(
                         base_task.map(|b| b.categories.as_slice()),
                         &ht.categories,
