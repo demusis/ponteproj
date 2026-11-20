@@ -9063,7 +9063,7 @@ fn handle_connection(mut stream: TcpStream, db_lock: &Mutex<PathBuf>) -> Result<
 /// Opens the library, checks the token and processes one request.
 fn answer_rpc(db_path: &std::path::Path, auth_token: &str, body: &[u8]) -> (u16, RpcResponse) {
     let error = |message: String| RpcResponse::Error { message };
-    let mut store = match Store::open(db_path) {
+    let mut store = match Store::open_service(db_path) {
         Ok(s) => s,
         Err(e) => {
             return (
@@ -9288,7 +9288,7 @@ impl SyncWorker {
                 let mut store: Option<Store> = None;
                 for request in request_rx {
                     if store.is_none() {
-                        store = Store::open(&db_path).ok();
+                        store = Store::open_service(&db_path).ok();
                     }
                     let reporter = crate::ai::Reporter::new(
                         progress_tx.clone(),

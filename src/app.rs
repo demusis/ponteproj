@@ -2386,7 +2386,7 @@ impl PonteApp {
             WorkKind::Sources,
             move |_| WorkResult::Sources {
                 document_id,
-                result: Store::open(&path)
+                result: Store::open_service(&path)
                     .and_then(|store| store.prepare_sources(&documents))
                     .map_err(|e| e.to_string()),
             },
@@ -2711,7 +2711,7 @@ impl PonteApp {
                         chrono::Utc::now().format("%Y%m%d-%H%M%S"),
                         uuid::Uuid::new_v4()
                     ));
-                    Store::open(&db_path)?.backup(&path)?;
+                    Store::open_service(&db_path)?.backup(&path)?;
                     Ok(path)
                 })();
                 WorkResult::Backup(result.map_err(|e| e.to_string()))
@@ -2727,7 +2727,7 @@ impl PonteApp {
             "Exportando dados para CSV…".into(),
             WorkKind::Export,
             move |_| {
-                let result = Store::open(&db_path)
+                let result = Store::open_service(&db_path)
                     .and_then(|store| crate::export::export_all(&store))
                     .map_err(|e| e.to_string());
                 WorkResult::Export(result)
