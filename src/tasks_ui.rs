@@ -3519,15 +3519,15 @@ impl TaskPanel {
                                 None => "sem previsão".to_owned(),
                             };
                             for moved in impact.moved.iter().take(4) {
-                                ui.add(egui::Label::new(RichText::new(format!("{}: {} → {}", moved.title, period(moved.before), period(moved.after))).small().weak()).truncate());
+                                ui.add(egui::Label::new(RichText::new(format!("{}: {} → {}", moved.title, period(moved.before), period(moved.after))).small().weak()).wrap());
                             }
                             if impact.moved.len() > 4 { widgets::small_muted(ui, format!("e mais {} tarefas", impact.moved.len() - 4)); }
                             for risk in impact.new_risks.iter().take(3) {
-                                ui.add(egui::Label::new(RichText::new(format!("⚠ Entra em risco: {} — {}", risk.title, crate::risk::reason(risk))).small().color(c().warn)).truncate());
+                                ui.add(egui::Label::new(RichText::new(format!("⚠ Entra em risco: {} — {}", risk.title, crate::risk::reason(risk))).small().color(c().warn)).wrap());
                             }
                             if impact.new_risks.len() > 3 { widgets::small_muted(ui, format!("e mais {}", impact.new_risks.len() - 3)); }
                             for risk in impact.cleared_risks.iter().take(3) {
-                                ui.add(egui::Label::new(RichText::new(format!("Sai do risco: {}", risk.title)).small().weak()).truncate());
+                                ui.add(egui::Label::new(RichText::new(format!("Sai do risco: {}", risk.title)).small().weak()).wrap());
                             }
                             if impact.cleared_risks.len() > 3 { widgets::small_muted(ui, format!("e mais {}", impact.cleared_risks.len() - 3)); }
                         }
