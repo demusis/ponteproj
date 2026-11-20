@@ -21,13 +21,7 @@ const CANDIDATE_LIMIT: usize = 300;
 
 /// The views the screen declares for the picture tour (`--features shots`).
 #[cfg(feature = "shots")]
-pub(super) const SHOTS: &[&str] = &[
-    "lista",
-    "aberto",
-    "linha-do-tempo",
-    "formulario",
-    "incluir",
-];
+pub(super) const SHOTS: &[&str] = &["lista", "aberto", "linha-do-tempo", "formulario", "incluir"];
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -173,12 +167,18 @@ fn task_groups<'a>(tasks: &'a [Task], today: &str) -> TaskGroups<'a> {
         }
     }
     let by_due = |a: &&Task, b: &&Task| {
-        (a.due_date.is_empty(), &a.due_date, a.title.to_lowercase(), a.id).cmp(&(
-            b.due_date.is_empty(),
-            &b.due_date,
-            b.title.to_lowercase(),
-            b.id,
-        ))
+        (
+            a.due_date.is_empty(),
+            &a.due_date,
+            a.title.to_lowercase(),
+            a.id,
+        )
+            .cmp(&(
+                b.due_date.is_empty(),
+                &b.due_date,
+                b.title.to_lowercase(),
+                b.id,
+            ))
     };
     groups.late.sort_by(by_due);
     groups.open.sort_by(by_due);
@@ -200,17 +200,26 @@ fn add_candidates<'a>(tasks: &'a [Task], query: &str) -> Vec<&'a Task> {
         .iter()
         .filter(|t| !t.is_done() && t.project_uid.is_empty())
         .filter(|t| {
-            let haystack = crate::labels::fold(&format!("{}\n{}\n{}", t.title, t.notes, t.assignee));
-            needle.split_whitespace().all(|word| haystack.contains(word))
+            let haystack =
+                crate::labels::fold(&format!("{}\n{}\n{}", t.title, t.notes, t.assignee));
+            needle
+                .split_whitespace()
+                .all(|word| haystack.contains(word))
         })
         .collect();
     out.sort_by(|a, b| {
-        (a.due_date.is_empty(), &a.due_date, a.title.to_lowercase(), a.id).cmp(&(
-            b.due_date.is_empty(),
-            &b.due_date,
-            b.title.to_lowercase(),
-            b.id,
-        ))
+        (
+            a.due_date.is_empty(),
+            &a.due_date,
+            a.title.to_lowercase(),
+            a.id,
+        )
+            .cmp(&(
+                b.due_date.is_empty(),
+                &b.due_date,
+                b.title.to_lowercase(),
+                b.id,
+            ))
     });
     out
 }
@@ -482,12 +491,9 @@ impl ProjectsPanel {
                         if conflict && ui.add(widgets::quiet("Recarregar")).clicked() {
                             reload = true;
                         }
-                        ui.with_layout(
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
-                            },
-                        );
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                        });
                     });
                 });
             });
@@ -702,12 +708,16 @@ impl ProjectsPanel {
                 }
                 if ui
                     .add(widgets::secondary("Incluir tarefas existentes…"))
-                    .on_hover_text("Escolhe tarefas em aberto que ainda não estão em nenhum projeto.")
+                    .on_hover_text(
+                        "Escolhe tarefas em aberto que ainda não estão em nenhum projeto.",
+                    )
                     .clicked()
                 {
                     include = true;
                 }
-                let more = widgets::icon_button(ui, icon::MORE, "Mais ações");
+                let more = ui
+                    .add(widgets::secondary(format!("Mais {}", icon::DOWN)))
+                    .on_hover_text("Arquivar ou excluir o projeto.");
                 egui::Popup::menu(&more).show(|ui| {
                     ui.set_min_width(190.0);
                     if project.status == ProjectStatus::Arquivado {
@@ -760,13 +770,9 @@ impl ProjectsPanel {
                 // Room for the scroll bar, so the cards keep their right edge.
                 ui.set_max_width(ui.available_width() - 14.0);
                 match self.view {
-                    View::Tasks => self.tasks_view(
-                        ui,
-                        today,
-                        &mut conclude,
-                        &mut open_task,
-                        &mut remove,
-                    ),
+                    View::Tasks => {
+                        self.tasks_view(ui, today, &mut conclude, &mut open_task, &mut remove)
+                    }
                     View::Timeline => {
                         let clicked = chart::show(
                             ui,
@@ -778,12 +784,8 @@ impl ProjectsPanel {
                             },
                         );
                         if let Some(id) = clicked {
-                            open_task = self
-                                .data
-                                .project_tasks
-                                .iter()
-                                .find(|t| t.id == id)
-                                .cloned();
+                            open_task =
+                                self.data.project_tasks.iter().find(|t| t.id == id).cloned();
                         }
                     }
                 }
@@ -995,7 +997,9 @@ impl ProjectsPanel {
                     task.title
                 ))));
             }
-            Err(error) => self.refused(format!("Não foi possível tirar a tarefa do projeto: {error}")),
+            Err(error) => self.refused(format!(
+                "Não foi possível tirar a tarefa do projeto: {error}"
+            )),
         }
     }
 
@@ -1092,7 +1096,9 @@ impl ProjectsPanel {
                         if form.conflict
                             && ui
                                 .add(widgets::quiet("Recarregar o projeto"))
-                                .on_hover_text("Traz a versão mais recente e descarta o que você digitou.")
+                                .on_hover_text(
+                                    "Traz a versão mais recente e descarta o que você digitou.",
+                                )
                                 .clicked()
                         {
                             reload = true;
@@ -1288,7 +1294,9 @@ impl ProjectsPanel {
                 })));
             } else {
                 // What went in leaves the list; what did not stays, with the reason.
-                dialog.chosen.retain(|id| failed.iter().any(|(f, _)| f == id));
+                dialog
+                    .chosen
+                    .retain(|id| failed.iter().any(|(f, _)| f == id));
                 dialog.error = Some(format!(
                     "{} Não entraram: {}",
                     if added > 0 {
@@ -1570,7 +1578,10 @@ fn task_row(
         ui.label(RichText::new(icon::CHECK).size(22.0).color(p.ok));
     } else {
         *conclude = ui
-            .add(egui::Button::new(RichText::new(icon::CIRCLE).size(22.0).color(p.muted)).frame(false))
+            .add(
+                egui::Button::new(RichText::new(icon::CIRCLE).size(22.0).color(p.muted))
+                    .frame(false),
+            )
             .on_hover_text("Conclui a tarefa. Nada é enviado ao SIGADOC.")
             .clicked();
     }
@@ -1624,13 +1635,9 @@ fn task_row(
             };
             if !line.is_empty() {
                 ui.add(
-                    egui::Label::new(
-                        RichText::new(line)
-                            .size(theme::SIZE_SMALL)
-                            .color(p.muted),
-                    )
-                    .selectable(false)
-                    .truncate(),
+                    egui::Label::new(RichText::new(line).size(theme::SIZE_SMALL).color(p.muted))
+                        .selectable(false)
+                        .truncate(),
                 );
             }
         });
@@ -1748,10 +1755,25 @@ mod tests {
     #[test]
     fn the_list_is_filtered_by_situation_and_searched_by_name_and_objective() {
         let all = vec![
-            project("a", "Reunião do Comitê", "Garantir auditório", ProjectStatus::Ativo),
-            project("b", "Quadro de pessoal", "Republicar a escala", ProjectStatus::Pausado),
+            project(
+                "a",
+                "Reunião do Comitê",
+                "Garantir auditório",
+                ProjectStatus::Ativo,
+            ),
+            project(
+                "b",
+                "Quadro de pessoal",
+                "Republicar a escala",
+                ProjectStatus::Pausado,
+            ),
             project("c", "Arquivo morto", "", ProjectStatus::Arquivado),
-            project("d", "Atualização do site", "Texto novo", ProjectStatus::Ativo),
+            project(
+                "d",
+                "Atualização do site",
+                "Texto novo",
+                ProjectStatus::Ativo,
+            ),
             project("e", "Entrega final", "", ProjectStatus::Concluido),
         ];
         assert_eq!(
@@ -1759,9 +1781,18 @@ mod tests {
             ["Atualização do site", "Reunião do Comitê"],
             "active ones by name, ignoring accents"
         );
-        assert_eq!(names(&list_view(&all, StatusFilter::Paused, "")), ["Quadro de pessoal"]);
-        assert_eq!(names(&list_view(&all, StatusFilter::Done, "")), ["Entrega final"]);
-        assert_eq!(names(&list_view(&all, StatusFilter::Archived, "")), ["Arquivo morto"]);
+        assert_eq!(
+            names(&list_view(&all, StatusFilter::Paused, "")),
+            ["Quadro de pessoal"]
+        );
+        assert_eq!(
+            names(&list_view(&all, StatusFilter::Done, "")),
+            ["Entrega final"]
+        );
+        assert_eq!(
+            names(&list_view(&all, StatusFilter::Archived, "")),
+            ["Arquivo morto"]
+        );
         // "Todos" groups by situation first, then by name.
         assert_eq!(
             names(&list_view(&all, StatusFilter::All, "")),
@@ -1774,8 +1805,14 @@ mod tests {
             ]
         );
         // The search looks at the name and the objective, ignoring case and accents.
-        assert_eq!(names(&list_view(&all, StatusFilter::All, "REUNIAO")), ["Reunião do Comitê"]);
-        assert_eq!(names(&list_view(&all, StatusFilter::All, "escala")), ["Quadro de pessoal"]);
+        assert_eq!(
+            names(&list_view(&all, StatusFilter::All, "REUNIAO")),
+            ["Reunião do Comitê"]
+        );
+        assert_eq!(
+            names(&list_view(&all, StatusFilter::All, "escala")),
+            ["Quadro de pessoal"]
+        );
         assert_eq!(
             names(&list_view(&all, StatusFilter::All, "comite auditorio")),
             ["Reunião do Comitê"],
@@ -1861,9 +1898,20 @@ mod tests {
             "by deadline, the ones without last"
         );
         assert_eq!(titles("SALA"), ["Confirmar a sala"]);
-        assert_eq!(titles("transportes"), ["Pedir os veículos"], "notes are searched");
-        assert_eq!(titles("servidor b"), ["Revisar texto"], "so is the assignee");
-        assert!(titles("projeto").is_empty(), "a task of a project is never offered");
+        assert_eq!(
+            titles("transportes"),
+            ["Pedir os veículos"],
+            "notes are searched"
+        );
+        assert_eq!(
+            titles("servidor b"),
+            ["Revisar texto"],
+            "so is the assignee"
+        );
+        assert!(
+            titles("projeto").is_empty(),
+            "a task of a project is never offered"
+        );
         assert!(titles("concluída").is_empty());
     }
 
@@ -1876,7 +1924,11 @@ mod tests {
         assert!(delete_sentence("Alfa", 0).contains("não tem tarefas"));
         assert!(delete_sentence("Alfa", 1).contains("A 1 tarefa dele continua"));
         let many = delete_sentence("Alfa", 5);
-        assert!(many.contains("“Alfa”") && many.contains("As 5 tarefas") && many.contains("Sem projeto"));
+        assert!(
+            many.contains("“Alfa”")
+                && many.contains("As 5 tarefas")
+                && many.contains("Sem projeto")
+        );
     }
 
     #[test]
@@ -1884,7 +1936,10 @@ mod tests {
         let mut documents = BTreeMap::new();
         documents.insert(7, ("ORG-OFI-2026/00431".to_owned(), "Ofício".to_owned()));
         let mut t = task(1, "X", "2026-11-04");
-        assert_eq!(candidate_detail(&t, &documents), "Sem documento · prazo 04/11");
+        assert_eq!(
+            candidate_detail(&t, &documents),
+            "Sem documento · prazo 04/11"
+        );
         t.document_id = Some(7);
         t.assignee = " Servidor A ".into();
         assert_eq!(
@@ -1911,17 +1966,29 @@ mod tests {
             ids.push(store.save_task(&t).unwrap());
         }
         // The third entered another project after the list was drawn.
-        let mut third = store.list_tasks().unwrap().into_iter().find(|t| t.id == ids[2]).unwrap();
+        let mut third = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == ids[2])
+            .unwrap();
         third.project_uid = other.uid.clone();
         store.save_task(&third).unwrap();
         ids.push(987_654);
         let (added, failed) = include_tasks(&mut store, &project.uid, &ids);
         assert_eq!(added, 2);
         assert_eq!(failed.len(), 2);
-        assert!(failed.iter().any(|(id, why)| *id == ids[2] && why.contains("já entrou em outro projeto")));
-        assert!(failed.iter().any(|(id, why)| *id == 987_654 && why.contains("não está mais disponível")));
+        assert!(failed
+            .iter()
+            .any(|(id, why)| *id == ids[2] && why.contains("já entrou em outro projeto")));
+        assert!(failed
+            .iter()
+            .any(|(id, why)| *id == 987_654 && why.contains("não está mais disponível")));
         let tasks = store.list_tasks().unwrap();
-        let in_alfa = tasks.iter().filter(|t| t.project_uid == project.uid).count();
+        let in_alfa = tasks
+            .iter()
+            .filter(|t| t.project_uid == project.uid)
+            .count();
         assert_eq!(in_alfa, 2);
         assert_eq!(
             tasks.iter().find(|t| t.id == ids[2]).unwrap().project_uid,

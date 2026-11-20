@@ -269,30 +269,35 @@ pub(super) fn show(ui: &mut egui::Ui, input: &Input) -> Option<i64> {
                     |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = S3;
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                match (task.done, task.due) {
-                                    (true, _) => widgets::pill(ui, "Concluída", Tone::Ok),
-                                    (false, Some(due)) => widgets::pill(
-                                        ui,
-                                        format!("Prazo {}", day_month(&due.to_string())),
-                                        Tone::Info,
-                                    ),
-                                    (false, None) => widgets::pill(ui, "Sem prazo", Tone::Neutral),
-                                };
-                                ui.with_layout(
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(&task.title)
-                                                    .font(theme::font_strong(theme::SIZE_BODY)),
-                                            )
-                                            .selectable(false)
-                                            .truncate(),
-                                        );
-                                    },
-                                );
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    match (task.done, task.due) {
+                                        (true, _) => widgets::pill(ui, "Concluída", Tone::Ok),
+                                        (false, Some(due)) => widgets::pill(
+                                            ui,
+                                            format!("Prazo {}", day_month(&due.to_string())),
+                                            Tone::Info,
+                                        ),
+                                        (false, None) => {
+                                            widgets::pill(ui, "Sem prazo", Tone::Neutral)
+                                        }
+                                    };
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(&task.title)
+                                                        .font(theme::font_strong(theme::SIZE_BODY)),
+                                                )
+                                                .selectable(false)
+                                                .truncate(),
+                                            );
+                                        },
+                                    );
+                                },
+                            );
                         });
                     },
                 );
@@ -424,10 +429,7 @@ fn paint_grid(
     height: f32,
 ) -> Option<i64> {
     let p = c();
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(scale.width(), height),
-        egui::Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(scale.width(), height), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let origin = rect.min;
     let grid_top = origin.y + HEAD_H;
@@ -469,11 +471,7 @@ fn paint_grid(
             );
         }
     }
-    painter.hline(
-        rect.x_range(),
-        grid_top,
-        egui::Stroke::new(1.0, p.outline),
-    );
+    painter.hline(rect.x_range(), grid_top, egui::Stroke::new(1.0, p.outline));
     for index in 1..rows.len() {
         painter.hline(
             rect.x_range(),
@@ -509,10 +507,8 @@ fn paint_grid(
             continue;
         };
         let top = grid_top + ROW_H * index as f32;
-        let row_rect = egui::Rect::from_min_size(
-            egui::pos2(origin.x, top),
-            egui::vec2(scale.width(), ROW_H),
-        );
+        let row_rect =
+            egui::Rect::from_min_size(egui::pos2(origin.x, top), egui::vec2(scale.width(), ROW_H));
         if !row_rect.intersects(ui.clip_rect()) {
             continue;
         }
@@ -542,13 +538,8 @@ fn paint_grid(
         }
         paint_bar(&painter, bar, row);
         if let Some(x) = due_x {
-            let color = if row.done {
-                p.muted
-            } else if row.late {
-                p.danger
-            } else {
-                p.text
-            };
+            // The text colour whatever the bar is, so it shows over a red one too.
+            let color = if row.done { p.muted } else { p.text };
             diamond(&painter, egui::pos2(x, top + ROW_H / 2.0), 5.5, color);
         }
         if response.clicked() {
@@ -656,7 +647,10 @@ mod tests {
         assert!((short.width() - 300.0).abs() < 0.001);
         let long = Scale::new(day("2026-01-01"), day("2026-12-31"), 600.0);
         assert_eq!(long.day_w, MIN_DAY_W);
-        assert!(long.width() > 600.0, "the area scrolls instead of shrinking");
+        assert!(
+            long.width() > 600.0,
+            "the area scrolls instead of shrinking"
+        );
         let one = Scale::new(day("2026-11-02"), day("2026-11-02"), 200.0);
         assert_eq!(one.days, 1);
     }

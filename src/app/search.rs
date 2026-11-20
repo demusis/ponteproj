@@ -366,7 +366,12 @@ fn matching_projects(list: Vec<crate::projects::Project>, needle: &str) -> Vec<P
     let (live, closed): (Vec<_>, Vec<_>) = list
         .into_iter()
         .filter(|p| project_matches(p, needle))
-        .partition(|p| !matches!(p.status, ProjectStatus::Concluido | ProjectStatus::Arquivado));
+        .partition(|p| {
+            !matches!(
+                p.status,
+                ProjectStatus::Concluido | ProjectStatus::Arquivado
+            )
+        });
     live.into_iter()
         .chain(closed)
         .map(|p| ProjectRow {
@@ -1647,5 +1652,81 @@ mod tests {
         assert!(matches!(search.pick_at(1), Some(Pick::Task(20))));
         assert!(matches!(search.pick_at(2), Some(Pick::Attendance(30))));
         assert!(search.pick_at(3).is_none());
+    }
+
+    fn project(
+        uid: &str,
+        name: &str,
+        objective: &str,
+        status: crate::projects::ProjectStatus,
+    ) -> crate::projects::Project {
+        crate::projects::Project {
+            uid: uid.into(),
+            name: name.into(),
+            objective: objective.into(),
+            status,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn projects_are_found_by_name_and_objective_and_the_ones_going_come_first() {
+        use crate::projects::ProjectStatus::{Arquivado, Ativo, Pausado};
+        let list = vec![
+            project("a", "Arquivo da reunião", "", Arquivado),
+            project("b", "Reunião do Comitê", "Garantir auditório", Ativo),
+            project(
+                "c",
+                "Quadro de pessoal",
+                "Preparar a reunião de entrega",
+                Pausado,
+            ),
+            project("d", "Outro assunto", "Nada a ver", Ativo),
+        ];
+        let found = |needle: &str| -> Vec<String> {
+            matching_projects(list.clone(), &fold(needle))
+                .into_iter()
+                .map(|p| p.uid)
+                .collect()
+        };
+        assert_eq!(
+            found("reuniao"),
+            ["b", "c", "a"],
+            "name or objective; archived last"
+        );
+        assert_eq!(found("AUDITORIO"), ["b"], "ignoring case and accents");
+        assert_eq!(found("reuniao entrega"), ["c"], "every word");
+        assert!(found("zzz").is_empty());
+    }
+
+    #[test]
+    fn a_project_row_is_picked_between_the_tasks_and_the_attendances() {
+        let mut search = GlobalSearch::default();
+        search.results.tasks = Group::limited(vec![TaskRow {
+            id: 20,
+            title: "Tarefa".into(),
+            document: String::new(),
+            standalone: false,
+            due_date: String::new(),
+            done: false,
+            categories: Vec::new(),
+        }]);
+        search.results.projects = Group::limited(vec![ProjectRow {
+            uid: "p1".into(),
+            name: "Projeto".into(),
+            objective: String::new(),
+            status: crate::projects::ProjectStatus::Ativo,
+        }]);
+        search.results.attendances = Group::limited(vec![AttendanceRow {
+            id: 30,
+            reference: "ORG-ATD-1".into(),
+            subject: String::new(),
+            status: "Em análise".into(),
+        }]);
+        assert_eq!(search.results.total(), 3);
+        assert!(matches!(search.pick_at(0), Some(Pick::Task(20))));
+        assert!(matches!(search.pick_at(1), Some(Pick::Project(uid)) if uid == "p1"));
+        assert!(matches!(search.pick_at(2), Some(Pick::Attendance(30))));
+        assert!(matches!(search.pick_at(3), Some(Pick::Command(_))) || search.pick_at(3).is_none());
     }
 }

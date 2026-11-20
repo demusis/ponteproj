@@ -166,7 +166,11 @@ pub fn project_filter_button(
                         .iter()
                         .partition(|p| p.status != ProjectStatus::Arquivado);
                     for project in live {
-                        choose(ui, ProjectFilter::Only(project.uid.clone()), project.name.clone());
+                        choose(
+                            ui,
+                            ProjectFilter::Only(project.uid.clone()),
+                            project.name.clone(),
+                        );
                     }
                     for project in archived {
                         choose(
@@ -211,7 +215,11 @@ mod tests {
                 .collect()
         };
         assert_eq!(names(""), ["Alfa", "Gama"], "archived ones are not offered");
-        assert_eq!(names("b"), ["Alfa", "Beta", "Gama"], "unless it is the current one");
+        assert_eq!(
+            names("b"),
+            ["Alfa", "Beta", "Gama"],
+            "unless it is the current one"
+        );
         assert_eq!(names("zzz"), ["Alfa", "Gama"]);
     }
 
