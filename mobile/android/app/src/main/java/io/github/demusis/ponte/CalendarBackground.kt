@@ -42,6 +42,7 @@ class CalendarReceiver : BroadcastReceiver() {
         if (intent?.action != CalendarBackground.ACTION) return
         val app = context.applicationContext
         CalendarBackground.arm(app)
+        TodayWidget.refresh(app)
         if (!CalendarSchedule.shouldSchedule(CalendarSyncRunner.isOn(app), DeviceCalendar.hasPermission(app))) return
         val pending = goAsync()
         val finished = AtomicBoolean(false)
