@@ -1422,6 +1422,51 @@ fn a_subtask_made_offline_keeps_the_project_it_inherited_when_the_parent_moves()
 }
 
 #[test]
+fn the_first_publisher_of_a_folder_settles_the_project_of_a_new_subtask_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("Drive").join("ponte-sync.ponte");
+    std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
+    let files = vec![folder.display().to_string()];
+    // A has its own library, with a parent task in a project, and is the
+    // first to publish it.
+    let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+    let p = make(&mut a, "P");
+    let q = make(&mut a, "Q");
+    let parent = task_in(&mut a, "Pai", &p.uid);
+    a.save_intranet_config(&folder_config("Servidor A", &files))
+        .unwrap();
+    sync(&mut a);
+    assert!(!a.projects_cache_stale(), "the first copy is of this build");
+    let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+    b.save_intranet_config(&folder_config("Servidor B", &files))
+        .unwrap();
+    sync(&mut b);
+    assert!(!b.projects_cache_stale());
+    // A makes a subtask without naming a project: it carries what A saw.
+    a.save_task(&child_of(parent, "Filha")).unwrap();
+    assert_eq!(by_title(&a, "Filha").project_uid, p.uid);
+    let queued = a.list_offline_outbox().unwrap();
+    assert!(
+        queued.iter().any(|e| matches!(
+            &e.mutation,
+            IntranetMutation::SaveTask { task, .. } if task.title == "Filha" && task.project_uid == p.uid
+        )),
+        "the queued create names the project the person saw"
+    );
+    // B moves the parent and publishes first.
+    let mut moved = stored(&b, parent);
+    moved.project_uid = q.uid.clone();
+    b.save_task(&moved).unwrap();
+    sync(&mut b);
+    sync(&mut a);
+    sync(&mut b);
+    for store in [&a, &b] {
+        assert_eq!(by_title(store, "Filha").project_uid, p.uid);
+        assert_eq!(stored(store, parent).project_uid, q.uid);
+    }
+}
+
+#[test]
 fn repeating_the_creation_of_a_subtask_never_changes_the_project_it_got() {
     let (_dir, mut host, _cfg, _server, _client) = host_with_server();
     let p = make(&mut host, "P");

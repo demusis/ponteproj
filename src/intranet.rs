@@ -1053,6 +1053,18 @@ fn is_category_mutation(mutation: &IntranetMutation) -> bool {
     )
 }
 
+/// Records the library schema of the copy this library now holds (see
+/// `Store::projects_cache_stale`). Written in the transaction that settles
+/// the exchange which made the library that copy.
+fn record_cache_schema(tx: &Connection, schema: i64) -> Result<()> {
+    tx.execute(
+        "INSERT INTO client_cache(id,schema) VALUES(1,?1)
+         ON CONFLICT(id) DO UPDATE SET schema=excluded.schema",
+        [schema],
+    )?;
+    Ok(())
+}
+
 fn is_project_mutation(mutation: &IntranetMutation) -> bool {
     matches!(
         mutation,
@@ -2457,11 +2469,7 @@ impl Store {
             }
         }
         // What kind of copy this library now is (see `projects_cache_stale`).
-        tx.execute(
-            "INSERT INTO client_cache(id,schema) VALUES(1,?1)
-             ON CONFLICT(id) DO UPDATE SET schema=excluded.schema",
-            [snapshot.schema_version],
-        )?;
+        record_cache_schema(&tx, snapshot.schema_version)?;
         // This library now numbers its items as the copy it received.
         crate::idmap::reset_frame(&tx, true)?;
         finish(&tx)?;
@@ -3014,11 +3022,7 @@ impl Store {
             }
         }
         // Done once: the next polls are the usual cheap ones.
-        tx.execute(
-            "INSERT INTO client_cache(id,schema) VALUES(1,?1)
-             ON CONFLICT(id) DO UPDATE SET schema=excluded.schema",
-            [snapshot.schema_version],
-        )?;
+        record_cache_schema(&tx, snapshot.schema_version)?;
         tx.commit()?;
         Ok(changed)
     }
@@ -3797,6 +3801,9 @@ impl Store {
                 // First copy, made from this library: its numbers are the
                 // reference from now on.
                 crate::idmap::reset_frame(tx, true)?;
+                // And a copy of the schema of this build: its tasks carry
+                // their projects (see `projects_cache_stale`).
+                record_cache_schema(tx, crate::storage::SCHEMA_VERSION)?;
             }
             crate::idmap::save_frame_journal(tx, &payload.journal)
         };
