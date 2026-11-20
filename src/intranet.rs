@@ -114,6 +114,11 @@ pub struct IntranetConfig {
     /// last taken from. Empty until the main computer says one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host_generation: String,
+    /// Shared folder: the identity (`sharedfolder::snapshot_identity`) of the
+    /// content this library last matched in the folders. Empty before the
+    /// first exchange of this build.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder_identity: String,
 }
 
 impl std::fmt::Debug for IntranetConfig {
@@ -187,6 +192,7 @@ impl Default for IntranetConfig {
             folder_writer: uuid::Uuid::new_v4().simple().to_string(),
             folder_lineage: String::new(),
             host_generation: String::new(),
+            folder_identity: String::new(),
         }
     }
 }
@@ -3394,10 +3400,7 @@ impl Store {
                 let _ = std::fs::remove_file(path);
             }
         }
-        copies.sort_by(|a, b| {
-            (b.header.revision, &b.header.written_at)
-                .cmp(&(a.header.revision, &a.header.written_at))
-        });
+        sharedfolder::sort_newest_first(&mut copies);
         let outbox = self.list_offline_outbox()?;
         // Its body is read only when someone wrote after it (the newest
         // folder copy is not this very copy): the usual exchange with
@@ -3459,10 +3462,7 @@ impl Store {
         let guard_missing = guard_path.is_some() && !guard_trusted;
         if let Some(copy) = guard {
             copies.push(copy);
-            copies.sort_by(|a, b| {
-                (b.header.revision, &b.header.written_at)
-                    .cmp(&(a.header.revision, &a.header.written_at))
-            });
+            sharedfolder::sort_newest_first(&mut copies);
         }
         // Changes other copies carry that the newest one never received.
         let best_applied: std::collections::BTreeSet<String> = copies
@@ -3470,6 +3470,9 @@ impl Store {
             .map(|c| c.payload.applied.iter().cloned().collect())
             .unwrap_or_default();
         let mut foreign: Vec<(JournalEntry, usize)> = Vec::new();
+        // Copies that carry something the base cannot give back: they are
+        // kept aside before the folder is rewritten (see below).
+        let mut preserve: Vec<PathBuf> = Vec::new();
         for (index, copy) in copies.iter().enumerate().skip(1) {
             let missing_from_journal = copy
                 .payload
@@ -3486,6 +3489,7 @@ impl Store {
                     copy.path.display(),
                     plural(missing_from_journal, "alteração", "alterações")
                 ));
+                preserve.push(copy.path.clone());
             }
             for entry in &copy.payload.journal {
                 if !best_applied.contains(&entry.uid)
@@ -3497,6 +3501,38 @@ impl Store {
         }
         foreign
             .sort_by(|a, b| (a.0.revision, &a.0.created_at).cmp(&(b.0.revision, &b.0.created_at)));
+        // Two copies at the same revision that took the same changes and yet
+        // hold different content diverged in a way no journal explains: the
+        // base wins and the other is kept aside, so every computer ends with
+        // the same mirrors and nothing is only in one of them.
+        if let Some(best) = copies.first() {
+            let best_applied_list: std::collections::BTreeSet<&String> =
+                best.payload.applied.iter().collect();
+            let mut best_identity: Option<String> = None;
+            for copy in copies.iter().skip(1) {
+                if copy.header.revision != best.header.revision
+                    || copy.header.schema_version != best.header.schema_version
+                    || guard_path.as_deref() == Some(copy.path.as_path())
+                    || preserve.contains(&copy.path)
+                    || copy
+                        .payload
+                        .applied
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        != best_applied_list
+                {
+                    continue;
+                }
+                let identity = best_identity.get_or_insert_with(|| best.content_identity());
+                if copy.content_identity() != *identity {
+                    report.notes.push(format!(
+                        "{}: tem o mesmo histórico de alterações da cópia mais recente, mas conteúdo diferente.",
+                        copy.path.display()
+                    ));
+                    preserve.push(copy.path.clone());
+                }
+            }
+        }
         let lagging = copies
             .iter()
             .skip(1)
@@ -3508,6 +3544,15 @@ impl Store {
             && foreign.is_empty()
             && copies[0].header.revision == cfg.synced_revision
             && !lagging
+            && preserve.is_empty()
+            // The same revision is not the same content: two computers that
+            // wrote different things at one revision must not both stay
+            // where they are. (Not asked of a copy this very computer wrote
+            // last, which is its own content by construction.)
+            && (cfg.folder_identity.is_empty()
+                || (copies[0].header.writer == cfg.folder_writer
+                    && !guard_missing)
+                || copies[0].content_identity() == cfg.folder_identity)
         {
             report.revision = cfg.synced_revision;
             return Ok(report);
@@ -3527,6 +3572,7 @@ impl Store {
             first_write,
             joining,
             guard_path.as_deref(),
+            &preserve,
             &temp_path,
             reporter,
             report,
@@ -3550,6 +3596,7 @@ impl Store {
         first_write: bool,
         joining: bool,
         guard_path: Option<&std::path::Path>,
+        preserve: &[PathBuf],
         temp_path: &std::path::Path,
         reporter: &crate::ai::Reporter,
         mut report: FolderSyncReport,
@@ -4056,7 +4103,7 @@ impl Store {
                 continue;
             }
             // A copy already at this exact state is left alone.
-            if changed_content || copy.header.revision < revision {
+            if changed_content || copy.header.revision < revision || preserve.contains(&copy.path) {
                 targets.push(copy.path.clone());
             }
         }
@@ -4068,6 +4115,24 @@ impl Store {
         }
         let mut failures = Vec::new();
         for path in &targets {
+            // What the rewrite would drop is kept first, beside it; if that
+            // cannot be done, the copy is left as it is.
+            if preserve.contains(path) {
+                match sharedfolder::keep_aside(path) {
+                    Ok(aside) => report.notes.push(format!(
+                        "A cópia de {} tinha alterações que não puderam ser reaplicadas; ela foi guardada em {}.",
+                        path.display(),
+                        aside.display()
+                    )),
+                    Err(error) => {
+                        failures.push(format!(
+                            "{} não foi regravada, para não perder o que só ela tem: {error}",
+                            path.display()
+                        ));
+                        continue;
+                    }
+                }
+            }
             match sharedfolder::write(path, key, &request, &payload, &blobs) {
                 Ok(_) => report.written_to.push(path.display().to_string()),
                 Err(error) => failures.push(error.to_string()),
@@ -4099,6 +4164,7 @@ impl Store {
         updated.synced_revision = revision;
         updated.last_sync_at = now_iso();
         updated.folder_lineage = lineage.to_owned();
+        updated.folder_identity = sharedfolder::snapshot_identity(&final_snapshot);
         let replaced = temp.is_some();
         let finish = |tx: &rusqlite::Transaction| -> Result<()> {
             for conflict in &conflicts {
@@ -8979,6 +9045,8 @@ impl IntranetPanel {
             self.draft.synced_revision = stored.synced_revision;
             self.draft.last_sync_at = stored.last_sync_at;
             self.draft.folder_lineage = stored.folder_lineage;
+            self.draft.host_generation = stored.host_generation;
+            self.draft.folder_identity = stored.folder_identity;
             if self.draft.folder_writer.trim().is_empty() {
                 self.draft.folder_writer = stored.folder_writer;
             }
@@ -8992,6 +9060,8 @@ impl IntranetPanel {
             self.draft.synced_revision = stored.synced_revision;
             self.draft.last_sync_at = stored.last_sync_at;
             self.draft.folder_lineage = stored.folder_lineage;
+            self.draft.host_generation = stored.host_generation;
+            self.draft.folder_identity = stored.folder_identity;
         }
     }
 
@@ -16101,5 +16171,261 @@ mod lost_reply_tests {
         assert!(!wire.contains("mutation_uid") && !wire.contains("expected_generation"));
         let with: RpcRequest = serde_json::from_str(&wire).unwrap();
         assert!(matches!(with, RpcRequest::Mutate { mutation_uid, .. } if mutation_uid.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod tied_mirror_tests {
+    use super::*;
+    use crate::model::sample_capture;
+    use crate::sharedfolder::{self, Payload, WriteRequest};
+    use crate::tasks::Task;
+    use std::path::Path;
+
+    const KEY: &str = "senha-de-teste-123";
+    const TIED_AT: &str = "2026-01-01T00:00:00Z";
+
+    fn config(member: &str, files: &[&Path]) -> IntranetConfig {
+        IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: member.into(),
+            folder_files: files.iter().map(|p| p.display().to_string()).collect(),
+            folder_key: KEY.into(),
+            ..IntranetConfig::default()
+        }
+    }
+
+    fn open(dir: &Path, name: &str, member: &str, files: &[&Path]) -> Store {
+        let mut store = Store::open(&dir.join(name)).unwrap();
+        let mut cfg = store
+            .load_intranet_config()
+            .unwrap_or_else(|_| config(member, files));
+        if cfg.mode != IntranetMode::SharedFolder {
+            cfg = config(member, files);
+        }
+        cfg.folder_files = files.iter().map(|p| p.display().to_string()).collect();
+        store.save_intranet_config(&cfg).unwrap();
+        store
+    }
+
+    fn sync(store: &mut Store, files: &[&Path]) -> FolderSyncReport {
+        let mut cfg = store.load_intranet_config().unwrap();
+        cfg.folder_files = files.iter().map(|p| p.display().to_string()).collect();
+        store.save_intranet_config(&cfg).unwrap();
+        store
+            .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+            .unwrap()
+    }
+
+    fn identity(path: &Path) -> String {
+        sharedfolder::read(path, KEY)
+            .unwrap()
+            .unwrap()
+            .content_identity()
+    }
+
+    fn titles(store: &Store) -> Vec<String> {
+        let mut all: Vec<String> = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        all.sort();
+        all
+    }
+
+    fn copy_all(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_all(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn asides(dir: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for folder in ["pen", "drive"] {
+            for entry in std::fs::read_dir(dir.join(folder)).unwrap() {
+                let path = entry.unwrap().path();
+                if path.to_string_lossy().contains("divergente") {
+                    found.push(path);
+                }
+            }
+        }
+        found
+    }
+
+    /// Two computers that each reached only one of the two mirrors, so the
+    /// mirrors hold different content at the same revision; their headers are
+    /// then given the very same moment (a tie). Returns the folder with
+    /// everything in it, the computers closed.
+    fn diverged(
+        edit_a: impl FnOnce(&mut Store, i64),
+        edit_b: impl FnOnce(&mut Store, i64),
+        compact_pen: bool,
+    ) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let pen = dir.path().join("pen").join("ponte-sync.ponte");
+        let drive = dir.path().join("drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        let both = [pen.as_path(), drive.as_path()];
+        let mut a = open(dir.path(), "a.sqlite3", "Casa", &both);
+        let document = a.import_capture(&sample_capture()).unwrap().document_id;
+        sync(&mut a, &both);
+        let mut b = open(dir.path(), "b.sqlite3", "Celular", &both);
+        sync(&mut b, &both);
+        edit_a(&mut a, document);
+        sync(&mut a, &[pen.as_path()]);
+        edit_b(&mut b, document);
+        sync(&mut b, &[drive.as_path()]);
+        for path in [&pen, &drive] {
+            let mut copy = sharedfolder::read(path, KEY).unwrap().unwrap();
+            if compact_pen && path == &pen {
+                // The history of this copy was summarized: what it carries
+                // beyond the other can no longer be replayed.
+                copy.payload.journal.clear();
+            }
+            let Payload {
+                snapshot,
+                applied,
+                journal,
+            } = copy.payload;
+            let payload = Payload {
+                snapshot,
+                applied,
+                journal,
+            };
+            sharedfolder::write_stamped(
+                path,
+                KEY,
+                &WriteRequest {
+                    lineage: &copy.header.lineage,
+                    revision: copy.header.revision,
+                    writer: &copy.header.writer,
+                    writer_name: &copy.header.writer_name,
+                    schema_version: copy.header.schema_version,
+                },
+                &payload,
+                &copy.blobs,
+                TIED_AT,
+            )
+            .unwrap();
+        }
+        let (h_pen, h_drive) = (
+            sharedfolder::read_header(&pen).unwrap().unwrap(),
+            sharedfolder::read_header(&drive).unwrap().unwrap(),
+        );
+        assert_eq!(
+            (h_pen.revision, &h_pen.written_at),
+            (h_drive.revision, &h_drive.written_at),
+            "the scenario needs tied headers"
+        );
+        assert_ne!(identity(&pen), identity(&drive), "and different content");
+        dir
+    }
+
+    #[test]
+    fn copies_tied_on_revision_and_moment_give_the_same_base_in_either_folder_order() {
+        let dir = diverged(
+            |a, _| {
+                let mut task = a.list_tasks().unwrap().remove(0);
+                task.title = "Título de A".into();
+                a.save_task(&task).unwrap();
+            },
+            |b, _| {
+                let mut task = b.list_tasks().unwrap().remove(0);
+                task.title = "Título de B".into();
+                b.save_task(&task).unwrap();
+            },
+            false,
+        );
+        // The same world twice; the computer only differs in the order of
+        // its folders.
+        let other = tempfile::tempdir().unwrap();
+        copy_all(dir.path(), other.path());
+        let mut results = Vec::new();
+        for (root, order) in [(dir.path(), [0, 1]), (other.path(), [1, 0])] {
+            let pen = root.join("pen").join("ponte-sync.ponte");
+            let drive = root.join("drive").join("ponte-sync.ponte");
+            let folders = [&pen, &drive];
+            let ordered = [folders[order[0]].as_path(), folders[order[1]].as_path()];
+            let mut a = open(root, "a.sqlite3", "Casa", &ordered);
+            let mut b = open(root, "b.sqlite3", "Celular", &ordered);
+            // B reads the folders the other way round.
+            let reversed = [ordered[1], ordered[0]];
+            sync(&mut a, &ordered);
+            sync(&mut b, &reversed);
+            sync(&mut a, &ordered);
+            // Converged: same mirrors, same library, and nothing of either
+            // edit is silently gone (the losing one is a conflict to decide).
+            assert_eq!(identity(&pen), identity(&drive), "the mirrors agree");
+            assert_eq!(titles(&a), titles(&b), "the computers agree");
+            let conflicts =
+                a.list_sync_conflicts().unwrap().len() + b.list_sync_conflicts().unwrap().len();
+            assert!(conflicts >= 1, "the other edit is kept as a conflict");
+            results.push((titles(&a), conflicts, identity(&pen)));
+        }
+        assert_eq!(
+            (&results[0].0, results[0].1),
+            (&results[1].0, results[1].1),
+            "the same base whatever the order of the folders"
+        );
+    }
+
+    #[test]
+    fn a_copy_whose_unique_creation_left_the_journal_is_kept_aside_not_overwritten() {
+        let dir = diverged(
+            |a, document| {
+                let mut task = Task::new(document);
+                task.title = "Só em A".into();
+                a.save_task(&task).unwrap();
+            },
+            |b, _| {
+                let mut task = b.list_tasks().unwrap().remove(0);
+                task.title = "Editada em B".into();
+                b.save_task(&task).unwrap();
+            },
+            true,
+        );
+        // A computer that never saw the branch of A reads both mirrors, in
+        // either order, in two identical worlds.
+        let other = tempfile::tempdir().unwrap();
+        copy_all(dir.path(), other.path());
+        for (root, order) in [(dir.path(), [0, 1]), (other.path(), [1, 0])] {
+            let pen = root.join("pen").join("ponte-sync.ponte");
+            let drive = root.join("drive").join("ponte-sync.ponte");
+            let folders = [&pen, &drive];
+            let ordered = [folders[order[0]].as_path(), folders[order[1]].as_path()];
+            let mut b = open(root, "b.sqlite3", "Celular", &ordered);
+            // Nor the guard copy of A, nor A, brings it back.
+            let a = open(root, "a.sqlite3", "Casa", &ordered);
+            let _ = std::fs::remove_file(a.guard_copy_path().unwrap());
+            drop(a);
+            sync(&mut b, &ordered);
+            assert_eq!(identity(&pen), identity(&drive), "the mirrors agree");
+            let kept_in_library = titles(&b).contains(&"Só em A".to_owned());
+            let aside = asides(root);
+            let kept_aside = aside.iter().any(|path| {
+                sharedfolder::read(path, KEY)
+                    .unwrap()
+                    .unwrap()
+                    .payload
+                    .snapshot
+                    .tasks
+                    .iter()
+                    .any(|t| t.title == "Só em A")
+            });
+            assert!(
+                kept_in_library || kept_aside,
+                "the creation is neither in the library nor kept aside (order {order:?})"
+            );
+        }
     }
 }

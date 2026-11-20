@@ -119,6 +119,82 @@ pub struct Copy {
     pub blobs: Blobs,
 }
 
+/// What a snapshot holds, as a stable id: a SHA-256 of its canonical form
+/// (keys in order). The same content gives the same id on every computer,
+/// whatever the path, the salt or the moment it was written, so copies that
+/// tie on revision and moment can be told apart the same way everywhere, and
+/// a computer can tell that the copy at its own revision is not the content it
+/// holds.
+pub fn snapshot_identity(snapshot: &CabinetSnapshot) -> String {
+    let canonical = serde_json::to_value(snapshot)
+        .and_then(|value| serde_json::to_vec(&value))
+        .unwrap_or_default();
+    let digest = ring::digest::digest(&ring::digest::SHA256, &canonical);
+    digest.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+impl Copy {
+    /// See [`snapshot_identity`].
+    pub fn content_identity(&self) -> String {
+        snapshot_identity(&self.payload.snapshot)
+    }
+}
+
+/// Orders copies newest first: higher revision, then later moment. Copies
+/// that tie on both are ordered by the identity of their content and then by
+/// who wrote them, never by the order of the folders in this computer's list,
+/// so every computer takes the same one as the base.
+pub fn sort_newest_first(copies: &mut Vec<Copy>) {
+    let ties = |copies: &[Copy], index: usize| {
+        let this = &copies[index].header;
+        copies.iter().enumerate().any(|(other, copy)| {
+            other != index
+                && copy.header.revision == this.revision
+                && copy.header.written_at == this.written_at
+        })
+    };
+    let mut keyed: Vec<((i64, String, String, String), Copy)> = Vec::new();
+    let tied: Vec<bool> = (0..copies.len()).map(|i| ties(copies, i)).collect();
+    for (index, copy) in std::mem::take(copies).into_iter().enumerate() {
+        let identity = if tied[index] {
+            copy.content_identity()
+        } else {
+            String::new()
+        };
+        keyed.push((
+            (
+                copy.header.revision,
+                copy.header.written_at.clone(),
+                identity,
+                copy.header.writer.clone(),
+            ),
+            copy,
+        ));
+    }
+    keyed.sort_by(|a, b| b.0.cmp(&a.0));
+    copies.extend(keyed.into_iter().map(|(_, copy)| copy));
+}
+
+/// Keeps a copy that is about to be replaced: the same file, beside it, under
+/// a name that says it diverged. Returns where it went.
+pub fn keep_aside(path: &Path) -> Result<PathBuf> {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ponte-sync");
+    let aside = path.with_file_name(format!(
+        "{stem}-divergente-{}.ponte",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    ));
+    ensure!(
+        !aside.exists(),
+        "Já existe uma cópia divergente guardada neste instante."
+    );
+    std::fs::copy(path, &aside)
+        .with_context(|| format!("Não foi possível guardar uma cópia de {}.", path.display()))?;
+    Ok(aside)
+}
+
 fn random(bytes: usize) -> Result<Vec<u8>> {
     use ring::rand::SecureRandom;
     let mut out = vec![0_u8; bytes];
@@ -263,6 +339,20 @@ pub fn write(
     payload: &Payload,
     blobs: &Blobs,
 ) -> Result<Header> {
+    let written_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    write_stamped(path, password, request, payload, blobs, &written_at)
+}
+
+/// [`write`] with the moment of the header given: two copies written within
+/// the same second carry the same one (the tests need that to be exact).
+pub(crate) fn write_stamped(
+    path: &Path,
+    password: &str,
+    request: &WriteRequest<'_>,
+    payload: &Payload,
+    blobs: &Blobs,
+    written_at: &str,
+) -> Result<Header> {
     ensure!(!password.is_empty(), "Informe a senha de sincronização.");
     let salt = random(SALT_BYTES)?;
     let nonce_bytes = random(NONCE_BYTES)?;
@@ -273,7 +363,7 @@ pub fn write(
         revision: request.revision,
         writer: request.writer.to_owned(),
         writer_name: request.writer_name.to_owned(),
-        written_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        written_at: written_at.to_owned(),
         salt: STANDARD.encode(&salt),
         nonce: STANDARD.encode(&nonce_bytes),
     };
