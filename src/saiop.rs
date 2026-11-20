@@ -2036,6 +2036,7 @@ impl Store {
             assignee: assignee.trim().to_owned(),
             proposal_id: String::new(),
             categories: Vec::new(),
+            project_uid: String::new(),
         });
         if let Some(task) = &task {
             task.validate()?;

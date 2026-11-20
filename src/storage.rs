@@ -22,8 +22,10 @@ use std::time::Duration;
 /// the categories (a table, and the uids kept in the payloads of tasks and
 /// of the document context), a new synced entity. 20 adds the library
 /// settings (a table and a synced entity again: the holidays shared by every
-/// computer and phone of the library).
-pub(crate) const SCHEMA_VERSION: i64 = 20;
+/// computer and phone of the library). 21 adds the projects (a table, a
+/// synced entity, and the project uid kept in the payload of the tasks): the
+/// number is stamped only once the table and the write guards exist.
+pub(crate) const SCHEMA_VERSION: i64 = 21;
 const MAX_HUMAN_BYTES: usize = 500 * 1024;
 
 pub struct Store {
@@ -262,6 +264,7 @@ impl Store {
         store.ensure_resources()?;
         store.ensure_categories()?;
         store.ensure_library_settings()?;
+        store.ensure_projects()?;
         store.ensure_write_guards()?;
         crate::idmap::init_watermark(&store.conn)?;
         // Schema 15 (recursos) stamps the library, so an older Ponte refuses
@@ -321,6 +324,7 @@ impl Store {
             "resource_uses",
             "categories",
             "library_settings",
+            "projects",
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());

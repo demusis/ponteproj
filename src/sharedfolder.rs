@@ -19,6 +19,12 @@ use std::io::{Read, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
+/// Format 8 (schema 21) carries the projects and the project uid of tasks. A
+/// Ponte that only knows format 7 refuses such a file with the "versão mais
+/// nova" message instead of rewriting it without them. A copy of an older
+/// format loads with no projects (the field has a default), and applying it
+/// keeps the ones the library has.
+///
 /// Format 7 (schema 20) carries the library settings (the holidays shared by
 /// every computer and phone of the library). A Ponte that only knows format 6
 /// refuses such a file with the "versão mais nova" message instead of
@@ -41,7 +47,7 @@ use std::path::{Path, PathBuf};
 /// tasks without document, `document_id: null`; a copy of an older format
 /// loads with no facts, proposals or proposal ids (every new field has a
 /// default).
-pub const FORMAT: u32 = 7;
+pub const FORMAT: u32 = 8;
 const MAGIC: &[u8] = b"PONTE-SYNC1\n";
 pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 /// Journal retention: enough for a few weeks of one person's work.
@@ -146,6 +152,13 @@ pub fn validate_password(password: &str) -> Result<()> {
 
 /// Reads only the plain header. `None` when the file does not exist.
 pub fn read_header(path: &Path) -> Result<Option<Header>> {
+    read_header_up_to(path, FORMAT)
+}
+
+/// [`read_header`] for a reader that knows the formats up to `newest`: this
+/// is how every build refuses the file of a newer one (and how the tests
+/// stand in for an older build).
+fn read_header_up_to(path: &Path, newest: u32) -> Result<Option<Header>> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -182,7 +195,7 @@ pub fn read_header(path: &Path) -> Result<Option<Header>> {
     let header: Header =
         serde_json::from_slice(&line).context("O arquivo de sincronização está incompleto ou danificado. Espere a nuvem terminar de sincronizar e tente de novo.")?;
     ensure!(
-        (1..=FORMAT).contains(&header.format),
+        (1..=newest).contains(&header.format),
         "O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte."
     );
     Ok(Some(header))
@@ -474,33 +487,37 @@ mod tests {
         // Truncated or tampered copies are refused, never half-applied.
         std::fs::write(&path, &raw[..raw.len() - 5]).unwrap();
         assert!(read(&path, "senha-forte-123").is_err());
-        // The copy was written with format 7 (library settings).
-        assert_eq!(read_header(&path).unwrap().unwrap().format, 7);
+        // The copy was written with format 8 (projects).
+        assert_eq!(read_header(&path).unwrap().unwrap().format, 8);
         // Copies written by format 1 (before tasks without document), format
         // 2 (before recursos), format 3 (before the proposals), format 4
-        // (before the categories), format 5 (before the planning fields) and
-        // format 6 (before the library settings) are still read.
-        for older_format in [1, 2, 3, 4, 5, 6] {
+        // (before the categories), format 5 (before the planning fields),
+        // format 6 (before the library settings) and format 7 (before the
+        // projects) are still read.
+        for older_format in [1, 2, 3, 4, 5, 6, 7] {
             let older = String::from_utf8_lossy(&raw)
-                .replace("\"format\":7", &format!("\"format\":{older_format}"));
+                .replace("\"format\":8", &format!("\"format\":{older_format}"));
             std::fs::write(&path, older.as_bytes()).unwrap();
             assert_eq!(read_header(&path).unwrap().unwrap().format, older_format);
         }
-        // One written for format 8 is refused by this reader (built for 7).
-        let newer = String::from_utf8_lossy(&raw).replace("\"format\":7", "\"format\":8");
-        std::fs::write(&path, newer.as_bytes()).unwrap();
-        assert!(read_header(&path)
-            .unwrap_err()
-            .to_string()
-            .contains("Atualize"));
-        let mut future = raw.clone();
-        let text = String::from_utf8_lossy(&future).replace("\"format\":7", "\"format\":9");
-        future = text.into_bytes();
-        std::fs::write(&path, &future).unwrap();
-        assert!(read_header(&path)
-            .unwrap_err()
-            .to_string()
-            .contains("Atualize"));
+        // A Ponte before the projects (it knows formats up to 7) refuses the
+        // file this one writes with the "update" message, and leaves it alone.
+        std::fs::write(&path, &raw).unwrap();
+        let error = read_header_up_to(&path, 7).unwrap_err().to_string();
+        assert!(error.contains("versão mais nova") && error.contains("Atualize"));
+        assert_eq!(std::fs::read(&path).unwrap(), raw);
+        assert_eq!(read_header_up_to(&path, 8).unwrap().unwrap().format, 8);
+        // And this one refuses what a later format writes.
+        for newer_format in [9, 10] {
+            let newer = String::from_utf8_lossy(&raw)
+                .replace("\"format\":8", &format!("\"format\":{newer_format}"));
+            std::fs::write(&path, newer.as_bytes()).unwrap();
+            assert!(read_header(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("Atualize"));
+            assert_eq!(std::fs::read(&path).unwrap(), newer.as_bytes());
+        }
         assert!(
             validate_password("curta").is_err() && validate_password("senha-forte-123").is_ok()
         );

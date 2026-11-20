@@ -84,6 +84,8 @@ pub mod icon;
 pub mod labels;
 /// Small named texts that belong to the library and sync with it.
 pub mod library_settings;
+/// Projects: an optional grouping of tasks, with progress, risk and timeline.
+pub mod projects;
 
 #[cfg(feature = "desktop")]
 pub mod windows_ui;

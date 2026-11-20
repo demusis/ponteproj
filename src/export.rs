@@ -26,6 +26,7 @@ pub struct ExportReport {
     pub attendances: usize,
     pub resources: usize,
     pub resource_uses: usize,
+    pub projects: usize,
 }
 
 pub struct Table {
@@ -58,12 +59,14 @@ pub fn export_to(store: &Store, folder: &Path) -> Result<ExportReport> {
         &crate::resources::now_moment(),
     );
     let resources = resources_table(&resources);
+    let projects = projects_table(store)?;
     for (name, table) in [
         ("documentos.csv", &documents),
         ("tarefas.csv", &tasks),
         ("atendimentos.csv", &attendances),
         ("recursos.csv", &resources),
         ("usos-de-recursos.csv", &resource_uses),
+        ("projetos.csv", &projects),
     ] {
         let path = folder.join(name);
         std::fs::write(&path, render_csv(table))
@@ -76,6 +79,7 @@ pub fn export_to(store: &Store, folder: &Path) -> Result<ExportReport> {
         attendances: attendances.rows.len(),
         resources: resources.rows.len(),
         resource_uses: resource_uses.rows.len(),
+        projects: projects.rows.len(),
     })
 }
 
@@ -441,6 +445,11 @@ fn tasks_table(store: &Store) -> Result<Table> {
         .collect();
     let attachments = store.attachment_counts("task").unwrap_or_default();
     let categories = category_name_map(store)?;
+    let project_names: BTreeMap<String, String> = store
+        .list_projects()?
+        .into_iter()
+        .map(|p| (p.uid, p.name))
+        .collect();
     let mut rows = Vec::new();
     for task in store.list_tasks()? {
         let due = iso_date(&task.due_date);
@@ -470,6 +479,10 @@ fn tasks_table(store: &Store) -> Result<Table> {
             task.dependencies.len().to_string(),
             attachments.get(&task.id).copied().unwrap_or(0).to_string(),
             category_names(&categories, &task.categories),
+            project_names
+                .get(&task.project_uid)
+                .cloned()
+                .unwrap_or_default(),
         ]);
     }
     Ok(Table {
@@ -489,6 +502,50 @@ fn tasks_table(store: &Store) -> Result<Table> {
             "Dependências",
             "Anexos",
             "Categorias",
+            "Projeto",
+        ],
+        rows,
+    })
+}
+
+/// `projetos.csv`: one row per project, with the numbers of its tasks.
+fn projects_table(store: &Store) -> Result<Table> {
+    let today = chrono::Local::now().date_naive();
+    let rows = store
+        .project_overview(today)?
+        .into_iter()
+        .map(|item| {
+            let p = &item.project;
+            vec![
+                p.name.clone(),
+                p.status.label().to_owned(),
+                p.assignee.trim().to_owned(),
+                p.start_date.clone(),
+                p.target_date.clone(),
+                item.progress.total.to_string(),
+                item.progress.done.to_string(),
+                item.progress.late.to_string(),
+                item.progress.next_due.clone().unwrap_or_default(),
+                item.risk.deliveries_at_risk.to_string(),
+                yes_no(item.risk.target_at_risk.is_some()),
+                p.objective.clone(),
+            ]
+        })
+        .collect();
+    Ok(Table {
+        headers: vec![
+            "Projeto",
+            "Situação",
+            "Responsável",
+            "Início",
+            "Data-alvo",
+            "Tarefas",
+            "Concluídas",
+            "Atrasadas",
+            "Próximo prazo",
+            "Entregas em risco",
+            "Data-alvo em risco",
+            "Objetivo",
         ],
         rows,
     })

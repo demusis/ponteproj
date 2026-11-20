@@ -578,6 +578,10 @@ pub struct CabinetSnapshot {
     /// without, and applying it keeps the ones this library has.
     #[serde(default)]
     pub settings: Vec<crate::library_settings::SettingRow>,
+    /// The projects (tasks carry their uid). A copy written before them
+    /// loads without, and applying it keeps the ones this library has.
+    #[serde(default)]
+    pub projects: Vec<crate::projects::Project>,
     /// The library schema of the computer that wrote this copy (0 when it
     /// did not say: a Ponte before the recursos). A copy below
     /// [`RESOURCES_SCHEMA`] knows nothing of recursos, so applying it keeps
@@ -599,6 +603,11 @@ pub(crate) const CATEGORIES_SCHEMA: i64 = 17;
 pub(crate) const SCHEDULE_SCHEMA: i64 = 18;
 /// The first library schema that stores the library settings.
 pub(crate) const SETTINGS_SCHEMA: i64 = 20;
+/// The first library schema that stores the projects.
+pub(crate) const PROJECTS_SCHEMA: i64 = 21;
+
+/// What a person is told when the main computer does not store projects.
+pub(crate) const HOST_WITHOUT_PROJECTS: &str = "O computador principal está numa versão anterior do Ponte, que ainda não guarda projetos. Atualize o Ponte no computador principal e tente de novo.";
 
 /// What a person is told when the main computer does not store the library
 /// settings (the holidays shared by every computer).
@@ -825,6 +834,19 @@ pub enum IntranetMutation {
         #[serde(default)]
         expected_version: Option<i64>,
     },
+    /// Projects are addressed by uid. Archiving is a save with the status
+    /// `arquivado`; the project of a task travels in `SaveTask`.
+    SaveProject {
+        project: crate::projects::Project,
+        #[serde(default)]
+        expected_version: Option<i64>,
+    },
+    /// Takes the project off every task that has it too (the tasks stay).
+    DeleteProject {
+        uid: String,
+        #[serde(default)]
+        expected_version: Option<i64>,
+    },
     /// A library setting (the holidays). Never a conflict: the change applied
     /// last wins. With `seed`, it is the one-time hand-over of what a device
     /// kept before the setting lived in the library: every replica applies it
@@ -1023,6 +1045,23 @@ fn is_category_mutation(mutation: &IntranetMutation) -> bool {
     )
 }
 
+fn is_project_mutation(mutation: &IntranetMutation) -> bool {
+    matches!(
+        mutation,
+        IntranetMutation::SaveProject { .. } | IntranetMutation::DeleteProject { .. }
+    )
+}
+
+/// Whether a change carries something only a schema 21 library keeps: a
+/// project, or a task that belongs to one.
+fn mutation_carries_projects(mutation: &IntranetMutation) -> bool {
+    match mutation {
+        IntranetMutation::SaveProject { .. } | IntranetMutation::DeleteProject { .. } => true,
+        IntranetMutation::SaveTask { task, .. } => !task.project_uid.is_empty(),
+        _ => false,
+    }
+}
+
 /// Whether a change carries something only a schema 17 library keeps: a
 /// category, or a task or document context that has categories.
 fn mutation_carries_categories(mutation: &IntranetMutation) -> bool {
@@ -1069,6 +1108,11 @@ impl Store {
     /// The same for the categories.
     pub(crate) fn ensure_host_stores_categories(&self, cfg: &IntranetConfig) -> Result<()> {
         self.ensure_host_schema(cfg, CATEGORIES_SCHEMA, HOST_WITHOUT_CATEGORIES)
+    }
+
+    /// The same for the projects.
+    pub(crate) fn ensure_host_stores_projects(&self, cfg: &IntranetConfig) -> Result<()> {
+        self.ensure_host_schema(cfg, PROJECTS_SCHEMA, HOST_WITHOUT_PROJECTS)
     }
 
     /// The same for the library settings.
@@ -1121,6 +1165,9 @@ fn carry_old_task_fields(old: &Task, value: &mut Task, schema: i64) {
     }
     if schema < CATEGORIES_SCHEMA {
         value.categories = old.categories.clone();
+    }
+    if schema < PROJECTS_SCHEMA {
+        value.project_uid = old.project_uid.clone();
     }
     if schema < PROPOSALS_SCHEMA && old.title == value.title {
         value.proposal_id = old.proposal_id.clone();
@@ -1396,6 +1443,11 @@ pub(crate) fn record_mutation(
         [MAX_TEAM_EVENTS],
     )?;
     Ok(next_version)
+}
+
+/// The version number of an item inside a transaction; 0 when it never had one.
+pub(crate) fn version_of(tx: &Connection, kind: &str, item_id: i64) -> Result<i64> {
+    Ok(read_version_tx(tx, kind, item_id)?.version)
 }
 
 fn read_version_tx(tx: &Connection, kind: &str, item_id: i64) -> Result<VersionMeta> {
@@ -1885,6 +1937,7 @@ impl Store {
             resources: self.export_resources()?,
             categories: self.export_categories()?,
             settings: self.export_library_settings()?,
+            projects: self.export_projects()?,
             schema_version: crate::storage::SCHEMA_VERSION,
         })
     }
@@ -2015,7 +2068,7 @@ impl Store {
                 }
             }
         }
-        let old_tasks = if snapshot.schema_version < SCHEDULE_SCHEMA {
+        let old_tasks = if snapshot.schema_version < PROJECTS_SCHEMA {
             let mut statement = self.conn.prepare("SELECT id,payload FROM tasks")?;
             let rows =
                 statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
@@ -2056,6 +2109,12 @@ impl Store {
         let keep_settings = snapshot.schema_version < SETTINGS_SCHEMA;
         if !keep_settings {
             tx.execute_batch("DELETE FROM library_settings;")?;
+        }
+        // And the projects (their tasks keep the uid through
+        // `carry_old_task_fields`).
+        let keep_projects = snapshot.schema_version < PROJECTS_SCHEMA;
+        if !keep_projects {
+            tx.execute_batch("DELETE FROM projects;")?;
         }
         let mut kept_links: Vec<(String, i64)> = Vec::new();
         if keep_resources {
@@ -2326,6 +2385,9 @@ impl Store {
         if !keep_settings {
             crate::library_settings::apply_settings(&tx, &snapshot.settings)?;
         }
+        if !keep_projects {
+            crate::projects::apply_projects(&tx, &snapshot.projects)?;
+        }
         if !keep_resources {
             let mut resources = snapshot.resources.clone();
             for row in &mut resources.uses {
@@ -2487,6 +2549,22 @@ impl Store {
                 expected_version,
             } => self
                 .delete_category_checked(&uid, expected_version)
+                .map(|()| MutationReply::Unit),
+            IntranetMutation::SaveProject {
+                project,
+                expected_version,
+            } => self
+                .save_project_applied(&project, expected_version)
+                .map(|_| MutationReply::Unit),
+            // Deleted already (two computers deleted it offline): nothing to do.
+            IntranetMutation::DeleteProject { uid, .. } if !self.project_exists(&uid) => {
+                Ok(MutationReply::Unit)
+            }
+            IntranetMutation::DeleteProject {
+                uid,
+                expected_version,
+            } => self
+                .delete_project_checked(&uid, expected_version)
                 .map(|()| MutationReply::Unit),
             IntranetMutation::SaveSetting { key, value, seed } => self
                 .save_setting_applied(&key, &value, seed)
@@ -3136,6 +3214,37 @@ impl Store {
                     }
                 }
             }
+            // A copy from a Ponte before the projects says nothing about
+            // them: the projects of this library go into the copy being
+            // built, and so does the project of each of its tasks (copies
+            // before the planning fields were handled with the tasks above).
+            if best.header.schema_version < PROJECTS_SCHEMA {
+                incoming.projects = self.export_projects()?;
+                carried_old_fields |= !incoming.projects.is_empty();
+                if best.header.schema_version >= SCHEDULE_SCHEMA {
+                    let mut mine: BTreeMap<String, String> = BTreeMap::new();
+                    let mut statement = self.conn.prepare("SELECT id, payload FROM tasks")?;
+                    let rows = statement.query_map([], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                    })?;
+                    for row in rows {
+                        let (id, bytes) = row?;
+                        if let Some(task) =
+                            crate::tasks::decode_task_or_skip_trashed(&self.conn, id, &bytes)?
+                        {
+                            if !task.project_uid.is_empty() && !task.uid.is_empty() {
+                                mine.insert(task.uid, task.project_uid);
+                            }
+                        }
+                    }
+                    for task in &mut incoming.tasks {
+                        if let Some(project) = mine.get(&task.uid) {
+                            task.project_uid = project.clone();
+                            carried_old_fields = true;
+                        }
+                    }
+                }
+            }
             store.apply_snapshot(
                 &incoming,
                 |file_id, _| {
@@ -3155,6 +3264,9 @@ impl Store {
             )?;
             if best.header.schema_version < CATEGORIES_SCHEMA {
                 crate::categories::apply_categories(&store.conn, &incoming.categories)?;
+            }
+            if best.header.schema_version < PROJECTS_SCHEMA {
+                crate::projects::apply_projects(&store.conn, &incoming.projects)?;
             }
             // A copy from a Ponte before the settings says nothing about
             // them: the ones this library has go into the copy being built.
@@ -3888,6 +4000,26 @@ impl Store {
                     expected_version: ver,
                 }
             }
+            IntranetMutation::SaveProject {
+                project,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("project", &project.uid));
+                IntranetMutation::SaveProject {
+                    project,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::DeleteProject {
+                uid,
+                expected_version,
+            } => {
+                let ver = expected_version.or_else(|| self.uid_version("project", &uid));
+                IntranetMutation::DeleteProject {
+                    uid,
+                    expected_version: ver,
+                }
+            }
             other => other,
         }
     }
@@ -3905,6 +4037,7 @@ impl Store {
             "resource" => self.resource_exists(uid),
             "resource_use" => self.resource_use_exists(uid),
             "category" => self.category_exists(uid),
+            "project" => self.project_exists(uid),
             _ => self
                 .list_examples()
                 .ok()
@@ -3979,6 +4112,17 @@ impl Store {
                     .find(|c| c.uid == category.uid)?;
                 Some(IntranetMutation::SaveCategory {
                     category: current,
+                    expected_version: None,
+                })
+            }
+            IntranetMutation::SaveProject { project, .. } if !project.uid.is_empty() => {
+                let current = self
+                    .list_projects()
+                    .ok()?
+                    .into_iter()
+                    .find(|p| p.uid == project.uid)?;
+                Some(IntranetMutation::SaveProject {
+                    project: current,
                     expected_version: None,
                 })
             }
@@ -4342,6 +4486,20 @@ impl Store {
                     expected_version: ver,
                 }
             }
+            IntranetMutation::SaveProject { project, .. } => {
+                let ver = self.uid_version("project", &project.uid);
+                IntranetMutation::SaveProject {
+                    project,
+                    expected_version: ver,
+                }
+            }
+            IntranetMutation::DeleteProject { uid, .. } => {
+                let ver = self.uid_version("project", &uid);
+                IntranetMutation::DeleteProject {
+                    uid,
+                    expected_version: ver,
+                }
+            }
             other => other,
         })
     }
@@ -4463,6 +4621,12 @@ impl Store {
                         v
                     ));
                     scalar!(assignee, "Responsável", plain);
+                    scalar!(project_uid, "Projeto", |v: &String| self
+                        .get_project(v)
+                        .ok()
+                        .flatten()
+                        .map(|p| p.name)
+                        .unwrap_or_default());
                     m.categories = crate::categories::merge_uids(
                         base_task.map(|b| b.categories.as_slice()),
                         &ht.categories,
@@ -4806,6 +4970,59 @@ impl Store {
                     expected_version: ver,
                 })
             }
+            IntranetMutation::SaveProject { project: local, .. } => {
+                let ver = self.uid_version("project", &local.uid);
+                let host = self
+                    .list_projects()?
+                    .into_iter()
+                    .find(|p| p.uid == local.uid);
+                let base_item = match base {
+                    Some(IntranetMutation::SaveProject { project, .. }) => Some(project),
+                    _ => None,
+                };
+                let merged = if let Some(h) = host {
+                    let mut m = h.clone();
+                    // The local side prevails where both changed a field.
+                    m.name = pick(base_item.map(|b| &b.name), &h.name, &local.name).0;
+                    m.assignee =
+                        pick(base_item.map(|b| &b.assignee), &h.assignee, &local.assignee).0;
+                    m.status = pick(base_item.map(|b| &b.status), &h.status, &local.status).0;
+                    m.start_date = pick(
+                        base_item.map(|b| &b.start_date),
+                        &h.start_date,
+                        &local.start_date,
+                    )
+                    .0;
+                    m.target_date = pick(
+                        base_item.map(|b| &b.target_date),
+                        &h.target_date,
+                        &local.target_date,
+                    )
+                    .0;
+                    m.objective = pick_text(
+                        base_item.map(|b| b.objective.as_str()),
+                        &h.objective,
+                        &local.objective,
+                        actor,
+                    );
+                    // Two sides may each have picked a valid date that
+                    // together are not: the target never precedes the start.
+                    if !m.start_date.is_empty()
+                        && !m.target_date.is_empty()
+                        && m.target_date < m.start_date
+                    {
+                        m.start_date = local.start_date.clone();
+                        m.target_date = local.target_date.clone();
+                    }
+                    m
+                } else {
+                    local
+                };
+                Ok(IntranetMutation::SaveProject {
+                    project: merged,
+                    expected_version: ver,
+                })
+            }
             IntranetMutation::SaveResourceUse { item: local, .. } => {
                 let ver = self.uid_version("resource_use", &local.uid);
                 let host = self
@@ -4987,6 +5204,7 @@ impl Store {
             }
             IntranetMutation::SaveTask { task, .. } => {
                 let cats = self.list_categories().unwrap_or_default();
+                let projects = self.list_projects().unwrap_or_default();
                 let Some(host) = self
                     .list_tasks()
                     .ok()
@@ -4995,10 +5213,16 @@ impl Store {
                     return vec![];
                 };
                 let base = match &conflict.base {
-                    Some(IntranetMutation::SaveTask { task, .. }) => Some(task_fields(task, &cats)),
+                    Some(IntranetMutation::SaveTask { task, .. }) => {
+                        Some(task_fields(task, &cats, &projects))
+                    }
                     _ => None,
                 };
-                diff(task_fields(&host, &cats), task_fields(task, &cats), base)
+                diff(
+                    task_fields(&host, &cats, &projects),
+                    task_fields(task, &cats, &projects),
+                    base,
+                )
             }
             IntranetMutation::SaveWorkContext {
                 document_id, value, ..
@@ -5064,6 +5288,22 @@ impl Store {
                     _ => None,
                 };
                 diff(category_fields(&host), category_fields(category), base)
+            }
+            IntranetMutation::SaveProject { project, .. } => {
+                let Some(host) = self
+                    .list_projects()
+                    .ok()
+                    .and_then(|all| all.into_iter().find(|h| h.uid == project.uid))
+                else {
+                    return vec![];
+                };
+                let base = match &conflict.base {
+                    Some(IntranetMutation::SaveProject { project, .. }) => {
+                        Some(project_fields(project))
+                    }
+                    _ => None,
+                };
+                diff(project_fields(&host), project_fields(project), base)
             }
             IntranetMutation::SaveResourceUse { item, .. } => {
                 let Some(host) = self
@@ -5547,11 +5787,15 @@ pub fn explain_resolve_error(
 /// "Situação: Concluída | Prazo: 12/11/2026".
 fn change_summary(store: &Store, conflict: &SyncConflict) -> Option<String> {
     let cats = store.list_categories().unwrap_or_default();
+    let projects = store.list_projects().unwrap_or_default();
     let (now, before) = match (&conflict.mutation, &conflict.base) {
         (
             IntranetMutation::SaveTask { task, .. },
             Some(IntranetMutation::SaveTask { task: base, .. }),
-        ) => (task_fields(task, &cats), task_fields(base, &cats)),
+        ) => (
+            task_fields(task, &cats, &projects),
+            task_fields(base, &cats, &projects),
+        ),
         (
             IntranetMutation::SaveWorkContext { value, .. },
             Some(IntranetMutation::SaveWorkContext { value: base, .. }),
@@ -5570,6 +5814,10 @@ fn change_summary(store: &Store, conflict: &SyncConflict) -> Option<String> {
             IntranetMutation::SaveCategory { category, .. },
             Some(IntranetMutation::SaveCategory { category: base, .. }),
         ) => (category_fields(category), category_fields(base)),
+        (
+            IntranetMutation::SaveProject { project, .. },
+            Some(IntranetMutation::SaveProject { project: base, .. }),
+        ) => (project_fields(project), project_fields(base)),
         (
             IntranetMutation::SaveResourceUse { item, .. },
             Some(IntranetMutation::SaveResourceUse { item: base, .. }),
@@ -5848,6 +6096,12 @@ impl Store {
                 s.key = Some(format!("category:{}", category.uid));
             }
             M::DeleteCategory { .. } => s.title = "Exclusão de uma categoria".into(),
+            M::SaveProject { project, .. } => {
+                s.title = format!("Projeto: {}", project.name);
+                s.noun = "deste projeto";
+                s.key = Some(format!("project:{}", project.uid));
+            }
+            M::DeleteProject { .. } => s.title = "Exclusão de um projeto".into(),
             M::SaveSetting { .. } => s.title = "Feriados e dias sem expediente".into(),
             M::SaveResourceUse { item, .. } => {
                 s.title = format!(
@@ -5968,6 +6222,11 @@ impl Store {
                 .ok()
                 .and_then(|all| all.into_iter().find(|c| c.uid == category.uid))
                 .is_some_and(|host| host.same_content(category)),
+            IntranetMutation::SaveProject { project, .. } => self
+                .list_projects()
+                .ok()
+                .and_then(|all| all.into_iter().find(|p| p.uid == project.uid))
+                .is_some_and(|host| host.same_content(project)),
             _ => false,
         }
     }
@@ -6256,7 +6515,11 @@ fn category_names(all: &[crate::categories::Category], uids: &[String]) -> Strin
         .join(", ")
 }
 
-fn task_fields(t: &Task, cats: &[crate::categories::Category]) -> Vec<(&'static str, String)> {
+fn task_fields(
+    t: &Task,
+    cats: &[crate::categories::Category],
+    projects: &[crate::projects::Project],
+) -> Vec<(&'static str, String)> {
     vec![
         ("Título", t.title.clone()),
         ("Ação", crate::tasks::action_label(&t.action).to_owned()),
@@ -6288,6 +6551,14 @@ fn task_fields(t: &Task, cats: &[crate::categories::Category]) -> Vec<(&'static 
                 .join("; "),
         ),
         ("Categorias", category_names(cats, &t.categories)),
+        (
+            "Projeto",
+            projects
+                .iter()
+                .find(|p| p.uid == t.project_uid)
+                .map(|p| p.name.clone())
+                .unwrap_or_default(),
+        ),
     ]
 }
 
@@ -6373,6 +6644,17 @@ fn category_fields(c: &crate::categories::Category) -> Vec<(&'static str, String
     ]
 }
 
+fn project_fields(p: &crate::projects::Project) -> Vec<(&'static str, String)> {
+    vec![
+        ("Nome", p.name.clone()),
+        ("Objetivo", p.objective.clone()),
+        ("Responsável", p.assignee.clone()),
+        ("Situação", p.status.label().to_owned()),
+        ("Início", crate::labels::date(&p.start_date)),
+        ("Data-alvo", crate::labels::date(&p.target_date)),
+    ]
+}
+
 fn resource_fields(r: &crate::resources::Resource) -> Vec<(&'static str, String)> {
     vec![
         ("Nome", r.name.clone()),
@@ -6420,6 +6702,10 @@ fn mutation_target_key(mutation: &IntranetMutation) -> Option<String> {
             Some(format!("category:{}", category.uid))
         }
         IntranetMutation::DeleteCategory { uid, .. } => Some(format!("category:{uid}")),
+        IntranetMutation::SaveProject { project, .. } if !project.uid.is_empty() => {
+            Some(format!("project:{}", project.uid))
+        }
+        IntranetMutation::DeleteProject { uid, .. } => Some(format!("project:{uid}")),
         // A delete takes the place of the offline edits of the same item and
         // keeps the version the first of them saw.
         IntranetMutation::DeleteResource { uid, .. } => Some(format!("resource:{uid}")),
@@ -6524,6 +6810,30 @@ fn preserve_original_base_version(
             expected_version: *orig,
         },
         (
+            IntranetMutation::SaveProject {
+                expected_version: orig,
+                ..
+            },
+            IntranetMutation::SaveProject { project, .. },
+        ) => IntranetMutation::SaveProject {
+            project,
+            expected_version: *orig,
+        },
+        (
+            IntranetMutation::SaveProject {
+                expected_version: orig,
+                ..
+            }
+            | IntranetMutation::DeleteProject {
+                expected_version: orig,
+                ..
+            },
+            IntranetMutation::DeleteProject { uid, .. },
+        ) => IntranetMutation::DeleteProject {
+            uid,
+            expected_version: *orig,
+        },
+        (
             IntranetMutation::SaveResource {
                 expected_version: orig,
                 ..
@@ -6618,6 +6928,10 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
             format!("Categoria \"{}\"", category.name)
         }
         IntranetMutation::DeleteCategory { .. } => "Exclusão de categoria".to_owned(),
+        IntranetMutation::SaveProject { project, .. } => {
+            format!("Projeto \"{}\"", project.name)
+        }
+        IntranetMutation::DeleteProject { .. } => "Exclusão de projeto".to_owned(),
         IntranetMutation::SaveSetting { .. } => "Feriados e dias sem expediente".to_owned(),
         IntranetMutation::SaveResourceUse { item, .. } => format!(
             "Uso de recurso: {} ({} a {})",
@@ -7054,6 +7368,18 @@ fn send_rpc_classified(
             }
         }
     }
+    // The same for what carries projects.
+    if let RpcRequest::Mutate { mutation, .. } = request {
+        if mutation_carries_projects(mutation) {
+            if let Ok(RpcResponse::Pong { schema_version, .. }) =
+                send_rpc_classified(cfg, &RpcRequest::Ping)
+            {
+                if schema_version < PROJECTS_SCHEMA {
+                    return Err(RpcError::Unreachable(HOST_WITHOUT_PROJECTS.into()));
+                }
+            }
+        }
+    }
     // The same for a library setting.
     if let RpcRequest::Mutate { mutation, .. } = request {
         if is_setting_mutation(mutation) {
@@ -7129,6 +7455,9 @@ fn send_rpc_classified(
         }
         if message.starts_with(HOST_CANNOT_READ_START) && is_category_mutation(mutation) {
             return Err(RpcError::Unreachable(HOST_WITHOUT_CATEGORIES.into()));
+        }
+        if message.starts_with(HOST_CANNOT_READ_START) && is_project_mutation(mutation) {
+            return Err(RpcError::Unreachable(HOST_WITHOUT_PROJECTS.into()));
         }
         if message.starts_with(HOST_CANNOT_READ_START) && is_setting_mutation(mutation) {
             return Err(RpcError::Unreachable(HOST_WITHOUT_SETTINGS.into()));
@@ -9185,6 +9514,7 @@ fn comparable_conflict(mutation: &IntranetMutation) -> bool {
             | IntranetMutation::SaveResource { .. }
             | IntranetMutation::SaveResourceUse { .. }
             | IntranetMutation::SaveCategory { .. }
+            | IntranetMutation::SaveProject { .. }
     )
 }
 
@@ -13265,9 +13595,9 @@ mod resources_sync_tests {
             .unwrap();
         assert!(other.list_resources().unwrap().is_empty());
         assert!(other.list_resource_uses().unwrap().is_empty());
-        // Schema 20 and format 7 are the ones this build writes.
-        assert_eq!(crate::storage::SCHEMA_VERSION, 20);
-        assert_eq!(crate::sharedfolder::FORMAT, 7);
+        // Schema 21 and format 8 are the ones this build writes.
+        assert_eq!(crate::storage::SCHEMA_VERSION, 21);
+        assert_eq!(crate::sharedfolder::FORMAT, 8);
     }
     #[test]
     fn a_client_books_through_the_main_computer_which_refuses_a_clash() {
