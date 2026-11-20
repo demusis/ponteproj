@@ -156,21 +156,23 @@ internal object Holidays {
     /** State holidays that are not national (the same table is in `src/holidays.rs`). */
     private val STATE_TABLE: Map<String, List<When>> = mapOf(
         "AC" to listOf(
-            fixed(1, 23, "Dia do Evangélico"), fixed(6, 15, "Aniversário do Acre"),
+            fixed(1, 23, "Dia do Evangélico"), fixed(3, 8, "Dia Internacional da Mulher"),
+            fixed(6, 15, "Aniversário do Acre"),
             fixed(9, 5, "Dia da Amazônia"), fixed(11, 17, "Tratado de Petrópolis")
         ),
         "AL" to listOf(fixed(6, 24, "São João"), fixed(6, 29, "São Pedro"), fixed(9, 16, "Emancipação de Alagoas")),
         "AP" to listOf(fixed(3, 19, "São José"), fixed(9, 13, "Criação do Amapá")),
-        "AM" to listOf(fixed(9, 5, "Elevação do Amazonas a Província")),
+        "AM" to listOf(fixed(9, 5, "Elevação do Amazonas a Província"), fixed(12, 8, "Nossa Senhora da Conceição")),
         "BA" to listOf(fixed(7, 2, "Independência da Bahia")),
-        "CE" to listOf(fixed(3, 25, "Data Magna do Ceará")),
+        "CE" to listOf(fixed(3, 19, "São José"), fixed(3, 25, "Data Magna do Ceará")),
         "DF" to listOf(fixed(11, 30, "Dia do Evangélico")),
         "ES" to listOf(When(0, 0, 0, 8L, "Nossa Senhora da Penha")),
         "MA" to listOf(fixed(7, 28, "Adesão do Maranhão")),
         "MS" to listOf(fixed(10, 11, "Criação de Mato Grosso do Sul")),
         "PA" to listOf(fixed(8, 15, "Adesão do Pará")),
         "PB" to listOf(fixed(8, 5, "Fundação da Paraíba")),
-        "PE" to listOf(fixed(3, 6, "Data Magna de Pernambuco", from = 2017), fixed(6, 24, "São João")),
+        // São João (24/06) is municipal there (Recife, Caruaru…), not a state holiday.
+        "PE" to listOf(fixed(3, 6, "Data Magna de Pernambuco", from = 2017)),
         "PI" to listOf(fixed(10, 19, "Dia do Piauí")),
         "RJ" to listOf(fixed(4, 23, "São Jorge")),
         "RN" to listOf(fixed(10, 3, "Mártires de Cunhaú e Uruaçu")),
@@ -179,7 +181,10 @@ internal object Holidays {
         "RS" to listOf(fixed(9, 20, "Revolução Farroupilha")),
         "SE" to listOf(fixed(7, 8, "Emancipação de Sergipe")),
         "SP" to listOf(fixed(7, 9, "Revolução Constitucionalista")),
-        "TO" to listOf(fixed(10, 5, "Criação do Tocantins"), fixed(9, 8, "Nossa Senhora da Natividade"))
+        "TO" to listOf(
+            fixed(3, 18, "Autonomia do Tocantins"), fixed(10, 5, "Criação do Tocantins"),
+            fixed(9, 8, "Nossa Senhora da Natividade")
+        )
     )
 
     /** The state's holidays as lines for Ajustes: when ("09/07" or "8 dias depois da Páscoa"), and the name. */

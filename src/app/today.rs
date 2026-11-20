@@ -1397,45 +1397,6 @@ fn task_group(
                             )
                             .on_hover_text("Conclui a tarefa. Nada é enviado ao SIGADOC.")
                             .clicked();
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&task.title)
-                                        .font(theme::font_strong(theme::SIZE_BODY)),
-                                )
-                                .selectable(false)
-                                .truncate(),
-                            );
-                            // A task without document says so, quietly, and has nothing to open.
-                            let document = task.document_id.map(title_of).unwrap_or_default();
-                            if task.document_id.is_none() {
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new("Sem documento")
-                                            .size(theme::SIZE_SMALL)
-                                            .color(p.muted),
-                                    )
-                                    .selectable(false),
-                                )
-                                .on_hover_text("Tarefa avulsa: não pertence a nenhum documento.");
-                            } else if !document.is_empty() {
-                                open_document = ui
-                                    .add(
-                                        egui::Label::new(
-                                            RichText::new(document)
-                                                .size(theme::SIZE_SMALL)
-                                                .color(p.muted),
-                                        )
-                                        .selectable(false)
-                                        .truncate()
-                                        .sense(egui::Sense::click()),
-                                    )
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .on_hover_text("Abrir o documento desta tarefa")
-                                    .clicked();
-                            }
-                        });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                             let (text, tone) = if task.due_date.as_str() < today {
                                 (
@@ -1465,6 +1426,49 @@ fn task_group(
                                 categories,
                                 2,
                             );
+                            // The chips take their room first; the texts get what is left, so a
+                            // long title ends in "…" instead of running under them.
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&task.title)
+                                            .font(theme::font_strong(theme::SIZE_BODY)),
+                                    )
+                                    .selectable(false)
+                                    .truncate(),
+                                );
+                                // A task without document says so, quietly, and has nothing to open.
+                                let document = task.document_id.map(title_of).unwrap_or_default();
+                                if task.document_id.is_none() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new("Sem documento")
+                                                .size(theme::SIZE_SMALL)
+                                                .color(p.muted),
+                                        )
+                                        .selectable(false),
+                                    )
+                                    .on_hover_text(
+                                        "Tarefa avulsa: não pertence a nenhum documento.",
+                                    );
+                                } else if !document.is_empty() {
+                                    open_document = ui
+                                        .add(
+                                            egui::Label::new(
+                                                RichText::new(document)
+                                                    .size(theme::SIZE_SMALL)
+                                                    .color(p.muted),
+                                            )
+                                            .selectable(false)
+                                            .truncate()
+                                            .sense(egui::Sense::click()),
+                                        )
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .on_hover_text("Abrir o documento desta tarefa")
+                                        .clicked();
+                                }
+                            });
                         });
                     });
                 },
@@ -1508,40 +1512,6 @@ fn attendance_group(
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = S3;
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            let reference = if attendance.reference_raw.is_empty() {
-                                "Sem referência"
-                            } else {
-                                attendance.reference_raw.as_str()
-                            };
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(reference)
-                                        .font(theme::font_strong(theme::SIZE_BODY)),
-                                )
-                                .selectable(false)
-                                .truncate(),
-                            );
-                            let mut detail = attendance.subject.clone();
-                            if !attendance.assignee.is_empty() {
-                                if !detail.is_empty() {
-                                    detail.push_str(" · ");
-                                }
-                                detail.push_str(&attendance.assignee);
-                            }
-                            if !detail.is_empty() {
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(detail)
-                                            .size(theme::SIZE_SMALL)
-                                            .color(p.muted),
-                                    )
-                                    .selectable(false)
-                                    .truncate(),
-                                );
-                            }
-                        });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                             if attendance.due_date.as_str() < today {
                                 widgets::pill(
@@ -1552,6 +1522,40 @@ fn attendance_group(
                             } else {
                                 widgets::pill(ui, "Hoje", Tone::Warn);
                             }
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                let reference = if attendance.reference_raw.is_empty() {
+                                    "Sem referência"
+                                } else {
+                                    attendance.reference_raw.as_str()
+                                };
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(reference)
+                                            .font(theme::font_strong(theme::SIZE_BODY)),
+                                    )
+                                    .selectable(false)
+                                    .truncate(),
+                                );
+                                let mut detail = attendance.subject.clone();
+                                if !attendance.assignee.is_empty() {
+                                    if !detail.is_empty() {
+                                        detail.push_str(" · ");
+                                    }
+                                    detail.push_str(&attendance.assignee);
+                                }
+                                if !detail.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(detail)
+                                                .size(theme::SIZE_SMALL)
+                                                .color(p.muted),
+                                        )
+                                        .selectable(false)
+                                        .truncate(),
+                                    );
+                                }
+                            });
                         });
                     });
                 },

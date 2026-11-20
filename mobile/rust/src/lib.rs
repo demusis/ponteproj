@@ -2662,7 +2662,7 @@ mod tests {
         assert!(format!("{error:#}").contains("foi alterado depois"));
         assert_eq!(store.document_categories(doc).unwrap().len(), 2);
         // The current version works; more than ten and unknown documents are refused.
-        set_document_categories(&mut store, doc, &[b.clone()], v1).unwrap();
+        set_document_categories(&mut store, doc, std::slice::from_ref(&b), v1).unwrap();
         assert_eq!(store.document_categories(doc).unwrap(), vec![b.clone()]);
         let v2 = work_context_version(&store, doc);
         assert!(set_document_categories(&mut store, doc, &vec![a.clone(); 11], v2).is_err());

@@ -3887,11 +3887,19 @@ impl SaiopPanel {
                 }
                 if !dialog.contact || dialog.set_next {
                     labeled(ui, "Próxima cobrança em", |ui| {
-                        crate::labels::date_field(ui, "saiop-follow-up-next", &mut dialog.next);
+                        crate::labels::date_field_plain(
+                            ui,
+                            "saiop-follow-up-next",
+                            &mut dialog.next,
+                        );
                     });
                     ui.horizontal(|ui| {
-                        for (label, days) in [("Amanhã", 1), ("Em 3 dias", 3), ("Em 1 semana", 7)]
-                        {
+                        for (label, days) in [
+                            ("Hoje", 0),
+                            ("Amanhã", 1),
+                            ("Em 3 dias", 3),
+                            ("Em 1 semana", 7),
+                        ] {
                             if ui.add(widgets::quiet(label)).clicked() {
                                 dialog.next = (today + ChronoDuration::days(days))
                                     .format("%Y-%m-%d")

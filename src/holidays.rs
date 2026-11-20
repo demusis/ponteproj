@@ -104,6 +104,7 @@ fn state_table(uf: &str) -> &'static [(When, &'static str)] {
     match uf {
         "AC" => &[
             (Fixed(1, 23, 0), "Dia do Evangélico"),
+            (Fixed(3, 8, 0), "Dia Internacional da Mulher"),
             (Fixed(6, 15, 0), "Aniversário do Acre"),
             (Fixed(9, 5, 0), "Dia da Amazônia"),
             (Fixed(11, 17, 0), "Tratado de Petrópolis"),
@@ -117,19 +118,24 @@ fn state_table(uf: &str) -> &'static [(When, &'static str)] {
             (Fixed(3, 19, 0), "São José"),
             (Fixed(9, 13, 0), "Criação do Amapá"),
         ],
-        "AM" => &[(Fixed(9, 5, 0), "Elevação do Amazonas a Província")],
+        "AM" => &[
+            (Fixed(9, 5, 0), "Elevação do Amazonas a Província"),
+            (Fixed(12, 8, 0), "Nossa Senhora da Conceição"),
+        ],
         "BA" => &[(Fixed(7, 2, 0), "Independência da Bahia")],
-        "CE" => &[(Fixed(3, 25, 0), "Data Magna do Ceará")],
+        "CE" => &[
+            (Fixed(3, 19, 0), "São José"),
+            (Fixed(3, 25, 0), "Data Magna do Ceará"),
+        ],
         "DF" => &[(Fixed(11, 30, 0), "Dia do Evangélico")],
         "ES" => &[(AfterEaster(8), "Nossa Senhora da Penha")],
         "MA" => &[(Fixed(7, 28, 0), "Adesão do Maranhão")],
         "MS" => &[(Fixed(10, 11, 0), "Criação de Mato Grosso do Sul")],
         "PA" => &[(Fixed(8, 15, 0), "Adesão do Pará")],
         "PB" => &[(Fixed(8, 5, 0), "Fundação da Paraíba")],
-        "PE" => &[
-            (Fixed(3, 6, 2017), "Data Magna de Pernambuco"),
-            (Fixed(6, 24, 0), "São João"),
-        ],
+        // São João (24/06) is a municipal holiday there (Recife, Caruaru…), not a
+        // state one: who needs it registers it as a day of their own.
+        "PE" => &[(Fixed(3, 6, 2017), "Data Magna de Pernambuco")],
         "PI" => &[(Fixed(10, 19, 0), "Dia do Piauí")],
         "RJ" => &[(Fixed(4, 23, 0), "São Jorge")],
         "RN" => &[(Fixed(10, 3, 0), "Mártires de Cunhaú e Uruaçu")],
@@ -142,6 +148,7 @@ fn state_table(uf: &str) -> &'static [(When, &'static str)] {
         "SE" => &[(Fixed(7, 8, 0), "Emancipação de Sergipe")],
         "SP" => &[(Fixed(7, 9, 0), "Revolução Constitucionalista")],
         "TO" => &[
+            (Fixed(3, 18, 0), "Autonomia do Tocantins"),
             (Fixed(10, 5, 0), "Criação do Tocantins"),
             (Fixed(9, 8, 0), "Nossa Senhora da Natividade"),
         ],
@@ -575,7 +582,7 @@ anual 05-02 Recesso
         let pe = uf("PE");
         assert_eq!(name(d(2016, 3, 6), &pe), None);
         assert!(name(d(2017, 3, 6), &pe).is_some());
-        assert!(name(d(2026, 6, 24), &pe).is_some());
+        assert_eq!(name(d(2026, 6, 24), &pe), None);
     }
     #[test]
     fn national_comes_first_and_every_state_is_known() {
@@ -586,7 +593,8 @@ anual 05-02 Recesso
             assert_eq!(state_name(code), Some(full));
         }
         assert!(state_holiday_lines("GO").is_empty());
-        assert_eq!(state_holiday_lines("AC").len(), 4);
+        assert_eq!(state_holiday_lines("AC").len(), 5);
+        assert_eq!(state_holiday_lines("TO")[0].0, "18/03");
         assert_eq!(state_holiday_lines("SP")[0].0, "09/07");
     }
     #[test]

@@ -99,7 +99,7 @@ class HolidaysTest {
         Holidays.configure("uf PE")
         assertNull(Holidays.holiday(d(2016, 3, 6)))
         assertTrue(Holidays.holiday(d(2017, 3, 6)) != null)
-        assertTrue(Holidays.holiday(d(2026, 6, 24)) != null)
+        assertNull(Holidays.holiday(d(2026, 6, 24)))
     }
 
     @Test fun nacionalVemPrimeiroETodosOsEstadosSaoConhecidos() {
@@ -108,7 +108,8 @@ class HolidaysTest {
         assertEquals("Tiradentes", Holidays.holiday(d(2026, 4, 21)))
         for ((code, full) in Holidays.STATES) assertEquals(full, Holidays.stateName(code))
         assertTrue(Holidays.stateHolidayLines("GO").isEmpty())
-        assertEquals(4, Holidays.stateHolidayLines("AC").size)
+        assertEquals(5, Holidays.stateHolidayLines("AC").size)
+        assertEquals("18/03", Holidays.stateHolidayLines("TO")[0].first)
         assertEquals("09/07", Holidays.stateHolidayLines("SP")[0].first)
         assertEquals("8 dias depois da Páscoa", Holidays.stateHolidayLines("ES")[0].first)
     }

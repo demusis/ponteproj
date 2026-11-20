@@ -447,6 +447,27 @@ pub fn date_field(
     id_salt: impl std::hash::Hash + std::fmt::Debug,
     value: &mut String,
 ) -> eframe::egui::Response {
+    date_field_with(ui, id_salt, value, true)
+}
+
+#[cfg(feature = "desktop")]
+/// [`date_field`] without its "Hoje" shortcut, for a form that offers its own
+/// row of shortcuts under the field.
+pub fn date_field_plain(
+    ui: &mut eframe::egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    value: &mut String,
+) -> eframe::egui::Response {
+    date_field_with(ui, id_salt, value, false)
+}
+
+#[cfg(feature = "desktop")]
+fn date_field_with(
+    ui: &mut eframe::egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    value: &mut String,
+    today_shortcut: bool,
+) -> eframe::egui::Response {
     use eframe::egui;
     let id = ui.make_persistent_id(("ponte-date-field", id_salt));
     // (buffer shown, backing value it was derived from)
@@ -487,10 +508,11 @@ pub fn date_field(
                 *value = chosen;
                 state = (date(value), value.clone());
             }
-            if ui
-                .add(crate::widgets::quiet("Hoje"))
-                .on_hover_text("Preenche com a data de hoje")
-                .clicked()
+            if today_shortcut
+                && ui
+                    .add(crate::widgets::quiet("Hoje"))
+                    .on_hover_text("Preenche com a data de hoje")
+                    .clicked()
             {
                 *value = chrono::Local::now().format("%Y-%m-%d").to_string();
                 state = (date(value), value.clone());
