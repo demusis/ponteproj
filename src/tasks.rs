@@ -524,6 +524,19 @@ impl Store {
         self.save_task_checked(task, None)
     }
 
+    /// Creates a NEW task that has no project, even when its parent has one:
+    /// the explicit "no project" (a plain `save_task` of a subtask with an
+    /// empty `project_uid` takes the project of its parent). It travels with
+    /// the change, so the main computer, the queue and the shared folder do
+    /// not give it one either.
+    pub fn save_task_without_project(&mut self, task: &Task) -> Result<i64> {
+        ensure!(
+            task.id == 0 && task.project_uid.is_empty(),
+            "Só uma tarefa nova, sem projeto, pode ser criada sem projeto."
+        );
+        self.save_task_inner(task, None, true)
+    }
+
     /// One-click conclusion. Dependency rules are still enforced by
     /// `save_task_checked`, and the edit is version-checked like any other.
     pub fn complete_task(&mut self, id: i64) -> Result<Task> {
@@ -644,6 +657,17 @@ impl Store {
     }
 
     pub fn save_task_checked(&mut self, task: &Task, expected_version: Option<i64>) -> Result<i64> {
+        self.save_task_inner(task, expected_version, false)
+    }
+
+    /// `no_project`: the writer chose no project (see
+    /// [`Store::save_task_without_project`]); only a new task reads it here.
+    pub(crate) fn save_task_inner(
+        &mut self,
+        task: &Task,
+        expected_version: Option<i64>,
+        no_project: bool,
+    ) -> Result<i64> {
         task.validate()?;
         if let Some(cfg) = self.client_config()? {
             if !task.proposal_id.is_empty() {
@@ -661,6 +685,7 @@ impl Store {
                 crate::intranet::IntranetMutation::SaveTask {
                     task: task.clone(),
                     expected_version,
+                    no_project,
                 },
             )? {
                 crate::intranet::MutationReply::Id(id) => return Ok(id),
@@ -673,7 +698,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let saved = write_task(&tx, &actor, task, expected_version)?;
+        let saved = write_task_with_graph(&tx, &actor, task, expected_version, None, no_project)?;
         tx.commit()?;
         if saved.status == "concluida" && !self.cascade_suppressed {
             // A concluded main document implicitly concludes the pieces
@@ -758,8 +783,8 @@ impl Store {
                 continue;
             }
             created += 1;
-            let saved =
-                write_task_with_graph(&tx, &actor, task, None, Some(&mut graph)).map_err(|e| {
+            let saved = write_task_with_graph(&tx, &actor, task, None, Some(&mut graph), false)
+                .map_err(|e| {
                     anyhow::anyhow!(
                         "Ocorrência {} de {} ({}): {e}",
                         index + 1,
@@ -787,7 +812,7 @@ pub(crate) fn write_task(
     task: &Task,
     expected_version: Option<i64>,
 ) -> Result<Task> {
-    write_task_with_graph(tx, actor, task, expected_version, None)
+    write_task_with_graph(tx, actor, task, expected_version, None, false)
 }
 
 type TaskGraph = std::collections::BTreeMap<i64, Task>;
@@ -815,6 +840,7 @@ fn write_task_with_graph(
     task: &Task,
     expected_version: Option<i64>,
     batch_graph: Option<&mut TaskGraph>,
+    no_project: bool,
 ) -> Result<Task> {
     task.validate()?;
     if let Some(document_id) = task.document_id {
@@ -823,8 +849,10 @@ fn write_task_with_graph(
     let mut saved = task.clone();
     saved.categories = crate::categories::retain_known(tx, &task.categories)?;
     // A new subtask without a project of its own takes the one of its parent
-    // (later changes of the parent's project do not reach it).
-    let inherits = task.id == 0 && task.project_uid.is_empty() && task.parent_task_id.is_some();
+    // (later changes of the parent's project do not reach it), unless the
+    // writer chose no project at all.
+    let inherits =
+        task.id == 0 && task.project_uid.is_empty() && !no_project && task.parent_task_id.is_some();
     if inherits {
         if let Some(parent) = task.parent_task_id {
             saved.project_uid = crate::projects::project_of_task(tx, parent)?;
@@ -847,10 +875,10 @@ fn write_task_with_graph(
                 "A identidade da tarefa pertence a um item na lixeira."
             );
             existing.id = 0;
-            // The project a subtask inherited belongs to the original create.
-            if inherits {
-                saved.project_uid = existing.project_uid.clone();
-            }
+            // The project of a task belongs to the original create: a retry
+            // (the reply was lost) neither adds the default nor undoes what
+            // was done with the task since.
+            saved.project_uid = existing.project_uid.clone();
             // A generated completion timestamp belongs to the original create, not the retry.
             if saved.status == "concluida" && saved.completed_at.is_none() {
                 saved.completed_at = existing.completed_at.clone();
@@ -2450,6 +2478,7 @@ mod planning_tests {
         let mutation = crate::intranet::IntranetMutation::SaveTask {
             task: old,
             expected_version: None,
+            no_project: false,
         };
         let crate::intranet::IntranetMutation::SaveTask { task: kept, .. } =
             store.keep_unseen_fields(mutation, 17).unwrap()

@@ -656,6 +656,14 @@ pub enum IntranetMutation {
     SaveTask {
         task: Task,
         expected_version: Option<i64>,
+        /// The writer chose NO project: for a saved task it is the explicit
+        /// removal of the link (an empty `project_uid` alone only means that
+        /// the writer did not touch it, or never saw it, and the stored link
+        /// is kept); for a new subtask it is the choice of not taking the
+        /// project of its parent. Absent (a queue or a request written by an
+        /// older Ponte): false. Ignored when the task names a project.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        no_project: bool,
     },
     /// Moves a task to another document, or to none, keeping everything
     /// else about it (id, attachments, checklist, history). Never a side
@@ -1448,6 +1456,35 @@ pub(crate) fn record_mutation(
 /// The version number of an item inside a transaction; 0 when it never had one.
 pub(crate) fn version_of(tx: &Connection, kind: &str, item_id: i64) -> Result<i64> {
     Ok(read_version_tx(tx, kind, item_id)?.version)
+}
+
+impl Store {
+    /// The versions of the projects, as a snapshot carries them: the ones of
+    /// projects that exist and the ones kept for deleted projects (a change
+    /// made on top of an older view of a deleted project must not bring it
+    /// back).
+    pub(crate) fn project_item_versions(&self) -> Result<Vec<(String, i64, VersionMeta)>> {
+        let rows = self
+            .conn
+            .prepare(
+                "SELECT item_id,version,payload FROM item_versions WHERE kind='project' ORDER BY item_id",
+            )?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (item_id, version, blob) in rows {
+            let mut meta: VersionMeta = serde_json::from_slice(&unseal(&blob)?)?;
+            meta.version = version;
+            out.push(("project".to_owned(), item_id, meta));
+        }
+        Ok(out)
+    }
 }
 
 fn read_version_tx(tx: &Connection, kind: &str, item_id: i64) -> Result<VersionMeta> {
@@ -2419,6 +2456,12 @@ impl Store {
                 }
             }
         }
+        // What kind of copy this library now is (see `projects_cache_stale`).
+        tx.execute(
+            "INSERT INTO client_cache(id,schema) VALUES(1,?1)
+             ON CONFLICT(id) DO UPDATE SET schema=excluded.schema",
+            [snapshot.schema_version],
+        )?;
         // This library now numbers its items as the copy it received.
         crate::idmap::reset_frame(&tx, true)?;
         finish(&tx)?;
@@ -2590,6 +2633,7 @@ impl Store {
             IntranetMutation::SaveTask {
                 task,
                 expected_version,
+                no_project,
             } => (|| -> Result<MutationReply> {
                 let existing = if task.id == 0 && !task.uid.is_empty() {
                     self.list_tasks()?
@@ -2601,6 +2645,10 @@ impl Store {
                 if let Some(existing) = existing {
                     let mut retried = task.clone();
                     retried.id = existing.id;
+                    // A repeated create never changes the project the first
+                    // one gave the task (what a person or another computer
+                    // did with it since is not undone by the retry).
+                    retried.project_uid = existing.project_uid.clone();
                     if retried == existing {
                         Ok(MutationReply::Id(existing.id))
                     } else {
@@ -2609,12 +2657,14 @@ impl Store {
                             IntranetMutation::SaveTask {
                                 task: retried,
                                 expected_version: None,
+                                no_project: false,
                             },
                             None,
                         )?;
                         if let IntranetMutation::SaveTask {
                             task,
                             expected_version,
+                            ..
                         } = merged
                         {
                             self.save_task_checked(&task, expected_version)
@@ -2624,7 +2674,7 @@ impl Store {
                         }
                     }
                 } else {
-                    self.save_task_checked(&task, expected_version)
+                    self.save_task_inner(&task, expected_version, no_project)
                         .map(MutationReply::Id)
                 }
             })(),
@@ -2832,7 +2882,13 @@ impl Store {
 
         // A pending translation means this library still uses its own
         // numbers: only a full copy of the main one settles it.
-        let since = if force_full || pushed_offline || crate::idmap::has_pending(&self.conn)? {
+        // The same for a library upgraded while it held a copy taken before
+        // the projects: the main computer may still be at that revision.
+        let since = if force_full
+            || pushed_offline
+            || crate::idmap::has_pending(&self.conn)?
+            || self.projects_cache_stale()
+        {
             None
         } else {
             Some(cfg.synced_revision)
@@ -3128,6 +3184,9 @@ impl Store {
         let mut conflicts: Vec<SyncConflict> = Vec::new();
         let mut temp: Option<Store> = None;
         let mut carried_old_fields = false;
+        // The changes the copy that carries the projects had applied, when
+        // the base is one that cannot.
+        let mut donor_applied: std::collections::BTreeSet<String> = Default::default();
         let base_snapshot = copies.first().map(|c| &c.payload.snapshot);
         if first_write {
             reporter.step("Preparando a primeira cópia a partir do acervo deste computador…");
@@ -3218,11 +3277,40 @@ impl Store {
             // them: the projects of this library go into the copy being
             // built, and so does the project of each of its tasks (copies
             // before the planning fields were handled with the tasks above).
+            // But a copy that does carry them (another folder, or the copy
+            // this computer wrote) is the better source: a base that cannot
+            // hold projects never means "there are none", and this
+            // library's own may be the older or the empty one.
             if best.header.schema_version < PROJECTS_SCHEMA {
-                incoming.projects = self.export_projects()?;
+                let donor = copies
+                    .iter()
+                    .find(|c| c.header.schema_version >= PROJECTS_SCHEMA);
+                let mut links: BTreeMap<String, String> = BTreeMap::new();
+                let project_versions = if let Some(donor) = donor {
+                    let snapshot = &donor.payload.snapshot;
+                    incoming.projects = snapshot.projects.clone();
+                    let versions = snapshot
+                        .item_versions
+                        .iter()
+                        .filter(|(kind, _, _)| kind == "project")
+                        .cloned()
+                        .collect();
+                    for task in &snapshot.tasks {
+                        if !task.uid.is_empty() {
+                            links.insert(task.uid.clone(), task.project_uid.clone());
+                        }
+                    }
+                    versions
+                } else {
+                    incoming.projects = self.export_projects()?;
+                    self.project_item_versions()?
+                };
+                incoming
+                    .item_versions
+                    .retain(|(kind, _, _)| kind != "project");
+                incoming.item_versions.extend(project_versions);
                 carried_old_fields |= !incoming.projects.is_empty();
-                if best.header.schema_version >= SCHEDULE_SCHEMA {
-                    let mut mine: BTreeMap<String, String> = BTreeMap::new();
+                if donor.is_none() && best.header.schema_version >= SCHEDULE_SCHEMA {
                     let mut statement = self.conn.prepare("SELECT id, payload FROM tasks")?;
                     let rows = statement.query_map([], |row| {
                         Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
@@ -3233,17 +3321,22 @@ impl Store {
                             crate::tasks::decode_task_or_skip_trashed(&self.conn, id, &bytes)?
                         {
                             if !task.project_uid.is_empty() && !task.uid.is_empty() {
-                                mine.insert(task.uid, task.project_uid);
+                                links.insert(task.uid, task.project_uid);
                             }
                         }
                     }
-                    for task in &mut incoming.tasks {
-                        if let Some(project) = mine.get(&task.uid) {
+                }
+                for task in &mut incoming.tasks {
+                    if let Some(project) = links.get(&task.uid) {
+                        if task.project_uid != *project {
                             task.project_uid = project.clone();
                             carried_old_fields = true;
                         }
                     }
                 }
+                donor_applied = donor
+                    .map(|d| d.payload.applied.iter().cloned().collect())
+                    .unwrap_or_default();
             }
             store.apply_snapshot(
                 &incoming,
@@ -3292,6 +3385,16 @@ impl Store {
             }
             for (entry, index) in foreign {
                 if applied.contains(&entry.uid) {
+                    continue;
+                }
+                // A project change the copy that carries the projects has
+                // already applied is inside the projects taken from it:
+                // replayed, it would only clash with its own result.
+                if is_project_mutation(&entry.mutation) && donor_applied.contains(&entry.uid) {
+                    let revision = store.cabinet_revision()?;
+                    applied.insert(entry.uid.clone());
+                    resolved.insert(entry.uid.clone(), Some(entry.created.clone()));
+                    journal.push(JournalEntry { revision, ..entry });
                     continue;
                 }
                 let source = &copies[index];
@@ -3441,7 +3544,16 @@ impl Store {
                     report.conflicts += 1;
                     continue;
                 }
-                let remapped = ids.remap(&entry.mutation, &*self, Some(&store));
+                // A change queued before the upgrade (or from a copy that
+                // never saw the projects) does not clear the link it did not
+                // touch.
+                let remapped =
+                    ids.remap(&entry.mutation, &*self, Some(&store))
+                        .and_then(|mutation| {
+                            store
+                                .keep_unseen_fields(mutation, crate::storage::SCHEMA_VERSION)
+                                .map_err(|e| e.to_string())
+                        });
                 let outcome = match &remapped {
                     Ok(mutation) => store
                         .execute_mutation(&entry.actor, mutation.clone())
@@ -3717,6 +3829,9 @@ impl Store {
     ) -> Result<MutationReply> {
         cfg.validate()?;
         let actor = cfg.member_name.trim().to_owned();
+        // What the project of a task means is settled here, where the person
+        // saw it, before the change is sent or queued.
+        let mutation = self.settle_project_link(mutation);
         if cfg.mode == IntranetMode::SharedFolder {
             // There is no host to ask: every change is applied here and
             // queued for the next exchange through the folders. This is the
@@ -3784,6 +3899,72 @@ impl Store {
         }
     }
 
+    /// The library schema of the copy this library last took from the main
+    /// computer or the folders (0: none, or one taken by a Ponte that did not
+    /// record it).
+    pub(crate) fn cache_schema(&self) -> i64 {
+        self.conn
+            .query_row("SELECT schema FROM client_cache WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or(0)
+    }
+
+    /// Whether what this library holds of the main computer predates the
+    /// projects: its tasks never carried the link, and only a full copy
+    /// settles it (the revision may be the same).
+    pub(crate) fn projects_cache_stale(&self) -> bool {
+        self.cache_schema() < PROJECTS_SCHEMA
+    }
+
+    /// Says, on the side that saw the screen, what the project of a task
+    /// change means: a task that names a project is in it; an empty one is the
+    /// explicit removal only when this library knew the link and the person
+    /// took it off; a new subtask carries the project it just took from its
+    /// parent here (or the choice of none), so the change means the same
+    /// whenever and wherever it is applied.
+    fn settle_project_link(&self, mutation: IntranetMutation) -> IntranetMutation {
+        let IntranetMutation::SaveTask {
+            mut task,
+            expected_version,
+            mut no_project,
+        } = mutation
+        else {
+            return mutation;
+        };
+        if !task.project_uid.is_empty() {
+            no_project = false;
+        } else if task.id > 0 {
+            if !no_project {
+                let had = self
+                    .list_tasks()
+                    .ok()
+                    .and_then(|all| all.into_iter().find(|t| t.id == task.id))
+                    .is_some_and(|stored| !stored.project_uid.is_empty());
+                no_project = had;
+            }
+        } else if let (false, Some(parent), false) =
+            (no_project, task.parent_task_id, self.projects_cache_stale())
+        {
+            let inherited = crate::projects::project_of_task(&self.conn, parent)
+                .and_then(|uid| crate::projects::retain_known(&self.conn, &uid))
+                .unwrap_or_default();
+            if inherited.is_empty() {
+                no_project = true;
+            } else {
+                task.project_uid = inherited;
+            }
+        }
+        IntranetMutation::SaveTask {
+            task,
+            expected_version,
+            no_project,
+        }
+    }
+
     /// Applies the change here and queues it, keeping the state before the
     /// change as the common ancestor for a field-by-field merge later.
     fn queue_locally(&mut self, actor: &str, mutation: IntranetMutation) -> Result<MutationReply> {
@@ -3817,12 +3998,14 @@ impl Store {
             IntranetMutation::SaveTask {
                 mut task,
                 expected_version,
+                no_project,
             } => {
                 if task.id <= 0 {
                     task.id = 0;
                     IntranetMutation::SaveTask {
                         task,
                         expected_version: None,
+                        no_project,
                     }
                 } else {
                     let ver = expected_version
@@ -3830,6 +4013,7 @@ impl Store {
                     IntranetMutation::SaveTask {
                         task,
                         expected_version: ver,
+                        no_project,
                     }
                 }
             }
@@ -4072,6 +4256,7 @@ impl Store {
                 Some(IntranetMutation::SaveTask {
                     task: current,
                     expected_version: None,
+                    no_project: false,
                 })
             }
             IntranetMutation::SaveWorkContext { document_id, .. } => {
@@ -4174,6 +4359,20 @@ impl Store {
                         .flat_map(|e| e.created.iter()),
                 );
                 let must_move = later.remap(&mutation, &*self, None).is_err();
+                // A task that now names a project created by a change queued
+                // after that place must follow it too: saved before it, the
+                // receiver would not know the project and clear the link.
+                let must_move = must_move
+                    || matches!(
+                        &mutation,
+                        IntranetMutation::SaveTask { task, .. }
+                            if !task.project_uid.is_empty()
+                                && existing.iter().filter(|e| e.id > prev.id).any(|e| matches!(
+                                    &e.mutation,
+                                    IntranetMutation::SaveProject { project, .. }
+                                        if project.uid == task.project_uid
+                                ))
+                    );
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
                 let updated = OutboxEntry {
                     id: prev.id,
@@ -4349,7 +4548,11 @@ impl Store {
                     expected_version: Some(ver),
                 }
             }
-            IntranetMutation::SaveTask { mut task, .. } => {
+            IntranetMutation::SaveTask {
+                mut task,
+                no_project,
+                ..
+            } => {
                 let ver = self.item_version("task", task.id)?.version;
                 // The link is not edited by a plain save: it follows the one
                 // the task has now (another computer may have relinked it).
@@ -4359,6 +4562,7 @@ impl Store {
                 IntranetMutation::SaveTask {
                     task,
                     expected_version: Some(ver),
+                    no_project,
                 }
             }
             IntranetMutation::RelinkTask {
@@ -4545,7 +4749,9 @@ impl Store {
                 })
             }
             IntranetMutation::SaveTask {
-                task: local_task, ..
+                task: local_task,
+                no_project: local_no_project,
+                ..
             } => {
                 let ver = self.item_version("task", local_task.id)?.version;
                 let host_task = self
@@ -4671,6 +4877,7 @@ impl Store {
                     local_task
                 };
                 Ok(IntranetMutation::SaveTask {
+                    no_project: merged_task.project_uid.is_empty() && local_no_project,
                     task: merged_task,
                     expected_version: Some(ver),
                 })
@@ -6735,13 +6942,22 @@ fn preserve_original_base_version(
         (
             IntranetMutation::SaveTask {
                 expected_version: orig,
+                no_project: first,
                 ..
             },
-            IntranetMutation::SaveTask { task, .. },
-        ) => IntranetMutation::SaveTask {
-            task,
-            expected_version: *orig,
-        },
+            IntranetMutation::SaveTask {
+                task, no_project, ..
+            },
+        ) => {
+            // An explicit removal of the project that the first edit made
+            // stays, unless the later one names a project.
+            let no_project = (*first || no_project) && task.project_uid.is_empty();
+            IntranetMutation::SaveTask {
+                task,
+                expected_version: *orig,
+                no_project,
+            }
+        }
         (
             IntranetMutation::SaveWorkContext {
                 expected_version: orig,
@@ -11418,6 +11634,7 @@ mod tests {
                 IntranetMutation::SaveTask {
                     task: local,
                     expected_version: None,
+                    no_project: false,
                 },
                 None,
             )
@@ -11459,10 +11676,12 @@ mod tests {
                 IntranetMutation::SaveTask {
                     task: local,
                     expected_version: None,
+                    no_project: false,
                 },
                 Some(&IntranetMutation::SaveTask {
                     task: base,
                     expected_version: None,
+                    no_project: false,
                 }),
             )
             .unwrap()
@@ -11496,6 +11715,7 @@ mod tests {
                 IntranetMutation::SaveTask {
                     task,
                     expected_version: None,
+                    no_project: false,
                 },
             )
             .unwrap();
@@ -11584,10 +11804,12 @@ mod tests {
                 IntranetMutation::SaveTask {
                     task: local.clone(),
                     expected_version: None,
+                    no_project: false,
                 },
                 Some(&IntranetMutation::SaveTask {
                     task: base.clone(),
                     expected_version: None,
+                    no_project: false,
                 }),
             )
             .unwrap();
@@ -11618,10 +11840,12 @@ mod tests {
             mutation: IntranetMutation::SaveTask {
                 task: local,
                 expected_version: None,
+                no_project: false,
             },
             base: Some(IntranetMutation::SaveTask {
                 task: base,
                 expected_version: None,
+                no_project: false,
             }),
             unresolved: false,
         };
@@ -12237,6 +12461,7 @@ anual 05-02 Recesso
                 mutation: IntranetMutation::SaveTask {
                     task: edit,
                     expected_version: None,
+                    no_project: false,
                 },
                 base: None,
                 revision: copy.header.revision,
@@ -12457,6 +12682,7 @@ mod conflict_card_tests {
         IntranetMutation::SaveTask {
             task: task.clone(),
             expected_version: None,
+            no_project: false,
         }
     }
 
@@ -14014,6 +14240,7 @@ mod resources_sync_tests {
             mutation: IntranetMutation::SaveTask {
                 task: Task::standalone(),
                 expected_version: None,
+                no_project: false,
             },
         };
         assert!(
@@ -14038,12 +14265,14 @@ mod resources_sync_tests {
         let plain = IntranetMutation::SaveTask {
             task: task.clone(),
             expected_version: None,
+            no_project: false,
         };
         assert!(!mutation_carries_projects(&plain) && !is_project_mutation(&plain));
         task.project_uid = "a".repeat(32);
         let with_project = IntranetMutation::SaveTask {
             task,
             expected_version: None,
+            no_project: false,
         };
         assert!(mutation_carries_projects(&with_project) && !is_project_mutation(&with_project));
         assert_eq!(PROJECTS_SCHEMA, crate::storage::SCHEMA_VERSION);
@@ -14124,6 +14353,7 @@ mod resources_sync_tests {
                 mutation: IntranetMutation::SaveTask {
                     task: task.clone(),
                     expected_version: None,
+                    no_project: false,
                 },
             },
         );
@@ -14136,6 +14366,7 @@ mod resources_sync_tests {
                 mutation: IntranetMutation::SaveTask {
                     task: Task::standalone(),
                     expected_version: None,
+                    no_project: false,
                 },
             },
         );
@@ -14364,6 +14595,7 @@ mod resources_sync_tests {
         let waiting = sent(IntranetMutation::SaveTask {
             task: proposal_task("Responder o ofício"),
             expected_version: None,
+            no_project: false,
         });
         assert!(
             matches!(&waiting, Err(RpcError::Rejected(_))),
@@ -14377,6 +14609,7 @@ mod resources_sync_tests {
         let ordinary = sent(IntranetMutation::SaveTask {
             task: Task::standalone(),
             expected_version: None,
+            no_project: false,
         });
         assert!(matches!(ordinary, Err(RpcError::Rejected(_))));
         // End to end: queued while the host was away, then the host answers.

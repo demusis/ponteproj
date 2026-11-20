@@ -342,6 +342,10 @@ impl Store {
     /// A client older than the library of this computer drops fields it does
     /// not know when it reads a task or a work context, and sends them back
     /// empty. For a saved item, the stored values of those fields are kept.
+    /// The same for the project of a task of a client that never saw it: an
+    /// empty `project_uid` takes the link off only when the change says so
+    /// (`no_project`), so a queue written before the projects, or a save made
+    /// from a copy that predates them, never clears a link.
     pub(crate) fn keep_unseen_fields(
         &self,
         mutation: IntranetMutation,
@@ -351,7 +355,11 @@ impl Store {
             IntranetMutation::SaveTask {
                 mut task,
                 expected_version,
-            } if task.id > 0 && client_schema < crate::intranet::PROJECTS_SCHEMA => {
+                no_project,
+            } if task.id > 0
+                && (client_schema < crate::intranet::PROJECTS_SCHEMA
+                    || (task.project_uid.is_empty() && !no_project)) =>
+            {
                 if let Some(stored) = self.list_tasks()?.into_iter().find(|t| t.id == task.id) {
                     if client_schema < crate::intranet::SCHEDULE_SCHEMA {
                         task.uid = stored.uid;
@@ -368,12 +376,16 @@ impl Store {
                         }
                     }
                     // A Ponte before the projects never sees the field and
-                    // sends the task back without it.
-                    task.project_uid = stored.project_uid;
+                    // sends the task back without it; a current one sends it
+                    // empty either to clear it (no_project) or untouched.
+                    if client_schema < crate::intranet::PROJECTS_SCHEMA || !no_project {
+                        task.project_uid = stored.project_uid;
+                    }
                 }
                 IntranetMutation::SaveTask {
                     task,
                     expected_version,
+                    no_project,
                 }
             }
             IntranetMutation::SaveResourceUse {
@@ -1165,6 +1177,7 @@ mod tests {
             old_request(IntranetMutation::SaveTask {
                 task: seen,
                 expected_version: None,
+                no_project: false,
             }),
         )
         .unwrap();
@@ -1202,6 +1215,7 @@ mod tests {
                 mutation: IntranetMutation::SaveTask {
                     task,
                     expected_version: None,
+                    no_project: false,
                 },
                 client_schema: crate::storage::SCHEMA_VERSION,
             },

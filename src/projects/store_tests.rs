@@ -749,6 +749,7 @@ fn an_older_client_saving_a_task_keeps_the_project_it_cannot_see() {
         old_request(IntranetMutation::SaveTask {
             task: seen,
             expected_version: None,
+            no_project: false,
         }),
     )
     .unwrap();
@@ -767,6 +768,7 @@ fn an_older_client_saving_a_task_keeps_the_project_it_cannot_see() {
             mutation: IntranetMutation::SaveTask {
                 task,
                 expected_version: None,
+                no_project: true,
             },
             client_schema: crate::storage::SCHEMA_VERSION,
         },
@@ -839,4 +841,541 @@ fn deleting_a_project_already_deleted_is_not_a_conflict_when_applied() {
     .unwrap();
     // The interface keeps telling it.
     assert!(host.delete_project(&made.uid).is_err());
+}
+
+// -- replication regressions -----------------------------------------------
+
+/// Rewrites the copy at `path` as a Ponte of schema 20 (format 7) writes it:
+/// no projects, no project on the tasks, no project versions.
+fn rewrite_as_schema_20(path: &std::path::Path, writer: &str, revision: i64) {
+    let mut copy = crate::sharedfolder::read(path, KEY).unwrap().unwrap();
+    copy.payload.snapshot.projects.clear();
+    for task in &mut copy.payload.snapshot.tasks {
+        task.project_uid.clear();
+    }
+    copy.payload
+        .snapshot
+        .item_versions
+        .retain(|(kind, _, _)| kind != "project");
+    copy.payload.snapshot.schema_version = crate::intranet::PROJECTS_SCHEMA - 1;
+    let h = &copy.header;
+    let request = crate::sharedfolder::WriteRequest {
+        lineage: &h.lineage,
+        revision,
+        writer,
+        writer_name: "Antigo",
+        schema_version: crate::intranet::PROJECTS_SCHEMA - 1,
+    };
+    crate::sharedfolder::write(path, KEY, &request, &copy.payload, &copy.blobs).unwrap();
+}
+
+fn read_copy(path: &std::path::Path) -> crate::sharedfolder::Copy {
+    crate::sharedfolder::read(path, KEY).unwrap().unwrap()
+}
+
+#[test]
+fn a_schema_20_mirror_with_the_higher_revision_does_not_erase_the_projects_of_a_schema_21_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let f1 = dir.path().join("Drive1").join("ponte-sync.ponte");
+    let f2 = dir.path().join("Drive2").join("ponte-sync.ponte");
+    std::fs::create_dir_all(f1.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(f2.parent().unwrap()).unwrap();
+    let files = |paths: &[&std::path::Path]| {
+        paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    // An existing folder written by Ponte builds that know nothing of projects.
+    let mut z = Store::open(&dir.path().join("z.sqlite3")).unwrap();
+    z.save_intranet_config(&folder_config("Servidor Z", &files(&[&f1])))
+        .unwrap();
+    sync(&mut z);
+    rewrite_as_schema_20(&f1, "old-z", read_copy(&f1).header.revision);
+    std::fs::copy(&f1, &f2).unwrap();
+
+    // A made a project (and deleted another) while standalone, then joined
+    // the folder: the merge carries them into a schema 21 copy with no
+    // project change in its journal.
+    let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+    let kept = make(&mut a, "Reforma");
+    let gone = make(&mut a, "Apagado");
+    a.delete_project(&gone.uid).unwrap();
+    a.save_intranet_config(&folder_config("Servidor A", &files(&[&f1])))
+        .unwrap();
+    sync(&mut a);
+    assert_eq!(names(&a), ["Reforma"]);
+    let mirror_of_a = read_copy(&f1);
+    assert_eq!(mirror_of_a.header.schema_version, 21);
+    assert_eq!(mirror_of_a.payload.snapshot.projects.len(), 1);
+    assert!(mirror_of_a.payload.journal.iter().all(|e| !matches!(
+        e.mutation,
+        IntranetMutation::SaveProject { .. } | IntranetMutation::DeleteProject { .. }
+    )));
+    let version_of_gone = a.project_version(&gone.uid).unwrap();
+    assert!(version_of_gone > 0, "the deletion is remembered");
+
+    // B (a Ponte of schema 20) edits something else in its own mirror, which
+    // ends up with the higher revision.
+    let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+    b.save_intranet_config(&folder_config("Servidor B", &files(&[&f2])))
+        .unwrap();
+    sync(&mut b);
+    task_in(&mut b, "Edição de B", "");
+    sync(&mut b);
+    rewrite_as_schema_20(&f2, "old-b", mirror_of_a.header.revision + 10);
+
+    // C sees both mirrors, takes B's as the base, and has no projects.
+    let mut c = Store::open(&dir.path().join("c.sqlite3")).unwrap();
+    c.save_intranet_config(&folder_config("Servidor C", &files(&[&f1, &f2])))
+        .unwrap();
+    sync(&mut c);
+    assert_eq!(names(&c), ["Reforma"], "C keeps A's project");
+    assert_eq!(c.project_version(&gone.uid).unwrap(), version_of_gone);
+    for path in [&f1, &f2] {
+        let written = read_copy(path);
+        assert_eq!(written.header.schema_version, 21);
+        assert_eq!(written.payload.snapshot.projects.len(), 1, "{path:?}");
+    }
+    assert_eq!(by_title(&c, "Edição de B").title, "Edição de B");
+
+    // And A, on its next exchange, still has what it made.
+    sync(&mut a);
+    assert_eq!(names(&a), ["Reforma"]);
+    assert_eq!(a.get_project(&kept.uid).unwrap().unwrap().uid, kept.uid);
+    assert!(a.list_sync_conflicts().unwrap().is_empty());
+    assert!(c.list_sync_conflicts().unwrap().is_empty());
+}
+
+fn live_url(server: &HostServer) -> String {
+    format!("http://{}", server.local_addr())
+}
+
+/// The client reaches (or stops reaching) its main computer.
+fn point_at(client: &mut Store, url: &str) {
+    let mut cfg = client.load_intranet_config().unwrap();
+    cfg.host_url = url.into();
+    client.save_intranet_config(&cfg).unwrap();
+}
+
+const DEAD_HOST: &str = "http://127.0.0.1:9";
+
+/// What a Ponte of schema 20 leaves in a library: no projects table, no
+/// project on the tasks, nothing recorded of the copy it holds. Opening it
+/// again with this build upgrades it.
+fn as_left_by_schema_20(path: &std::path::Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.create_scalar_function(
+        "ponte_client_schema",
+        0,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+        |_| Ok(crate::storage::SCHEMA_VERSION),
+    )
+    .unwrap();
+    conn.execute_batch("DROP TABLE projects; DROP TABLE client_cache; PRAGMA user_version=20;")
+        .unwrap();
+    let rows = conn
+        .prepare("SELECT id,payload FROM tasks")
+        .unwrap()
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for (id, blob) in rows {
+        let plain = crate::protection::unseal(&blob).unwrap();
+        let mut task: Task = serde_json::from_slice(&plain).unwrap();
+        task.project_uid.clear();
+        conn.execute(
+            "UPDATE tasks SET payload=?1 WHERE id=?2",
+            rusqlite::params![
+                crate::protection::seal(&serde_json::to_vec(&task).unwrap()).unwrap(),
+                id
+            ],
+        )
+        .unwrap();
+    }
+}
+
+type UpgradedClient = (
+    tempfile::TempDir,
+    Store,
+    IntranetConfig,
+    HostServer,
+    Store,
+    Project,
+    i64,
+);
+
+/// A client library, synced with a host that has a project and a task in it,
+/// then left as a schema 20 build leaves it and upgraded by opening it here.
+fn upgraded_client_with_old_cache() -> UpgradedClient {
+    let (dir, mut host, cfg, server, mut client) = host_with_server();
+    let project = make(&mut host, "Reforma");
+    let id = task_in(&mut host, "Pintar", &project.uid);
+    client.sync_from_host(true).unwrap();
+    assert_eq!(stored(&client, id).project_uid, project.uid);
+    drop(client);
+    let path = dir.path().join("client.sqlite3");
+    as_left_by_schema_20(&path);
+    let client = Store::open(&path).unwrap();
+    // The premise: what it holds knows nothing of projects, at the very
+    // revision the main computer is at.
+    assert!(client.list_projects().unwrap().is_empty());
+    assert!(stored(&client, id).project_uid.is_empty());
+    (dir, host, cfg, server, client, project, id)
+}
+
+#[test]
+fn an_upgraded_client_asks_for_a_full_copy_even_when_the_revision_is_the_same() {
+    let (_dir, host, _cfg, mut server, mut client, project, id) = upgraded_client_with_old_cache();
+    assert!(client.sync_from_host(false).unwrap(), "a full copy came");
+    assert_eq!(names(&client), ["Reforma"]);
+    assert_eq!(
+        client.list_projects().unwrap(),
+        host.list_projects().unwrap()
+    );
+    assert_eq!(stored(&client, id).project_uid, project.uid);
+    // Settled: the next poll is the usual cheap one.
+    assert!(!client.sync_from_host(false).unwrap());
+    server.stop();
+}
+
+#[test]
+fn a_task_saved_right_after_the_upgrade_keeps_the_link_the_old_copy_never_showed() {
+    let (_dir, host, _cfg, mut server, mut client, project, id) = upgraded_client_with_old_cache();
+    // Before any refresh: the screen shows the task without a project.
+    let mut seen = stored(&client, id);
+    seen.notes = "Depois da atualização".into();
+    let version = client.item_version("task", id).unwrap().version;
+    client.save_task_checked(&seen, Some(version)).unwrap();
+    let on_host = stored(&host, id);
+    assert_eq!(on_host.notes, "Depois da atualização");
+    assert_eq!(on_host.project_uid, project.uid, "the link was not touched");
+    server.stop();
+}
+
+#[test]
+fn a_task_edit_queued_before_the_upgrade_does_not_clear_the_link_when_replayed() {
+    let (_dir, host, _cfg, mut server, mut client, project, id) = upgraded_client_with_old_cache();
+    let live = live_url(&server);
+    point_at(&mut client, DEAD_HOST);
+    let mut seen = stored(&client, id);
+    seen.notes = "Feita sem rede".into();
+    client.save_task(&seen).unwrap();
+    assert_eq!(client.list_offline_outbox().unwrap().len(), 1);
+    // As an older Ponte wrote it: no word about the project.
+    let queued = serde_json::to_string(&client.list_offline_outbox().unwrap()[0].mutation).unwrap();
+    assert!(!queued.contains("no_project") && !queued.contains("project_uid"));
+    point_at(&mut client, &live);
+    client.sync_from_host(false).unwrap();
+    let on_host = stored(&host, id);
+    assert_eq!(on_host.notes, "Feita sem rede");
+    assert_eq!(on_host.project_uid, project.uid);
+    assert_eq!(stored(&client, id).project_uid, project.uid);
+    assert!(client.list_sync_conflicts().unwrap().is_empty());
+    server.stop();
+}
+
+#[test]
+fn only_an_explicit_removal_takes_the_project_off_a_task_through_the_main_computer() {
+    let (_dir, mut host, cfg, _server, _client) = host_with_server();
+    let project = make(&mut host, "Reforma");
+    let id = task_in(&mut host, "Pintar", &project.uid);
+    let send = |host: &mut Store, task: Task, no_project: bool| {
+        process_rpc(
+            host,
+            &cfg,
+            RpcRequest::Mutate {
+                actor: "Servidor B".into(),
+                mutation: IntranetMutation::SaveTask {
+                    task,
+                    expected_version: None,
+                    no_project,
+                },
+                client_schema: crate::storage::SCHEMA_VERSION,
+            },
+        )
+        .unwrap();
+    };
+    let mut edit = stored(&host, id);
+    edit.notes = "Sem mexer no projeto".into();
+    edit.project_uid.clear();
+    send(&mut host, edit.clone(), false);
+    assert_eq!(stored(&host, id).project_uid, project.uid);
+    assert_eq!(stored(&host, id).notes, "Sem mexer no projeto");
+    send(&mut host, edit.clone(), true);
+    assert!(stored(&host, id).project_uid.is_empty());
+    // A flag that says nothing is not written (what an older build sends).
+    let json = serde_json::to_string(&IntranetMutation::SaveTask {
+        task: edit,
+        expected_version: None,
+        no_project: false,
+    })
+    .unwrap();
+    assert!(!json.contains("no_project"));
+    assert!(matches!(
+        serde_json::from_str::<IntranetMutation>(&json).unwrap(),
+        IntranetMutation::SaveTask {
+            no_project: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_person_removing_the_project_of_a_task_still_clears_it_everywhere() {
+    let (_dir, host, _cfg, mut server, mut client) = host_with_server();
+    let project = make(&mut client, "Reforma");
+    let id = task_in(&mut client, "Pintar", &project.uid);
+    assert_eq!(stored(&host, id).project_uid, project.uid);
+    let mut task = stored(&client, id);
+    task.project_uid.clear();
+    client.save_task(&task).unwrap();
+    assert!(stored(&host, id).project_uid.is_empty());
+    assert!(stored(&client, id).project_uid.is_empty());
+    // And offline, queued and replayed (together with edits of the notes
+    // around it, which take its place in the queue).
+    let live = live_url(&server);
+    let mut task = stored(&client, id);
+    task.project_uid = project.uid.clone();
+    client.save_task(&task).unwrap();
+    assert_eq!(stored(&host, id).project_uid, project.uid);
+    point_at(&mut client, DEAD_HOST);
+    let mut task = stored(&client, id);
+    task.notes = "Primeiro".into();
+    client.save_task(&task).unwrap();
+    let mut task = stored(&client, id);
+    task.project_uid.clear();
+    client.save_task(&task).unwrap();
+    let mut task = stored(&client, id);
+    task.notes = "Depois".into();
+    client.save_task(&task).unwrap();
+    assert_eq!(client.list_offline_outbox().unwrap().len(), 1, "coalesced");
+    point_at(&mut client, &live);
+    client.sync_from_host(false).unwrap();
+    assert!(
+        stored(&host, id).project_uid.is_empty(),
+        "the removal stays"
+    );
+    assert_eq!(stored(&host, id).notes, "Depois");
+    server.stop();
+}
+
+fn position(outbox: &[crate::intranet::OutboxEntry], is: fn(&IntranetMutation) -> bool) -> usize {
+    outbox.iter().position(|e| is(&e.mutation)).unwrap()
+}
+
+#[test]
+fn a_task_assigned_to_a_project_created_after_its_first_queued_edit_follows_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, mut b, _) = pair(dir.path());
+    let id = task_in(&mut a, "Alvo", "");
+    sync(&mut a);
+    sync(&mut b);
+    // Offline: edit the existing task, create a project, assign the task.
+    let mut task = stored(&a, id);
+    task.notes = "Anotação".into();
+    a.save_task(&task).unwrap();
+    let project = make(&mut a, "Novo projeto");
+    let mut task = stored(&a, id);
+    task.project_uid = project.uid.clone();
+    a.save_task(&task).unwrap();
+    let outbox = a.list_offline_outbox().unwrap();
+    assert_eq!(outbox.len(), 2, "the two saves of the task are one");
+    let created = position(&outbox, |m| {
+        matches!(m, IntranetMutation::SaveProject { .. })
+    });
+    let assigned = position(&outbox, |m| matches!(m, IntranetMutation::SaveTask { .. }));
+    assert!(
+        created < assigned,
+        "the project exists before the task names it"
+    );
+    sync(&mut a);
+    sync(&mut b);
+    for store in [&a, &b] {
+        let found = stored(store, id);
+        assert_eq!(found.project_uid, project.uid);
+        assert_eq!(found.notes, "Anotação");
+        assert!(store.list_sync_conflicts().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn the_queue_of_a_client_puts_a_project_before_the_task_that_names_it() {
+    let (_dir, host, _cfg, mut server, mut client) = host_with_server();
+    let live = live_url(&server);
+    let id = task_in(&mut client, "Alvo", "");
+    point_at(&mut client, DEAD_HOST);
+    // Offline: edit the existing task, create a project, assign the task.
+    let mut task = stored(&client, id);
+    task.notes = "Anotação".into();
+    client.save_task(&task).unwrap();
+    let project = make(&mut client, "Novo");
+    let mut task = stored(&client, id);
+    task.project_uid = project.uid.clone();
+    client.save_task(&task).unwrap();
+    let outbox = client.list_offline_outbox().unwrap();
+    assert_eq!(outbox.len(), 2);
+    assert!(matches!(
+        outbox[0].mutation,
+        IntranetMutation::SaveProject { .. }
+    ));
+    assert!(matches!(
+        &outbox[1].mutation,
+        IntranetMutation::SaveTask { task, .. } if task.project_uid == project.uid
+    ));
+    point_at(&mut client, &live);
+    client.sync_from_host(false).unwrap();
+    assert_eq!(stored(&host, id).project_uid, project.uid);
+    assert_eq!(stored(&host, id).notes, "Anotação");
+    assert!(client.list_sync_conflicts().unwrap().is_empty());
+    server.stop();
+}
+
+fn child_of(parent: i64, title: &str) -> Task {
+    let mut task = Task::standalone();
+    task.title = title.into();
+    task.parent_task_id = Some(parent);
+    task
+}
+
+#[test]
+fn a_subtask_made_offline_keeps_the_project_it_inherited_when_the_parent_moves() {
+    let (_dir, mut host, _cfg, mut server, mut client) = host_with_server();
+    let live = live_url(&server);
+    let p = make(&mut client, "P");
+    let q = make(&mut client, "Q");
+    let parent = task_in(&mut client, "Pai", &p.uid);
+    point_at(&mut client, DEAD_HOST);
+    client.save_task(&child_of(parent, "Filha")).unwrap();
+    // The one chosen on purpose to have none.
+    client
+        .save_task_without_project(&child_of(parent, "Avulsa"))
+        .unwrap();
+    assert_eq!(by_title(&client, "Filha").project_uid, p.uid);
+    assert!(by_title(&client, "Avulsa").project_uid.is_empty());
+    // The queue carries what the person saw, not a blank to fill in later.
+    let outbox = client.list_offline_outbox().unwrap();
+    let queued = |title: &str| {
+        outbox
+            .iter()
+            .find_map(|e| match &e.mutation {
+                IntranetMutation::SaveTask {
+                    task, no_project, ..
+                } if task.title == title => Some((task.project_uid.clone(), *no_project)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(queued("Filha"), (p.uid.clone(), false));
+    assert_eq!(queued("Avulsa"), (String::new(), true));
+    // Meanwhile the parent moves.
+    let mut moved = stored(&host, parent);
+    moved.project_uid = q.uid.clone();
+    host.save_task(&moved).unwrap();
+    point_at(&mut client, &live);
+    client.sync_from_host(false).unwrap();
+    for store in [&host, &client] {
+        assert_eq!(by_title(store, "Filha").project_uid, p.uid);
+        assert!(by_title(store, "Avulsa").project_uid.is_empty());
+        assert_eq!(stored(store, parent).project_uid, q.uid);
+    }
+    server.stop();
+}
+
+#[test]
+fn repeating_the_creation_of_a_subtask_never_changes_the_project_it_got() {
+    let (_dir, mut host, _cfg, _server, _client) = host_with_server();
+    let p = make(&mut host, "P");
+    let q = make(&mut host, "Q");
+    let parent = task_in(&mut host, "Pai", &p.uid);
+    let child = child_of(parent, "Filha");
+    let create = || IntranetMutation::SaveTask {
+        task: child.clone(),
+        expected_version: None,
+        no_project: false,
+    };
+    host.execute_mutation("Servidor B", create()).unwrap();
+    assert_eq!(by_title(&host, "Filha").project_uid, p.uid);
+    // The reply was lost and the same creation arrives again: an empty
+    // project in it is a default, not a removal.
+    host.execute_mutation("Servidor B", create()).unwrap();
+    assert_eq!(by_title(&host, "Filha").project_uid, p.uid);
+    // Moved meanwhile by someone: a late retry does not undo it.
+    let mut moved = by_title(&host, "Filha");
+    moved.project_uid = q.uid.clone();
+    host.save_task(&moved).unwrap();
+    host.execute_mutation("Servidor B", create()).unwrap();
+    assert_eq!(by_title(&host, "Filha").project_uid, q.uid);
+    assert_eq!(
+        host.list_tasks()
+            .unwrap()
+            .iter()
+            .filter(|t| t.title == "Filha")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_subtask_created_with_no_project_has_none_even_under_a_parent_in_one() {
+    let (_dir, mut store) = store();
+    let p = make(&mut store, "P");
+    let parent = task_in(&mut store, "Pai", &p.uid);
+    store
+        .save_task_without_project(&child_of(parent, "Avulsa"))
+        .unwrap();
+    store.save_task(&child_of(parent, "Herdeira")).unwrap();
+    assert!(by_title(&store, "Avulsa").project_uid.is_empty());
+    assert_eq!(by_title(&store, "Herdeira").project_uid, p.uid);
+    // Only a new task without a project can be created this way.
+    let mut named = child_of(parent, "Nomeada");
+    named.project_uid = p.uid.clone();
+    assert!(store.save_task_without_project(&named).is_err());
+    let mut saved = by_title(&store, "Herdeira");
+    saved.title = "Outra".into();
+    assert!(store.save_task_without_project(&saved).is_err());
+}
+
+#[test]
+fn schema_21_write_guards_survive_an_older_build_rewriting_the_ones_it_knows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("guards.sqlite3");
+    drop(Store::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    // An older Ponte that opens the library meanwhile: its connection says 20,
+    // and it drops and writes again every guard it knows by name, with 20.
+    conn.create_scalar_function(
+        "ponte_client_schema",
+        0,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+        |_| Ok(20_i64),
+    )
+    .unwrap();
+    for table in ["item_versions", "tasks", "offline_outbox"] {
+        for operation in ["INSERT", "UPDATE", "DELETE"] {
+            let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());
+            conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < 20 THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;"))
+                .unwrap();
+        }
+    }
+    // Its writes are still refused.
+    let error = conn
+        .execute(
+            "INSERT INTO item_versions(kind,item_id,version,payload) VALUES('x',1,1,x'00')",
+            [],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Use a versão atual do Ponte"), "{error}");
+    // And the guards of the projects exist under both names.
+    let count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_guard%projects%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 6);
 }

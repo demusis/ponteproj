@@ -975,6 +975,7 @@ mod tests {
         let mutation = IntranetMutation::SaveTask {
             task,
             expected_version: None,
+            no_project: false,
         };
         let IntranetMutation::SaveTask { task, .. } = ids.remap(&mutation, &store, None).unwrap()
         else {
