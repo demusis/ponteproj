@@ -1035,6 +1035,12 @@ pub enum RpcResponse {
         revision: i64,
         reply: MutationReply,
         snapshot: Box<CabinetSnapshot>,
+        /// What the change created, with the numbers of the main computer, as
+        /// recorded when it was applied. Present when the change came with an
+        /// identity: an answer repeated from the receipt must not derive them
+        /// from a library that has moved on since.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created: Option<Vec<crate::idmap::CreatedId>>,
     },
     Error {
         message: String,
@@ -1062,6 +1068,15 @@ struct StoredDraftPayload {
 /// replaced by another history (a folder being joined, a main computer that
 /// went back to an older copy); the window shows what follows it.
 const CONFIRM_REPLACE: &str = "[confirmar-substituicao]";
+
+/// What the main computer keeps of an applied change: the answer it gave and
+/// what the change created, with its own numbers at that moment.
+#[derive(Serialize, Deserialize)]
+struct StoredReceipt {
+    reply: MutationReply,
+    #[serde(default)]
+    created: Option<Vec<crate::idmap::CreatedId>>,
+}
 
 /// How long, and how many, answers to applied changes the main computer keeps.
 const RECEIPT_DAYS: i64 = 30;
@@ -1715,7 +1730,7 @@ impl Store {
     }
 
     /// The answer given to a change already applied here under `uid`.
-    fn mutation_receipt(&self, uid: &str) -> Result<Option<MutationReply>> {
+    fn mutation_receipt(&self, uid: &str) -> Result<Option<StoredReceipt>> {
         let blob: Option<Vec<u8>> = self
             .conn
             .query_row(
@@ -1725,7 +1740,17 @@ impl Store {
             )
             .optional()?;
         match blob {
-            Some(bytes) => Ok(Some(serde_json::from_slice(&unseal(&bytes)?)?)),
+            Some(bytes) => {
+                let plain = unseal(&bytes)?;
+                match serde_json::from_slice::<StoredReceipt>(&plain) {
+                    Ok(receipt) => Ok(Some(receipt)),
+                    // A receipt kept as the bare answer: no numbers recorded.
+                    Err(_) => Ok(Some(StoredReceipt {
+                        reply: serde_json::from_slice(&plain)?,
+                        created: None,
+                    })),
+                }
+            }
             None => Ok(None),
         }
     }
@@ -1733,10 +1758,10 @@ impl Store {
     /// Keeps the answer given to the change `uid`, so sending it again gets
     /// the same answer instead of applying it again. Old receipts go away:
     /// a lost answer is retried within days, not months.
-    fn record_mutation_receipt(&self, uid: &str, reply: &MutationReply) -> Result<()> {
+    fn record_mutation_receipt(&self, uid: &str, receipt: &StoredReceipt) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO mutation_receipts(uid,created_at,reply) VALUES(?1,?2,?3)",
-            params![uid, now_iso(), seal(&serde_json::to_vec(reply)?)?],
+            params![uid, now_iso(), seal(&serde_json::to_vec(receipt)?)?],
         )?;
         let cutoff = (Utc::now() - chrono::Duration::days(RECEIPT_DAYS))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -3155,9 +3180,15 @@ impl Store {
                     &mut reached,
                 ) {
                     Ok(RpcResponse::Mutated {
-                        reply, snapshot, ..
+                        reply,
+                        snapshot,
+                        created,
+                        ..
                     }) => {
-                        let there = crate::idmap::created_ids(&*snapshot, &sent.mutation, &reply)?;
+                        let there = match created {
+                            Some(there) => there,
+                            None => crate::idmap::created_ids(&*snapshot, &sent.mutation, &reply)?,
+                        };
                         let learned = ids.learn(&entry.created, Some(&there));
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
                         host_frame = Some(snapshot);
@@ -8840,29 +8871,45 @@ pub(crate) fn process_rpc(
                 // Already applied (its answer was lost on the way back): the
                 // same answer, and nothing is applied again, whatever
                 // happened to the item since.
-                if let Some(reply) = store.mutation_receipt(&mutation_uid)? {
+                if let Some(receipt) = store.mutation_receipt(&mutation_uid)? {
                     let mut snapshot = store.export_snapshot()?;
                     snapshot.generation = generation;
                     return Ok(RpcResponse::Mutated {
                         revision: snapshot.revision,
-                        reply,
+                        reply: receipt.reply,
                         snapshot: Box::new(snapshot),
+                        created: receipt.created,
                     });
                 }
             }
             let mutation = store.keep_unseen_fields(mutation, client_schema)?;
+            let applied = mutation.clone();
             let reply = store.execute_mutation(&actor, mutation)?;
-            if receipted {
-                // Without it a repeated send would only be applied again,
-                // as before: the change itself is already done.
-                let _ = store.record_mutation_receipt(&mutation_uid, &reply);
-            }
+            let created = if receipted {
+                // What it created is read now, in the library where it was
+                // just applied, and kept with the answer: a repeat must give
+                // back these numbers, not what a later state would suggest.
+                let created = crate::idmap::created_ids(&*store, &applied, &reply).ok();
+                // Without the receipt a repeated send would only be applied
+                // again, as before: the change itself is already done.
+                let _ = store.record_mutation_receipt(
+                    &mutation_uid,
+                    &StoredReceipt {
+                        reply: reply.clone(),
+                        created: created.clone(),
+                    },
+                );
+                created
+            } else {
+                None
+            };
             let mut snapshot = store.export_snapshot()?;
             snapshot.generation = generation;
             Ok(RpcResponse::Mutated {
                 revision: snapshot.revision,
                 reply,
                 snapshot: Box::new(snapshot),
+                created,
             })
         }
     }
@@ -16305,6 +16352,58 @@ Connection: close
             .unwrap();
         assert_eq!(on_host.notes, "Revista");
         assert!(pair.client.list_sync_conflicts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_repeated_identity_returns_the_numbers_the_change_created_then_not_what_the_library_suggests_now(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Store::open(&dir.path().join("host.sqlite3")).unwrap();
+        let cfg = IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "ANFITRIAO".into(),
+            ..IntranetConfig::default()
+        };
+        host.save_intranet_config(&cfg).unwrap();
+        let capture = sample_capture();
+        let import = || RpcRequest::Mutate {
+            actor: "Ana".into(),
+            mutation: IntranetMutation::ImportCapture {
+                capture: capture.clone(),
+            },
+            client_schema: crate::storage::SCHEMA_VERSION,
+            expected_generation: String::new(),
+            mutation_uid: "cccccccc-1".into(),
+        };
+        let created_of = |response: RpcResponse| match response {
+            RpcResponse::Mutated {
+                created: Some(created),
+                reply: MutationReply::Receipt(receipt),
+                ..
+            } => (created, receipt),
+            other => panic!("unexpected {other:?}"),
+        };
+        let (first, receipt) = created_of(process_rpc(&mut host, &cfg, import()).unwrap());
+        // The library moves on: the atendimento of the import is deleted, so
+        // the latest state no longer shows it.
+        let attendance = first
+            .iter()
+            .find(|c| c.kind == crate::idmap::IdKind::Saiop && c.slot == "import")
+            .expect("the import created its atendimento")
+            .id;
+        host.delete_saiop_attendance(attendance).unwrap();
+        let (again, _) = created_of(process_rpc(&mut host, &cfg, import()).unwrap());
+        assert_eq!(again, first, "the numbers of the first answer");
+        // What the library suggests now is something else (the old derivation).
+        let now = crate::idmap::created_ids(
+            &host,
+            &IntranetMutation::ImportCapture {
+                capture: capture.clone(),
+            },
+            &MutationReply::Receipt(receipt),
+        )
+        .unwrap();
+        assert_ne!(now, first, "the scenario needs the latest state to differ");
     }
 
     #[test]
