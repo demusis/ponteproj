@@ -266,6 +266,7 @@ class NoticeReceiver : BroadcastReceiver() {
         val app = context.applicationContext
         // Today's notice is counted as shown the moment the alarm rings (so the next alarm is tomorrow's
         // and a day never gets two), and tomorrow's alarm is set before anything that could fail.
+        TodayWidget.refresh(app)
         NoticeScheduler.markShown(app)
         NoticeScheduler.armDaily(app)
         if (!NoticeScheduler.isOn(app)) return
@@ -359,7 +360,7 @@ internal object PlannedNotices {
     }
 
     /** The app lock is in force (the same rule as [Controller]: its switch, on by default with a secure screen lock). */
-    private fun lockInForce(ctx: Context): Boolean = try {
+    fun lockInForce(ctx: Context): Boolean = try {
         val p = prefs(ctx)
         val secure = AppLock.deviceSecure(ctx)
         val enabled = if (p.contains("lock_on")) p.getBoolean("lock_on", true) else LockPolicy.defaultEnabled(secure)

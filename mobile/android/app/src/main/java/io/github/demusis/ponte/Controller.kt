@@ -628,6 +628,8 @@ internal object Controller {
     fun setLockEnabled(on: Boolean) {
         if (on) {
             if (deviceSecure()) prefs.edit().putBoolean(K_LOCK, true).apply()
+            TodayWidget.conceal(app)
+            TodayWidget.refresh(app)
             updateSettings()
             return
         }
@@ -635,6 +637,7 @@ internal object Controller {
         if (!deviceSecure()) {
             // Nothing to prove with: the lock is not in force anyway.
             prefs.edit().putBoolean(K_LOCK, false).apply()
+            TodayWidget.refresh(app)
             updateSettings()
             return
         }
@@ -643,6 +646,7 @@ internal object Controller {
         AppLock.verify(a, "Desligar o bloqueio", {
             unlockBusy = false
             prefs.edit().putBoolean(K_LOCK, false).apply()
+            TodayWidget.refresh(app)
             updateSettings()
             promptDone(true)
         }, { unlockBusy = false; promptDone(false) })
@@ -1129,6 +1133,7 @@ internal object Controller {
 
     /** Reads the Atendimentos list (it is also what the search of this list filters). */
     private fun refreshAttendances() {
+        if (::app.isInitialized) TodayWidget.refresh(app)
         SyncRunner.background({ Api.attendances() to Api.followUps() }, { (rows, chase) ->
             attendances = AttendancesState(
                 loading = false, error = null, rows = rows, followUps = chase.rows, channels = chase.channels
