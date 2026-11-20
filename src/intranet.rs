@@ -1591,6 +1591,18 @@ impl Store {
         Ok(())
     }
 
+    /// The settled ID marks (`kind`, highest number) this library keeps for
+    /// translating its queue. Read only; the tests of the phone use it to
+    /// prove a refused exchange touched nothing.
+    pub fn id_marks(&self) -> Result<Vec<(String, i64)>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT kind,max_id FROM offline_watermark ORDER BY kind")?;
+        let rows =
+            statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub(crate) fn active_actor(&self) -> String {
         if !self.actor_override.is_empty() {
             return self.actor_override.clone();

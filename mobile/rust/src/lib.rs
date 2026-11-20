@@ -142,11 +142,12 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
     if !pending.is_empty() && std::path::Path::new(pending).exists() {
         files.push(pending.to_owned());
     }
+    // The paths are an input of this exchange, not something saved up front:
+    // a file this build refuses (newer format or schema) must change nothing
+    // here, and saving the settings would also reset the settled ID marks.
+    // A good exchange stores them with the rest of its state.
     let mut cfg = store.load_intranet_config()?;
-    if cfg.folder_files != files {
-        cfg.folder_files = files;
-        store.save_intranet_config(&cfg)?;
-    }
+    cfg.folder_files = files;
     let reporter = ponteproj::ai::Reporter::silent();
     let report = match store.sync_with_folders(&cfg, key, false, &reporter) {
         Ok(report) => report,
@@ -4422,6 +4423,83 @@ mod tests {
         assert_eq!(std::fs::read(&work).unwrap(), newer.as_bytes(), "nothing rewritten");
         assert!(leftovers(&dir.0).is_empty());
         assert!(phone.list_documents("").unwrap().is_empty(), "nothing adopted");
+    }
+
+    /// Everything a refused exchange must leave alone, as plain values.
+    fn phone_state(phone: &Store) -> String {
+        let cfg = phone.load_intranet_config().unwrap();
+        format!(
+            "{:?}|{}|{}|{:?}|{}|{}|{:?}",
+            cfg.folder_files,
+            cfg.synced_revision,
+            cfg.folder_lineage,
+            phone.id_marks().unwrap(),
+            phone.list_offline_outbox().unwrap().len(),
+            phone.cabinet_revision().unwrap(),
+            phone.list_tasks().unwrap().iter().map(|t| (t.id, t.title.clone())).collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn a_refused_transport_file_changes_nothing_on_the_phone_not_even_its_settings() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (_computer, drive, _) = first_transport(&dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work.display().to_string(), "", KEY).unwrap();
+        // A local change not yet sent moves the highest numbers past the
+        // settled ID marks, which saving the settings would have reset.
+        create_task(&mut phone, &json!({"title": "Só no celular"})).unwrap();
+
+        let raw = std::fs::read(&drive).unwrap();
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let pending = dir.0.join("pendente.ponte");
+        std::fs::write(&pending, &raw).unwrap();
+        // A real copy of a later build: sealed by the core, schema 22.
+        let copy = ponteproj::sharedfolder::read(&drive, KEY).unwrap().unwrap();
+        let schema22 = dir.0.join("schema22.ponte");
+        ponteproj::sharedfolder::write(
+            &schema22,
+            KEY,
+            &ponteproj::sharedfolder::WriteRequest {
+                lineage: &copy.header.lineage,
+                revision: copy.header.revision + 1,
+                writer: "outro-computador",
+                writer_name: "Outro",
+                schema_version: 22,
+            },
+            &copy.payload,
+            &copy.blobs,
+        )
+        .unwrap();
+        let header = ponteproj::sharedfolder::read_header(&schema22).unwrap().unwrap();
+        assert_eq!((header.format, header.schema_version), (8, 22));
+        for (what, refused) in [
+            ("format 9", text.replacen("\"format\":8", "\"format\":9", 1).into_bytes()),
+            ("format 8, schema 22", std::fs::read(&schema22).unwrap()),
+        ] {
+            assert_ne!(refused, raw, "{what}: the file differs");
+            // A path this phone never used: the refusal must not store it.
+            let other = dir.0.join(format!("outro-{}.ponte", what.len()));
+            std::fs::write(&other, &refused).unwrap();
+            let before = phone_state(&phone);
+            let error = sync_paths(
+                &mut phone,
+                &other.display().to_string(),
+                &pending.display().to_string(),
+                KEY,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("mais nov"), "{what}: {error}");
+            assert_eq!(phone_state(&phone), before, "{what}: the phone is untouched");
+            assert_eq!(std::fs::read(&other).unwrap(), refused, "{what}: file");
+            assert_eq!(std::fs::read(&pending).unwrap(), raw, "{what}: pending copy");
+        }
+        assert!(leftovers(&dir.0).is_empty());
     }
 
     #[test]
