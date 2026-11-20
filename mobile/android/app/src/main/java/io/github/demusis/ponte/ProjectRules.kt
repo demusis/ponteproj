@@ -432,7 +432,10 @@ internal object ProjectRules {
 
     // ------------------------------------------------------------ the timeline chart
 
-    const val ROW_HEIGHT = 44f
+    /** The least a row may measure (48 dp, the touch target); it grows with the font scale, see [rowHeight]. */
+    const val ROW_HEIGHT = 48f
+    private const val ROW_TEXT_LINES = 16f + 14f // the title line and the period line of a label, in sp
+    private const val ROW_TEXT_PADDING = 10f
     const val HEADER_HEIGHT = 28f
     const val BAR_HEIGHT = 18f
     const val MIN_DAY_WIDTH = 20f
@@ -440,6 +443,18 @@ internal object ProjectRules {
     private const val MIN_LABEL_GAP = 44f
     private const val MAX_EXTENDED_DAYS = 400
     private val TICK_STEPS = listOf(1, 2, 3, 7, 14, 28)
+
+    /** The height in dp of a chart row at [fontScale]: both label lines fit, never less than [ROW_HEIGHT]. */
+    fun rowHeight(fontScale: Float): Float {
+        val scale = if (fontScale.isNaN()) 1f else fontScale.coerceIn(1f, 3f)
+        return maxOf(ROW_HEIGHT, kotlin.math.ceil(ROW_TEXT_LINES * scale + ROW_TEXT_PADDING))
+    }
+
+    private fun chartRows(items: List<TimelineItem>) =
+        items.filter { it.hasPeriod && momentOf(it.start) != null && momentOf(it.end) != null }
+
+    /** Whether [layout] has anything to draw (the same rows, with no width involved). */
+    fun hasChart(items: List<TimelineItem>): Boolean = chartRows(items).isNotEmpty()
 
     private fun momentOf(value: String): LocalDateTime? = try { LocalDateTime.parse(value) } catch (_: Exception) { null }
 
@@ -456,7 +471,7 @@ internal object ProjectRules {
         availableWidth: Float,
         minDayWidth: Float = MIN_DAY_WIDTH
     ): TimelineLayout? {
-        val rows = items.filter { it.hasPeriod && momentOf(it.start) != null && momentOf(it.end) != null }
+        val rows = chartRows(items)
         if (rows.isEmpty()) return null
         var lo = rows.minOf { momentOf(it.start)!!.toLocalDate() }
         var hi = rows.maxOf { momentOf(it.end)!!.toLocalDate() }
