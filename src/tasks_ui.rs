@@ -74,6 +74,8 @@ const PRIMARY_VIEWS: [usize; 4] = [0, 2, 3, 4];
 const SECONDARY_VIEWS: [usize; 5] = [8, 1, 5, 6, 7];
 /// Width of the side panel with the task form.
 const FORM_WIDTH: f32 = 420.0;
+/// Narrowest the task form gets when the window is small.
+const FORM_MIN_WIDTH: f32 = 340.0;
 /// Room kept on the right of a row for the priority and deadline pills.
 const PILLS_WIDTH: f32 = 170.0;
 /// Size of the round conclude control of a row.
@@ -1750,7 +1752,19 @@ impl TaskPanel {
         let Some(task) = &self.draft else {
             return Ok(());
         };
-        match store.save_task_checked(task, self.base_version) {
+        // Taking the task off its project in the form is a removal made on
+        // purpose: it must travel even if the stored copy meanwhile lost the link.
+        let took_project_off = task.project_uid.is_empty()
+            && self
+                .original
+                .as_ref()
+                .is_some_and(|o| !o.project_uid.is_empty());
+        let saved = if took_project_off {
+            store.save_task_clearing_project(task, self.base_version)
+        } else {
+            store.save_task_checked(task, self.base_version)
+        };
+        match saved {
             Ok(id) => {
                 self.draft = store
                     .list_tasks()
@@ -2680,8 +2694,10 @@ impl TaskPanel {
 
         // The task form is the side panel on the right; the rest is the area.
         if self.draft.is_some() {
+            // In a narrow window the form gives up some width so the list keeps room.
+            let form_width = FORM_WIDTH.min((ui.available_width() * 0.55).max(FORM_MIN_WIDTH));
             egui::Panel::right("task-form")
-                .exact_size(FORM_WIDTH)
+                .exact_size(form_width)
                 .resizable(false)
                 .frame(egui::Frame::new().fill(c().surface))
                 .show(ui, |ui| {
