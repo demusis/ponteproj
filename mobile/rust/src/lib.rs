@@ -175,7 +175,15 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
         "conflicts": report.conflicts,
         // False when a copy with work the exchange could not merge was left
         // as it is: the app must keep the pending copy then.
-        "pending_settled": report.preserve_failed.is_empty(),
+        //
+        // Also false when the working copy needed a rewrite that did not
+        // succeed: the pending copy may then be the newest one there is, and
+        // nothing has reached Drive yet.
+        "pending_settled": report.preserve_failed.is_empty()
+            && !report
+                .unwritten
+                .iter()
+                .any(|w| std::path::Path::new(w) == std::path::Path::new(path)),
         // How many copies could not be rewritten (also in the summary).
         "unwritten": report.unwritten.len(),
     });
@@ -4568,6 +4576,49 @@ mod tests {
         let kept = ponteproj::sharedfolder::read(&aside, KEY).unwrap().unwrap();
         assert!(kept.payload.snapshot.tasks.iter().any(|t| t.title == "Só no celular"));
         assert!(aside.file_name().unwrap().to_string_lossy().contains("-divergente-"));
+    }
+
+    #[test]
+    // Windows files: read-only is only ever set back to writable here.
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn a_pending_copy_that_is_the_newest_is_not_settled_while_the_working_copy_cannot_be_rewritten() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (_computer, drive, _) = first_transport(&dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        // An edit is merged into the working copy, kept as the pending copy,
+        // and then the upload fails: Drive still has the old file.
+        create_task(&mut phone, &json!({"title": "Só no pendente"})).unwrap();
+        let sent = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(sent["written"], json!(true));
+        let pending = dir.0.join("pendente.ponte");
+        std::fs::copy(&work, &pending).unwrap();
+        std::fs::copy(&drive, &work).unwrap();
+        let before = std::fs::read(&pending).unwrap();
+
+        // Retry with no new edit, the working copy locked: it needs a rewrite
+        // that cannot be done, so nothing reached Drive and the pending copy
+        // is not settled.
+        let mut permissions = std::fs::metadata(&work).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&work, permissions.clone()).unwrap();
+        let answer = sync_paths(&mut phone, &work_s, &pending.display().to_string(), KEY).unwrap();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&work, permissions).unwrap();
+        assert_eq!(answer["written"], json!(false), "{answer}");
+        assert_eq!(answer["unwritten"], json!(1), "{answer}");
+        assert_eq!(answer["pending_settled"], json!(false), "{answer}");
+        assert_eq!(std::fs::read(&pending).unwrap(), before);
+
+        // Writable again: the Drive copy is rewritten and the pending one settles.
+        let answer = sync_paths(&mut phone, &work_s, &pending.display().to_string(), KEY).unwrap();
+        assert_eq!(answer["written"], json!(true), "{answer}");
+        assert_eq!(answer["pending_settled"], json!(true), "{answer}");
     }
 
     #[test]
