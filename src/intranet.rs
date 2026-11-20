@@ -110,6 +110,10 @@ pub struct IntranetConfig {
     /// Identity of the library lineage adopted from (or given to) the folders.
     #[serde(default)]
     pub folder_lineage: String,
+    /// Client: the history (`generation`) of the main computer this copy was
+    /// last taken from. Empty until the main computer says one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host_generation: String,
 }
 
 impl std::fmt::Debug for IntranetConfig {
@@ -129,6 +133,7 @@ impl std::fmt::Debug for IntranetConfig {
             .field("remember_folder_key", &self.remember_folder_key)
             .field("folder_writer", &self.folder_writer)
             .field("folder_lineage", &self.folder_lineage)
+            .field("host_generation", &self.host_generation)
             .finish()
     }
 }
@@ -181,6 +186,7 @@ impl Default for IntranetConfig {
             remember_folder_key: true,
             folder_writer: uuid::Uuid::new_v4().simple().to_string(),
             folder_lineage: String::new(),
+            host_generation: String::new(),
         }
     }
 }
@@ -588,6 +594,11 @@ pub struct CabinetSnapshot {
     /// the ones this library has.
     #[serde(default)]
     pub schema_version: i64,
+    /// History of the main computer that answered (see
+    /// `Store::host_generation`); empty from a Ponte that does not say one,
+    /// and never written into a transport file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub generation: String,
 }
 
 /// The first library schema that stores recursos.
@@ -973,6 +984,12 @@ pub enum RpcRequest {
         /// send it. The host uses it to keep what the sender cannot see.
         #[serde(default)]
         client_schema: i64,
+        /// The history (`generation`) of the main computer the sender last
+        /// took its copy from. When it is not the main computer's own, the
+        /// change is refused: it was made against another history. Empty from
+        /// a Ponte that does not send it (never refused).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        expected_generation: String,
     },
 }
 
@@ -989,6 +1006,9 @@ pub enum RpcResponse {
     },
     UpToDate {
         revision: i64,
+        /// History of the main computer (empty from one that does not say).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        generation: String,
     },
     Snapshot(Box<CabinetSnapshot>),
     FileBytes {
@@ -1021,6 +1041,16 @@ struct StoredDraftPayload {
 /// from an older version, it does not know a newer kind of change. From
 /// 0.23.6 on, the answer names the version (`host_cannot_read`), so a
 /// message that a current main computer cannot read is a plain refusal.
+/// Starts the notice that asks the person to confirm before this library is
+/// replaced by another history (a folder being joined, a main computer that
+/// went back to an older copy); the window shows what follows it.
+const CONFIRM_REPLACE: &str = "[confirmar-substituicao]";
+
+/// What the main computer answers to a change made against another history
+/// (its library was replaced by a backup): the change is kept in the sender's
+/// queue and the next synchronization asks the person what to do.
+const HISTORY_CHANGED: &str = "O acervo do computador principal mudou de história (uma cópia de segurança foi restaurada, por exemplo). A alteração não foi aplicada; ela fica guardada neste computador até você decidir na próxima sincronização.";
+
 const HOST_TOO_OLD: &str = "Formato de mensagem incompatível com o anfitrião.";
 
 const HOST_CANNOT_READ_START: &str = "O computador principal não entendeu esta mensagem";
@@ -1548,6 +1578,10 @@ impl Store {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at TEXT NOT NULL,
                 payload BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS host_generation(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                value TEXT NOT NULL
             );",
         )?;
         crate::idmap::ensure_schema(&tx)?;
@@ -1589,6 +1623,74 @@ impl Store {
         // (or starts a shared copy): its numbers become the reference.
         crate::idmap::reset_frame_if_settled(&self.conn)?;
         Ok(())
+    }
+
+    /// The history of this library as the main computer of the clients: a
+    /// random id that changes whenever the library file is replaced by an
+    /// older one (a restored backup), so a client can tell "the same library,
+    /// moved forward" from "another history that reuses the same numbers".
+    ///
+    /// It is kept in the library and, beside the library file, together with
+    /// the highest revision answered so far. A library that no longer matches
+    /// that note (another id, no id, or a lower revision) was replaced: it
+    /// gets a new id. Best effort by nature: a note that cannot be written
+    /// only weakens the detection; the clients also compare revisions.
+    pub(crate) fn host_generation(&mut self) -> Result<String> {
+        let revision = self.cabinet_revision()?;
+        let stored: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM host_generation WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let note_path = self
+            .conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(|db| PathBuf::from(format!("{db}-geracao.json")));
+        let note: Option<(String, i64)> = note_path.as_ref().and_then(|path| {
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+            Some((
+                value.get("generation")?.as_str()?.to_owned(),
+                value.get("revision")?.as_i64()?,
+            ))
+        });
+        let kept = match (&stored, &note) {
+            (Some(own), None) => Some(own.clone()),
+            (Some(own), Some((noted, highest))) if own == noted && revision >= *highest => {
+                Some(own.clone())
+            }
+            _ => None,
+        };
+        let generation = kept
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        if kept.is_none() || stored.is_none() {
+            self.conn.execute(
+                "INSERT INTO host_generation(id,value) VALUES(1,?1)
+                 ON CONFLICT(id) DO UPDATE SET value=excluded.value",
+                [&generation],
+            )?;
+        }
+        if let Some(path) = note_path {
+            if note.as_ref() != Some(&(generation.clone(), revision)) {
+                let text = serde_json::json!({"generation": generation, "revision": revision});
+                let _ = std::fs::write(path, text.to_string());
+            }
+        }
+        Ok(generation)
+    }
+
+    /// Notes the history (see [`Store::host_generation`]) when this library
+    /// is a main computer. Never prevents opening.
+    pub(crate) fn note_host_history(&mut self) {
+        if self
+            .load_intranet_config()
+            .is_ok_and(|cfg| cfg.mode == IntranetMode::Host)
+        {
+            let _ = self.host_generation();
+        }
     }
 
     /// The settled ID marks (`kind`, highest number) this library keeps for
@@ -2000,6 +2102,7 @@ impl Store {
             settings: self.export_library_settings()?,
             projects: self.export_projects()?,
             schema_version: crate::storage::SCHEMA_VERSION,
+            generation: String::new(),
         })
     }
 
@@ -2473,6 +2576,9 @@ impl Store {
                 if let Ok(mut cfg) = serde_json::from_slice::<IntranetConfig>(&plain) {
                     cfg.synced_revision = snapshot.revision;
                     cfg.last_sync_at = now_iso();
+                    if !snapshot.generation.is_empty() {
+                        cfg.host_generation = snapshot.generation.clone();
+                    }
                     tx.execute(
                         "UPDATE intranet_config SET payload=?1 WHERE id=1",
                         [seal(&serde_json::to_vec(&cfg)?)?],
@@ -2808,6 +2914,47 @@ impl Store {
     }
 
     pub fn sync_from_host(&mut self, force_full: bool) -> Result<bool> {
+        self.sync_from_host_confirmed(force_full, false)
+    }
+
+    /// Whether the history of the main computer breaks with the one this
+    /// copy was taken from: its revision went back (a restored backup) or
+    /// its generation is another one (see `Store::host_generation`). The
+    /// answer is the notice to show, started by the tag that asks the person
+    /// to confirm.
+    fn host_history_notice(
+        &self,
+        cfg: &IntranetConfig,
+        revision: i64,
+        generation: &str,
+    ) -> Option<String> {
+        let cause = if cfg.synced_revision > 0 && revision < cfg.synced_revision {
+            format!(
+                "O computador principal voltou a uma cópia mais antiga do acervo (revisão {revision}; este computador já tinha recebido a {})",
+                cfg.synced_revision
+            )
+        } else if !generation.is_empty()
+            && !cfg.host_generation.is_empty()
+            && generation != cfg.host_generation
+        {
+            "O acervo do computador principal foi trocado por outro (uma cópia de segurança restaurada, por exemplo), com uma história diferente da que este computador recebeu".to_owned()
+        } else {
+            return None;
+        };
+        Some(format!(
+            "{CONFIRM_REPLACE} {cause}. Nada foi enviado nem substituído aqui: as alterações deste computador continuam guardadas. Se você confirmar, o acervo daqui passa a ser o do computador principal e as alterações que esperavam envio ficam em Conflitos de edição, para você refazer ou descartar."
+        ))
+    }
+
+    /// [`Store::sync_from_host`]; `accept_host_history` is the person's
+    /// confirmation that the main computer's history replaces this copy
+    /// (see `host_history_notice`). Without it, a main computer whose history
+    /// broke with this copy gets nothing sent and replaces nothing.
+    pub fn sync_from_host_confirmed(
+        &mut self,
+        force_full: bool,
+        accept_host_history: bool,
+    ) -> Result<bool> {
         let cfg = self.load_intranet_config()?;
         ensure!(
             cfg.mode == IntranetMode::Client,
@@ -2836,12 +2983,39 @@ impl Store {
             };
             self.note_host_reachability(true);
 
+            // Before anything is sent: is this still the history the queue
+            // was made against? A restored backup may number new items like
+            // the old ones, and a change would land on the wrong one.
+            let mut rolled_back = false;
+            if let Some(snapshot) = host_snapshot.as_deref() {
+                if let Some(notice) =
+                    self.host_history_notice(&cfg, snapshot.revision, &snapshot.generation)
+                {
+                    ensure!(accept_host_history, "{notice}");
+                    rolled_back = true;
+                }
+            }
+
             // Numbers of items created here are translated into the ones the
             // main computer gives them, change by change. The translation is
             // stored, so a connection that drops halfway loses nothing.
             let mut ids = crate::idmap::load(&self.conn)?;
             let mut host_frame = host_snapshot;
             for entry in outbox {
+                if rolled_back {
+                    // Confirmed: the changes are kept as conflicts to redo,
+                    // never sent to a history they were not made against.
+                    let learned = ids.learn(&entry.created, None);
+                    let mut conflict = build_sync_conflict(
+                        &entry,
+                        "O computador principal voltou a uma história anterior; esta alteração não foi enviada.",
+                        host_frame.as_deref(),
+                    );
+                    conflict.unresolved = true;
+                    self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
+                    pushed_offline = true;
+                    continue;
+                }
                 let sent = match ids.remap(
                     &entry.mutation,
                     &*self,
@@ -2871,6 +3045,7 @@ impl Store {
                         actor: sent.actor.clone(),
                         mutation: sent.mutation.clone(),
                         client_schema: crate::storage::SCHEMA_VERSION,
+                        expected_generation: cfg.host_generation.clone(),
                     },
                 ) {
                     Ok(RpcResponse::Mutated {
@@ -2916,24 +3091,47 @@ impl Store {
         } else {
             Some(cfg.synced_revision)
         };
-        let response = match send_rpc_classified(
+        let ask = |store: &mut Store, since_revision: Option<i64>| match send_rpc_classified(
             &cfg,
-            &RpcRequest::Sync {
-                since_revision: since,
-            },
+            &RpcRequest::Sync { since_revision },
         ) {
             Ok(response) => {
-                self.note_host_reachability(true);
-                response
+                store.note_host_reachability(true);
+                Ok(response)
             }
             Err(RpcError::Unreachable(msg)) => {
-                self.note_host_reachability(false);
+                store.note_host_reachability(false);
                 bail!("{msg}");
             }
             Err(RpcError::Rejected(msg)) => bail!("{msg}"),
         };
+        let mut response = ask(&mut *self, since)?;
+        let broken = match &response {
+            RpcResponse::UpToDate {
+                revision,
+                generation,
+            } => self.host_history_notice(&cfg, *revision, generation),
+            RpcResponse::Snapshot(snapshot) => {
+                self.host_history_notice(&cfg, snapshot.revision, &snapshot.generation)
+            }
+            _ => None,
+        };
+        if let Some(notice) = broken {
+            ensure!(accept_host_history, "{notice}");
+            // Confirmed: this copy becomes the main computer's, whole.
+            if matches!(response, RpcResponse::UpToDate { .. }) {
+                response = ask(&mut *self, None)?;
+            }
+        }
         match response {
-            RpcResponse::UpToDate { .. } => Ok(pushed_offline),
+            RpcResponse::UpToDate { generation, .. } => {
+                if cfg.host_generation.is_empty() && !generation.is_empty() {
+                    let mut known = cfg.clone();
+                    known.host_generation = generation;
+                    write_intranet_config(&self.conn, &known)?;
+                }
+                Ok(pushed_offline)
+            }
             RpcResponse::Snapshot(snapshot) => {
                 if projects_only && snapshot.revision == cfg.synced_revision {
                     return self.take_projects_from(&snapshot);
@@ -4008,6 +4206,7 @@ impl Store {
                     actor: actor.clone(),
                     mutation: mutation.clone(),
                     client_schema: crate::storage::SCHEMA_VERSION,
+                    expected_generation: cfg.host_generation.clone(),
                 },
             )
         };
@@ -4035,6 +4234,12 @@ impl Store {
                     Err(error) => Err(error),
                     Ok(()) => Ok(reply),
                 }
+            }
+            // Made against another history: kept, never applied there.
+            Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message))
+                if message == HISTORY_CHANGED =>
+            {
+                self.queue_locally(&actor, mutation)
             }
             Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
                 bail!("{message}")
@@ -8290,11 +8495,16 @@ pub(crate) fn process_rpc(
             })
         }
         RpcRequest::Sync { since_revision } => {
+            let generation = store.host_generation()?;
             let revision = store.cabinet_revision()?;
             if since_revision == Some(revision) && revision > 0 {
-                return Ok(RpcResponse::UpToDate { revision });
+                return Ok(RpcResponse::UpToDate {
+                    revision,
+                    generation,
+                });
             }
-            let snapshot = store.export_snapshot()?;
+            let mut snapshot = store.export_snapshot()?;
+            snapshot.generation = generation;
             Ok(RpcResponse::Snapshot(Box::new(snapshot)))
         }
         RpcRequest::FetchFileBytes {
@@ -8316,6 +8526,7 @@ pub(crate) fn process_rpc(
             actor,
             mutation,
             client_schema,
+            expected_generation,
         } => {
             ensure!(
                 !actor.trim().is_empty()
@@ -8323,9 +8534,15 @@ pub(crate) fn process_rpc(
                     && !actor.chars().any(char::is_control),
                 "Identificação do integrante inválida."
             );
+            let generation = store.host_generation()?;
+            ensure!(
+                expected_generation.is_empty() || expected_generation == generation,
+                "{HISTORY_CHANGED}"
+            );
             let mutation = store.keep_unseen_fields(mutation, client_schema)?;
             let reply = store.execute_mutation(&actor, mutation)?;
-            let snapshot = store.export_snapshot()?;
+            let mut snapshot = store.export_snapshot()?;
+            snapshot.generation = generation;
             Ok(RpcResponse::Mutated {
                 revision: snapshot.revision,
                 reply,
@@ -8461,7 +8678,8 @@ fn run_sync(
         }
         _ => {
             reporter.step("Sincronizando com o computador principal…");
-            let changed = store.sync_from_host(request.force_full)?;
+            let changed =
+                store.sync_from_host_confirmed(request.force_full, request.allow_replace)?;
             Ok(SyncDone {
                 changed,
                 summary: String::new(),
@@ -8781,26 +8999,7 @@ impl IntranetPanel {
         });
         ui.add_space(theme::S3);
 
-        if let Some(text) = self.replace_confirmation.clone() {
-            soft_note(ui, Tone::Warn, icon::WARNING, &text);
-            ui.horizontal(|ui| {
-                if ui
-                    .add(widgets::danger(
-                        "Substituir o acervo deste computador e sincronizar",
-                    ))
-                    .clicked()
-                {
-                    self.allow_replace_next = true;
-                    self.replace_confirmation = None;
-                    self.request_full_sync();
-                    *refresh_needed = self.refresh_client(store, db_path);
-                }
-                if ui.add(widgets::secondary("Cancelar")).clicked() {
-                    self.replace_confirmation = None;
-                }
-            });
-            ui.add_space(theme::S3);
-        }
+        self.replace_confirmation_block(ui, store, db_path, refresh_needed);
 
         ui.horizontal_wrapped(|ui| {
             let can_sync = !self.sync_in_flight && !self.draft.folder_files.is_empty();
@@ -9026,6 +9225,44 @@ impl IntranetPanel {
             }
         });
         ui.add_space(theme::S3);
+        if saved.mode == IntranetMode::Client {
+            self.replace_confirmation_block(ui, store, db_path, refresh_needed);
+        }
+    }
+
+    /// The question that waits for the person before this library is
+    /// replaced by another history (folders being joined, a main computer
+    /// that went back to an older copy).
+    fn replace_confirmation_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        store: &mut Store,
+        db_path: &std::path::Path,
+        refresh_needed: &mut bool,
+    ) {
+        use crate::theme::{self, icon};
+        use crate::widgets;
+        let Some(text) = self.replace_confirmation.clone() else {
+            return;
+        };
+        soft_note(ui, widgets::Tone::Warn, icon::WARNING, &text);
+        ui.horizontal(|ui| {
+            if ui
+                .add(widgets::danger(
+                    "Substituir o acervo deste computador e sincronizar",
+                ))
+                .clicked()
+            {
+                self.allow_replace_next = true;
+                self.replace_confirmation = None;
+                self.request_full_sync();
+                *refresh_needed = self.refresh_client(store, db_path);
+            }
+            if ui.add(widgets::secondary("Cancelar")).clicked() {
+                self.replace_confirmation = None;
+            }
+        });
+        ui.add_space(theme::S3);
     }
 
     /// The "Salvar configuração" action, shared by every mode.
@@ -9134,10 +9371,7 @@ impl IntranetPanel {
                     })
             });
         let due = elapsed.is_none_or(|e| e >= interval) || changes_waiting;
-        if cfg.mode == IntranetMode::SharedFolder
-            && self.replace_confirmation.is_some()
-            && !self.manual_sync
-        {
+        if self.replace_confirmation.is_some() && !self.manual_sync {
             // Waiting for the person's decision: no automatic retries.
             return changed;
         }
@@ -9261,6 +9495,26 @@ impl IntranetPanel {
                     self.error = false;
                     self.message = "Acervo sincronizado com o computador principal.".into();
                 }
+            }
+            Err(error) if error.starts_with(CONFIRM_REPLACE) => {
+                // The main computer answered: it is its history that broke
+                // with this copy. Nothing was sent or replaced.
+                self.offline = false;
+                store.note_host_reachability(true);
+                self.last_sync_finished = Some((Instant::now(), false));
+                self.replace_confirmation = Some(
+                    error
+                        .strip_prefix(CONFIRM_REPLACE)
+                        .unwrap_or(&error)
+                        .trim()
+                        .to_owned(),
+                );
+                self.status_summary = format!(
+                    "Computador principal ({}) • aguardando sua confirmação (ver Ajustes ▸ Equipe e sincronização)",
+                    cfg.host_url
+                );
+                self.error = false;
+                self.message.clear();
             }
             Err(error) => {
                 self.offline = true;
@@ -14348,6 +14602,7 @@ mod resources_sync_tests {
         let request = RpcRequest::Mutate {
             actor: "Ana".into(),
             client_schema: crate::storage::SCHEMA_VERSION,
+            expected_generation: String::new(),
             mutation: before[0].mutation.clone(),
         };
         assert!(matches!(
@@ -14446,6 +14701,7 @@ mod resources_sync_tests {
         let request = RpcRequest::Mutate {
             actor: "Ana".into(),
             client_schema: crate::storage::SCHEMA_VERSION,
+            expected_generation: String::new(),
             mutation: IntranetMutation::SaveTask {
                 task: Task::standalone(),
                 expected_version: None,
@@ -14544,6 +14800,7 @@ mod resources_sync_tests {
                 &RpcRequest::Mutate {
                     actor: "Servidor B".into(),
                     client_schema: crate::storage::SCHEMA_VERSION,
+                    expected_generation: String::new(),
                     mutation,
                 },
             );
@@ -14559,6 +14816,7 @@ mod resources_sync_tests {
             &RpcRequest::Mutate {
                 actor: "Servidor B".into(),
                 client_schema: crate::storage::SCHEMA_VERSION,
+                expected_generation: String::new(),
                 mutation: IntranetMutation::SaveTask {
                     task: task.clone(),
                     expected_version: None,
@@ -14572,6 +14830,7 @@ mod resources_sync_tests {
             &RpcRequest::Mutate {
                 actor: "Servidor B".into(),
                 client_schema: crate::storage::SCHEMA_VERSION,
+                expected_generation: String::new(),
                 mutation: IntranetMutation::SaveTask {
                     task: Task::standalone(),
                     expected_version: None,
@@ -14675,6 +14934,7 @@ mod resources_sync_tests {
             &RpcRequest::Mutate {
                 actor: "Servidor B".into(),
                 client_schema: crate::storage::SCHEMA_VERSION,
+                expected_generation: String::new(),
                 mutation,
             },
         );
@@ -14688,6 +14948,7 @@ mod resources_sync_tests {
             &RpcRequest::Mutate {
                 actor: "Servidor B".into(),
                 client_schema: crate::storage::SCHEMA_VERSION,
+                expected_generation: String::new(),
                 mutation: IntranetMutation::SaveNote {
                     document_id: 1,
                     note: "x".into(),
@@ -14797,6 +15058,7 @@ mod resources_sync_tests {
                 &RpcRequest::Mutate {
                     actor: "Servidor B".into(),
                     client_schema: crate::storage::SCHEMA_VERSION,
+                    expected_generation: String::new(),
                     mutation,
                 },
             )
@@ -15037,5 +15299,330 @@ mod resources_sync_tests {
                 .unwrap();
             assert_eq!(kept.kind, kind);
         }
+    }
+}
+
+#[cfg(test)]
+mod host_history_tests {
+    use super::*;
+    use crate::model::sample_capture;
+    use crate::tasks::Task;
+
+    /// A main computer with a client that already exchanged with it, and a
+    /// backup of the main computer taken at that moment.
+    struct Rig {
+        _dir: tempfile::TempDir,
+        host_path: PathBuf,
+        backup: PathBuf,
+        server: HostServer,
+        client: Store,
+        document: i64,
+        /// The revision the client has when the backup is already old.
+        synced_after_backup: i64,
+    }
+
+    fn task_of(store: &Store, title: &str) -> Task {
+        store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == title)
+            .unwrap_or_else(|| panic!("task {title:?} missing"))
+    }
+
+    fn titles(store: &Store) -> Vec<String> {
+        let mut all: Vec<String> = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .filter(|title| title != "Triar documento")
+            .collect();
+        all.sort();
+        all
+    }
+
+    fn rig() -> Rig {
+        let dir = tempfile::tempdir().unwrap();
+        let host_path = dir.path().join("host.sqlite3");
+        let token = generate_token();
+        let mut host = Store::open(&host_path).unwrap();
+        host.save_intranet_config(&IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "ANFITRIAO".into(),
+            bind_addr: "127.0.0.1:0".into(),
+            cabinet_token: token.clone(),
+            ..IntranetConfig::default()
+        })
+        .unwrap();
+        let document = host.import_capture(&sample_capture()).unwrap().document_id;
+        let server = HostServer::start(host_path.clone(), "127.0.0.1:0").unwrap();
+        let mut client = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        client
+            .save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::Client,
+                member_name: "CLIENTE".into(),
+                host_url: format!("http://{}", server.local_addr()),
+                cabinet_token: token,
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+        client.sync_from_host(false).unwrap();
+        // The backup: the library as the client already knows it.
+        let backup = dir.path().join("backup.sqlite3");
+        host.backup(&backup).unwrap();
+        // Then the history moves on: the task, and the client takes it.
+        let mut original = Task::new(document);
+        original.title = "Original".into();
+        host.save_task(&original).unwrap();
+        let mut extra = Task::new(document);
+        extra.title = "Extra".into();
+        host.save_task(&extra).unwrap();
+        client.sync_from_host(false).unwrap();
+        let synced_after_backup = client.load_intranet_config().unwrap().synced_revision;
+        assert!(synced_after_backup > host_revision_of(&backup));
+        drop(host);
+        Rig {
+            _dir: dir,
+            host_path,
+            backup,
+            server,
+            client,
+            document,
+            synced_after_backup,
+        }
+    }
+
+    fn host_revision_of(backup: &std::path::Path) -> i64 {
+        Store::open(backup).unwrap().cabinet_revision().unwrap()
+    }
+
+    impl Rig {
+        /// The person puts the backup in place of the main computer's file
+        /// and opens the main computer again.
+        fn restore_backup(&mut self) -> Store {
+            for suffix in ["-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.host_path.display()));
+            }
+            std::fs::copy(&self.backup, &self.host_path).unwrap();
+            Store::open(&self.host_path).unwrap()
+        }
+
+        fn host(&self) -> Store {
+            Store::open(&self.host_path).unwrap()
+        }
+
+        /// The client reaches the main computer again, now at a new address.
+        fn reconnect(&mut self) {
+            self.server.stop();
+            self.server = HostServer::start(self.host_path.clone(), "127.0.0.1:0").unwrap();
+            let mut cfg = self.client.load_intranet_config().unwrap();
+            cfg.host_url = format!("http://{}", self.server.local_addr());
+            self.client.save_intranet_config(&cfg).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_main_computer_restored_from_an_older_backup_gets_no_queue_and_replaces_nothing_unconfirmed(
+    ) {
+        let mut rig = rig();
+        // Offline, the client edits the task it knows.
+        rig.server.stop();
+        let mut edited = task_of(&rig.client, "Original");
+        edited.notes = "Edição offline".into();
+        rig.client.save_task(&edited).unwrap();
+        assert_eq!(rig.client.list_offline_outbox().unwrap().len(), 1);
+        // The main computer goes back to the backup and gives the same task
+        // number (and so the same item version) to a different task.
+        let mut host = rig.restore_backup();
+        let mut replacement = Task::new(rig.document);
+        replacement.title = "Substituta".into();
+        let reused = host.save_task(&replacement).unwrap();
+        assert_eq!(reused, edited.id, "the scenario reuses the number");
+        let host_revision = host.cabinet_revision().unwrap();
+        assert!(host_revision < rig.synced_after_backup);
+        drop(host);
+        rig.reconnect();
+        let before = rig.client.load_intranet_config().unwrap();
+
+        // Without the person's word: nothing is sent, nothing is replaced.
+        let error = rig.client.sync_from_host(false).unwrap_err().to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        assert!(
+            error.contains("mais antiga") && error.contains("Nada foi enviado"),
+            "{error}"
+        );
+        assert_eq!(
+            rig.client.list_offline_outbox().unwrap().len(),
+            1,
+            "the queue is kept"
+        );
+        assert_eq!(task_of(&rig.client, "Original").notes, "Edição offline");
+        assert_eq!(rig.client.load_intranet_config().unwrap(), before);
+        assert!(rig.client.list_sync_conflicts().unwrap().is_empty());
+        let host = rig.host();
+        assert_eq!(titles(&host), ["Substituta"]);
+        assert!(
+            task_of(&host, "Substituta").notes.is_empty(),
+            "the replacement is untouched"
+        );
+        assert_eq!(host.cabinet_revision().unwrap(), host_revision);
+
+        // Confirmed: the copy becomes the main computer's, and what waited
+        // for sending is kept as a conflict to redo, never applied.
+        assert!(rig.client.sync_from_host_confirmed(false, true).unwrap());
+        assert_eq!(titles(&rig.client), ["Substituta"]);
+        assert!(rig.client.list_offline_outbox().unwrap().is_empty());
+        let conflicts = rig.client.list_sync_conflicts().unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert!(conflicts[0].unresolved);
+        assert!(
+            conflicts[0].local_summary.contains("Edição offline"),
+            "{:?}",
+            conflicts[0]
+        );
+        assert!(task_of(&host, "Substituta").notes.is_empty());
+        assert_eq!(host.cabinet_revision().unwrap(), host_revision);
+        let after = rig.client.load_intranet_config().unwrap();
+        assert_eq!(after.synced_revision, host_revision);
+        // And the exchange is normal again.
+        assert!(!rig.client.sync_from_host(false).unwrap());
+    }
+
+    #[test]
+    fn a_main_computer_restored_from_an_older_backup_does_not_replace_a_newer_client_copy_unconfirmed(
+    ) {
+        let mut rig = rig();
+        let mut host = rig.restore_backup();
+        let mut replacement = Task::new(rig.document);
+        replacement.title = "Substituta".into();
+        host.save_task(&replacement).unwrap();
+        drop(host);
+        rig.reconnect();
+        assert!(rig.client.list_offline_outbox().unwrap().is_empty());
+
+        let error = rig.client.sync_from_host(false).unwrap_err().to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        assert_eq!(
+            titles(&rig.client),
+            ["Extra", "Original"],
+            "the newer copy stays"
+        );
+        assert_eq!(
+            rig.client.load_intranet_config().unwrap().synced_revision,
+            rig.synced_after_backup
+        );
+        // A forced full copy does not count as the person's word either.
+        let error = rig.client.sync_from_host(true).unwrap_err().to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        assert_eq!(titles(&rig.client), ["Extra", "Original"]);
+
+        assert!(rig.client.sync_from_host_confirmed(false, true).unwrap());
+        assert_eq!(titles(&rig.client), ["Substituta"]);
+        assert!(rig.client.list_sync_conflicts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_restored_main_computer_that_reaches_the_old_revision_again_is_told_by_its_generation() {
+        let mut rig = rig();
+        let mut host = rig.restore_backup();
+        // The same task number and item version, and the history grows until
+        // the revision is the one the client already holds: only the
+        // generation tells the two histories apart.
+        let mut replacement = Task::new(rig.document);
+        replacement.title = "Substituta".into();
+        host.save_task(&replacement).unwrap();
+        let mut notes = 0;
+        while host.cabinet_revision().unwrap() < rig.synced_after_backup {
+            notes += 1;
+            let mut again = task_of(&host, "Substituta");
+            again.notes = format!("rodada {notes}");
+            host.save_task(&again).unwrap();
+        }
+        assert_eq!(host.cabinet_revision().unwrap(), rig.synced_after_backup);
+        drop(host);
+        rig.reconnect();
+        let known = rig.client.load_intranet_config().unwrap();
+        assert!(
+            !known.host_generation.is_empty(),
+            "the client recorded the history"
+        );
+
+        // Same revision: the old answer would have been "up to date".
+        let error = rig.client.sync_from_host(false).unwrap_err().to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        assert!(error.contains("trocado por outro"), "{error}");
+        assert_eq!(titles(&rig.client), ["Extra", "Original"]);
+
+        // The same with a queue: nothing is sent to the other history.
+        let mut edited = task_of(&rig.client, "Original");
+        edited.notes = "Edição offline".into();
+        rig.client.save_task(&edited).unwrap();
+        let queued = rig.client.list_offline_outbox().unwrap().len();
+        assert!(queued >= 1);
+        let error = rig.client.sync_from_host(false).unwrap_err().to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        assert_eq!(rig.client.list_offline_outbox().unwrap().len(), queued);
+        let host = rig.host();
+        assert!(!task_of(&host, "Substituta")
+            .notes
+            .contains("Edição offline"));
+
+        assert!(rig.client.sync_from_host_confirmed(false, true).unwrap());
+        assert_eq!(titles(&rig.client), ["Substituta"]);
+        assert_eq!(rig.client.list_sync_conflicts().unwrap().len(), queued);
+        assert!(!task_of(&host, "Substituta")
+            .notes
+            .contains("Edição offline"));
+        assert!(
+            !rig.client.sync_from_host(false).unwrap(),
+            "up to date again"
+        );
+    }
+
+    #[test]
+    fn the_history_notes_cost_nothing_when_nothing_was_restored_and_older_builds_ignore_them() {
+        let mut rig = rig();
+        let before = rig.client.load_intranet_config().unwrap();
+        assert!(!before.host_generation.is_empty());
+        // Normal growth, a reopening and a forced full copy: no question.
+        let mut host = rig.host();
+        let mut task = Task::new(rig.document);
+        task.title = "Nova".into();
+        host.save_task(&task).unwrap();
+        drop(host);
+        let host = rig.host();
+        drop(host);
+        rig.client.sync_from_host(false).unwrap();
+        rig.client.sync_from_host(true).unwrap();
+        assert_eq!(
+            rig.client.load_intranet_config().unwrap().host_generation,
+            before.host_generation
+        );
+        assert_eq!(titles(&rig.client), ["Extra", "Nova", "Original"]);
+        // The answer of a main computer that never heard of generations.
+        let old: RpcResponse = serde_json::from_str(r#"{"UpToDate":{"revision":3}}"#).unwrap();
+        assert!(matches!(old, RpcResponse::UpToDate { generation, .. } if generation.is_empty()));
+        // And what this one writes is read by one that does not know the field.
+        let text = serde_json::to_string(&RpcResponse::UpToDate {
+            revision: 3,
+            generation: String::new(),
+        })
+        .unwrap();
+        assert_eq!(text, r#"{"UpToDate":{"revision":3}}"#);
+        let snapshot = serde_json::to_string(&CabinetSnapshot::default()).unwrap();
+        assert!(
+            !snapshot.contains("\"generation\":"),
+            "never in a transport file"
+        );
+        // A client without a recorded history takes the first one it sees.
+        let mut fresh = before.clone();
+        fresh.host_generation.clear();
+        write_intranet_config(&rig.client.conn, &fresh).unwrap();
+        rig.client.sync_from_host(false).unwrap();
+        assert_eq!(
+            rig.client.load_intranet_config().unwrap().host_generation,
+            before.host_generation
+        );
     }
 }

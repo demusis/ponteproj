@@ -283,6 +283,9 @@ impl Store {
         // Lazy, idempotent: libraries imported before this feature gain the
         // juntada links too. Unreadable content never prevents opening.
         let _ = store.link_juntadas();
+        // A main computer notes its history at every opening, so a backup put
+        // in place of the file is noticed before the library moves forward.
+        store.note_host_history();
         Ok(store)
     }
 

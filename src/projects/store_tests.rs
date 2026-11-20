@@ -732,6 +732,7 @@ fn old_request(mutation: IntranetMutation) -> RpcRequest {
         actor: "Servidor B".into(),
         mutation,
         client_schema: crate::intranet::PROJECTS_SCHEMA - 1,
+        expected_generation: String::new(),
     }
 }
 
@@ -771,6 +772,7 @@ fn an_older_client_saving_a_task_keeps_the_project_it_cannot_see() {
                 no_project: true,
             },
             client_schema: crate::storage::SCHEMA_VERSION,
+            expected_generation: String::new(),
         },
     )
     .unwrap();
@@ -1283,6 +1285,7 @@ fn only_an_explicit_removal_takes_the_project_off_a_task_through_the_main_comput
                     no_project,
                 },
                 client_schema: crate::storage::SCHEMA_VERSION,
+                expected_generation: String::new(),
             },
         )
         .unwrap();

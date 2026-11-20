@@ -1134,6 +1134,7 @@ mod tests {
             actor: "Servidor B".into(),
             mutation,
             client_schema: 16,
+            expected_generation: String::new(),
         })
         .unwrap();
         json["Mutate"]
@@ -1218,6 +1219,7 @@ mod tests {
                     no_project: false,
                 },
                 client_schema: crate::storage::SCHEMA_VERSION,
+                expected_generation: String::new(),
             },
         )
         .unwrap();
