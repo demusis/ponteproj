@@ -1041,6 +1041,65 @@ fn an_upgraded_client_asks_for_a_full_copy_even_when_the_revision_is_the_same() 
     server.stop();
 }
 
+/// Switches the library to Local mode, makes a task and an edit there, and
+/// goes back to the main computer. Returns the id of the new task.
+fn work_in_local_mode(client: &mut Store, edited: i64) -> i64 {
+    let back = client.load_intranet_config().unwrap();
+    let mut local = back.clone();
+    local.mode = IntranetMode::Local;
+    client.save_intranet_config(&local).unwrap();
+    let mut mine = Task::standalone();
+    mine.title = "Só aqui".into();
+    let id = client.save_task(&mine).unwrap();
+    let mut task = stored(client, edited);
+    task.notes = "Anotada em modo local".into();
+    client.save_task(&task).unwrap();
+    client.save_intranet_config(&back).unwrap();
+    id
+}
+
+#[test]
+fn an_upgraded_client_at_the_same_revision_takes_only_the_projects_and_keeps_its_local_work() {
+    let (_dir, host, _cfg, mut server, mut client, project, id) = upgraded_client_with_old_cache();
+    let local_id = work_in_local_mode(&mut client, id);
+    assert!(client.sync_from_host(false).unwrap());
+    // What the old copy could not carry arrived.
+    assert_eq!(
+        client.list_projects().unwrap(),
+        host.list_projects().unwrap()
+    );
+    assert_eq!(stored(&client, id).project_uid, project.uid);
+    assert_eq!(
+        client.project_version(&project.uid).unwrap(),
+        host.project_version(&project.uid).unwrap()
+    );
+    // Nothing else was replaced.
+    assert_eq!(by_title(&client, "Só aqui").id, local_id);
+    assert_eq!(stored(&client, id).notes, "Anotada em modo local");
+    assert!(!host
+        .list_tasks()
+        .unwrap()
+        .iter()
+        .any(|t| t.title == "Só aqui"));
+    // Done once.
+    assert!(!client.sync_from_host(false).unwrap());
+    assert_eq!(by_title(&client, "Só aqui").id, local_id);
+    server.stop();
+}
+
+#[test]
+fn an_upgraded_client_still_takes_the_full_copy_when_the_revision_moved() {
+    let (_dir, mut host, _cfg, mut server, mut client, project, id) =
+        upgraded_client_with_old_cache();
+    work_in_local_mode(&mut client, id);
+    task_in(&mut host, "Nova no anfitrião", "");
+    assert!(client.sync_from_host(false).unwrap());
+    assert_eq!(client.list_tasks().unwrap(), host.list_tasks().unwrap());
+    assert_eq!(stored(&client, id).project_uid, project.uid);
+    assert!(!client.sync_from_host(false).unwrap());
+    server.stop();
+}
+
 #[test]
 fn a_task_saved_right_after_the_upgrade_keeps_the_link_the_old_copy_never_showed() {
     let (_dir, host, _cfg, mut server, mut client, project, id) = upgraded_client_with_old_cache();

@@ -2884,11 +2884,14 @@ impl Store {
         // numbers: only a full copy of the main one settles it.
         // The same for a library upgraded while it held a copy taken before
         // the projects: the main computer may still be at that revision.
-        let since = if force_full
-            || pushed_offline
-            || crate::idmap::has_pending(&self.conn)?
-            || self.projects_cache_stale()
-        {
+        // Only the projects (and the links of the tasks to them) can be
+        // missing from such a copy: when the revision turns out to be the
+        // same, nothing else of this library is replaced (it may hold work
+        // that no queue protects, made in Local mode).
+        let numbers_pending = crate::idmap::has_pending(&self.conn)?;
+        let projects_only =
+            !force_full && !pushed_offline && !numbers_pending && self.projects_cache_stale();
+        let since = if force_full || pushed_offline || numbers_pending || projects_only {
             None
         } else {
             Some(cfg.synced_revision)
@@ -2912,6 +2915,9 @@ impl Store {
         match response {
             RpcResponse::UpToDate { .. } => Ok(pushed_offline),
             RpcResponse::Snapshot(snapshot) => {
+                if projects_only && snapshot.revision == cfg.synced_revision {
+                    return self.take_projects_from(&snapshot);
+                }
                 let cfg_clone = cfg.clone();
                 self.apply_snapshot_and(
                     &snapshot,
@@ -2924,6 +2930,97 @@ impl Store {
             RpcResponse::Error { message } => bail!("{message}"),
             _ => bail!("Resposta inesperada do computador principal durante a sincronização."),
         }
+    }
+
+    /// The copy this library holds is at the revision of the main computer
+    /// but predates the projects: takes from `snapshot` only what that copy
+    /// could not carry (the projects, the versions kept for them, deleted
+    /// ones included, and the link of the tasks to them) and records that the
+    /// copy now knows them. Whatever this library already has stays as it
+    /// is: tasks, edits made in Local mode, projects made here.
+    pub(crate) fn take_projects_from(&mut self, snapshot: &CabinetSnapshot) -> Result<bool> {
+        // A main computer that cannot carry projects has nothing to give.
+        if snapshot.schema_version < PROJECTS_SCHEMA {
+            return Ok(false);
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut changed = false;
+        let known: std::collections::BTreeSet<String> = tx
+            .prepare("SELECT uid FROM projects")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let missing: Vec<crate::projects::Project> = snapshot
+            .projects
+            .iter()
+            .filter(|p| !known.contains(&p.uid))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            crate::projects::apply_projects(&tx, &missing)?;
+            changed = true;
+        }
+        for (kind, item_id, meta) in snapshot
+            .item_versions
+            .iter()
+            .filter(|(k, _, _)| k == "project")
+        {
+            changed |= tx.execute(
+                "INSERT OR IGNORE INTO item_versions(kind,item_id,version,payload) VALUES(?1,?2,?3,?4)",
+                params![
+                    kind,
+                    item_id,
+                    meta.version,
+                    seal(&serde_json::to_vec(meta)?)?
+                ],
+            )? > 0;
+        }
+        for task in snapshot
+            .tasks
+            .iter()
+            .filter(|t| !t.uid.is_empty() && !t.project_uid.is_empty())
+        {
+            let row: Option<Vec<u8>> = tx
+                .query_row("SELECT payload FROM tasks WHERE id=?1", [task.id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            let Some(mut mine) = row
+                .and_then(|blob| unseal(&blob).ok())
+                .and_then(|plain| serde_json::from_slice::<Task>(&plain).ok())
+            else {
+                continue;
+            };
+            let exists = tx
+                .query_row(
+                    "SELECT 1 FROM projects WHERE uid=?1",
+                    [&task.project_uid],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if mine.uid == task.uid
+                && mine.document_id == task.document_id
+                && mine.project_uid.is_empty()
+                && exists
+            {
+                mine.project_uid = task.project_uid.clone();
+                tx.execute(
+                    "UPDATE tasks SET payload=?1 WHERE id=?2",
+                    params![seal(&serde_json::to_vec(&mine)?)?, task.id],
+                )?;
+                changed = true;
+            }
+        }
+        // Done once: the next polls are the usual cheap ones.
+        tx.execute(
+            "INSERT INTO client_cache(id,schema) VALUES(1,?1)
+             ON CONFLICT(id) DO UPDATE SET schema=excluded.schema",
+            [snapshot.schema_version],
+        )?;
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// Exchange with the transport files of the shared-folder mode. Reads
