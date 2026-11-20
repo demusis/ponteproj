@@ -334,6 +334,8 @@ pub fn created_ids(
             | IntranetMutation::SaveResourceUse { .. }
             | IntranetMutation::SaveCategory { .. }
             | IntranetMutation::DeleteCategory { .. }
+            | IntranetMutation::SaveProject { .. }
+            | IntranetMutation::DeleteProject { .. }
             | IntranetMutation::SaveSetting { .. },
             MutationReply::Unit,
         ) => {}
@@ -687,6 +689,8 @@ impl IdMap {
             | M::SaveResource { .. }
             | M::SaveCategory { .. }
             | M::DeleteCategory { .. }
+            | M::SaveProject { .. }
+            | M::DeleteProject { .. }
             | M::SaveSetting { .. }
             | M::DeleteResourceUse { .. } => {}
             // Addressed by uid; only the links to numbered items change.

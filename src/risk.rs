@@ -77,7 +77,7 @@ pub fn planned_end_after_due(end: &str, due: &str) -> bool {
 }
 
 /// The planned period of a task, when it has a valid one.
-fn planned(task: &Task) -> Option<(NaiveDateTime, NaiveDateTime)> {
+pub(crate) fn planned(task: &Task) -> Option<(NaiveDateTime, NaiveDateTime)> {
     match (
         parse_moment(&task.scheduled_start),
         parse_moment(&task.scheduled_end),

@@ -351,20 +351,25 @@ impl Store {
             IntranetMutation::SaveTask {
                 mut task,
                 expected_version,
-            } if task.id > 0 && client_schema < crate::intranet::SCHEDULE_SCHEMA => {
+            } if task.id > 0 && client_schema < crate::intranet::PROJECTS_SCHEMA => {
                 if let Some(stored) = self.list_tasks()?.into_iter().find(|t| t.id == task.id) {
-                    task.uid = stored.uid;
-                    task.scheduled_start = stored.scheduled_start;
-                    task.scheduled_end = stored.scheduled_end;
-                    task.estimate_minutes = stored.estimate_minutes;
-                    task.parent_task_id = stored.parent_task_id;
-                    task.reminder_offsets_minutes = stored.reminder_offsets_minutes;
-                    if client_schema < crate::intranet::CATEGORIES_SCHEMA {
-                        task.categories = stored.categories;
+                    if client_schema < crate::intranet::SCHEDULE_SCHEMA {
+                        task.uid = stored.uid;
+                        task.scheduled_start = stored.scheduled_start;
+                        task.scheduled_end = stored.scheduled_end;
+                        task.estimate_minutes = stored.estimate_minutes;
+                        task.parent_task_id = stored.parent_task_id;
+                        task.reminder_offsets_minutes = stored.reminder_offsets_minutes;
+                        if client_schema < crate::intranet::CATEGORIES_SCHEMA {
+                            task.categories = stored.categories;
+                        }
+                        if client_schema < crate::intranet::PROPOSALS_SCHEMA {
+                            task.proposal_id = stored.proposal_id;
+                        }
                     }
-                    if client_schema < crate::intranet::PROPOSALS_SCHEMA {
-                        task.proposal_id = stored.proposal_id;
-                    }
+                    // A Ponte before the projects never sees the field and
+                    // sends the task back without it.
+                    task.project_uid = stored.project_uid;
                 }
                 IntranetMutation::SaveTask {
                     task,

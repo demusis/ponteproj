@@ -90,6 +90,11 @@ pub struct Task {
     /// kept when the task is saved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
+    /// Uid of the project of the task (schema 21); empty: no project. Saving
+    /// a task clears it when the project does not exist, and a new subtask
+    /// takes the project of its parent when it has none of its own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_uid: String,
 }
 impl Task {
     pub fn new(document_id: i64) -> Self {
@@ -134,6 +139,7 @@ impl Task {
             assignee: String::new(),
             proposal_id: String::new(),
             categories: Vec::new(),
+            project_uid: String::new(),
         }
     }
     /// Concluded: the status says so, or a conclusion date is set.
@@ -177,6 +183,10 @@ impl Task {
             "A identificação da proposta da tarefa é inválida."
         );
         crate::categories::check_item_categories(&self.categories)?;
+        ensure!(
+            self.project_uid.is_empty() || crate::projects::is_valid_uid(&self.project_uid),
+            "A identificação do projeto da tarefa é inválida."
+        );
         ensure!(
             ["pendente", "em analise", "aguardando", "concluida"].contains(&self.status.as_str()),
             "A situação da tarefa é inválida."
@@ -490,6 +500,7 @@ impl Store {
             task.id = id;
             task.document_id = document_id;
             task.categories = self.known_categories_of(&task.categories)?;
+            task.project_uid = self.known_project_of(&task.project_uid)?;
             out.push(task);
         }
         out.sort_by_key(|t| {
@@ -640,6 +651,9 @@ impl Store {
             }
             if !task.categories.is_empty() {
                 self.ensure_host_stores_categories(&cfg)?;
+            }
+            if !task.project_uid.is_empty() {
+                self.ensure_host_stores_projects(&cfg)?;
             }
             self.ensure_host_stores_schedule(&cfg)?;
             match self.remote_mutate(
@@ -808,6 +822,16 @@ fn write_task_with_graph(
     }
     let mut saved = task.clone();
     saved.categories = crate::categories::retain_known(tx, &task.categories)?;
+    // A new subtask without a project of its own takes the one of its parent
+    // (later changes of the parent's project do not reach it).
+    let inherits = task.id == 0 && task.project_uid.is_empty() && task.parent_task_id.is_some();
+    if inherits {
+        if let Some(parent) = task.parent_task_id {
+            saved.project_uid = crate::projects::project_of_task(tx, parent)?;
+        }
+    }
+    // A project that does not exist is dropped, as an unknown category is.
+    saved.project_uid = crate::projects::retain_known(tx, &saved.project_uid)?;
     if task.id == 0 && !task.uid.is_empty() {
         let found: Option<(i64, Vec<u8>)> = tx
             .query_row(
@@ -823,6 +847,10 @@ fn write_task_with_graph(
                 "A identidade da tarefa pertence a um item na lixeira."
             );
             existing.id = 0;
+            // The project a subtask inherited belongs to the original create.
+            if inherits {
+                saved.project_uid = existing.project_uid.clone();
+            }
             // A generated completion timestamp belongs to the original create, not the retry.
             if saved.status == "concluida" && saved.completed_at.is_none() {
                 saved.completed_at = existing.completed_at.clone();
@@ -2129,7 +2157,7 @@ mod planning_tests {
         {
             let conn = rusqlite::Connection::open(&path).unwrap();
             conn.execute_batch(&format!(
-                "DROP TABLE library_settings; PRAGMA user_version={};",
+                "DROP TABLE library_settings; DROP TABLE projects; PRAGMA user_version={};",
                 crate::storage::SCHEMA_VERSION - 2
             ))
             .unwrap();
@@ -2160,6 +2188,75 @@ mod planning_tests {
         let store = Store::open(&path).unwrap();
         assert_eq!(version(&store), crate::storage::SCHEMA_VERSION);
         assert_eq!(store.library_setting("holidays").unwrap(), None);
+    }
+
+    #[test]
+    fn a_schema_20_library_gains_the_projects_table_and_guards_before_the_number_21() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("to21.sqlite3");
+        let id = {
+            let mut store = Store::open(&path).unwrap();
+            let mut task = Task::standalone();
+            task.title = "Antiga".into();
+            store.save_task(&task).unwrap()
+        };
+        // As a Ponte of schema 20 leaves it: no table, no guards, number 20.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER ponte_guard_projects_insert; DROP TRIGGER ponte_guard_projects_update; DROP TRIGGER ponte_guard_projects_delete; DROP TABLE projects; PRAGMA user_version=20;",
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, crate::storage::SCHEMA_VERSION);
+        assert_eq!(crate::storage::SCHEMA_VERSION, 21);
+        assert!(store.list_projects().unwrap().is_empty());
+        let guards: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte_guard_projects_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(guards, 3);
+        let task = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        assert_eq!(task.title, "Antiga");
+        assert!(task.project_uid.is_empty());
+        // Opening it again changes nothing (the migration can be re-run).
+        drop(store);
+        let again = Store::open(&path).unwrap();
+        assert_eq!(again.list_tasks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_library_of_a_newer_schema_than_21_is_refused_and_left_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("future.sqlite3");
+        drop(Store::open(&path).unwrap());
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "PRAGMA user_version={};",
+                crate::storage::SCHEMA_VERSION + 1
+            ))
+            .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let error = Store::open(&path).err().unwrap().to_string();
+        assert!(error.contains("versão mais nova"), "{error}");
+        assert!(error.contains("atualize"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]

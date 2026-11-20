@@ -8,6 +8,7 @@ use crate::categories::Category;
 use crate::dossier::Movement;
 use crate::manual::ManualFields;
 use crate::model::{ActionSuggestion, Analysis, Capture, Coverage};
+use crate::projects::{Project, ProjectStatus};
 use crate::saiop::{SaiopAttendance, SaiopEvent};
 use crate::storage::Store;
 use crate::tasks::Task;
@@ -66,6 +67,7 @@ fn seed_all(store: &mut Store) -> Result<()> {
     whatsapp(store).context("conversa do WhatsApp de exemplo")?;
     tasks(store, &ids).context("tarefas de exemplo")?;
     categories(store, &ids).context("categorias de exemplo")?;
+    projects(store).context("projetos de exemplo")?;
     attendances(store, &ids).context("atendimentos de exemplo")?;
     analysis(store, &ids).context("análise de exemplo")?;
     templates(store).context("modelos de exemplo")?;
@@ -789,6 +791,79 @@ fn categories(store: &mut Store, ids: &Ids) -> Result<()> {
     store.set_document_categories(ids.vehicles, &[urgent])?;
     store.set_document_categories(ids.staff, &[legal])?;
     store.set_document_categories(ids.schedule, &[waiting])?;
+    Ok(())
+}
+
+/// A moment `days` days from today at `hour:00`, as the plan of a task keeps it.
+fn at(days: i64, hour: u32) -> String {
+    format!("{}T{hour:02}:00", iso(days))
+}
+
+/// Two projects for the project screens: an active one with five of the
+/// tasks above (some planned, one projected from its prerequisite, the reply
+/// planned past its deadline, and a late one) and a target date; and a paused
+/// one with a single task.
+fn projects(store: &mut Store) -> Result<()> {
+    let mut committee = Project::new("Reunião do Comitê Gestor");
+    committee.objective = "Garantir auditório, sala e veículos para a reunião do Comitê Gestor e \
+                           responder ao Protocolo Geral sobre o apoio logístico."
+        .into();
+    committee.assignee = "Servidor A".into();
+    committee.start_date = iso(-7);
+    committee.target_date = iso(10);
+    let committee = store.save_project(&committee)?;
+    let mut staff = Project::new("Atualização do quadro de pessoal");
+    staff.objective = "Conferir nomes e turnos do Projeto Alfa e republicar a escala.".into();
+    staff.assignee = "Servidor B".into();
+    staff.status = ProjectStatus::Pausado;
+    staff.start_date = iso(-15);
+    staff.target_date = iso(30);
+    let staff = store.save_project(&staff)?;
+
+    let find = |store: &Store, title: &str| -> Result<Task> {
+        store
+            .list_tasks()?
+            .into_iter()
+            .find(|t| t.title == title)
+            .with_context(|| format!("tarefa de exemplo \"{title}\""))
+    };
+    let vehicles_title = "Pedir os dois veículos à Seção de Transportes";
+    let steps: [(&str, Option<(String, String)>); 5] = [
+        // Overdue, still waiting for an answer.
+        (
+            "Confirmar disponibilidade do auditório",
+            Some((at(-5, 9), at(-3, 18))),
+        ),
+        // Due today but planned to end tomorrow: late, a delivery at risk.
+        (
+            "Responder ao Protocolo Geral sobre o apoio logístico",
+            Some((at(0, 14), at(1, 12))),
+        ),
+        (vehicles_title, Some((at(1, 9), at(2, 12)))),
+        // Projected from the vehicles.
+        (
+            "Revisar a distribuição de veículos antes da assinatura",
+            None,
+        ),
+        ("Confirmar a sala da reunião de quinta-feira", None),
+    ];
+    let vehicles_id = find(store, vehicles_title)?.id;
+    for (title, plan) in steps {
+        let mut task = find(store, title)?;
+        task.project_uid = committee.uid.clone();
+        if let Some((start, end)) = plan {
+            task.scheduled_start = start;
+            task.scheduled_end = end;
+        }
+        if title.starts_with("Revisar") {
+            task.dependencies = vec![vehicles_id];
+            task.estimate_minutes = 1440;
+        }
+        store.save_task(&task)?;
+    }
+    let mut roster = find(store, "Atualizar a escala da equipe do Projeto Alfa")?;
+    roster.project_uid = staff.uid.clone();
+    store.save_task(&roster)?;
     Ok(())
 }
 
@@ -1789,6 +1864,54 @@ mod tests {
         assert!(uses.iter().any(|u| u.document_id.is_some()));
         assert!(uses.iter().any(|u| u.saiop_id.is_some()));
         assert!(store.auto_attendance_enabled().unwrap());
+    }
+
+    #[test]
+    fn the_sample_projects_have_tasks_plans_a_late_one_and_a_target_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("amostra.sqlite3")).unwrap();
+        seed(&mut store).unwrap();
+        let today = Local::now().date_naive();
+        let overview = store.project_overview(today).unwrap();
+        assert_eq!(overview.len(), 2);
+        let active = overview
+            .iter()
+            .find(|o| o.project.status == ProjectStatus::Ativo)
+            .unwrap();
+        assert!((4..=5).contains(&active.progress.total));
+        assert_eq!(active.progress.total, 5);
+        assert!(active.progress.late >= 1, "one task is overdue");
+        assert!(
+            active.risk.deliveries_at_risk >= 1,
+            "the reply ends after its deadline"
+        );
+        assert!(!active.project.target_date.is_empty());
+        assert!(active.project.start_date < active.project.target_date);
+        let rows = crate::projects::timeline(&active.project.uid, &store.list_tasks().unwrap());
+        assert_eq!(rows.len(), 5);
+        assert!(
+            rows.iter()
+                .filter(|r| r.period.is_some() && !r.projected)
+                .count()
+                >= 3
+        );
+        assert!(rows.iter().any(|r| r.projected), "one bar is projected");
+        assert!(
+            rows.iter().any(|r| r.late),
+            "one bar ends after its deadline"
+        );
+        assert!(
+            rows.iter().any(|r| r.period.is_none()),
+            "one has no period yet"
+        );
+        let paused = overview
+            .iter()
+            .find(|o| o.project.status == ProjectStatus::Pausado)
+            .unwrap();
+        assert_eq!(paused.progress.total, 1);
+        assert!(!paused.project.target_date.is_empty());
+        // Every task of a project is still a task of the library.
+        assert!(store.list_tasks().unwrap().len() >= 11);
     }
     #[test]
     fn the_sample_draft_has_the_three_points_and_a_conference_of_its_text() {
