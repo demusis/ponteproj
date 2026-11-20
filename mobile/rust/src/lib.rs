@@ -572,6 +572,9 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_reopenTask<'local>
 
 /// A new task: `{"document_id":1,"title":"...","action":"responder","due_date":"AAAA-MM-DD"}`.
 /// A missing or zero `document_id` makes a task without document.
+/// `project_uid`: a uid puts the task in that project; absent, a subtask
+/// takes the project of its parent; an explicit `null` or empty text creates
+/// it with NO project (even under a parent that has one).
 #[no_mangle]
 pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createTask<'local>(
     mut env: JNIEnv<'local>,
@@ -585,6 +588,13 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createTask<'local>
 }
 
 fn create_task(store: &mut Store, input: &Value) -> Result<Value> {
+    // `project_uid`: absent, a subtask takes the project of its parent; an
+    // explicit null or empty text, the task is created with NO project.
+    let no_project = match input.get("project_uid") {
+        None => false,
+        Some(value) if value.is_null() => true,
+        Some(value) => value.as_str().is_some_and(|text| text.trim().is_empty()),
+    };
     // Missing or 0: no document. A negative number is a mistake, not "none".
     let document_id = match input["document_id"].as_i64() {
         Some(id) if id < 0 => anyhow::bail!("Documento inválido."),
@@ -605,7 +615,11 @@ fn create_task(store: &mut Store, input: &Value) -> Result<Value> {
     }
     // The project of the task; a subtask without one takes its parent's.
     apply_project(&mut task, input)?;
-    let id = store.save_task(&task)?;
+    let id = if no_project && task.parent_task_id.is_some() {
+        store.save_task_without_project(&task)?
+    } else {
+        store.save_task(&task)?
+    };
     Ok(json!({ "id": id }))
 }
 
@@ -989,7 +1003,17 @@ fn project_error(error: anyhow::Error) -> anyhow::Error {
 /// `version` read by `getProject` or `listProjects` is required, and a
 /// project changed meanwhile saves nothing. Answers `{uid, version, project}`.
 fn save_project(store: &mut Store, input: &Value) -> Result<Value> {
-    let uid = input["uid"].as_str().unwrap_or("").trim().to_owned();
+    // No `uid` (absent, null or empty) creates a project; one that is present
+    // but is not a text is a mistake, never "a new project".
+    let uid = match input.get("uid") {
+        None => String::new(),
+        Some(value) if value.is_null() => String::new(),
+        Some(value) => value
+            .as_str()
+            .context("Identificação do projeto inválida.")?
+            .trim()
+            .to_owned(),
+    };
     let mut project = if uid.is_empty() {
         ponteproj::projects::Project::default()
     } else {
@@ -4228,6 +4252,94 @@ mod tests {
         assert_eq!((row["project_uid"].as_str(), row["project_name"].as_str()), (Some(""), Some("")));
     }
 
+
+    #[test]
+    fn creating_a_task_says_what_an_absent_null_or_empty_project_means() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let uid = project_uid_of(&save_project(&mut store, &json!({"name": "Mudança"})).unwrap());
+        let parent = create_task(&mut store, &json!({"title": "Mãe", "project_uid": uid}))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let project_of = |store: &Store, id: i64| get_task(store, id).unwrap()["project_uid"].clone();
+        // Absent: the subtask takes the project of its parent.
+        let inherited = create_task(&mut store, &json!({"title": "A", "parent_task_id": parent}))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(project_of(&store, inherited), json!(uid));
+        // An explicit null or an empty text: no project at all.
+        for (title, value) in [("B", json!(null)), ("C", json!("")), ("D", json!("  "))] {
+            let id = create_task(
+                &mut store,
+                &json!({"title": title, "parent_task_id": parent, "project_uid": value}),
+            )
+            .unwrap()["id"]
+                .as_i64()
+                .unwrap();
+            assert_eq!(project_of(&store, id), json!(""), "{title}");
+        }
+        // A project named in the request still wins, and a task with no
+        // parent has none unless it names one.
+        let named = create_task(
+            &mut store,
+            &json!({"title": "E", "parent_task_id": parent, "project_uid": uid}),
+        )
+        .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(project_of(&store, named), json!(uid));
+        let loose = create_task(&mut store, &json!({"title": "F", "project_uid": null}))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(project_of(&store, loose), json!(""));
+        // A project that is not a text is a mistake.
+        assert!(create_task(&mut store, &json!({"title": "G", "project_uid": 7})).is_err());
+    }
+
+    #[test]
+    fn a_uid_that_is_present_but_not_a_text_is_refused_not_taken_for_a_new_project() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        for bad in [json!(7), json!(true), json!([]), json!({"a": 1})] {
+            let error = save_project(&mut store, &json!({"uid": bad, "name": "Fantasma"}))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("inválida"), "{error}");
+        }
+        assert!(store.list_projects().unwrap().is_empty(), "nothing was created");
+        // Absent, null and empty still mean "a new project".
+        for (name, input) in [
+            ("Um", json!({"name": "Um"})),
+            ("Dois", json!({"uid": null, "name": "Dois"})),
+            ("Três", json!({"uid": "", "name": "Três"})),
+        ] {
+            let saved = save_project(&mut store, &input).unwrap();
+            assert_eq!(saved["project"]["name"], name);
+        }
+        assert_eq!(store.list_projects().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_project_with_a_due_date_at_the_end_of_the_calendar_opens_on_the_phone() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let uid = project_uid_of(&save_project(&mut store, &json!({"name": "Fim dos tempos"})).unwrap());
+        for due in ["+262142-12-31", "2026-11-24"] {
+            create_task(&mut store, &json!({"title": due, "project_uid": uid, "due_date": due})).unwrap();
+        }
+        let shown = get_project(&store, &uid, today_of("2026-11-19")).unwrap();
+        assert_eq!(shown["tasks"].as_array().unwrap().len(), 2);
+        assert!(shown["span"]["start"].is_string() && shown["span"]["end"].is_string());
+    }
     #[test]
     fn a_transport_file_of_a_newer_format_is_refused_by_the_phone_and_left_alone() {
         let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
