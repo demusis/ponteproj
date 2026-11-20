@@ -329,6 +329,15 @@ impl Store {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());
                 tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {SCHEMA_VERSION} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;"))?;
+                // The same guard under a name that carries the schema: an
+                // older Ponte that opens the library meanwhile drops and
+                // writes again the guard it knows by the name above, with
+                // its own (lower) number, and must not weaken this one.
+                let versioned = format!(
+                    "ponte_guard_v{SCHEMA_VERSION}_{table}_{}",
+                    operation.to_lowercase()
+                );
+                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {versioned}; CREATE TRIGGER {versioned} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {SCHEMA_VERSION} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;"))?;
             }
         }
         for (table, column) in [

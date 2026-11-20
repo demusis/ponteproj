@@ -1679,10 +1679,12 @@ pub fn conflicts_scenario(store: &mut Store) -> Result<()> {
                 mutation: IntranetMutation::SaveTask {
                     task: task.clone(),
                     expected_version: None,
+                    no_project: false,
                 },
                 base: Some(IntranetMutation::SaveTask {
                     task: base.clone(),
                     expected_version: None,
+                    no_project: false,
                 }),
                 unresolved: false,
             }

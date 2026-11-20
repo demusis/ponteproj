@@ -267,6 +267,7 @@ fn belongs(task: &Task, project_uid: &str) -> bool {
 /// Progress of the project `project_uid` over `tasks` as of `today`.
 pub fn progress(project_uid: &str, tasks: &[Task], today: NaiveDate) -> Progress {
     let mut out = Progress::default();
+    let mut next_due: Option<NaiveDate> = None;
     for task in tasks.iter().filter(|t| belongs(t, project_uid)) {
         out.total += 1;
         if task.is_done() {
@@ -279,11 +280,10 @@ pub fn progress(project_uid: &str, tasks: &[Task], today: NaiveDate) -> Progress
         if due < today {
             out.late += 1;
         }
-        if out
-            .next_due
-            .as_deref()
-            .is_none_or(|current| task.due_date.as_str() < current)
-        {
+        // Dates are compared as dates: as text, a year of more than four
+        // digits ("+12345-01-01") would come before 2026.
+        if next_due.is_none_or(|current| due < current) {
+            next_due = Some(due);
             out.next_due = Some(task.due_date.clone());
         }
     }
@@ -421,8 +421,12 @@ pub fn timeline_span(rows: &[TimelineRow]) -> Option<(NaiveDateTime, NaiveDateTi
             widen(start, end);
         }
         if let Some(due) = row.due {
-            let from = due.and_hms_opt(0, 0, 0).expect("midnight exists");
-            widen(from, from + Duration::days(1));
+            // Checked: a due date at the very end of the calendar has no
+            // "next day" to pad to, and is counted without the padding.
+            if let Some(from) = due.and_hms_opt(0, 0, 0) {
+                let to = from.checked_add_signed(Duration::days(1)).unwrap_or(from);
+                widen(from, to);
+            }
         }
     }
     span
@@ -531,6 +535,13 @@ impl Store {
                 uid TEXT NOT NULL UNIQUE,
                 payload BLOB NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+            -- The schema of the copy of the team's library this one last took
+            -- (one row, written when a copy is applied): a library upgraded
+            -- with a copy taken before the projects must ask for a full one.
+            CREATE TABLE IF NOT EXISTS client_cache(
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                schema INTEGER NOT NULL
             );",
         )?;
         Ok(())
@@ -1126,6 +1137,62 @@ mod rules_tests {
         )];
         let r = project_risk(&project("2026-12-01"), &fixed, today);
         assert_eq!(r.target_at_risk, Some(at("2026-12-02T18:00")));
+    }
+
+    #[test]
+    fn progress_compares_due_dates_as_dates_not_as_text() {
+        // As text, "+12345-01-01" would come before "2026-05-01".
+        let tasks = vec![
+            task(1, "longe", P, "+12345-01-01"),
+            task(2, "perto", P, "2026-05-01"),
+            task(3, "inválida", P, "2026-02-30"),
+        ];
+        let found = progress(P, &tasks, day("2026-11-19"));
+        assert_eq!(found.total, 3);
+        assert_eq!(found.next_due.as_deref(), Some("2026-05-01"));
+        assert_eq!(found.late, 1, "only the date in the past is late");
+        // The other way round, and with the far date alone.
+        let reversed: Vec<Task> = tasks.iter().rev().cloned().collect();
+        assert_eq!(
+            progress(P, &reversed, day("2026-11-19"))
+                .next_due
+                .as_deref(),
+            Some("2026-05-01")
+        );
+        assert_eq!(
+            progress(P, &tasks[..1], day("2026-11-19"))
+                .next_due
+                .as_deref(),
+            Some("+12345-01-01")
+        );
+    }
+
+    #[test]
+    fn timeline_span_survives_a_due_date_at_the_end_of_the_calendar() {
+        let last = NaiveDate::MAX;
+        let row = |due| TimelineRow {
+            id: 1,
+            uid: String::new(),
+            title: "fim".into(),
+            done: false,
+            period: None,
+            projected: false,
+            due,
+            late: false,
+        };
+        // No next day to pad to: the day counts without the padding.
+        let midnight = last.and_hms_opt(0, 0, 0).unwrap();
+        assert_eq!(
+            timeline_span(&[row(Some(last))]),
+            Some((midnight, midnight))
+        );
+        // Next to an ordinary row it still widens the span.
+        let rows = [row(Some(day("2026-11-20"))), row(Some(last))];
+        assert_eq!(
+            timeline_span(&rows),
+            Some((at("2026-11-20T00:00"), midnight))
+        );
+        assert_eq!(timeline_span(&[row(None)]), None);
     }
 }
 
