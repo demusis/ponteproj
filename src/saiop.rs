@@ -2742,8 +2742,23 @@ pub(crate) fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>
             MAX_XLSX_EXPANDED_BYTES / (1024 * 1024)
         );
         let decoded = match method {
-            0 => comp_slice.to_vec(),
-            8 => inflate_raw(comp_slice, uncomp_size)?,
+            0 => {
+                // Sem compactação, o tamanho gravado tem de bater com o declarado: senão a
+                // cópia fugiria do limite de descompressão.
+                ensure!(
+                    comp_size == uncomp_size,
+                    "A planilha está danificada ou não é um arquivo .xlsx válido."
+                );
+                comp_slice.to_vec()
+            }
+            8 => {
+                let out = inflate_raw(comp_slice, uncomp_size)?;
+                ensure!(
+                    out.len() == uncomp_size,
+                    "A planilha está danificada ou não é um arquivo .xlsx válido."
+                );
+                out
+            }
             _ => bail!("A planilha usa um tipo de compactação que o Ponte não reconhece. Salve-a de novo como .xlsx no Excel."),
         };
         entries.insert(name, decoded);
@@ -6150,6 +6165,46 @@ mod tests {
         out.extend_from_slice(&cd_offset.to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out
+    }
+
+    /// Posição do cabeçalho do diretório central da primeira entrada de um zip montado por `build_stored_zip`.
+    fn first_central_header(zip: &[u8]) -> usize {
+        zip.windows(4)
+            .position(|w| w == [0x50, 0x4b, 0x01, 0x02])
+            .unwrap()
+    }
+
+    #[test]
+    fn zip_reader_refuses_stored_entry_whose_sizes_disagree() {
+        let data = vec![b'x'; 1000];
+        let zip = build_stored_zip(&[("xl/workbook.xml", &data)]);
+        assert_eq!(
+            read_zip_entries(&zip).unwrap()["xl/workbook.xml"].len(),
+            1000
+        );
+
+        // Tamanho descompactado declarado menor que o gravado: antes, os 1000 bytes eram copiados.
+        let mut bad = zip.clone();
+        let cd = first_central_header(&bad);
+        bad[cd + 24..cd + 28].copy_from_slice(&10u32.to_le_bytes());
+        let err = read_zip_entries(&bad).unwrap_err().to_string();
+        assert!(err.contains("danificada"), "{err}");
+    }
+
+    #[test]
+    fn zip_reader_refuses_deflated_entry_that_decodes_short() {
+        // Um único bloco Deflate sem compressão com 5 bytes; o diretório declara 50.
+        let mut zip = build_stored_zip(&[(
+            "xl/workbook.xml",
+            &[0x01, 0x05, 0x00, 0xfa, 0xff, b'h', b'e', b'l', b'l', b'o'],
+        )]);
+        let cd = first_central_header(&zip);
+        zip[cd + 10..cd + 12].copy_from_slice(&8u16.to_le_bytes());
+        zip[cd + 24..cd + 28].copy_from_slice(&5u32.to_le_bytes());
+        assert_eq!(read_zip_entries(&zip).unwrap()["xl/workbook.xml"], b"hello");
+        zip[cd + 24..cd + 28].copy_from_slice(&50u32.to_le_bytes());
+        let err = read_zip_entries(&zip).unwrap_err().to_string();
+        assert!(err.contains("danificada"), "{err}");
     }
 
     #[test]
