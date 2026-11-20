@@ -277,24 +277,31 @@ internal fun CategoryFilterContent(
 }
 
 /** The button of a list that opens the filter, and the sheet itself. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun CategoryFilterButton(
     chosen: Set<String>,
     onChange: (Set<String>) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    if (LocalCategories.current.isEmpty() && chosen.isEmpty()) return
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        CategoryFilterPill(chosen, onChange)
+    }
+}
+
+/** The pill of the category filter and its sheet, to sit in a row with other filters. Nothing while there is nothing to filter by. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun CategoryFilterPill(
+    chosen: Set<String>,
+    onChange: (Set<String>) -> Unit
+) {
     val all = LocalCategories.current
     var open by rememberSaveable { mutableStateOf(false) }
     val on = chosen.isNotEmpty()
     // Nothing to filter by while the library has no category (and no filter is on).
     if (all.isEmpty() && !on) return
-    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FilterChips(
-            listOf("categories" to CategoryRules.filterLabel(chosen)),
-            selected = if (on) "categories" else "", onSelect = { open = true }
-        )
-    }
+    FilterPill(CategoryRules.filterLabel(chosen), on, Modifier.widthIn(max = 220.dp)) { open = true }
     if (open) {
         var draft by remember { mutableStateOf(chosen) }
         ModalBottomSheet(
@@ -321,7 +328,7 @@ private fun CategoryDot(c: Category) {
 
 /** A 48 dp checkable row; [content] is what comes before the check. */
 @Composable
-private fun PickRow(
+internal fun PickRow(
     on: Boolean,
     enabled: Boolean,
     description: String,

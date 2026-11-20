@@ -74,7 +74,8 @@ internal fun TaskScreen(
     remindersBlocked: Boolean = false,
     onRemindersChosen: () -> Unit = {},
     relations: TasksState = TasksState(),
-    onOpenTask: (Long) -> Unit = {}
+    onOpenTask: (Long) -> Unit = {},
+    projects: List<ProjectItem> = emptyList()
 ) {
     // Only the task this screen was opened for: never the form of one with the data of another.
     val task = TaskRules.shown(routeId, state)
@@ -86,7 +87,7 @@ internal fun TaskScreen(
         return
     }
     key(task.id) {
-        TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory, remindersBlocked, onRemindersChosen, relations, onOpenTask)
+        TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory, remindersBlocked, onRemindersChosen, relations, onOpenTask, projects)
     }
 }
 
@@ -111,7 +112,8 @@ private fun TaskLoaded(
     remindersBlocked: Boolean,
     onRemindersChosen: () -> Unit,
     relations: TasksState,
-    onOpenTask: (Long) -> Unit
+    onOpenTask: (Long) -> Unit,
+    projects: List<ProjectItem>
 ) {
     val c = Ponte.colors
     // The draft remembers the version it started from; a newer stored task resets it (nothing
@@ -208,6 +210,8 @@ private fun TaskLoaded(
             AssigneeField(form.assignee, { v -> edit { it.copy(assignee = v) } }, assignees, myName)
             // Part of the draft like the other fields: saved with Salvar, refused with the rest on a conflict.
             CategoryField(form.categories, { v -> edit { it.copy(categories = v) } }, onCreateCategory, enabled = !state.busy)
+            // Part of the draft too: "Sem projeto" and the projects that are not archived (plus this task's own).
+            ProjectField(form.projectUid, projects, task.projectName, { v -> edit { it.copy(projectUid = v) } })
             LabeledField(
                 "Observações", form.notes, { v -> edit { it.copy(notes = v) } },
                 singleLine = false, minLines = 4,

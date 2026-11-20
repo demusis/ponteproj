@@ -33,11 +33,13 @@ internal object Api {
 
     fun createTask(
         documentId: Long, title: String, action: String, due: String, assignee: String = "",
-        categories: List<String> = emptyList(), planning: NewPlanning = NewPlanning()
+        categories: List<String> = emptyList(), planning: NewPlanning = NewPlanning(), projectUid: String = ""
     ): Long {
         val o = JSONObject().put("document_id", documentId).put("title", title)
             .put("action", action).put("due_date", due).put("assignee", assignee)
             .put("categories", JSONArray(categories))
+        // Absent leaves the task with no project (a subtask then takes its parent's).
+        if (projectUid.isNotEmpty()) o.put("project_uid", projectUid)
         planning.fields().forEach { (k, v) -> o.put(k, if (v is List<*>) JSONArray(v) else v) }
         return c(core.createTask(o.toString())).optLong("id")
     }
@@ -55,6 +57,18 @@ internal object Api {
     /** Replaces the categories of a document; [version] is the one its ficha was read at. Answers the new version. */
     fun setDocumentCategories(documentId: Long, uids: List<String>, version: Long): Long =
         c(core.setDocumentCategories(documentId, JSONArray(uids).toString(), version)).optLong("categories_version")
+
+    /** Every project, by name, with its progress and risk. */
+    fun projects(): List<ProjectItem> = c(core.listProjects()).optJSONArray("projects").objs().map { it.toProject() }
+
+    /** One project with its tasks and timeline. */
+    fun project(uid: String): ProjectDetail = c(core.getProject(uid)).toProjectDetail()
+
+    /** Creates or changes a project ([ProjectRules.saveJson]); answers the project as stored. */
+    fun saveProject(json: JSONObject): ProjectItem = c(core.saveProject(json.toString())).getJSONObject("project").toProject()
+
+    /** Deletes a project; answers how many tasks went back to no project. */
+    fun deleteProject(uid: String): Int = c(core.deleteProject(uid)).optInt("released")
 
     fun assignees(): List<String> {
         val names = c(core.assignees()).optJSONArray("names") ?: return emptyList()

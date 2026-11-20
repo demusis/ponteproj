@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.layout
@@ -211,4 +212,207 @@ class NovasTelasTest {
 
     @Test fun tarefaComPlanoEDependencias() = tarefa(false, "claro")
     @Test fun tarefaComPlanoEDependenciasEscuro() = tarefa(true, "escuro")
+
+    // ------------------------------------------------------------------ Projetos
+
+    private val longName = "Mudança da sede para o novo prédio da Coordenação-Geral de Planejamento e Orçamento"
+    private val projetos = listOf(
+        ProjectItem(
+            "p1", longName, "Levar todos os setores para o prédio novo até o fim do mês.", "Maria Aparecida dos Santos Oliveira",
+            "ativo", "Ativo", "2026-11-01", "2026-11-24", 7,
+            ProjectProgress(8, 3, 2, "2026-11-10"), ProjectRisk(1, "2026-11-25T18:00")
+        ),
+        ProjectItem(
+            "p2", "Auditoria interna", "Revisar os contratos de 2026.", "Ana", "ativo", "Ativo", "", "2026-12-15", 2,
+            ProjectProgress(5, 5, 0, "")
+        ),
+        ProjectItem(
+            "p3", "Revisão do plano de contratações 2027", "Consolidar as demandas dos setores.", "Servidor A", "ativo", "Ativo",
+            "2026-11-03", "2026-12-20", 1, ProjectProgress(12, 4, 0, "2026-11-21"), ProjectRisk(3, "")
+        ),
+        ProjectItem("p4", "Campanha de vacinação", "", "", "pausado", "Pausado", "", "", 1, ProjectProgress()),
+        ProjectItem("p5", "Inventário de bens", "Conferir os bens de cada sala.", "Carlos", "concluido", "Concluído", "2026-08-01", "2026-10-30", 4, ProjectProgress(6, 6, 0, "")),
+        ProjectItem("p6", "Arquivo morto", "", "", "arquivado", "Arquivado", "", "", 3, ProjectProgress(2, 1, 0, ""))
+    )
+
+    private fun projetoTask(id: Long, title: String, action: String, number: String, due: String, chip: String, done: Boolean = false, overdue: Boolean = false) =
+        TaskItem(id, if (number.isEmpty()) 0 else 100 + id, title, action, number, due, chip, done, overdue, false,
+            bucket = if (done) "concluidas" else if (overdue) "atrasadas" else if (due.isEmpty()) "sem_prazo" else "proximas",
+            projectUid = "p1", projectName = longName)
+
+    private val tarefasDoProjeto = listOf(
+        projetoTask(21, "Conferir a planilha de veículos do transporte", "Analisar", "PROC. 2026/5512", "2026-11-10", "há 9 dias", overdue = true),
+        projetoTask(22, "Reservar a sala para a reunião", "", "", "2026-11-12", "há 7 dias", overdue = true),
+        projetoTask(23, "Contratar a transportadora", "Encaminhar", "MEM. 118/2026", "2026-11-24", "24/11"),
+        projetoTask(24, "Preparar minuta de resposta ao Setor Jurídico", "Elaborar minuta", "OF. 0398/2026", "2026-11-30", "30/11"),
+        projetoTask(25, "Arquivar comprovantes", "Arquivar", "", "", ""),
+        projetoTask(26, "Assinar termo de recebimento", "Assinar", "TERMO 22/2026", "2026-11-03", "03/11", done = true),
+        projetoTask(27, "Encaminhar escala de trabalho", "", "", "", "", done = true)
+    )
+
+    private val linhaDoTempo = listOf(
+        TimelineItem(23, "u23", "Contratar a transportadora", false, "2026-11-16T09:00", "2026-11-18T18:00", false, "2026-11-24", false),
+        TimelineItem(24, "u24", "Preparar minuta de resposta ao Setor Jurídico", false, "2026-11-19T09:00", "2026-11-23T18:00", false, "2026-11-30", false),
+        TimelineItem(21, "u21", "Conferir a planilha de veículos do transporte", false, "2026-11-12T09:00", "2026-11-17T18:00", false, "2026-11-10", true),
+        TimelineItem(28, "u28", "Mover os móveis", false, "2026-11-24T09:00", "2026-11-26T18:00", true, "2026-11-24", true),
+        TimelineItem(29, "u29", "Revisar", false, "2026-11-27T09:00", "2026-11-27T18:00", true, "", false),
+        TimelineItem(26, "u26", "Assinar termo de recebimento", true, "2026-11-10T09:00", "2026-11-11T18:00", false, "2026-11-03", false),
+        TimelineItem(22, "u22", "Reservar a sala para a reunião", false, due = "2026-11-12", late = true),
+        TimelineItem(27, "u27", "Encaminhar escala de trabalho", true)
+    )
+
+    private val detalhe = ProjectDetail(projetos[0], tarefasDoProjeto, linhaDoTempo, TimelineSpan("2026-11-10T00:00", "2026-12-01T00:00"))
+    private val hoje = LocalDate.of(2026, 11, 19)
+
+    /** The Tarefas area with Projetos chosen, as on the phone. */
+    private fun projetosLista(state: ProjectsState, filter: String, query: String, name: String, dark: Boolean) {
+        narrow(1920)
+        sliced(name, dark) {
+            MainShell(Samples.shell.copy(tab = 1, projects = true), {}, {}, {}, {}) {
+                Column(Modifier.fillMaxSize()) {
+                    SegmentedTabs(TasksSegments.labels(), TasksSegments.position(TasksSegments.PROJECTS), {})
+                    Box(Modifier.weight(1f).fillMaxWidth()) { ProjectsScreen(state, filter, {}, query, {}, {}, {}) }
+                }
+            }
+        }
+    }
+
+    @Test fun projetosListaAtivos() = projetosLista(ProjectsState(false, null, projetos), "ativo", "", "ativos", false)
+    @Test fun projetosListaTodosEscuro() = projetosLista(ProjectsState(false, null, projetos), "todos", "", "todos_escuro", true)
+    @Test fun projetosListaVazia() = projetosLista(ProjectsState(false, null, emptyList()), "ativo", "", "vazia", false)
+    @Test fun projetosListaVaziaEscuro() = projetosLista(ProjectsState(false, null, emptyList()), "ativo", "", "vazia_escuro", true)
+    @Test fun projetosListaSemResultado() = projetosLista(ProjectsState(false, null, projetos), "arquivado", "", "sem_resultado", false)
+    @Test fun projetosListaBuscaSemResultado() = projetosLista(ProjectsState(false, null, projetos), "todos", "xyz", "busca", false)
+
+    private fun projeto(tab: Int, name: String, dark: Boolean, detail: ProjectDetail = detalhe, heightPx: Int = 3840) {
+        narrow(heightPx)
+        sliced(name, dark) {
+            ProjectScreen(
+                detail.project.uid, ProjectViewState(detail.project.uid, loading = false, detail = detail),
+                {}, {}, {}, {}, { _, _ -> }, {}, {}, {}, {}, today = hoje, initialTab = tab
+            )
+        }
+    }
+
+    @Test fun projetoTarefas() = projeto(0, "tarefas", false)
+    @Test fun projetoTarefasEscuro() = projeto(0, "tarefas_escuro", true)
+    @Test fun projetoLinhaDoTempo() = projeto(1, "linha", false, heightPx = 3840)
+    @Test fun projetoLinhaDoTempoEscuro() = projeto(1, "linha_escuro", true, heightPx = 3840)
+
+    private val projetoSimples = ProjectDetail(projetos[1], emptyList(), emptyList(), null)
+
+    @Test fun projetoSemTarefas() = projeto(0, "sem_tarefas", false, projetoSimples, 1920)
+    @Test fun projetoSemTarefasLinhaDoTempo() = projeto(1, "sem_tarefas_linha", false, projetoSimples, 1920)
+
+    private fun formulario(project: ProjectItem?, state: ProjectEditState, name: String, dark: Boolean) {
+        narrow(1920)
+        sliced(name, dark) {
+            ProjectFormScreen(
+                project?.uid ?: "", project, false, state, listOf("Maria Aparecida", "Ana", "Servidor A"), "Servidor A", {}, { _, _ -> }, {}
+            )
+        }
+    }
+
+    @Test fun projetoFormularioNovo() = formulario(null, ProjectEditState(), "novo", false)
+    @Test fun projetoFormularioEditar() = formulario(projetos[0], ProjectEditState(), "editar", false)
+    @Test fun projetoFormularioEditarEscuro() = formulario(projetos[0], ProjectEditState(), "editar_escuro", true)
+    @Test fun projetoFormularioErro() =
+        formulario(projetos[0], ProjectEditState(error = "Já existe um projeto com esse nome."), "erro", false)
+    @Test fun projetoFormularioConflito() =
+        formulario(projetos[0], ProjectEditState(error = ProjectRules.CHANGED, conflict = true), "conflito", true)
+
+    private fun incluir(tasks: List<TaskItem>, state: SaveState, name: String, dark: Boolean) {
+        narrow(1920)
+        sliced(name, dark) { ProjectIncludeScreen(longName, tasks, state, {}, {}) }
+    }
+
+    @Test fun projetoIncluirTarefas() = incluir(Samples.tasks, SaveState(), "incluir", false)
+    @Test fun projetoIncluirTarefasEscuro() = incluir(Samples.tasks, SaveState(error = "Não foi possível mudar o projeto da tarefa."), "incluir_escuro", true)
+    @Test fun projetoIncluirSemTarefas() = incluir(emptyList(), SaveState(), "incluir_vazio", false)
+
+    // The Projeto field of the task screen, the task list with its project chips and filter, the search.
+    private fun tarefaComProjeto(dark: Boolean, name: String) {
+        narrow(5760)
+        val form = Samples.taskForm.copy(projectUid = "p1")
+        val task = TaskDetail(5, 0, "", "", form, false, 3, emptyList(), projectName = longName)
+        sliced(name, dark) {
+            TaskScreen(
+                5, TaskEditState(id = 5, loading = false, task = task), Samples.actions, Samples.priorities, {}, {}, {}, {}, {}, {}, {},
+                projects = projetos
+            )
+        }
+    }
+
+    @Test fun tarefaComProjeto() = tarefaComProjeto(false, "claro")
+    @Test fun tarefaComProjetoEscuro() = tarefaComProjeto(true, "escuro")
+
+    private val tarefasComProjeto = Samples.tasks.mapIndexed { i, t ->
+        when (i) {
+            0 -> t.copy(projectUid = "p1", projectName = longName)
+            1 -> t.copy(projectUid = "p2", projectName = "Auditoria interna", categories = listOf("u1"))
+            3 -> t.copy(projectUid = "p3", projectName = "Revisão do plano de contratações 2027")
+            else -> t
+        }
+    }
+
+    private fun listaDeTarefas(filter: String, name: String, dark: Boolean) {
+        narrow(1920)
+        sliced(name, dark) {
+            androidx.compose.runtime.CompositionLocalProvider(LocalCategories provides listOf(Category("u1", "Urgente", 4))) {
+                MainShell(Samples.shell.copy(tab = 1), {}, {}, {}, {}) {
+                    Column(Modifier.fillMaxSize()) {
+                        SegmentedTabs(TasksSegments.labels(), 0, {})
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            TasksScreen(
+                                TasksState(false, null, tarefasComProjeto), {}, {}, projects = projetos, projectFilter = filter
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test fun tarefasComProjetoNaLinha() = listaDeTarefas("", "claro", false)
+    @Test fun tarefasFiltradasPorProjetoEscuro() = listaDeTarefas("p1", "filtrada_escuro", true)
+    @Test fun tarefasSemProjeto() = listaDeTarefas(ProjectRules.NONE, "sem_projeto", false)
+
+    @Test fun filtroDeProjetoFolha() {
+        narrow(1920)
+        sliced("folha", false) {
+            Box(Modifier.fillMaxSize().background(Ponte.colors.ground)) {
+                Box(Modifier.background(Ponte.colors.surface).padding(top = 12.dp)) { ProjectFilterContent(projetos, "p3") {} }
+            }
+        }
+    }
+
+    @Test fun novaTarefaNoProjeto() {
+        narrow(3840)
+        sliced("nova", false) {
+            NewTaskScreen(
+                "", Samples.actions.filter { it.key != "triar" }, {}, { _, _, _, _, _, _, _ -> }, withoutDocument = true,
+                projects = projetos, projectUid = "p3"
+            )
+        }
+    }
+
+    @Test fun buscaComProjetos() {
+        narrow(1920)
+        sliced("busca", false) {
+            SearchScreen(
+                SearchState(query = "audit", result = SearchResult(SearchGroup.none(), SearchGroup(listOf(Samples.tasks[0]), 0), SearchGroup.none())),
+                {}, {}, {}, {}, {}, projects = ProjectRules.search(projetos, "audit")
+            )
+        }
+    }
+
+    // The bar of the Tarefas area, with four words, at 360 dp and with a large font.
+    @Test fun barraDaAreaComQuatro() {
+        narrow(1920)
+        sliced("barra", false) {
+            Column(Modifier.fillMaxSize().background(Ponte.colors.ground)) {
+                for (id in TasksSegments.ORDER) SegmentedTabs(TasksSegments.labels(), TasksSegments.position(id), {})
+            }
+        }
+    }
 }

@@ -51,8 +51,19 @@ internal sealed class Route {
     /** The note editor. */
     data class Note(val id: Long) : Route() { override val key get() = "note:$id" }
 
-    /** A new task for a document. */
-    data class NewTask(val id: Long) : Route() { override val key get() = "task:$id" }
+    /** A new task for a document (0: none); [projectUid] presets its project (empty: none). */
+    data class NewTask(val id: Long, val projectUid: String = "") : Route() {
+        override val key get() = if (projectUid.isEmpty()) "task:$id" else "task:$id@$projectUid"
+    }
+
+    /** The screen of one project: its tasks and its timeline. */
+    data class Project(val uid: String) : Route() { override val key get() = "proj:$uid" }
+
+    /** The form of a project; an empty uid is a new project. */
+    data class ProjectEdit(val uid: String) : Route() { override val key get() = "projedit:$uid" }
+
+    /** The list to pick the tasks to include in the project [uid]. */
+    data class ProjectInclude(val uid: String) : Route() { override val key get() = "projinc:$uid" }
 
     /** The screen of one task (edit, conclude, change its document). */
     data class EditTask(val id: Long) : Route() { override val key get() = "edit:$id" }
@@ -96,7 +107,10 @@ internal sealed class Route {
                 "doc" -> arg.toLongOrNull()?.let { Document(it) }
                 "text" -> arg.toLongOrNull()?.let { Text(it) }
                 "note" -> arg.toLongOrNull()?.let { Note(it) }
-                "task" -> arg.toLongOrNull()?.let { NewTask(it) }
+                "task" -> arg.substringBefore('@').toLongOrNull()?.let { NewTask(it, arg.substringAfter('@', "")) }
+                "proj" -> arg.takeIf { it.isNotEmpty() }?.let { Project(it) }
+                "projedit" -> ProjectEdit(arg)
+                "projinc" -> arg.takeIf { it.isNotEmpty() }?.let { ProjectInclude(it) }
                 "edit" -> arg.toLongOrNull()?.let { EditTask(it) }
                 "pick" -> arg.toLongOrNull()?.let { Pick(it) }
                 "att" -> arg.toLongOrNull()?.let { Attendance(it) }
@@ -192,11 +206,30 @@ internal object Controller {
     /** The category filters of Tarefas and Documentos: chosen uids, plus [CategoryRules.NONE]. */
     var taskCatFilter by mutableStateOf<Set<String>>(emptySet())
     var docCatFilter by mutableStateOf<Set<String>>(emptySet())
+
+    /** The project filter of Tarefas: empty (all), [ProjectRules.NONE] or a project uid. */
+    var taskProjectFilter by mutableStateOf("")
     var tasks by mutableStateOf(TasksState())
     var taskRelations by mutableStateOf(TasksState())
         private set
 
-    /** 0 Tarefas, 1 Atendimentos: what the Tarefas area shows. */
+    /** The Projetos list of the Tarefas area, read again with the tasks and after a sync. */
+    var projects by mutableStateOf(ProjectsState())
+        private set
+
+    /** The situation chosen on the Projetos list, and the text typed in its search box (memory only). */
+    var projFilter by mutableStateOf(ProjectRules.DEFAULT_FILTER)
+    var projQuery by mutableStateOf("")
+
+    /** The project screen, its form and the "Incluir tarefas" list. */
+    var projectView by mutableStateOf(ProjectViewState())
+        private set
+    var projectEdit by mutableStateOf(ProjectEditState())
+        private set
+    var projectInclude by mutableStateOf(SaveState())
+        private set
+
+    /** What the Tarefas area shows: one of the ids of [TasksSegments]. */
     var tasksSegment by mutableIntStateOf(0)
         private set
     var attendances by mutableStateOf(AttendancesState())
@@ -323,7 +356,7 @@ internal object Controller {
     /** After the process died: navigation and the photo form come back. */
     private fun restore(s: Bundle) {
         tab = s.getInt("tab", 0).coerceIn(0, 3)
-        tasksSegment = s.getInt("segment", 0).coerceIn(0, 2)
+        tasksSegment = s.getInt("segment", 0).coerceIn(0, TasksSegments.PROJECTS)
         docQuery = s.getString("query") ?: ""
         docFinder.ask(docQuery)
         docFilter = try { DocFilter.valueOf(s.getString("filter") ?: "") } catch (_: Throwable) { DocFilter.ALL }
@@ -350,6 +383,14 @@ internal object Controller {
                 is Route.Pick -> {}
                 // Read from the lists, which are read again at start.
                 is Route.ResourceUse, is Route.Resource -> {}
+                // One project screen at most (see openProject): the top-most one comes back.
+                is Route.Project -> if (r == stack.lastOrNull { it is Route.Project }) {
+                    projGen++
+                    projectView = ProjectViewState(uid = r.uid)
+                    loadProject(r.uid)
+                } else stack.remove(r)
+                // The form and the list start over; the projects are read again at start.
+                is Route.ProjectEdit, is Route.ProjectInclude -> {}
                 // One atendimento screen at most (see openAttendance): the top-most one comes back.
                 is Route.Attendance -> if (r == stack.lastOrNull { it is Route.Attendance }) {
                     attGen++
@@ -753,8 +794,9 @@ internal object Controller {
                 statusLine = line,
                 statusKind = kind,
                 syncEnabled = !SyncRunner.keyBroken,
-                attendances = tasksSegment == 1,
-                resources = tasksSegment == 2
+                attendances = tasksSegment == TasksSegments.ATTENDANCES,
+                resources = tasksSegment == TasksSegments.RESOURCES,
+                projects = tasksSegment == TasksSegments.PROJECTS
             )
             if (stack.lastOrNull() == Route.Setup && setup.step == 2) {
                 setup = setup.copy(
@@ -849,12 +891,17 @@ internal object Controller {
         }
     }
 
-    /** Tarefas | Atendimentos | Recursos, at the top of the Tarefas area. */
+    /** Tarefas | Projetos | Atendimentos | Recursos, at the top of the Tarefas area (see [TasksSegments]). */
     fun selectSegment(i: Int) {
-        tasksSegment = i.coerceIn(0, 2)
-        shell = shell.copy(attendances = tasksSegment == 1, resources = tasksSegment == 2)
+        tasksSegment = i.coerceIn(0, TasksSegments.PROJECTS)
+        shell = shell.copy(
+            attendances = tasksSegment == TasksSegments.ATTENDANCES,
+            resources = tasksSegment == TasksSegments.RESOURCES,
+            projects = tasksSegment == TasksSegments.PROJECTS
+        )
         refreshAttendances()
         refreshResources()
+        refreshProjects()
     }
 
     fun openFollowUps() {
@@ -902,6 +949,8 @@ internal object Controller {
             is Route.EditTask, is Route.Pick -> if (!taskEdit.busy) pop()
             // While the library is saving, leaving would hide the answer (and lose the form on a refusal).
             is Route.NewTask -> if (!newTaskSave.busy) pop()
+            is Route.ProjectEdit -> if (!projectEdit.busy) pop()
+            is Route.ProjectInclude -> if (!projectInclude.busy) pop()
             is Route.Note -> if (!noteSave.busy) pop()
             Route.Search -> closeSearch()
             else -> {
@@ -1118,12 +1167,208 @@ internal object Controller {
         refreshToday()
         refreshAttendances()
         refreshResources()
+        refreshProjects()
         refreshAssignees()
     }
 
     /** The suggestions of the Responsável field. A failure only means no suggestions. */
     private fun refreshAssignees() {
         SyncRunner.background({ Api.assignees() }, { assignees = it })
+    }
+
+    // ---------------------------------------------------------------- projetos
+
+    /**
+     * Reads the Projetos list (the numbers are the core's, as of today). A failure keeps the list already
+     * shown. It also reads the open project screen again, so any change of a task shows up there.
+     */
+    fun refreshProjects() {
+        SyncRunner.background({ Api.projects() }, { list ->
+            projects = ProjectsState(loading = false, error = null, rows = list)
+            taskProjectFilter = ProjectRules.pruneFilter(taskProjectFilter, list)
+        }, { projects = projects.copy(loading = false, error = it) },
+            fail = "Não foi possível ler os projetos. Toque em Sincronizar agora e tente de novo.")
+        refreshOpenProject()
+    }
+
+    /** Grows whenever the project screen is opened (or restored): an answer asked for an earlier one is dropped. */
+    private var projGen = 0
+
+    private fun projectOnScreen(uid: String, gen: Int) =
+        gen == projGen && projectView.uid == uid && stack.any { it is Route.Project && it.uid == uid }
+
+    /** Opens a project. There is one project screen at most on the stack (opening another replaces it). */
+    fun openProject(uid: String) {
+        if (uid.isEmpty()) return
+        val r = Route.Project(uid)
+        if (stack.lastOrNull() == r) return
+        stack.removeAll { it is Route.Project }
+        projGen++
+        projectView = ProjectViewState(uid = uid)
+        stack.add(r)
+        loadProject(uid)
+    }
+
+    private fun loadProject(uid: String) {
+        val gen = projGen
+        SyncRunner.background({ Api.project(uid) }, { d ->
+            if (projectOnScreen(uid, gen)) projectView = ProjectViewState(uid = uid, loading = false, detail = d)
+        }, {
+            if (projectOnScreen(uid, gen)) {
+                projectView = ProjectViewState(uid = uid, loading = false, error = it, detail = projectView.detail)
+            }
+        }, fail = "Não foi possível abrir o projeto. Volte e tente de novo.")
+    }
+
+    /** A change of a task, a sync or a save: the project screen under whatever is on top is read again. */
+    private fun refreshOpenProject() {
+        val uid = (stack.lastOrNull { it is Route.Project } as? Route.Project)?.uid ?: return
+        if (projectView.uid == uid && !projectView.busy) loadProject(uid)
+    }
+
+    /** The form of a project; an empty [uid] is a new one. */
+    fun openProjectForm(uid: String) {
+        if (!projectEdit.busy) projectEdit = ProjectEditState(epoch = projectEdit.epoch)
+        push(Route.ProjectEdit(uid))
+    }
+
+    /** "Ver a versão atual": the form starts over from what the library holds now. */
+    fun reloadProjectForm() {
+        if (projectEdit.busy) return
+        projectEdit = ProjectEditState(epoch = projectEdit.epoch + 1)
+        refreshProjects()
+    }
+
+    /** Saves the form: creates the project (and opens it) or changes it, then the form closes. */
+    fun saveProject(uid: String, version: Long, form: ProjectForm) {
+        val route = stack.lastOrNull() as? Route.ProjectEdit ?: return
+        if (projectEdit.busy || ProjectRules.formProblem(form).isNotEmpty()) return
+        projectEdit = projectEdit.copy(busy = true, error = "", conflict = false)
+        SyncRunner.background({ Api.saveProject(ProjectRules.saveJson(uid, version, form)) }, { saved ->
+            projectEdit = ProjectEditState(epoch = projectEdit.epoch)
+            stack.remove(route)
+            refreshProjects()
+            if (uid.isEmpty()) openProject(saved.uid)
+            say(if (uid.isEmpty()) "Projeto criado." else "Projeto salvo.")
+            requestSync(null, auto = true)
+        }, { message ->
+            if (stack.contains(route)) {
+                projectEdit = projectEdit.copy(busy = false, error = message, conflict = ProjectRules.isConflict(message))
+            } else status(message, true)
+        }, fail = "Não foi possível salvar o projeto. Seus dados continuam na tela; tente de novo.")
+    }
+
+    /** "Arquivar" or "Reabrir": only the situation changes. */
+    fun setProjectStatus(p: ProjectItem, status: String) {
+        if (projectView.busy) return
+        projectView = projectView.copy(busy = true)
+        SyncRunner.background({ Api.saveProject(ProjectRules.statusJson(p.uid, p.version, status)) }, {
+            projectView = projectView.copy(busy = false)
+            refreshProjects()
+            say(if (status == ProjectRules.ARCHIVED) "Projeto arquivado." else "Projeto reaberto.")
+            requestSync(null, auto = true)
+        }, {
+            projectView = projectView.copy(busy = false)
+            refreshProjects()
+            say(it, long = true)
+        }, fail = "Não foi possível mudar a situação do projeto. Tente de novo.")
+    }
+
+    /** Deletes the project; its tasks stay, with no project. */
+    fun deleteProject(uid: String) {
+        if (projectView.busy) return
+        projectView = projectView.copy(busy = true)
+        SyncRunner.background({ Api.deleteProject(uid) }, { released ->
+            stack.removeAll {
+                (it is Route.Project && it.uid == uid) || (it is Route.ProjectEdit && it.uid == uid) ||
+                    (it is Route.ProjectInclude && it.uid == uid)
+            }
+            projectView = ProjectViewState()
+            refreshTasks()
+            say(ProjectRules.deletedMessage(released), long = true)
+            requestSync(null, auto = true)
+        }, {
+            projectView = projectView.copy(busy = false)
+            refreshProjects()
+            say(it, long = true)
+        }, fail = "Não foi possível excluir o projeto. Tente de novo.")
+    }
+
+    /**
+     * Puts the tasks [ids] in the project [uid] (empty: takes them out of any), one save each at the version
+     * just read. Answers how many were done and the reason of the first that was not.
+     */
+    private fun moveToProject(ids: List<Long>, uid: String): Pair<Int, String?> {
+        var done = 0
+        var why: String? = null
+        for (id in ids) {
+            try {
+                val d = Api.task(id)
+                Api.saveTask(id, d.version, mapOf("project_uid" to uid))
+                done++
+            } catch (e: CoreException) {
+                if (why == null) why = e.message
+            } catch (e: Throwable) {
+                if (why == null) why = "Não foi possível mudar o projeto da tarefa."
+            }
+        }
+        return done to why
+    }
+
+    /** The list of the open tasks with no project, to include some of them in [uid]. */
+    fun openProjectInclude(uid: String) {
+        if (!projectInclude.busy) projectInclude = SaveState()
+        push(Route.ProjectInclude(uid))
+    }
+
+    fun includeTasks(uid: String, ids: List<Long>) {
+        val route = stack.lastOrNull() as? Route.ProjectInclude ?: return
+        if (ids.isEmpty()) return
+        projectInclude = SaveGate.begin(projectInclude) ?: return
+        SyncRunner.background({ moveToProject(ids, uid) }, { (done, why) ->
+            // Whatever was done is in the library; the lists show it either way.
+            refreshTasks()
+            if (done == 0 && why != null) {
+                projectInclude = SaveGate.failed(why)
+            } else {
+                projectInclude = SaveGate.done()
+                SaveGate.close(stack, route)
+                say(
+                    if (why == null) ProjectRules.includedMessage(done)
+                    else ProjectRules.includedMessage(done) + " As outras não puderam ser incluídas: $why",
+                    long = why != null
+                )
+                requestSync(null, auto = true)
+            }
+        }, {
+            projectInclude = SaveGate.failed(it)
+        }, fail = "Não foi possível incluir as tarefas. Tente de novo.")
+    }
+
+    /** "Tirar do projeto": the task goes back to no project; "Desfazer" puts it back. */
+    fun removeFromProject(t: TaskItem) {
+        val was = t.projectUid
+        SyncRunner.background({ moveToProject(listOf(t.id), "") }, { (done, why) ->
+            refreshTasks()
+            if (done > 0) {
+                say("Tarefa tirada do projeto.", "Desfazer") { putBack(t.id, was) }
+                requestSync(null, auto = true)
+            } else say(why ?: "Não foi possível tirar a tarefa do projeto.", long = true)
+        }, { say(it, long = true) }, fail = "Não foi possível tirar a tarefa do projeto. Tente de novo.")
+    }
+
+    private fun putBack(id: Long, uid: String) {
+        SyncRunner.background({ moveToProject(listOf(id), uid) }, { (done, why) ->
+            refreshTasks()
+            if (done > 0) requestSync(null, auto = true) else say(why ?: "Não foi possível desfazer.", long = true)
+        }, { say(it, long = true) }, fail = "Não foi possível desfazer. Tente de novo.")
+    }
+
+    /** From a project: a new task that starts in it. */
+    fun openNewTaskInProject(uid: String) {
+        if (actions.isEmpty()) loadChoices()
+        if (!newTaskSave.busy) newTaskSave = SaveState()
+        push(Route.NewTask(0, uid))
     }
 
     // ---------------------------------------------------------------- atendimentos (read-only)
@@ -1638,13 +1883,16 @@ internal object Controller {
         }, fail = "Não foi possível trocar o documento da tarefa. Tente de novo.")
     }
 
-    fun createTask(title: String, action: String, due: String, assignee: String = "", categories: List<String> = emptyList(), planning: NewPlanning = NewPlanning()) {
+    fun createTask(
+        title: String, action: String, due: String, assignee: String = "", categories: List<String> = emptyList(),
+        planning: NewPlanning = NewPlanning(), projectUid: String = ""
+    ) {
         val route = stack.lastOrNull() as? Route.NewTask ?: return
         if (title.isBlank() || planning.problem().isNotEmpty()) return
         // A second tap (or a tap while the first is still being saved) starts nothing.
         newTaskSave = SaveGate.begin(newTaskSave) ?: return
         SyncRunner.background({
-            Api.createTask(route.id, title.trim(), action, due, assignee.trim(), categories, planning)
+            Api.createTask(route.id, title.trim(), action, due, assignee.trim(), categories, planning, projectUid)
             // The task exists locally from here on: a failure below must not offer to create it again.
             SyncRunner.refreshDocs()
         }, {

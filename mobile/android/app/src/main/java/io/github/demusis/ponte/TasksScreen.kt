@@ -1,6 +1,8 @@
 package io.github.demusis.ponte
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -44,13 +46,19 @@ internal fun TasksScreen(
     onOpen: (TaskItem) -> Unit,
     onNew: () -> Unit = {},
     categoryFilter: Set<String> = emptySet(),
-    onCategoryFilter: (Set<String>) -> Unit = {}
+    onCategoryFilter: (Set<String>) -> Unit = {},
+    projects: List<ProjectItem> = emptyList(),
+    projectFilter: String = "",
+    onProjectFilter: (String) -> Unit = {}
 ) {
     val c = Ponte.colors
     var showDone by rememberSaveable { mutableStateOf(false) }
     // The category filter: an item with ANY chosen category, or none when "Sem categoria" is chosen.
-    val all = remember(state.tasks, categoryFilter) {
-        state.tasks.filter { CategoryRules.matches(it.categories, categoryFilter) }
+    // The project filter: one project, or "Sem projeto"; both together narrow the list.
+    val all = remember(state.tasks, categoryFilter, projectFilter) {
+        state.tasks.filter {
+            CategoryRules.matches(it.categories, categoryFilter) && ProjectRules.matchesTask(it.projectUid, projectFilter)
+        }
     }
     // The core says which group each task is in, and sends them in the order to show.
     val groups = remember(all) {
@@ -64,7 +72,7 @@ internal fun TasksScreen(
     }
     val done = remember(all) { all.filter { it.done } }
     val noOpen = all.none { !it.done }
-    val filtering = categoryFilter.isNotEmpty()
+    val filtering = categoryFilter.isNotEmpty() || projectFilter.isNotEmpty()
 
     if (state.loading && state.tasks.isEmpty()) {
         LoadingBox(text = "Carregando as tarefas…", modifier = Modifier.fillMaxSize())
@@ -78,15 +86,25 @@ internal fun TasksScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         state.error?.let { item(key = "error") { Notice(it) } }
-        item(key = "category-filter") { CategoryFilterButton(categoryFilter, onCategoryFilter) }
+        item(key = "filters") {
+            // The category filter and the project filter side by side (each shows only when it has something to filter by).
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically
+            ) {
+                CategoryFilterPill(categoryFilter, onCategoryFilter)
+                ProjectFilterPill(projects, projectFilter, onProjectFilter)
+            }
+        }
         if (noOpen && filtering) {
             item(key = "empty-filter") {
+                val onlyCategories = projectFilter.isEmpty()
                 EmptyState(
-                    "Nenhuma tarefa em aberto com essas categorias.",
-                    text = "Mude as categorias marcadas ou limpe o filtro.",
+                    if (onlyCategories) "Nenhuma tarefa em aberto com essas categorias." else "Nenhuma tarefa em aberto com esse filtro.",
+                    text = if (onlyCategories) "Mude as categorias marcadas ou limpe o filtro." else "Mude o filtro ou limpe-o.",
                     icon = Icons.Outlined.CheckCircle,
                     action = {
-                        TextButton(onClick = { onCategoryFilter(emptySet()) }) {
+                        TextButton(onClick = { onCategoryFilter(emptySet()); onProjectFilter("") }) {
                             Text("Limpar o filtro", color = c.accent, fontWeight = FontWeight.SemiBold)
                         }
                     }

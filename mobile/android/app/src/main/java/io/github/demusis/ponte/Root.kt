@@ -51,7 +51,7 @@ internal fun AppRoot() {
     // The Recursos screens say who holds what "now": the core decides it again when they open (the
     // list is read as the area is chosen) and then once a minute while one of them is in front.
     val resourcesVisible = !c.locked &&
-        (top is Route.ResourceUse || top is Route.Resource || (top == null && c.tab == 1 && c.tasksSegment == 2))
+        (top is Route.ResourceUse || top is Route.Resource || (top == null && c.tab == 1 && c.tasksSegment == TasksSegments.RESOURCES))
     LaunchedEffect(resourcesVisible) {
         while (resourcesVisible) {
             kotlinx.coroutines.delay(60_000L)
@@ -99,17 +99,28 @@ internal fun AppRoot() {
                             risks = c.risks, onOpenTask = c::openTask,
                             followUpCount = c.attendances.followUps.size, onOpenFollowUps = c::openFollowUps
                         )
-                        // Tarefas | Atendimentos | Recursos: they have no tab of their own (four is the limit).
+                        // Tarefas | Projetos | Atendimentos | Recursos: they have no tab of their own (four is the limit).
                         1 -> Column(Modifier.fillMaxSize()) {
-                            SegmentedTabs(listOf("Tarefas", "Atendimentos", PhoneWords.RES_AREA), c.tasksSegment, c::selectSegment)
+                            SegmentedTabs(
+                                TasksSegments.labels(), TasksSegments.position(c.tasksSegment),
+                                { c.selectSegment(TasksSegments.at(it)) }
+                            )
                             Box(Modifier.weight(1f).fillMaxWidth()) {
-                                if (c.tasksSegment == 0) {
+                                if (c.tasksSegment == TasksSegments.TASKS) {
                                     TasksScreen(
                                         c.tasks, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
                                         onNew = c::openNewTaskWithoutDocument,
-                                        categoryFilter = c.taskCatFilter, onCategoryFilter = { c.taskCatFilter = it }
+                                        categoryFilter = c.taskCatFilter, onCategoryFilter = { c.taskCatFilter = it },
+                                        projects = c.projects.rows, projectFilter = c.taskProjectFilter,
+                                        onProjectFilter = { c.taskProjectFilter = it }
                                     )
-                                } else if (c.tasksSegment == 2) {
+                                } else if (c.tasksSegment == TasksSegments.PROJECTS) {
+                                    ProjectsScreen(
+                                        c.projects, filter = c.projFilter, onFilter = { c.projFilter = it },
+                                        query = c.projQuery, onQuery = { c.projQuery = it },
+                                        onOpen = { c.openProject(it.uid) }, onNew = { c.openProjectForm("") }
+                                    )
+                                } else if (c.tasksSegment == TasksSegments.RESOURCES) {
                                     ResourcesScreen(
                                         c.resources,
                                         query = c.resQuery, onQuery = c::typeResQuery,
@@ -147,7 +158,8 @@ internal fun AppRoot() {
         }
 
         // Above the bottom bar (or the footer of a detail); on Documentos, above the photo button too.
-        val lift = if (top == null && ((c.tab == 1 && c.tasksSegment == 0) || c.tab == 2)) 152.dp else 84.dp
+        val fab = c.tasksSegment == TasksSegments.TASKS || c.tasksSegment == TasksSegments.PROJECTS
+        val lift = if (top == null && ((c.tab == 1 && fab) || c.tab == 2)) 152.dp else 84.dp
         SnackbarHost(
             c.snackbar,
             Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding().padding(bottom = lift)
@@ -180,7 +192,7 @@ private fun RouteScreen(route: Route) {
             onReload = c::reloadTask, assignees = c.assignees, myName = c.personName,
             onCreateCategory = c::createCategory,
             remindersBlocked = c.taskNoticeBlocked, onRemindersChosen = c::taskRemindersChosen,
-            relations = c.taskRelations, onOpenTask = c::openTask
+            relations = c.taskRelations, onOpenTask = c::openTask, projects = c.projects.rows
         )
         is Route.Attendance -> AttendanceScreen(
             routeId = route.id, state = c.attendance, onBack = c::back,
@@ -197,7 +209,25 @@ private fun RouteScreen(route: Route) {
         )
         Route.Search -> SearchScreen(
             state = c.search, onQuery = c::setSearchQuery, onBack = c::back,
-            onOpenDocument = c::openDocument, onOpenTask = c::openTask, onOpenAttendance = c::openAttendance
+            onOpenDocument = c::openDocument, onOpenTask = c::openTask, onOpenAttendance = c::openAttendance,
+            projects = ProjectRules.search(c.projects.rows, c.search.query), onOpenProject = c::openProject
+        )
+        is Route.Project -> ProjectScreen(
+            uid = route.uid, state = c.projectView, onBack = c::back,
+            onEdit = { c.openProjectForm(route.uid) }, onNewTask = { c.openNewTaskInProject(route.uid) },
+            onInclude = { c.openProjectInclude(route.uid) }, onStatus = c::setProjectStatus, onDelete = c::deleteProject,
+            onToggleTask = c::toggleTask, onOpenTask = c::openTask, onRemoveTask = c::removeFromProject
+        )
+        is Route.ProjectEdit -> ProjectFormScreen(
+            uid = route.uid, project = c.projects.byUid(route.uid), loading = c.projects.loading,
+            state = c.projectEdit, assignees = c.assignees, myName = c.personName,
+            onBack = c::back, onSave = { form, version -> c.saveProject(route.uid, version, form) },
+            onReload = c::reloadProjectForm
+        )
+        is Route.ProjectInclude -> ProjectIncludeScreen(
+            projectName = c.projects.byUid(route.uid)?.name ?: c.projectView.detail?.project?.name ?: "",
+            tasks = c.tasks.tasks, state = c.projectInclude, onBack = c::back,
+            onInclude = { c.includeTasks(route.uid, it) }
         )
         is Route.Pick -> DocumentPickerScreen(
             docs = c.docs, currentId = c.taskEdit.task?.documentId ?: 0L, busy = c.taskEdit.busy,
@@ -218,7 +248,8 @@ private fun RouteScreen(route: Route) {
             onBack = c::back, onCreate = c::createTask, withoutDocument = route.id <= 0,
             assignees = c.assignees, myName = c.personName, onCreateCategory = c::createCategory,
             remindersBlocked = c.taskNoticeBlocked, onRemindersChosen = c::taskRemindersChosen,
-            saving = c.newTaskSave.busy, saveError = c.newTaskSave.error
+            saving = c.newTaskSave.busy, saveError = c.newTaskSave.error,
+            projects = c.projects.rows, projectUid = route.projectUid
         )
         Route.Share -> {
             val sh = Intake.share

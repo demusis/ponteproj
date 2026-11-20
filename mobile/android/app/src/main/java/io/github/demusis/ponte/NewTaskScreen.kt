@@ -30,7 +30,7 @@ internal fun NewTaskScreen(
     document: String,
     actions: List<Choice>,
     onBack: () -> Unit,
-    onCreate: (String, String, String, String, List<String>, NewPlanning) -> Unit,
+    onCreate: (String, String, String, String, List<String>, NewPlanning, String) -> Unit,
     withoutDocument: Boolean = false,
     assignees: List<String> = emptyList(),
     myName: String = "",
@@ -38,13 +38,17 @@ internal fun NewTaskScreen(
     remindersBlocked: Boolean = false,
     onRemindersChosen: () -> Unit = {},
     saving: Boolean = false,
-    saveError: String = ""
+    saveError: String = "",
+    projects: List<ProjectItem> = emptyList(),
+    /** The project the task starts in (empty: none). */
+    projectUid: String = ""
 ) {
     var title by rememberSaveable { mutableStateOf("") }
     var action by rememberSaveable { mutableStateOf(actions.firstOrNull()?.key ?: "") }
     var due by rememberSaveable { mutableStateOf("") }
     var assignee by rememberSaveable { mutableStateOf(myName) }
     var categories by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var project by rememberSaveable { mutableStateOf(projectUid) }
     var tried by rememberSaveable { mutableStateOf(false) }
     var start by rememberSaveable { mutableStateOf("") }
     var end by rememberSaveable { mutableStateOf("") }
@@ -73,7 +77,7 @@ internal fun NewTaskScreen(
                 )
             }
             PrimaryButton("Criar tarefa", enabled = !hourInvalid && planningProblem.isEmpty(), loading = saving, onClick = {
-                if (title.isBlank()) tried = true else onCreate(title.trim(), action, due, assignee.trim(), categories, planning)
+                if (title.isBlank()) tried = true else onCreate(title.trim(), action, due, assignee.trim(), categories, planning, project)
             })
         }
     ) {
@@ -110,6 +114,7 @@ internal fun NewTaskScreen(
             ReminderChips(reminders, { reminders = it }, remindersBlocked, onRemindersChosen)
             AssigneeField(assignee, { assignee = it }, assignees, myName)
             CategoryField(categories, { categories = it }, onCreateCategory)
+            ProjectField(project, projects, "", { project = it })
         }
     }
 }

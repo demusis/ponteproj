@@ -320,7 +320,7 @@ internal object NavGuard {
      */
     fun busy(stack: List<Route>, attachBusy: Boolean): Boolean = attachBusy || stack.any {
         when (it) {
-            is Route.Document, is Route.Text, is Route.Attendance -> false
+            is Route.Document, is Route.Text, is Route.Attendance, is Route.Project -> false
             else -> true
         }
     }
