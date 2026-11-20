@@ -305,7 +305,7 @@ class NovasTelasTest {
     @Test fun projetoSemTarefasLinhaDoTempo() = projeto(1, "sem_tarefas_linha", false, projetoSimples, 1920)
 
     private fun formulario(project: ProjectItem?, state: ProjectEditState, name: String, dark: Boolean) {
-        narrow(1920)
+        narrow(3000)
         sliced(name, dark) {
             ProjectFormScreen(
                 project?.uid ?: "", project, false, state, listOf("Maria Aparecida", "Ana", "Servidor A"), "Servidor A", {}, { _, _ -> }, {}

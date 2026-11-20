@@ -1,7 +1,6 @@
 package io.github.demusis.ponte
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -85,7 +84,7 @@ internal fun ProjectChip(name: String, modifier: Modifier = Modifier) {
     Row(
         modifier.widthIn(max = 200.dp).background(c.chip, RoundedCornerShape(50))
             .padding(start = 7.dp, end = 10.dp, top = 3.dp, bottom = 3.dp)
-            .semantics { contentDescription = "Projeto $name" },
+            .clearAndSetSemantics { contentDescription = "Projeto $name" },
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(Icons.Outlined.Folder, contentDescription = null, tint = c.secondary, modifier = Modifier.size(13.dp))
@@ -117,6 +116,15 @@ internal fun ProjectAlerts(p: ProjectItem, modifier: Modifier = Modifier) {
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (p.progress.late > 0) Pill(ProjectRules.lateLabel(p.progress.late), tone = Tone.ERROR)
         if (p.risk.deliveriesAtRisk > 0) Pill(ProjectRules.riskLabel(p.risk.deliveriesAtRisk), tone = Tone.WARNING)
+    }
+}
+
+/** The situation chips: wrapped onto a second line when they do not fit, so the chosen one is always in view. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ProjectFilters(filter: String, onFilter: (String) -> Unit) {
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        for ((key, label) in ProjectRules.FILTERS) FilterPill(label, key == filter) { onFilter(key) }
     }
 }
 
@@ -185,7 +193,7 @@ internal fun ProjectsScreen(
             state.error?.let { item(key = "error") { Notice(it) } }
             if (state.rows.isNotEmpty()) {
                 item(key = "search") { SearchBox(query, onQuery, "Nome ou objetivo") }
-                item(key = "filters") { FilterChips(ProjectRules.FILTERS, filter, onFilter) }
+                item(key = "filters") { ProjectFilters(filter, onFilter) }
             }
             if (shown.isEmpty()) {
                 item(key = "empty") {
@@ -439,9 +447,13 @@ internal fun ProjectIncludeScreen(
     ) {
         Column(Modifier.fillMaxSize()) {
             Text(
-                "Em “$projectName”. Aparecem as tarefas em aberto que ainda não estão em um projeto.",
-                Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-                style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 3, overflow = TextOverflow.Ellipsis
+                projectName.ifEmpty { "Projeto" }, Modifier.padding(start = 16.dp, end = 16.dp),
+                style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                "Tarefas em aberto que ainda não estão em um projeto.",
+                Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 8.dp),
+                style = MaterialTheme.typography.bodySmall, color = c.muted
             )
             SearchBox(query, { query = it }, "Buscar tarefa", Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             if (candidates.isEmpty()) {

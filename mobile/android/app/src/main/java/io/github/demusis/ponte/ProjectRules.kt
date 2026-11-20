@@ -435,8 +435,8 @@ internal object ProjectRules {
     const val ROW_HEIGHT = 44f
     const val HEADER_HEIGHT = 28f
     const val BAR_HEIGHT = 18f
-    const val MIN_DAY_WIDTH = 16f
-    const val MIN_BAR_WIDTH = 6f
+    const val MIN_DAY_WIDTH = 20f
+    const val MIN_BAR_WIDTH = 10f
     private const val MIN_LABEL_GAP = 44f
     private const val MAX_EXTENDED_DAYS = 400
     private val TICK_STEPS = listOf(1, 2, 3, 7, 14, 28)
@@ -517,6 +517,15 @@ internal object ProjectRules {
             todayX = if (todayIdx in 0 until days) (todayIdx + 0.5f) * dayWidth else null,
             targetX = if (targetIdx != null && targetIdx in 0 until days) (targetIdx + 1) * dayWidth else null
         )
+    }
+
+    /**
+     * How far the time area starts scrolled: with today a third of the way in, or, when there is no today in the
+     * chart, at the first bar. Never past the end (nor before the start).
+     */
+    fun initialScroll(layout: TimelineLayout, viewWidth: Float): Float {
+        val anchor = layout.todayX?.let { it - viewWidth / 3f } ?: ((layout.bars.minOfOrNull { it.x } ?: 0f) - 12f)
+        return anchor.coerceIn(0f, maxOf(0f, layout.width - viewWidth))
     }
 
     /** The items the chart cannot place: no start or no end. */

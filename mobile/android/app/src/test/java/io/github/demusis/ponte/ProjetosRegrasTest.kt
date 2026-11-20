@@ -369,7 +369,7 @@ class ProjetosRegrasTest {
 
     @Test fun rotulosDoCabecalhoNuncaSeAmontoam() {
         val narrow = layout(200f)
-        // 16 dp a day: a label every 3 days (48 dp) is the first step that leaves room.
+        // 20 dp a day: a label every 3 days (60 dp) is the first step that leaves room.
         assertEquals("09/11", narrow.ticks.first().label)
         assertEquals("12/11", narrow.ticks[1].label)
         assertEquals(8, narrow.ticks.size)
@@ -377,6 +377,16 @@ class ProjetosRegrasTest {
         val wide = layout(960f)
         assertEquals("11/11", wide.ticks[1].label)
         assertTrue(wide.ticks.zipWithNext().all { (a, b) -> b.x - a.x >= 44f })
+    }
+
+    @Test fun graficoComecaComHojeAUmTercoDaTela() {
+        val l = layout()
+        // Today is at 10.5 days; the view is 200 dp wide: it starts a third of the view before today.
+        assertEquals(10.5f * 20f - 200f / 3f, ProjectRules.initialScroll(l, 200f), 0.01f)
+        // Never past the end, nor before the start.
+        assertEquals(0f, ProjectRules.initialScroll(l, 2000f), 0f)
+        val noToday = layout(todayAt = LocalDate.parse("2024-01-01"))
+        assertEquals(l.bars.minOf { it.x } - 12f, ProjectRules.initialScroll(noToday, 200f), 0.01f)
     }
 
     @Test fun toqueNoGraficoAchaALinha() {

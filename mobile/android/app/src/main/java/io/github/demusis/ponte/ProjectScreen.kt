@@ -150,8 +150,8 @@ private fun ProjectHeader(p: ProjectItem, modifier: Modifier = Modifier) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Text(
-                    p.name, Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, color = c.text,
-                    maxLines = 4, overflow = TextOverflow.Ellipsis
+                    p.name, Modifier.weight(1f), fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.SemiBold, color = c.text,
+                    maxLines = 6, overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.width(8.dp))
                 ProjectStatusPill(p, Modifier.padding(top = 4.dp))
@@ -232,7 +232,7 @@ private fun LazyListScope.tasksTab(
 private fun DoneHeader(count: Int, open: Boolean, onToggle: () -> Unit) {
     val c = Ponte.colors
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp, end = 12.dp).clickable(onClick = onToggle),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onToggle).padding(start = 16.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         SectionLabel("Concluídas · $count", Modifier.weight(1f))

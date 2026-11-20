@@ -98,7 +98,7 @@ internal fun TimelineSection(detail: ProjectDetail, today: LocalDate, onOpenTask
                     icon = Icons.Outlined.Timeline
                 )
             } else {
-                Chart(layout, labelWidth, today, onOpenTask)
+                Chart(layout, labelWidth, timeWidth.value, onOpenTask)
             }
         }
         if (unplanned.isNotEmpty()) {
@@ -110,15 +110,15 @@ internal fun TimelineSection(detail: ProjectDetail, today: LocalDate, onOpenTask
 }
 
 @Composable
-private fun Chart(layout: TimelineLayout, labelWidth: androidx.compose.ui.unit.Dp, today: LocalDate, onOpenTask: (Long) -> Unit) {
+private fun Chart(layout: TimelineLayout, labelWidth: androidx.compose.ui.unit.Dp, timeWidth: Float, onOpenTask: (Long) -> Unit) {
     val c = Ponte.colors
     val colors = chartColors()
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer()
     val tickStyle = TextStyle(fontSize = 11.sp, color = colors.tick)
     val scroll = rememberScrollState(
-        // Starts with today (or the first row) in view.
-        with(density) { ((layout.todayX ?: layout.bars.firstOrNull()?.x ?: 0f) - 40f).coerceAtLeast(0f).dp.roundToPx() }
+        // Starts with today (a third of the way in) or, without it, the first bar in view.
+        with(density) { ProjectRules.initialScroll(layout, timeWidth).dp.roundToPx() }
     )
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface)) {
         Column(Modifier.width(labelWidth)) {
@@ -225,10 +225,11 @@ private fun DrawScope.drawTimeline(layout: TimelineLayout, k: ChartColors, measu
         drawPath(diamond, k.mark)
         drawPath(diamond, k.surface, style = Stroke(1.5f * d))
     }
+    // The lines of the target and of today start under the header, so they never cross its dates.
     layout.targetX?.let { x ->
-        drawLine(k.target, Offset(x * d, 0f), Offset(x * d, totalH), 2 * d, pathEffect = PathEffect.dashPathEffect(floatArrayOf(8 * d, 6 * d)))
+        drawLine(k.target, Offset(x * d, headerH), Offset(x * d, totalH), 2 * d, pathEffect = PathEffect.dashPathEffect(floatArrayOf(8 * d, 6 * d)))
     }
-    layout.todayX?.let { x -> drawLine(k.today, Offset(x * d, 0f), Offset(x * d, totalH), 2 * d) }
+    layout.todayX?.let { x -> drawLine(k.today, Offset(x * d, headerH), Offset(x * d, totalH), 2 * d) }
 }
 
 // ---------------------------------------------------------------- legend
