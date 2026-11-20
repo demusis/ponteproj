@@ -275,6 +275,23 @@ impl DocPriorityFilter {
     }
 }
 
+/// What the derived part of a periodic refresh reads (see
+/// `PonteApp::refresh_polled`): when it is the same as at the last refresh,
+/// what was built then is still right.
+#[derive(Clone, Debug, PartialEq)]
+struct RefreshKey {
+    /// `Store::library_stamp`; `None` when it could not be read, and then
+    /// nothing is taken for current.
+    stamp: Option<(i64, i64)>,
+    day: String,
+    minute: String,
+    /// Days without a move after which a follow-up is due (Atendimentos).
+    stale_days: i64,
+    /// The holiday calendar the planning counts working days with.
+    holidays: crate::holidays::HolidayConfig,
+    selected: Option<i64>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct DocTaskStatusSummary {
     open_on_time: usize,
@@ -1312,6 +1329,10 @@ struct PonteApp {
     /// documents were replaced.
     doc_list: Option<library::DocListView>,
     documents_gen: u64,
+    /// The library and the search the list in `documents` was read for, and
+    /// what the derived part of the last refresh read (see `refresh_polled`).
+    documents_for: Option<((i64, i64), String)>,
+    derived_for: Option<RefreshKey>,
     manual_form: ManualForm,
     filters_open: bool,
     /// Browser-bridge installation check, refreshed every few seconds while
@@ -1420,6 +1441,8 @@ impl PonteApp {
             doc_sort: DocSort::Recent,
             doc_list: None,
             documents_gen: 0,
+            documents_for: None,
+            derived_for: None,
             manual_form: ManualForm::default(),
             filters_open: false,
             install_status: None,
@@ -2001,24 +2024,123 @@ impl PonteApp {
         self.documents_gen = self.documents_gen.wrapping_add(1);
     }
 
+    /// Brings the window up to date with the library, whatever changed: the
+    /// synchronization step, the list of documents and everything derived
+    /// from the library (Hoje, the badges, the open document). Called after
+    /// an action of the person; the periodic poll is `refresh_polled`.
     fn refresh(&mut self) {
+        self.poll_sync();
+        self.rebuild(true);
+    }
+
+    /// The poll of every few seconds: the synchronization step always runs,
+    /// the rest only when something it reads changed since the last time (the
+    /// library, the day, the minute for the returns of resources, the late
+    /// threshold of the follow-ups, the holiday calendar).
+    fn refresh_polled(&mut self) {
+        self.poll_sync();
+        self.rebuild(false);
+    }
+
+    fn poll_sync(&mut self) {
         self.last_refresh = Instant::now();
         self.intranet.refresh_client(&mut self.store, &self.db_path);
         // The holidays are the library's: what another computer saved arrives
         // with the synchronization, before the projections below are built.
         self.sync_holidays_with_library();
-        match self.store.list_documents(&self.query) {
-            Ok(documents) => self.set_documents(documents),
-            Err(error) => self.error(format!(
-                "Não foi possível atualizar a lista de documentos: {error}"
-            )),
+    }
+
+    /// What the derived part of a refresh reads besides the open document.
+    fn refresh_key(&self, stamp: Option<(i64, i64)>) -> RefreshKey {
+        RefreshKey {
+            stamp,
+            day: chrono::Local::now().format("%Y-%m-%d").to_string(),
+            // The returns of resources are late by the minute.
+            minute: crate::resources::now_moment(),
+            stale_days: self.saiop.stale_days(),
+            holidays: crate::holidays::config(),
+            selected: self.selected_id,
         }
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    }
+
+    /// Reads the list of documents and rebuilds what derives from the
+    /// library; unless `force`, each only when what it reads changed since it
+    /// was last done.
+    fn rebuild(&mut self, force: bool) {
+        // Read first: a commit that lands while rebuilding shows as a change
+        // at the next poll.
+        let stamp = self.store.library_stamp();
+        self.refresh_documents_if_changed(stamp, force);
+        let key = self.refresh_key(stamp);
+        if !force && stamp.is_some() && self.derived_for.as_ref() == Some(&key) {
+            return;
+        }
+        let today = key.day.clone();
+        self.derived_for = Some(key);
         self.today = today::TodayData::load_with(&self.store, &today, self.saiop.stale_days());
         self.task_badge = self.today.pending_tasks();
         self.resources_overdue = self.overdue_returns();
         if let Some(id) = self.selected_id {
             self.reload(id);
+        }
+    }
+
+    fn refresh_documents_if_changed(&mut self, stamp: Option<(i64, i64)>, force: bool) {
+        let loaded_for = stamp.map(|stamp| (stamp, self.query.clone()));
+        if !force && loaded_for.is_some() && self.documents_for == loaded_for {
+            return;
+        }
+        match self.store.list_documents(&self.query) {
+            Ok(documents) => {
+                self.set_documents(documents);
+                self.documents_for = loaded_for;
+            }
+            Err(error) => self.error(format!(
+                "Não foi possível atualizar a lista de documentos: {error}"
+            )),
+        }
+    }
+
+    /// The search text changed: only the list of documents is read again
+    /// (and the pieces joined to the open one, which depend on it). Nothing
+    /// else a refresh builds depends on the search.
+    fn refresh_documents_for_search(&mut self) {
+        let stamp = self.store.library_stamp();
+        self.refresh_documents_if_changed(stamp, false);
+        if let Some(id) = self.selected_id {
+            self.reload_joined_children(id);
+        }
+    }
+
+    /// The documents juntados to `id`, for its page. An unfiltered library
+    /// list already covers every document.
+    fn joined_children_of(&self, id: i64) -> Result<Vec<DocumentSummary>> {
+        if self.query.trim().is_empty() {
+            Ok(self
+                .documents
+                .iter()
+                .filter(|d| d.joined_to_id == Some(id))
+                .cloned()
+                .collect())
+        } else {
+            self.store.joined_children(id)
+        }
+    }
+
+    fn reload_joined_children(&mut self, id: i64) {
+        match self.joined_children_of(id) {
+            Ok(children) => self.joined_children = children,
+            Err(error) => {
+                self.joined_children.clear();
+                self.error(format!(
+                    "Não foi possível ler os documentos juntados: {error}"
+                ));
+            }
+        }
+        if let Some(detail) = &mut self.detail {
+            if detail.summary.id == id {
+                detail.summary.joined_children_count = self.joined_children.len();
+            }
         }
     }
 
@@ -2061,17 +2183,7 @@ impl PonteApp {
                 }
                 if self.selected_id == Some(id) {
                     let mut detail = detail;
-                    // An unfiltered library list already covers every document.
-                    let children = if self.query.trim().is_empty() {
-                        Ok(self
-                            .documents
-                            .iter()
-                            .filter(|d| d.joined_to_id == Some(id))
-                            .cloned()
-                            .collect())
-                    } else {
-                        self.store.joined_children(id)
-                    };
+                    let children = self.joined_children_of(id);
                     match children {
                         Ok(children) => self.joined_children = children,
                         Err(error) => {
@@ -3696,9 +3808,11 @@ impl eframe::App for PonteApp {
             .is_some_and(|changed| changed.elapsed() > Duration::from_millis(250))
         {
             self.search_changed = None;
-            self.refresh();
-        } else if self.last_refresh.elapsed() > Duration::from_secs(4) {
-            self.refresh();
+            // Only the list of documents depends on the search.
+            self.refresh_documents_for_search();
+        }
+        if self.last_refresh.elapsed() > Duration::from_secs(4) {
+            self.refresh_polled();
         }
         self.sweep_trash();
         ctx.request_repaint_after(Duration::from_millis(300));
@@ -4520,5 +4634,130 @@ mod sender_tests {
         assert_eq!(sender_line("a@b.br"), "a@b.br");
         assert_eq!(sender_line("<a@b.br>"), "a@b.br");
         assert_eq!(sender_line("João Silva <j@x.br>"), "j@x.br · João Silva");
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::PonteApp;
+    use crate::holidays::{ConfigGuard, HolidayConfig};
+    use crate::storage::Store;
+    use crate::tasks::Task;
+
+    fn app(dir: &tempfile::TempDir) -> PonteApp {
+        let path = dir.path().join("acervo.sqlite3");
+        PonteApp::new(Store::open(&path).unwrap(), path)
+    }
+
+    /// Marks what the derived part of a refresh built; the mark survives only
+    /// until it is built again.
+    fn mark(app: &mut PonteApp) {
+        app.today.error = Some("marca".into());
+    }
+    fn marked(app: &PonteApp) -> bool {
+        app.today.error.as_deref() == Some("marca")
+    }
+
+    #[test]
+    fn the_poll_rebuilds_only_what_changed_and_never_shows_old_data() {
+        let _guard = ConfigGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(&dir);
+        let document = app
+            .store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        app.refresh();
+        let badge = app.task_badge;
+        let documents = app.documents.len();
+        assert_eq!(documents, 1);
+
+        // Nothing changed: the poll leaves what was built.
+        mark(&mut app);
+        app.refresh_polled();
+        assert!(marked(&app), "rebuilt with nothing changed");
+
+        // A save here: seen by the next poll.
+        let mut task = Task::new(document);
+        task.title = "Vence hoje".into();
+        task.due_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        app.store.save_task(&task).unwrap();
+        app.refresh_polled();
+        assert!(!marked(&app), "a save did not rebuild");
+        assert_eq!(app.task_badge, badge + 1);
+
+        // A commit of another connection (the team server, a synchronization).
+        mark(&mut app);
+        let mut other = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut again = Task::new(document);
+        again.title = "Atrasada".into();
+        again.due_date = "2000-01-01".into();
+        other.save_task(&again).unwrap();
+        app.refresh_polled();
+        assert!(!marked(&app), "another connection's commit did not rebuild");
+        assert_eq!(app.task_badge, badge + 2);
+
+        // The day (or the minute) changed since the last refresh.
+        mark(&mut app);
+        app.derived_for.as_mut().unwrap().day = "2000-01-01".into();
+        app.refresh_polled();
+        assert!(!marked(&app), "a new day did not rebuild");
+        mark(&mut app);
+        app.derived_for.as_mut().unwrap().minute = "2000-01-01T00:00".into();
+        app.refresh_polled();
+        assert!(!marked(&app), "a new minute did not rebuild");
+
+        // The holiday calendar the planning counts with.
+        mark(&mut app);
+        let mut holidays = HolidayConfig::new();
+        holidays.uf = Some("MG");
+        crate::holidays::set_config(holidays);
+        app.refresh_polled();
+        assert!(!marked(&app), "a new holiday calendar did not rebuild");
+
+        // An explicit refresh (after an action) always rebuilds.
+        mark(&mut app);
+        app.refresh();
+        assert!(!marked(&app));
+    }
+
+    #[test]
+    fn a_search_reads_only_the_list_of_documents() {
+        let _guard = ConfigGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(&dir);
+        app.store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        app.refresh();
+        assert_eq!(app.documents.len(), 1);
+        let generation = app.documents_gen;
+
+        mark(&mut app);
+        app.query = "palavra-que-nao-existe".into();
+        app.refresh_documents_for_search();
+        assert!(app.documents.is_empty());
+        assert_ne!(app.documents_gen, generation);
+        assert!(marked(&app), "a search rebuilt more than the list");
+
+        // The same search again, library untouched: not read again.
+        let generation = app.documents_gen;
+        app.refresh_documents_for_search();
+        assert_eq!(app.documents_gen, generation);
+
+        app.query.clear();
+        app.refresh_documents_for_search();
+        assert_eq!(app.documents.len(), 1);
+        assert!(marked(&app));
+
+        // And the poll, with the library unchanged, leaves the list of the
+        // search it was read for.
+        app.query = "palavra-que-nao-existe".into();
+        app.refresh_documents_for_search();
+        let generation = app.documents_gen;
+        app.refresh_polled();
+        assert_eq!(app.documents_gen, generation);
+        assert!(marked(&app));
     }
 }
