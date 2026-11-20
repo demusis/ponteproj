@@ -1145,6 +1145,20 @@ fn write_generation_note(path: &std::path::Path, note: &GenerationNote) -> bool 
     done
 }
 
+/// Whether a copy of the library made before a replacement opens and passes
+/// SQLite's own check.
+fn backup_checks_out(path: &std::path::Path) -> bool {
+    let ok =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .and_then(|conn| conn.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)))
+            .is_ok_and(|answer| answer == "ok");
+    // Opening a copy in WAL mode may leave its (empty) side files behind.
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+    ok
+}
+
 /// What the main computer keeps of an applied change: the answer it gave and
 /// what the change created, with its own numbers at that moment.
 #[derive(Serialize, Deserialize)]
@@ -2377,6 +2391,27 @@ impl Store {
         G: Fn(i64) -> Result<Vec<u8>>,
         H: FnOnce(&rusqlite::Transaction) -> Result<()>,
     {
+        self.apply_snapshot_staged(snapshot, fetch_pdf, fetch_attachment, |_| Ok(()), finish)
+    }
+
+    /// [`Store::apply_snapshot_and`] with `staged`, run once everything that
+    /// comes from outside has arrived and checked (the PDFs and attachments)
+    /// and nothing of this library has been touched yet: the last point where
+    /// the library can still be kept as it is.
+    pub(crate) fn apply_snapshot_staged<F, G, S, H>(
+        &mut self,
+        snapshot: &CabinetSnapshot,
+        fetch_pdf: F,
+        fetch_attachment: G,
+        staged: S,
+        finish: H,
+    ) -> Result<()>
+    where
+        F: Fn(i64, i64) -> Result<Vec<u8>>,
+        G: Fn(i64) -> Result<Vec<u8>>,
+        S: FnOnce(&Store) -> Result<()>,
+        H: FnOnce(&rusqlite::Transaction) -> Result<()>,
+    {
         // Attachments already here with the same content are kept; the rest
         // are transferred from the main computer and checked by hash.
         let existing_attachments = self
@@ -2486,6 +2521,7 @@ impl Store {
         } else {
             std::collections::BTreeMap::new()
         };
+        staged(&*self)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -3190,36 +3226,58 @@ impl Store {
                     .parent()
                     .map(|d| d.display().to_string())
             })
-            .map(|dir| format!(" na pasta {dir} (arquivo terminado em -antes-da-substituicao-…)"))
+            .map(|dir| format!(" na pasta {dir}\\copias-antes-da-substituicao"))
             .unwrap_or_default();
         Some(format!(
             "{CONFIRM_REPLACE} {cause}. Nada foi enviado nem substituído aqui: as alterações deste computador continuam guardadas. Se você confirmar, uma cópia do acervo daqui é guardada primeiro{where_}; depois o acervo daqui passa a ser o do computador principal e as alterações que esperavam envio ficam em Conflitos de edição, para você refazer ou descartar."
         ))
     }
 
-    /// Where the copy made before a replacement goes: beside the library
-    /// file, named by the moment. `None` for a library without a file.
-    fn replacement_backup_path(&self) -> Option<PathBuf> {
-        let db = self.conn.path().filter(|p| !p.is_empty())?;
-        let moment = Utc::now().format("%Y%m%d-%H%M%S");
-        (0..1000).find_map(|n| {
-            let tail = if n == 0 {
-                String::new()
-            } else {
-                format!("-{n}")
-            };
-            let path = PathBuf::from(format!("{db}-antes-da-substituicao-{moment}{tail}.sqlite3"));
-            (!path.exists()).then_some(path)
-        })
+    /// The folder of the copies made before a replacement: beside the library
+    /// file (the library's own, local folder), in a folder of its own.
+    fn replacement_backup_dir(&self) -> Option<PathBuf> {
+        let db = std::path::Path::new(self.conn.path().filter(|p| !p.is_empty())?);
+        Some(db.parent()?.join("copias-antes-da-substituicao"))
     }
 
-    /// Makes that copy. `Ok(None)` when there is no file to keep it beside.
+    /// Identity of the library as it is now (content and queue): the same
+    /// library state gives the same copy, however many times it is asked.
+    fn library_state_identity(&self) -> Result<String> {
+        let mut text = crate::sharedfolder::snapshot_identity(&self.export_snapshot()?);
+        for (id, uid) in queued_identities(&self.conn)? {
+            text.push_str(&format!("|{id}:{uid}"));
+        }
+        Ok(format!("{:x}", Sha256::digest(text.as_bytes()))[..16].to_owned())
+    }
+
+    /// Keeps the library as it is, whole and verified, in a copy named by its
+    /// state: a replacement tried again with the library unchanged finds the
+    /// copy it made and reuses it. Nothing is replaced if the copy cannot be
+    /// made or does not check out. `Ok(None)` when there is no file to keep it
+    /// beside.
     fn backup_before_replacement(&self) -> Result<Option<PathBuf>> {
-        let Some(path) = self.replacement_backup_path() else {
+        let Some(dir) = self.replacement_backup_dir() else {
             return Ok(None);
         };
-        self.backup(&path)
-            .context("Não foi possível guardar uma cópia do acervo antes de substituí-lo; nada foi substituído.")?;
+        let stem = std::path::Path::new(self.conn.path().unwrap_or_default())
+            .file_name()
+            .map_or_else(|| "acervo".to_owned(), |n| n.to_string_lossy().into_owned());
+        let fail = "Não foi possível guardar uma cópia do acervo antes de substituí-lo; nada foi substituído.";
+        std::fs::create_dir_all(&dir).context(fail)?;
+        let path = dir.join(format!("{stem}-{}.sqlite3", self.library_state_identity()?));
+        if path.is_file() && backup_checks_out(&path) {
+            return Ok(Some(path));
+        }
+        let _ = std::fs::remove_file(&path);
+        let part = dir.join(format!("{stem}.parte-{}", uuid::Uuid::new_v4().simple()));
+        let made = self.backup(&part).context(fail).and_then(|()| {
+            ensure!(backup_checks_out(&part), "{fail}");
+            std::fs::rename(&part, &path).context(fail)
+        });
+        if let Err(error) = made {
+            let _ = std::fs::remove_file(&part);
+            return Err(error);
+        }
         Ok(Some(path))
     }
 
@@ -3449,39 +3507,41 @@ impl Store {
                     )?;
                     return Ok(true);
                 }
-                // The library as it is now is kept first, whole; if that
-                // cannot be done nothing is replaced.
-                let backup = self.backup_before_replacement()?;
-                let reason = format!(
-                    "O computador principal voltou a uma história anterior; esta alteração não foi enviada. Uma cópia do acervo anterior a esta substituição ficou em {}.",
-                    backup.as_ref().map_or_else(|| "(sem arquivo)".to_owned(), |p| p.display().to_string())
-                );
+                // What comes from outside is fetched and checked first; only
+                // then is the library kept, whole and verified (one copy per
+                // library state, reused by a retry), and only then replaced.
+                // The queued changes become conflicts in the very transaction
+                // that adopts the replacement: a failure anywhere before it
+                // (a file that does not come, a dropped connection) leaves the
+                // library and the queue exactly as they were.
+                let backup: std::cell::RefCell<Option<PathBuf>> = Default::default();
                 let moved: Vec<(i64, String)> = replaced_queue
                     .iter()
                     .map(|entry| (entry.id, entry.uid.clone()))
                     .collect();
-                let conflicts: Vec<SyncConflict> = replaced_queue
-                    .iter()
-                    .map(|entry| {
-                        let mut conflict = build_sync_conflict(entry, &reason, Some(&snapshot));
-                        conflict.unresolved = true;
-                        conflict
-                    })
-                    .collect();
-                // The queued changes become conflicts in the very transaction
-                // that adopts the replacement: a failure anywhere before it
-                // (a file that does not come, a dropped connection) leaves the
-                // queue exactly as it was.
-                self.apply_snapshot_and(
+                self.apply_snapshot_staged(
                     &snapshot,
                     |file_id, capture_id| fetch_remote_pdf(&cfg_clone, file_id, capture_id),
                     |id| fetch_remote_attachment(&cfg_clone, id),
+                    |store| {
+                        *backup.borrow_mut() = store.backup_before_replacement()?;
+                        Ok(())
+                    },
                     |tx| {
+                        let reason = format!(
+                            "O computador principal voltou a uma história anterior; esta alteração não foi enviada. Uma cópia do acervo anterior a esta substituição ficou em {}.",
+                            backup.borrow().as_ref().map_or_else(
+                                || "(sem arquivo)".to_owned(),
+                                |p| p.display().to_string()
+                            )
+                        );
                         ensure_queue_settled(tx, &moved)?;
-                        for conflict in &conflicts {
+                        for entry in &replaced_queue {
+                            let mut conflict = build_sync_conflict(entry, &reason, Some(&snapshot));
+                            conflict.unresolved = true;
                             tx.execute(
                                 "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
-                                params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
+                                params![conflict.created_at, seal(&serde_json::to_vec(&conflict)?)?],
                             )?;
                         }
                         delete_sent_outboxes(tx, &moved)
@@ -15892,6 +15952,13 @@ mod host_history_tests {
         synced_after_backup: i64,
     }
 
+    /// The copies made before a replacement.
+    fn backup_files(dir: &std::path::Path) -> Vec<std::fs::DirEntry> {
+        std::fs::read_dir(dir.join("copias-antes-da-substituicao"))
+            .map(|entries| entries.filter_map(|e| e.ok()).collect())
+            .unwrap_or_default()
+    }
+
     fn task_of(store: &Store, title: &str) -> Task {
         store
             .list_tasks()
@@ -16096,7 +16163,7 @@ mod host_history_tests {
         let line = rig.reconnect_through_line();
         // The notice says where the copy of this library will be kept.
         let notice = rig.client.sync_from_host(false).unwrap_err().to_string();
-        assert!(notice.contains("-antes-da-substituicao-"), "{notice}");
+        assert!(notice.contains("copias-antes-da-substituicao"), "{notice}");
 
         // The attachment does not come: nothing changed, the queue is whole.
         line.refuse_attachment_fetches(true);
@@ -16116,19 +16183,11 @@ mod host_history_tests {
         let conflicts = rig.client.list_sync_conflicts().unwrap();
         assert_eq!(conflicts.len(), 1);
         assert!(
-            conflicts[0].reason.contains("-antes-da-substituicao-"),
+            conflicts[0].reason.contains("copias-antes-da-substituicao"),
             "{}",
             conflicts[0].reason
         );
-        let backups: Vec<_> = std::fs::read_dir(rig._dir.path())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .contains("-antes-da-substituicao-")
-            })
-            .collect();
+        let backups = backup_files(rig._dir.path());
         assert!(
             !backups.is_empty(),
             "a copy of the library before the replacement"
@@ -16137,6 +16196,63 @@ mod host_history_tests {
         let kept = Store::open(&backups[0].path()).unwrap();
         assert_eq!(task_of(&kept, "Original").title, "Original");
         assert_eq!(titles(&rig.client), ["Substituta"]);
+    }
+
+    #[test]
+    fn failed_confirmations_leave_no_copy_and_retries_share_one_verified_copy() {
+        let mut rig = rig();
+        rig.server.stop();
+        let mut edited = task_of(&rig.client, "Original");
+        edited.notes = "Edição offline".into();
+        rig.client.save_task(&edited).unwrap();
+        let mut host = rig.restore_backup();
+        let mut replacement = Task::new(rig.document);
+        replacement.title = "Substituta".into();
+        let reused = host.save_task(&replacement).unwrap();
+        host.add_attachment(
+            crate::attachments::Owner::Task(reused),
+            "nota.txt",
+            "",
+            b"anexo",
+        )
+        .unwrap();
+        drop(host);
+        let line = rig.reconnect_through_line();
+        line.refuse_attachment_fetches(true);
+        // The files do not come, again and again: the library is never
+        // copied for nothing.
+        for _ in 0..3 {
+            assert!(rig.client.sync_from_host_confirmed(false, true).is_err());
+        }
+        assert!(
+            backup_files(rig._dir.path()).is_empty(),
+            "nothing copied before the files arrived"
+        );
+        // One attempt gets as far as the copy and fails after it (the check of
+        // the queue in the commit): simulate with a second client change that
+        // grows the queue meanwhile, then retry with the library as it was.
+        line.refuse_attachment_fetches(false);
+        let first = rig.client.backup_before_replacement().unwrap().unwrap();
+        let again = rig.client.backup_before_replacement().unwrap().unwrap();
+        assert_eq!(first, again, "the same library state, the same copy");
+        assert_eq!(backup_files(rig._dir.path()).len(), 1);
+        assert!(super::backup_checks_out(&first));
+        // And the replacement itself reuses it.
+        assert!(rig.client.sync_from_host_confirmed(false, true).unwrap());
+        assert_eq!(
+            backup_files(rig._dir.path()).len(),
+            1,
+            "no second full copy"
+        );
+        // A changed library is another state: another copy.
+        let mut more = task_of(&rig.client, "Substituta");
+        more.notes = "Depois".into();
+        rig.client.save_task(&more).unwrap();
+        let third = rig.client.backup_before_replacement().unwrap().unwrap();
+        assert_ne!(third, first);
+        assert!(!backup_files(rig._dir.path())
+            .iter()
+            .any(|e| e.file_name().to_string_lossy().contains(".parte")));
     }
 
     #[test]
