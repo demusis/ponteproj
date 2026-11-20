@@ -42,6 +42,8 @@ $storeManifestJson = $storeManifest | ConvertTo-Json -Depth 10
 # valid JSON; the store reads it fine. Non-ASCII text stays as UTF-8.
 if ($storeManifestJson -match '"key"') { throw 'O campo key nao foi removido.' }
 
+$distDir = Join-Path $projectRoot 'dist'
+New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 $output = Join-Path $projectRoot "dist\ponte-extensao-webstore-$version.zip"
 if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Force }
 Add-Type -AssemblyName System.IO.Compression
