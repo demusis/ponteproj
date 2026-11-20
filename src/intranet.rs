@@ -1031,6 +1031,13 @@ pub enum RpcResponse {
     FileBytes {
         data_base64: String,
     },
+    /// The change sent under this identity was applied before, and the full
+    /// answer is gone (receipts are pruned sooner than the record of what was
+    /// applied): the sender drops it from its queue instead of sending it
+    /// again.
+    AlreadyApplied {
+        revision: i64,
+    },
     Mutated {
         revision: i64,
         reply: MutationReply,
@@ -1150,6 +1157,9 @@ struct StoredReceipt {
 /// How long, and how many, answers to applied changes the main computer keeps.
 const RECEIPT_DAYS: i64 = 30;
 const RECEIPT_LIMIT: i64 = 5000;
+/// The compact record of applied identities (no answer) is kept far longer.
+const APPLIED_DAYS: i64 = 365;
+const APPLIED_LIMIT: i64 = 500_000;
 
 /// Whether a change identity sent by a client is one the main computer keeps
 /// answers for (a uuid, as the queue makes them).
@@ -1695,6 +1705,10 @@ impl Store {
                 created_at TEXT NOT NULL,
                 reply BLOB NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS applied_mutations(
+                uid TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS host_generation(
                 id INTEGER PRIMARY KEY CHECK(id=1),
                 value TEXT NOT NULL
@@ -1872,6 +1886,11 @@ impl Store {
             "INSERT OR IGNORE INTO mutation_receipts(uid,created_at,reply) VALUES(?1,?2,?3)",
             params![uid, now_iso(), seal(&serde_json::to_vec(receipt)?)?],
         )?;
+        // The compact record (identity and moment only) outlives the answer.
+        self.conn.execute(
+            "INSERT OR IGNORE INTO applied_mutations(uid,created_at) VALUES(?1,?2)",
+            params![uid, now_iso()],
+        )?;
         let cutoff = (Utc::now() - chrono::Duration::days(RECEIPT_DAYS))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
         self.conn.execute(
@@ -1879,7 +1898,28 @@ impl Store {
              OR rowid NOT IN (SELECT rowid FROM mutation_receipts ORDER BY rowid DESC LIMIT ?2)",
             params![cutoff, RECEIPT_LIMIT],
         )?;
+        let record_cutoff = (Utc::now() - chrono::Duration::days(APPLIED_DAYS))
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        self.conn.execute(
+            "DELETE FROM applied_mutations WHERE created_at<?1
+             OR rowid NOT IN (SELECT rowid FROM applied_mutations ORDER BY rowid DESC LIMIT ?2)",
+            params![record_cutoff, APPLIED_LIMIT],
+        )?;
         Ok(())
+    }
+
+    /// Whether a change sent under `uid` was applied here (kept longer than
+    /// its full answer).
+    fn mutation_was_applied(&self, uid: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM applied_mutations WHERE uid=?1",
+                [uid],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
     }
 
     /// Notes the history (see [`Store::host_generation`]) when this library
@@ -3301,6 +3341,16 @@ impl Store {
                         let learned = ids.learn(&entry.created, Some(&there));
                         self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
                         host_frame = Some(snapshot);
+                        pushed_offline = true;
+                    }
+                    Ok(RpcResponse::AlreadyApplied { .. }) => {
+                        // It is there already (its answer was lost, and the
+                        // main computer no longer keeps it): the entry goes,
+                        // never sent again. What it created is known there
+                        // only by its own numbers, so later changes that
+                        // depend on those wait as conflicts.
+                        let learned = ids.learn(&entry.created, None);
+                        self.finish_outbox_entry(entry.id, &entry.uid, &learned, None)?;
                         pushed_offline = true;
                     }
                     Ok(RpcResponse::Error { message }) | Err(RpcError::Rejected(message)) => {
@@ -9003,6 +9053,13 @@ pub(crate) fn process_rpc(
                         created: receipt.created,
                     });
                 }
+            }
+            // Applied once, and the full answer is gone: it must not be applied
+            // again, and the sender can only be told so.
+            if receipted && store.mutation_was_applied(&mutation_uid)? {
+                return Ok(RpcResponse::AlreadyApplied {
+                    revision: store.cabinet_revision()?,
+                });
             }
             let mutation = store.keep_unseen_fields(mutation, client_schema)?;
             let applied = mutation.clone();
@@ -16710,6 +16767,46 @@ Connection: close
         )
         .unwrap();
         assert_ne!(now, first, "the scenario needs the latest state to differ");
+    }
+
+    #[test]
+    fn a_change_whose_answer_was_pruned_is_reported_as_already_applied_and_dropped_from_the_queue()
+    {
+        let mut pair = pair();
+        pair.line.lose_next_replies(1);
+        let mut task = Task::new(pair.document);
+        task.title = "Tarefa muito atrasada".into();
+        pair.client.save_task(&task).unwrap();
+        let queued = pair.client.list_offline_outbox().unwrap();
+        assert_eq!(queued.len(), 1);
+        let count = |store: &Store| {
+            store
+                .list_tasks()
+                .unwrap()
+                .into_iter()
+                .filter(|t| t.title == "Tarefa muito atrasada")
+                .count()
+        };
+        assert_eq!(count(&pair.host), 1);
+        // Weeks pass: the full answers are pruned; the compact record stays.
+        pair.host
+            .conn
+            .execute("DELETE FROM mutation_receipts", [])
+            .unwrap();
+        let recorded: i64 = pair
+            .host
+            .conn
+            .query_row("SELECT count(*) FROM applied_mutations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(recorded, 1);
+        pair.client.sync_from_host(false).unwrap();
+        assert!(
+            pair.client.list_offline_outbox().unwrap().is_empty(),
+            "the entry is dropped"
+        );
+        assert!(pair.client.list_sync_conflicts().unwrap().is_empty());
+        assert_eq!(count(&pair.host), 1, "never applied twice");
+        assert_eq!(count(&pair.client), 1);
     }
 
     #[test]
