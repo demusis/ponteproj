@@ -17,6 +17,7 @@ struct FormImpactCache {
 }
 
 use crate::category_ui::CategoryFilter;
+use crate::project_ui::ProjectFilter;
 use crate::theme::{self, c, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
 use crate::{categories::Category, model::TaskProposal, storage::Store, tasks::Task};
@@ -211,6 +212,8 @@ struct Scope<'a> {
     week: &'a str,
     /// Categories the list is narrowed to (none chosen: no narrowing).
     categories: &'a CategoryFilter,
+    /// The project the list is narrowed to (or to none).
+    project: &'a ProjectFilter,
 }
 
 /// True when the task belongs to the document filter and the search text.
@@ -230,6 +233,9 @@ fn in_scope(
         return false;
     }
     if !scope.categories.matches(&task.categories) {
+        return false;
+    }
+    if !scope.project.matches(&task.project_uid) {
         return false;
     }
     if scope.query.is_empty() {
@@ -449,6 +455,7 @@ struct ListEnv<'a> {
     selecting: bool,
     selected: &'a BTreeSet<i64>,
     categories: &'a [Category],
+    projects: &'a [crate::projects::Project],
 }
 
 /// What the person asked for in the list during this frame.
@@ -708,6 +715,13 @@ fn task_row(
                                 .on_hover_text("Posição na cadeia de dependências. O recuo da linha para no 4º nível.");
                             }
                             crate::category_ui::category_chips_compact(ui, &task.categories, env.categories, 3);
+                            if let Some(project) = env
+                                .projects
+                                .iter()
+                                .find(|p| !task.project_uid.is_empty() && p.uid == task.project_uid)
+                            {
+                                crate::project_ui::project_chip(ui, project);
+                            }
                             if let Some(count) = env.attachment_counts.get(&task.id) {
                                 ui.add(
                                     egui::Label::new(
@@ -1603,6 +1617,8 @@ struct BatchUndo {
 pub struct TaskPanel {
     /// Categories the list is narrowed to.
     category_filter: CategoryFilter,
+    /// The project the list is narrowed to, or to none.
+    project_filter: ProjectFilter,
     unplanned_only: bool,
     /// "Gerenciar categorias…" was clicked; the app opens Ajustes.
     open_categories: bool,
@@ -1669,6 +1685,9 @@ pub struct TaskPanel {
     /// Development only: keeps "Mais detalhes" open for the picture.
     #[cfg(feature = "shots")]
     shots_details: bool,
+    /// Development only: how far the form is scrolled in the pictures.
+    #[cfg(feature = "shots")]
+    shots_form_scroll: f32,
     /// Development only: scroll of the list, to picture its lower groups.
     #[cfg(feature = "shots")]
     shots_scroll: f32,
@@ -1679,6 +1698,8 @@ fn is_untouched_blank(task: &Task) -> bool {
     *task
         == Task {
             uid: task.uid.clone(),
+            // "Nova tarefa neste projeto" starts with the project chosen.
+            project_uid: task.project_uid.clone(),
             ..Task::blank(task.document_id)
         }
 }
@@ -1832,6 +1853,20 @@ impl TaskPanel {
         self.base_version = None;
         self.message.clear();
         self.focus_title = true;
+        true
+    }
+    /// Opens a blank task for this project (without document), unless
+    /// another edit is pending.
+    pub fn start_new_in_project(&mut self, project_uid: &str) -> bool {
+        if !self.start_new(None) {
+            return false;
+        }
+        // The list keeps showing everything, so the new task can be found
+        // after it is saved.
+        self.project_filter = ProjectFilter::Any;
+        if let Some(task) = self.draft.as_mut() {
+            task.project_uid = project_uid.to_owned();
+        }
         true
     }
     pub fn focus_task(&mut self, task: &Task) -> bool {
@@ -2555,6 +2590,7 @@ impl TaskPanel {
         }
         let actor = store.active_actor();
         let categories = store.list_categories().unwrap_or_default();
+        let projects = store.list_projects().unwrap_or_default();
         let data = std::mem::take(&mut self.data);
         let tasks = &data.tasks;
         let documents = &data.documents;
@@ -2580,6 +2616,7 @@ impl TaskPanel {
             today: &today_text,
             week: &week_text,
             categories: &self.category_filter,
+            project: &self.project_filter,
         };
         // The chips count what each view would list right now.
         let [all_count, today_count, week_count, overdue_count] =
@@ -2723,6 +2760,14 @@ impl TaskPanel {
                                     &categories,
                                 );
                             }
+                            if !projects.is_empty() || self.project_filter.is_active() {
+                                crate::project_ui::project_filter_button(
+                                    ui,
+                                    "tasks",
+                                    &mut self.project_filter,
+                                    &projects,
+                                );
+                            }
                             // A discreet way to narrow the list to the document
                             // open in Documentos.
                             if let (None, Some(id)) = (self.document_filter, selected_document) {
@@ -2854,6 +2899,7 @@ impl TaskPanel {
                     selecting: self.selecting,
                     selected: &self.selected,
                     categories: &categories,
+                    projects: &projects,
                 };
                 let mut groups: [Vec<&Task>; 5] = Default::default();
                 for task in &visible {
@@ -2886,7 +2932,9 @@ impl TaskPanel {
                 list_scroll.show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         if visible.is_empty() {
-                            let text = if self.category_filter.is_active() && !tasks.is_empty() {
+                            let text = if self.project_filter.is_active() && !tasks.is_empty() {
+                                "Nenhuma tarefa deste filtro de projeto nesta visão.".to_owned()
+                            } else if self.category_filter.is_active() && !tasks.is_empty() {
                                 "Nenhuma tarefa com as categorias escolhidas nesta visão.".to_owned()
                             } else {
                                 empty_text(
@@ -2904,6 +2952,10 @@ impl TaskPanel {
                                 if !self.query.trim().is_empty() {
                                     if ui.add(widgets::quiet("Limpar a busca")).clicked() {
                                         self.query.clear();
+                                    }
+                                } else if self.project_filter.is_active() && !tasks.is_empty() {
+                                    if ui.add(widgets::quiet("Limpar o filtro de projeto")).clicked() {
+                                        self.project_filter = ProjectFilter::Any;
                                     }
                                 } else if self.category_filter.is_active() && !tasks.is_empty() {
                                     if ui.add(widgets::quiet("Limpar as categorias")).clicked() {
@@ -3072,6 +3124,7 @@ impl TaskPanel {
         }
         let current_actor = store.active_actor();
         let categories = store.list_categories().unwrap_or_default();
+        let projects = store.list_projects().unwrap_or_default();
         let mut category_error: Option<String> = None;
         let mut manage_categories = false;
         let deps = crate::tasks::Dependencies::new(tasks);
@@ -3323,14 +3376,15 @@ impl TaskPanel {
         };
         #[cfg(feature = "shots")]
         let force_details = self.shots_details;
+        #[cfg(feature = "shots")]
+        let shots_form_scroll = self.shots_form_scroll;
         #[allow(unused_mut)]
         let mut form_scroll = egui::ScrollArea::vertical()
             .id_salt("task-form")
             .auto_shrink([false, false]);
         #[cfg(feature = "shots")]
         if crate::shots::active() {
-            form_scroll =
-                form_scroll.vertical_scroll_offset(if force_details { 330.0 } else { 0.0 });
+            form_scroll = form_scroll.vertical_scroll_offset(shots_form_scroll);
         }
         form_scroll.show(ui, |ui| {
                 egui::Frame::new()
@@ -3476,6 +3530,7 @@ impl TaskPanel {
                             }
                         });
                         widgets::small_muted(ui, REMINDER_FORM_HINT);
+                        let parent_before = task.parent_task_id;
                         egui::ComboBox::from_id_salt(("task-parent", task_id))
                             .selected_text(task.parent_task_id.and_then(|id| tasks.iter().find(|t| t.id == id)).map(|t| t.title.as_str()).unwrap_or("Sem tarefa pai"))
                             .show_ui(ui, |ui| {
@@ -3484,6 +3539,12 @@ impl TaskPanel {
                                     ui.selectable_value(&mut task.parent_task_id, Some(candidate.id), &candidate.title);
                                 }
                             });
+                        // A new subtask shows the project of its parent already chosen
+                        // (the library applies the same rule when it is saved).
+                        if task_id == 0 && task.parent_task_id != parent_before {
+                            let parent_project = task.parent_task_id.and_then(|id| tasks.iter().find(|t| t.id == id)).map(|t| t.project_uid.as_str());
+                            task.project_uid = crate::project_ui::inherited_project(&task.project_uid, parent_project);
+                        }
                         if task_id > 0 {
                             let children: Vec<_> = tasks.iter().filter(|t| t.parent_task_id == Some(task_id)).collect();
                             if !children.is_empty() {
@@ -3491,6 +3552,9 @@ impl TaskPanel {
                                 for child in children { chain_row(ui, child, &mut open_task); }
                             }
                         }
+                        ui.add_space(S2);
+                        widgets::field_label(ui, "Projeto");
+                        crate::project_ui::project_picker(ui, ("task-project", task_id), &mut task.project_uid, &projects);
                         ui.add_space(S2);
                         two_columns(
                             ui,
@@ -4003,6 +4067,7 @@ mod navigation_tests {
             today: "2026-11-18",
             week: "2026-11-25",
             categories: &categories,
+            project: &crate::project_ui::NO_PROJECT_FILTER,
         };
         let deps = crate::tasks::Dependencies::new(&[]);
         task.scheduled_start = "2026-11-18T09:00".into();
@@ -4048,6 +4113,7 @@ mod navigation_tests {
             today: "2026-11-10",
             week: "2026-11-17",
             categories: &crate::category_ui::NO_CATEGORY_FILTER,
+            project: &crate::project_ui::NO_PROJECT_FILTER,
         }
     }
 
@@ -4304,6 +4370,9 @@ pub const SHOTS: &[&str] = &[
     "selecao-excluir",
     "selecao-categoria",
     "selecao-resultado",
+    "projeto",
+    "projeto-filtro",
+    "efeito-mudanca",
 ];
 
 #[cfg(feature = "shots")]
@@ -4431,6 +4500,40 @@ impl TaskPanel {
                     self.open_task(task, store);
                 }
                 self.shots_details = true;
+                self.shots_form_scroll = 330.0;
+            }
+            "projeto" | "projeto-filtro" | "efeito-mudanca" => {
+                let project = store
+                    .list_projects()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|p| p.status == crate::projects::ProjectStatus::Ativo);
+                if view == "projeto-filtro" {
+                    if let Some(project) = project {
+                        self.project_filter = ProjectFilter::Only(project.uid);
+                    }
+                    return;
+                }
+                let title = if view == "efeito-mudanca" {
+                    "Pedir os dois veículos à Seção de Transportes"
+                } else {
+                    "Confirmar a sala da reunião de quinta-feira"
+                };
+                let Some(task) = tasks.iter().find(|t| t.title == title) else {
+                    return;
+                };
+                self.open_task(task, store);
+                if view == "efeito-mudanca" {
+                    // The planned end moves a few days: the tasks that wait for
+                    // this one move with it (nothing is saved).
+                    let end = chrono::Local::now().date_naive() + chrono::Duration::days(6);
+                    if let Some(draft) = self.draft.as_mut() {
+                        draft.scheduled_end = format!("{}T18:00", end.format("%Y-%m-%d"));
+                    }
+                    self.shots_form_scroll = 260.0;
+                } else {
+                    self.shots_form_scroll = 560.0;
+                }
             }
             _ => {}
         }
@@ -4457,6 +4560,7 @@ mod standalone_tests {
             today: "2026-11-10",
             week: "2026-11-17",
             categories: &crate::category_ui::NO_CATEGORY_FILTER,
+            project: &crate::project_ui::NO_PROJECT_FILTER,
         }
     }
 
