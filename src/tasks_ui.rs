@@ -1938,6 +1938,18 @@ impl TaskPanel {
     pub fn undo_conclude(&mut self, store: &mut Store, task_id: i64) -> Result<(), String> {
         self.apply_status_change(store, task_id, false)
     }
+    /// The project of the task in the form (tests).
+    #[cfg(test)]
+    pub fn draft_project_uid(&self) -> Option<&str> {
+        self.draft.as_ref().map(|t| t.project_uid.as_str())
+    }
+    /// Types a title in the form (tests).
+    #[cfg(test)]
+    pub fn set_draft_title(&mut self, title: &str) {
+        if let Some(task) = self.draft.as_mut() {
+            task.title = title.to_owned();
+        }
+    }
     /// The task in the panel; a new, unsaved one has no id.
     pub fn open_task_id(&self) -> Option<i64> {
         self.draft.as_ref().map(|t| t.id).filter(|id| *id > 0)

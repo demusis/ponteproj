@@ -57,6 +57,17 @@ impl StatusFilter {
         }
     }
 
+    /// What an empty list says ("Nenhum projeto ativo.").
+    fn none_text(self) -> &'static str {
+        match self {
+            StatusFilter::Active => "Nenhum projeto ativo.",
+            StatusFilter::Paused => "Nenhum projeto pausado.",
+            StatusFilter::Done => "Nenhum projeto concluído.",
+            StatusFilter::Archived => "Nenhum projeto arquivado.",
+            StatusFilter::All => "Nenhum projeto.",
+        }
+    }
+
     fn matches(self, status: ProjectStatus) -> bool {
         match self {
             StatusFilter::Active => status == ProjectStatus::Ativo,
@@ -585,7 +596,7 @@ impl ProjectsPanel {
                         widgets::muted(
                             ui,
                             if self.query.trim().is_empty() {
-                                format!("Nenhum projeto {}.", self.filter.label().to_lowercase())
+                                self.filter.none_text().to_owned()
                             } else {
                                 format!("Nenhum projeto encontrado para “{}”.", self.query.trim())
                             },
@@ -1820,6 +1831,13 @@ mod tests {
         );
         assert!(list_view(&all, StatusFilter::Active, "escala").is_empty());
         assert_eq!(count_in(&all, StatusFilter::Active), 2);
+        for filter in StatusFilter::ALL {
+            assert!(filter.none_text().starts_with("Nenhum projeto"));
+        }
+        assert_eq!(
+            StatusFilter::Archived.none_text(),
+            "Nenhum projeto arquivado."
+        );
         assert_eq!(count_in(&all, StatusFilter::All), 5);
     }
 
@@ -1995,6 +2013,52 @@ mod tests {
             other.uid,
             "the one in another project was left alone"
         );
+    }
+
+    fn app() -> (tempfile::TempDir, PonteApp) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acervo.sqlite3");
+        let store = Store::open(&path).unwrap();
+        (dir, PonteApp::new(store, path))
+    }
+
+    #[test]
+    fn a_new_task_for_a_project_opens_the_form_with_the_project_chosen() {
+        let (_dir, mut app) = app();
+        let project = app.store.save_project(&Project::new("Alfa")).unwrap();
+        app.area = super::super::Area::Projects;
+        app.navigate(Leave::NewProjectTask(project.uid.clone()));
+        assert!(app.area == super::super::Area::Tasks);
+        assert_eq!(app.tasks.draft_project_uid(), Some(project.uid.as_str()));
+        assert!(
+            !app.tasks.dirty(),
+            "the project alone is what the button proposes, not unsaved work"
+        );
+        assert!(app.leave.is_none());
+    }
+
+    #[test]
+    fn a_new_task_for_a_project_waits_for_an_unsaved_edit() {
+        let (_dir, mut app) = app();
+        let project = app.store.save_project(&Project::new("Alfa")).unwrap();
+        assert!(app.tasks.start_new(None));
+        app.tasks.set_draft_title("Em edição");
+        app.area = super::super::Area::Projects;
+        app.navigate(Leave::NewProjectTask(project.uid.clone()));
+        assert!(app.leave.is_some(), "the person is asked first");
+        assert!(app.area == super::super::Area::Projects);
+        assert_eq!(app.tasks.draft_project_uid(), Some(""));
+    }
+
+    #[test]
+    fn opening_a_project_from_the_search_goes_to_the_area_with_it_open() {
+        let (_dir, mut app) = app();
+        let project = app.store.save_project(&Project::new("Alfa")).unwrap();
+        app.navigate(Leave::Project(project.uid.clone()));
+        assert!(app.area == super::super::Area::Projects);
+        assert_eq!(app.projects.open.as_deref(), Some(project.uid.as_str()));
+        app.navigate(Leave::NewProject);
+        assert!(app.projects.form.is_some());
     }
 
     /// Runs the panel headless on a library with one project and its tasks, in

@@ -10,6 +10,9 @@ impl PonteApp {
     const TOUR: &'static [&'static str] = &[
         "hoje",
         "busca",
+        // Right after the tallest box: a result list that has to grow from
+        // the one before is not settled when the picture is taken.
+        "busca-nome-do-projeto",
         "busca-tarefas",
         "busca-sala",
         "busca-projetor",
@@ -307,13 +310,18 @@ impl PonteApp {
                 self.refresh();
                 self.area = Area::Today;
             }
-            "busca" | "busca-tarefas" | "busca-sala" | "busca-projetor" => {
+            "busca"
+            | "busca-tarefas"
+            | "busca-sala"
+            | "busca-projetor"
+            | "busca-nome-do-projeto" => {
                 self.refresh();
                 self.area = Area::Today;
                 self.global_search.shots_open(match name {
                     "busca" => "or",
                     "busca-sala" => "sala",
                     "busca-projetor" => "projetor",
+                    "busca-nome-do-projeto" => "comitê gestor",
                     _ => "veículos",
                 });
             }
