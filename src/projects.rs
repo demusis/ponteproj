@@ -753,6 +753,12 @@ impl Store {
     ) -> Result<()> {
         ensure!(valid_uid(uid), "A identificação do projeto é inválida.");
         if let Some(cfg) = self.client_config()? {
+            // Told now, in every mode: a project this library does not have
+            // (deleted elsewhere already) has nothing to delete here.
+            ensure!(
+                self.project_exists(uid),
+                "Projeto não encontrado (já apagado?)."
+            );
             self.ensure_host_stores_projects(&cfg)?;
             self.remote_mutate(
                 &cfg,

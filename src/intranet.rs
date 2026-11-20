@@ -14069,13 +14069,12 @@ mod resources_sync_tests {
             .unwrap_err()
             .to_string();
         assert_eq!(error, HOST_WITHOUT_PROJECTS);
-        assert_eq!(
-            client
-                .delete_project(&"a".repeat(32))
-                .unwrap_err()
-                .to_string(),
-            HOST_WITHOUT_PROJECTS
-        );
+        // A project this library does not have has nothing to delete.
+        assert!(client
+            .delete_project(&"a".repeat(32))
+            .unwrap_err()
+            .to_string()
+            .contains("não encontrado"));
         let mut task = Task::standalone();
         task.title = "Em projeto".into();
         task.project_uid = "a".repeat(32);

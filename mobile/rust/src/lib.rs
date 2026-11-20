@@ -273,7 +273,7 @@ fn json_arg(env: &mut JNIEnv, value: &JString) -> Result<Value> {
     serde_json::from_str(&text(env, value)?).context("Dados inválidos vindos do aplicativo.")
 }
 
-fn task_json(task: &ponteproj::tasks::Task, numbers: &std::collections::HashMap<i64, String>) -> Value {
+fn task_json(task: &ponteproj::tasks::Task, numbers: &TaskNames) -> Value {
     let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
     task_json_on(task, numbers, &today)
 }
@@ -281,7 +281,7 @@ fn task_json(task: &ponteproj::tasks::Task, numbers: &std::collections::HashMap<
 /// `task_json` as of the given day (`AAAA-MM-DD`), so tests can fix the date.
 fn task_json_on(
     task: &ponteproj::tasks::Task,
-    numbers: &std::collections::HashMap<i64, String>,
+    numbers: &TaskNames,
     today: &str,
 ) -> Value {
     let open = !task.is_done();
@@ -292,7 +292,7 @@ fn task_json_on(
         "document_id": task.document_id.unwrap_or(0),
         "document_number": task
             .document_id
-            .and_then(|id| numbers.get(&id).cloned())
+            .and_then(|id| numbers.documents.get(&id).cloned())
             .unwrap_or_default(),
         "title": task.title,
         "action": task.action,
@@ -321,15 +321,37 @@ fn task_json_on(
         "notes": task.notes,
         // Uids of the categories; names and colours come from `listCategories`.
         "categories": task.categories,
+        // The project of the task (empty: none) and its name.
+        "project_uid": task.project_uid,
+        "project_name": numbers.projects.get(&task.project_uid).cloned().unwrap_or_default(),
     })
 }
 
-fn document_numbers(store: &Store) -> Result<std::collections::HashMap<i64, String>> {
+/// What the task JSON needs besides the task itself: the numbers of the
+/// documents and the names of the projects, by uid.
+#[derive(Default)]
+struct TaskNames {
+    documents: std::collections::HashMap<i64, String>,
+    projects: std::collections::HashMap<String, String>,
+}
+
+fn project_names(store: &Store) -> Result<std::collections::HashMap<String, String>> {
     Ok(store
-        .list_documents("")?
+        .list_projects()?
         .into_iter()
-        .map(|d| (d.id, d.document_number))
+        .map(|p| (p.uid, p.name))
         .collect())
+}
+
+fn document_numbers(store: &Store) -> Result<TaskNames> {
+    Ok(TaskNames {
+        documents: store
+            .list_documents("")?
+            .into_iter()
+            .map(|d| (d.id, d.document_number))
+            .collect(),
+        projects: project_names(store)?,
+    })
 }
 
 /// Everything the document screen shows.
@@ -463,7 +485,7 @@ const DONE_LIMIT: usize = 30;
 /// concluded); upcoming by date; the concluded newest first, at most 30.
 fn ordered_tasks(
     mut tasks: Vec<ponteproj::tasks::Task>,
-    numbers: &std::collections::HashMap<i64, String>,
+    numbers: &TaskNames,
     today: &str,
 ) -> Vec<Value> {
     tasks.sort_by(|a, b| {
@@ -581,8 +603,24 @@ fn create_task(store: &mut Store, input: &Value) -> Result<Value> {
     if let Some(uids) = uid_list(&input["categories"]) {
         task.categories = uids;
     }
+    // The project of the task; a subtask without one takes its parent's.
+    apply_project(&mut task, input)?;
     let id = store.save_task(&task)?;
     Ok(json!({ "id": id }))
+}
+
+/// The `project_uid` of `input`, when it has one: a uid puts the task in that
+/// project (the core drops one that does not exist), an empty text or null
+/// takes it out. Absent: the task keeps what it has.
+fn apply_project(task: &mut ponteproj::tasks::Task, input: &Value) -> Result<()> {
+    if let Some(value) = input.get("project_uid") {
+        task.project_uid = if value.is_null() {
+            String::new()
+        } else {
+            value.as_str().context("Projeto inválido.")?.trim().to_owned()
+        };
+    }
+    Ok(())
 }
 
 fn apply_planning(task: &mut ponteproj::tasks::Task, input: &Value) -> Result<()> {
@@ -650,7 +688,10 @@ fn get_task(store: &Store, id: i64) -> Result<Value> {
         .and_then(|d| documents.iter().find(|x| x.id == d))
         .map(|d| d.title.clone())
         .unwrap_or_default();
-    let numbers = documents.iter().map(|d| (d.id, d.document_number.clone())).collect();
+    let numbers = TaskNames {
+        documents: documents.iter().map(|d| (d.id, d.document_number.clone())).collect(),
+        projects: project_names(store)?,
+    };
     let mut value = task_json(&task, &numbers);
     value["document_title"] = json!(title);
     value["assignee"] = json!(task.assignee);
@@ -695,6 +736,7 @@ fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
     if let Some(uids) = uid_list(&input["categories"]) {
         task.categories = uids;
     }
+    apply_project(&mut task, input)?;
     anyhow::ensure!(!task.title.is_empty(), "Informe o título da tarefa.");
     anyhow::ensure!(
         ["baixa", "normal", "alta", "urgente"].contains(&task.priority.as_str()),
@@ -797,6 +839,248 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_setDocumentCategor
         let uids = uid_list(&json_arg(env, &uids_json)?)
             .context("Dados inválidos vindos do aplicativo.")?;
         with_store(|store| set_document_categories(store, document_id, &uids, version))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Projects: an optional grouping of tasks. Read-only listing and detail (with
+// the numbers of the rules of `ponteproj::projects`), save and delete.
+
+/// Moment of a timeline row as the core keeps planned moments: `AAAA-MM-DDTHH:MM`.
+fn moment(value: chrono::NaiveDateTime) -> String {
+    value.format("%Y-%m-%dT%H:%M").to_string()
+}
+
+fn project_json(p: &ponteproj::projects::Project, version: i64) -> Value {
+    json!({
+        "uid": p.uid,
+        "name": p.name,
+        "objective": p.objective,
+        "assignee": p.assignee,
+        "status": p.status.key(),
+        "status_label": p.status.label(),
+        "start_date": p.start_date,
+        "target_date": p.target_date,
+        "start_label": ponteproj::labels::date(&p.start_date),
+        "target_label": ponteproj::labels::date(&p.target_date),
+        "created_at": p.created_at,
+        "updated_at": p.updated_at,
+        // What a save must present back.
+        "version": version,
+    })
+}
+
+fn progress_json(p: &ponteproj::projects::Progress) -> Value {
+    json!({
+        "total": p.total,
+        "done": p.done,
+        "late": p.late,
+        "next_due": p.next_due,
+        "next_due_label": p.next_due.as_deref().map(ponteproj::labels::date).unwrap_or_default(),
+    })
+}
+
+fn risk_json(r: &ponteproj::projects::ProjectRisk) -> Value {
+    json!({
+        "deliveries_at_risk": r.deliveries_at_risk,
+        // The latest planned or projected end when it falls after the target
+        // date of the project (`AAAA-MM-DDTHH:MM`), otherwise null.
+        "target_at_risk": r.target_at_risk.map(moment),
+    })
+}
+
+/// Every project, by name, each with its progress and risk as of `today`.
+fn list_projects(store: &Store, today: chrono::NaiveDate) -> Result<Value> {
+    let list = store
+        .project_overview(today)?
+        .iter()
+        .map(|item| {
+            let version = store.project_version(&item.project.uid).unwrap_or(0);
+            let mut row = project_json(&item.project, version);
+            row["progress"] = progress_json(&item.progress);
+            row["risk"] = risk_json(&item.risk);
+            row
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "projects": list }))
+}
+
+fn timeline_json(rows: &[ponteproj::projects::TimelineRow]) -> Vec<Value> {
+    rows.iter()
+        .map(|row| {
+            json!({
+                "id": row.id,
+                "uid": row.uid,
+                "title": row.title,
+                "done": row.done,
+                "start": row.period.map(|p| moment(p.0)),
+                "end": row.period.map(|p| moment(p.1)),
+                // The period came from the projection, not from a fixed plan.
+                "projected": row.projected,
+                "due": row.due.map(|d| d.format("%Y-%m-%d").to_string()),
+                // The period ends after the due date.
+                "late": row.late,
+            })
+        })
+        .collect()
+}
+
+/// What the phone says when the project is not there (the core's text is
+/// written for the computer).
+const PROJECT_GONE: &str =
+    "Projeto não encontrado. Ele pode ter sido excluído em outro aparelho.";
+
+/// What the phone says when the project changed under the form.
+const PROJECT_CHANGED: &str =
+    "Este projeto foi alterado depois que você o abriu. Abra-o de novo para ver a versão atual.";
+
+/// One project, its tasks (the task JSON of every other list), and its
+/// timeline, as of `today`.
+fn get_project(store: &Store, uid: &str, today: chrono::NaiveDate) -> Result<Value> {
+    let overview = store
+        .project_overview(today)?
+        .into_iter()
+        .find(|item| item.project.uid == uid)
+        .context(PROJECT_GONE)?;
+    let numbers = document_numbers(store)?;
+    let all = store.list_tasks()?;
+    let day = today.format("%Y-%m-%d").to_string();
+    let mut mine: Vec<_> = all.iter().filter(|t| t.project_uid == uid).cloned().collect();
+    // Open tasks first (by due date, the ones without a date after them),
+    // concluded last.
+    mine.sort_by(|a, b| {
+        a.is_done()
+            .cmp(&b.is_done())
+            .then_with(|| a.due_date.is_empty().cmp(&b.due_date.is_empty()))
+            .then_with(|| a.due_date.cmp(&b.due_date))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let tasks = mine.iter().map(|t| task_json_on(t, &numbers, &day)).collect::<Vec<_>>();
+    let rows = ponteproj::projects::timeline(uid, &all);
+    let span = ponteproj::projects::timeline_span(&rows)
+        .map(|(start, end)| json!({ "start": moment(start), "end": moment(end) }));
+    let version = store.project_version(uid).unwrap_or(0);
+    let mut project = project_json(&overview.project, version);
+    project["progress"] = progress_json(&overview.progress);
+    project["risk"] = risk_json(&overview.risk);
+    Ok(json!({
+        "project": project,
+        "tasks": tasks,
+        "timeline": timeline_json(&rows),
+        "span": span,
+    }))
+}
+
+fn project_error(error: anyhow::Error) -> anyhow::Error {
+    let text = format!("{error:#}");
+    if text.starts_with("Conflito de edição simultânea") {
+        anyhow::anyhow!(PROJECT_CHANGED)
+    } else if text.starts_with("Projeto não encontrado") {
+        anyhow::anyhow!(PROJECT_GONE)
+    } else {
+        error
+    }
+}
+
+/// Creates (no `uid`) or changes a project. The fields present in `input`
+/// among `name`, `objective`, `assignee`, `status` (`ativo`, `pausado`,
+/// `concluido`, `arquivado`), `start_date` and `target_date` (`AAAA-MM-DD` or
+/// empty) are written over the stored project; for an existing one the
+/// `version` read by `getProject` or `listProjects` is required, and a
+/// project changed meanwhile saves nothing. Answers `{uid, version, project}`.
+fn save_project(store: &mut Store, input: &Value) -> Result<Value> {
+    let uid = input["uid"].as_str().unwrap_or("").trim().to_owned();
+    let mut project = if uid.is_empty() {
+        ponteproj::projects::Project::default()
+    } else {
+        store.get_project(&uid)?.context(PROJECT_GONE)?
+    };
+    let text = |key: &str| input[key].as_str().map(str::to_owned);
+    if let Some(name) = text("name") {
+        project.name = name;
+    }
+    if let Some(objective) = text("objective") {
+        project.objective = objective;
+    }
+    if let Some(assignee) = text("assignee") {
+        project.assignee = assignee.trim().to_owned();
+    }
+    if let Some(status) = text("status") {
+        project.status = ponteproj::projects::ProjectStatus::parse(&status)
+            .context("A situação do projeto é inválida.")?;
+    }
+    for (key, target) in [("start_date", &mut project.start_date), ("target_date", &mut project.target_date)] {
+        if let Some(value) = input.get(key) {
+            *target = valid_due(value.as_str().context("Data inválida.")?)?;
+        }
+    }
+    let saved = if uid.is_empty() {
+        store.save_project(&project).map_err(project_error)?
+    } else {
+        let version = input["version"].as_i64().context("Versão do projeto ausente.")?;
+        store.save_project_checked(&project, Some(version)).map_err(project_error)?
+    };
+    let version = store.project_version(&saved.uid)?;
+    let stored = store.get_project(&saved.uid)?.unwrap_or(saved);
+    Ok(json!({
+        "uid": stored.uid,
+        "version": version,
+        "project": project_json(&stored, version),
+    }))
+}
+
+/// Deletes a project; its tasks stay, with no project (`released` tells how
+/// many).
+fn delete_project(store: &mut Store, uid: &str) -> Result<Value> {
+    store.get_project(uid)?.context(PROJECT_GONE)?;
+    let released = store.project_tasks(uid)?.len();
+    store.delete_project(uid).map_err(project_error)?;
+    Ok(json!({ "released": released }))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listProjects<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| list_projects(store, chrono::Local::now().date_naive()))
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_getProject<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    uid: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let uid = text(env, &uid)?;
+        with_store(|store| get_project(store, &uid, chrono::Local::now().date_naive()))
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_saveProject<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    project_json_text: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = json_arg(env, &project_json_text)?;
+        with_store(|store| save_project(store, &input))
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_deleteProject<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    uid: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let uid = text(env, &uid)?;
+        with_store(|store| delete_project(store, &uid))
     })
 }
 
@@ -3551,7 +3835,7 @@ mod tests {
         task.title = "x".into();
         task.due_date = "2026-11-01".into();
         task.completed_at = Some("2026-11-02T10:00:00".into());
-        let json = task_json_on(&task, &std::collections::HashMap::new(), "2026-11-10");
+        let json = task_json_on(&task, &TaskNames::default(), "2026-11-10");
         assert_eq!(json["done"], json!(true));
         assert_eq!(json["overdue"], json!(false));
         assert_eq!(json["bucket"], json!("concluidas"));
@@ -3726,5 +4010,299 @@ mod tests {
         assert_eq!(empty.library_setting("holidays").unwrap(), None);
         // ... and the phone keeps using its own copy meanwhile.
         assert_eq!(none["text"], "uf PR\n");
+    }
+
+    // -- projects ---------------------------------------------------------
+
+    fn project_uid_of(saved: &Value) -> String {
+        saved["uid"].as_str().unwrap().to_owned()
+    }
+
+    fn today_of(text: &str) -> chrono::NaiveDate {
+        chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn a_project_is_created_changed_listed_and_deleted_on_the_phone() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let today = today_of("2026-11-19");
+        assert!(list_projects(&store, today).unwrap()["projects"].as_array().unwrap().is_empty());
+
+        // Creating: the core trims the name and fills the stamps.
+        let saved = save_project(
+            &mut store,
+            &json!({"name": "  Mudança   da sede ", "objective": "Levar tudo", "assignee": "Ana",
+                    "target_date": "2026-11-24"}),
+        )
+        .unwrap();
+        let uid = project_uid_of(&saved);
+        assert_eq!(uid.len(), 32);
+        assert_eq!(saved["project"]["name"], "Mudança da sede");
+        assert_eq!(saved["project"]["status"], "ativo");
+        assert_eq!(saved["project"]["status_label"], "Ativo");
+        assert_eq!(saved["project"]["target_label"], "24/11/2026");
+        let v1 = saved["version"].as_i64().unwrap();
+        assert!(v1 > 0 && saved["project"]["version"] == json!(v1));
+
+        // What the core refuses.
+        for bad in [
+            json!({"name": "   "}),
+            json!({"name": "x", "status": "feito"}),
+            json!({"name": "x", "target_date": "24/11/2026"}),
+            json!({"name": "x", "start_date": "2026-12-01", "target_date": "2026-11-01"}),
+            json!({"name": "mudanca da sede"}),
+        ] {
+            assert!(save_project(&mut store, &bad).is_err(), "{bad}");
+        }
+        assert_eq!(store.list_projects().unwrap().len(), 1);
+
+        // Tasks of the project: planned, projected, late and concluded.
+        let plan = create_task(
+            &mut store,
+            &json!({"title": "Planejar", "project_uid": uid, "due_date": "2026-11-30",
+                    "scheduled_start": "2026-11-23T09:00", "scheduled_end": "2026-11-24T18:00"}),
+        )
+        .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        create_task(
+            &mut store,
+            &json!({"title": "Executar", "project_uid": uid, "due_date": "2026-11-24",
+                    "dependencies": [plan], "estimate_minutes": 1440}),
+        )
+        .unwrap();
+        create_task(&mut store, &json!({"title": "Atrasada", "project_uid": uid, "due_date": "2026-11-10"}))
+            .unwrap();
+        let done = create_task(&mut store, &json!({"title": "Feita", "project_uid": uid}))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        store.complete_task(done).unwrap();
+        create_task(&mut store, &json!({"title": "Avulsa"})).unwrap();
+
+        // Reading never writes to the library.
+        let revision = store.cabinet_revision().unwrap();
+        let listed = list_projects(&store, today).unwrap();
+        let row = &listed["projects"][0];
+        assert_eq!(row["uid"], json!(uid));
+        assert_eq!(row["name"], "Mudança da sede");
+        assert_eq!(row["objective"], "Levar tudo");
+        assert_eq!(row["assignee"], "Ana");
+        assert_eq!(row["start_date"], "");
+        assert_eq!(row["progress"]["total"], 4);
+        assert_eq!(row["progress"]["done"], 1);
+        assert_eq!(row["progress"]["late"], 1);
+        assert_eq!(row["progress"]["next_due"], "2026-11-10");
+        assert_eq!(row["progress"]["next_due_label"], "10/11/2026");
+        assert_eq!(row["risk"]["deliveries_at_risk"], 1);
+        assert_eq!(row["risk"]["target_at_risk"], "2026-11-25T18:00");
+
+        let got = get_project(&store, &uid, today).unwrap();
+        assert_eq!(store.cabinet_revision().unwrap(), revision);
+        assert_eq!(got["project"]["uid"], json!(uid));
+        assert_eq!(got["project"]["progress"]["total"], 4);
+        assert_eq!(got["project"]["risk"]["target_at_risk"], "2026-11-25T18:00");
+        let tasks = got["tasks"].as_array().unwrap();
+        let titles: Vec<_> = tasks.iter().map(|t| t["title"].as_str().unwrap()).collect();
+        // Open ones by due date (the undated after them), concluded last.
+        assert_eq!(titles, ["Atrasada", "Executar", "Planejar", "Feita"]);
+        assert!(tasks.iter().all(|t| t["project_uid"] == json!(uid)));
+        assert!(tasks.iter().all(|t| t["project_name"] == "Mudança da sede"));
+        assert_eq!(tasks[0]["overdue"], json!(true));
+        let timeline = got["timeline"].as_array().unwrap();
+        let rows: Vec<_> = timeline.iter().map(|r| r["title"].as_str().unwrap()).collect();
+        assert_eq!(rows, ["Planejar", "Executar", "Atrasada", "Feita"]);
+        assert_eq!(timeline[0]["start"], "2026-11-23T09:00");
+        assert_eq!(timeline[0]["end"], "2026-11-24T18:00");
+        assert_eq!(timeline[0]["projected"], json!(false));
+        assert_eq!(timeline[0]["late"], json!(false));
+        assert_eq!(timeline[0]["due"], "2026-11-30");
+        assert_eq!(timeline[1]["start"], "2026-11-25T09:00");
+        assert_eq!(timeline[1]["end"], "2026-11-25T18:00");
+        assert_eq!(timeline[1]["projected"], json!(true));
+        assert_eq!(timeline[1]["late"], json!(true));
+        assert_eq!(timeline[2]["start"], Value::Null);
+        assert_eq!(timeline[2]["end"], Value::Null);
+        assert_eq!(timeline[2]["due"], "2026-11-10");
+        assert_eq!(timeline[3]["done"], json!(true));
+        assert_eq!(timeline[3]["due"], Value::Null);
+        assert_eq!(got["span"]["start"], "2026-11-10T00:00");
+        assert_eq!(got["span"]["end"], "2026-12-01T00:00");
+        assert!(get_project(&store, &"f".repeat(32), today).is_err());
+
+        // Changing: the version is required and a stale one saves nothing.
+        assert!(save_project(&mut store, &json!({"uid": uid, "name": "Outro"})).is_err());
+        let changed = save_project(
+            &mut store,
+            &json!({"uid": uid, "version": v1, "status": "pausado", "start_date": "2026-11-01"}),
+        )
+        .unwrap();
+        assert_eq!(changed["project"]["status"], "pausado");
+        assert_eq!(changed["project"]["status_label"], "Pausado");
+        assert_eq!(changed["project"]["name"], "Mudança da sede", "other fields stay");
+        assert_eq!(changed["project"]["start_date"], "2026-11-01");
+        let v2 = changed["version"].as_i64().unwrap();
+        assert_eq!(v2, v1 + 1);
+        let stale = save_project(&mut store, &json!({"uid": uid, "version": v1, "name": "Velho"}))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(stale, PROJECT_CHANGED);
+        assert_eq!(store.get_project(&uid).unwrap().unwrap().name, "Mudança da sede");
+        let archived =
+            save_project(&mut store, &json!({"uid": uid, "version": v2, "status": "arquivado"})).unwrap();
+        assert_eq!(archived["project"]["status"], "arquivado");
+
+        // The project of a task is set and taken off by the task functions.
+        let avulsa = store.list_tasks().unwrap().into_iter().find(|t| t.title == "Avulsa").unwrap();
+        let version = store.item_version("task", avulsa.id).unwrap().version;
+        save_task(&mut store, &json!({"id": avulsa.id, "version": version, "project_uid": uid})).unwrap();
+        assert_eq!(get_task(&store, avulsa.id).unwrap()["project_uid"], json!(uid));
+        assert_eq!(get_task(&store, avulsa.id).unwrap()["project_name"], "Mudança da sede");
+        let version = store.item_version("task", avulsa.id).unwrap().version;
+        save_task(&mut store, &json!({"id": avulsa.id, "version": version, "notes": "x"})).unwrap();
+        assert_eq!(get_task(&store, avulsa.id).unwrap()["project_uid"], json!(uid), "absent: kept");
+        let version = store.item_version("task", avulsa.id).unwrap().version;
+        save_task(&mut store, &json!({"id": avulsa.id, "version": version, "project_uid": ghost()})).unwrap();
+        assert_eq!(get_task(&store, avulsa.id).unwrap()["project_uid"], "", "unknown: dropped");
+        assert_eq!(get_task(&store, avulsa.id).unwrap()["project_name"], "");
+        let version = store.item_version("task", avulsa.id).unwrap().version;
+        save_task(&mut store, &json!({"id": avulsa.id, "version": version, "project_uid": uid})).unwrap();
+        let version = store.item_version("task", avulsa.id).unwrap().version;
+        save_task(&mut store, &json!({"id": avulsa.id, "version": version, "project_uid": null})).unwrap();
+        assert_eq!(get_task(&store, avulsa.id).unwrap()["project_uid"], "");
+        assert!(create_task(&mut store, &json!({"title": "Ruim", "project_uid": "abc"})).is_err());
+        assert!(create_task(&mut store, &json!({"title": "Ruim", "project_uid": 5})).is_err());
+
+        // Deleting keeps the tasks, with no project.
+        let gone = delete_project(&mut store, &uid).unwrap();
+        assert_eq!(gone["released"], 4);
+        assert!(list_projects(&store, today).unwrap()["projects"].as_array().unwrap().is_empty());
+        assert_eq!(store.list_tasks().unwrap().len(), 6, "the triage task of the document too");
+        assert!(store.list_tasks().unwrap().iter().all(|t| t.project_uid.is_empty()));
+        assert_eq!(get_project(&store, &uid, today).unwrap_err().to_string(), PROJECT_GONE);
+        assert_eq!(delete_project(&mut store, &uid).unwrap_err().to_string(), PROJECT_GONE);
+        assert_eq!(
+            save_project(&mut store, &json!({"uid": uid, "version": v2, "name": "Volta"}))
+                .unwrap_err()
+                .to_string(),
+            PROJECT_GONE
+        );
+    }
+
+    fn ghost() -> &'static str {
+        "0123456789abcdef0123456789abcdef"
+    }
+
+    #[test]
+    fn a_new_subtask_made_on_the_phone_takes_the_project_of_its_parent() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let uid = project_uid_of(&save_project(&mut store, &json!({"name": "Mudança"})).unwrap());
+        let parent = create_task(&mut store, &json!({"title": "Mãe", "project_uid": uid}))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let child = create_task(&mut store, &json!({"title": "Filha", "parent_task_id": parent}))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(get_task(&store, child).unwrap()["project_uid"], json!(uid));
+        let other = project_uid_of(&save_project(&mut store, &json!({"name": "Outro"})).unwrap());
+        let own = create_task(
+            &mut store,
+            &json!({"title": "Própria", "parent_task_id": parent, "project_uid": other}),
+        )
+        .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(get_task(&store, own).unwrap()["project_uid"], json!(other));
+        // Every task row carries the two fields, empty when there is none.
+        let plain = create_task(&mut store, &json!({"title": "Solta"})).unwrap()["id"].as_i64().unwrap();
+        let numbers = document_numbers(&store).unwrap();
+        let row = task_json(&find_task(&store, plain).unwrap(), &numbers);
+        assert_eq!((row["project_uid"].as_str(), row["project_name"].as_str()), (Some(""), Some("")));
+    }
+
+    #[test]
+    fn a_transport_file_of_a_newer_format_is_refused_by_the_phone_and_left_alone() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (_computer, drive, _) = first_transport(&dir.0);
+        // The transport this build writes is format 8, schema 21 (projects).
+        let header = ponteproj::sharedfolder::read_header(&drive).unwrap().unwrap();
+        assert_eq!((header.format, header.schema_version), (8, 21));
+        assert_eq!(ponteproj::sharedfolder::FORMAT, 8);
+        // What a later build writes is refused with the "update" message.
+        let raw = std::fs::read(&drive).unwrap();
+        let newer = String::from_utf8_lossy(&raw).replacen("\"format\":8", "\"format\":9", 1);
+        let work = dir.0.join("work.ponte");
+        std::fs::write(&work, newer.as_bytes()).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        let error = sync_paths(&mut phone, &work.display().to_string(), "", KEY)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("mais nova") && error.contains("Atualize"), "{error}");
+        assert_eq!(std::fs::read(&work).unwrap(), newer.as_bytes(), "nothing rewritten");
+        assert!(leftovers(&dir.0).is_empty());
+        assert!(phone.list_documents("").unwrap().is_empty(), "nothing adopted");
+    }
+
+    #[test]
+    fn the_projects_of_the_computer_reach_the_phone_and_the_phone_changes_reach_back() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        let project = computer
+            .save_project(&ponteproj::projects::Project::new("Reforma"))
+            .unwrap();
+        let mut task = ponteproj::tasks::Task::blank(None);
+        task.title = "Pintar".into();
+        task.project_uid = project.uid.clone();
+        computer.save_task(&task).unwrap();
+        let cfg = computer.load_intranet_config().unwrap();
+        let reporter = ponteproj::ai::Reporter::silent();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        let today = today_of("2026-11-19");
+        let listed = list_projects(&phone, today).unwrap();
+        assert_eq!(listed["projects"][0]["name"], "Reforma");
+        assert_eq!(listed["projects"][0]["progress"]["total"], 1);
+        let shown = get_project(&phone, &project.uid, today).unwrap();
+        assert_eq!(shown["tasks"][0]["title"], "Pintar");
+        assert_eq!(shown["tasks"].as_array().unwrap().len(), 1);
+
+        // The phone makes a project and files the task in it; the computer
+        // gets both, in order.
+        let made = save_project(&mut phone, &json!({"name": "Do celular"})).unwrap();
+        let uid = project_uid_of(&made);
+        let id = phone.list_tasks().unwrap().into_iter().find(|t| t.title == "Pintar").unwrap().id;
+        let version = phone.item_version("task", id).unwrap().version;
+        save_task(&mut phone, &json!({"id": id, "version": version, "project_uid": uid})).unwrap();
+        let sent = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(sent["written"], json!(true));
+        std::fs::copy(&work, &drive).unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        assert_eq!(computer.list_projects().unwrap().len(), 2);
+        let pintar = computer.list_tasks().unwrap().into_iter().find(|t| t.title == "Pintar").unwrap();
+        assert_eq!(pintar.project_uid, uid);
+        // The computer deletes the first project: its task stays on the phone.
+        computer.delete_project(&project.uid).unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        std::fs::copy(&drive, &work).unwrap();
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(phone.list_projects().unwrap().len(), 1);
+        assert_eq!(phone.list_tasks().unwrap().len(), 2, "the tasks stay");
     }
 }

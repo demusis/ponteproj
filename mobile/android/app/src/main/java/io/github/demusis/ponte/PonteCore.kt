@@ -60,6 +60,34 @@ class PonteCore {
      */
     external fun setDocumentCategories(documentId: Long, uidsJson: String, version: Long): String
 
+    /**
+     * Every project, by name, with its numbers: {projects: [{uid, name, objective, assignee,
+     * status ("ativo", "pausado", "concluido", "arquivado"), status_label, start_date,
+     * target_date (AAAA-MM-DD or ""), start_label, target_label, created_at, updated_at, version,
+     * progress: {total, done, late, next_due (or null), next_due_label},
+     * risk: {deliveries_at_risk, target_at_risk (AAAA-MM-DDTHH:MM or null)}}]}. Read-only.
+     */
+    external fun listProjects(): String
+
+    /**
+     * One project: {project (as in listProjects), tasks: [task] (the task JSON of getTask's list
+     * form, with "project_uid" and "project_name"), timeline: [{id, uid, title, done, start, end
+     * (AAAA-MM-DDTHH:MM or null), projected, due (AAAA-MM-DD or null), late}], span: {start, end}
+     * or null}. Read-only.
+     */
+    external fun getProject(uid: String): String
+
+    /**
+     * Creates (no "uid") or changes a project; the fields sent among name, objective, assignee,
+     * status, start_date, target_date are written, and the "version" of listProjects/getProject
+     * is required for an existing one (a project changed meanwhile saves nothing).
+     * Answer: {uid, version, project}.
+     */
+    external fun saveProject(json: String): String
+
+    /** Deletes a project; its tasks stay with no project. Answer: {released: N tasks}. */
+    external fun deleteProject(uid: String): String
+
     /** Names used as responsible person, most used first: {names: [String]}. */
     external fun assignees(): String
 
