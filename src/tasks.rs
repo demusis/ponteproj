@@ -537,6 +537,25 @@ impl Store {
         self.save_task_inner(task, None, true)
     }
 
+    /// Saves a task whose project the writer took off ON PURPOSE (the phone
+    /// sends the empty `project_uid` of such a save on its own): the removal
+    /// travels with the change even when this library's copy of the task had
+    /// no project to remove, so the main computer, the queue and the shared
+    /// folder do not keep a link that another copy gave it meanwhile. A plain
+    /// `save_task_checked` with an empty `project_uid` only means so when this
+    /// copy knew a link.
+    pub fn save_task_clearing_project(
+        &mut self,
+        task: &Task,
+        expected_version: Option<i64>,
+    ) -> Result<i64> {
+        ensure!(
+            task.project_uid.is_empty(),
+            "Uma tarefa que sai do projeto não pode nomear um."
+        );
+        self.save_task_inner(task, expected_version, true)
+    }
+
     /// One-click conclusion. Dependency rules are still enforced by
     /// `save_task_checked`, and the edit is version-checked like any other.
     pub fn complete_task(&mut self, id: i64) -> Result<Task> {

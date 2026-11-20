@@ -948,6 +948,136 @@ fn a_schema_20_mirror_with_the_higher_revision_does_not_erase_the_projects_of_a_
     assert!(c.list_sync_conflicts().unwrap().is_empty());
 }
 
+/// Rewrites a copy with `change` applied to its payload, keeping its
+/// lineage, schema and blobs.
+fn rewrite_copy(
+    path: &std::path::Path,
+    writer: &str,
+    revision: i64,
+    change: impl FnOnce(&mut crate::sharedfolder::Payload),
+) {
+    let mut copy = read_copy(path);
+    change(&mut copy.payload);
+    let request = crate::sharedfolder::WriteRequest {
+        lineage: &copy.header.lineage,
+        revision,
+        writer,
+        writer_name: writer,
+        schema_version: copy.header.schema_version,
+    };
+    crate::sharedfolder::write(path, KEY, &request, &copy.payload, &copy.blobs).unwrap();
+}
+
+fn folder_paths(dir: &std::path::Path, names: &[&str]) -> Vec<std::path::PathBuf> {
+    names
+        .iter()
+        .map(|name| {
+            let path = dir.join(name).join("ponte-sync.ponte");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            path
+        })
+        .collect()
+}
+
+fn shown(paths: &[&std::path::Path]) -> Vec<String> {
+    paths.iter().map(|p| p.display().to_string()).collect()
+}
+
+#[test]
+fn a_pending_delete_is_not_undone_by_the_older_copy_of_a_project_grafted_from_the_donor() {
+    let dir = tempfile::tempdir().unwrap();
+    let [f1, d] = <[_; 2]>::try_from(folder_paths(dir.path(), &["Drive1", "Drive2"])).unwrap();
+    let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+    let project = make(&mut a, "Antigo");
+    a.save_intranet_config(&folder_config("Servidor A", &shown(&[&f1])))
+        .unwrap();
+    sync(&mut a);
+    // An older mirror, with the project at version 1: the donor.
+    std::fs::copy(&f1, &d).unwrap();
+    // A renames it (version 2) and publishes; the copy A keeps beside its
+    // library is then lost, and the project is deleted while offline.
+    let mut renamed = a.get_project(&project.uid).unwrap().unwrap();
+    renamed.name = "Renomeado".into();
+    a.save_project(&renamed).unwrap();
+    sync(&mut a);
+    assert_eq!(a.project_version(&project.uid).unwrap(), 2);
+    let guard = dir.path().join("a.sqlite3-guarda.ponte");
+    let _ = std::fs::remove_file(guard);
+    a.delete_project(&project.uid).unwrap();
+    assert!(a.list_projects().unwrap().is_empty());
+    // The folder A wrote is now seen as a copy of the old format with the
+    // higher revision; the donor still holds the project at version 1.
+    let revision = read_copy(&f1).header.revision;
+    rewrite_as_schema_20(&f1, "old-writer", revision + 10);
+    let mut cfg = a.load_intranet_config().unwrap();
+    cfg.folder_files = shown(&[&f1, &d]);
+    a.save_intranet_config(&cfg).unwrap();
+    sync(&mut a);
+    assert!(a.list_projects().unwrap().is_empty(), "it stays deleted");
+    assert!(a.list_sync_conflicts().unwrap().is_empty());
+    assert!(a.list_offline_outbox().unwrap().is_empty());
+    for path in [&f1, &d] {
+        let written = read_copy(path);
+        assert!(written.payload.snapshot.projects.is_empty(), "{path:?}");
+    }
+}
+
+#[test]
+fn a_change_the_donor_refused_is_replayed_not_skipped_as_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let [f1, f2, f3] =
+        <[_; 3]>::try_from(folder_paths(dir.path(), &["Drive1", "Drive2", "Drive3"])).unwrap();
+    let mut author = Store::open(&dir.path().join("author.sqlite3")).unwrap();
+    let project = make(&mut author, "Antigo");
+    author
+        .save_intranet_config(&folder_config("Autor", &shown(&[&f1])))
+        .unwrap();
+    sync(&mut author);
+    let revision = read_copy(&f1).header.revision;
+    let version = author.project_version(&project.uid).unwrap();
+    // A rename that some copy carries in its journal.
+    let mut renamed = project.clone();
+    renamed.name = "Renomeado".into();
+    let change = crate::sharedfolder::JournalEntry {
+        uid: "e".repeat(32),
+        created_at: "2026-01-01T00:00:00Z".into(),
+        actor: "Outro".into(),
+        writer: "w-outro".into(),
+        label: "Projeto renomeado".into(),
+        mutation: IntranetMutation::SaveProject {
+            project: renamed,
+            expected_version: Some(version),
+        },
+        base: None,
+        revision,
+        created: Vec::new(),
+    };
+    std::fs::copy(&f1, &f2).unwrap();
+    std::fs::copy(&f1, &f3).unwrap();
+    // The copy that has it in its journal (the oldest).
+    let entry = change.clone();
+    rewrite_copy(&f3, "w-outro", revision, |payload| {
+        payload.applied.push(entry.uid.clone());
+        payload.journal.push(entry);
+    });
+    // The donor refused it (a conflict on its side): the change is in its
+    // `applied`, never in its journal, and its projects do not have it.
+    let uid = change.uid.clone();
+    rewrite_copy(&f2, "w-doador", revision + 5, |payload| {
+        payload.applied.push(uid);
+    });
+    // The base: a copy of the old format with the highest revision.
+    rewrite_as_schema_20(&f1, "old-writer", revision + 10);
+    let mut other = Store::open(&dir.path().join("other.sqlite3")).unwrap();
+    other
+        .save_intranet_config(&folder_config("Outro", &shown(&[&f1, &f2, &f3])))
+        .unwrap();
+    sync(&mut other);
+    let found = other.get_project(&project.uid).unwrap().unwrap();
+    assert_eq!(found.name, "Renomeado", "the change was not dropped");
+    assert!(other.list_sync_conflicts().unwrap().is_empty());
+}
+
 fn live_url(server: &HostServer) -> String {
     format!("http://{}", server.local_addr())
 }
@@ -1037,6 +1167,65 @@ fn an_upgraded_client_asks_for_a_full_copy_even_when_the_revision_is_the_same() 
     );
     assert_eq!(stored(&client, id).project_uid, project.uid);
     // Settled: the next poll is the usual cheap one.
+    assert!(!client.sync_from_host(false).unwrap());
+    server.stop();
+}
+
+/// Switches the library to Local mode, makes a task and an edit there, and
+/// goes back to the main computer. Returns the id of the new task.
+fn work_in_local_mode(client: &mut Store, edited: i64) -> i64 {
+    let back = client.load_intranet_config().unwrap();
+    let mut local = back.clone();
+    local.mode = IntranetMode::Local;
+    client.save_intranet_config(&local).unwrap();
+    let mut mine = Task::standalone();
+    mine.title = "Só aqui".into();
+    let id = client.save_task(&mine).unwrap();
+    let mut task = stored(client, edited);
+    task.notes = "Anotada em modo local".into();
+    client.save_task(&task).unwrap();
+    client.save_intranet_config(&back).unwrap();
+    id
+}
+
+#[test]
+fn an_upgraded_client_at_the_same_revision_takes_only_the_projects_and_keeps_its_local_work() {
+    let (_dir, host, _cfg, mut server, mut client, project, id) = upgraded_client_with_old_cache();
+    let local_id = work_in_local_mode(&mut client, id);
+    assert!(client.sync_from_host(false).unwrap());
+    // What the old copy could not carry arrived.
+    assert_eq!(
+        client.list_projects().unwrap(),
+        host.list_projects().unwrap()
+    );
+    assert_eq!(stored(&client, id).project_uid, project.uid);
+    assert_eq!(
+        client.project_version(&project.uid).unwrap(),
+        host.project_version(&project.uid).unwrap()
+    );
+    // Nothing else was replaced.
+    assert_eq!(by_title(&client, "Só aqui").id, local_id);
+    assert_eq!(stored(&client, id).notes, "Anotada em modo local");
+    assert!(!host
+        .list_tasks()
+        .unwrap()
+        .iter()
+        .any(|t| t.title == "Só aqui"));
+    // Done once.
+    assert!(!client.sync_from_host(false).unwrap());
+    assert_eq!(by_title(&client, "Só aqui").id, local_id);
+    server.stop();
+}
+
+#[test]
+fn an_upgraded_client_still_takes_the_full_copy_when_the_revision_moved() {
+    let (_dir, mut host, _cfg, mut server, mut client, project, id) =
+        upgraded_client_with_old_cache();
+    work_in_local_mode(&mut client, id);
+    task_in(&mut host, "Nova no anfitrião", "");
+    assert!(client.sync_from_host(false).unwrap());
+    assert_eq!(client.list_tasks().unwrap(), host.list_tasks().unwrap());
+    assert_eq!(stored(&client, id).project_uid, project.uid);
     assert!(!client.sync_from_host(false).unwrap());
     server.stop();
 }
@@ -1233,6 +1422,185 @@ fn the_queue_of_a_client_puts_a_project_before_the_task_that_names_it() {
     server.stop();
 }
 
+#[test]
+fn clearing_the_project_on_purpose_is_queued_even_when_the_copy_had_none() {
+    let (_dir, mut host, _cfg, mut server, mut client) = host_with_server();
+    let live = live_url(&server);
+    let project = make(&mut host, "Reforma");
+    let id = task_in(&mut client, "Alvo", "");
+    let other = task_in(&mut client, "Outra", "");
+    point_at(&mut client, DEAD_HOST);
+    let flag_of = |store: &Store, id: i64| {
+        store
+            .list_offline_outbox()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|e| match &e.mutation {
+                IntranetMutation::SaveTask {
+                    task, no_project, ..
+                } if task.id == id => Some(*no_project),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // The cached copy has no link: a plain save says nothing about it, the
+    // explicit one says "none".
+    let mut plain = stored(&client, other);
+    plain.notes = "Só a anotação".into();
+    client.save_task(&plain).unwrap();
+    assert!(!flag_of(&client, other));
+    let mut cleared = stored(&client, id);
+    cleared.notes = "Tirada do projeto".into();
+    let version = client.item_version("task", id).unwrap().version;
+    client
+        .save_task_clearing_project(&cleared, Some(version))
+        .unwrap();
+    assert!(flag_of(&client, id));
+    // Meanwhile another computer put the task in a project: the explicit
+    // removal still wins when the queue is replayed, the plain one does not.
+    let mut linked = stored(&host, id);
+    linked.project_uid = project.uid.clone();
+    host.save_task(&linked).unwrap();
+    let mut linked = stored(&host, other);
+    linked.project_uid = project.uid.clone();
+    host.save_task(&linked).unwrap();
+    point_at(&mut client, &live);
+    client.sync_from_host(false).unwrap();
+    // Both saves hit a newer task: each waits for the person, who merges.
+    for conflict in client.list_sync_conflicts().unwrap() {
+        client
+            .resolve_sync_conflict(conflict.id, crate::intranet::ConflictResolution::Merge)
+            .unwrap();
+    }
+    assert!(stored(&host, id).project_uid.is_empty(), "explicit removal");
+    assert_eq!(
+        stored(&host, id).notes.lines().next(),
+        Some("Tirada do projeto")
+    );
+    assert_eq!(stored(&host, other).project_uid, project.uid, "plain save");
+    server.stop();
+}
+
+#[test]
+fn an_explicit_removal_survives_the_merge_with_a_link_given_meanwhile_in_the_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, mut b, _) = pair(dir.path());
+    let id = task_in(&mut a, "Alvo", "");
+    let other = task_in(&mut a, "Outra", "");
+    sync(&mut a);
+    sync(&mut b);
+    let project = make(&mut b, "Reforma");
+    // A, with the copy that has no link, takes the project off one task on
+    // purpose and only edits the notes of the other.
+    let mut cleared = stored(&a, id);
+    cleared.notes = "Tirada do projeto".into();
+    let version = a.item_version("task", id).unwrap().version;
+    a.save_task_clearing_project(&cleared, Some(version))
+        .unwrap();
+    let mut plain = stored(&a, other);
+    plain.notes = "Só a anotação".into();
+    a.save_task(&plain).unwrap();
+    // Meanwhile B puts both in the project.
+    for target in [id, other] {
+        let mut linked = stored(&b, target);
+        linked.project_uid = project.uid.clone();
+        b.save_task(&linked).unwrap();
+    }
+    sync(&mut b);
+    sync(&mut a);
+    // Both of A's saves meet a newer task: A merges them.
+    for conflict in a.list_sync_conflicts().unwrap() {
+        a.resolve_sync_conflict(conflict.id, crate::intranet::ConflictResolution::Merge)
+            .unwrap();
+    }
+    sync(&mut a);
+    sync(&mut b);
+    for store in [&a, &b] {
+        assert!(stored(store, id).project_uid.is_empty(), "explicit removal");
+        assert_eq!(stored(store, other).project_uid, project.uid, "plain save");
+        assert_eq!(stored(store, other).notes, "Só a anotação");
+    }
+}
+
+/// A task and one that depends on it, both open.
+fn chained(store: &mut Store) -> (i64, i64) {
+    let a = task_in(store, "Primeira", "");
+    let mut second = Task::standalone();
+    second.title = "Segunda".into();
+    second.dependencies = vec![a];
+    let b = store.save_task(&second).unwrap();
+    (a, b)
+}
+
+/// Offline: complete A, complete B (which needs A), create a project and put
+/// A in it. Returns the project.
+fn complete_chain_then_assign(store: &mut Store, a: i64, b: i64) -> Project {
+    store.complete_task(a).unwrap();
+    store.complete_task(b).unwrap();
+    let project = make(store, "Depois");
+    let mut task = stored(store, a);
+    task.project_uid = project.uid.clone();
+    store.save_task(&task).unwrap();
+    project
+}
+
+fn assert_chain_queue_in_order(outbox: &[crate::intranet::OutboxEntry], a: i64, b: i64) {
+    let of = |id: i64| {
+        outbox
+            .iter()
+            .position(|e| matches!(&e.mutation, IntranetMutation::SaveTask { task, .. } if task.id == id && task.status == "concluida"))
+            .unwrap()
+    };
+    // The entry that completes A stays before the one that completes B.
+    assert!(of(a) < of(b), "A is completed before B in the queue");
+    let last = outbox.last().unwrap();
+    assert!(
+        matches!(&last.mutation, IntranetMutation::SaveTask { task, .. } if task.id == a && !task.project_uid.is_empty()),
+        "the assignment goes at the end"
+    );
+}
+
+#[test]
+fn a_task_assigned_to_a_later_project_does_not_move_behind_the_task_that_needs_it_done_on_a_client()
+{
+    let (_dir, host, _cfg, mut server, mut client) = host_with_server();
+    let live = live_url(&server);
+    let (a, b) = chained(&mut client);
+    point_at(&mut client, DEAD_HOST);
+    let project = complete_chain_then_assign(&mut client, a, b);
+    assert_chain_queue_in_order(&client.list_offline_outbox().unwrap(), a, b);
+    point_at(&mut client, &live);
+    client.sync_from_host(false).unwrap();
+    assert!(client.list_offline_outbox().unwrap().is_empty());
+    assert!(client.list_sync_conflicts().unwrap().is_empty());
+    for store in [&host, &client] {
+        assert_eq!(stored(store, b).status, "concluida", "B was accepted");
+        assert_eq!(stored(store, a).status, "concluida");
+        assert_eq!(stored(store, a).project_uid, project.uid);
+    }
+    server.stop();
+}
+
+#[test]
+fn a_task_assigned_to_a_later_project_does_not_move_behind_the_task_that_needs_it_done_in_the_folder(
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a_store, mut b_store, _) = pair(dir.path());
+    let (a, b) = chained(&mut a_store);
+    sync(&mut a_store);
+    sync(&mut b_store);
+    let project = complete_chain_then_assign(&mut a_store, a, b);
+    assert_chain_queue_in_order(&a_store.list_offline_outbox().unwrap(), a, b);
+    sync(&mut a_store);
+    sync(&mut b_store);
+    for store in [&a_store, &b_store] {
+        assert_eq!(stored(store, b).status, "concluida", "B was accepted");
+        assert_eq!(stored(store, a).project_uid, project.uid);
+        assert!(store.list_sync_conflicts().unwrap().is_empty());
+    }
+}
+
 fn child_of(parent: i64, title: &str) -> Task {
     let mut task = Task::standalone();
     task.title = title.into();
@@ -1282,6 +1650,51 @@ fn a_subtask_made_offline_keeps_the_project_it_inherited_when_the_parent_moves()
         assert_eq!(stored(store, parent).project_uid, q.uid);
     }
     server.stop();
+}
+
+#[test]
+fn the_first_publisher_of_a_folder_settles_the_project_of_a_new_subtask_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("Drive").join("ponte-sync.ponte");
+    std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
+    let files = vec![folder.display().to_string()];
+    // A has its own library, with a parent task in a project, and is the
+    // first to publish it.
+    let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+    let p = make(&mut a, "P");
+    let q = make(&mut a, "Q");
+    let parent = task_in(&mut a, "Pai", &p.uid);
+    a.save_intranet_config(&folder_config("Servidor A", &files))
+        .unwrap();
+    sync(&mut a);
+    assert!(!a.projects_cache_stale(), "the first copy is of this build");
+    let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+    b.save_intranet_config(&folder_config("Servidor B", &files))
+        .unwrap();
+    sync(&mut b);
+    assert!(!b.projects_cache_stale());
+    // A makes a subtask without naming a project: it carries what A saw.
+    a.save_task(&child_of(parent, "Filha")).unwrap();
+    assert_eq!(by_title(&a, "Filha").project_uid, p.uid);
+    let queued = a.list_offline_outbox().unwrap();
+    assert!(
+        queued.iter().any(|e| matches!(
+            &e.mutation,
+            IntranetMutation::SaveTask { task, .. } if task.title == "Filha" && task.project_uid == p.uid
+        )),
+        "the queued create names the project the person saw"
+    );
+    // B moves the parent and publishes first.
+    let mut moved = stored(&b, parent);
+    moved.project_uid = q.uid.clone();
+    b.save_task(&moved).unwrap();
+    sync(&mut b);
+    sync(&mut a);
+    sync(&mut b);
+    for store in [&a, &b] {
+        assert_eq!(by_title(store, "Filha").project_uid, p.uid);
+        assert_eq!(stored(store, parent).project_uid, q.uid);
+    }
 }
 
 #[test]

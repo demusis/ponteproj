@@ -751,12 +751,22 @@ fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
         task.categories = uids;
     }
     apply_project(&mut task, input)?;
+    // A `project_uid` that is present and empty (or null) is the person
+    // taking the task out of its project: that travels with the change, even
+    // when this copy of the task has no project to take out (another copy may
+    // have given it one meanwhile). Absent, the link is left alone.
+    let clears_project = input.get("project_uid").is_some() && task.project_uid.is_empty();
     anyhow::ensure!(!task.title.is_empty(), "Informe o título da tarefa.");
     anyhow::ensure!(
         ["baixa", "normal", "alta", "urgente"].contains(&task.priority.as_str()),
         "A prioridade da tarefa é inválida."
     );
-    store.save_task_checked(&task, Some(version)).map_err(task_conflict)?;
+    if clears_project {
+        store.save_task_clearing_project(&task, Some(version))
+    } else {
+        store.save_task_checked(&task, Some(version))
+    }
+    .map_err(task_conflict)?;
     Ok(json!({ "id": id, "version": store.item_version("task", id)?.version }))
 }
 
@@ -4299,6 +4309,55 @@ mod tests {
         assert_eq!(project_of(&store, loose), json!(""));
         // A project that is not a text is a mistake.
         assert!(create_task(&mut store, &json!({"title": "G", "project_uid": 7})).is_err());
+    }
+
+    #[test]
+    fn saving_a_task_with_an_empty_or_null_project_queues_an_explicit_removal() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let uid = project_uid_of(&save_project(&mut store, &json!({"name": "Mudança"})).unwrap());
+        let new = |store: &mut Store, title: &str| {
+            let id = create_task(store, &json!({"title": title})).unwrap()["id"].as_i64().unwrap();
+            let version = store.item_version("task", id).unwrap().version;
+            (id, version)
+        };
+        // What the queue holds for the last save of a task.
+        let queued = |store: &Store, id: i64| {
+            store
+                .list_offline_outbox()
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|e| match &e.mutation {
+                    ponteproj::intranet::IntranetMutation::SaveTask { task, no_project, .. }
+                        if task.id == id =>
+                    {
+                        Some((task.project_uid.clone(), *no_project))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // The copy of the task has no project; the phone sends an explicit
+        // empty text, an explicit null, nothing, or a project.
+        let (empty, v) = new(&mut store, "vazio");
+        save_task(&mut store, &json!({"id": empty, "version": v, "project_uid": ""})).unwrap();
+        assert_eq!(queued(&store, empty), (String::new(), true));
+        let (nulled, v) = new(&mut store, "nulo");
+        save_task(&mut store, &json!({"id": nulled, "version": v, "project_uid": null})).unwrap();
+        assert_eq!(queued(&store, nulled), (String::new(), true));
+        let (absent, v) = new(&mut store, "ausente");
+        save_task(&mut store, &json!({"id": absent, "version": v, "notes": "só isto"})).unwrap();
+        assert_eq!(queued(&store, absent), (String::new(), false));
+        let (named, v) = new(&mut store, "nomeado");
+        save_task(&mut store, &json!({"id": named, "version": v, "project_uid": uid})).unwrap();
+        assert_eq!(queued(&store, named), (uid.clone(), false));
+        // Taking a task out of a project stays what it was.
+        let version = store.item_version("task", named).unwrap().version;
+        save_task(&mut store, &json!({"id": named, "version": version, "project_uid": ""})).unwrap();
+        assert_eq!(get_task(&store, named).unwrap()["project_uid"], json!(""));
     }
 
     #[test]

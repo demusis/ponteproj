@@ -1053,6 +1053,18 @@ fn is_category_mutation(mutation: &IntranetMutation) -> bool {
     )
 }
 
+/// Records the library schema of the copy this library now holds (see
+/// `Store::projects_cache_stale`). Written in the transaction that settles
+/// the exchange which made the library that copy.
+fn record_cache_schema(tx: &Connection, schema: i64) -> Result<()> {
+    tx.execute(
+        "INSERT INTO client_cache(id,schema) VALUES(1,?1)
+         ON CONFLICT(id) DO UPDATE SET schema=excluded.schema",
+        [schema],
+    )?;
+    Ok(())
+}
+
 fn is_project_mutation(mutation: &IntranetMutation) -> bool {
     matches!(
         mutation,
@@ -2457,11 +2469,7 @@ impl Store {
             }
         }
         // What kind of copy this library now is (see `projects_cache_stale`).
-        tx.execute(
-            "INSERT INTO client_cache(id,schema) VALUES(1,?1)
-             ON CONFLICT(id) DO UPDATE SET schema=excluded.schema",
-            [snapshot.schema_version],
-        )?;
+        record_cache_schema(&tx, snapshot.schema_version)?;
         // This library now numbers its items as the copy it received.
         crate::idmap::reset_frame(&tx, true)?;
         finish(&tx)?;
@@ -2884,11 +2892,14 @@ impl Store {
         // numbers: only a full copy of the main one settles it.
         // The same for a library upgraded while it held a copy taken before
         // the projects: the main computer may still be at that revision.
-        let since = if force_full
-            || pushed_offline
-            || crate::idmap::has_pending(&self.conn)?
-            || self.projects_cache_stale()
-        {
+        // Only the projects (and the links of the tasks to them) can be
+        // missing from such a copy: when the revision turns out to be the
+        // same, nothing else of this library is replaced (it may hold work
+        // that no queue protects, made in Local mode).
+        let numbers_pending = crate::idmap::has_pending(&self.conn)?;
+        let projects_only =
+            !force_full && !pushed_offline && !numbers_pending && self.projects_cache_stale();
+        let since = if force_full || pushed_offline || numbers_pending || projects_only {
             None
         } else {
             Some(cfg.synced_revision)
@@ -2912,6 +2923,9 @@ impl Store {
         match response {
             RpcResponse::UpToDate { .. } => Ok(pushed_offline),
             RpcResponse::Snapshot(snapshot) => {
+                if projects_only && snapshot.revision == cfg.synced_revision {
+                    return self.take_projects_from(&snapshot);
+                }
                 let cfg_clone = cfg.clone();
                 self.apply_snapshot_and(
                     &snapshot,
@@ -2924,6 +2938,93 @@ impl Store {
             RpcResponse::Error { message } => bail!("{message}"),
             _ => bail!("Resposta inesperada do computador principal durante a sincronização."),
         }
+    }
+
+    /// The copy this library holds is at the revision of the main computer
+    /// but predates the projects: takes from `snapshot` only what that copy
+    /// could not carry (the projects, the versions kept for them, deleted
+    /// ones included, and the link of the tasks to them) and records that the
+    /// copy now knows them. Whatever this library already has stays as it
+    /// is: tasks, edits made in Local mode, projects made here.
+    pub(crate) fn take_projects_from(&mut self, snapshot: &CabinetSnapshot) -> Result<bool> {
+        // A main computer that cannot carry projects has nothing to give.
+        if snapshot.schema_version < PROJECTS_SCHEMA {
+            return Ok(false);
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut changed = false;
+        let known: std::collections::BTreeSet<String> = tx
+            .prepare("SELECT uid FROM projects")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let missing: Vec<crate::projects::Project> = snapshot
+            .projects
+            .iter()
+            .filter(|p| !known.contains(&p.uid))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            crate::projects::apply_projects(&tx, &missing)?;
+            changed = true;
+        }
+        for (kind, item_id, meta) in snapshot
+            .item_versions
+            .iter()
+            .filter(|(k, _, _)| k == "project")
+        {
+            changed |= tx.execute(
+                "INSERT OR IGNORE INTO item_versions(kind,item_id,version,payload) VALUES(?1,?2,?3,?4)",
+                params![
+                    kind,
+                    item_id,
+                    meta.version,
+                    seal(&serde_json::to_vec(meta)?)?
+                ],
+            )? > 0;
+        }
+        for task in snapshot
+            .tasks
+            .iter()
+            .filter(|t| !t.uid.is_empty() && !t.project_uid.is_empty())
+        {
+            let row: Option<Vec<u8>> = tx
+                .query_row("SELECT payload FROM tasks WHERE id=?1", [task.id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            let Some(mut mine) = row
+                .and_then(|blob| unseal(&blob).ok())
+                .and_then(|plain| serde_json::from_slice::<Task>(&plain).ok())
+            else {
+                continue;
+            };
+            let exists = tx
+                .query_row(
+                    "SELECT 1 FROM projects WHERE uid=?1",
+                    [&task.project_uid],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if mine.uid == task.uid
+                && mine.document_id == task.document_id
+                && mine.project_uid.is_empty()
+                && exists
+            {
+                mine.project_uid = task.project_uid.clone();
+                tx.execute(
+                    "UPDATE tasks SET payload=?1 WHERE id=?2",
+                    params![seal(&serde_json::to_vec(&mine)?)?, task.id],
+                )?;
+                changed = true;
+            }
+        }
+        // Done once: the next polls are the usual cheap ones.
+        record_cache_schema(&tx, snapshot.schema_version)?;
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// Exchange with the transport files of the shared-folder mode. Reads
@@ -3305,11 +3406,36 @@ impl Store {
                     incoming.projects = self.export_projects()?;
                     self.project_item_versions()?
                 };
+                // A project this library deleted after the donor's version of
+                // it (a deletion still waiting in the queue included) stays
+                // deleted: the donor's older copy of it must not bring it back
+                // (the deletion would then expect a version that is gone).
+                let mut project_versions: Vec<(String, i64, VersionMeta)> = project_versions;
+                let mut gone: std::collections::BTreeSet<String> = Default::default();
+                if donor.is_some() && !joining {
+                    for project in &incoming.projects {
+                        if self.project_exists(&project.uid) {
+                            continue;
+                        }
+                        let key = crate::work_templates::version_key(&project.uid);
+                        let mine = self.item_version("project", key)?;
+                        let theirs = project_versions
+                            .iter()
+                            .find(|(_, id, _)| *id == key)
+                            .map_or(0, |(_, _, meta)| meta.version);
+                        if mine.version > theirs {
+                            gone.insert(project.uid.clone());
+                            project_versions.retain(|(_, id, _)| *id != key);
+                            project_versions.push(("project".to_owned(), key, mine));
+                        }
+                    }
+                    incoming.projects.retain(|p| !gone.contains(&p.uid));
+                }
                 incoming
                     .item_versions
                     .retain(|(kind, _, _)| kind != "project");
                 incoming.item_versions.extend(project_versions);
-                carried_old_fields |= !incoming.projects.is_empty();
+                carried_old_fields |= !incoming.projects.is_empty() || !gone.is_empty();
                 if donor.is_none() && best.header.schema_version >= SCHEDULE_SCHEMA {
                     let mut statement = self.conn.prepare("SELECT id, payload FROM tasks")?;
                     let rows = statement.query_map([], |row| {
@@ -3333,9 +3459,18 @@ impl Store {
                             carried_old_fields = true;
                         }
                     }
+                    if gone.contains(&task.project_uid) {
+                        task.project_uid.clear();
+                    }
                 }
+                // Only what the donor applied SUCCESSFULLY is inside its
+                // projects: a change it refused is also in `applied` (so it
+                // is not offered again) but not in its journal, and replayed
+                // here it either applies or becomes a conflict to decide,
+                // never a silent loss. (A change old enough to have left the
+                // journal is replayed too: at worst a conflict, never a loss.)
                 donor_applied = donor
-                    .map(|d| d.payload.applied.iter().cloned().collect())
+                    .map(|d| d.payload.journal.iter().map(|e| e.uid.clone()).collect())
                     .unwrap_or_default();
             }
             store.apply_snapshot(
@@ -3700,6 +3835,9 @@ impl Store {
                 // First copy, made from this library: its numbers are the
                 // reference from now on.
                 crate::idmap::reset_frame(tx, true)?;
+                // And a copy of the schema of this build: its tasks carry
+                // their projects (see `projects_cache_stale`).
+                record_cache_schema(tx, crate::storage::SCHEMA_VERSION)?;
             }
             crate::idmap::save_frame_journal(tx, &payload.journal)
         };
@@ -4373,6 +4511,34 @@ impl Store {
                                         if project.uid == task.project_uid
                                 ))
                     );
+                // Moving the merged edit behind a change queued after it is
+                // only safe when nothing there can depend on it (the edit
+                // of a project cannot). Otherwise (a later completion that
+                // needs this task done, say) the earlier entry stays where it
+                // is, and what is new goes at the end as an entry of its own,
+                // expecting the version the earlier entry leaves.
+                if must_move
+                    && matches!(mutation, IntranetMutation::SaveTask { .. })
+                    && existing
+                        .iter()
+                        .any(|e| e.id > prev.id && !is_project_mutation(&e.mutation))
+                {
+                    let mut mutation = mutation;
+                    if let IntranetMutation::SaveTask {
+                        expected_version, ..
+                    } = &mut mutation
+                    {
+                        *expected_version = match &prev.mutation {
+                            IntranetMutation::SaveTask {
+                                expected_version: Some(v),
+                                ..
+                            } => Some(v + 1),
+                            _ => None,
+                        };
+                    }
+                    self.insert_outbox_entry(actor, mutation, base, Vec::new())?;
+                    return Ok(());
+                }
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
                 let updated = OutboxEntry {
                     id: prev.id,
@@ -4406,6 +4572,16 @@ impl Store {
                 return Ok(());
             }
         }
+        self.insert_outbox_entry(actor, mutation, base, created)
+    }
+
+    fn insert_outbox_entry(
+        &mut self,
+        actor: &str,
+        mutation: IntranetMutation,
+        base: Option<IntranetMutation>,
+        created: Vec<crate::idmap::CreatedId>,
+    ) -> Result<()> {
         let entry = OutboxEntry {
             id: 0,
             created_at: now_iso(),
@@ -4833,6 +5009,27 @@ impl Store {
                         .flatten()
                         .map(|p| p.name)
                         .unwrap_or_default());
+                    // The writer took the task out of its project on purpose:
+                    // an empty link equal to the ancestor's is then a choice,
+                    // not "untouched", and a link the other copy gave the task
+                    // meanwhile does not survive it.
+                    if local_no_project
+                        && local_task.project_uid.is_empty()
+                        && !m.project_uid.is_empty()
+                    {
+                        let base_link = base_task.map(|b| b.project_uid.as_str());
+                        if base_link != Some(m.project_uid.as_str()) {
+                            kept.push(format!(
+                                "Projeto: no computador principal estava \"{}\"",
+                                self.get_project(&m.project_uid)
+                                    .ok()
+                                    .flatten()
+                                    .map(|p| p.name)
+                                    .unwrap_or_default()
+                            ));
+                        }
+                        m.project_uid.clear();
+                    }
                     m.categories = crate::categories::merge_uids(
                         base_task.map(|b| b.categories.as_slice()),
                         &ht.categories,
