@@ -398,7 +398,7 @@ No celular, ao editar uma tarefa, em **Depende de**, **Escolher tarefas…** abr
 
 **Hoje no celular (Ponte de bolso 0.15.0).** No alto, uma linha de resumo diz o que vence (ou *Nada vence hoje.*); se há tarefas atrasadas, *⚠ N atrasadas · ver* leva à lista. Logo abaixo, a semana: as setas mudam de semana e **Hoje** volta à atual. A faixa mostra os sete dias com pontinhos (azul: trabalho planejado ou reserva; vermelho: prazo). Toque num dia para ver a agenda dele, com o horário e os avisos de dependência; dia sem nada diz *Dia livre.* Tocar numa linha abre a tarefa ou a reserva.
 
-**Widget Hoje:** mantenha a tela inicial pressionada, escolha Widgets e adicione Hoje do Ponte de bolso. Ele mostra os n?meros de tarefas, cobran?as e entregas em risco e at? quatro tarefas. Com o bloqueio do aplicativo ligado, mostra apenas os n?meros.
+**Widget Hoje:** mantenha a tela inicial pressionada, escolha Widgets e adicione Hoje do Ponte de bolso. Ele mostra os números de tarefas, cobranças e entregas em risco e até quatro tarefas. Com o bloqueio do aplicativo ligado, mostra apenas os números.
 
 **No Ponte de bolso 0.10.0**, uma sincronização pedida em **Sincronizar agora**, na tela de documento ou no diálogo de status acontece ou informa o motivo; sem Wi-Fi, oferece **Usar dados móveis desta vez**. As sincronizações automáticas continuam silenciosas, e a versão instala por cima da 0.9.x.
 
