@@ -3007,9 +3007,46 @@ impl Store {
         } else {
             return None;
         };
+        let where_ = self
+            .conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .and_then(|db| {
+                std::path::Path::new(db)
+                    .parent()
+                    .map(|d| d.display().to_string())
+            })
+            .map(|dir| format!(" na pasta {dir} (arquivo terminado em -antes-da-substituicao-…)"))
+            .unwrap_or_default();
         Some(format!(
-            "{CONFIRM_REPLACE} {cause}. Nada foi enviado nem substituído aqui: as alterações deste computador continuam guardadas. Se você confirmar, o acervo daqui passa a ser o do computador principal e as alterações que esperavam envio ficam em Conflitos de edição, para você refazer ou descartar."
+            "{CONFIRM_REPLACE} {cause}. Nada foi enviado nem substituído aqui: as alterações deste computador continuam guardadas. Se você confirmar, uma cópia do acervo daqui é guardada primeiro{where_}; depois o acervo daqui passa a ser o do computador principal e as alterações que esperavam envio ficam em Conflitos de edição, para você refazer ou descartar."
         ))
+    }
+
+    /// Where the copy made before a replacement goes: beside the library
+    /// file, named by the moment. `None` for a library without a file.
+    fn replacement_backup_path(&self) -> Option<PathBuf> {
+        let db = self.conn.path().filter(|p| !p.is_empty())?;
+        let moment = Utc::now().format("%Y%m%d-%H%M%S");
+        (0..1000).find_map(|n| {
+            let tail = if n == 0 {
+                String::new()
+            } else {
+                format!("-{n}")
+            };
+            let path = PathBuf::from(format!("{db}-antes-da-substituicao-{moment}{tail}.sqlite3"));
+            (!path.exists()).then_some(path)
+        })
+    }
+
+    /// Makes that copy. `Ok(None)` when there is no file to keep it beside.
+    fn backup_before_replacement(&self) -> Result<Option<PathBuf>> {
+        let Some(path) = self.replacement_backup_path() else {
+            return Ok(None);
+        };
+        self.backup(&path)
+            .context("Não foi possível guardar uma cópia do acervo antes de substituí-lo; nada foi substituído.")?;
+        Ok(Some(path))
     }
 
     /// [`Store::sync_from_host`]; `accept_host_history` is the person's
@@ -3031,6 +3068,12 @@ impl Store {
         // 1. Se houver alterações feitas offline nesta estação cliente, sincroniza mutuamente com o anfitrião:
         let outbox = self.list_offline_outbox()?;
         let mut pushed_offline = false;
+        // The person confirmed that the main computer's history replaces this
+        // copy: the queued changes then wait here, untouched, until the
+        // replacement itself is applied (they move to the conflicts in that
+        // same step, never before it).
+        let mut replacing = false;
+        let mut replaced_queue: Vec<OutboxEntry> = Vec::new();
         if !outbox.is_empty() {
             let host_snapshot = match send_rpc_classified(
                 &cfg,
@@ -3059,8 +3102,16 @@ impl Store {
                 {
                     ensure!(accept_host_history, "{notice}");
                     rolled_back = true;
+                    replacing = true;
                 }
             }
+            // Never sent to a history they were not made against.
+            let outbox = if rolled_back {
+                replaced_queue = outbox;
+                Vec::new()
+            } else {
+                outbox
+            };
 
             // Numbers of items created here are translated into the ones the
             // main computer gives them, change by change. The translation is
@@ -3068,20 +3119,6 @@ impl Store {
             let mut ids = crate::idmap::load(&self.conn)?;
             let mut host_frame = host_snapshot;
             for entry in outbox {
-                if rolled_back {
-                    // Confirmed: the changes are kept as conflicts to redo,
-                    // never sent to a history they were not made against.
-                    let learned = ids.learn(&entry.created, None);
-                    let mut conflict = build_sync_conflict(
-                        &entry,
-                        "O computador principal voltou a uma história anterior; esta alteração não foi enviada.",
-                        host_frame.as_deref(),
-                    );
-                    conflict.unresolved = true;
-                    self.finish_outbox_entry(entry.id, &entry.uid, &learned, Some(&conflict))?;
-                    pushed_offline = true;
-                    continue;
-                }
                 let sent = match ids.remap(
                     &entry.mutation,
                     &*self,
@@ -3160,7 +3197,8 @@ impl Store {
         let numbers_pending = crate::idmap::has_pending(&self.conn)?;
         let projects_only =
             !force_full && !pushed_offline && !numbers_pending && self.projects_cache_stale();
-        let since = if force_full || pushed_offline || numbers_pending || projects_only {
+        let since = if force_full || replacing || pushed_offline || numbers_pending || projects_only
+        {
             None
         } else {
             Some(cfg.synced_revision)
@@ -3193,6 +3231,7 @@ impl Store {
         if let Some(notice) = broken {
             ensure!(accept_host_history, "{notice}");
             // Confirmed: this copy becomes the main computer's, whole.
+            replacing = true;
             if matches!(response, RpcResponse::UpToDate { .. }) {
                 response = ask(&mut *self, None)?;
             }
@@ -3211,11 +3250,52 @@ impl Store {
                     return self.take_projects_from(&snapshot);
                 }
                 let cfg_clone = cfg.clone();
+                if !replacing {
+                    self.apply_snapshot_and(
+                        &snapshot,
+                        |file_id, capture_id| fetch_remote_pdf(&cfg_clone, file_id, capture_id),
+                        |id| fetch_remote_attachment(&cfg_clone, id),
+                        |tx| ensure_queue_settled(tx, &[]),
+                    )?;
+                    return Ok(true);
+                }
+                // The library as it is now is kept first, whole; if that
+                // cannot be done nothing is replaced.
+                let backup = self.backup_before_replacement()?;
+                let reason = format!(
+                    "O computador principal voltou a uma história anterior; esta alteração não foi enviada. Uma cópia do acervo anterior a esta substituição ficou em {}.",
+                    backup.as_ref().map_or_else(|| "(sem arquivo)".to_owned(), |p| p.display().to_string())
+                );
+                let moved: Vec<(i64, String)> = replaced_queue
+                    .iter()
+                    .map(|entry| (entry.id, entry.uid.clone()))
+                    .collect();
+                let conflicts: Vec<SyncConflict> = replaced_queue
+                    .iter()
+                    .map(|entry| {
+                        let mut conflict = build_sync_conflict(entry, &reason, Some(&snapshot));
+                        conflict.unresolved = true;
+                        conflict
+                    })
+                    .collect();
+                // The queued changes become conflicts in the very transaction
+                // that adopts the replacement: a failure anywhere before it
+                // (a file that does not come, a dropped connection) leaves the
+                // queue exactly as it was.
                 self.apply_snapshot_and(
                     &snapshot,
                     |file_id, capture_id| fetch_remote_pdf(&cfg_clone, file_id, capture_id),
                     |id| fetch_remote_attachment(&cfg_clone, id),
-                    |tx| ensure_queue_settled(tx, &[]),
+                    |tx| {
+                        ensure_queue_settled(tx, &moved)?;
+                        for conflict in &conflicts {
+                            tx.execute(
+                                "INSERT INTO offline_conflicts(created_at,payload) VALUES(?1,?2)",
+                                params![conflict.created_at, seal(&serde_json::to_vec(conflict)?)?],
+                            )?;
+                        }
+                        delete_sent_outboxes(tx, &moved)
+                    },
                 )?;
                 Ok(true)
             }
@@ -15552,6 +15632,7 @@ mod resources_sync_tests {
 
 #[cfg(test)]
 mod host_history_tests {
+    use super::lost_reply_tests::LossyLine;
     use super::*;
     use crate::model::sample_capture;
     use crate::tasks::Task;
@@ -15660,6 +15741,18 @@ mod host_history_tests {
             Store::open(&self.host_path).unwrap()
         }
 
+        /// Like [`Rig::reconnect`], through a line that can refuse the
+        /// transfer of attachments.
+        fn reconnect_through_line(&mut self) -> LossyLine {
+            self.server.stop();
+            self.server = HostServer::start(self.host_path.clone(), "127.0.0.1:0").unwrap();
+            let line = LossyLine::to(self.server.local_addr());
+            let mut cfg = self.client.load_intranet_config().unwrap();
+            cfg.host_url = format!("http://{}", line.addr);
+            self.client.save_intranet_config(&cfg).unwrap();
+            line
+        }
+
         /// The client reaches the main computer again, now at a new address.
         fn reconnect(&mut self) {
             self.server.stop();
@@ -15735,6 +15828,73 @@ mod host_history_tests {
         assert_eq!(after.synced_revision, host_revision);
         // And the exchange is normal again.
         assert!(!rig.client.sync_from_host(false).unwrap());
+    }
+
+    #[test]
+    fn confirming_a_replacement_keeps_the_queue_until_the_replacement_is_applied_and_keeps_a_backup(
+    ) {
+        let mut rig = rig();
+        rig.server.stop();
+        let mut edited = task_of(&rig.client, "Original");
+        edited.notes = "Edição offline".into();
+        rig.client.save_task(&edited).unwrap();
+        let mut host = rig.restore_backup();
+        let mut replacement = Task::new(rig.document);
+        replacement.title = "Substituta".into();
+        let reused = host.save_task(&replacement).unwrap();
+        // The replacement carries an attachment the client must fetch.
+        host.add_attachment(
+            crate::attachments::Owner::Task(reused),
+            "nota.txt",
+            "",
+            b"anexo",
+        )
+        .unwrap();
+        drop(host);
+        let line = rig.reconnect_through_line();
+        // The notice says where the copy of this library will be kept.
+        let notice = rig.client.sync_from_host(false).unwrap_err().to_string();
+        assert!(notice.contains("-antes-da-substituicao-"), "{notice}");
+
+        // The attachment does not come: nothing changed, the queue is whole.
+        line.refuse_attachment_fetches(true);
+        assert!(rig.client.sync_from_host_confirmed(false, true).is_err());
+        assert_eq!(
+            rig.client.list_offline_outbox().unwrap().len(),
+            1,
+            "the queue is kept"
+        );
+        assert!(rig.client.list_sync_conflicts().unwrap().is_empty());
+        assert_eq!(task_of(&rig.client, "Original").notes, "Edição offline");
+
+        // It comes: the replacement, the conflict and the backup together.
+        line.refuse_attachment_fetches(false);
+        assert!(rig.client.sync_from_host_confirmed(false, true).unwrap());
+        assert!(rig.client.list_offline_outbox().unwrap().is_empty());
+        let conflicts = rig.client.list_sync_conflicts().unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert!(
+            conflicts[0].reason.contains("-antes-da-substituicao-"),
+            "{}",
+            conflicts[0].reason
+        );
+        let backups: Vec<_> = std::fs::read_dir(rig._dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("-antes-da-substituicao-")
+            })
+            .collect();
+        assert!(
+            !backups.is_empty(),
+            "a copy of the library before the replacement"
+        );
+        // That copy still has the work the replacement dropped.
+        let kept = Store::open(&backups[0].path()).unwrap();
+        assert_eq!(task_of(&kept, "Original").title, "Original");
+        assert_eq!(titles(&rig.client), ["Substituta"]);
     }
 
     #[test]
@@ -15888,21 +16048,25 @@ mod lost_reply_tests {
     /// request, waits for the main computer to finish it (so the change is
     /// committed) and, while `drop_replies` is above zero, closes the
     /// connection without handing the answer back.
-    struct LossyLine {
-        addr: SocketAddr,
+    pub(super) struct LossyLine {
+        pub(super) addr: SocketAddr,
         drop_replies: Arc<Mutex<usize>>,
+        refuse_attachments: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl LossyLine {
-        fn to(host: SocketAddr) -> Self {
+        pub(super) fn to(host: SocketAddr) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let drop_replies = Arc::new(Mutex::new(0_usize));
             let counter = drop_replies.clone();
+            let refuse_attachments = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let refuse = refuse_attachments.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(mut client) = stream else { continue };
                     let counter = counter.clone();
+                    let refuse = refuse.clone();
                     std::thread::spawn(move || {
                         let mut request = Vec::new();
                         let mut chunk = [0_u8; 4096];
@@ -15928,6 +16092,24 @@ mod lost_reply_tests {
                                 break;
                             }
                         }
+                        if refuse.load(std::sync::atomic::Ordering::SeqCst)
+                            && String::from_utf8_lossy(&request).contains("FetchAttachmentBytes")
+                        {
+                            let body = r#"{"Error":{"message":"Anexo indisponível agora."}}"#;
+                            let _ = client.write_all(
+                                format!(
+                                    "HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{body}",
+                                    body.len()
+                                )
+                                .as_bytes(),
+                            );
+                            return;
+                        }
                         let Ok(mut host) = std::net::TcpStream::connect(host) else {
                             return;
                         };
@@ -15949,7 +16131,16 @@ mod lost_reply_tests {
                     });
                 }
             });
-            Self { addr, drop_replies }
+            Self {
+                addr,
+                drop_replies,
+                refuse_attachments,
+            }
+        }
+
+        pub(super) fn refuse_attachment_fetches(&self, on: bool) {
+            self.refuse_attachments
+                .store(on, std::sync::atomic::Ordering::SeqCst);
         }
 
         fn lose_next_replies(&self, count: usize) {
