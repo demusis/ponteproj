@@ -4602,6 +4602,17 @@ impl Store {
             Ok(RpcResponse::Mutated {
                 reply, snapshot, ..
             }) => {
+                // The change is on that computer, but is it still the history
+                // this copy comes from? If it went back, its answer replaces
+                // nothing here: the next synchronization asks the person.
+                if self
+                    .host_history_notice(cfg, snapshot.revision, &snapshot.generation)
+                    .is_some()
+                {
+                    bail!(
+                        "A alteração foi gravada no computador principal, mas ele voltou a uma cópia mais antiga do acervo (ou a outra história). Nada foi substituído aqui; na próxima sincronização o Ponte pergunta o que fazer."
+                    );
+                }
                 let cfg_clone = cfg.clone();
                 match self.apply_snapshot_and(
                     &snapshot,
@@ -8940,6 +8951,8 @@ pub(crate) fn process_rpc(
             }
             let mut snapshot = store.export_snapshot()?;
             snapshot.generation = generation;
+            // The note follows the revision actually served.
+            let _ = store.host_generation();
             Ok(RpcResponse::Snapshot(Box::new(snapshot)))
         }
         RpcRequest::FetchFileBytes {
@@ -9014,6 +9027,10 @@ pub(crate) fn process_rpc(
             };
             let mut snapshot = store.export_snapshot()?;
             snapshot.generation = generation;
+            // The note was made before the change: it now follows the
+            // revision this answer carries, so a restart or a second opening
+            // never finds the note behind what clients were told.
+            let _ = store.host_generation();
             Ok(RpcResponse::Mutated {
                 revision: snapshot.revision,
                 reply,
@@ -16141,6 +16158,81 @@ mod host_history_tests {
         assert!(
             !rig.client.sync_from_host(false).unwrap(),
             "up to date again"
+        );
+    }
+
+    #[test]
+    fn the_note_follows_the_revision_a_change_was_answered_with() {
+        let mut rig = rig();
+        let cfg = rig.host().load_intranet_config().unwrap();
+        let mut host = rig.host();
+        let mut task = Task::new(rig.document);
+        task.title = "Nova".into();
+        let response = process_rpc(
+            &mut host,
+            &cfg,
+            RpcRequest::Mutate {
+                actor: "Ana".into(),
+                mutation: IntranetMutation::SaveTask {
+                    task,
+                    expected_version: None,
+                    no_project: false,
+                },
+                client_schema: crate::storage::SCHEMA_VERSION,
+                expected_generation: String::new(),
+                mutation_uid: String::new(),
+            },
+        )
+        .unwrap();
+        let RpcResponse::Mutated { revision, .. } = response else {
+            panic!("unexpected {response:?}");
+        };
+        let note: GenerationNote = serde_json::from_slice(
+            &std::fs::read(format!("{}-geracao.json", rig.host_path.display())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(note.revision, revision, "the note is not one change behind");
+        rig.server.stop();
+    }
+
+    #[test]
+    fn a_change_answered_by_a_main_computer_that_went_back_replaces_nothing_here() {
+        let mut rig = rig();
+        // The client is well ahead of the backup.
+        let mut host = rig.host();
+        for title in ["Mais um", "Mais dois"] {
+            let mut task = Task::new(rig.document);
+            task.title = title.into();
+            host.save_task(&task).unwrap();
+        }
+        drop(host);
+        rig.client.sync_from_host(false).unwrap();
+        let ahead = rig.client.load_intranet_config().unwrap().synced_revision;
+        rig.server.stop();
+        // An older main computer: it does not rotate its generation, as one
+        // whose note was lost (or that never kept one) would not.
+        let note = format!("{}-geracao.json", rig.host_path.display());
+        let _ = std::fs::remove_file(&note);
+        let mut host = rig.restore_backup();
+        let mut replacement = Task::new(rig.document);
+        replacement.title = "Substituta".into();
+        let reused = host.save_task(&replacement).unwrap();
+        drop(host);
+        let _ = std::fs::remove_file(&note);
+        rig.reconnect();
+        let mut edited = task_of(&rig.client, "Original");
+        assert_eq!(edited.id, reused);
+        edited.notes = "Edição ao vivo".into();
+        let error = rig.client.save_task(&edited).unwrap_err().to_string();
+        assert!(error.contains("mais antiga"), "{error}");
+        // Nothing of the main computer's answer was taken in.
+        assert_eq!(
+            titles(&rig.client),
+            ["Extra", "Mais dois", "Mais um", "Original"]
+        );
+        assert_eq!(
+            rig.client.load_intranet_config().unwrap().synced_revision,
+            ahead
         );
     }
 
