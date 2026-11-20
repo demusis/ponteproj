@@ -275,24 +275,78 @@ pub fn sanitize_file_name(name: &str) -> String {
     }
 }
 
+/// Where decrypted working copies live: `%LOCALAPPDATA%/PonteProj/temp` of the
+/// local user profile, never inside the library folder (which may be synced to
+/// the cloud when `PONTEPROJ_DATA_DIR` points there).
+fn production_temp_dir() -> Result<PathBuf> {
+    Ok(directories::BaseDirs::new()
+        .context("Perfil local do usuário indisponível")?
+        .data_local_dir()
+        .join("PonteProj")
+        .join("temp"))
+}
+
 /// Folder for temporary copies opened in other programs. Emptied when the
 /// Ponte starts and when it closes.
 pub fn temp_dir() -> Result<PathBuf> {
-    let dir = crate::paths::data_dir()?.join("temp");
+    // Tests never touch the real profile: each test thread gets its own folder.
+    #[cfg(test)]
+    let dir = std::env::temp_dir().join(format!(
+        "ponteproj-tests-temp-{:?}",
+        std::thread::current().id()
+    ));
+    #[cfg(not(test))]
+    let dir = production_temp_dir()?;
     std::fs::create_dir_all(&dir).context("Não foi possível criar a pasta temporária.")?;
     Ok(dir)
 }
 
 pub fn clear_temp_dir() {
-    let Ok(dir) = temp_dir() else {
-        return;
-    };
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            // A file still open in another program stays; next start retries.
-            let _ = std::fs::remove_file(entry.path());
+    let mut folders = Vec::new();
+    if let Ok(dir) = temp_dir() {
+        folders.push(dir);
+    }
+    // Earlier versions kept the copies inside the library folder, where a
+    // cloud drive could have picked them up: clean what they left behind.
+    #[cfg(not(test))]
+    if let Ok(data) = crate::paths::data_dir() {
+        folders.push(data.join("temp"));
+    }
+    for dir in folders {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                // A file still open in another program stays; next start retries.
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
     }
+}
+
+/// Longest file name a Windows folder entry accepts, in UTF-16 units.
+const WINDOWS_NAME_UNITS: usize = 255;
+
+/// Name of a temporary copy: `<id>-<name>`, cut to fit one Windows path
+/// component (255 UTF-16 units) by shortening the stem and keeping the
+/// validated extension, so the program that opens it still recognises it.
+pub fn temp_file_name(id: i64, name: &str) -> String {
+    let clean = sanitize_file_name(name);
+    let prefix = format!("{id}-");
+    let (stem, ext) = match (extension_of(&clean), clean.rsplit_once('.')) {
+        (Some(_), Some((stem, ext))) => (stem.to_owned(), format!(".{ext}")),
+        _ => (clean.clone(), String::new()),
+    };
+    let units = |s: &str| s.encode_utf16().count();
+    let budget = WINDOWS_NAME_UNITS.saturating_sub(units(&prefix) + units(&ext));
+    let mut kept = String::new();
+    for ch in stem.chars() {
+        if units(&kept) + ch.len_utf16() > budget {
+            break;
+        }
+        kept.push(ch);
+    }
+    let kept = kept.trim_end_matches(['.', ' ']);
+    let kept = if kept.is_empty() { "anexo" } else { kept };
+    format!("{prefix}{kept}{ext}")
 }
 
 fn now() -> String {
@@ -647,7 +701,7 @@ impl Store {
     /// Writes a copy in the temp folder so another program can open it.
     pub fn attachment_temp_copy(&self, id: i64) -> Result<PathBuf> {
         let (meta, data) = self.attachment_bytes(id)?;
-        let path = temp_dir()?.join(format!("{id}-{}", sanitize_file_name(&meta.name)));
+        let path = temp_dir()?.join(temp_file_name(id, &meta.name));
         std::fs::write(&path, data).context("Não foi possível gravar a cópia temporária.")?;
         Ok(path)
     }
@@ -1562,8 +1616,37 @@ mod tests {
         // Temp copy and export carry the exact bytes.
         let copy = store.attachment_temp_copy(id).unwrap();
         assert_eq!(std::fs::read(&copy).unwrap(), pdf);
+        clear_temp_dir();
+        assert!(!copy.exists());
         let export = _dir.path().join("copia.pdf");
         store.export_attachment(id, &export).unwrap();
         assert_eq!(std::fs::read(&export).unwrap(), pdf);
+    }
+
+    #[test]
+    fn working_copies_live_in_the_local_profile_not_in_the_library_folder() {
+        let dir = production_temp_dir().unwrap();
+        assert!(dir.ends_with(std::path::Path::new("PonteProj").join("temp")));
+        let local = directories::BaseDirs::new().unwrap();
+        assert!(dir.starts_with(local.data_local_dir()));
+        // And the test folder is never the real one.
+        assert_ne!(temp_dir().unwrap(), dir);
+    }
+
+    #[test]
+    fn temporary_names_fit_one_windows_path_component() {
+        let units = |s: &str| s.encode_utf16().count();
+        assert_eq!(temp_file_name(7, "peticao.pdf"), "7-peticao.pdf");
+        // 180 astral characters = 360 UTF-16 units: too long once the id is prepended.
+        let long = format!("{}.docx", "😀".repeat(174));
+        let name = temp_file_name(123456, &long);
+        assert!(units(&name) <= 255, "{}", units(&name));
+        assert!(name.starts_with("123456-") && name.ends_with(".docx"));
+        // A name at the 180-character limit made only of BMP letters still fits.
+        let long = format!("{}.pdf", "a".repeat(176));
+        let name = temp_file_name(99, &long);
+        assert!(units(&name) <= 255 && name.ends_with(".pdf"));
+        // Nothing left of the stem falls back to a neutral one.
+        assert_eq!(temp_file_name(5, " .. "), "5-anexo");
     }
 }
