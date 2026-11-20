@@ -209,8 +209,11 @@ impl Store {
             "Este acervo foi criado por uma versão mais nova do Ponte; atualize o Ponte antes de abri-lo."
         );
         let upgrading = version < SCHEMA_VERSION;
+        // `cache_size` is in KiB when negative: 64 MB of pages kept in memory
+        // (the default, about 2 MB, made a library of some size read its
+        // pages from the file again at every query).
         conn.execute_batch(
-            "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA secure_delete=ON;",
+            "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA secure_delete=ON; PRAGMA cache_size=-65536;",
         )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -3257,5 +3260,30 @@ mod reopen_tests {
         let before = stamp_seen_by(&observer);
         drop(Store::open_service(&path).unwrap());
         assert_eq!(stamp_seen_by(&observer), before);
+    }
+}
+
+#[cfg(test)]
+mod pragma_tests {
+    use super::*;
+
+    #[test]
+    fn the_page_cache_is_64_mb_and_the_durability_pragmas_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("p.sqlite3")).unwrap();
+        let pragma = |name: &str| -> i64 {
+            store
+                .conn
+                .pragma_query_value(None, name, |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(pragma("cache_size"), -65536);
+        assert_eq!(pragma("synchronous"), 2, "FULL");
+        assert_eq!(pragma("secure_delete"), 1);
+        let mode: String = store
+            .conn
+            .pragma_query_value(None, "journal_mode", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
     }
 }
