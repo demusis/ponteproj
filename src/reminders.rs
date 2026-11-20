@@ -249,7 +249,7 @@ impl ReminderSettings {
     }
 
     fn path() -> Option<std::path::PathBuf> {
-        crate::paths::data_dir().ok().map(|dir| dir.join(FILE_NAME))
+        state_dir().map(|dir| dir.join(FILE_NAME))
     }
 
     /// Unreadable or missing file: the defaults, never an error.
@@ -260,11 +260,12 @@ impl ReminderSettings {
             .unwrap_or_default()
     }
 
-    /// Best effort: a failure to write is not shown to the person.
-    pub fn save(&self) {
-        if let Some(path) = Self::path() {
-            let _ = std::fs::write(path, self.to_text());
-        }
+    /// Replaces the file whole (never a truncated one); the caller decides
+    /// whether the person hears about a failure.
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::path().ok_or("a pasta local do Ponte não está disponível")?;
+        crate::atomic_file::write_atomic(&path, self.to_text().as_bytes())
+            .map_err(|error| error.to_string())
     }
 
     fn time(&self) -> NaiveTime {
@@ -302,6 +303,9 @@ pub struct Reminders {
     /// The day already decided in this run (also when nothing was due).
     checked_day: Option<NaiveDate>,
     notice: Option<String>,
+    /// Why the last change the person made could not be saved; shown through
+    /// `take_notice` the next time the window is in front.
+    save_error: Option<String>,
     open_today: bool,
     focused: bool,
     wired: bool,
@@ -323,8 +327,24 @@ impl Reminders {
     pub fn set_enabled(&mut self, enabled: bool) {
         if self.settings.enabled != enabled {
             self.settings.enabled = enabled;
-            self.settings.save();
+            let saved = self.settings.save();
+            self.remember_save_error("os lembretes", saved);
         }
+    }
+
+    /// Keeps the reason of a failed save (the person's change stays in effect
+    /// in this run) so `take_notice` can tell them.
+    fn remember_save_error(&mut self, what: &str, saved: Result<(), String>) {
+        if let Err(error) = saved {
+            self.save_error = Some(format!(
+                "Não foi possível salvar {what}: {error}. A alteração vale só até fechar o Ponte."
+            ));
+        }
+    }
+
+    fn save_individual(&mut self) {
+        let saved = self.individual.save();
+        self.remember_save_error("os avisos individuais", saved);
     }
 
     pub fn time(&self) -> (u32, u32) {
@@ -335,7 +355,8 @@ impl Reminders {
         if hour < 24 && minute < 60 && (hour, minute) != self.time() {
             self.settings.hour = hour;
             self.settings.minute = minute;
-            self.settings.save();
+            let saved = self.settings.save();
+            self.remember_save_error("o horário dos lembretes", saved);
         }
     }
 
@@ -438,7 +459,7 @@ impl Reminders {
             // On a read error, try again in a minute.
             if let Ok(counts) = Counts::from_store(store, now.date_naive()) {
                 if let Some(fire) = self.tick(now, counts) {
-                    self.settings.save();
+                    let _ = self.settings.save(); // routine bookkeeping: best effort
                     self.deliver(&fire, false);
                 }
             }
@@ -504,17 +525,17 @@ impl Reminders {
 
     pub fn dismiss_missed_overflow(&mut self) {
         self.individual.state.missed_overflow = 0;
-        self.individual.save();
+        self.save_individual();
     }
 
     pub fn dismiss_missed(&mut self, key: &str) {
         self.individual.state.missed.remove(key);
-        self.individual.save();
+        self.save_individual();
     }
 
     pub fn dismiss_individual(&mut self, id: &str) {
         self.individual.state.active.remove(id);
-        self.individual.save();
+        self.save_individual();
     }
 
     pub fn snooze_individual(&mut self, id: &str) {
@@ -523,14 +544,14 @@ impl Reminders {
             id.to_owned(),
             (Local::now().naive_local() + Duration::minutes(10)).to_string(),
         );
-        self.individual.save();
+        self.save_individual();
     }
 
     /// The summary to show with the app's own notice, only while the window is
     /// in front (a notice would expire unseen otherwise).
     pub fn take_notice(&mut self) -> Option<String> {
         if self.focused {
-            self.notice.take()
+            self.save_error.take().or_else(|| self.notice.take())
         } else {
             None
         }
@@ -549,6 +570,21 @@ impl Drop for Reminders {
 }
 
 const MISSED_LIMIT: usize = 100;
+
+/// Where the reminder files live (tests point it at a temporary folder).
+fn state_dir() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = TEST_DIR.with(|d| d.borrow().clone()) {
+        return Some(dir);
+    }
+    crate::paths::data_dir().ok()
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DIR: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 fn missed_summary(count: usize) -> Option<String> {
     if count == 0 {
@@ -591,9 +627,7 @@ struct IndividualReminders {
 /// ledger is encrypted and separate from synchronized task data.
 impl IndividualReminders {
     fn path() -> Option<std::path::PathBuf> {
-        crate::paths::data_dir()
-            .ok()
-            .map(|p| p.join("avisos-individuais.bin"))
+        state_dir().map(|p| p.join("avisos-individuais.bin"))
     }
     fn load() -> Self {
         let state = Self::path()
@@ -606,12 +640,13 @@ impl IndividualReminders {
             last_check: None,
         }
     }
-    fn save(&self) {
-        if let (Some(path), Ok(bytes)) = (Self::path(), serde_json::to_vec(&self.state)) {
-            if let Ok(bytes) = crate::protection::seal(&bytes) {
-                let _ = std::fs::write(path, bytes);
-            }
-        }
+    /// Replaces the ledger whole: an interrupted write must not leave a
+    /// truncated file that would load as empty.
+    fn save(&self) -> Result<(), String> {
+        let path = Self::path().ok_or("a pasta local do Ponte não está disponível")?;
+        let bytes = serde_json::to_vec(&self.state).map_err(|error| error.to_string())?;
+        let bytes = crate::protection::seal(&bytes).map_err(|error| error.to_string())?;
+        crate::atomic_file::write_atomic(&path, &bytes).map_err(|error| error.to_string())
     }
     fn update(&mut self, store: &Store, now: chrono::NaiveDateTime) -> (bool, usize) {
         if self
@@ -626,7 +661,8 @@ impl IndividualReminders {
         self.last_check = Some(now);
         let missed = self.collect_missed(&tasks, now);
         let fired = self.decide(&tasks, now);
-        self.save();
+        // Routine bookkeeping, not a change the person made: best effort.
+        let _ = self.save();
         (fired, missed)
     }
 
@@ -1109,5 +1145,54 @@ mod tests {
         assert_eq!(counts.resource_reservations, 3);
         assert_eq!(counts.total(), 4);
         assert!(!counts.summary().contains("Auditório"));
+    }
+
+    #[test]
+    fn reminder_files_are_replaced_whole_and_failures_reach_the_person() {
+        let dir = tempfile::tempdir().unwrap();
+        TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.path().to_path_buf()));
+
+        // Settings: written atomically, round-trips, leaves no temporary file.
+        let mut reminders = Reminders::default();
+        reminders.settings.enabled = true;
+        reminders.set_enabled(false);
+        assert!(reminders.save_error.is_none());
+        assert!(!ReminderSettings::load().enabled);
+        // Snooze keeps the ledger readable.
+        reminders
+            .individual
+            .state
+            .active
+            .insert("a".into(), "x".into());
+        reminders.snooze_individual("a");
+        assert!(reminders.save_error.is_none());
+        assert!(IndividualReminders::load().state.snoozed.contains_key("a"));
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+
+        // A destination that cannot be replaced is reported, not discarded.
+        let blocked = tempfile::tempdir().unwrap();
+        std::fs::create_dir(blocked.path().join(FILE_NAME)).unwrap();
+        std::fs::create_dir(blocked.path().join("avisos-individuais.bin")).unwrap();
+        TEST_DIR.with(|d| *d.borrow_mut() = Some(blocked.path().to_path_buf()));
+        reminders.focused = true;
+        reminders.set_enabled(true);
+        let notice = reminders.take_notice().expect("the failure is shown");
+        assert!(notice.contains("Não foi possível salvar"), "{notice}");
+        assert!(reminders.take_notice().is_none());
+        reminders
+            .individual
+            .state
+            .active
+            .insert("b".into(), "x".into());
+        reminders.dismiss_individual("b");
+        assert!(reminders
+            .take_notice()
+            .is_some_and(|n| n.contains("avisos individuais")));
+
+        TEST_DIR.with(|d| *d.borrow_mut() = None);
     }
 }
