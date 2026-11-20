@@ -948,6 +948,136 @@ fn a_schema_20_mirror_with_the_higher_revision_does_not_erase_the_projects_of_a_
     assert!(c.list_sync_conflicts().unwrap().is_empty());
 }
 
+/// Rewrites a copy with `change` applied to its payload, keeping its
+/// lineage, schema and blobs.
+fn rewrite_copy(
+    path: &std::path::Path,
+    writer: &str,
+    revision: i64,
+    change: impl FnOnce(&mut crate::sharedfolder::Payload),
+) {
+    let mut copy = read_copy(path);
+    change(&mut copy.payload);
+    let request = crate::sharedfolder::WriteRequest {
+        lineage: &copy.header.lineage,
+        revision,
+        writer,
+        writer_name: writer,
+        schema_version: copy.header.schema_version,
+    };
+    crate::sharedfolder::write(path, KEY, &request, &copy.payload, &copy.blobs).unwrap();
+}
+
+fn folder_paths(dir: &std::path::Path, names: &[&str]) -> Vec<std::path::PathBuf> {
+    names
+        .iter()
+        .map(|name| {
+            let path = dir.join(name).join("ponte-sync.ponte");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            path
+        })
+        .collect()
+}
+
+fn shown(paths: &[&std::path::Path]) -> Vec<String> {
+    paths.iter().map(|p| p.display().to_string()).collect()
+}
+
+#[test]
+fn a_pending_delete_is_not_undone_by_the_older_copy_of_a_project_grafted_from_the_donor() {
+    let dir = tempfile::tempdir().unwrap();
+    let [f1, d] = <[_; 2]>::try_from(folder_paths(dir.path(), &["Drive1", "Drive2"])).unwrap();
+    let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+    let project = make(&mut a, "Antigo");
+    a.save_intranet_config(&folder_config("Servidor A", &shown(&[&f1])))
+        .unwrap();
+    sync(&mut a);
+    // An older mirror, with the project at version 1: the donor.
+    std::fs::copy(&f1, &d).unwrap();
+    // A renames it (version 2) and publishes; the copy A keeps beside its
+    // library is then lost, and the project is deleted while offline.
+    let mut renamed = a.get_project(&project.uid).unwrap().unwrap();
+    renamed.name = "Renomeado".into();
+    a.save_project(&renamed).unwrap();
+    sync(&mut a);
+    assert_eq!(a.project_version(&project.uid).unwrap(), 2);
+    let guard = dir.path().join("a.sqlite3-guarda.ponte");
+    let _ = std::fs::remove_file(guard);
+    a.delete_project(&project.uid).unwrap();
+    assert!(a.list_projects().unwrap().is_empty());
+    // The folder A wrote is now seen as a copy of the old format with the
+    // higher revision; the donor still holds the project at version 1.
+    let revision = read_copy(&f1).header.revision;
+    rewrite_as_schema_20(&f1, "old-writer", revision + 10);
+    let mut cfg = a.load_intranet_config().unwrap();
+    cfg.folder_files = shown(&[&f1, &d]);
+    a.save_intranet_config(&cfg).unwrap();
+    sync(&mut a);
+    assert!(a.list_projects().unwrap().is_empty(), "it stays deleted");
+    assert!(a.list_sync_conflicts().unwrap().is_empty());
+    assert!(a.list_offline_outbox().unwrap().is_empty());
+    for path in [&f1, &d] {
+        let written = read_copy(path);
+        assert!(written.payload.snapshot.projects.is_empty(), "{path:?}");
+    }
+}
+
+#[test]
+fn a_change_the_donor_refused_is_replayed_not_skipped_as_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let [f1, f2, f3] =
+        <[_; 3]>::try_from(folder_paths(dir.path(), &["Drive1", "Drive2", "Drive3"])).unwrap();
+    let mut author = Store::open(&dir.path().join("author.sqlite3")).unwrap();
+    let project = make(&mut author, "Antigo");
+    author
+        .save_intranet_config(&folder_config("Autor", &shown(&[&f1])))
+        .unwrap();
+    sync(&mut author);
+    let revision = read_copy(&f1).header.revision;
+    let version = author.project_version(&project.uid).unwrap();
+    // A rename that some copy carries in its journal.
+    let mut renamed = project.clone();
+    renamed.name = "Renomeado".into();
+    let change = crate::sharedfolder::JournalEntry {
+        uid: "e".repeat(32),
+        created_at: "2026-01-01T00:00:00Z".into(),
+        actor: "Outro".into(),
+        writer: "w-outro".into(),
+        label: "Projeto renomeado".into(),
+        mutation: IntranetMutation::SaveProject {
+            project: renamed,
+            expected_version: Some(version),
+        },
+        base: None,
+        revision,
+        created: Vec::new(),
+    };
+    std::fs::copy(&f1, &f2).unwrap();
+    std::fs::copy(&f1, &f3).unwrap();
+    // The copy that has it in its journal (the oldest).
+    let entry = change.clone();
+    rewrite_copy(&f3, "w-outro", revision, |payload| {
+        payload.applied.push(entry.uid.clone());
+        payload.journal.push(entry);
+    });
+    // The donor refused it (a conflict on its side): the change is in its
+    // `applied`, never in its journal, and its projects do not have it.
+    let uid = change.uid.clone();
+    rewrite_copy(&f2, "w-doador", revision + 5, |payload| {
+        payload.applied.push(uid);
+    });
+    // The base: a copy of the old format with the highest revision.
+    rewrite_as_schema_20(&f1, "old-writer", revision + 10);
+    let mut other = Store::open(&dir.path().join("other.sqlite3")).unwrap();
+    other
+        .save_intranet_config(&folder_config("Outro", &shown(&[&f1, &f2, &f3])))
+        .unwrap();
+    sync(&mut other);
+    let found = other.get_project(&project.uid).unwrap().unwrap();
+    assert_eq!(found.name, "Renomeado", "the change was not dropped");
+    assert!(other.list_sync_conflicts().unwrap().is_empty());
+}
+
 fn live_url(server: &HostServer) -> String {
     format!("http://{}", server.local_addr())
 }

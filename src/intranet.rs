@@ -3406,11 +3406,36 @@ impl Store {
                     incoming.projects = self.export_projects()?;
                     self.project_item_versions()?
                 };
+                // A project this library deleted after the donor's version of
+                // it (a deletion still waiting in the queue included) stays
+                // deleted: the donor's older copy of it must not bring it back
+                // (the deletion would then expect a version that is gone).
+                let mut project_versions: Vec<(String, i64, VersionMeta)> = project_versions;
+                let mut gone: std::collections::BTreeSet<String> = Default::default();
+                if donor.is_some() && !joining {
+                    for project in &incoming.projects {
+                        if self.project_exists(&project.uid) {
+                            continue;
+                        }
+                        let key = crate::work_templates::version_key(&project.uid);
+                        let mine = self.item_version("project", key)?;
+                        let theirs = project_versions
+                            .iter()
+                            .find(|(_, id, _)| *id == key)
+                            .map_or(0, |(_, _, meta)| meta.version);
+                        if mine.version > theirs {
+                            gone.insert(project.uid.clone());
+                            project_versions.retain(|(_, id, _)| *id != key);
+                            project_versions.push(("project".to_owned(), key, mine));
+                        }
+                    }
+                    incoming.projects.retain(|p| !gone.contains(&p.uid));
+                }
                 incoming
                     .item_versions
                     .retain(|(kind, _, _)| kind != "project");
                 incoming.item_versions.extend(project_versions);
-                carried_old_fields |= !incoming.projects.is_empty();
+                carried_old_fields |= !incoming.projects.is_empty() || !gone.is_empty();
                 if donor.is_none() && best.header.schema_version >= SCHEDULE_SCHEMA {
                     let mut statement = self.conn.prepare("SELECT id, payload FROM tasks")?;
                     let rows = statement.query_map([], |row| {
@@ -3434,9 +3459,18 @@ impl Store {
                             carried_old_fields = true;
                         }
                     }
+                    if gone.contains(&task.project_uid) {
+                        task.project_uid.clear();
+                    }
                 }
+                // Only what the donor applied SUCCESSFULLY is inside its
+                // projects: a change it refused is also in `applied` (so it
+                // is not offered again) but not in its journal, and replayed
+                // here it either applies or becomes a conflict to decide,
+                // never a silent loss. (A change old enough to have left the
+                // journal is replayed too: at worst a conflict, never a loss.)
                 donor_applied = donor
-                    .map(|d| d.payload.applied.iter().cloned().collect())
+                    .map(|d| d.payload.journal.iter().map(|e| e.uid.clone()).collect())
                     .unwrap_or_default();
             }
             store.apply_snapshot(
