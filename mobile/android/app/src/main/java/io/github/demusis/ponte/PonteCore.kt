@@ -70,8 +70,8 @@ class PonteCore {
     external fun listProjects(): String
 
     /**
-     * One project: {project (as in listProjects), tasks: [task] (the task JSON of getTask's list
-     * form, with "project_uid" and "project_name"), timeline: [{id, uid, title, done, start, end
+     * One project: {project (as in listProjects), tasks: [task] (the same task JSON as listTasks
+     * with "project_uid" and "project_name"), timeline: [{id, uid, title, done, start, end
      * (AAAA-MM-DDTHH:MM or null), projected, due (AAAA-MM-DD or null), late}], span: {start, end}
      * or null}. Read-only.
      */
