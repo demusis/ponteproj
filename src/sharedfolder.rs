@@ -175,20 +175,34 @@ pub fn sort_newest_first(copies: &mut Vec<Copy>) {
     copies.extend(keyed.into_iter().map(|(_, copy)| copy));
 }
 
-/// Keeps a copy that is about to be replaced: the same file, beside it, under
-/// a name that says it diverged. Returns where it went.
-pub fn keep_aside(path: &Path) -> Result<PathBuf> {
+/// Where [`keep_aside`] puts the copy at `path`: beside it, named by what it
+/// holds (a SHA-256 prefix), so the same content is never archived twice and
+/// the name cannot be taken for a working file.
+pub fn aside_path(path: &Path) -> Result<PathBuf> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("Não foi possível ler {}.", path.display()))?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    let short: String = digest
+        .as_ref()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("ponte-sync");
-    let aside = path.with_file_name(format!(
-        "{stem}-divergente-{}.ponte",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-    ));
+    Ok(path.with_file_name(format!("{stem}-divergente-{short}.ponte")))
+}
+
+/// Keeps a copy that is about to be replaced: the same file, beside it, under
+/// a name that says it diverged. Returns where it went.
+pub fn keep_aside(path: &Path) -> Result<PathBuf> {
+    let aside = aside_path(path)?;
     ensure!(
         !aside.exists(),
-        "Já existe uma cópia divergente guardada neste instante."
+        "Já existe um arquivo em {}.",
+        aside.display()
     );
     std::fs::copy(path, &aside)
         .with_context(|| format!("Não foi possível guardar uma cópia de {}.", path.display()))?;

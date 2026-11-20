@@ -308,6 +308,9 @@ internal object SyncRunner {
             val conflicts = r.optInt("conflicts", 0)
             var message = "Sincronizado: " + PhoneWords.adapt(summary)
             var isError = false
+            // The pending copy may go only when the core says that what it
+            // held is merged or kept; an answer without it keeps the copy.
+            val pendingSettled = r.optBoolean("pending_settled", false)
 
             if (r.optBoolean("written")) {
                 // c. the core has already taken what this phone had to send: the
@@ -332,14 +335,14 @@ internal object SyncRunner {
                         if (SyncIo.unchanged(want, readUri(ctx, uri, null, Long.MAX_VALUE))) { ok = true; break }
                     }
                     if (ok) {
-                        pending.delete()
+                        if (SyncIo.mayDropPending(pendingSettled)) pending.delete()
                     } else {
                         isError = true
                         message = "Não foi possível conferir a gravação no Drive. " +
                             "As alterações ficaram guardadas neste aparelho e vão na próxima sincronização."
                     }
                 }
-            } else if (pending.exists()) {
+            } else if (pending.exists() && SyncIo.mayDropPending(pendingSettled)) {
                 // f. nothing written although the pending copy was read too:
                 // the Drive copy already holds everything it had (otherwise
                 // the core would have rewritten it), so it is no longer needed.
@@ -494,11 +497,26 @@ internal object SyncIo {
     fun removeStale(dir: File) {
         dir.listFiles()?.forEach {
             val name = it.name
-            if ((name.startsWith(WORK_PREFIX) && name.endsWith(WORK_SUFFIX)) || name.startsWith("." + WORK_PREFIX)) {
+            if (isStale(name)) {
                 try { it.delete() } catch (_: Throwable) { }
             }
         }
     }
+
+    /**
+     * A copy the core kept aside because it held work it could not merge
+     * (`<name>-divergente-<hash>.ponte`). It may be the only copy of that work:
+     * never swept, whatever name it was derived from.
+     */
+    const val ARCHIVE_MARK = "-divergente-"
+
+    /** A working file (or the core's temporary file) that nobody owns any more. */
+    fun isStale(name: String): Boolean =
+        !name.contains(ARCHIVE_MARK) &&
+            ((name.startsWith(WORK_PREFIX) && name.endsWith(WORK_SUFFIX)) || name.startsWith("." + WORK_PREFIX))
+
+    /** The pending copy goes only on the core's explicit word that it is settled. */
+    fun mayDropPending(coreSaysSettled: Boolean): Boolean = coreSaysSettled
 
     /**
      * Keeps [from] as [to] so that [to] is either the old file or the whole

@@ -4129,13 +4129,19 @@ impl Store {
                             "{} não foi regravada, para não perder o que só ela tem: {error}",
                             path.display()
                         ));
+                        report.preserve_failed.push(path.display().to_string());
                         continue;
                     }
                 }
             }
             match sharedfolder::write(path, key, &request, &payload, &blobs) {
                 Ok(_) => report.written_to.push(path.display().to_string()),
-                Err(error) => failures.push(error.to_string()),
+                Err(error) => {
+                    if preserve.contains(path) {
+                        report.preserve_failed.push(path.display().to_string());
+                    }
+                    failures.push(error.to_string());
+                }
             }
         }
         if changed_content {
@@ -7852,6 +7858,10 @@ pub struct FolderSyncReport {
     pub written_to: Vec<String>,
     pub unreachable: Vec<String>,
     pub notes: Vec<String>,
+    /// Copies that carry something the exchange could not merge and that
+    /// were left as they are because they could not be kept aside (or
+    /// rewritten after it): whoever deletes such a copy loses that work.
+    pub preserve_failed: Vec<String>,
 }
 
 impl FolderSyncReport {

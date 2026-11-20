@@ -109,6 +109,23 @@ class SyncIoTest {
         assertFalse(f.exists())
     }
 
+    @Test fun aCopyTheCoreKeptAsideIsNeverSweptEvenWhenNamedAfterAWorkingFile() {
+        val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
+        try {
+            val archive = File(dir, SyncIo.WORK_PREFIX + "1-divergente-0a1b2c3d4e5f6071" + SyncIo.WORK_SUFFIX).also { it.writeText("x") }
+            val stale = File(dir, SyncIo.WORK_PREFIX + "2" + SyncIo.WORK_SUFFIX).also { it.writeText("x") }
+            SyncIo.removeStale(dir)
+            assertTrue("o arquivo guardado ao lado é o único exemplar do trabalho", archive.exists())
+            assertFalse(stale.exists())
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test fun thePendingCopyGoesOnlyOnTheCoresExplicitWord() {
+        assertTrue(SyncIo.mayDropPending(true))
+        // An answer that does not say it (or says no) keeps the copy.
+        assertFalse(SyncIo.mayDropPending(false))
+    }
+
     @Test fun staleWorkFilesGoButOtherFilesStay() {
         val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
         try {
