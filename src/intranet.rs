@@ -16334,6 +16334,8 @@ mod host_history_tests {
     }
 
     #[test]
+    // Windows files: read-only is only ever set back to writable here.
+    #[allow(clippy::permissions_set_readonly_false)]
     fn a_note_that_cannot_be_written_never_rotates_the_generation_at_every_opening() {
         let mut rig = rig();
         let first = rig.host().host_generation().unwrap();
@@ -17095,6 +17097,8 @@ mod tied_mirror_tests {
     }
 
     #[test]
+    // Windows files: read-only is only ever set back to writable here.
+    #[allow(clippy::permissions_set_readonly_false)]
     fn a_copy_kept_aside_is_reused_on_a_retry_and_a_mirror_that_cannot_be_written_is_reported() {
         let dir = diverged(
             |a, _| {
