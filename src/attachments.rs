@@ -709,7 +709,7 @@ impl Store {
     /// Saves a copy where the person chose.
     pub fn export_attachment(&self, id: i64, destination: &Path) -> Result<()> {
         let (_, data) = self.attachment_bytes(id)?;
-        std::fs::write(destination, data)
+        crate::atomic_file::write_atomic(destination, &data)
             .with_context(|| format!("Não foi possível gravar em {}.", destination.display()))?;
         Ok(())
     }
@@ -1621,6 +1621,27 @@ mod tests {
         let export = _dir.path().join("copia.pdf");
         store.export_attachment(id, &export).unwrap();
         assert_eq!(std::fs::read(&export).unwrap(), pdf);
+        // Exporting over an existing file replaces it whole and leaves no temporary file.
+        std::fs::write(&export, b"anterior").unwrap();
+        store.export_attachment(id, &export).unwrap();
+        assert_eq!(std::fs::read(&export).unwrap(), pdf);
+        assert_eq!(
+            std::fs::read_dir(_dir.path())
+                .unwrap()
+                .filter(|e| e
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp"))
+                .count(),
+            0
+        );
+        // A destination that cannot be replaced fails without touching anything else.
+        let blocked = _dir.path().join("pasta.pdf");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(store.export_attachment(id, &blocked).is_err());
+        assert!(blocked.is_dir());
     }
 
     #[test]

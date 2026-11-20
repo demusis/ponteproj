@@ -10,6 +10,7 @@ pub mod ai_eval;
 pub mod ai_roles;
 #[cfg(feature = "desktop")]
 pub mod app;
+pub mod atomic_file;
 pub mod attachments;
 pub mod chatgpt;
 /// Deterministic checks of a draft (Conferência da minuta).
