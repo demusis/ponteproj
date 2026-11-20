@@ -1171,6 +1171,20 @@ struct StoredReceipt {
 /// How long, and how many, answers to applied changes the main computer keeps.
 const RECEIPT_DAYS: i64 = 30;
 const RECEIPT_LIMIT: i64 = 5000;
+/// Receipts are pruned at most this often (seconds) in one process.
+const PRUNE_EVERY_SECS: i64 = 3600;
+
+/// Whether the receipts are due for pruning at `now` (unix seconds); asking
+/// marks the moment, so the answer is yes once per interval.
+fn prune_is_due(last_pruned: &std::sync::atomic::AtomicI64, now: i64) -> bool {
+    let last = last_pruned.load(std::sync::atomic::Ordering::SeqCst);
+    let due = last == 0 || now < last || now - last >= PRUNE_EVERY_SECS;
+    if due {
+        last_pruned.store(now, std::sync::atomic::Ordering::SeqCst);
+    }
+    due
+}
+
 /// The compact record of applied identities (no answer) is kept far longer.
 const APPLIED_DAYS: i64 = 365;
 const APPLIED_LIMIT: i64 = 500_000;
@@ -1687,6 +1701,11 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let had_applied_record: bool = tx.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='applied_mutations'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS intranet_config(
                 id INTEGER PRIMARY KEY CHECK(id=1),
@@ -1723,11 +1742,23 @@ impl Store {
                 uid TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS mutation_receipts_by_time ON mutation_receipts(created_at);
+            CREATE INDEX IF NOT EXISTS applied_mutations_by_time ON applied_mutations(created_at);
             CREATE TABLE IF NOT EXISTS host_generation(
                 id INTEGER PRIMARY KEY CHECK(id=1),
                 value TEXT NOT NULL
             );",
         )?;
+        // A library whose receipts predate the compact record (the table is
+        // new here) gets the record from them: what they cover must not be
+        // forgotten when the full answers are pruned.
+        if !had_applied_record {
+            tx.execute(
+                "INSERT OR IGNORE INTO applied_mutations(uid,created_at)
+                 SELECT uid,created_at FROM mutation_receipts",
+                [],
+            )?;
+        }
         crate::idmap::ensure_schema(&tx)?;
         if tx.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? < 9 {
             tx.pragma_update(None, "user_version", 9)?;
@@ -1905,20 +1936,46 @@ impl Store {
             "INSERT OR IGNORE INTO applied_mutations(uid,created_at) VALUES(?1,?2)",
             params![uid, now_iso()],
         )?;
-        let cutoff = (Utc::now() - chrono::Duration::days(RECEIPT_DAYS))
-            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        // Pruning is not done at every mutation: at most once per
+        // `PRUNE_EVERY_SECS` in this process.
+        static LAST_PRUNED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        if prune_is_due(&LAST_PRUNED, Utc::now().timestamp()) {
+            self.prune_mutation_records()?;
+        }
+        Ok(())
+    }
+
+    /// Drops the full answers older than `RECEIPT_DAYS` (or beyond
+    /// `RECEIPT_LIMIT`) and the compact records older than `APPLIED_DAYS` (or
+    /// beyond `APPLIED_LIMIT`).
+    fn prune_mutation_records(&self) -> Result<()> {
+        let moment = |days: i64| {
+            (Utc::now() - chrono::Duration::days(days)).to_rfc3339_opts(SecondsFormat::Millis, true)
+        };
+        self.prune_table("mutation_receipts", &moment(RECEIPT_DAYS), RECEIPT_LIMIT)?;
+        self.prune_table("applied_mutations", &moment(APPLIED_DAYS), APPLIED_LIMIT)
+    }
+
+    /// Age by the index on the moment, count by a range of row numbers (the
+    /// row `limit` places from the newest is looked up once): neither scans
+    /// the table.
+    fn prune_table(&self, table: &str, cutoff: &str, limit: i64) -> Result<()> {
         self.conn.execute(
-            "DELETE FROM mutation_receipts WHERE created_at<?1
-             OR rowid NOT IN (SELECT rowid FROM mutation_receipts ORDER BY rowid DESC LIMIT ?2)",
-            params![cutoff, RECEIPT_LIMIT],
+            &format!("DELETE FROM {table} WHERE created_at<?1"),
+            [cutoff],
         )?;
-        let record_cutoff = (Utc::now() - chrono::Duration::days(APPLIED_DAYS))
-            .to_rfc3339_opts(SecondsFormat::Millis, true);
-        self.conn.execute(
-            "DELETE FROM applied_mutations WHERE created_at<?1
-             OR rowid NOT IN (SELECT rowid FROM applied_mutations ORDER BY rowid DESC LIMIT ?2)",
-            params![record_cutoff, APPLIED_LIMIT],
-        )?;
+        let oldest_kept: Option<i64> = self
+            .conn
+            .query_row(
+                &format!("SELECT rowid FROM {table} ORDER BY rowid DESC LIMIT 1 OFFSET ?1"),
+                [limit],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(rowid) = oldest_kept {
+            self.conn
+                .execute(&format!("DELETE FROM {table} WHERE rowid<=?1"), [rowid])?;
+        }
         Ok(())
     }
 
@@ -16953,6 +17010,90 @@ Connection: close
         assert!(pair.client.list_sync_conflicts().unwrap().is_empty());
         assert_eq!(count(&pair.host), 1, "never applied twice");
         assert_eq!(count(&pair.client), 1);
+    }
+
+    #[test]
+    fn pruning_uses_indexes_and_ranges_is_not_done_at_every_mutation_and_old_receipts_gain_a_record(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Store::open(&dir.path().join("host.sqlite3")).unwrap();
+        // The moment of both tables is indexed, and the age prune uses it.
+        for table in ["mutation_receipts", "applied_mutations"] {
+            let plan: String = host
+                .conn
+                .prepare(&format!(
+                    "EXPLAIN QUERY PLAN DELETE FROM {table} WHERE created_at<'x'"
+                ))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                plan.contains("USING INDEX") || plan.contains("USING COVERING INDEX"),
+                "{table}: {plan}"
+            );
+        }
+        // Pruning is due once, then not for an hour, whatever the number of changes.
+        let last = std::sync::atomic::AtomicI64::new(0);
+        let t0 = 1_900_000_000;
+        assert!(prune_is_due(&last, t0));
+        assert!((1..500).all(|n| !prune_is_due(&last, t0 + n)));
+        assert!(!prune_is_due(&last, t0 + PRUNE_EVERY_SECS - 1));
+        assert!(prune_is_due(&last, t0 + PRUNE_EVERY_SECS));
+        // By age and by count, by ranges.
+        for n in 0..10 {
+            host.conn
+                .execute(
+                    "INSERT INTO mutation_receipts(uid,created_at,reply) VALUES(?1,?2,x'00')",
+                    params![
+                        format!("uid-{n}"),
+                        if n < 2 {
+                            "2000-01-01T00:00:00.000Z"
+                        } else {
+                            "2999-01-01T00:00:00.000Z"
+                        }
+                    ],
+                )
+                .unwrap();
+        }
+        host.prune_table("mutation_receipts", "2020-01-01T00:00:00.000Z", 5)
+            .unwrap();
+        let kept: Vec<String> = host
+            .conn
+            .prepare("SELECT uid FROM mutation_receipts ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            kept,
+            ["uid-5", "uid-6", "uid-7", "uid-8", "uid-9"],
+            "the two old ones by age, three by count"
+        );
+        // A library from before the compact record: the table is new, its
+        // record is made from the receipts it already has.
+        host.conn
+            .execute("DROP TABLE applied_mutations", [])
+            .unwrap();
+        host.ensure_intranet().unwrap();
+        let recorded: i64 = host
+            .conn
+            .query_row("SELECT count(*) FROM applied_mutations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(recorded, 5);
+        // Already there: not made again (a pruned record stays pruned).
+        host.conn
+            .execute("DELETE FROM applied_mutations", [])
+            .unwrap();
+        host.ensure_intranet().unwrap();
+        let again: i64 = host
+            .conn
+            .query_row("SELECT count(*) FROM applied_mutations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(again, 0);
     }
 
     #[test]
