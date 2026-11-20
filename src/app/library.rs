@@ -8,11 +8,149 @@ use crate::model::DocumentSummary;
 use crate::theme::{self, icon, S1, S2, S3, S4};
 use crate::widgets::{self, Tone};
 use eframe::egui::{self, RichText};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 /// Side margin of the library panel, which the rows of the list bleed into.
 const LIST_BLEED: f32 = 14.0;
+
+/// Everything the document list derives from the library and from its
+/// controls. The list is rebuilt only when one of these changes, not on every
+/// frame: the library (`stamp`: a save here, a synchronization or the team
+/// server there), the day (the tasks' deadlines are compared with it), the
+/// filters and the order, and the documents the list was read for.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct DocListKey {
+    /// `Store::library_stamp`; `None` when it could not be read, and then the
+    /// list is never taken for current.
+    stamp: Option<(i64, i64)>,
+    today: String,
+    task: DocTaskFilter,
+    priority: DocPriorityFilter,
+    origin: DocOriginFilter,
+    category: crate::category_ui::CategoryFilter,
+    sort: DocSort,
+    /// Moves every time `PonteApp::documents` is replaced (a search changes
+    /// the documents without changing the library).
+    documents_gen: u64,
+    documents_len: usize,
+}
+
+/// How many documents each task filter (and the origin one) would list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct DocCounts {
+    open_any: usize,
+    on_time: usize,
+    overdue: usize,
+    completed: usize,
+    manual: usize,
+}
+
+/// The document list, derived once per change of its key.
+pub(super) struct DocListView {
+    key: DocListKey,
+    summaries: HashMap<i64, DocTaskStatusSummary>,
+    /// The summary of a document with no task.
+    no_tasks: DocTaskStatusSummary,
+    attachment_counts: BTreeMap<i64, usize>,
+    counts: DocCounts,
+    /// Positions in `PonteApp::documents` of what the filters leave, in the
+    /// chosen order.
+    visible: Vec<usize>,
+}
+
+impl DocListView {
+    fn build(
+        key: DocListKey,
+        documents: &[DocumentSummary],
+        tasks: &[crate::tasks::Task],
+        attachment_counts: BTreeMap<i64, usize>,
+    ) -> Self {
+        let summaries = DocTaskStatusSummary::by_document(tasks, &key.today);
+        let no_tasks = DocTaskStatusSummary::default();
+        let mut counts = DocCounts::default();
+        for doc in documents {
+            let summary = summaries.get(&doc.id).unwrap_or(&no_tasks);
+            counts.open_any += usize::from(summary.matches(DocTaskFilter::OpenAny));
+            counts.on_time += usize::from(summary.matches(DocTaskFilter::OpenOnTime));
+            counts.overdue += usize::from(summary.matches(DocTaskFilter::Overdue));
+            counts.completed += usize::from(summary.matches(DocTaskFilter::Completed));
+            counts.manual += usize::from(doc.manual);
+        }
+        let mut view = Self {
+            key,
+            summaries,
+            no_tasks,
+            attachment_counts,
+            counts,
+            visible: Vec::new(),
+        };
+        let mut visible: Vec<&DocumentSummary> = documents
+            .iter()
+            .filter(|doc| {
+                view.summary_of(doc.id).matches(view.key.task)
+                    && view.key.priority.matches(&doc.priority)
+                    && view.key.origin.matches(doc.manual)
+                    && view.key.category.matches(&doc.categories)
+            })
+            .collect();
+        view.key
+            .sort
+            .apply(&mut visible, |id| view.summary_of(id).nearest_due.clone());
+        // `apply` reorders references into `documents`; their positions are
+        // what is kept.
+        let position: HashMap<i64, usize> = documents
+            .iter()
+            .enumerate()
+            .map(|(index, doc)| (doc.id, index))
+            .collect();
+        view.visible = visible.iter().map(|doc| position[&doc.id]).collect();
+        view
+    }
+
+    fn summary_of(&self, id: i64) -> &DocTaskStatusSummary {
+        self.summaries.get(&id).unwrap_or(&self.no_tasks)
+    }
+}
+
+impl PonteApp {
+    fn doc_list_key(&self, today: &str) -> DocListKey {
+        DocListKey {
+            stamp: self.store.library_stamp(),
+            today: today.to_owned(),
+            task: self.doc_task_filter,
+            priority: self.doc_priority_filter,
+            origin: self.doc_origin_filter,
+            category: self.doc_category_filter.clone(),
+            sort: self.doc_sort,
+            documents_gen: self.documents_gen,
+            documents_len: self.documents.len(),
+        }
+    }
+
+    /// Makes `self.doc_list` current: rebuilt only when the library, the day,
+    /// the filters, the order or the documents changed since it was built.
+    pub(super) fn ensure_doc_list(&mut self, today: &str) {
+        let key = self.doc_list_key(today);
+        if key.stamp.is_some() && self.doc_list.as_ref().is_some_and(|view| view.key == key) {
+            return;
+        }
+        let tasks = self.store.list_tasks();
+        let attachments = self.store.attachment_counts("document");
+        let mut key = key;
+        if tasks.is_err() || attachments.is_err() {
+            // Not kept as current: the next frame reads again, as it did
+            // when nothing was kept.
+            key.stamp = None;
+        }
+        self.doc_list = Some(DocListView::build(
+            key,
+            &self.documents,
+            &tasks.unwrap_or_default(),
+            attachments.unwrap_or_default(),
+        ));
+    }
+}
 
 /// What one row of the document list shows.
 struct DocRow<'a> {
@@ -329,31 +467,21 @@ impl PonteApp {
             self.search_changed = Some(Instant::now());
         }
 
-        let all_tasks = self.store.list_tasks().unwrap_or_default();
         let today_iso = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let mut summaries = BTreeMap::new();
-        let mut count_open_any = 0usize;
-        let mut count_on_time = 0usize;
-        let mut count_overdue = 0usize;
-        let mut count_completed = 0usize;
-
-        for doc in &self.documents {
-            let s = DocTaskStatusSummary::from_tasks(&all_tasks, doc.id, &today_iso);
-            if s.matches(DocTaskFilter::OpenAny) {
-                count_open_any += 1;
-            }
-            if s.matches(DocTaskFilter::OpenOnTime) {
-                count_on_time += 1;
-            }
-            if s.matches(DocTaskFilter::Overdue) {
-                count_overdue += 1;
-            }
-            if s.matches(DocTaskFilter::Completed) {
-                count_completed += 1;
-            }
-            summaries.insert(doc.id, s);
-        }
-        let attachment_counts = self.store.attachment_counts("document").unwrap_or_default();
+        // One pass over the tasks, once per change of the library, the day,
+        // the documents or the controls (not once per frame).
+        self.ensure_doc_list(&today_iso);
+        let counts = self
+            .doc_list
+            .as_ref()
+            .map(|view| view.counts)
+            .unwrap_or_default();
+        let (count_open_any, count_on_time, count_overdue, count_completed) = (
+            counts.open_any,
+            counts.on_time,
+            counts.overdue,
+            counts.completed,
+        );
         let all_categories = self.store.list_categories().unwrap_or_default();
 
         let filters_active = self.doc_task_filter != DocTaskFilter::All
@@ -480,7 +608,7 @@ impl PonteApp {
                         .on_hover_text(
                             "Ordena a lista; documentos juntados continuam abaixo do principal.",
                         );
-                    let manual_count = self.documents.iter().filter(|d| d.manual).count();
+                    let manual_count = counts.manual;
                     if manual_count > 0 || self.doc_origin_filter != DocOriginFilter::All {
                         ui.add_space(S1);
                         widgets::field_label(ui, "Origem");
@@ -501,23 +629,13 @@ impl PonteApp {
                 });
         }
 
-        let mut filtered_docs: Vec<&DocumentSummary> = self
-            .documents
-            .iter()
-            .filter(|doc| {
-                let task_ok = summaries
-                    .get(&doc.id)
-                    .is_none_or(|s| s.matches(self.doc_task_filter));
-                let prio_ok = self.doc_priority_filter.matches(&doc.priority);
-                let origin_ok = self.doc_origin_filter.matches(doc.manual);
-                let category_ok = self.doc_category_filter.matches(&doc.categories);
-                task_ok && prio_ok && origin_ok && category_ok
-            })
-            .collect();
-        self.doc_sort.apply(&mut filtered_docs, |id| {
-            summaries.get(&id).and_then(|s| s.nearest_due.clone())
-        });
-
+        // A chip clicked above changes the list in this same frame.
+        self.ensure_doc_list(&today_iso);
+        let list_view = self.doc_list.as_ref();
+        let no_tasks = DocTaskStatusSummary::default();
+        let filtered_docs: Vec<&DocumentSummary> = list_view
+            .map(|view| view.visible.iter().map(|&i| &self.documents[i]).collect())
+            .unwrap_or_default();
         ui.add_space(S1);
         let mut clear = false;
         ui.horizontal(|ui| {
@@ -579,12 +697,15 @@ impl PonteApp {
                     } else {
                         document.document_number.clone()
                     };
-                    let summary = summaries.get(&document.id).cloned().unwrap_or_default();
+                    let summary = list_view.map_or(&no_tasks, |view| view.summary_of(document.id));
                     let row = DocRow {
                         document,
                         number,
-                        summary: &summary,
-                        attachments: attachment_counts.get(&document.id).copied().unwrap_or(0),
+                        summary,
+                        attachments: list_view
+                            .and_then(|view| view.attachment_counts.get(&document.id))
+                            .copied()
+                            .unwrap_or(0),
                         indent,
                         selected: self.selected_id == Some(document.id),
                         editing,
@@ -1059,5 +1180,153 @@ mod welcome_tests {
         let url = store_url();
         assert!(url.starts_with("https://chromewebstore.google.com/detail/"));
         assert!(!url.contains(char::is_whitespace));
+    }
+}
+
+#[cfg(test)]
+mod doc_list_tests {
+    use super::*;
+    use crate::storage::Store;
+    use crate::tasks::Task;
+
+    fn app(dir: &tempfile::TempDir) -> PonteApp {
+        let path = dir.path().join("acervo.sqlite3");
+        PonteApp::new(Store::open(&path).unwrap(), path)
+    }
+
+    fn task_due(document: i64, due: &str) -> Task {
+        let mut task = Task::new(document);
+        task.title = format!("Tarefa {due}");
+        task.due_date = due.to_owned();
+        task
+    }
+
+    fn load_documents(app: &mut PonteApp) {
+        let documents = app.store.list_documents("").unwrap();
+        app.set_documents(documents);
+    }
+
+    /// Marks the derived list; the mark survives only while it is not rebuilt.
+    fn mark(app: &mut PonteApp) {
+        app.doc_list.as_mut().unwrap().no_tasks.completed = 99;
+    }
+    fn marked(app: &PonteApp) -> bool {
+        app.doc_list.as_ref().unwrap().no_tasks.completed == 99
+    }
+
+    #[test]
+    fn the_list_is_rebuilt_when_the_library_the_day_or_the_controls_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(&dir);
+        let receipt = app
+            .store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let document = receipt.document_id;
+        load_documents(&mut app);
+        app.ensure_doc_list("2026-11-20");
+        let first = app.doc_list.as_ref().unwrap().counts;
+        assert_eq!(first.overdue, 0);
+
+        // Nothing changed: the same list, not built again.
+        mark(&mut app);
+        app.ensure_doc_list("2026-11-20");
+        assert!(marked(&app), "rebuilt with nothing changed");
+
+        // A save on this connection.
+        app.store
+            .save_task(&task_due(document, "2026-11-01"))
+            .unwrap();
+        app.ensure_doc_list("2026-11-20");
+        assert!(!marked(&app), "a save did not rebuild the list");
+        assert_eq!(app.doc_list.as_ref().unwrap().counts.overdue, 1);
+        assert_eq!(
+            app.doc_list.as_ref().unwrap().summary_of(document).overdue,
+            1
+        );
+
+        // A commit by another connection (the team server, a synchronization):
+        // here the task becomes the second late one, but the document counts
+        // once; the summary shows it.
+        mark(&mut app);
+        let mut other = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        other.save_task(&task_due(document, "2026-11-02")).unwrap();
+        app.ensure_doc_list("2026-11-20");
+        assert!(!marked(&app), "another connection's commit did not rebuild");
+        assert_eq!(
+            app.doc_list.as_ref().unwrap().summary_of(document).overdue,
+            2
+        );
+
+        // The day changes with the library untouched: deadlines are compared
+        // with the new day.
+        mark(&mut app);
+        app.ensure_doc_list("2026-10-01");
+        assert!(!marked(&app), "a new day did not rebuild the list");
+        let summary = app.doc_list.as_ref().unwrap().summary_of(document);
+        assert_eq!(summary.overdue, 0);
+        assert!(summary.open_on_time >= 2);
+
+        // A filter or the order, and a new set of documents.
+        app.ensure_doc_list("2026-11-20");
+        assert_eq!(app.doc_list.as_ref().unwrap().visible.len(), 1);
+        mark(&mut app);
+        app.doc_task_filter = DocTaskFilter::Completed;
+        app.ensure_doc_list("2026-11-20");
+        assert!(!marked(&app), "a filter did not rebuild the list");
+        assert!(app.doc_list.as_ref().unwrap().visible.is_empty());
+        app.doc_task_filter = DocTaskFilter::All;
+        app.ensure_doc_list("2026-11-20");
+        mark(&mut app);
+        app.doc_sort = DocSort::Number;
+        app.ensure_doc_list("2026-11-20");
+        assert!(!marked(&app), "the order did not rebuild the list");
+        mark(&mut app);
+        load_documents(&mut app);
+        app.ensure_doc_list("2026-11-20");
+        assert!(!marked(&app), "new documents did not rebuild the list");
+    }
+
+    #[test]
+    fn one_pass_summaries_match_the_per_document_ones_and_keep_documents_without_tasks() {
+        let today = "2026-11-20";
+        let mut tasks = vec![
+            task_due(101, "2026-11-01"),
+            task_due(101, "2026-12-01"),
+            task_due(102, today),
+            task_due(102, ""),
+        ];
+        tasks[1].status = "concluida".into();
+        tasks.push(Task::standalone());
+        let by_document = DocTaskStatusSummary::by_document(&tasks, today);
+        for id in [101, 102] {
+            assert_eq!(
+                by_document.get(&id),
+                Some(&DocTaskStatusSummary::from_tasks(&tasks, id, today))
+            );
+        }
+        assert!(!by_document.contains_key(&103));
+        // A document with no task is not listed under "Com tarefa".
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let documents = store.list_documents("").unwrap();
+        assert_eq!(documents.len(), 1);
+        let key = DocListKey {
+            stamp: Some((0, 0)),
+            today: today.into(),
+            task: DocTaskFilter::OpenAny,
+            priority: DocPriorityFilter::All,
+            origin: DocOriginFilter::All,
+            category: Default::default(),
+            sort: DocSort::Recent,
+            documents_gen: 0,
+            documents_len: 1,
+        };
+        let view = DocListView::build(key, &documents, &tasks, BTreeMap::new());
+        assert!(view.visible.is_empty());
+        assert_eq!(view.counts.open_any, 0);
     }
 }

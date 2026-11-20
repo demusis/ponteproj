@@ -288,27 +288,47 @@ impl DocTaskStatusSummary {
     fn from_tasks(tasks: &[crate::tasks::Task], document_id: i64, today_iso: &str) -> Self {
         let mut summary = Self::default();
         for task in tasks.iter().filter(|t| t.document_id == Some(document_id)) {
-            if task.status == "concluida" {
-                summary.completed += 1;
+            summary.add(task, today_iso);
+        }
+        summary
+    }
+
+    /// The summary of every document that has tasks, in one pass over the
+    /// tasks (a document without any is not in the map: its summary is the
+    /// default one).
+    fn by_document(
+        tasks: &[crate::tasks::Task],
+        today_iso: &str,
+    ) -> std::collections::HashMap<i64, Self> {
+        let mut summaries = std::collections::HashMap::<i64, Self>::new();
+        for task in tasks {
+            if let Some(document) = task.document_id {
+                summaries.entry(document).or_default().add(task, today_iso);
+            }
+        }
+        summaries
+    }
+
+    fn add(&mut self, task: &crate::tasks::Task, today_iso: &str) {
+        if task.status == "concluida" {
+            self.completed += 1;
+        } else {
+            let is_overdue = !task.due_date.is_empty() && task.due_date.as_str() < today_iso;
+            if is_overdue {
+                self.overdue += 1;
             } else {
-                let is_overdue = !task.due_date.is_empty() && task.due_date.as_str() < today_iso;
-                if is_overdue {
-                    summary.overdue += 1;
-                } else {
-                    summary.open_on_time += 1;
-                    if task.due_date == today_iso {
-                        summary.due_today += 1;
-                    }
+                self.open_on_time += 1;
+                if task.due_date == today_iso {
+                    self.due_today += 1;
                 }
-                if !task.due_date.is_empty() {
-                    match &summary.nearest_due {
-                        Some(current) if current.as_str() <= task.due_date.as_str() => {}
-                        _ => summary.nearest_due = Some(task.due_date.clone()),
-                    }
+            }
+            if !task.due_date.is_empty() {
+                match &self.nearest_due {
+                    Some(current) if current.as_str() <= task.due_date.as_str() => {}
+                    _ => self.nearest_due = Some(task.due_date.clone()),
                 }
             }
         }
-        summary
     }
 
     fn matches(&self, filter: DocTaskFilter) -> bool {
@@ -1287,6 +1307,11 @@ struct PonteApp {
     doc_category_filter: crate::category_ui::CategoryFilter,
     category_manager: crate::category_ui::CategoryManager,
     doc_sort: DocSort,
+    /// The document list derived from `documents`, the tasks and the controls
+    /// (see `library::DocListView`), and the counter that tells it the
+    /// documents were replaced.
+    doc_list: Option<library::DocListView>,
+    documents_gen: u64,
     manual_form: ManualForm,
     filters_open: bool,
     /// Browser-bridge installation check, refreshed every few seconds while
@@ -1393,6 +1418,8 @@ impl PonteApp {
             doc_category_filter: Default::default(),
             category_manager: Default::default(),
             doc_sort: DocSort::Recent,
+            doc_list: None,
+            documents_gen: 0,
             manual_form: ManualForm::default(),
             filters_open: false,
             install_status: None,
@@ -1967,6 +1994,13 @@ impl PonteApp {
         }
     }
 
+    /// Replaces the documents of the list; what is derived from them (the
+    /// list as drawn) is rebuilt on its own.
+    fn set_documents(&mut self, documents: Vec<DocumentSummary>) {
+        self.documents = documents;
+        self.documents_gen = self.documents_gen.wrapping_add(1);
+    }
+
     fn refresh(&mut self) {
         self.last_refresh = Instant::now();
         self.intranet.refresh_client(&mut self.store, &self.db_path);
@@ -1974,7 +2008,7 @@ impl PonteApp {
         // with the synchronization, before the projections below are built.
         self.sync_holidays_with_library();
         match self.store.list_documents(&self.query) {
-            Ok(documents) => self.documents = documents,
+            Ok(documents) => self.set_documents(documents),
             Err(error) => self.error(format!(
                 "Não foi possível atualizar a lista de documentos: {error}"
             )),
@@ -2090,7 +2124,7 @@ impl PonteApp {
             self.return_to = None;
         }
         if let Ok(documents) = self.store.list_documents(&self.query) {
-            self.documents = documents;
+            self.set_documents(documents);
         }
         match action {
             Some(label) => self.message_with_action(text, label, NoticeAction::OpenTrash),
