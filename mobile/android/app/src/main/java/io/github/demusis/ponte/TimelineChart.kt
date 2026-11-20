@@ -83,6 +83,7 @@ private fun chartColors(): ChartColors {
 internal fun TimelineSection(detail: ProjectDetail, today: LocalDate, onOpenTask: (Long) -> Unit, modifier: Modifier = Modifier) {
     val c = Ponte.colors
     val unplanned = ProjectRules.unplanned(detail.timeline)
+    val hasChart = remember(detail) { ProjectRules.hasChart(detail.timeline) }
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val labelWidth = minOf(maxWidth * LABEL_SHARE, LABEL_MAX)
@@ -105,7 +106,7 @@ internal fun TimelineSection(detail: ProjectDetail, today: LocalDate, onOpenTask
             SectionLabel("Sem período planejado · ${unplanned.size}")
             for (item in unplanned) UnplannedCard(item) { onOpenTask(item.id) }
         }
-        if (ProjectRules.layout(detail.timeline, detail.span, today, detail.project.targetDate, 100f) != null) Legend()
+        if (hasChart) Legend()
     }
 }
 
@@ -114,6 +115,7 @@ private fun Chart(layout: TimelineLayout, labelWidth: androidx.compose.ui.unit.D
     val c = Ponte.colors
     val colors = chartColors()
     val density = LocalDensity.current
+    val rowHeight = ProjectRules.rowHeight(density.fontScale)
     val measurer = rememberTextMeasurer()
     val tickStyle = TextStyle(fontSize = 11.sp, color = colors.tick)
     val scroll = rememberScrollState(
@@ -123,30 +125,30 @@ private fun Chart(layout: TimelineLayout, labelWidth: androidx.compose.ui.unit.D
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface)) {
         Column(Modifier.width(labelWidth)) {
             Spacer(Modifier.height(ProjectRules.HEADER_HEIGHT.dp))
-            for (item in layout.rows) RowLabel(item) { onOpenTask(item.id) }
+            for (item in layout.rows) RowLabel(item, rowHeight) { onOpenTask(item.id) }
         }
         Row(Modifier.weight(1f).horizontalScroll(scroll)) {
             Canvas(
-                Modifier.width(layout.width.dp).height((ProjectRules.HEADER_HEIGHT + ProjectRules.ROW_HEIGHT * layout.rows.size).dp)
+                Modifier.width(layout.width.dp).height((ProjectRules.HEADER_HEIGHT + rowHeight * layout.rows.size).dp)
                     // The labels carry the words for a screen reader; the picture adds nothing to them.
                     .clearAndSetSemantics { }
-                    .pointerInput(layout) {
+                    .pointerInput(layout, rowHeight) {
                         detectTapGestures { at ->
-                            val row = ProjectRules.rowAt(at.y / density.density, layout.rows.size)
+                            val row = ProjectRules.rowAt(at.y / density.density, layout.rows.size, rowHeight = rowHeight)
                             if (row != null) onOpenTask(layout.rows[row].id)
                         }
                     }
-            ) { drawTimeline(layout, colors, measurer, tickStyle) }
+            ) { drawTimeline(layout, colors, measurer, tickStyle, rowHeight) }
         }
     }
 }
 
 /** The title and the period of a row, in the fixed column. */
 @Composable
-private fun RowLabel(item: TimelineItem, onClick: () -> Unit) {
+private fun RowLabel(item: TimelineItem, rowHeight: Float, onClick: () -> Unit) {
     val c = Ponte.colors
     Column(
-        Modifier.fillMaxWidth().height(ProjectRules.ROW_HEIGHT.dp)
+        Modifier.fillMaxWidth().height(rowHeight.dp)
             .drawBehind { drawLine(c.divider, Offset(0f, size.height), Offset(size.width, size.height), 1f) }
             .clickable(onClick = onClick)
             .semantics(mergeDescendants = true) { contentDescription = ProjectRules.rowDescription(item) }
@@ -184,10 +186,10 @@ private fun UnplannedCard(item: TimelineItem, onClick: () -> Unit) {
 // ---------------------------------------------------------------- drawing
 
 /** Draws the whole chart: weekends, grid, header, bars, due marks, the target line and today. */
-private fun DrawScope.drawTimeline(layout: TimelineLayout, k: ChartColors, measurer: TextMeasurer, tickStyle: TextStyle) {
+private fun DrawScope.drawTimeline(layout: TimelineLayout, k: ChartColors, measurer: TextMeasurer, tickStyle: TextStyle, rowHeight: Float) {
     val d = density
     val headerH = ProjectRules.HEADER_HEIGHT * d
-    val rowH = ProjectRules.ROW_HEIGHT * d
+    val rowH = rowHeight * d
     val barH = ProjectRules.BAR_HEIGHT * d
     val rows = layout.rows.size
     val totalH = headerH + rowH * rows

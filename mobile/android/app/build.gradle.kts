@@ -24,8 +24,9 @@ android {
     // (`~/.ponte-assinatura/assinatura.properties`, or the file named by
     // PONTE_ASSINATURA): the key file, the file holding its password and the
     // alias. Neither the key nor the password is ever in the repository.
-    // Where that folder does not exist (another machine, the checks on
-    // GitHub), the build falls back to the debug key and says so.
+    // Where that folder does not exist, packaging a release FAILS, unless
+    // `-Pponte.semAssinatura=true` is passed (the APK then gets the debug key).
+    // Compiling and unit tests of the release variant never need the key.
     val signingFile = file(
         System.getenv("PONTE_ASSINATURA")
             ?: (System.getProperty("user.home") + "/.ponte-assinatura/assinatura.properties")
@@ -53,7 +54,7 @@ android {
             signingConfig = if (ownKey) {
                 signingConfigs.getByName("ponte")
             } else {
-                logger.warn("Ponte de bolso: chave própria não encontrada; APK assinado com a chave de depuração.")
+                // Only reached when packaging is allowed (see the check below).
                 signingConfigs.getByName("debug")
             }
         }
@@ -67,6 +68,31 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+}
+
+// A release that would silently carry the debug key is refused: only the tasks
+// that sign or package the release variant check, so testReleaseUnitTest and
+// compilation still work on a machine without the key.
+val semAssinatura = providers.gradleProperty("ponte.semAssinatura").orNull == "true"
+val chaveProprianaExiste = providers.environmentVariable("PONTE_ASSINATURA")
+    .map { File(it).isFile }
+    .orElse(File(System.getProperty("user.home") + "/.ponte-assinatura/assinatura.properties").isFile)
+    .get()
+gradle.taskGraph.whenReady {
+    val empacota = allTasks.any {
+        it.project == project && it.name in setOf("validateSigningRelease", "packageRelease", "assembleRelease", "bundleRelease")
+    }
+    if (empacota && !chaveProprianaExiste) {
+        if (semAssinatura) {
+            logger.warn("Ponte de bolso: SEM chave própria (-Pponte.semAssinatura=true); APK assinado com a chave de depuração.")
+        } else {
+            throw GradleException(
+                "Ponte de bolso: chave de assinatura da versão não encontrada " +
+                    "(~/.ponte-assinatura/assinatura.properties ou PONTE_ASSINATURA). " +
+                    "Para gerar de propósito um APK com a chave de depuração, passe -Pponte.semAssinatura=true."
+            )
+        }
+    }
 }
 
 dependencies {

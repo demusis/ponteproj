@@ -299,7 +299,7 @@ internal object Controller {
         fileUri = prefs.getString("uri", null)?.let { Uri.parse(it) }
         lastSync = prefs.getLong("last_sync", 0L)
         val fresh = saved == null
-        if (fresh) cleanTemp()
+        if (fresh) cleanTempAsync()
         if (!started) {
             // A new process always starts behind the lock (if the lock is in force), and nothing
             // handed to other apps in an earlier run is kept. Photos of a form that is coming
@@ -415,19 +415,33 @@ internal object Controller {
         if (tab == 3) openMailTab()
     }
 
-    /** Old export/photo files from a previous run are not needed any more. */
-    private fun cleanTemp() {
-        try {
-            val limit = System.currentTimeMillis() - 60L * 60 * 1000
-            for (d in listOf(PonteFiles.DIR_SHARED, PonteFiles.DIR_PHOTOS)) {
-                File(app.cacheDir, d).listFiles()?.forEach { if (it.isFile && it.lastModified() < limit) it.delete() }
+    /**
+     * Old export/photo files from a previous run are not needed any more. The scan and the deletions run on a
+     * background thread, never on the UI thread. What is in use is read here, on the UI thread, before the
+     * thread starts (the photo of a form in progress, a camera picture waiting to be attached, a record being
+     * saved), and anything touched in the last hour is left alone, so a share or an intake in progress
+     * never loses its file.
+     */
+    private fun cleanTempAsync() {
+        val keep = setOfNotNull(photoPath, newPath) + Intake.keepPaths()
+        val saving = photo.saving
+        val cache = app.cacheDir
+        val worker = Thread({
+            try {
+                val now = System.currentTimeMillis()
+                for (d in listOf(PonteFiles.DIR_SHARED, PonteFiles.DIR_PHOTOS)) {
+                    File(cache, d).listFiles()?.forEach {
+                        if (it.isFile && TempRules.mayDelete(it.absolutePath, it.lastModified(), now, keep, saving)) it.delete()
+                    }
+                }
+                cache.listFiles()?.forEach {
+                    if (it.isFile && TempRules.isSyncExport(it.name) && TempRules.mayDelete(it.absolutePath, it.lastModified(), now, keep, saving)) it.delete()
+                }
+            } catch (_: Throwable) {
             }
-            app.cacheDir.listFiles()?.forEach {
-                if (it.isFile && it.name.startsWith("sync-") && it.name.endsWith(".ponte") &&
-                    it.lastModified() < limit) it.delete()
-            }
-        } catch (_: Throwable) {
-        }
+        }, "ponte-clean-temp")
+        worker.isDaemon = true
+        worker.start()
     }
 
     private fun startup() {

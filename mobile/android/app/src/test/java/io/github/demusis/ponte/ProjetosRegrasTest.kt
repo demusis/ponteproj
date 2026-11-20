@@ -396,6 +396,23 @@ class ProjetosRegrasTest {
         assertNull(ProjectRules.rowAt(ProjectRules.HEADER_HEIGHT + 2 * ProjectRules.ROW_HEIGHT + 1f, 2))
     }
 
+    @Test fun linhaDoGraficoTemNoMinimo48DpECrescePelaFonte() {
+        assertEquals(48f, ProjectRules.rowHeight(1f), 0f)
+        assertEquals(48f, ProjectRules.rowHeight(0.85f), 0f)
+        assertEquals(48f, ProjectRules.rowHeight(Float.NaN), 0f)
+        // At 2x the two label lines (16 + 14 sp) take 60 dp: the row must hold them.
+        assertTrue(ProjectRules.rowHeight(2f) >= 60f)
+        assertTrue(ProjectRules.rowHeight(1.5f) < ProjectRules.rowHeight(2f))
+        assertTrue(ProjectRules.rowHeight(3f) >= 90f)
+        assertEquals(1, ProjectRules.rowAt(ProjectRules.HEADER_HEIGHT + 70f, 3, rowHeight = 60f))
+    }
+
+    @Test fun graficoSoExisteComLinhaComPeriodo() {
+        assertTrue(ProjectRules.hasChart(items))
+        assertFalse(ProjectRules.hasChart(items.filter { !it.hasPeriod }))
+        assertFalse(ProjectRules.hasChart(emptyList()))
+    }
+
     @Test fun leitorDeTelaOuveTituloPeriodoPrazoEEstado() {
         assertEquals("23/11 a 24/11", ProjectRules.periodLabel(items[0]))
         assertEquals("25/11", ProjectRules.periodLabel(items[1]))

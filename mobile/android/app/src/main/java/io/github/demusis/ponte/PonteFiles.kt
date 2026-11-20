@@ -135,3 +135,17 @@ internal fun openExported(a: MainActivity, kind: String, id: Long, captureId: Lo
         }
     }, { Controller.say(it, long = true) }, fail = "Não foi possível abrir o arquivo. Tente de novo.")
 }
+
+/**
+ * What the start-up cleaning of the cache may delete: only what is older than an hour and not in use
+ * ([inProgress] holds the photos of forms and attachments under way; nothing goes while a record is [saving]).
+ * Files in the cache root only when they are old sync exports (`sync-*.ponte`).
+ */
+internal object TempRules {
+    const val MAX_AGE_MS = 60L * 60 * 1000
+
+    fun isSyncExport(name: String) = name.startsWith("sync-") && name.endsWith(".ponte")
+
+    fun mayDelete(path: String, lastModified: Long, now: Long, inProgress: Set<String>, saving: Boolean): Boolean =
+        !saving && path !in inProgress && lastModified < now - MAX_AGE_MS
+}
