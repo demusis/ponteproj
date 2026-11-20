@@ -4373,6 +4373,34 @@ impl Store {
                                         if project.uid == task.project_uid
                                 ))
                     );
+                // Moving the merged edit behind a change queued after it is
+                // only safe when nothing there can depend on it (the edit
+                // of a project cannot). Otherwise (a later completion that
+                // needs this task done, say) the earlier entry stays where it
+                // is, and what is new goes at the end as an entry of its own,
+                // expecting the version the earlier entry leaves.
+                if must_move
+                    && matches!(mutation, IntranetMutation::SaveTask { .. })
+                    && existing
+                        .iter()
+                        .any(|e| e.id > prev.id && !is_project_mutation(&e.mutation))
+                {
+                    let mut mutation = mutation;
+                    if let IntranetMutation::SaveTask {
+                        expected_version, ..
+                    } = &mut mutation
+                    {
+                        *expected_version = match &prev.mutation {
+                            IntranetMutation::SaveTask {
+                                expected_version: Some(v),
+                                ..
+                            } => Some(v + 1),
+                            _ => None,
+                        };
+                    }
+                    self.insert_outbox_entry(actor, mutation, base, Vec::new())?;
+                    return Ok(());
+                }
                 let coalesced = preserve_original_base_version(&prev.mutation, mutation);
                 let updated = OutboxEntry {
                     id: prev.id,
@@ -4406,6 +4434,16 @@ impl Store {
                 return Ok(());
             }
         }
+        self.insert_outbox_entry(actor, mutation, base, created)
+    }
+
+    fn insert_outbox_entry(
+        &mut self,
+        actor: &str,
+        mutation: IntranetMutation,
+        base: Option<IntranetMutation>,
+        created: Vec<crate::idmap::CreatedId>,
+    ) -> Result<()> {
         let entry = OutboxEntry {
             id: 0,
             created_at: now_iso(),

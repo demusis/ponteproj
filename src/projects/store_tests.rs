@@ -1233,6 +1233,84 @@ fn the_queue_of_a_client_puts_a_project_before_the_task_that_names_it() {
     server.stop();
 }
 
+/// A task and one that depends on it, both open.
+fn chained(store: &mut Store) -> (i64, i64) {
+    let a = task_in(store, "Primeira", "");
+    let mut second = Task::standalone();
+    second.title = "Segunda".into();
+    second.dependencies = vec![a];
+    let b = store.save_task(&second).unwrap();
+    (a, b)
+}
+
+/// Offline: complete A, complete B (which needs A), create a project and put
+/// A in it. Returns the project.
+fn complete_chain_then_assign(store: &mut Store, a: i64, b: i64) -> Project {
+    store.complete_task(a).unwrap();
+    store.complete_task(b).unwrap();
+    let project = make(store, "Depois");
+    let mut task = stored(store, a);
+    task.project_uid = project.uid.clone();
+    store.save_task(&task).unwrap();
+    project
+}
+
+fn assert_chain_queue_in_order(outbox: &[crate::intranet::OutboxEntry], a: i64, b: i64) {
+    let of = |id: i64| {
+        outbox
+            .iter()
+            .position(|e| matches!(&e.mutation, IntranetMutation::SaveTask { task, .. } if task.id == id && task.status == "concluida"))
+            .unwrap()
+    };
+    // The entry that completes A stays before the one that completes B.
+    assert!(of(a) < of(b), "A is completed before B in the queue");
+    let last = outbox.last().unwrap();
+    assert!(
+        matches!(&last.mutation, IntranetMutation::SaveTask { task, .. } if task.id == a && !task.project_uid.is_empty()),
+        "the assignment goes at the end"
+    );
+}
+
+#[test]
+fn a_task_assigned_to_a_later_project_does_not_move_behind_the_task_that_needs_it_done_on_a_client()
+{
+    let (_dir, host, _cfg, mut server, mut client) = host_with_server();
+    let live = live_url(&server);
+    let (a, b) = chained(&mut client);
+    point_at(&mut client, DEAD_HOST);
+    let project = complete_chain_then_assign(&mut client, a, b);
+    assert_chain_queue_in_order(&client.list_offline_outbox().unwrap(), a, b);
+    point_at(&mut client, &live);
+    client.sync_from_host(false).unwrap();
+    assert!(client.list_offline_outbox().unwrap().is_empty());
+    assert!(client.list_sync_conflicts().unwrap().is_empty());
+    for store in [&host, &client] {
+        assert_eq!(stored(store, b).status, "concluida", "B was accepted");
+        assert_eq!(stored(store, a).status, "concluida");
+        assert_eq!(stored(store, a).project_uid, project.uid);
+    }
+    server.stop();
+}
+
+#[test]
+fn a_task_assigned_to_a_later_project_does_not_move_behind_the_task_that_needs_it_done_in_the_folder(
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a_store, mut b_store, _) = pair(dir.path());
+    let (a, b) = chained(&mut a_store);
+    sync(&mut a_store);
+    sync(&mut b_store);
+    let project = complete_chain_then_assign(&mut a_store, a, b);
+    assert_chain_queue_in_order(&a_store.list_offline_outbox().unwrap(), a, b);
+    sync(&mut a_store);
+    sync(&mut b_store);
+    for store in [&a_store, &b_store] {
+        assert_eq!(stored(store, b).status, "concluida", "B was accepted");
+        assert_eq!(stored(store, a).project_uid, project.uid);
+        assert!(store.list_sync_conflicts().unwrap().is_empty());
+    }
+}
+
 fn child_of(parent: i64, title: &str) -> Task {
     let mut task = Task::standalone();
     task.title = title.into();
