@@ -316,7 +316,10 @@ internal object SyncRunner {
                 // c. the core has already taken what this phone had to send: the
                 // merged copy must survive whatever happens next, so it is kept
                 // before anything else can fail.
-                SyncIo.keep(work, pending)
+                // Where it is kept depends on the core's word about the pending
+                // copy: unsettled, that copy may be the only one with some work
+                // and is never replaced (see SyncIo.keepNewOutput).
+                val kept = SyncIo.keepNewOutput(work, pending, pendingSettled)
                 // the core says how long the file it wrote is: anything else is not what it meant
                 if (r.has("bytes") && r.optLong("bytes", -1) != work.length()) {
                     throw CoreException("O arquivo de sincronização não ficou completo. Tente sincronizar de novo.")
@@ -336,6 +339,8 @@ internal object SyncRunner {
                     }
                     if (ok) {
                         if (SyncIo.mayDropPending(pendingSettled)) pending.delete()
+                        // Verified on Drive: the staged output is not needed.
+                        if (kept != pending) kept.delete()
                     } else {
                         isError = true
                         message = "Não foi possível conferir a gravação no Drive. " +
@@ -517,6 +522,21 @@ internal object SyncIo {
 
     /** The pending copy goes only on the core's explicit word that it is settled. */
     fun mayDropPending(coreSaysSettled: Boolean): Boolean = coreSaysSettled
+
+    /** Where the output of an exchange waits when the pending copy must stay as it is. */
+    const val STAGED = "pendente-novo.ponte"
+
+    /**
+     * Keeps the new output [work] of an exchange until it is on Drive. When the core
+     * says the pending copy is settled, the output becomes the pending copy; otherwise
+     * the pending copy (which may hold the only copy of some work) is left untouched
+     * and the output is staged beside it under another name. Returns where it is.
+     */
+    fun keepNewOutput(work: File, pending: File, coreSaysSettled: Boolean): File {
+        val target = if (mayDropPending(coreSaysSettled)) pending else File(pending.parentFile, STAGED)
+        keep(work, target)
+        return target
+    }
 
     /**
      * Keeps [from] as [to] so that [to] is either the old file or the whole

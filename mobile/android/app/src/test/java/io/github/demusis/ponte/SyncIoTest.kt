@@ -150,6 +150,24 @@ class SyncIoTest {
     }
 
     @Test
+    fun theNewOutputNeverReplacesAPendingCopyTheCoreDoesNotCallSettled() {
+        val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
+        try {
+            val work = File(dir, "sync-work-1.ponte").also { it.writeBytes(bytes(1_000)) }
+            val pending = File(dir, "pendente.ponte").also { it.writeText("trabalho só aqui") }
+            // Unsettled (or an answer without the word): the pending copy is untouched.
+            val kept = SyncIo.keepNewOutput(work, pending, false)
+            assertEquals("pendente-novo.ponte", kept.name)
+            assertEquals("trabalho só aqui", pending.readText())
+            assertArrayEquals(bytes(1_000), kept.readBytes())
+            // Settled: the output becomes the pending copy, as before.
+            val again = SyncIo.keepNewOutput(work, pending, true)
+            assertEquals(pending, again)
+            assertArrayEquals(bytes(1_000), pending.readBytes())
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test
     fun keepingThePendingCopyReplacesItWholeAndLeavesNoPart() {
         val dir = java.nio.file.Files.createTempDirectory("syncio").toFile()
         try {
