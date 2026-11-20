@@ -1100,17 +1100,17 @@ mod rules_tests {
             "2026-11-23T09:00",
             "2026-11-24T18:00",
         );
-        let r = project_risk(&project("2026-11-25"), &planned_tasks, today);
+        let r = project_risk(&project("2026-11-24"), &planned_tasks, today);
         assert_eq!(r.deliveries_at_risk, 0);
         assert_eq!(r.target_at_risk, Some(at("2026-11-25T18:00")));
-        let r = project_risk(&project("2026-11-26"), &planned_tasks, today);
+        let r = project_risk(&project("2026-11-25"), &planned_tasks, today);
         assert_eq!(r.target_at_risk, None);
         // No target date: nothing to miss. Concluded tasks do not count.
         let r = project_risk(&project(""), &planned_tasks, today);
         assert_eq!(r.target_at_risk, None);
         let mut finished = planned_tasks.clone();
         finished[1].status = "concluida".into();
-        let r = project_risk(&project("2026-11-25"), &finished, today);
+        let r = project_risk(&project("2026-11-24"), &finished, today);
         assert_eq!(r.target_at_risk, None);
         // A fixed plan counts as well as a projection.
         let fixed = vec![planned(
@@ -1122,3 +1122,6 @@ mod rules_tests {
         assert_eq!(r.target_at_risk, Some(at("2026-12-02T18:00")));
     }
 }
+
+#[cfg(test)]
+mod store_tests;

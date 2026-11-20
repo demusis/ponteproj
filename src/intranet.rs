@@ -14022,6 +14022,180 @@ mod resources_sync_tests {
     }
 
     #[test]
+    fn what_needs_schema_21_is_told_apart_from_what_does_not() {
+        let project = crate::projects::Project::new("Mudança");
+        let save = IntranetMutation::SaveProject {
+            project,
+            expected_version: None,
+        };
+        let delete = IntranetMutation::DeleteProject {
+            uid: "a".repeat(32),
+            expected_version: None,
+        };
+        assert!(is_project_mutation(&save) && is_project_mutation(&delete));
+        assert!(mutation_carries_projects(&save) && mutation_carries_projects(&delete));
+        let mut task = Task::standalone();
+        let plain = IntranetMutation::SaveTask {
+            task: task.clone(),
+            expected_version: None,
+        };
+        assert!(!mutation_carries_projects(&plain) && !is_project_mutation(&plain));
+        task.project_uid = "a".repeat(32);
+        let with_project = IntranetMutation::SaveTask {
+            task,
+            expected_version: None,
+        };
+        assert!(mutation_carries_projects(&with_project) && !is_project_mutation(&with_project));
+        assert_eq!(PROJECTS_SCHEMA, crate::storage::SCHEMA_VERSION);
+        assert!(HOST_WITHOUT_PROJECTS.contains("Atualize o Ponte no computador principal"));
+        // The message of a library or a file written by a newer Ponte is the
+        // existing one, and a copy from this one declares schema 21.
+        let (_dir, store) = {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+            (dir, store)
+        };
+        assert_eq!(store.export_snapshot().unwrap().schema_version, 21);
+    }
+
+    #[test]
+    fn a_main_computer_before_the_projects_is_told_plainly_and_nothing_is_queued_or_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = old_host(CabinetSnapshot::default());
+        let (mut client, cfg) = client_of(dir.path(), "client.sqlite3", &url);
+        // Early: the host answers and is too old, so nothing is written.
+        let error = client
+            .save_project(&crate::projects::Project::new("Mudança"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, HOST_WITHOUT_PROJECTS);
+        assert_eq!(
+            client
+                .delete_project(&"a".repeat(32))
+                .unwrap_err()
+                .to_string(),
+            HOST_WITHOUT_PROJECTS
+        );
+        let mut task = Task::standalone();
+        task.title = "Em projeto".into();
+        task.project_uid = "a".repeat(32);
+        assert_eq!(
+            client.save_task(&task).unwrap_err().to_string(),
+            HOST_WITHOUT_PROJECTS
+        );
+        assert!(client.list_projects().unwrap().is_empty());
+        assert!(client.list_tasks().unwrap().is_empty());
+        assert!(client.list_offline_outbox().unwrap().is_empty());
+        // The refusal of a change that was queued while the host could not be
+        // reached waits in the queue: it is not a refusal of the change.
+        for mutation in [
+            IntranetMutation::SaveProject {
+                project: crate::projects::Project {
+                    uid: "a".repeat(32),
+                    name: "Mudança".into(),
+                    ..Default::default()
+                },
+                expected_version: None,
+            },
+            IntranetMutation::DeleteProject {
+                uid: "a".repeat(32),
+                expected_version: None,
+            },
+        ] {
+            let sent = send_rpc_classified(
+                &cfg,
+                &RpcRequest::Mutate {
+                    actor: "Servidor B".into(),
+                    client_schema: crate::storage::SCHEMA_VERSION,
+                    mutation,
+                },
+            );
+            assert!(
+                matches!(&sent, Err(RpcError::Unreachable(m)) if m == HOST_WITHOUT_PROJECTS),
+                "queued, with the plain sentence"
+            );
+        }
+        // A task, with a project or not, is refused by a host this old like
+        // any other task (it is told in the early check above).
+        let in_project = send_rpc_classified(
+            &cfg,
+            &RpcRequest::Mutate {
+                actor: "Servidor B".into(),
+                client_schema: crate::storage::SCHEMA_VERSION,
+                mutation: IntranetMutation::SaveTask {
+                    task: task.clone(),
+                    expected_version: None,
+                },
+            },
+        );
+        assert!(matches!(in_project, Err(RpcError::Rejected(_))));
+        let ordinary = send_rpc_classified(
+            &cfg,
+            &RpcRequest::Mutate {
+                actor: "Servidor B".into(),
+                client_schema: crate::storage::SCHEMA_VERSION,
+                mutation: IntranetMutation::SaveTask {
+                    task: Task::standalone(),
+                    expected_version: None,
+                },
+            },
+        );
+        assert!(matches!(ordinary, Err(RpcError::Rejected(_))));
+        // End to end: queued while the host was away, then the host answers
+        // with that refusal: the change stays queued, no conflict, nothing
+        // lost here.
+        let (mut away, mut away_cfg) = client_of(dir.path(), "away.sqlite3", "http://127.0.0.1:9");
+        let made = away
+            .save_project(&crate::projects::Project::new("Mudança"))
+            .unwrap();
+        assert_eq!(away.list_offline_outbox().unwrap().len(), 1);
+        away_cfg.host_url = url.clone();
+        away.save_intranet_config(&away_cfg).unwrap();
+        let error = away.sync_from_host(false).unwrap_err().to_string();
+        assert_eq!(error, HOST_WITHOUT_PROJECTS);
+        assert_eq!(away.list_offline_outbox().unwrap().len(), 1, "still queued");
+        assert!(away.list_sync_conflicts().unwrap().is_empty());
+        assert_eq!(away.list_projects().unwrap()[0].uid, made.uid, "kept here");
+    }
+
+    #[test]
+    fn applying_a_copy_of_an_older_main_computer_keeps_the_projects_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut here = Store::open(&dir.path().join("here.sqlite3")).unwrap();
+        let project = here
+            .save_project(&crate::projects::Project::new("Mudança"))
+            .unwrap();
+        let mut task = Task::standalone();
+        task.title = "Caixas".into();
+        task.project_uid = project.uid.clone();
+        let id = here.save_task(&task).unwrap();
+        // What an older main computer sends (schema 20): the same tasks, no
+        // projects, no field on the tasks.
+        let mut copy = here.export_snapshot().unwrap();
+        copy.projects.clear();
+        for task in &mut copy.tasks {
+            task.project_uid.clear();
+        }
+        copy.schema_version = SETTINGS_SCHEMA;
+        here.apply_snapshot(&copy, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        assert_eq!(here.list_projects().unwrap().len(), 1);
+        let kept = here
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        assert_eq!(kept.project_uid, project.uid);
+        // A copy from a current computer is the truth, empty or not.
+        copy.schema_version = PROJECTS_SCHEMA;
+        here.apply_snapshot(&copy, |_, _| unreachable!(), |_| unreachable!())
+            .unwrap();
+        assert!(here.list_projects().unwrap().is_empty());
+        assert!(here.list_tasks().unwrap()[0].project_uid.is_empty());
+    }
+
+    #[test]
     fn a_main_computer_without_recursos_is_told_plainly_and_nothing_is_queued_or_lost() {
         let dir = tempfile::tempdir().unwrap();
         let url = old_host(CabinetSnapshot::default());
