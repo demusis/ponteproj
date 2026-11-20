@@ -82,11 +82,22 @@ impl Store {
             ))
         })?;
         let mut pages = std::collections::BTreeMap::new();
+        // Whether a file holds the same content as `file`, decided once per
+        // file (its metadata is sealed JSON; the rows are one per page).
+        let mut same_content = std::collections::HashMap::<i64, bool>::new();
         for row in rows {
-            let (_, metadata, page, payload) = row?;
-            let summary: crate::files::FileSummary =
-                serde_json::from_slice(&protection::unseal(&metadata)?)?;
-            if summary.sha256 == current.sha256 && !pages.contains_key(&page) {
+            let (file_id, metadata, page, payload) = row?;
+            let same = match same_content.get(&file_id) {
+                Some(same) => *same,
+                None => {
+                    let summary: crate::files::FileSummary =
+                        serde_json::from_slice(&protection::unseal(&metadata)?)?;
+                    let same = summary.sha256 == current.sha256;
+                    same_content.insert(file_id, same);
+                    same
+                }
+            };
+            if same && !pages.contains_key(&page) {
                 pages.insert(
                     page,
                     serde_json::from_slice(&protection::unseal(&payload)?)?,
