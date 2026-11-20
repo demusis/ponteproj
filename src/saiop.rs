@@ -823,6 +823,15 @@ pub fn map_verification_dimensions(
 
 /// Converte valor de célula de data do Excel (serial numérico ou texto `DD/MM/AAAA`) sem corrigir silenciosamente anos atípicos.
 pub fn parse_spreadsheet_date(raw: &str) -> (Option<String>, Option<String>) {
+    parse_spreadsheet_date_with_epoch(raw, false)
+}
+
+/// Como [`parse_spreadsheet_date`], mas respeita o sistema de datas da pasta de trabalho:
+/// `date1904 = true` usa a época de 1904 (`workbookPr date1904="1"`), em que o serial 0 é 01/01/1904.
+pub fn parse_spreadsheet_date_with_epoch(
+    raw: &str,
+    date1904: bool,
+) -> (Option<String>, Option<String>) {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return (None, None);
@@ -831,7 +840,12 @@ pub fn parse_spreadsheet_date(raw: &str) -> (Option<String>, Option<String>) {
     if let Ok(serial_f) = trimmed.replace(',', ".").parse::<f64>() {
         let serial = serial_f.floor() as i64;
         if (10000..=80000).contains(&serial) {
-            let base = NaiveDate::from_ymd_opt(1899, 12, 30).expect("valid base date");
+            let base = if date1904 {
+                NaiveDate::from_ymd_opt(1904, 1, 1)
+            } else {
+                NaiveDate::from_ymd_opt(1899, 12, 30)
+            }
+            .expect("valid base date");
             if let Some(date) = base.checked_add_signed(ChronoDuration::days(serial)) {
                 let iso = date.format("%Y-%m-%d").to_string();
                 let year = date.year();
@@ -1561,7 +1575,7 @@ impl Store {
                 }
             }
 
-            let (entry_iso, entry_flag) = parse_spreadsheet_date(col_b);
+            let (entry_iso, entry_flag) = parse_spreadsheet_date_with_epoch(col_b, sheet.date1904);
             if let Some(f) = entry_flag {
                 flags.push(format!("Entrada (Col B): {f}"));
             }
@@ -1583,7 +1597,7 @@ impl Store {
             };
 
             // Col K: Prazo de retorno
-            let (due_iso, due_flag) = parse_spreadsheet_date(col_k);
+            let (due_iso, due_flag) = parse_spreadsheet_date_with_epoch(col_k, sheet.date1904);
             let (due_date, due_kind) = match due_iso {
                 Some(iso) => {
                     if let Some(f) = due_flag {
@@ -1615,7 +1629,7 @@ impl Store {
             };
 
             // Col O: Data de trâmite (saída)
-            let (exit_iso, exit_flag) = parse_spreadsheet_date(col_o);
+            let (exit_iso, exit_flag) = parse_spreadsheet_date_with_epoch(col_o, sheet.date1904);
             if let Some(f) = exit_flag {
                 flags.push(format!("Data de trâmite (Col O): {f}"));
             }
@@ -2241,6 +2255,21 @@ struct ParsedSheet {
     sheet_name: String,
     headers: Vec<String>,
     rows: Vec<RawSpreadsheetRow>,
+    /// A pasta de trabalho usa o sistema de datas de 1904 (`workbookPr date1904`).
+    date1904: bool,
+}
+
+fn workbook_uses_1904(entries: &BTreeMap<String, Vec<u8>>) -> bool {
+    let Some(wb_xml) = entries
+        .get("xl/workbook.xml")
+        .and_then(|b| std::str::from_utf8(b).ok())
+    else {
+        return false;
+    };
+    extract_xml_tags(wb_xml, "workbookPr")
+        .iter()
+        .filter_map(|tag| xml_attr(tag, "date1904"))
+        .any(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true"))
 }
 
 fn parse_xlsx_processos_sheet(bytes: &[u8]) -> Result<ParsedSheet> {
@@ -2267,6 +2296,7 @@ fn parse_xlsx_processos_sheet(bytes: &[u8]) -> Result<ParsedSheet> {
         sheet_name,
         headers,
         rows,
+        date1904: workbook_uses_1904(&entries),
     })
 }
 
@@ -6120,6 +6150,60 @@ mod tests {
         out.extend_from_slice(&cd_offset.to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out
+    }
+
+    #[test]
+    fn spreadsheet_serial_follows_the_1900_and_1904_date_systems() {
+        // 46032 = 2026-01-10 no sistema de 1900; o mesmo serial no de 1904 fica 1.462 dias depois.
+        assert_eq!(
+            parse_spreadsheet_date_with_epoch("46032", false)
+                .0
+                .as_deref(),
+            Some("2026-01-10")
+        );
+        assert_eq!(
+            parse_spreadsheet_date("46032").0.as_deref(),
+            Some("2026-01-10")
+        );
+        assert_eq!(
+            parse_spreadsheet_date_with_epoch("46032", true)
+                .0
+                .as_deref(),
+            Some("2030-01-11")
+        );
+        // Texto não é afetado pela época.
+        assert_eq!(
+            parse_spreadsheet_date_with_epoch("10/01/2026", true)
+                .0
+                .as_deref(),
+            Some("2026-01-10")
+        );
+    }
+
+    #[test]
+    fn xlsx_reader_detects_the_1904_date_system_flag() {
+        let sheet = br#"<worksheet><sheetData><row r="1"><c r="B1"><v>1</v></c></row></sheetData></worksheet>"#;
+        let build = |wb: &str| {
+            build_stored_zip(&[
+                ("xl/workbook.xml", wb.as_bytes()),
+                ("xl/worksheets/sheet1.xml", &sheet[..]),
+            ])
+        };
+        let plain = parse_xlsx_processos_sheet(&build(
+            r#"<workbook><workbookPr/><sheets><sheet name="PROCESSOS" sheetId="1"/></sheets></workbook>"#,
+        ))
+        .unwrap();
+        assert!(!plain.date1904);
+        let flagged = parse_xlsx_processos_sheet(&build(
+            r#"<workbook><workbookPr date1904="1"/><sheets><sheet name="PROCESSOS" sheetId="1"/></sheets></workbook>"#,
+        ))
+        .unwrap();
+        assert!(flagged.date1904);
+        let off = parse_xlsx_processos_sheet(&build(
+            r#"<workbook><workbookPr date1904="0"/><sheets><sheet name="PROCESSOS" sheetId="1"/></sheets></workbook>"#,
+        ))
+        .unwrap();
+        assert!(!off.date1904);
     }
 
     #[test]
