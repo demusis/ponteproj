@@ -13,6 +13,7 @@ mod conference;
 mod ficha;
 mod library;
 mod minuta;
+mod projects;
 mod proposals;
 mod queue;
 mod repetition;
@@ -636,6 +637,7 @@ enum Area {
     Today,
     Documents,
     Tasks,
+    Projects,
     Saiop,
     Templates,
     Resources,
@@ -1067,6 +1069,14 @@ enum Leave {
     NewAttendance,
     /// Open a new reservation after reaching Recursos.
     NewReservation,
+    /// The "Projetos" screen.
+    Projects,
+    /// A new project, in the form of the "Projetos" screen.
+    NewProject,
+    /// This project (uid), open in "Projetos".
+    Project(String),
+    /// A new task for this project (uid), in the form of Tarefas.
+    NewProjectTask(String),
     /// The "Atendimentos" screen.
     Saiop,
     /// The "Modelos" screen.
@@ -1104,6 +1114,7 @@ impl Leave {
         matches!(
             self,
             Leave::NewTask(_)
+                | Leave::NewProjectTask(_)
                 | Leave::OpenTask(_)
                 | Leave::EditTask(_)
                 | Leave::Suggestion { .. }
@@ -1172,6 +1183,8 @@ struct PonteApp {
     saiop: crate::saiop::SaiopPanel,
     /// The "Recursos" area.
     resources: crate::resources_ui::ResourcesPanel,
+    /// The "Projetos" area.
+    projects: projects::ProjectsPanel,
     /// Returns overdue, for the badge of the rail (read on each refresh).
     resources_overdue: usize,
     intranet: crate::intranet::IntranetPanel,
@@ -1306,6 +1319,7 @@ impl PonteApp {
             tasks: Default::default(),
             saiop: Default::default(),
             resources: Default::default(),
+            projects: Default::default(),
             resources_overdue: 0,
             intranet: Default::default(),
             // The welcome screen (or the opened document) is the first thing seen.
@@ -1749,6 +1763,24 @@ impl PonteApp {
             Leave::NewReservation => {
                 self.area = Area::Resources;
                 self.resources.new_reservation(&self.store);
+            }
+            Leave::Projects => {
+                self.area = Area::Projects;
+            }
+            Leave::NewProject => {
+                self.area = Area::Projects;
+                self.projects.start_new_project();
+            }
+            Leave::Project(uid) => {
+                self.projects.open_project(&uid);
+                self.area = Area::Projects;
+            }
+            Leave::NewProjectTask(uid) => {
+                if self.tasks.start_new_in_project(&uid) {
+                    self.area = Area::Tasks;
+                } else {
+                    self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");
+                }
             }
             Leave::Saiop => {
                 self.area = Area::Saiop;
@@ -2906,9 +2938,10 @@ impl PonteApp {
             WorkResult::Export(result) => match result {
                 Ok(report) => {
                     self.message(format!(
-                        "Exportação concluída: {}, {}, {}, {} e {}, em {}. No CERES, envie cada arquivo .csv como um conjunto.",
+                        "Exportação concluída: {}, {}, {}, {}, {} e {}, em {}. No CERES, envie cada arquivo .csv como um conjunto.",
                         plural(report.documents, "documento", "documentos"),
                         plural(report.tasks, "tarefa", "tarefas"),
+                        plural(report.projects, "projeto", "projetos"),
                         plural(report.attendances, "atendimento", "atendimentos"),
                         plural(report.resources, "recurso", "recursos"),
                         plural(report.resource_uses, "uso de recurso", "usos de recursos"),
@@ -3130,6 +3163,19 @@ impl PonteApp {
                     }
                     if rail_item(
                         ui,
+                        icon::FOLDER,
+                        "Projetos",
+                        self.area == Area::Projects,
+                        0,
+                        false,
+                    )
+                    .on_hover_text("Tarefas reunidas por objetivo, com progresso, riscos e linha do tempo. (Ctrl+7)")
+                    .clicked()
+                    {
+                        self.navigate(Leave::Projects);
+                    }
+                    if rail_item(
+                        ui,
                         icon::ATTENDANCES,
                         "Atendimentos",
                         self.area == Area::Saiop,
@@ -3184,7 +3230,7 @@ impl PonteApp {
             });
     }
 
-    /// The keyboard, in one place. Ctrl+1 to Ctrl+5 change the area, like the
+    /// The keyboard, in one place. Ctrl+1 to Ctrl+7 change the area, like the
     /// rail; Ctrl+F goes to the search of the area; Ctrl+N creates; Ctrl+S
     /// saves what is being edited; Esc closes the window or panel in front.
     /// Nothing here discards unsaved work: each key goes through the same
@@ -3209,6 +3255,8 @@ impl PonteApp {
             self.navigate(Leave::Templates);
         } else if pressed(Key::Num6) {
             self.navigate(Leave::Resources);
+        } else if pressed(Key::Num7) {
+            self.navigate(Leave::Projects);
         } else if pressed(Key::K) {
             self.global_search.open = true;
         } else if pressed(Key::F) {
@@ -3218,6 +3266,7 @@ impl PonteApp {
                 Area::Documents => self.focus_search = true,
                 Area::Templates => self.templates.key_find(),
                 Area::Resources => self.resources.key_find(),
+                Area::Projects => self.projects.key_find(),
                 Area::Today | Area::Settings => {
                     self.focus_search = true;
                     self.navigate(Leave::Documents);
@@ -3242,6 +3291,7 @@ impl PonteApp {
                 Area::Resources => {
                     self.resources.key_new(&self.store);
                 }
+                Area::Projects => self.projects.start_new_project(),
                 Area::Settings => {}
             }
         } else if pressed(Key::S) {
@@ -3269,7 +3319,7 @@ impl PonteApp {
                 Area::Resources => {
                     self.resources.key_save(&mut self.store);
                 }
-                Area::Today => {}
+                Area::Today | Area::Projects => {}
             }
         } else if !egui::Popup::is_any_open(ctx)
             && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
@@ -3296,6 +3346,9 @@ impl PonteApp {
                     }
                     Area::Resources => {
                         self.resources.key_escape();
+                    }
+                    Area::Projects => {
+                        self.projects.key_escape();
                     }
                     _ => {}
                 }
@@ -3842,6 +3895,8 @@ impl eframe::App for PonteApp {
             ui.add_enabled_ui(enabled, |ui| {
                 if self.area == Area::Today {
                     self.today_area(ui);
+                } else if self.area == Area::Projects {
+                    self.projects_area(ui);
                 } else if self.area == Area::Settings {
                     self.settings_area(ui);
                 } else if self.area == Area::Templates {

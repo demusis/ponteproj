@@ -74,6 +74,9 @@ pub mod categories;
 /// Categories on the screens: chips, picker, filter and manager.
 #[cfg(feature = "desktop")]
 pub mod category_ui;
+/// Projects on the task screens: chip, picker and filter.
+#[cfg(feature = "desktop")]
+pub mod project_ui;
 pub mod recurrence;
 /// Rooms, books and equipment, and their bookings and loans.
 pub mod resources;

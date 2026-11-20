@@ -1,5 +1,5 @@
-//! Search across the whole library — documents, tasks, atendimentos,
-//! resources and uses of resources — in one box (Ctrl+K), over whatever
+//! Search across the whole library — documents, tasks, projects,
+//! atendimentos, resources and uses of resources — in one box (Ctrl+K), over whatever
 //! area is on screen.
 use super::{Leave, PonteApp};
 use crate::resources::{Resource, ResourceStatus, ResourceUse, UseStatus};
@@ -41,6 +41,15 @@ struct TaskRow {
     done: bool,
     /// Uids of the task's categories.
     categories: Vec<String>,
+}
+
+/// A project found.
+struct ProjectRow {
+    uid: String,
+    name: String,
+    /// The objective, as one muted line.
+    objective: String,
+    status: crate::projects::ProjectStatus,
 }
 
 /// An atendimento found.
@@ -98,6 +107,7 @@ struct Results {
     commands: Vec<Command>,
     documents: Group<DocumentRow>,
     tasks: Group<TaskRow>,
+    projects: Group<ProjectRow>,
     attendances: Group<AttendanceRow>,
     resources: Group<ResourceRow>,
     resource_uses: Group<ResourceUseRow>,
@@ -111,6 +121,7 @@ impl Results {
     fn total(&self) -> usize {
         self.documents.rows.len()
             + self.tasks.rows.len()
+            + self.projects.rows.len()
             + self.attendances.rows.len()
             + self.resources.rows.len()
             + self.resource_uses.rows.len()
@@ -123,6 +134,8 @@ enum Pick {
     Command(Command),
     Document(i64),
     Task(i64),
+    /// A project, by uid.
+    Project(String),
     Attendance(i64),
     /// A resource, by uid.
     Resource(String),
@@ -135,6 +148,7 @@ enum Pick {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
     NewTask,
+    NewProject,
     NewManual,
     NewAttendance,
     NewReservation,
@@ -142,6 +156,7 @@ enum Command {
     Week,
     Documents,
     Tasks,
+    Projects,
     Attendances,
     Resources,
     Templates,
@@ -150,8 +165,9 @@ enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 13] = [
+    const ALL: [Command; 15] = [
         Self::NewTask,
+        Self::NewProject,
         Self::NewManual,
         Self::NewAttendance,
         Self::NewReservation,
@@ -159,6 +175,7 @@ impl Command {
         Self::Week,
         Self::Documents,
         Self::Tasks,
+        Self::Projects,
         Self::Attendances,
         Self::Resources,
         Self::Templates,
@@ -169,6 +186,7 @@ impl Command {
     fn label(self) -> &'static str {
         match self {
             Self::NewTask => "Nova tarefa",
+            Self::NewProject => "Novo projeto",
             Self::NewManual => "Novo registro manual",
             Self::NewAttendance => "Nova entrada em Atendimentos",
             Self::NewReservation => "Nova reserva",
@@ -176,6 +194,7 @@ impl Command {
             Self::Week => "Planejar a semana",
             Self::Documents => "Abrir documentos",
             Self::Tasks => "Abrir tarefas",
+            Self::Projects => "Abrir projetos",
             Self::Attendances => "Abrir atendimentos",
             Self::Resources => "Abrir reservas e recursos",
             Self::Templates => "Abrir modelos",
@@ -193,6 +212,7 @@ impl Command {
             Self::Attendances => "Ctrl+4",
             Self::Templates => "Ctrl+5",
             Self::Resources => "Ctrl+6",
+            Self::Projects => "Ctrl+7",
             _ => "",
         }
     }
@@ -254,6 +274,11 @@ fn fields_match(needle: &str, fields: &[&str]) -> bool {
 
 fn task_matches(task: &Task, needle: &str) -> bool {
     fields_match(needle, &[&task.title, &task.notes, &task.assignee])
+}
+
+/// Name and objective.
+fn project_matches(project: &crate::projects::Project, needle: &str) -> bool {
+    fields_match(needle, &[&project.name, &project.objective])
 }
 
 fn attendance_matches(attendance: &SaiopAttendance, needle: &str) -> bool {
@@ -333,6 +358,29 @@ fn matching_uses<'a>(
     closed.sort_by(|a, b| b.0.start.cmp(&a.0.start));
     open.extend(closed);
     open
+}
+
+/// The projects that match, the ones still going first (each part keeps its order).
+fn matching_projects(list: Vec<crate::projects::Project>, needle: &str) -> Vec<ProjectRow> {
+    use crate::projects::ProjectStatus;
+    let (live, closed): (Vec<_>, Vec<_>) = list
+        .into_iter()
+        .filter(|p| project_matches(p, needle))
+        .partition(|p| {
+            !matches!(
+                p.status,
+                ProjectStatus::Concluido | ProjectStatus::Arquivado
+            )
+        });
+    live.into_iter()
+        .chain(closed)
+        .map(|p| ProjectRow {
+            uid: p.uid,
+            name: p.name,
+            objective: p.objective,
+            status: p.status,
+        })
+        .collect()
 }
 
 fn task_done(task: &Task) -> bool {
@@ -448,6 +496,12 @@ impl GlobalSearch {
             }
             Err(error) => errors.push(error.to_string()),
         }
+        match store.list_projects() {
+            Ok(list) => {
+                results.projects = Group::limited(matching_projects(list, &needle));
+            }
+            Err(error) => errors.push(error.to_string()),
+        }
         match store.list_saiop_attendances() {
             Ok(list) => {
                 results.attendances = Group::limited(
@@ -509,9 +563,11 @@ impl GlobalSearch {
         let r = &self.results;
         let documents = r.documents.rows.len();
         let tasks = r.tasks.rows.len();
+        let projects = r.projects.rows.len();
         let attendances = r.attendances.rows.len();
         let resources = r.resources.rows.len();
-        let records = documents + tasks + attendances + resources + r.resource_uses.rows.len();
+        let records =
+            documents + tasks + projects + attendances + resources + r.resource_uses.rows.len();
         if index >= records {
             return r.commands.get(index - records).copied().map(Pick::Command);
         }
@@ -519,20 +575,24 @@ impl GlobalSearch {
             Some(Pick::Document(r.documents.rows[index].id))
         } else if index < documents + tasks {
             Some(Pick::Task(r.tasks.rows[index - documents].id))
-        } else if index < documents + tasks + attendances {
-            Some(Pick::Attendance(
-                r.attendances.rows[index - documents - tasks].id,
+        } else if index < documents + tasks + projects {
+            Some(Pick::Project(
+                r.projects.rows[index - documents - tasks].uid.clone(),
             ))
-        } else if index < documents + tasks + attendances + resources {
+        } else if index < documents + tasks + projects + attendances {
+            Some(Pick::Attendance(
+                r.attendances.rows[index - documents - tasks - projects].id,
+            ))
+        } else if index < documents + tasks + projects + attendances + resources {
             Some(Pick::Resource(
-                r.resources.rows[index - documents - tasks - attendances]
+                r.resources.rows[index - documents - tasks - projects - attendances]
                     .uid
                     .clone(),
             ))
         } else {
             r.resource_uses
                 .rows
-                .get(index - documents - tasks - attendances - resources)
+                .get(index - documents - tasks - projects - attendances - resources)
                 .map(|u| Pick::ResourceUse(u.uid.clone()))
         }
     }
@@ -757,6 +817,7 @@ impl PonteApp {
     fn run_command(&mut self, command: Command, ctx: &egui::Context) {
         match command {
             Command::NewTask => self.navigate(Leave::NewTask(None)),
+            Command::NewProject => self.navigate(Leave::NewProject),
             Command::Today => self.navigate(Leave::Today),
             Command::Week => self.navigate(Leave::Week(ctx.clone())),
             Command::NewManual => self.navigate(Leave::NewManual),
@@ -764,6 +825,7 @@ impl PonteApp {
             Command::NewReservation => self.navigate(Leave::NewReservation),
             Command::Documents => self.navigate(Leave::Documents),
             Command::Tasks => self.go_tasks(),
+            Command::Projects => self.navigate(Leave::Projects),
             Command::Attendances => self.navigate(Leave::Saiop),
             Command::Resources => self.navigate(Leave::Resources),
             Command::Templates => self.navigate(Leave::Templates),
@@ -791,6 +853,7 @@ impl PonteApp {
                     }
                 }
             }
+            Pick::Project(uid) => self.navigate(Leave::Project(uid)),
             Pick::Attendance(id) => {
                 if self.saiop.focus_attendance(&self.store, id) {
                     self.navigate(Leave::Saiop);
@@ -993,6 +1056,71 @@ fn draw_results(
                 }
                 more_line(ui, results.tasks.more);
             }
+            if !results.projects.rows.is_empty() {
+                heading(ui, "Projetos");
+                for project in &results.projects.rows {
+                    let on = search.highlight == Some(index);
+                    let closed = matches!(
+                        project.status,
+                        crate::projects::ProjectStatus::Concluido
+                            | crate::projects::ProjectStatus::Arquivado
+                    );
+                    if result_row(
+                        ui,
+                        ("gs-project", &project.uid),
+                        on,
+                        scroll_to_highlight,
+                        closed,
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = S2;
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Min),
+                                    |ui| {
+                                        widgets::pill(ui, project.status.label(), Tone::Neutral);
+                                        ui.with_layout(
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            |ui| {
+                                                ui.spacing_mut().item_spacing.y = 2.0;
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(&project.name).font(
+                                                            theme::font_strong(theme::SIZE_BODY),
+                                                        ),
+                                                    )
+                                                    .selectable(false)
+                                                    .truncate(),
+                                                );
+                                                if !project.objective.is_empty() {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(
+                                                                project
+                                                                    .objective
+                                                                    .lines()
+                                                                    .next()
+                                                                    .unwrap_or_default(),
+                                                            )
+                                                            .size(theme::SIZE_SMALL)
+                                                            .color(p.muted),
+                                                        )
+                                                        .selectable(false)
+                                                        .truncate(),
+                                                    );
+                                                }
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        },
+                    ) {
+                        clicked = Some(Pick::Project(project.uid.clone()));
+                    }
+                    index += 1;
+                }
+                more_line(ui, results.projects.more);
+            }
             if !results.attendances.rows.is_empty() {
                 heading(ui, "Atendimentos");
                 for attendance in &results.attendances.rows {
@@ -1184,6 +1312,8 @@ mod tests {
 
     #[test]
     fn commands_filter_ignoring_accents_and_the_prefix() {
+        assert_eq!(commands("> projetos"), [Command::Projects]);
+        assert_eq!(commands("> novo projeto"), [Command::NewProject]);
         assert_eq!(commands("").len(), Command::ALL.len());
         assert_eq!(commands(">").len(), Command::ALL.len());
         assert_eq!(commands("  >  ").len(), Command::ALL.len());
@@ -1522,5 +1652,81 @@ mod tests {
         assert!(matches!(search.pick_at(1), Some(Pick::Task(20))));
         assert!(matches!(search.pick_at(2), Some(Pick::Attendance(30))));
         assert!(search.pick_at(3).is_none());
+    }
+
+    fn project(
+        uid: &str,
+        name: &str,
+        objective: &str,
+        status: crate::projects::ProjectStatus,
+    ) -> crate::projects::Project {
+        crate::projects::Project {
+            uid: uid.into(),
+            name: name.into(),
+            objective: objective.into(),
+            status,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn projects_are_found_by_name_and_objective_and_the_ones_going_come_first() {
+        use crate::projects::ProjectStatus::{Arquivado, Ativo, Pausado};
+        let list = vec![
+            project("a", "Arquivo da reunião", "", Arquivado),
+            project("b", "Reunião do Comitê", "Garantir auditório", Ativo),
+            project(
+                "c",
+                "Quadro de pessoal",
+                "Preparar a reunião de entrega",
+                Pausado,
+            ),
+            project("d", "Outro assunto", "Nada a ver", Ativo),
+        ];
+        let found = |needle: &str| -> Vec<String> {
+            matching_projects(list.clone(), &fold(needle))
+                .into_iter()
+                .map(|p| p.uid)
+                .collect()
+        };
+        assert_eq!(
+            found("reuniao"),
+            ["b", "c", "a"],
+            "name or objective; archived last"
+        );
+        assert_eq!(found("AUDITORIO"), ["b"], "ignoring case and accents");
+        assert_eq!(found("reuniao entrega"), ["c"], "every word");
+        assert!(found("zzz").is_empty());
+    }
+
+    #[test]
+    fn a_project_row_is_picked_between_the_tasks_and_the_attendances() {
+        let mut search = GlobalSearch::default();
+        search.results.tasks = Group::limited(vec![TaskRow {
+            id: 20,
+            title: "Tarefa".into(),
+            document: String::new(),
+            standalone: false,
+            due_date: String::new(),
+            done: false,
+            categories: Vec::new(),
+        }]);
+        search.results.projects = Group::limited(vec![ProjectRow {
+            uid: "p1".into(),
+            name: "Projeto".into(),
+            objective: String::new(),
+            status: crate::projects::ProjectStatus::Ativo,
+        }]);
+        search.results.attendances = Group::limited(vec![AttendanceRow {
+            id: 30,
+            reference: "ORG-ATD-1".into(),
+            subject: String::new(),
+            status: "Em análise".into(),
+        }]);
+        assert_eq!(search.results.total(), 3);
+        assert!(matches!(search.pick_at(0), Some(Pick::Task(20))));
+        assert!(matches!(search.pick_at(1), Some(Pick::Project(uid)) if uid == "p1"));
+        assert!(matches!(search.pick_at(2), Some(Pick::Attendance(30))));
+        assert!(matches!(search.pick_at(3), Some(Pick::Command(_))) || search.pick_at(3).is_none());
     }
 }

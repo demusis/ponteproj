@@ -10,6 +10,9 @@ impl PonteApp {
     const TOUR: &'static [&'static str] = &[
         "hoje",
         "busca",
+        // Right after the tallest box: a result list that has to grow from
+        // the one before is not settled when the picture is taken.
+        "busca-nome-do-projeto",
         "busca-tarefas",
         "busca-sala",
         "busca-projetor",
@@ -91,8 +94,9 @@ impl PonteApp {
     /// (`SHOTS` in its own file), then everything again in the dark theme.
     pub(super) fn tour_names() -> Vec<String> {
         let mut names: Vec<String> = Self::TOUR.iter().map(|name| (*name).to_owned()).collect();
-        let panels: [(&str, &[&str]); 6] = [
+        let panels: [(&str, &[&str]); 7] = [
             ("tarefas", crate::tasks_ui::SHOTS),
+            ("projetos", super::projects::SHOTS),
             ("atendimentos", crate::saiop::SHOTS),
             ("modelos", crate::templates_ui::SHOTS),
             ("recursos", crate::resources_ui::SHOTS),
@@ -286,6 +290,7 @@ impl PonteApp {
         self.tasks = Default::default();
         self.saiop = Default::default();
         self.resources = Default::default();
+        self.projects = Default::default();
         super::today::shots_calendar(ctx, false);
         ctx.data_mut(|d| d.insert_temp(egui::Id::unique("today-week-view"), false));
         self.tour_holidays(false);
@@ -305,13 +310,18 @@ impl PonteApp {
                 self.refresh();
                 self.area = Area::Today;
             }
-            "busca" | "busca-tarefas" | "busca-sala" | "busca-projetor" => {
+            "busca"
+            | "busca-tarefas"
+            | "busca-sala"
+            | "busca-projetor"
+            | "busca-nome-do-projeto" => {
                 self.refresh();
                 self.area = Area::Today;
                 self.global_search.shots_open(match name {
                     "busca" => "or",
                     "busca-sala" => "sala",
                     "busca-projetor" => "projetor",
+                    "busca-nome-do-projeto" => "comitê gestor",
                     _ => "veículos",
                 });
             }
@@ -980,6 +990,10 @@ Se mudar o horário, me avise.
                     self.tasks = Default::default();
                     self.area = Area::Tasks;
                     self.tasks.shots_open(&mut self.store, view);
+                } else if let Some(view) = other.strip_prefix("projetos-") {
+                    self.refresh();
+                    self.projects.shots_open(&self.store, view);
+                    self.area = Area::Projects;
                 } else if let Some(view) = other.strip_prefix("atendimentos-") {
                     self.saiop = Default::default();
                     self.area = Area::Saiop;

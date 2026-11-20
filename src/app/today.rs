@@ -495,7 +495,7 @@ fn resource_groups(
 }
 
 /// "07/11" from "2026-11-07".
-fn day_month(iso: &str) -> String {
+pub(super) fn day_month(iso: &str) -> String {
     match (iso.get(8..10), iso.get(5..7)) {
         (Some(day), Some(month)) => format!("{day}/{month}"),
         _ => iso.to_owned(),
@@ -837,7 +837,7 @@ impl PonteApp {
     }
 
     /// Concludes a task from the "Hoje" list, offering to undo it.
-    fn conclude_from_today(&mut self, task: Task) {
+    pub(super) fn conclude_from_today(&mut self, task: Task) {
         if self.tasks.open_task_id() == Some(task.id) && self.tasks.dirty() {
             self.error("Esta tarefa está aberta em Tarefas com alterações não salvas. Salve ou cancele a edição antes de concluí-la.");
             return;
@@ -1193,7 +1193,7 @@ fn calendar_view(
 
 /// One row with a thin line under it; returns its rectangle and whether the
 /// empty part of the row was clicked.
-fn row(
+pub(super) fn row(
     ui: &mut egui::Ui,
     id: impl std::hash::Hash + std::fmt::Debug,
     last: bool,
@@ -1331,7 +1331,7 @@ fn follow_ups_card(ui: &mut egui::Ui, count: usize, asked: &mut Option<Asked>) {
     ui.add_space(S3);
 }
 
-fn list_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn list_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     widgets::card_frame()
         .inner_margin(egui::Margin::ZERO)
         .show(ui, |ui| {
