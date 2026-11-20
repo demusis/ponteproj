@@ -104,15 +104,23 @@ pub(super) fn chart_range(
 ) -> Option<(NaiveDate, NaiveDate)> {
     let (start, end) = span?;
     // A span that ends at midnight sharp does not touch the day that begins there.
-    let last_used = (end - Duration::seconds(1)).date().max(start.date());
-    let mut first = start.date() - Duration::days(1);
-    let mut last = last_used + Duration::days(1);
+    // Stored dates are not trusted: near chrono's limits the plain `+`/`-` panic.
+    let day = Duration::days(1);
+    let last_used = end
+        .checked_sub_signed(Duration::seconds(1))
+        .unwrap_or(end)
+        .date()
+        .max(start.date());
+    let mut first = start.date().checked_sub_signed(day).unwrap_or(start.date());
+    let mut last = last_used.checked_add_signed(day).unwrap_or(last_used);
     if let Some(target) = target {
         first = first.min(target);
-        last = last.max(target + Duration::days(1));
+        last = last.max(target.checked_add_signed(day).unwrap_or(target));
     }
     let reach = Duration::days(TODAY_REACH_DAYS);
-    if today >= first - reach && today <= last + reach {
+    let near_first = first.checked_sub_signed(reach).unwrap_or(NaiveDate::MIN);
+    let near_last = last.checked_add_signed(reach).unwrap_or(NaiveDate::MAX);
+    if today >= near_first && today <= near_last {
         first = first.min(today);
         last = last.max(today);
     }
@@ -702,6 +710,9 @@ mod tests {
             Some((day("2026-11-03"), day("2026-11-07")))
         );
         assert_eq!(chart_range(None, day("2026-11-05"), None), None);
+        // A stored date at chrono's limit must not panic the chart.
+        let range = chart_range(span, day("2026-11-05"), Some(NaiveDate::MAX)).unwrap();
+        assert_eq!(range.1, NaiveDate::MAX);
     }
 
     #[test]

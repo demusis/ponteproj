@@ -147,6 +147,13 @@ fn parse_day(text: &str) -> Option<NaiveDate> {
     (date.format("%Y-%m-%d").to_string() == text).then_some(date)
 }
 
+/// A date the person types into a project: `AAAA-MM-DD` with a four-digit year.
+/// chrono also reads `+262142-12-31`, whose next day does not exist.
+fn parse_project_day(text: &str) -> Option<NaiveDate> {
+    use chrono::Datelike;
+    parse_day(text).filter(|date| (1900..=9999).contains(&date.year()))
+}
+
 impl Project {
     /// A new project as the form proposes it (no uid yet, status ativo).
     pub fn new(name: &str) -> Self {
@@ -199,7 +206,7 @@ impl Project {
             None
         } else {
             Some(
-                parse_day(&self.start_date)
+                parse_project_day(&self.start_date)
                     .context("Data de início inválida. Use o formato dd/mm/aaaa.")?,
             )
         };
@@ -207,7 +214,7 @@ impl Project {
             None
         } else {
             Some(
-                parse_day(&self.target_date)
+                parse_project_day(&self.target_date)
                     .context("Data-alvo inválida. Use o formato dd/mm/aaaa.")?,
             )
         };
@@ -238,7 +245,7 @@ impl Project {
 
     /// The target date, when it is set.
     pub fn target(&self) -> Option<NaiveDate> {
-        parse_day(&self.target_date)
+        parse_project_day(&self.target_date)
     }
 }
 
@@ -928,6 +935,16 @@ mod rules_tests {
         p.start_date = "2026-05-10".into();
         p.target_date = "2026-5-12".into();
         assert!(ok(&p).unwrap_err().contains("alvo"));
+        // chrono's largest date is read by `%Y` but is not a four-digit year.
+        p.target_date = "+262142-12-31".into();
+        assert!(ok(&p).unwrap_err().contains("alvo"));
+        assert_eq!(p.target(), None);
+        p.target_date = "9999-12-31".into();
+        assert!(ok(&p).is_ok());
+        p.start_date = "+262142-01-01".into();
+        assert!(ok(&p).unwrap_err().contains("início"));
+        p.start_date = "2026-05-10".into();
+        p.target_date = "2026-5-12".into();
         p.target_date = "2026-05-09".into();
         assert!(ok(&p).unwrap_err().contains("anterior"));
         p.target_date = "2026-05-10".into();
