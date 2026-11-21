@@ -396,6 +396,27 @@ class ProjetosRegrasTest {
         assertNull(ProjectRules.rowAt(ProjectRules.HEADER_HEIGHT + 2 * ProjectRules.ROW_HEIGHT + 1f, 2))
     }
 
+    @Test fun graficoUsaAMesmaAlturaDeLinhaEmPixelsInteirosEmDensidadeFracionaria() {
+        val density = 2.625f
+        val headerPx = ProjectRules.pixels(ProjectRules.HEADER_HEIGHT, density) // 73.5 -> 74
+        val rowPx = ProjectRules.pixels(53f, density) // 139.125 -> 139
+        assertEquals(74, headerPx)
+        assertEquals(139, rowPx)
+        // The rows of the labels start at headerPx + rowPx * i: a tap anywhere inside row i finds row i,
+        // even far down, where the unrounded 139.125 px would be 12 px off at row 100.
+        for (i in listOf(0, 1, 7, 50, 99, 100)) {
+            val top = (headerPx + rowPx * i).toFloat()
+            assertEquals(i, ProjectRules.rowAtPx(top, 101, headerPx, rowPx))
+            assertEquals(i, ProjectRules.rowAtPx(top + rowPx / 2f, 101, headerPx, rowPx))
+            assertEquals(i, ProjectRules.rowAtPx(top + rowPx - 1f, 101, headerPx, rowPx))
+        }
+        assertNull(ProjectRules.rowAtPx(headerPx - 1f, 101, headerPx, rowPx))
+        assertNull(ProjectRules.rowAtPx((headerPx + rowPx * 101).toFloat(), 101, headerPx, rowPx))
+        // Whole numbers of dp stay what they were; nothing collapses to zero.
+        assertEquals(48, ProjectRules.pixels(48f, 1f))
+        assertEquals(1, ProjectRules.pixels(0f, 3f))
+    }
+
     @Test fun linhaDoGraficoTemNoMinimo48DpECrescePelaFonte() {
         assertEquals(48f, ProjectRules.rowHeight(1f), 0f)
         assertEquals(48f, ProjectRules.rowHeight(0.85f), 0f)

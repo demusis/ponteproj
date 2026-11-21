@@ -115,7 +115,12 @@ private fun Chart(layout: TimelineLayout, labelWidth: androidx.compose.ui.unit.D
     val c = Ponte.colors
     val colors = chartColors()
     val density = LocalDensity.current
-    val rowHeight = ProjectRules.rowHeight(density.fontScale)
+    // One row height in WHOLE pixels for the labels, the canvas and the taps: at a fractional density
+    // (2.625) the unrounded height of the canvas drifted from the rounded one of the labels, row by row.
+    val headerPx = ProjectRules.pixels(ProjectRules.HEADER_HEIGHT, density.density)
+    val rowPx = ProjectRules.pixels(ProjectRules.rowHeight(density.fontScale), density.density)
+    val headerDp = with(density) { headerPx.toDp() }
+    val rowDp = with(density) { rowPx.toDp() }
     val measurer = rememberTextMeasurer()
     val tickStyle = TextStyle(fontSize = 11.sp, color = colors.tick)
     val scroll = rememberScrollState(
@@ -124,31 +129,31 @@ private fun Chart(layout: TimelineLayout, labelWidth: androidx.compose.ui.unit.D
     )
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface)) {
         Column(Modifier.width(labelWidth)) {
-            Spacer(Modifier.height(ProjectRules.HEADER_HEIGHT.dp))
-            for (item in layout.rows) RowLabel(item, rowHeight) { onOpenTask(item.id) }
+            Spacer(Modifier.height(headerDp))
+            for (item in layout.rows) RowLabel(item, rowDp) { onOpenTask(item.id) }
         }
         Row(Modifier.weight(1f).horizontalScroll(scroll)) {
             Canvas(
-                Modifier.width(layout.width.dp).height((ProjectRules.HEADER_HEIGHT + rowHeight * layout.rows.size).dp)
+                Modifier.width(layout.width.dp).height(with(density) { (headerPx + rowPx * layout.rows.size).toDp() })
                     // The labels carry the words for a screen reader; the picture adds nothing to them.
                     .clearAndSetSemantics { }
-                    .pointerInput(layout, rowHeight) {
+                    .pointerInput(layout, headerPx, rowPx) {
                         detectTapGestures { at ->
-                            val row = ProjectRules.rowAt(at.y / density.density, layout.rows.size, rowHeight = rowHeight)
+                            val row = ProjectRules.rowAtPx(at.y, layout.rows.size, headerPx, rowPx)
                             if (row != null) onOpenTask(layout.rows[row].id)
                         }
                     }
-            ) { drawTimeline(layout, colors, measurer, tickStyle, rowHeight) }
+            ) { drawTimeline(layout, colors, measurer, tickStyle, headerPx, rowPx) }
         }
     }
 }
 
 /** The title and the period of a row, in the fixed column. */
 @Composable
-private fun RowLabel(item: TimelineItem, rowHeight: Float, onClick: () -> Unit) {
+private fun RowLabel(item: TimelineItem, rowHeight: androidx.compose.ui.unit.Dp, onClick: () -> Unit) {
     val c = Ponte.colors
     Column(
-        Modifier.fillMaxWidth().height(rowHeight.dp)
+        Modifier.fillMaxWidth().height(rowHeight)
             .drawBehind { drawLine(c.divider, Offset(0f, size.height), Offset(size.width, size.height), 1f) }
             .clickable(onClick = onClick)
             .semantics(mergeDescendants = true) { contentDescription = ProjectRules.rowDescription(item) }
@@ -186,10 +191,10 @@ private fun UnplannedCard(item: TimelineItem, onClick: () -> Unit) {
 // ---------------------------------------------------------------- drawing
 
 /** Draws the whole chart: weekends, grid, header, bars, due marks, the target line and today. */
-private fun DrawScope.drawTimeline(layout: TimelineLayout, k: ChartColors, measurer: TextMeasurer, tickStyle: TextStyle, rowHeight: Float) {
+private fun DrawScope.drawTimeline(layout: TimelineLayout, k: ChartColors, measurer: TextMeasurer, tickStyle: TextStyle, headerPx: Int, rowPx: Int) {
     val d = density
-    val headerH = ProjectRules.HEADER_HEIGHT * d
-    val rowH = rowHeight * d
+    val headerH = headerPx.toFloat()
+    val rowH = rowPx.toFloat()
     val barH = ProjectRules.BAR_HEIGHT * d
     val rows = layout.rows.size
     val totalH = headerH + rowH * rows
