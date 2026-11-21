@@ -547,6 +547,17 @@ fn date_field_with(
                 *value = chrono::Local::now().format("%Y-%m-%d").to_string();
                 state = (date(value), value.clone());
             }
+            if today_shortcut
+                && ui
+                    .add(crate::widgets::quiet("Amanhã"))
+                    .on_hover_text("Preenche com a data de amanhã")
+                    .clicked()
+            {
+                *value = (today + chrono::Duration::days(1))
+                    .format("%Y-%m-%d")
+                    .to_string();
+                state = (date(value), value.clone());
+            }
             response
         })
         .inner;
