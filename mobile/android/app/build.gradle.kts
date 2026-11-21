@@ -6,6 +6,22 @@ plugins {
     id("app.cash.paparazzi")
 }
 
+// The release key lives outside the project, in the owner's profile
+// (`~/.ponte-assinatura/assinatura.properties`, or the file named by
+// PONTE_ASSINATURA): the key file, the file holding its password and the
+// alias. Neither the key nor the password is ever in the repository.
+// Where that folder does not exist, packaging a release FAILS, unless
+// `-Pponte.semAssinatura=true` is passed (the APK then gets the debug key).
+// Compiling and unit tests of the release variant never need the key.
+// Resolved ONCE, relative to this project like Gradle's `file(...)`, and used
+// both by the signing configuration and by the check below, so they cannot
+// disagree about which file counts (a relative PONTE_ASSINATURA included).
+val signingFile: File = file(
+    System.getenv("PONTE_ASSINATURA")
+        ?: (System.getProperty("user.home") + "/.ponte-assinatura/assinatura.properties")
+)
+val ownKey: Boolean = signingFile.isFile
+
 android {
     namespace = "io.github.demusis.ponte"
     compileSdk = 34
@@ -20,18 +36,6 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
 
-    // The release key lives outside the project, in the owner's profile
-    // (`~/.ponte-assinatura/assinatura.properties`, or the file named by
-    // PONTE_ASSINATURA): the key file, the file holding its password and the
-    // alias. Neither the key nor the password is ever in the repository.
-    // Where that folder does not exist, packaging a release FAILS, unless
-    // `-Pponte.semAssinatura=true` is passed (the APK then gets the debug key).
-    // Compiling and unit tests of the release variant never need the key.
-    val signingFile = file(
-        System.getenv("PONTE_ASSINATURA")
-            ?: (System.getProperty("user.home") + "/.ponte-assinatura/assinatura.properties")
-    )
-    val ownKey = signingFile.isFile
     signingConfigs {
         if (ownKey) {
             create("ponte") {
@@ -74,10 +78,7 @@ android {
 // that sign or package the release variant check, so testReleaseUnitTest and
 // compilation still work on a machine without the key.
 val semAssinatura = providers.gradleProperty("ponte.semAssinatura").orNull == "true"
-val chaveProprianaExiste = providers.environmentVariable("PONTE_ASSINATURA")
-    .map { File(it).isFile }
-    .orElse(File(System.getProperty("user.home") + "/.ponte-assinatura/assinatura.properties").isFile)
-    .get()
+val chaveProprianaExiste = ownKey
 gradle.taskGraph.whenReady {
     val empacota = allTasks.any {
         it.project == project && it.name in setOf("validateSigningRelease", "packageRelease", "assembleRelease", "bundleRelease")
