@@ -116,43 +116,6 @@ begin
   StringChangeEx(Result, '"', '\"', True);
 end;
 
-{ Cópia por arquivo, só para quando o programa novo nem consegue rodar (um
-  antivírus que o bloqueou, por exemplo). Não é uma cópia consistente se o Ponte
-  estiver aberto; por isso qualquer falha, inclusive a do -wal, conta como falha. }
-function BackupByPlainCopy(var Detail: String): Boolean;
-var
-  DataDir, Source, Target, Stamp: String;
-begin
-  Result := True;
-  Detail := '';
-  BackupPath := '';
-  DataDir := GetEnv('PONTEPROJ_DATA_DIR');
-  if DataDir = '' then
-    DataDir := ExpandConstant('{localappdata}\PonteProj');
-  Source := DataDir + '\acervo.sqlite3';
-  if not FileExists(Source) then
-    exit;
-  Stamp := GetDateTimeString('yyyymmdd-hhnnss', '-', '-');
-  Target := DataDir + '\backups\antes-de-instalar-v{#AppVersion}-' + Stamp + '.sqlite3';
-  if not ForceDirectories(DataDir + '\backups') then
-    Result := False
-  else if not CopyFile(Source, Target, False) then
-    Result := False
-  else if FileExists(Source + '-wal') and not CopyFile(Source + '-wal', Target + '-wal', False) then
-    Result := False
-  else if FileExists(Source + '-shm') and not CopyFile(Source + '-shm', Target + '-shm', False) then
-    Result := False;
-  if Result then
-    BackupPath := Target
-  else
-  begin
-    Detail := 'Não foi possível copiar os arquivos do acervo para ' + DataDir + '\backups.';
-    DeleteFile(Target);
-    DeleteFile(Target + '-wal');
-    DeleteFile(Target + '-shm');
-  end;
-end;
-
 { O relatório que ponteproj.exe --copia-antes-de-atualizar grava (UTF-8): a
   primeira linha é ok, sem-acervo ou erro; o resto é o detalhe. }
 function ReadBackupReport(const ReportFile: String; var Detail: String): String;
@@ -192,8 +155,11 @@ begin
   try
     ExtractTemporaryFile('ponteproj.exe');
   except
+    { Sem o programa novo não há cópia consistente: copiar o arquivo do acervo
+      e depois o -wal pode dar uma cópia velha se um checkpoint acontecer entre
+      os dois. Falhar aqui é falha da cópia, como qualquer outra. }
     Log('Não foi possível extrair o programa novo para a cópia de segurança: ' + GetExceptionMessage);
-    Result := BackupByPlainCopy(Detail);
+    Detail := 'Não foi possível extrair o programa de cópia (um antivírus pode ter bloqueado): ' + GetExceptionMessage;
     exit;
   end;
   DeleteFile(ReportFile);
@@ -201,7 +167,7 @@ begin
   if not Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     Log('O programa novo não pôde ser executado para a cópia de segurança: ' + SysErrorMessage(ResultCode));
-    Result := BackupByPlainCopy(Detail);
+    Detail := 'Não foi possível executar o programa de cópia (um antivírus pode ter bloqueado): ' + SysErrorMessage(ResultCode);
     exit;
   end;
   Status := ReadBackupReport(ReportFile, ReportDetail);
