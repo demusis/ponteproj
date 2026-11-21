@@ -471,10 +471,10 @@ class ProjetosRegrasTest {
         assertTrue("size $size", size >= 12f)
         val total = shares.sum()
         labels.forEachIndexed { i, w -> assertTrue(w.length * 0.6f * size <= 322f * shares[i] / total - 12f + 0.001f) }
-        // Three words keep the equal parts and the size they always had.
+        // Three words keep the equal parts, and a wide screen leaves the wanted size alone.
         val three = listOf("Tarefas", "Atendimentos", "Recursos")
         assertEquals(listOf(1f, 1f, 1f), NavLabel.shares(three))
-        assertEquals(NavLabel.sizeDp(322, three, 15f), NavLabel.sizeDp(322, three, 15f, NavLabel.shares(three)), 0.001f)
+        assertEquals(15f, NavLabel.sizeDp(1000, three, 15f, NavLabel.shares(three)), 0.001f)
     }
 
     @Test fun projetoDaTarefaViajaNoRascunhoEEntraNasMudancas() {

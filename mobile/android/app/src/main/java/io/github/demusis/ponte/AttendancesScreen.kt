@@ -156,25 +156,24 @@ internal fun AttendancesScreen(
         LoadingBox(text = "Carregando os atendimentos…", modifier = Modifier.fillMaxSize())
         return
     }
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        state.error?.let { item(key = "error") { Notice(it) } }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = 32.dp)) {
+        val pad = Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp)
+        state.error?.let { item(key = "error") { Notice(it, pad) } }
         if (state.rows.isNotEmpty()) {
             item(key = "search") {
-                SearchBox(query, onQuery, "Referência, assunto, responsável")
+                SearchBox(query, onQuery, "Referência, assunto, responsável", pad)
             }
         }
         if (chase.isNotEmpty()) {
-            item(key = "h-chase") { SectionLabel(FollowUpRules.title(chase.size), Modifier.padding(top = 4.dp)) }
+            item(key = "h-chase") { SectionLabel(FollowUpRules.title(chase.size), Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp)) }
             items(chase, key = { "f-${it.id}" }) { a ->
-                FollowUpCard(
-                    a, onOpen = { onOpen(a) },
-                    onRegister = { dialogContact = true; dialogId = a.id },
-                    onSchedule = { dialogContact = false; dialogId = a.id }
-                )
+                Box(pad) {
+                    FollowUpCard(
+                        a, onOpen = { onOpen(a) },
+                        onRegister = { dialogContact = true; dialogId = a.id },
+                        onSchedule = { dialogContact = false; dialogId = a.id }
+                    )
+                }
             }
         }
         if (state.rows.isEmpty()) {
@@ -203,46 +202,46 @@ internal fun AttendancesScreen(
             }
         } else {
             item(key = "h-open") {
-                SectionLabel("Em aberto · ${split.open.size}", Modifier.padding(top = 4.dp))
+                SectionLabel("Em aberto · ${split.open.size}", Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp))
             }
             if (split.open.isEmpty()) {
                 item(key = "no-open") {
                     Text(
-                        "Nenhum atendimento em aberto.", Modifier.padding(start = 4.dp),
+                        "Nenhum atendimento em aberto.", Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
                         style = MaterialTheme.typography.bodyMedium, color = c.muted
                     )
                 }
             }
-            items(split.open, key = { "a-${it.id}" }) { a -> AttendanceCard(a, onClick = { onOpen(a) }) }
+            items(split.open, key = { "a-${it.id}" }) { a -> AttendanceRow(a, onClick = { onOpen(a) }) }
             if (split.closed.isNotEmpty()) {
                 item(key = "h-closed") {
                     Row(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { showClosed = !showClosed },
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { showClosed = !showClosed }.padding(start = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         SectionLabel("Encerrados · ${split.closed.size}", Modifier.weight(1f))
                         Icon(
                             Icons.Outlined.ExpandMore,
                             contentDescription = if (showClosed) "Recolher os encerrados" else "Mostrar os encerrados",
-                            tint = c.muted, modifier = Modifier.padding(end = 4.dp).size(22.dp).rotate(if (showClosed) 180f else 0f)
+                            tint = c.muted, modifier = Modifier.padding(end = 16.dp).size(22.dp).rotate(if (showClosed) 180f else 0f)
                         )
                     }
                 }
-                if (showClosed) items(split.closed, key = { "c-${it.id}" }) { a -> AttendanceCard(a, onClick = { onOpen(a) }) }
+                if (showClosed) items(split.closed, key = { "c-${it.id}" }) { a -> AttendanceRow(a, onClick = { onOpen(a) }) }
             }
         }
     }
 }
 
 /**
- * An atendimento in a card: reference (or subject), subject, situation and responsible person, and the
- * deadline in a pill (only while it is open). Tapping it opens the ficha when [onClick] is given.
+ * An atendimento as a flat row: reference (or subject), subject, situation and responsible person, and the
+ * deadline at the end (only while it is open). Tapping it opens the ficha when [onClick] is given.
  */
 @Composable
-internal fun AttendanceCard(a: AttendanceItem, onClick: (() -> Unit)? = null) {
+internal fun AttendanceRow(a: AttendanceItem, onClick: (() -> Unit)? = null) {
     val c = Ponte.colors
-    PonteCard(onClick = onClick) {
-        Row(Modifier.padding(start = 16.dp, top = 12.dp, end = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    FlatRow(onClick) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
                 Text(
                     a.reference, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium,
@@ -258,7 +257,7 @@ internal fun AttendanceCard(a: AttendanceItem, onClick: (() -> Unit)? = null) {
             }
             if (a.open && a.dueChip.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
-                Pill(a.dueChip, tone = if (a.late) Tone.ERROR else if (a.dueToday) Tone.WARNING else Tone.NEUTRAL)
+                DueMark(a.dueChip, a.late, a.dueToday)
             }
         }
     }

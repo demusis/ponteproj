@@ -29,9 +29,10 @@ internal fun Paparazzi.shot(name: String, dark: Boolean = false, content: @Compo
 
 /** One of the three areas inside its frame, as on the phone. */
 internal fun Paparazzi.shotInShell(
-    name: String, tab: Int, dark: Boolean = false, shell: ShellState = Samples.shell, content: @Composable () -> Unit
+    name: String, tab: Int, dark: Boolean = false, shell: ShellState = Samples.shell,
+    filter: ShellFilter? = null, content: @Composable () -> Unit
 ) {
-    shot(name, dark) { MainShell(shell.copy(tab = tab), {}, {}, {}, {}) { content() } }
+    shot(name, dark) { MainShell(shell.copy(tab = tab), {}, {}, {}, {}, onSearch = {}, filter = filter) { content() } }
 }
 
 internal object Samples {

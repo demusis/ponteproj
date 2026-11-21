@@ -68,16 +68,13 @@ internal fun DocumentsScreen(
             byFilter && CategoryRules.matches(d.categories, categoryFilter) && (matches == null || d.id in matches)
         }
     }
+    val categories = LocalCategories.current
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 104.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = FAB_CLEARANCE)) {
             item(key = "search") {
                 OutlinedTextField(
                     value = query, onValueChange = onQuery,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 4.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 4.dp, bottom = 4.dp),
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyLarge,
                     placeholder = { Text("Buscar por número, título ou origem", color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -102,14 +99,20 @@ internal fun DocumentsScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp)
                 )
             }
-            item(key = "category-filter") {
-                CategoryFilterButton(categoryFilter, onCategoryFilter, Modifier.padding(horizontal = 16.dp))
+            // The category filter is behind the filter icon of the frame; while it is on, this line says which.
+            if (categoryFilter.isNotEmpty()) {
+                item(key = "filter-line") {
+                    FilterSummaryRow(
+                        FilterSummary.line(FilterSummary.categoryNames(categoryFilter, categories), ""),
+                        onClear = { onCategoryFilter(emptySet()) }
+                    )
+                }
             }
             if (docs.isEmpty()) {
                 item(key = "none") {
                     EmptyState(
                         "Nenhum documento neste aparelho.",
-                        text = "Toque em sincronizar para trazer o acervo do computador.",
+                        text = "Puxe a lista para baixo, ou use ⋮ › Sincronizar agora, para trazer o acervo do computador.",
                         icon = Icons.Outlined.Description
                     )
                 }
@@ -128,26 +131,20 @@ internal fun DocumentsScreen(
                 }
             } else {
                 items(shown, key = { it.id }) { d ->
-                    DocCard(d, { onOpen(d.id) }, Modifier.padding(horizontal = 16.dp))
+                    DocRow(d, { onOpen(d.id) })
                 }
             }
         }
-        ExtendedFloatingActionButton(
-            onClick = onPhoto,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-            containerColor = c.accent, contentColor = c.onAccent,
-            elevation = FloatingActionButtonDefaults.elevation(2.dp, 2.dp, 2.dp, 2.dp),
-            icon = { Icon(Icons.Outlined.PhotoCamera, contentDescription = null) },
-            text = { Text("Registro por foto", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
-        )
+        PonteFab(Icons.Outlined.PhotoCamera, "Registro por foto", onPhoto, Modifier.align(Alignment.BottomEnd))
     }
 }
 
+/** One document as a flat row (the list and the document picker). */
 @Composable
-internal fun DocCard(d: Doc,onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun DocRow(d: Doc, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = Ponte.colors
-    PonteCard(modifier, onClick) {
-        Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    FlatRow(onClick, modifier) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (d.type.isNotEmpty()) Tag(d.type, tone = Tone.ACCENT, modifier = Modifier.widthIn(max = 200.dp))
                 Spacer(Modifier.weight(1f))

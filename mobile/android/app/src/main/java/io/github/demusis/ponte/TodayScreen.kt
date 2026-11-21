@@ -87,17 +87,17 @@ internal fun TodayScreen(
     LazyColumn(
         Modifier.fillMaxSize(),
         state = listState,
-        contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp)
     ) {
-        state.error?.let { item(key = "error") { Notice(it) } }
+        val pad = Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp)
+        state.error?.let { item(key = "error") { Notice(it, pad) } }
         item(key = "summary") {
             if (state.isEmpty) {
                 val extra = if (weekDeadlines > 0) " · " + (if (weekDeadlines == 1) "1 prazo nesta semana" else "$weekDeadlines prazos nesta semana") else ""
-                Text("Nada vence hoje.$extra", Modifier.padding(start = 4.dp), fontSize = 15.sp, color = c.muted)
+                Text("Nada vence hoje.$extra", Modifier.padding(horizontal = 20.dp, vertical = 4.dp), fontSize = 15.sp, color = c.muted)
             } else {
                 Text(
-                    state.summary, Modifier.padding(start = 4.dp),
+                    state.summary, Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
                     fontSize = 17.sp, fontWeight = FontWeight.Medium,
                     color = if (state.late.isNotEmpty() || state.overdueReturns > 0) c.error else c.text
                 )
@@ -107,7 +107,7 @@ internal fun TodayScreen(
             run {
                 val n = state.late.size
                 Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    pad.fillMaxWidth().heightIn(min = 48.dp)
                         .clip(RoundedCornerShape(12.dp)).background(c.errorContainer)
                         .clickable { scope.launch { listState.animateScrollToItem(lateIndex) } }
                         .padding(horizontal = 16.dp),
@@ -122,28 +122,28 @@ internal fun TodayScreen(
             }
         }
         if (followUpCount > 0) item(key = "follow-ups") {
-            ResourceCountCard("Cobranças de hoje", followUpCount, Tone.ACCENT, onOpenFollowUps)
+            Box(pad) { ResourceCountCard("Cobranças de hoje", followUpCount, Tone.ACCENT, onOpenFollowUps) }
         }
-        if (risks.isNotEmpty()) item(key = "risks") { RiskCard(risks, onOpenTask) }
+        if (risks.isNotEmpty()) item(key = "risks") { Box(pad) { RiskCard(risks, onOpenTask) } }
         if (week.isNotEmpty()) {
-            item(key = "week") { WeekModule(week, weekStart, onMoveWeek, onOpenWeekEntry) }
+            item(key = "week") { Box(pad) { WeekModule(week, weekStart, onMoveWeek, onOpenWeekEntry) } }
         }
         section("late", "Atrasadas", state.late, onToggle, onOpen, late = true)
         section("today", "Para hoje", state.today, onToggle, onOpen)
         section("upcoming", "Próximos dias", state.upcoming, onToggle, onOpen)
         if (state.attendances.isNotEmpty()) {
             item(key = "h-att") {
-                SectionLabel("Atendimentos com prazo · ${state.attendances.size}", Modifier.padding(top = 8.dp))
+                SectionLabel("Atendimentos com prazo · ${state.attendances.size}", Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp))
             }
-            items(state.attendances, key = { "a-${it.id}" }) { a -> AttendanceCard(a, onClick = { onOpenAttendance(a) }) }
+            items(state.attendances, key = { "a-${it.id}" }) { a -> AttendanceRow(a, onClick = { onOpenAttendance(a) }) }
         }
         if (state.reservationsToday > 0 || state.overdueReturns > 0) {
-            item(key = "h-res") { SectionLabel(PhoneWords.RES_AREA, Modifier.padding(top = 8.dp)) }
+            item(key = "h-res") { SectionLabel(PhoneWords.RES_AREA, Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp)) }
             if (state.overdueReturns > 0) {
-                item(key = "res-overdue") { ResourceCountCard(PhoneWords.RES_OVERDUE_LINE, state.overdueReturns, Tone.ERROR, onOpenResources) }
+                item(key = "res-overdue") { Box(pad) { ResourceCountCard(PhoneWords.RES_OVERDUE_LINE, state.overdueReturns, Tone.ERROR, onOpenResources) } }
             }
             if (state.reservationsToday > 0) {
-                item(key = "res-today") { ResourceCountCard(PhoneWords.RES_TODAY_LINE, state.reservationsToday, Tone.ACCENT, onOpenResources) }
+                item(key = "res-today") { Box(pad) { ResourceCountCard(PhoneWords.RES_TODAY_LINE, state.reservationsToday, Tone.ACCENT, onOpenResources) } }
             }
         }
     }
@@ -159,9 +159,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
 ) {
     if (list.isEmpty()) return
     item(key = "h-$key") {
-        SectionLabel("$title · ${list.size}", Modifier.padding(top = 8.dp), color = if (late) Ponte.colors.error else Ponte.colors.muted)
+        SectionLabel("$title · ${list.size}", Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp), color = if (late) Ponte.colors.error else Ponte.colors.muted)
     }
-    items(list, key = { "t-${it.id}" }) { t -> TaskCard(t, onToggle, onOpen) }
+    items(list, key = { "t-${it.id}" }) { t -> TaskListRow(t, { onToggle(t) }, { onOpen(t) }) }
 }
 
 /** "Entregas em risco · N": three rows, the rest behind "ver todas". Full-width rows, so 360dp never clips. */

@@ -22,6 +22,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -80,6 +81,19 @@ internal fun AppRoot() {
         return
     }
 
+    // The filter of the list in front (Tarefas: categories and project; Documentos: categories), behind one icon.
+    val categories = LocalCategories.current
+    val taskFilterOn = FilterIcon.forTasks(c.shell) &&
+        (FilterSummary.hasCategories(categories, c.taskCatFilter) || FilterSummary.hasProjects(c.projects.rows, c.taskProjectFilter))
+    val docFilterOn = FilterIcon.forDocuments(c.shell) && FilterSummary.hasCategories(categories, c.docCatFilter)
+    var filterOpen by rememberSaveable { mutableStateOf(false) }
+    val shellFilter = when {
+        taskFilterOn -> ShellFilter(FilterSummary.isActive(c.taskCatFilter, c.taskProjectFilter)) { filterOpen = true }
+        docFilterOn -> ShellFilter(c.docCatFilter.isNotEmpty()) { filterOpen = true }
+        else -> null
+    }
+    LaunchedEffect(shellFilter == null) { if (shellFilter == null) filterOpen = false }
+
     Box(Modifier.fillMaxSize().background(Ponte.colors.ground)) {
         if (top == null) {
             MainShell(
@@ -88,69 +102,69 @@ internal fun AppRoot() {
                 onSync = { c.requestSync(null) },
                 onSettings = c::openSettings,
                 onStatus = c::showStatus,
-                onSearch = c::openSearch
+                onSearch = c::openSearch,
+                onArea = c::selectSegment,
+                filter = shellFilter
             ) {
                 holder.SaveableStateProvider("tab:" + c.tab) {
-                    when (c.tab) {
-                        0 -> TodayScreen(
-                            c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
-                            onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources, week = c.week,
-                            weekStart = c.weekStart, onMoveWeek = c::moveWeek, onOpenWeekEntry = c::openWeekEntry,
-                            risks = c.risks, onOpenTask = c::openTask,
-                            followUpCount = c.attendances.followUps.size, onOpenFollowUps = c::openFollowUps
-                        )
-                        // Tarefas | Projetos | Atendimentos | Recursos: they have no tab of their own (four is the limit).
-                        1 -> Column(Modifier.fillMaxSize()) {
-                            SegmentedTabs(
-                                TasksSegments.labels(), TasksSegments.position(c.tasksSegment),
-                                { c.selectSegment(TasksSegments.at(it)) }
+                    // Pull the list down to sync, wherever a sync makes sense (E-mail has its own list and button).
+                    val body: @Composable () -> Unit = {
+                        when (c.tab) {
+                            0 -> TodayScreen(
+                                c.today, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
+                                onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources, week = c.week,
+                                weekStart = c.weekStart, onMoveWeek = c::moveWeek, onOpenWeekEntry = c::openWeekEntry,
+                                risks = c.risks, onOpenTask = c::openTask,
+                                followUpCount = c.attendances.followUps.size, onOpenFollowUps = c::openFollowUps
                             )
-                            Box(Modifier.weight(1f).fillMaxWidth()) {
-                                if (c.tasksSegment == TasksSegments.TASKS) {
-                                    TasksScreen(
-                                        c.tasks, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
-                                        onNew = c::openNewTaskWithoutDocument,
-                                        categoryFilter = c.taskCatFilter, onCategoryFilter = { c.taskCatFilter = it },
-                                        projects = c.projects.rows, projectFilter = c.taskProjectFilter,
-                                        onProjectFilter = { c.taskProjectFilter = it }
-                                    )
-                                } else if (c.tasksSegment == TasksSegments.PROJECTS) {
-                                    ProjectsScreen(
-                                        c.projects, filter = c.projFilter, onFilter = { c.projFilter = it },
-                                        query = c.projQuery, onQuery = { c.projQuery = it },
-                                        onOpen = { c.openProject(it.uid) }, onNew = { c.openProjectForm("") }
-                                    )
-                                } else if (c.tasksSegment == TasksSegments.RESOURCES) {
-                                    ResourcesScreen(
-                                        c.resources,
-                                        query = c.resQuery, onQuery = c::typeResQuery,
-                                        view = c.resView, onView = { c.resView = it },
-                                        onOpenUse = { c.openResourceUse(it.uid) }, onOpenResource = { c.openResource(it.uid) }
-                                    )
-                                } else {
-                                    AttendancesScreen(
-                                        c.attendances, query = c.attQuery, onQuery = { c.attQuery = it },
-                                        onOpen = { c.openAttendance(it.id) },
-                                        onRegisterFollowUp = c::registerFollowUp, onScheduleFollowUp = c::scheduleFollowUp,
-                                        onSync = { c.requestSync(null) }
-                                    )
-                                }
+                            // Tarefas | Projetos | Atendimentos | Recursos: they have no tab of their own (four is the limit);
+                            // the title of the frame chooses among them.
+                            1 -> when (c.tasksSegment) {
+                                TasksSegments.TASKS -> TasksScreen(
+                                    c.tasks, onToggle = c::toggleTask, onOpen = { c.openTask(it.id) },
+                                    onNew = c::openNewTaskWithoutDocument,
+                                    categoryFilter = c.taskCatFilter, onCategoryFilter = { c.taskCatFilter = it },
+                                    projects = c.projects.rows, projectFilter = c.taskProjectFilter,
+                                    onProjectFilter = { c.taskProjectFilter = it }
+                                )
+                                TasksSegments.PROJECTS -> ProjectsScreen(
+                                    c.projects, filter = c.projFilter, onFilter = { c.projFilter = it },
+                                    query = c.projQuery, onQuery = { c.projQuery = it },
+                                    onOpen = { c.openProject(it.uid) }, onNew = { c.openProjectForm("") }
+                                )
+                                TasksSegments.RESOURCES -> ResourcesScreen(
+                                    c.resources,
+                                    query = c.resQuery, onQuery = c::typeResQuery,
+                                    view = c.resView, onView = { c.resView = it },
+                                    onOpenUse = { c.openResourceUse(it.uid) }, onOpenResource = { c.openResource(it.uid) }
+                                )
+                                else -> AttendancesScreen(
+                                    c.attendances, query = c.attQuery, onQuery = { c.attQuery = it },
+                                    onOpen = { c.openAttendance(it.id) },
+                                    onRegisterFollowUp = c::registerFollowUp, onScheduleFollowUp = c::scheduleFollowUp,
+                                    onSync = { c.requestSync(null) }
+                                )
                             }
+                            2 -> DocumentsScreen(
+                                docs = c.docs,
+                                query = c.docQuery, onQuery = c::typeDocQuery, matches = c.docMatches,
+                                filter = c.docFilter, onFilter = { c.docFilter = it },
+                                categoryFilter = c.docCatFilter, onCategoryFilter = { c.docCatFilter = it },
+                                onOpen = c::openDocument, onPhoto = c::openPhoto
+                            )
+                            else -> MailScreen(
+                                state = c.mail,
+                                onAccount = c::selectMailAccount, onFolder = c::selectMailFolder,
+                                onFilter = c::selectMailFilter, onToggle = c::toggleMail,
+                                onImport = c::importMail, onReload = c::reloadMail,
+                                onAddAccount = { c.openAccount(null) }, onPassword = c::askMailPassword
+                            )
                         }
-                        2 -> DocumentsScreen(
-                            docs = c.docs,
-                            query = c.docQuery, onQuery = c::typeDocQuery, matches = c.docMatches,
-                            filter = c.docFilter, onFilter = { c.docFilter = it },
-                            categoryFilter = c.docCatFilter, onCategoryFilter = { c.docCatFilter = it },
-                            onOpen = c::openDocument, onPhoto = c::openPhoto
-                        )
-                        else -> MailScreen(
-                            state = c.mail,
-                            onAccount = c::selectMailAccount, onFolder = c::selectMailFolder,
-                            onFilter = c::selectMailFilter, onToggle = c::toggleMail,
-                            onImport = c::importMail, onReload = c::reloadMail,
-                            onAddAccount = { c.openAccount(null) }, onPassword = c::askMailPassword
-                        )
+                    }
+                    if (PullRules.enabled(c.tab)) {
+                        PullToSync(c.shell.syncing, { c.requestSync(null) }, Modifier.fillMaxSize()) { body() }
+                    } else {
+                        body()
                     }
                 }
             }
@@ -158,9 +172,30 @@ internal fun AppRoot() {
             holder.SaveableStateProvider(top.key) { RouteScreen(top) }
         }
 
-        // Above the bottom bar (or the footer of a detail); on Documentos, above the photo button too.
+        if (filterOpen && top == null && shellFilter != null) {
+            FilterSheet(onDismiss = { filterOpen = false }) {
+                if (taskFilterOn) {
+                    FilterSheetContent(
+                        categories = if (FilterSummary.hasCategories(categories, c.taskCatFilter)) categories else null,
+                        categoryChosen = c.taskCatFilter, onCategory = { c.taskCatFilter = it },
+                        projects = if (FilterSummary.hasProjects(c.projects.rows, c.taskProjectFilter)) c.projects.rows else null,
+                        projectChosen = c.taskProjectFilter, onProject = { c.taskProjectFilter = it },
+                        onClear = { c.taskCatFilter = emptySet(); c.taskProjectFilter = "" },
+                        onDone = { filterOpen = false }
+                    )
+                } else {
+                    FilterSheetContent(
+                        categories = categories, categoryChosen = c.docCatFilter, onCategory = { c.docCatFilter = it },
+                        projects = null, projectChosen = "", onProject = {},
+                        onClear = { c.docCatFilter = emptySet() }, onDone = { filterOpen = false }
+                    )
+                }
+            }
+        }
+
+        // Above the bottom bar (or the footer of a detail); where a round button floats (Tarefas, Projetos, Documentos), above it too.
         val fab = c.tasksSegment == TasksSegments.TASKS || c.tasksSegment == TasksSegments.PROJECTS
-        val lift = if (top == null && ((c.tab == 1 && fab) || c.tab == 2)) 152.dp else 84.dp
+        val lift = if (top == null && ((c.tab == 1 && fab) || c.tab == 2)) 136.dp else 64.dp
         SnackbarHost(
             c.snackbar,
             Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding().padding(bottom = lift)

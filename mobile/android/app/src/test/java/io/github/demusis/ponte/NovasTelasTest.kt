@@ -269,10 +269,7 @@ class NovasTelasTest {
         narrow(1920)
         sliced(name, dark) {
             MainShell(Samples.shell.copy(tab = 1, projects = true), {}, {}, {}, {}) {
-                Column(Modifier.fillMaxSize()) {
-                    SegmentedTabs(TasksSegments.labels(), TasksSegments.position(TasksSegments.PROJECTS), {})
-                    Box(Modifier.weight(1f).fillMaxWidth()) { ProjectsScreen(state, filter, {}, query, {}, {}, {}) }
-                }
+                ProjectsScreen(state, filter, {}, query, {}, {}, {})
             }
         }
     }
@@ -360,14 +357,9 @@ class NovasTelasTest {
         sliced(name, dark) {
             androidx.compose.runtime.CompositionLocalProvider(LocalCategories provides listOf(Category("u1", "Urgente", 4))) {
                 MainShell(Samples.shell.copy(tab = 1), {}, {}, {}, {}) {
-                    Column(Modifier.fillMaxSize()) {
-                        SegmentedTabs(TasksSegments.labels(), 0, {})
-                        Box(Modifier.weight(1f).fillMaxWidth()) {
-                            TasksScreen(
-                                TasksState(false, null, tarefasComProjeto), {}, {}, projects = projetos, projectFilter = filter
-                            )
-                        }
-                    }
+                    TasksScreen(
+                        TasksState(false, null, tarefasComProjeto), {}, {}, projects = projetos, projectFilter = filter
+                    )
                 }
             }
         }
@@ -406,13 +398,4 @@ class NovasTelasTest {
         }
     }
 
-    // The bar of the Tarefas area, with four words, at 360 dp and with a large font.
-    @Test fun barraDaAreaComQuatro() {
-        narrow(1920)
-        sliced("barra", false) {
-            Column(Modifier.fillMaxSize().background(Ponte.colors.ground)) {
-                for (id in TasksSegments.ORDER) SegmentedTabs(TasksSegments.labels(), TasksSegments.position(id), {})
-            }
-        }
-    }
 }

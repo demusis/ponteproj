@@ -2,6 +2,7 @@ package io.github.demusis.ponte
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -75,22 +76,20 @@ internal fun ResourcesScreen(
     val usesView = view == 0
     val hasData = if (usesView) state.uses.isNotEmpty() else state.resources.isNotEmpty()
     val noMatch = hasData && (if (usesView) state.groups.isEmpty() else rows.isEmpty())
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        state.error?.let { item(key = "error") { Notice(it) } }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = 32.dp)) {
+        val pad = Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp)
+        state.error?.let { item(key = "error") { Notice(it, pad) } }
         item(key = "toggle") {
             FilterChips(
                 listOf("0" to PhoneWords.RES_USES, "1" to PhoneWords.RES_AREA), view.toString(),
-                { onView(it.toInt()) }
+                { onView(it.toInt()) },
+                contentPadding = PaddingValues(horizontal = ROW_MARGIN, vertical = 4.dp)
             )
         }
-        if (header != null) item(key = "header") { header() }
+        if (header != null) item(key = "header") { Box(pad) { header() } }
         if (hasData) {
             item(key = "search") {
-                SearchBox(query, onQuery, if (usesView) PhoneWords.RES_SEARCH_USES else PhoneWords.RES_SEARCH_RESOURCES)
+                SearchBox(query, onQuery, if (usesView) PhoneWords.RES_SEARCH_USES else PhoneWords.RES_SEARCH_RESOURCES, pad)
             }
         }
         when {
@@ -116,7 +115,7 @@ internal fun ResourcesScreen(
                 )
             }
             !usesView -> items(rows, key = { "r-${it.uid}" }) { r ->
-                ResourceCard(r, r.usageLine, onClick = { onOpenResource(r) })
+                ResourceRow(r, r.usageLine, onClick = { onOpenResource(r) })
             }
             else -> {
                 for (group in state.groups) {
@@ -124,29 +123,29 @@ internal fun ResourcesScreen(
                     if (group.key == "encerrados") {
                         item(key = "h-closed") {
                             Row(
-                                Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { showClosed = !showClosed },
+                                Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { showClosed = !showClosed }.padding(start = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 SectionLabel("${group.title} · ${list.size}", Modifier.weight(1f))
                                 Icon(
                                     Icons.Outlined.ExpandMore,
                                     contentDescription = if (showClosed) "Recolher os encerrados" else "Mostrar os encerrados",
-                                    tint = c.muted, modifier = Modifier.padding(end = 4.dp).size(22.dp).rotate(if (showClosed) 180f else 0f)
+                                    tint = c.muted, modifier = Modifier.padding(end = 16.dp).size(22.dp).rotate(if (showClosed) 180f else 0f)
                                 )
                             }
                         }
                         // A search that found closed uses shows them: the person asked for them.
                         if (showClosed || query.isNotBlank()) {
-                            items(list, key = { "u-${it.uid}" }) { u -> ResourceUseCard(u, onClick = { onOpenUse(u) }) }
+                            items(list, key = { "u-${it.uid}" }) { u -> ResourceUseRow(u, onClick = { onOpenUse(u) }) }
                         }
                     } else {
                         item(key = "h-${group.key}") {
                             SectionLabel(
-                                "${group.title} · ${list.size}", Modifier.padding(top = 4.dp),
+                                "${group.title} · ${list.size}", Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp),
                                 color = if (group.late) c.error else c.muted
                             )
                         }
-                        items(list, key = { "u-${it.uid}" }) { u -> ResourceUseCard(u, onClick = { onOpenUse(u) }) }
+                        items(list, key = { "u-${it.uid}" }) { u -> ResourceUseRow(u, onClick = { onOpenUse(u) }) }
                     }
                 }
             }
@@ -166,15 +165,15 @@ private fun UsePill(u: ResourceUseItem, modifier: Modifier = Modifier) {
 }
 
 /**
- * A use in a card: the resource, who (and sector), the period, and its situation in a pill. A returned
+ * A use as a flat row: the resource, who (and sector), the period, and its situation in a pill. A returned
  * or cancelled use is in the muted color.
  */
 @Composable
-internal fun ResourceUseCard(u: ResourceUseItem, onClick: (() -> Unit)? = null) {
+internal fun ResourceUseRow(u: ResourceUseItem, onClick: (() -> Unit)? = null) {
     val c = Ponte.colors
     val closed = u.status == ResourceRules.RETURNED || u.status == ResourceRules.CANCELLED
-    PonteCard(onClick = onClick) {
-        Row(Modifier.padding(start = 16.dp, top = 12.dp, end = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    FlatRow(onClick) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
                     u.resourceName.ifEmpty { PhoneWords.RES_RESOURCE_TITLE }, fontSize = 16.sp, lineHeight = 21.sp,
@@ -194,12 +193,12 @@ internal fun ResourceUseCard(u: ResourceUseItem, onClick: (() -> Unit)? = null) 
     }
 }
 
-/** A resource of the register in a card: name, where it is, and how many are out now. */
+/** A resource of the register as a flat row: name, where it is, and how many are out now. */
 @Composable
-internal fun ResourceCard(r: ResourceItem, usage: String, onClick: (() -> Unit)? = null) {
+internal fun ResourceRow(r: ResourceItem, usage: String, onClick: (() -> Unit)? = null) {
     val c = Ponte.colors
-    PonteCard(onClick = onClick) {
-        Row(Modifier.padding(start = 16.dp, top = 12.dp, end = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    FlatRow(onClick) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
                     r.name, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium,

@@ -1,6 +1,16 @@
 package io.github.demusis.ponte
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.semantics.semantics
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -55,9 +65,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -81,10 +88,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.time.Instant
@@ -118,9 +122,13 @@ internal fun formatSize(n: Long): String = when {
 
 // ---------------------------------------------------------------- frames
 
+/** What the filter icon of the frame needs: whether a filter is on (the icon shows a dot) and what a tap opens. */
+internal class ShellFilter(val active: Boolean, val onClick: () -> Unit)
+
 /**
- * Frame of the three areas: large title with the one-line sync status, the sync and settings
- * buttons, a thin progress bar while syncing, the content, and the bottom bar.
+ * Frame of the four tabs: the title (on Tarefas it is the selector of the four areas) with the sync dot after it,
+ * the search, filter and overflow buttons, a thin progress bar while syncing, the content, and the bottom bar
+ * (icons only). The text of the sync state shows only while it matters (see [SyncDot]).
  */
 @Composable
 internal fun MainShell(
@@ -130,63 +138,81 @@ internal fun MainShell(
     onSettings: () -> Unit,
     onStatus: () -> Unit,
     onSearch: (() -> Unit)? = null,
+    /** An area of the Tarefas tab was chosen from the title (an id of [TasksSegments]). */
+    onArea: (Int) -> Unit = {},
+    /** The filter of the list in front; null: this list has none and the icon is not drawn. */
+    filter: ShellFilter? = null,
     content: @Composable () -> Unit
 ) {
     val c = Ponte.colors
-    val titles = listOf("Hoje", "Tarefas", "Documentos", "E-mail")
-    // The Tarefas area shows its Atendimentos list under another title.
-    val heading = when {
-        state.tab == 1 && state.attendances -> "Atendimentos"
-        state.tab == 1 && state.resources -> PhoneWords.RES_AREA
-        state.tab == 1 && state.projects -> "Projetos"
-        else -> titles.getOrElse(state.tab) { "" }
+    // The text of the state: after a sync ends it stays a few seconds, and a tap on the dot shows it for as long.
+    var peek by remember { mutableStateOf(false) }
+    var recentlyEnded by remember { mutableStateOf(false) }
+    var wasSyncing by remember { mutableStateOf(state.syncing) }
+    LaunchedEffect(state.syncing) {
+        if (wasSyncing && !state.syncing) {
+            recentlyEnded = true
+            try {
+                delay(SyncDot.SHOW_MS)
+            } finally {
+                recentlyEnded = false
+            }
+        }
+        wasSyncing = state.syncing
+    }
+    LaunchedEffect(peek) {
+        if (peek) {
+            try {
+                delay(SyncDot.SHOW_MS)
+            } finally {
+                peek = false
+            }
+        }
     }
     Column(Modifier.fillMaxSize().background(c.ground)) {
-        Row(
-            Modifier.statusBarsPadding().fillMaxWidth().padding(start = 20.dp, top = 12.dp, end = 8.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    heading,
-                    fontSize = 26.sp, lineHeight = 30.sp, fontWeight = FontWeight.SemiBold, color = c.text
-                )
-                Row(
-                    Modifier.clip(RoundedCornerShape(8.dp))
-                        .clickable(onClickLabel = "Ver detalhes da sincronização", onClick = onStatus)
-                        .padding(top = 4.dp, bottom = 4.dp, end = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val dot = when (state.statusKind) {
-                        StatusKind.OK -> c.success
-                        StatusKind.WAITING -> c.warning
-                        StatusKind.ERROR -> c.error
-                        StatusKind.NEUTRAL -> c.outline
+        Column(Modifier.statusBarsPadding().fillMaxWidth().animateContentSize()) {
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 8.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    ShellTitle(state, onArea)
+                    SyncDotButton(state) { peek = true }
+                }
+                // Hoje, Tarefas and Documentos: one search over the whole library.
+                if (onSearch != null && state.tab in 0..2) {
+                    IconButton(onClick = onSearch) {
+                        Icon(Icons.Outlined.Search, contentDescription = "Buscar em tudo", tint = c.secondary)
                     }
-                    Box(Modifier.size(8.dp).background(dot, CircleShape))
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        state.statusLine.ifEmpty { "Ainda não sincronizado" },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (state.statusKind == StatusKind.ERROR) c.error else c.muted,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis
-                    )
                 }
-            }
-            // Hoje, Tarefas and Documentos: one search over the whole library.
-            if (onSearch != null && state.tab in 0..2) {
-                IconButton(onClick = onSearch) {
-                    Icon(Icons.Outlined.Search, contentDescription = "Buscar em tudo", tint = c.secondary)
+                if (filter != null) {
+                    IconButton(onClick = filter.onClick) {
+                        Box(Modifier.size(24.dp)) {
+                            Icon(
+                                Icons.Outlined.FilterList, contentDescription = FilterSummary.iconDescription(filter.active),
+                                tint = if (filter.active) c.accent else c.secondary
+                            )
+                            if (filter.active) {
+                                Box(
+                                    Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(10.dp)
+                                        .background(c.accent, CircleShape).border(1.5.dp, c.ground, CircleShape)
+                                )
+                            }
+                        }
+                    }
                 }
+                OverflowMenu(state, onSync, onSettings)
             }
-            IconButton(onClick = onSync, enabled = state.syncEnabled && !state.syncing) {
-                Icon(
-                    Icons.Outlined.Sync, contentDescription = "Sincronizar agora",
-                    tint = if (state.syncEnabled && !state.syncing) c.accent else c.outline
+            if (SyncDot.lineVisible(state, recentlyEnded, peek)) {
+                Text(
+                    SyncDot.text(state),
+                    Modifier.fillMaxWidth()
+                        .clickable(onClickLabel = "Ver detalhes da sincronização", onClick = onStatus)
+                        .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (state.statusKind == StatusKind.ERROR) c.error else c.muted,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
-            }
-            IconButton(onClick = onSettings) {
-                Icon(Icons.Outlined.Tune, contentDescription = "Abrir Ajustes", tint = c.secondary)
             }
         }
         if (state.syncing) {
@@ -197,79 +223,144 @@ internal fun MainShell(
             Spacer(Modifier.height(3.dp))
         }
         Box(Modifier.weight(1f).fillMaxWidth()) { content() }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.barBorder))
-        NavigationBar(containerColor = c.surface, tonalElevation = 0.dp) {
-            val icons = listOf(Icons.Outlined.Today, Icons.Outlined.CheckCircle, Icons.Outlined.Description, Icons.Outlined.Mail)
-            val itemColors = NavigationBarItemDefaults.colors(
-                selectedIconColor = c.onAccentContainer,
-                selectedTextColor = c.onAccentContainer,
-                indicatorColor = c.accentContainer,
-                unselectedIconColor = c.secondary,
-                unselectedTextColor = c.secondary
+        BottomBar(state, onTab)
+    }
+}
+
+/** The title of the frame: plain text, or on the Tarefas tab the button that opens the menu of areas. */
+@Composable
+private fun RowScope.ShellTitle(state: ShellState, onArea: (Int) -> Unit) {
+    val c = Ponte.colors
+    val heading = AreaSelector.heading(state)
+    if (!AreaSelector.selectable(state)) {
+        Text(
+            heading, Modifier.weight(1f, fill = false).padding(start = 8.dp),
+            fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, color = c.text,
+            maxLines = 1, overflow = TextOverflow.Ellipsis
+        )
+        return
+    }
+    val area = AreaSelector.of(state)
+    var open by remember { mutableStateOf(false) }
+    Box(Modifier.weight(1f, fill = false)) {
+        Row(
+            Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
+                .semantics { contentDescription = AreaSelector.description(area) }
+                .clickable(role = Role.Button, onClickLabel = "Trocar a área") { open = true }
+                .padding(start = 8.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                heading, Modifier.weight(1f, fill = false),
+                fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, color = c.text,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
             )
-            val labelSize = navLabelSize(titles)
-            titles.forEachIndexed { i, title ->
-                NavigationBarItem(
-                    selected = state.tab == i,
-                    onClick = { onTab(i) },
-                    icon = {
-                        if (i == 0 && state.badge > 0) {
-                            // One node for the icon and the number: the reader says what the number means.
-                            val meaning = PhoneWords.plural(
-                                state.badge, "tarefa atrasada ou para hoje", "tarefas atrasadas ou para hoje"
-                            )
-                            BadgedBox(modifier = Modifier.clearAndSetSemantics { contentDescription = meaning }, badge = {
-                                Badge(containerColor = c.error, contentColor = if (c.dark) c.errorContainer else Color.White) {
-                                    Text(if (state.badge > 99) "99+" else state.badge.toString())
-                                }
-                            }) { Icon(icons[i], contentDescription = null) }
-                        } else {
-                            Icon(icons[i], contentDescription = null)
-                        }
-                    },
-                    label = {
-                        // Always one line: a name broken in two ("Documen-tos") makes the bar ragged.
-                        Text(
-                            title, fontSize = labelSize, letterSpacing = 0.sp,
-                            fontWeight = if (state.tab == i) FontWeight.Bold else FontWeight.Medium,
-                            maxLines = 1, softWrap = false, overflow = TextOverflow.Clip
-                        )
-                    },
-                    colors = itemColors
-                )
+            Icon(Icons.Outlined.ExpandMore, contentDescription = null, tint = c.secondary, modifier = Modifier.size(22.dp))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            AreaMenuItems(area) { open = false; onArea(it) }
+        }
+    }
+}
+
+/** The small coloured dot after the title: the state of the sync. A tap shows its text for a few seconds. */
+@Composable
+private fun SyncDotButton(state: ShellState, onTap: () -> Unit) {
+    val c = Ponte.colors
+    val color = when (state.statusKind) {
+        StatusKind.OK -> c.success
+        StatusKind.WAITING -> c.warning
+        StatusKind.ERROR -> c.error
+        StatusKind.NEUTRAL -> c.outline
+    }
+    Box(
+        Modifier.size(width = 36.dp, height = 48.dp)
+            .semantics { contentDescription = SyncDot.description(state) }
+            .clickable(role = Role.Button, onClickLabel = "Ver o estado da sincronização", onClick = onTap),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(Modifier.size(10.dp).background(color, CircleShape))
+    }
+}
+
+/** "⋮": Sincronizar agora (same rules as the old button) and Ajustes. */
+@Composable
+private fun OverflowMenu(state: ShellState, onSync: () -> Unit, onSettings: () -> Unit) {
+    val c = Ponte.colors
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(Icons.Outlined.MoreVert, contentDescription = "Mais opções", tint = c.secondary)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            val canSync = state.syncEnabled && !state.syncing
+            DropdownMenuItem(
+                // While it runs the item says so: that is why it cannot be tapped.
+                text = { Text(if (state.syncing) "Sincronizando…" else "Sincronizar agora", fontSize = 16.sp) },
+                onClick = { open = false; onSync() },
+                enabled = canSync,
+                leadingIcon = { Icon(Icons.Outlined.Sync, contentDescription = null) }
+            )
+            DropdownMenuItem(
+                text = { Text("Ajustes", fontSize = 16.sp) },
+                onClick = { open = false; onSettings() },
+                leadingIcon = { Icon(Icons.Outlined.Tune, contentDescription = null) }
+            )
+        }
+    }
+}
+
+/** The four tabs as icons only (the name is for the screen reader), 56 dp tall plus the system bar. */
+@Composable
+internal fun BottomBar(state: ShellState, onTab: (Int) -> Unit) {
+    val c = Ponte.colors
+    val titles = listOf("Hoje", "Tarefas", "Documentos", "E-mail")
+    val icons = listOf(Icons.Outlined.Today, Icons.Outlined.CheckCircle, Icons.Outlined.Description, Icons.Outlined.Mail)
+    Box(Modifier.fillMaxWidth().height(1.dp).background(c.barBorder))
+    Row(Modifier.fillMaxWidth().background(c.surface).navigationBarsPadding().height(56.dp).selectableGroup()) {
+        titles.forEachIndexed { i, title ->
+            val on = state.tab == i
+            val badge = if (i == 0) state.badge else 0
+            // One name for the icon and the number: the reader says what the number means.
+            val name = if (badge > 0) {
+                title + ", " + PhoneWords.plural(badge, "tarefa atrasada ou para hoje", "tarefas atrasadas ou para hoje")
+            } else title
+            Box(
+                Modifier.weight(1f).fillMaxHeight()
+                    .semantics { contentDescription = name }
+                    .selectable(selected = on, role = Role.Tab, onClick = { onTab(i) }),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    Modifier.size(width = 64.dp, height = 32.dp).clip(RoundedCornerShape(16.dp))
+                        .background(if (on) c.accentContainer else Color.Transparent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val tint = if (on) c.onAccentContainer else c.secondary
+                    if (badge > 0) {
+                        BadgedBox(modifier = Modifier.clearAndSetSemantics { }, badge = {
+                            Badge(containerColor = c.error, contentColor = if (c.dark) c.errorContainer else Color.White) {
+                                Text(if (badge > 99) "99+" else badge.toString())
+                            }
+                        }) { Icon(icons[i], contentDescription = null, tint = tint) }
+                    } else {
+                        Icon(icons[i], contentDescription = null, tint = tint)
+                    }
+                }
             }
         }
     }
 }
 
 /**
- * The size of the names under the icons of the bottom bar: the usual 12, but never so
- * large that the longest name stops fitting its share of the bar on one line. It is worked
- * out in dp, so a large font setting on the phone (or a narrow screen) shrinks the names
- * instead of breaking them; every name gets the same size.
+ * The arithmetic of the words of [SegmentedTabs] (the segmented rows inside a screen): the share of each word and the
+ * size that makes every word fit its share on one line.
  */
-@Composable
-private fun navLabelSize(titles: List<String>): TextUnit {
-    val density = LocalDensity.current
-    val screen = LocalConfiguration.current.screenWidthDp
-    val wanted = 12f * density.fontScale
-    return with(density) { NavLabel.sizeDp(screen, titles, wanted).dp.toSp() }
-}
-
-/** The arithmetic of [navLabelSize], apart so it can be tested. */
 internal object NavLabel {
-    /** Room an item keeps free at its sides, and how wide a bold letter is for its size. */
+    /** Room a word keeps free at its sides, and how wide a bold letter is for its size. */
     private const val SIDE_DP = 6f
     private const val LETTER = 0.6f
     private const val SMALLEST_DP = 9f
-
-    fun sizeDp(screenWidthDp: Int, titles: List<String>, wantedDp: Float): Float {
-        val longest = titles.maxOfOrNull { it.length } ?: return wantedDp
-        if (longest == 0 || titles.isEmpty()) return wantedDp
-        val room = screenWidthDp.toFloat() / titles.size - 2 * SIDE_DP
-        val fits = room / (longest * LETTER)
-        return wantedDp.coerceAtMost(fits).coerceAtLeast(SMALLEST_DP)
-    }
 
     /**
      * The relative width of each of [titles] in a row of segments: equal for up to three (as always), and for
@@ -278,7 +369,7 @@ internal object NavLabel {
     fun shares(titles: List<String>): List<Float> =
         if (titles.size <= 3) titles.map { 1f } else titles.map { it.length + 2f }
 
-    /** Like the plain [sizeDp], with the room of each word given by [shares] instead of an equal part. */
+    /** The size (dp) at which every one of [titles] fits its share of [screenWidthDp] on one line, never above [wantedDp]. */
     fun sizeDp(screenWidthDp: Int, titles: List<String>, wantedDp: Float, shares: List<Float>): Float {
         if (titles.isEmpty() || titles.size != shares.size) return wantedDp
         val total = shares.sum()
@@ -384,12 +475,16 @@ internal fun Tag(text: String, modifier: Modifier = Modifier, tone: Tone = Tone.
     )
 }
 
-/** Round check mark in a 44 dp touch target: empty ring, or green with a tick when [checked]. */
+/** Round check mark in a touch target (44 dp, 48 in the lists): empty ring, or green with a tick when [checked]. */
 @Composable
-internal fun RoundCheck(checked: Boolean, onClick: () -> Unit, description: String, enabled: Boolean = true) {
+internal fun RoundCheck(
+    checked: Boolean, onClick: () -> Unit, description: String, enabled: Boolean = true,
+    /** The touch target; the drawing inside stays the same. */
+    size: androidx.compose.ui.unit.Dp = 44.dp
+) {
     val c = Ponte.colors
     Box(
-        Modifier.size(44.dp).clip(CircleShape).clickable(enabled = enabled, role = Role.Checkbox, onClickLabel = description, onClick = onClick),
+        Modifier.size(size).clip(CircleShape).clickable(enabled = enabled, role = Role.Checkbox, onClickLabel = description, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         if (checked) {

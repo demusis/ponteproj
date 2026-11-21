@@ -136,20 +136,14 @@ internal fun MailScreen(
                 showList -> LazyColumn(
                     Modifier.fillMaxWidth().weight(1f),
                     contentPadding = PaddingValues(
-                        start = 16.dp, top = 8.dp, end = 16.dp,
+                        top = 4.dp,
                         bottom = if (state.checked.isNotEmpty()) 88.dp else 16.dp
                     )
                 ) {
-                    itemsIndexed(state.messages, key = { _, m -> m.uid }) { i, m ->
-                        val first = i == 0
-                        val last = i == state.messages.lastIndex
-                        val shape = RoundedCornerShape(
-                            topStart = if (first) 16.dp else 0.dp, topEnd = if (first) 16.dp else 0.dp,
-                            bottomStart = if (last) 16.dp else 0.dp, bottomEnd = if (last) 16.dp else 0.dp
-                        )
-                        Column(Modifier.background(c.surface, shape)) {
+                    itemsIndexed(state.messages, key = { _, m -> m.uid }) { _, m ->
+                        Column {
                             MessageRow(m, m.uid in state.checked, !state.busy) { onToggle(m.uid) }
-                            if (!last) Box(Modifier.padding(start = 52.dp).fillMaxWidth().height(1.dp).background(c.divider))
+                            RowDivider(68.dp)
                         }
                     }
                 }
@@ -239,7 +233,7 @@ private fun MessageRow(m: MailMessage, checked: Boolean, enabled: Boolean, onCli
     Row(
         Modifier.fillMaxWidth().heightIn(min = 64.dp)
             .then(if (m.imported || !enabled) Modifier else Modifier.clickable(onClick = onClick))
-            .padding(end = 14.dp, top = 6.dp, bottom = 6.dp),
+            .padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {

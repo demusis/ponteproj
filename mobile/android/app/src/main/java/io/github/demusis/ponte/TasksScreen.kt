@@ -1,9 +1,6 @@
 package io.github.demusis.ponte
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,13 +15,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,7 +32,10 @@ import androidx.compose.ui.unit.dp
 
 private class TaskGroup(val key: String, val title: String, val tasks: List<TaskItem>, val late: Boolean = false)
 
-/** The Tarefas area (inside MainShell): open tasks grouped by urgency, finished ones below. */
+/**
+ * The Tarefas area (inside MainShell): open tasks grouped by urgency, finished ones below, as flat rows. The
+ * category and project filters are behind the filter icon of the frame; while one is on, the first row says which.
+ */
 @Composable
 internal fun TasksScreen(
     state: TasksState,
@@ -53,6 +50,7 @@ internal fun TasksScreen(
 ) {
     val c = Ponte.colors
     var showDone by rememberSaveable { mutableStateOf(false) }
+    val categories = LocalCategories.current
     // The category filter: an item with ANY chosen category, or none when "Sem categoria" is chosen.
     // The project filter: one project, or "Sem projeto"; both together narrow the list.
     val all = remember(state.tasks, categoryFilter, projectFilter) {
@@ -72,7 +70,8 @@ internal fun TasksScreen(
     }
     val done = remember(all) { all.filter { it.done } }
     val noOpen = all.none { !it.done }
-    val filtering = categoryFilter.isNotEmpty() || projectFilter.isNotEmpty()
+    val filtering = FilterSummary.isActive(categoryFilter, projectFilter)
+    val clearFilter = { onCategoryFilter(emptySet()); onProjectFilter("") }
 
     if (state.loading && state.tasks.isEmpty()) {
         LoadingBox(text = "Carregando as tarefas…", modifier = Modifier.fillMaxSize())
@@ -80,90 +79,67 @@ internal fun TasksScreen(
     }
 
     Box(Modifier.fillMaxSize()) {
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 104.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        state.error?.let { item(key = "error") { Notice(it) } }
-        item(key = "filters") {
-            // The category filter and the project filter side by side (each shows only when it has something to filter by).
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically
-            ) {
-                CategoryFilterPill(categoryFilter, onCategoryFilter)
-                ProjectFilterPill(projects, projectFilter, onProjectFilter)
-            }
-        }
-        if (noOpen && filtering) {
-            item(key = "empty-filter") {
-                val onlyCategories = projectFilter.isEmpty()
-                EmptyState(
-                    if (onlyCategories) "Nenhuma tarefa em aberto com essas categorias." else "Nenhuma tarefa em aberto com esse filtro.",
-                    text = if (onlyCategories) "Mude as categorias marcadas ou limpe o filtro." else "Mude o filtro ou limpe-o.",
-                    icon = Icons.Outlined.CheckCircle,
-                    action = {
-                        TextButton(onClick = { onCategoryFilter(emptySet()); onProjectFilter("") }) {
-                            Text("Limpar o filtro", color = c.accent, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                )
-            }
-        } else if (noOpen) {
-            item(key = "empty") {
-                EmptyState(
-                    "Nenhuma tarefa em aberto.",
-                    text = "Quando surgir algo a fazer, aparece aqui. Aproveite o descanso.",
-                    icon = Icons.Outlined.CheckCircle
-                )
-            }
-        }
-        for (g in groups) {
-            item(key = "h-${g.key}") {
-                SectionLabel(
-                    "${g.title} · ${g.tasks.size}", Modifier.padding(top = 8.dp),
-                    color = if (g.late) c.error else c.muted
-                )
-            }
-            items(g.tasks, key = { "t-${it.id}" }) { t -> TaskCard(t, onToggle, onOpen) }
-        }
-        if (done.isNotEmpty()) {
-            item(key = "h-done") {
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { showDone = !showDone },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    SectionLabel("Concluídas · ${done.size}", Modifier.weight(1f))
-                    Icon(
-                        Icons.Outlined.ExpandMore,
-                        contentDescription = if (showDone) "Recolher as concluídas" else "Mostrar as concluídas",
-                        tint = c.muted, modifier = Modifier.padding(end = 4.dp).size(22.dp).rotate(if (showDone) 180f else 0f)
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = FAB_CLEARANCE)) {
+            state.error?.let { item(key = "error") { Notice(it, Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp)) } }
+            if (filtering) {
+                item(key = "filter-line") {
+                    FilterSummaryRow(
+                        FilterSummary.line(
+                            FilterSummary.categoryNames(categoryFilter, categories), FilterSummary.projectName(projectFilter, projects)
+                        ),
+                        onClear = clearFilter
                     )
                 }
             }
-            if (showDone) items(done, key = { "d-${it.id}" }) { t -> TaskCard(t, onToggle, onOpen) }
+            if (noOpen && filtering) {
+                item(key = "empty-filter") {
+                    val onlyCategories = projectFilter.isEmpty()
+                    EmptyState(
+                        if (onlyCategories) "Nenhuma tarefa em aberto com essas categorias." else "Nenhuma tarefa em aberto com esse filtro.",
+                        text = if (onlyCategories) "Mude as categorias marcadas ou limpe o filtro." else "Mude o filtro ou limpe-o.",
+                        icon = Icons.Outlined.CheckCircle,
+                        action = {
+                            TextButton(onClick = clearFilter) {
+                                Text("Limpar o filtro", color = c.accent, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    )
+                }
+            } else if (noOpen) {
+                item(key = "empty") {
+                    EmptyState(
+                        "Nenhuma tarefa em aberto.",
+                        text = "Quando surgir algo a fazer, aparece aqui. Aproveite o descanso.",
+                        icon = Icons.Outlined.CheckCircle
+                    )
+                }
+            }
+            for (g in groups) {
+                item(key = "h-${g.key}") {
+                    SectionLabel(
+                        "${g.title} · ${g.tasks.size}", Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp),
+                        color = if (g.late) c.error else c.muted
+                    )
+                }
+                items(g.tasks, key = { "t-${it.id}" }) { t -> TaskListRow(t, { onToggle(t) }, { onOpen(t) }) }
+            }
+            if (done.isNotEmpty()) {
+                item(key = "h-done") {
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { showDone = !showDone }.padding(start = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SectionLabel("Concluídas · ${done.size}", Modifier.weight(1f))
+                        Icon(
+                            Icons.Outlined.ExpandMore,
+                            contentDescription = if (showDone) "Recolher as concluídas" else "Mostrar as concluídas",
+                            tint = c.muted, modifier = Modifier.padding(end = 16.dp).size(22.dp).rotate(if (showDone) 180f else 0f)
+                        )
+                    }
+                }
+                if (showDone) items(done, key = { "d-${it.id}" }) { t -> TaskListRow(t, { onToggle(t) }, { onOpen(t) }) }
+            }
         }
-    }
-    ExtendedFloatingActionButton(
-        onClick = onNew,
-        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-        containerColor = c.accent, contentColor = c.onAccent,
-        elevation = FloatingActionButtonDefaults.elevation(2.dp, 2.dp, 2.dp, 2.dp),
-        icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-        text = { Text("Nova tarefa", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
-    )
-    }
-}
-
-/** One task in a card (Hoje and Tarefas): check to conclude, tap to open it. */
-@Composable
-internal fun TaskCard(t: TaskItem, onToggle: (TaskItem) -> Unit, onOpen: (TaskItem) -> Unit) {
-    PonteCard {
-        TaskRow(
-            t, t.secondLine,
-            onToggle = { onToggle(t) }, onOpen = { onOpen(t) },
-            modifier = Modifier.padding(start = 6.dp, end = 12.dp, top = 6.dp, bottom = 6.dp)
-        )
+        PonteFab(Icons.Outlined.Add, "Nova tarefa", onNew, Modifier.align(Alignment.BottomEnd))
     }
 }

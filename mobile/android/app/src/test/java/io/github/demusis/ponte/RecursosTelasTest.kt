@@ -141,10 +141,7 @@ class RecursosTelasTest {
     ) {
         paparazzi.tall(height)
         paparazzi.shotInShell(name, 1, dark, shell = Samples.shell.copy(resources = true)) {
-            Column(Modifier.fillMaxSize()) {
-                SegmentedTabs(listOf("Tarefas", "Atendimentos", PhoneWords.RES_AREA), 2, {})
-                Box(Modifier.weight(1f).fillMaxWidth()) { ResourcesScreen(state, query, {}, view, {}, {}, {}) }
-            }
+            ResourcesScreen(state, query, {}, view, {}, {}, {})
         }
     }
 
@@ -221,12 +218,7 @@ class RecursosTelasTest {
     private fun narrow(name: String, scale: Float, dark: Boolean = false) {
         paparazzi.unsafeUpdateConfig(deviceConfig = small(scale))
         paparazzi.shotInShell(name, 1, dark, shell = Samples.shell.copy(resources = true)) {
-            Column(Modifier.fillMaxSize()) {
-                SegmentedTabs(listOf("Tarefas", "Atendimentos", PhoneWords.RES_AREA), 2, {})
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    ResourcesScreen(ResourceSamples.state, "", {}, 0, {}, {}, {})
-                }
-            }
+            ResourcesScreen(ResourceSamples.state, "", {}, 0, {}, {}, {})
         }
     }
 

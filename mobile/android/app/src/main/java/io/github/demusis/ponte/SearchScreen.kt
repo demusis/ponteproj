@@ -87,14 +87,13 @@ private fun Results(
 ) {
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        contentPadding = PaddingValues(top = 4.dp, bottom = 32.dp)
     ) {
         group("d", "Documentos", r.documents, { it.id }) { d -> DocumentResult(d) { onOpenDocument(d.id) } }
         group("t", "Tarefas", r.tasks, { it.id }) { t -> TaskResult(t) { onOpenTask(t.id) } }
-        group("a", "Atendimentos", r.attendances, { it.id }) { a -> AttendanceCard(a, onClick = { onOpenAttendance(a.id) }) }
+        group("a", "Atendimentos", r.attendances, { it.id }) { a -> AttendanceRow(a, onClick = { onOpenAttendance(a.id) }) }
         if (projects.isNotEmpty()) {
-            item(key = "h-p") { SectionLabel("Projetos · ${projects.size}", Modifier.padding(top = 8.dp)) }
+            item(key = "h-p") { SectionLabel("Projetos · ${projects.size}", Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp)) }
             items(projects, key = { "p-${it.uid}" }) { p -> ProjectResult(p) { onOpenProject(p.uid) } }
         }
     }
@@ -108,12 +107,12 @@ private fun <T> LazyListScope.group(
     row: @Composable (T) -> Unit
 ) {
     if (g.rows.isEmpty()) return
-    item(key = "h-$key") { SectionLabel("$title · ${g.rows.size + g.more}", Modifier.padding(top = 8.dp)) }
+    item(key = "h-$key") { SectionLabel("$title · ${g.rows.size + g.more}", Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp)) }
     items(g.rows, key = { "$key-${id(it)}" }) { row(it) }
     if (g.more > 0) {
         item(key = "m-$key") {
             Text(
-                SearchRules.moreLine(g.more), Modifier.padding(start = 4.dp),
+                SearchRules.moreLine(g.more), Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.bodyMedium, color = Ponte.colors.muted
             )
         }
@@ -123,8 +122,8 @@ private fun <T> LazyListScope.group(
 @Composable
 private fun DocumentResult(d: SearchDoc, onClick: () -> Unit) {
     val c = Ponte.colors
-    PonteCard(onClick = onClick) {
-        Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    FlatRow(onClick) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (d.kind.isNotEmpty()) Tag(d.kind, tone = Tone.ACCENT)
             Text(
                 d.title.ifEmpty { "Sem título" }, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = c.text,
@@ -140,8 +139,8 @@ private fun DocumentResult(d: SearchDoc, onClick: () -> Unit) {
 @Composable
 private fun ProjectResult(p: ProjectItem, onClick: () -> Unit) {
     val c = Ponte.colors
-    PonteCard(onClick = onClick) {
-        Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    FlatRow(onClick) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     p.name, Modifier.weight(1f), fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = c.text,
@@ -161,8 +160,8 @@ private fun ProjectResult(p: ProjectItem, onClick: () -> Unit) {
 @Composable
 private fun TaskResult(t: TaskItem, onClick: () -> Unit) {
     val c = Ponte.colors
-    PonteCard(onClick = onClick) {
-        Row(Modifier.padding(start = 16.dp, top = 12.dp, end = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    FlatRow(onClick) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
                 Text(
                     t.title, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium,
@@ -177,7 +176,7 @@ private fun TaskResult(t: TaskItem, onClick: () -> Unit) {
             }
             if (!t.done && t.dueChip.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
-                Pill(t.dueChip, tone = if (t.overdue) Tone.ERROR else if (t.dueToday) Tone.WARNING else Tone.NEUTRAL)
+                DueMark(t.dueChip, t.overdue, t.dueToday)
             }
         }
     }

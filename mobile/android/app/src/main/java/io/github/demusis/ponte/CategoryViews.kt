@@ -276,50 +276,8 @@ internal fun CategoryFilterContent(
     }
 }
 
-/** The button of a list that opens the filter, and the sheet itself. */
 @Composable
-internal fun CategoryFilterButton(
-    chosen: Set<String>,
-    onChange: (Set<String>) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    if (LocalCategories.current.isEmpty() && chosen.isEmpty()) return
-    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        CategoryFilterPill(chosen, onChange)
-    }
-}
-
-/** The pill of the category filter and its sheet, to sit in a row with other filters. Nothing while there is nothing to filter by. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun CategoryFilterPill(
-    chosen: Set<String>,
-    onChange: (Set<String>) -> Unit
-) {
-    val all = LocalCategories.current
-    var open by rememberSaveable { mutableStateOf(false) }
-    val on = chosen.isNotEmpty()
-    // Nothing to filter by while the library has no category (and no filter is on).
-    if (all.isEmpty() && !on) return
-    FilterPill(CategoryRules.filterLabel(chosen), on, Modifier.widthIn(max = 220.dp)) { open = true }
-    if (open) {
-        var draft by remember { mutableStateOf(chosen) }
-        ModalBottomSheet(
-            onDismissRequest = { open = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = Ponte.colors.surface
-        ) {
-            CategoryFilterContent(
-                all, draft, onToggle = { draft = CategoryRules.toggleFilter(draft, it) },
-                onClear = { draft = emptySet() },
-                onDone = { open = false; onChange(draft) }
-            )
-        }
-    }
-}
-
-@Composable
-private fun CategoryDot(c: Category) {
+internal fun CategoryDot(c: Category) {
     val p = Ponte.colors
     val dot = if (c.archived) p.muted else Color(CategoryRules.colors(c.color, p.dark).dot)
     Box(Modifier.size(10.dp).background(dot, CircleShape))

@@ -134,10 +134,7 @@ class AtendimentosBuscaTest {
     private fun listShell(name: String, state: AttendancesState, query: String = "", dark: Boolean = false) {
         paparazzi.tall(2500)
         paparazzi.shotInShell(name, 1, dark, shell = Samples.shell.copy(attendances = true)) {
-            Column(Modifier.fillMaxSize()) {
-                SegmentedTabs(listOf("Tarefas", "Atendimentos"), 1, {})
-                Box(Modifier.weight(1f).fillMaxWidth()) { AttendancesScreen(state, query, {}, {}) }
-            }
+            AttendancesScreen(state, query, {}, {})
         }
     }
 
@@ -154,10 +151,7 @@ class AtendimentosBuscaTest {
     @Test fun tarefasComSegmento() {
         paparazzi.tall(2500)
         paparazzi.shotInShell("segmento_tarefas", 1) {
-            Column(Modifier.fillMaxSize()) {
-                SegmentedTabs(listOf("Tarefas", "Atendimentos"), 0, {})
-                Box(Modifier.weight(1f).fillMaxWidth()) { TasksScreen(TasksState(false, null, Samples.tasks), {}, {}) }
-            }
+            TasksScreen(TasksState(false, null, Samples.tasks), {}, {})
         }
     }
 

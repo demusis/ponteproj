@@ -128,13 +128,13 @@ private fun ProjectFilters(filter: String, onFilter: (String) -> Unit) {
     }
 }
 
-/** One project in the list. */
+/** One project in the list, as a flat row. */
 @Composable
-internal fun ProjectCard(p: ProjectItem, onClick: () -> Unit) {
+internal fun ProjectRow(p: ProjectItem, onClick: () -> Unit) {
     val c = Ponte.colors
-    PonteCard(onClick = onClick) {
+    FlatRow(onClick, Modifier, ROW_MARGIN) {
         Column(
-            Modifier.padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 14.dp),
+            Modifier.fillMaxWidth().padding(vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -185,15 +185,12 @@ internal fun ProjectsScreen(
         return
     }
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 104.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            state.error?.let { item(key = "error") { Notice(it) } }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = FAB_CLEARANCE)) {
+            val pad = Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp)
+            state.error?.let { item(key = "error") { Notice(it, pad) } }
             if (state.rows.isNotEmpty()) {
-                item(key = "search") { SearchBox(query, onQuery, "Nome ou objetivo") }
-                item(key = "filters") { ProjectFilters(filter, onFilter) }
+                item(key = "search") { SearchBox(query, onQuery, "Nome ou objetivo", pad) }
+                item(key = "filters") { Box(pad) { ProjectFilters(filter, onFilter) } }
             }
             if (shown.isEmpty()) {
                 item(key = "empty") {
@@ -223,16 +220,9 @@ internal fun ProjectsScreen(
                     }
                 }
             }
-            items(shown, key = { "p-${it.uid}" }) { p -> ProjectCard(p) { onOpen(p) } }
+            items(shown, key = { "p-${it.uid}" }) { p -> ProjectRow(p) { onOpen(p) } }
         }
-        ExtendedFloatingActionButton(
-            onClick = onNew,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-            containerColor = c.accent, contentColor = c.onAccent,
-            elevation = FloatingActionButtonDefaults.elevation(2.dp, 2.dp, 2.dp, 2.dp),
-            icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-            text = { Text("Novo projeto", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
-        )
+        PonteFab(Icons.Outlined.Add, "Novo projeto", onNew, Modifier.align(Alignment.BottomEnd))
     }
 }
 
@@ -250,28 +240,6 @@ internal fun ProjectField(
     val options = ProjectRules.fieldOptions(projects, selected, currentName)
     if (!ProjectRules.fieldShown(options, selected)) return
     ChoiceField("Projeto", options, selected, onChange, modifier)
-}
-
-/** The pill of the project filter of Tarefas and its sheet (one choice). Nothing while there is no project and no filter. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun ProjectFilterPill(
-    projects: List<ProjectItem>,
-    chosen: String,
-    onChange: (String) -> Unit
-) {
-    var open by rememberSaveable { mutableStateOf(false) }
-    if (projects.isEmpty() && chosen.isEmpty()) return
-    FilterPill(ProjectRules.filterLabel(chosen, projects), chosen.isNotEmpty(), Modifier.widthIn(max = 220.dp)) { open = true }
-    if (open) {
-        ModalBottomSheet(
-            onDismissRequest = { open = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = Ponte.colors.surface
-        ) {
-            ProjectFilterContent(projects, chosen) { open = false; onChange(it) }
-        }
-    }
 }
 
 /** The body of the filter sheet: every project, "Sem projeto" and "Todos os projetos"; a tap chooses and closes. */

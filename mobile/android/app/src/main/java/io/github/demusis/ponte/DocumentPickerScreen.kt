@@ -79,11 +79,7 @@ internal fun DocumentPickerScreen(
                     focusedTextColor = c.text, unfocusedTextColor = c.text, cursorColor = c.accent
                 )
             )
-            LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
                 if (shown.isEmpty()) {
                     item(key = "none") {
                         if (query.isNotBlank()) {
@@ -99,14 +95,14 @@ internal fun DocumentPickerScreen(
                         } else {
                             EmptyState(
                                 "Nenhum documento para escolher.",
-                                text = "Toque em sincronizar para trazer o acervo do computador.",
+                                text = "Sincronize antes (⋮ › Sincronizar agora, na tela Documentos) para trazer o acervo do computador.",
                                 icon = Icons.Outlined.Description
                             )
                         }
                     }
                 } else {
                     items(shown, key = { it.id }) { d ->
-                        DocCard(d.copy(openTasks = 0, attachments = 0), { if (!busy) onPick(d) })
+                        DocRow(d.copy(openTasks = 0, attachments = 0), { if (!busy) onPick(d) })
                     }
                 }
             }
