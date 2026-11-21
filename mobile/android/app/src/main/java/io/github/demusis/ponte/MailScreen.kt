@@ -247,7 +247,7 @@ private fun MessageRow(m: MailMessage, checked: Boolean, enabled: Boolean, onCli
                 )
             }
         }
-        Column(Modifier.weight(1f).alpha(if (m.imported) 0.6f else 1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.weight(1f).alpha(if (m.imported) 0.8f else 1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     sender, Modifier.weight(1f), fontSize = 15.sp,

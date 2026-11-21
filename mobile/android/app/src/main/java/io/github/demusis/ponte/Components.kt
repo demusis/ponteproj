@@ -698,7 +698,7 @@ internal fun LabeledField(
             modifier = Modifier.fillMaxWidth(),
             enabled = enabled,
             textStyle = MaterialTheme.typography.bodyLarge,
-            placeholder = if (placeholder.isEmpty()) null else ({ Text(placeholder, color = if (enabled) c.muted else c.muted.copy(alpha = 0.5f)) }),
+            placeholder = if (placeholder.isEmpty()) null else ({ Text(placeholder, color = c.muted) }),
             isError = error.isNotEmpty(),
             singleLine = singleLine,
             minLines = if (singleLine) 1 else minLines,

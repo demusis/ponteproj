@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -102,21 +103,32 @@ internal fun FlatRow(
     }
 }
 
-/** The round "+" (or other icon) button of a list: [description] is what the screen reader says. */
+/**
+ * A list with its round "+" (or other icon) button: the button has a lane of its own under the list (72 dp: the
+ * button and its margins), so no row, no trailing text and no fold chevron is ever under it, at rest or scrolled.
+ * [description] is what the screen reader says for the button.
+ */
 @Composable
-internal fun PonteFab(icon: ImageVector, description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun FabColumn(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
     val c = Ponte.colors
-    FloatingActionButton(
-        onClick = onClick,
-        modifier = modifier.padding(16.dp),
-        shape = CircleShape,
-        containerColor = c.accent, contentColor = c.onAccent,
-        elevation = FloatingActionButtonDefaults.elevation(2.dp, 2.dp, 2.dp, 2.dp)
-    ) { Icon(icon, contentDescription = description) }
+    Column(modifier.fillMaxSize()) {
+        Box(Modifier.weight(1f).fillMaxWidth()) { content() }
+        Box(Modifier.fillMaxWidth().padding(end = 16.dp, top = 4.dp, bottom = 12.dp), contentAlignment = Alignment.CenterEnd) {
+            FloatingActionButton(
+                onClick = onClick,
+                shape = CircleShape,
+                containerColor = c.accent, contentColor = c.onAccent,
+                elevation = FloatingActionButtonDefaults.elevation(2.dp, 2.dp, 2.dp, 2.dp)
+            ) { Icon(icon, contentDescription = description) }
+        }
+    }
 }
-
-/** Bottom padding of a list that has a round button over it: the last row can be lifted clear of it. */
-internal val FAB_CLEARANCE = 88.dp
 
 // ---------------------------------------------------------------- task row
 

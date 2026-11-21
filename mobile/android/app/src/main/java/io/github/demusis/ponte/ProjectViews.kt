@@ -184,8 +184,8 @@ internal fun ProjectsScreen(
         LoadingBox(text = "Carregando os projetos…", modifier = Modifier.fillMaxSize())
         return
     }
-    Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = FAB_CLEARANCE)) {
+    FabColumn(Icons.Outlined.Add, "Novo projeto", onNew) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = 8.dp)) {
             val pad = Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp)
             state.error?.let { item(key = "error") { Notice(it, pad) } }
             if (state.rows.isNotEmpty()) {
@@ -222,7 +222,6 @@ internal fun ProjectsScreen(
             }
             items(shown, key = { "p-${it.uid}" }) { p -> ProjectRow(p) { onOpen(p) } }
         }
-        PonteFab(Icons.Outlined.Add, "Novo projeto", onNew, Modifier.align(Alignment.BottomEnd))
     }
 }
 

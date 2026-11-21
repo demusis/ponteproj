@@ -1,6 +1,7 @@
 package io.github.demusis.ponte
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
@@ -199,7 +200,8 @@ internal val FieldLabelStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, f
 @Composable
 internal fun PonteTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
     val colors = if (dark) DarkPonteColors else LightPonteColors
-    CompositionLocalProvider(LocalPonteColors provides colors) {
+    // The colour of any text that names none: the theme's text, never the default black (invisible on the dark page).
+    CompositionLocalProvider(LocalPonteColors provides colors, LocalContentColor provides colors.text) {
         MaterialTheme(
             colorScheme = scheme(colors),
             typography = PonteTypography,

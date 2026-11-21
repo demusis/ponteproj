@@ -207,8 +207,11 @@ private fun TaskLoaded(
             SectionHeader("Tarefa pai")
             val parentTitle = relations.tasks.firstOrNull { it.id == form.parentTaskId }?.title
             SectionBody(spacing = 4.dp) {
-                Text(if (form.parentTaskId == null) "Sem tarefa pai" else parentTitle ?: "Tarefa pai #${form.parentTaskId}")
-                if (relations.loading) Text("Carregando tarefas…")
+                Text(
+                    if (form.parentTaskId == null) "Sem tarefa pai" else parentTitle ?: "Tarefa pai #${form.parentTaskId}",
+                    style = MaterialTheme.typography.bodyLarge, color = c.text
+                )
+                if (relations.loading) Text("Carregando tarefas…", style = MaterialTheme.typography.bodyMedium, color = c.muted)
                 relations.error?.let { Notice(it, tone = Tone.ERROR) }
             }
             SectionAction("Escolher tarefa pai…", { parentPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
@@ -356,7 +359,7 @@ private fun ParentTaskPicker(tasks: List<TaskItem>, taskId: Long, onDismiss: () 
             SearchBox(query, { query = it }, "Buscar tarefa")
             TextAction("Sem tarefa pai", { onPick(null) })
             Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
-                if (candidates.isEmpty()) Text("Nenhuma tarefa encontrada", Modifier.padding(16.dp))
+                if (candidates.isEmpty()) Text("Nenhuma tarefa encontrada", Modifier.padding(16.dp), color = Ponte.colors.muted)
                 candidates.forEach { candidate ->
                     Text(
                         candidate.title, Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onPick(candidate.id) }
@@ -380,7 +383,7 @@ private fun DependencyPicker(tasks: List<TaskItem>, taskId: Long, selected: List
             Text("Escolher tarefas", style = MaterialTheme.typography.titleMedium)
             SearchBox(query, { query = it }, "Buscar tarefa")
             Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
-                if (candidates.isEmpty()) Text("Nenhuma tarefa encontrada", Modifier.padding(16.dp))
+                if (candidates.isEmpty()) Text("Nenhuma tarefa encontrada", Modifier.padding(16.dp), color = Ponte.colors.muted)
                 candidates.forEach { candidate ->
                     val toggle = { chosen = if (candidate.id in chosen) chosen - candidate.id else chosen + candidate.id }
                     Row(

@@ -78,8 +78,8 @@ internal fun TasksScreen(
         return
     }
 
-    Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = FAB_CLEARANCE)) {
+    FabColumn(Icons.Outlined.Add, "Nova tarefa", onNew) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = 8.dp)) {
             state.error?.let { item(key = "error") { Notice(it, Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp)) } }
             if (filtering) {
                 item(key = "filter-line") {
@@ -140,6 +140,5 @@ internal fun TasksScreen(
                 if (showDone) items(done, key = { "d-${it.id}" }) { t -> TaskListRow(t, { onToggle(t) }, { onOpen(t) }) }
             }
         }
-        PonteFab(Icons.Outlined.Add, "Nova tarefa", onNew, Modifier.align(Alignment.BottomEnd))
     }
 }

@@ -38,12 +38,12 @@ class CategoriasTelasTest {
 
     @Test fun tarefasComCategorias() {
         paparazzi.tall(3000)
-        paparazzi.shotInShell("claro", 1) { withCategories { TasksScreen(TasksState(false, null, tasks), {}, {}) }() }
+        paparazzi.shotInShell("claro", 1, filter = ShellFilter(false) {}) { withCategories { TasksScreen(TasksState(false, null, tasks), {}, {}) }() }
     }
 
     @Test fun tarefasComCategoriasEscuro() {
         paparazzi.tall(3000)
-        paparazzi.shotInShell("escuro", 1, dark = true) { withCategories { TasksScreen(TasksState(false, null, tasks), {}, {}) }() }
+        paparazzi.shotInShell("escuro", 1, dark = true, filter = ShellFilter(false) {}) { withCategories { TasksScreen(TasksState(false, null, tasks), {}, {}) }() }
     }
 
     @Test fun tarefasFiltradas() = paparazzi.shotInShell("filtrada", 1) {

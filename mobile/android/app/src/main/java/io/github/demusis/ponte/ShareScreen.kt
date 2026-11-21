@@ -56,7 +56,9 @@ internal fun ShareScreen(
     onSaveRecord: () -> Unit,
     onChangeTarget: () -> Unit,
     onDescription: (String) -> Unit,
-    onSaveAttach: () -> Unit
+    onSaveAttach: () -> Unit,
+    /** Opens the document that holds the earlier version (shown next to its note); the controller decides what it does. */
+    onOpenEarlier: () -> Unit = {}
 ) {
     val c = Ponte.colors
     val item = state.item
@@ -92,6 +94,9 @@ internal fun ShareScreen(
             }
             if (item != null && state.keepFailed) Notice(ShareDraftRules.MSG_CANNOT_KEEP, tone = Tone.WARNING)
             if (item != null && state.note.isNotEmpty()) Notice(state.note, tone = Tone.NEUTRAL)
+            if (item != null && state.earlierDocumentId > 0) {
+                TextAction("Abrir o documento", onOpenEarlier, Modifier.offset(x = (-12).dp).fillMaxWidth())
+            }
             // The first step has no footer: the look at a save that was under way says what it is doing here.
             if (item != null && mode == ShareMode.CHOOSE && state.busy && state.progress.isNotEmpty()) {
                 Notice(state.progress, tone = Tone.NEUTRAL)

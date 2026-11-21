@@ -69,8 +69,8 @@ internal fun DocumentsScreen(
         }
     }
     val categories = LocalCategories.current
-    Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = FAB_CLEARANCE)) {
+    FabColumn(Icons.Outlined.PhotoCamera, "Registro por foto", onPhoto) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
             item(key = "search") {
                 OutlinedTextField(
                     value = query, onValueChange = onQuery,
@@ -135,7 +135,6 @@ internal fun DocumentsScreen(
                 }
             }
         }
-        PonteFab(Icons.Outlined.PhotoCamera, "Registro por foto", onPhoto, Modifier.align(Alignment.BottomEnd))
     }
 }
 

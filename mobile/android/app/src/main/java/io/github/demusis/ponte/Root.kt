@@ -83,9 +83,8 @@ internal fun AppRoot() {
 
     // The filter of the list in front (Tarefas: categories and project; Documentos: categories), behind one icon.
     val categories = LocalCategories.current
-    val taskFilterOn = FilterIcon.forTasks(c.shell) &&
-        (FilterSummary.hasCategories(categories, c.taskCatFilter) || FilterSummary.hasProjects(c.projects.rows, c.taskProjectFilter))
-    val docFilterOn = FilterIcon.forDocuments(c.shell) && FilterSummary.hasCategories(categories, c.docCatFilter)
+    val taskFilterOn = FilterIcon.tasksVisible(c.shell, categories, c.taskCatFilter, c.projects.rows, c.taskProjectFilter)
+    val docFilterOn = FilterIcon.documentsVisible(c.shell, categories, c.docCatFilter)
     var filterOpen by rememberSaveable { mutableStateOf(false) }
     val shellFilter = when {
         taskFilterOn -> ShellFilter(FilterSummary.isActive(c.taskCatFilter, c.taskProjectFilter)) { filterOpen = true }
@@ -298,7 +297,7 @@ private fun RouteScreen(route: Route) {
                 onOrigin = Intake::setOrigin, onNotes = Intake::setNotes,
                 onSaveRecord = Intake::saveRecord,
                 onChangeTarget = Intake::chooseAttach, onDescription = Intake::setDescription,
-                onSaveAttach = Intake::saveAttach
+                onSaveAttach = Intake::saveAttach, onOpenEarlier = Intake::openEarlier
             )
         }
         Route.SharePick -> DocumentPickerScreen(

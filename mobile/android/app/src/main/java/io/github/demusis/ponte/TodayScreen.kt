@@ -21,7 +21,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import kotlinx.coroutines.launch
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
@@ -82,8 +86,8 @@ internal fun TodayScreen(
     val scope = rememberCoroutineScope()
     val currentWeek = weekStart != null && weekStart == WeekPlan.mondayOf(java.time.LocalDate.now())
     val weekDeadlines = if (currentWeek) week.sumOf { it.deadlines.size } else 0
-    // Items before the "Atrasadas" header: error, summary, alert, week module.
-    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (state.late.isNotEmpty()) 1 else 0) + (if (risks.isNotEmpty()) 1 else 0) + (if (followUpCount > 0) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
+    // Items before the "Atrasadas" header: error, summary, follow-ups, risks, week module.
+    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (risks.isNotEmpty()) 1 else 0) + (if (followUpCount > 0) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
     LazyColumn(
         Modifier.fillMaxSize(),
         state = listState,
@@ -96,28 +100,31 @@ internal fun TodayScreen(
                 val extra = if (weekDeadlines > 0) " · " + (if (weekDeadlines == 1) "1 prazo nesta semana" else "$weekDeadlines prazos nesta semana") else ""
                 Text("Nada vence hoje.$extra", Modifier.padding(horizontal = 20.dp, vertical = 4.dp), fontSize = 15.sp, color = c.muted)
             } else {
-                Text(
-                    state.summary, Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
-                    fontSize = 17.sp, fontWeight = FontWeight.Medium,
-                    color = if (state.late.isNotEmpty() || state.overdueReturns > 0) c.error else c.text
-                )
-            }
-        }
-        if (state.late.isNotEmpty()) item(key = "late-alert") {
-            run {
-                val n = state.late.size
+                val late = state.late.isNotEmpty()
+                val color = if (late || state.overdueReturns > 0) c.error else c.text
+                // With late tasks the sentence is also the way to jump to them (it was the band's "ver").
                 Row(
-                    pad.fillMaxWidth().heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(12.dp)).background(c.errorContainer)
-                        .clickable { scope.launch { listState.animateScrollToItem(lateIndex) } }
-                        .padding(horizontal = 16.dp),
+                    Modifier.fillMaxWidth()
+                        .then(
+                            if (late) Modifier
+                                .semantics { contentDescription = state.summary + ". Toque para ir às tarefas atrasadas." }
+                                .clickable(role = Role.Button, onClickLabel = "Ir às tarefas atrasadas") {
+                                    scope.launch { listState.animateScrollToItem(lateIndex) }
+                                } else Modifier
+                        )
+                        .heightIn(min = 48.dp).padding(horizontal = 20.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "⚠ " + (if (n == 1) "1 atrasada" else "$n atrasadas"), Modifier.weight(1f),
-                        fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.error
+                        state.summary, Modifier.weight(1f, fill = false),
+                        fontSize = 17.sp, fontWeight = FontWeight.Medium, color = color
                     )
-                    Text("ver", fontSize = 15.sp, color = c.error)
+                    if (late) {
+                        Icon(
+                            Icons.Outlined.KeyboardArrowDown, contentDescription = null, tint = color,
+                            modifier = Modifier.padding(start = 4.dp).size(22.dp)
+                        )
+                    }
                 }
             }
         }

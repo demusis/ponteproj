@@ -164,6 +164,24 @@ class ReformaListasTest {
         assertFalse(FilterIcon.forDocuments(shell.copy(tab = 1)))
     }
 
+    @Test fun oIconeDoFiltroApareceSempreQueHaOQueFiltrarMesmoSemFiltroLigado() {
+        val shell = ShellState(tab = 1)
+        val library = listOf(Category("u1", "Estudo", 1))
+        val projects = listOf(ProjectItem("p1", "Projeto X", "", "", "ativo", "Ativo", "", "", 1, ProjectProgress()))
+        // Categories only, projects only, or both: visible with nothing chosen.
+        assertTrue(FilterIcon.tasksVisible(shell, library, emptySet(), emptyList(), ""))
+        assertTrue(FilterIcon.tasksVisible(shell, emptyList(), emptySet(), projects, ""))
+        assertTrue(FilterIcon.tasksVisible(shell, library, emptySet(), projects, ""))
+        // Nothing to filter by: hidden, unless a filter is still on (it must be possible to clear it).
+        assertFalse(FilterIcon.tasksVisible(shell, emptyList(), emptySet(), emptyList(), ""))
+        assertTrue(FilterIcon.tasksVisible(shell, emptyList(), setOf("u1"), emptyList(), ""))
+        // Not on the other areas of the tab.
+        assertFalse(FilterIcon.tasksVisible(shell.copy(projects = true), library, emptySet(), projects, ""))
+        // Documentos: the categories only.
+        assertTrue(FilterIcon.documentsVisible(shell.copy(tab = 2), library, emptySet()))
+        assertFalse(FilterIcon.documentsVisible(shell.copy(tab = 2), emptyList(), emptySet()))
+    }
+
     @Test fun aSegundaLinhaDaTarefaNaoDizSemDocumento() {
         assertEquals("Examinar · MANUAL-2026/0003", TaskRowText.lead(task()))
         // No document: the kind alone, never "Sem documento".
@@ -458,6 +476,36 @@ class ReformaListasTest {
                 )
             }
         }
+    }
+
+    @Test fun menuDeMaisEscuro() = paparazzi.shotInShell("menu_mais_escuro", 1, dark = true, filter = inactive) {
+        Box(Modifier.fillMaxSize()) {
+            tasksScreen()
+            MenuCard(Modifier.align(Alignment.TopEnd).padding(end = 8.dp, top = 4.dp)) {
+                DropdownMenuItem(
+                    text = { Text("Sincronizar agora") }, onClick = {},
+                    leadingIcon = { Icon(Icons.Outlined.Sync, null) }
+                )
+                DropdownMenuItem(
+                    text = { Text("Ajustes") }, onClick = {},
+                    leadingIcon = { Icon(Icons.Outlined.Tune, null) }
+                )
+            }
+        }
+    }
+
+    private val earlier = ShareState(
+        item = ShareItem("Oficio 0412 resposta.pdf", 1_250_000, "", "", "/privado/in-1.tmp"), kinds = Samples.kinds,
+        mode = ShareMode.RECORD, title = "Ofício 0412 resposta", earlierDocumentId = 101,
+        note = "A versão anterior deste item já tinha sido salva (documento 101). Estas alterações ainda não foram salvas."
+    )
+
+    @Test fun compartilharComVersaoAnterior() = paparazzi.shot("versao_anterior") {
+        ShareScreen(earlier, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+    }
+
+    @Test fun compartilharComVersaoAnteriorEscuro() = paparazzi.shot("versao_anterior_escuro", dark = true) {
+        ShareScreen(earlier, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
     }
 
     private fun sheet(dark: Boolean, name: String, cats: Set<String>, project: String) =

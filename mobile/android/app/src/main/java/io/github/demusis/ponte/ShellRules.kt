@@ -175,6 +175,17 @@ internal object PullRules {
 
 /** Which tabs and areas have a filter icon. */
 internal object FilterIcon {
+    /**
+     * The icon shows whenever the list has something to filter by (a category in the library or a project), also with
+     * no filter on; it is hidden only when there is nothing to filter by and no filter is left to clear.
+     */
+    fun tasksVisible(
+        state: ShellState, categories: List<Category>, categoryChosen: Set<String>, projects: List<ProjectItem>, projectChosen: String
+    ) = forTasks(state) && (FilterSummary.hasCategories(categories, categoryChosen) || FilterSummary.hasProjects(projects, projectChosen))
+
+    fun documentsVisible(state: ShellState, categories: List<Category>, categoryChosen: Set<String>) =
+        forDocuments(state) && FilterSummary.hasCategories(categories, categoryChosen)
+
     /** The category/project filter of the task list; the category filter of the document list. */
     fun forTasks(state: ShellState) = state.tab == 1 && AreaSelector.of(state) == TasksSegments.TASKS
     fun forDocuments(state: ShellState) = state.tab == 2
