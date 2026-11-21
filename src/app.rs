@@ -1071,6 +1071,48 @@ enum ReturnTo {
 
 /// Success notices leave by themselves; errors stay until closed.
 const NOTICE_LIFETIME: Duration = Duration::from_secs(7);
+/// Seconds between two polls of the synchronization (and of what depends on
+/// the library; see `PonteApp::refresh_polled`).
+const REFRESH_EVERY: Duration = Duration::from_secs(4);
+/// The search is read this long after the last key.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+/// How often the thread of `watch_other_starts` looks for a request.
+const REQUEST_LOOK_EVERY: Duration = Duration::from_millis(250);
+
+/// How long the window may go without a frame when nobody touches it. Work in
+/// the background and the files of other starts wake it by themselves; what
+/// is left is time: the next poll (every `REFRESH_EVERY`), and the labels
+/// that count minutes ("há 2 min" in the status bar), which want a frame at
+/// least every second while the window is in use and as often as the poll
+/// when it is not. Only what must show seconds, or end at a moment, asks for
+/// less: a running job (its seconds and steps), a notice about to leave, a
+/// search waiting for its pause.
+fn idle_wait(
+    since_refresh: Duration,
+    focused: bool,
+    job_running: bool,
+    notice_left: Option<Duration>,
+    search_waiting: Option<Duration>,
+) -> Duration {
+    // So that the moment has passed when the frame comes.
+    const MARGIN: Duration = Duration::from_millis(10);
+    let cap = if focused {
+        Duration::from_secs(1)
+    } else {
+        Duration::from_secs(5)
+    };
+    let mut wait = (REFRESH_EVERY.saturating_sub(since_refresh) + MARGIN).min(cap);
+    if job_running {
+        wait = wait.min(Duration::from_millis(300));
+    }
+    if let Some(left) = notice_left {
+        wait = wait.min(left + MARGIN);
+    }
+    if let Some(elapsed) = search_waiting {
+        wait = wait.min(SEARCH_DEBOUNCE.saturating_sub(elapsed) + MARGIN);
+    }
+    wait
+}
 
 /// Something not yet saved, listed when the person tries to close the window.
 struct Pending {
@@ -1289,6 +1331,9 @@ struct PonteApp {
     /// the front); `None` when this window does not answer for the library.
     requests_dir: Option<std::path::PathBuf>,
     requests_checked: Instant,
+    /// The thread that wakes the window when another start leaves a request
+    /// is running.
+    requests_watched: bool,
     /// Last automatic sweep of the trash (at start and once a day).
     last_trash_purge: Option<Instant>,
     tab: Tab,
@@ -1410,6 +1455,7 @@ impl PonteApp {
             last_refresh: Instant::now(),
             requests_dir: None,
             requests_checked: Instant::now(),
+            requests_watched: false,
             last_trash_purge: None,
             tab: Tab::Overview,
             settings_open: false,
@@ -3724,10 +3770,47 @@ impl PonteApp {
 }
 
 impl PonteApp {
+    /// Another start hands its request over by a file and waits only a few
+    /// seconds for the answer, so the window must notice it promptly even
+    /// when it has nothing else to redraw: a small thread looks at the file
+    /// and wakes the window, instead of redrawing it several times a second.
+    fn watch_other_starts(&mut self, ctx: &egui::Context) {
+        let Some(dir) = self.requests_dir.clone().filter(|_| !self.requests_watched) else {
+            return;
+        };
+        self.requests_watched = true;
+        let wake = ctx.clone();
+        let _ = std::thread::Builder::new()
+            .name("ponte-other-starts".into())
+            .spawn(move || loop {
+                std::thread::sleep(REQUEST_LOOK_EVERY);
+                if crate::single_instance::request_pending(&dir) {
+                    wake.request_repaint();
+                }
+            });
+    }
+
+    /// When the window next needs a frame if nobody touches it (see
+    /// [`idle_wait`]).
+    fn schedule_idle_repaint(&self, ctx: &egui::Context) {
+        let notice_left = self
+            .notice
+            .as_ref()
+            .filter(|n| !n.error)
+            .map(|n| NOTICE_LIFETIME.saturating_sub(n.since.elapsed()));
+        ctx.request_repaint_after(idle_wait(
+            self.last_refresh.elapsed(),
+            ctx.input(|i| i.focused),
+            self.worker.is_some(),
+            notice_left,
+            self.search_changed.map(|changed| changed.elapsed()),
+        ));
+    }
+
     /// Another start of the Ponte (the extension after an import, the Start
     /// menu) asked this window to come to the front, maybe on a document.
     fn answer_other_starts(&mut self, ctx: &egui::Context) {
-        if self.requests_checked.elapsed() < Duration::from_millis(250) {
+        if self.requests_checked.elapsed() < REQUEST_LOOK_EVERY {
             return;
         }
         self.requests_checked = Instant::now();
@@ -3790,6 +3873,7 @@ impl eframe::App for PonteApp {
         }
         self.poll_models();
         self.poll_chatgpt_login(&ctx);
+        self.watch_other_starts(&ctx);
         self.answer_other_starts(&ctx);
         if self.chatgpt_sync_pending && self.worker.is_none() && self.model_fetch.is_none() {
             self.chatgpt_sync_pending = false;
@@ -3805,17 +3889,16 @@ impl eframe::App for PonteApp {
         }
         if self
             .search_changed
-            .is_some_and(|changed| changed.elapsed() > Duration::from_millis(250))
+            .is_some_and(|changed| changed.elapsed() > SEARCH_DEBOUNCE)
         {
             self.search_changed = None;
             // Only the list of documents depends on the search.
             self.refresh_documents_for_search();
         }
-        if self.last_refresh.elapsed() > Duration::from_secs(4) {
+        if self.last_refresh.elapsed() > REFRESH_EVERY {
             self.refresh_polled();
         }
         self.sweep_trash();
-        ctx.request_repaint_after(Duration::from_millis(300));
         self.draft_tools.comparison(&ctx);
         self.pdf_reader.show(&ctx, &mut self.store);
         let pending = self.templates.dirty()
@@ -4208,6 +4291,7 @@ impl eframe::App for PonteApp {
         }
         #[cfg(feature = "shots")]
         self.tour_frame(&ctx);
+        self.schedule_idle_repaint(&ctx);
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -4759,5 +4843,43 @@ mod refresh_tests {
         app.refresh_polled();
         assert_eq!(app.documents_gen, generation);
         assert!(marked(&app));
+    }
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::{idle_wait, REFRESH_EVERY};
+    use std::time::Duration;
+
+    const MS: fn(u64) -> Duration = Duration::from_millis;
+
+    #[test]
+    fn an_idle_window_wakes_for_the_poll_and_for_the_clock_labels_only() {
+        // In use: a frame every second at most, sooner for the poll.
+        assert_eq!(idle_wait(MS(0), true, false, None, None), MS(1000));
+        assert_eq!(idle_wait(MS(3700), true, false, None, None), MS(310));
+        // Not in use: the poll is the only reason.
+        assert_eq!(
+            idle_wait(MS(1000), false, false, None, None),
+            REFRESH_EVERY - MS(1000) + MS(10)
+        );
+        assert!(idle_wait(MS(0), false, false, None, None) <= Duration::from_secs(5));
+        // The poll is due: a frame at once.
+        assert_eq!(idle_wait(MS(9000), false, false, None, None), MS(10));
+    }
+
+    #[test]
+    fn a_job_a_notice_and_a_search_ask_for_the_time_they_need() {
+        // A running job shows seconds and steps.
+        assert_eq!(idle_wait(MS(0), false, true, None, None), MS(300));
+        // A notice that leaves in two seconds, and one about to leave.
+        assert_eq!(
+            idle_wait(MS(0), false, false, Some(MS(2000)), None),
+            MS(2010)
+        );
+        assert_eq!(idle_wait(MS(0), true, false, Some(MS(0)), None), MS(10));
+        // A search waiting for its pause.
+        assert_eq!(idle_wait(MS(0), false, false, None, Some(MS(100))), MS(160));
+        assert_eq!(idle_wait(MS(0), false, false, None, Some(MS(400))), MS(10));
     }
 }
