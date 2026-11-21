@@ -20,12 +20,16 @@ use anyhow::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Test hook: when set, the next import that has attachments fails right
 /// after its record was written and before its attachments are, as a full
 /// disk or an interrupted process would. The flag is consumed by that
-/// import. Never set outside tests.
+/// import. Compiled only for tests (`cfg(test)`, or the `test-support` feature
+/// for the tests of other crates): a release build has neither the flag nor
+/// the check.
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub static INJECT_FAILURE_AFTER_RECORD: AtomicBool = AtomicBool::new(false);
 
@@ -221,6 +225,7 @@ fn store_refusal(err: &Error) -> Error {
 /// Called by an import with attachments after its record is written and
 /// before its files are (see `INJECT_FAILURE_AFTER_RECORD`).
 pub(crate) fn injected_failure() -> Result<()> {
+    #[cfg(any(test, feature = "test-support"))]
     if INJECT_FAILURE_AFTER_RECORD.swap(false, Ordering::SeqCst) {
         anyhow::bail!("falha simulada depois de gravar o registro");
     }
