@@ -126,8 +126,9 @@ pub fn backup_library(
             destination.display()
         )
     })?;
+    remove_abandoned_partials(destination, std::time::SystemTime::now());
     let final_path = free_name(destination, label, stamp)?;
-    let mut partial = Partial::new(append(&final_path, ".parcial"));
+    let mut partial = Partial::create(&final_path)?;
     copy_consistently(database, &partial.path)?;
     verify(&partial.path)?;
     std::fs::rename(&partial.path, &final_path).with_context(|| {
@@ -209,7 +210,7 @@ fn free_name(destination: &Path, label: &str, stamp: &str) -> Result<PathBuf> {
             format!("-{n}")
         };
         let path = destination.join(format!("antes-de-instalar-{label}-{stamp}{suffix}.sqlite3"));
-        if !path.exists() && !append(&path, ".parcial").exists() {
+        if !path.exists() {
             return Ok(path);
         }
     }
@@ -225,6 +226,36 @@ fn append(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Clears away what a run that died (power cut, killed Setup) left in the folder
+/// of the copies: its own unfinished copies (`antes-de-instalar-*.parcial`, with
+/// SQLite's side files) once they are more than a day old. A run that is going on
+/// now, or ended a moment ago, is far younger than that.
+fn remove_abandoned_partials(destination: &Path, now: std::time::SystemTime) {
+    let Ok(entries) = std::fs::read_dir(destination) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let ours = name.starts_with("antes-de-instalar-")
+            && ["", "-wal", "-shm", "-journal"]
+                .iter()
+                .any(|side| name.ends_with(&format!(".parcial{side}")));
+        if !ours {
+            continue;
+        }
+        let abandoned = entry
+            .metadata()
+            .ok()
+            .filter(|meta| meta.is_file())
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= ABANDONED_AFTER);
+        if abandoned {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// The unfinished copy: removed (with whatever SQLite put beside it) unless it
 /// was finished.
 struct Partial {
@@ -232,11 +263,39 @@ struct Partial {
     armed: bool,
 }
 
+/// How long an unfinished copy of an earlier run is left alone before the next
+/// run clears it away.
+const ABANDONED_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+
 impl Partial {
-    fn new(path: PathBuf) -> Self {
-        let partial = Partial { path, armed: true };
-        partial.remove();
-        partial
+    /// A new, empty file for the copy, with a name of this run alone
+    /// (`<final>.<random>.parcial`) and created exclusively: another run, or what
+    /// an older run left behind, is never reused or removed by this one.
+    fn create(final_path: &Path) -> Result<Self> {
+        for _ in 0..20 {
+            let unique = uuid::Uuid::new_v4().simple().to_string();
+            let path = append(final_path, &format!(".{}.parcial", &unique[..8]));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Partial { path, armed: true }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "Não foi possível criar o arquivo da cópia de segurança em {}.",
+                            path.display()
+                        )
+                    })
+                }
+            }
+        }
+        bail!(
+            "Não foi possível escolher um nome para a cópia de segurança em {}.",
+            final_path.display()
+        )
     }
     fn remove(&self) {
         for suffix in ["", "-wal", "-shm", "-journal"] {
@@ -920,5 +979,56 @@ mod tests {
         let mut stall = Stall::new(start);
         assert!(!stall.stalled(0, at(59)));
         assert!(stall.stalled(0, at(60)));
+    }
+
+    #[test]
+    fn each_run_has_its_own_unfinished_copy_and_never_touches_another_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let final_path = root.path().join("antes-de-instalar-v1-x.sqlite3");
+        let first = Partial::create(&final_path).unwrap();
+        let second = Partial::create(&final_path).unwrap();
+        assert_ne!(first.path, second.path);
+        assert!(first.path.to_string_lossy().ends_with(".parcial"));
+        std::fs::write(&first.path, "do outro").unwrap();
+        // The other run's file is still its own; dropping this one leaves it.
+        drop(second);
+        assert_eq!(std::fs::read_to_string(&first.path).unwrap(), "do outro");
+        // A finished copy next to an unfinished one of an earlier run.
+        let database = root.path().join("acervo.sqlite3");
+        drop(library_with(&database, 1));
+        let folder = root.path().join("copias");
+        std::fs::create_dir_all(&folder).unwrap();
+        let old = folder.join("antes-de-instalar-v0-x.sqlite3.deadbeef.parcial");
+        std::fs::write(&old, "velho").unwrap();
+        backup_library(&database, &folder, "v1", STAMP).unwrap();
+        // Young (not abandoned): the run does not remove it.
+        assert!(old.exists());
+    }
+
+    #[test]
+    fn unfinished_copies_older_than_a_day_are_cleared_at_the_start_of_a_run() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path();
+        let make = |name: &str, age: Duration| {
+            let path = folder.join(name);
+            std::fs::write(&path, "x").unwrap();
+            let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.set_modified(std::time::SystemTime::now() - age)
+                .unwrap();
+            path
+        };
+        let day = Duration::from_secs(24 * 60 * 60);
+        let old = make("antes-de-instalar-v1-x.sqlite3.aaaaaaaa.parcial", day * 2);
+        let old_wal = make(
+            "antes-de-instalar-v1-x.sqlite3.aaaaaaaa.parcial-wal",
+            day * 2,
+        );
+        let young = make("antes-de-instalar-v1-y.sqlite3.bbbbbbbb.parcial", day / 2);
+        // Not ours, whatever the age: a finished copy, and somebody's file.
+        let finished = make("antes-de-instalar-v1-z.sqlite3", day * 30);
+        let other = make("outro.parcial", day * 30);
+        remove_abandoned_partials(folder, std::time::SystemTime::now());
+        assert!(!old.exists() && !old_wal.exists());
+        assert!(young.exists() && finished.exists() && other.exists());
     }
 }

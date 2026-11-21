@@ -7,7 +7,7 @@
 ;      tudo, com o próprio programa novo (ponteproj.exe --copia-antes-de-atualizar):
 ;      ele acha o acervo como o Ponte acha (inclusive em PONTEPROJ_DATA_DIR),
 ;      confere a cópia e grava em <pasta do acervo>\backups. Se a cópia falhar, a
-;      instalação não segue (na instalação silenciosa, termina com código 8);
+;      instalação não segue (na instalação silenciosa, termina com código 7);
 ;   2. copia o programa para %LOCALAPPDATA%\Programs\PonteProj\vX.Y.Z;
 ;   3. copia a extensão do navegador para ...\PonteProj\extension (pasta fixa);
 ;   4. grava o manifesto do host nativo e as chaves HKCU para Chrome e Edge;
@@ -188,8 +188,9 @@ end;
 
 { Antes de qualquer arquivo ser trocado: sem cópia conferida do acervo, a
   instalação não segue. Na instalação silenciosa não há pergunta: termina com
-  código 8. Na interativa, a pessoa escolhe entre cancelar (o padrão) e seguir
-  sem cópia. }
+  código 7 (é o que o Inno Setup devolve quando PrepareToInstall recusa; o 8 seria
+  "recusou e precisa reiniciar o computador", e aqui NeedsRestart nunca é ligado).
+  Na interativa, a pessoa escolhe entre cancelar (o padrão) e seguir sem cópia. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Detail, Message: String;
