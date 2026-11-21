@@ -184,8 +184,8 @@ internal fun ProjectsScreen(
         LoadingBox(text = "Carregando os projetos…", modifier = Modifier.fillMaxSize())
         return
     }
-    FabColumn(Icons.Outlined.Add, "Novo projeto", onNew) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = 8.dp)) {
+    FabOverlay(Icons.Outlined.Add, "Novo projeto", onNew) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = FAB_CONTENT_BOTTOM)) {
             val pad = Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp)
             state.error?.let { item(key = "error") { Notice(it, pad) } }
             if (state.rows.isNotEmpty()) {

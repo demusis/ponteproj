@@ -83,11 +83,11 @@ internal fun AppRoot() {
 
     // The filter of the list in front (Tarefas: categories and project; Documentos: categories), behind one icon.
     val categories = LocalCategories.current
-    val taskFilterOn = FilterIcon.tasksVisible(c.shell, categories, c.taskCatFilter, c.projects.rows, c.taskProjectFilter)
+    val taskFilterOn = FilterIcon.tasksVisible(c.shell, categories, c.taskCatFilter, c.projects.rows, c.taskProjectFilter, c.docs, c.taskDocumentFilter)
     val docFilterOn = FilterIcon.documentsVisible(c.shell, categories, c.docCatFilter)
     var filterOpen by rememberSaveable { mutableStateOf(false) }
     val shellFilter = when {
-        taskFilterOn -> ShellFilter(FilterSummary.isActive(c.taskCatFilter, c.taskProjectFilter)) { filterOpen = true }
+        taskFilterOn -> ShellFilter(FilterSummary.isActive(c.taskCatFilter, c.taskProjectFilter, c.taskDocumentFilter)) { filterOpen = true }
         docFilterOn -> ShellFilter(c.docCatFilter.isNotEmpty()) { filterOpen = true }
         else -> null
     }
@@ -124,7 +124,9 @@ internal fun AppRoot() {
                                     onNew = c::openNewTaskWithoutDocument,
                                     categoryFilter = c.taskCatFilter, onCategoryFilter = { c.taskCatFilter = it },
                                     projects = c.projects.rows, projectFilter = c.taskProjectFilter,
-                                    onProjectFilter = { c.taskProjectFilter = it }
+                                    onProjectFilter = { c.taskProjectFilter = it },
+                                    documents = c.docs, documentFilter = c.taskDocumentFilter,
+                                    onDocumentFilter = { c.taskDocumentFilter = it }
                                 )
                                 TasksSegments.PROJECTS -> ProjectsScreen(
                                     c.projects, filter = c.projFilter, onFilter = { c.projFilter = it },
@@ -179,8 +181,10 @@ internal fun AppRoot() {
                         categoryChosen = c.taskCatFilter, onCategory = { c.taskCatFilter = it },
                         projects = if (FilterSummary.hasProjects(c.projects.rows, c.taskProjectFilter)) c.projects.rows else null,
                         projectChosen = c.taskProjectFilter, onProject = { c.taskProjectFilter = it },
-                        onClear = { c.taskCatFilter = emptySet(); c.taskProjectFilter = "" },
-                        onDone = { filterOpen = false }
+                        onClear = { c.taskCatFilter = emptySet(); c.taskProjectFilter = ""; c.taskDocumentFilter = null },
+                        onDone = { filterOpen = false },
+                        documents = if (c.docs.isNotEmpty() || c.taskDocumentFilter != null) c.docs else null,
+                        documentChosen = c.taskDocumentFilter, onDocument = { c.taskDocumentFilter = it }
                     )
                 } else {
                     FilterSheetContent(

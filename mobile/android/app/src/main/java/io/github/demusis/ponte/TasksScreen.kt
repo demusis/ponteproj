@@ -46,16 +46,20 @@ internal fun TasksScreen(
     onCategoryFilter: (Set<String>) -> Unit = {},
     projects: List<ProjectItem> = emptyList(),
     projectFilter: String = "",
-    onProjectFilter: (String) -> Unit = {}
+    onProjectFilter: (String) -> Unit = {},
+    documents: List<Doc> = emptyList(),
+    documentFilter: Long? = null,
+    onDocumentFilter: (Long?) -> Unit = {}
 ) {
     val c = Ponte.colors
     var showDone by rememberSaveable { mutableStateOf(false) }
     val categories = LocalCategories.current
     // The category filter: an item with ANY chosen category, or none when "Sem categoria" is chosen.
     // The project filter: one project, or "Sem projeto"; both together narrow the list.
-    val all = remember(state.tasks, categoryFilter, projectFilter) {
+    val all = remember(state.tasks, categoryFilter, projectFilter, documentFilter) {
         state.tasks.filter {
-            CategoryRules.matches(it.categories, categoryFilter) && ProjectRules.matchesTask(it.projectUid, projectFilter)
+            CategoryRules.matches(it.categories, categoryFilter) && ProjectRules.matchesTask(it.projectUid, projectFilter) &&
+                TaskDocumentFilter.matches(it.documentId, documentFilter)
         }
     }
     // The core says which group each task is in, and sends them in the order to show.
@@ -70,22 +74,23 @@ internal fun TasksScreen(
     }
     val done = remember(all) { all.filter { it.done } }
     val noOpen = all.none { !it.done }
-    val filtering = FilterSummary.isActive(categoryFilter, projectFilter)
-    val clearFilter = { onCategoryFilter(emptySet()); onProjectFilter("") }
+    val filtering = FilterSummary.isActive(categoryFilter, projectFilter, documentFilter)
+    val clearFilter = { onCategoryFilter(emptySet()); onProjectFilter(""); onDocumentFilter(null) }
 
     if (state.loading && state.tasks.isEmpty()) {
         LoadingBox(text = "Carregando as tarefas…", modifier = Modifier.fillMaxSize())
         return
     }
 
-    FabColumn(Icons.Outlined.Add, "Nova tarefa", onNew) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = 8.dp)) {
+    FabOverlay(Icons.Outlined.Add, "Nova tarefa", onNew) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = FAB_CONTENT_BOTTOM)) {
             state.error?.let { item(key = "error") { Notice(it, Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp)) } }
             if (filtering) {
                 item(key = "filter-line") {
                     FilterSummaryRow(
                         FilterSummary.line(
-                            FilterSummary.categoryNames(categoryFilter, categories), FilterSummary.projectName(projectFilter, projects)
+                            FilterSummary.categoryNames(categoryFilter, categories), FilterSummary.projectName(projectFilter, projects),
+                            TaskDocumentFilter.label(documentFilter, documents)
                         ),
                         onClear = clearFilter
                     )
@@ -93,7 +98,7 @@ internal fun TasksScreen(
             }
             if (noOpen && filtering) {
                 item(key = "empty-filter") {
-                    val onlyCategories = projectFilter.isEmpty()
+                    val onlyCategories = projectFilter.isEmpty() && documentFilter == null
                     EmptyState(
                         if (onlyCategories) "Nenhuma tarefa em aberto com essas categorias." else "Nenhuma tarefa em aberto com esse filtro.",
                         text = if (onlyCategories) "Mude as categorias marcadas ou limpe o filtro." else "Mude o filtro ou limpe-o.",

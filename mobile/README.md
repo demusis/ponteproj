@@ -2,9 +2,15 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (versão 0.23.0)
+## O que faz (versão 0.24.0)
 
 Cada item abaixo traz a versão em que entrou; vale o que está aqui, e a versão instalada aparece no aplicativo.
+
+- **Filtro por documento (0.24.0):** em Tarefas, o painel do **filtro** ganhou a seção **Documento**: busque pelo número ou título (sem diferença de acentos ou maiúsculas) e toque no documento para ver só as tarefas dele; há também **Todos os documentos** e **Sem documento**. O filtro combina com Categoria e Projeto, aparece na linha do alto da lista e sai com **Limpar**. Se o documento deixar de existir após sincronizar, o filtro é desfeito.
+
+- **Botões flutuantes (0.23.2):** os botões de criar tarefa, criar projeto e registrar foto ficam sobre o conteúdo, no canto inferior direito. O fim das listas tem espaço para rolar o último item acima do botão.
+
+- **Correção visual (0.23.1):** o fundo circular do indicador de puxar para sincronizar fica oculto quando a lista está em repouso, sem aparecer sobre o cabeçalho. Instala por cima da 0.23.0.
 
 - **Telas mais limpas (0.23.0):** a barra de baixo mostra só os ícones (Hoje, Tarefas, Documentos, E-mail); na aba Tarefas, o **título** é o seletor de área: toque em **Tarefas ▾** para trocar entre Tarefas, Projetos, Atendimentos e Recursos. A sincronização aparece como um ponto ao lado do título, e o texto só surge enquanto sincroniza, em erro ou quando algo pede atenção (toque no ponto para vê-lo). No alto ficam **Buscar**, o **filtro** (abre um painel com Categorias e Projeto; com filtro ativo, uma linha no alto da lista mostra o filtro e **Limpar**) e o menu **⋮**, com **Sincronizar agora** e **Ajustes**; puxar a lista para baixo também sincroniza. As listas são linhas com um traço fino, sem cartões: prioridade, categorias e prazo aparecem como texto com ícone. O botão de criar é um **+** redondo. Fichas, formulários e Ajustes usam seções com rótulo no lugar de caixas; ações pouco usadas (como **Desvincular do documento** e **Excluir conta**) ficam no **⋮** da tela. Em Hoje, a frase do alto leva às tarefas atrasadas.
 - **Dependências:** No celular, ao editar uma tarefa, em **Depende de**, **Escolher tarefas…** abre **Escolher tarefas**: marque várias, use **Buscar tarefa** e **Confirmar**; as concluídas aparecem com **· Concluída**. Tarefas que criariam ciclo não são oferecidas; o núcleo ainda recusa escolhas inválidas e o formulário mostra o motivo. Essa escolha não está em **Nova tarefa**.

@@ -90,15 +90,15 @@ internal object FilterSummary {
         if (chosen.isEmpty()) "" else ProjectRules.filterLabel(chosen, projects)
 
     /** "Filtro: Estudo · Projeto X"; empty when nothing is chosen. */
-    fun line(categoryNames: List<String>, project: String): String {
+    fun line(categoryNames: List<String>, project: String, document: String = ""): String {
         val shown = categoryNames.take(MAX_NAMES).joinToString(", ")
         val more = (categoryNames.size - MAX_NAMES).coerceAtLeast(0)
         val categories = if (more > 0) "$shown +$more" else shown
-        val parts = listOf(categories, project).filter { it.isNotEmpty() }
+        val parts = listOf(categories, project, document).filter { it.isNotEmpty() }
         return if (parts.isEmpty()) "" else "Filtro: " + parts.joinToString(" · ")
     }
 
-    fun isActive(categoryChosen: Set<String>, projectChosen: String) = categoryChosen.isNotEmpty() || projectChosen.isNotEmpty()
+    fun isActive(categoryChosen: Set<String>, projectChosen: String, documentChosen: Long? = null) = categoryChosen.isNotEmpty() || projectChosen.isNotEmpty() || documentChosen != null
 
     /** The sections the sheet has: categories when the library has any (or one is chosen), projects likewise. */
     fun hasCategories(all: List<Category>, chosen: Set<String>) = all.isNotEmpty() || chosen.isNotEmpty()
@@ -180,8 +180,9 @@ internal object FilterIcon {
      * no filter on; it is hidden only when there is nothing to filter by and no filter is left to clear.
      */
     fun tasksVisible(
-        state: ShellState, categories: List<Category>, categoryChosen: Set<String>, projects: List<ProjectItem>, projectChosen: String
-    ) = forTasks(state) && (FilterSummary.hasCategories(categories, categoryChosen) || FilterSummary.hasProjects(projects, projectChosen))
+        state: ShellState, categories: List<Category>, categoryChosen: Set<String>, projects: List<ProjectItem>, projectChosen: String,
+        documents: List<Doc> = emptyList(), documentChosen: Long? = null
+    ) = forTasks(state) && (FilterSummary.hasCategories(categories, categoryChosen) || FilterSummary.hasProjects(projects, projectChosen) || documents.isNotEmpty() || documentChosen != null)
 
     fun documentsVisible(state: ShellState, categories: List<Category>, categoryChosen: Set<String>) =
         forDocuments(state) && FilterSummary.hasCategories(categories, categoryChosen)

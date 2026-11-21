@@ -69,8 +69,8 @@ internal fun DocumentsScreen(
         }
     }
     val categories = LocalCategories.current
-    FabColumn(Icons.Outlined.PhotoCamera, "Registro por foto", onPhoto) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
+    FabOverlay(Icons.Outlined.PhotoCamera, "Registro por foto", onPhoto) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = FAB_CONTENT_BOTTOM)) {
             item(key = "search") {
                 OutlinedTextField(
                     value = query, onValueChange = onQuery,

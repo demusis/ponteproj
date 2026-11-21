@@ -210,6 +210,7 @@ internal object Controller {
 
     /** The project filter of Tarefas: empty (all), [ProjectRules.NONE] or a project uid. */
     var taskProjectFilter by mutableStateOf("")
+    var taskDocumentFilter by mutableStateOf<Long?>(null)
     var tasks by mutableStateOf(TasksState())
     var taskRelations by mutableStateOf(TasksState())
         private set
@@ -1500,6 +1501,7 @@ internal object Controller {
 
     /** Takes the documents the sync runner holds; what the Documentos search found is asked again for them. */
     private fun takeDocs() {
+        taskDocumentFilter = TaskDocumentFilter.afterRefresh(taskDocumentFilter, docs, SyncRunner.docs)
         docs = SyncRunner.docs
         docFinder.ask(docQuery)
     }

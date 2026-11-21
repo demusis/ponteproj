@@ -40,6 +40,10 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
@@ -47,6 +51,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -104,12 +109,12 @@ internal fun FlatRow(
 }
 
 /**
- * A list with its round "+" (or other icon) button: the button has a lane of its own under the list (72 dp: the
- * button and its margins), so no row, no trailing text and no fold chevron is ever under it, at rest or scrolled.
+ * A list with a floating round action button. Callers use [FAB_CONTENT_BOTTOM] as scrollable bottom padding
+ * so the last row can be scrolled clear of the button.
  * [description] is what the screen reader says for the button.
  */
 @Composable
-internal fun FabColumn(
+internal fun FabOverlay(
     icon: ImageVector,
     description: String,
     onClick: () -> Unit,
@@ -117,9 +122,9 @@ internal fun FabColumn(
     content: @Composable () -> Unit
 ) {
     val c = Ponte.colors
-    Column(modifier.fillMaxSize()) {
-        Box(Modifier.weight(1f).fillMaxWidth()) { content() }
-        Box(Modifier.fillMaxWidth().padding(end = 16.dp, top = 4.dp, bottom = 12.dp), contentAlignment = Alignment.CenterEnd) {
+    Box(modifier.fillMaxSize()) {
+        content()
+        Box(Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp)) {
             FloatingActionButton(
                 onClick = onClick,
                 shape = CircleShape,
@@ -129,6 +134,8 @@ internal fun FabColumn(
         }
     }
 }
+
+internal val FAB_CONTENT_BOTTOM = 88.dp
 
 // ---------------------------------------------------------------- task row
 
@@ -336,7 +343,9 @@ internal fun PullToSync(syncing: Boolean, onRefresh: () -> Unit, modifier: Modif
             state.endRefresh()
         }
     }
-    Box(modifier.nestedScroll(state.nestedScrollConnection)) {
+    // At rest the refresh container is translated above the list; clip it so
+    // its background cannot remain visible over the screen header.
+    Box(modifier.clipToBounds().nestedScroll(state.nestedScrollConnection)) {
         content()
         PullToRefreshContainer(
             state, Modifier.align(Alignment.TopCenter),
@@ -383,10 +392,13 @@ internal fun FilterSheetContent(
     projectChosen: String,
     onProject: (String) -> Unit,
     onClear: () -> Unit,
-    onDone: () -> Unit
+    onDone: () -> Unit,
+    documents: List<Doc>? = null,
+    documentChosen: Long? = null,
+    onDocument: (Long?) -> Unit = {}
 ) {
     val p = Ponte.colors
-    val active = FilterSummary.isActive(categoryChosen, projectChosen)
+    val active = FilterSummary.isActive(categoryChosen, projectChosen, documentChosen)
     Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
         Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Filtros", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = p.text)
@@ -423,6 +435,34 @@ internal fun FilterSheetContent(
                             fontSize = 16.sp, color = if (archived) p.muted else p.text, maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                     }
+                }
+            }
+            if (documents != null) {
+                SectionLabel("Documento", Modifier.padding(start = 0.dp, top = 12.dp, bottom = 2.dp))
+                var docQuery by rememberSaveable { mutableStateOf("") }
+                SearchBox(docQuery, { docQuery = it }, "Buscar por número ou título", Modifier.padding(vertical = 4.dp))
+                PickRow(documentChosen == null, true, "Todos os documentos", { onDocument(null) }) {
+                    Text("Todos os documentos", Modifier.weight(1f), fontSize = 16.sp, color = p.text)
+                }
+                PickRow(documentChosen == 0L, true, "Sem documento", { onDocument(0L) }) {
+                    Text("Sem documento", Modifier.weight(1f), fontSize = 16.sp, color = p.text)
+                }
+                val options = remember(documents, docQuery) { TaskDocumentFilter.options(documents, docQuery) }
+                val chosenDoc = documents.find { it.id == documentChosen }
+                // The chosen one stays in sight even when the search hides it.
+                val shown = (if (chosenDoc != null && chosenDoc !in options) listOf(chosenDoc) else emptyList()) +
+                    options.take(TaskDocumentFilter.MAX_SHOWN)
+                for (doc in shown) {
+                    val label = TaskDocumentFilter.label(doc)
+                    PickRow(doc.id == documentChosen, true, label, { onDocument(doc.id) }) {
+                        Text(label, Modifier.weight(1f), fontSize = 16.sp, color = p.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                if (options.size > TaskDocumentFilter.MAX_SHOWN) {
+                    Text(
+                        "Mais ${options.size - TaskDocumentFilter.MAX_SHOWN} — refine a busca.",
+                        Modifier.padding(vertical = 8.dp), fontSize = 14.sp, color = p.muted
+                    )
                 }
             }
         }
