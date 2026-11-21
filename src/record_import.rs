@@ -935,7 +935,7 @@ mod tests {
             .into_iter()
             .map(|e: OutboxEntry| {
                 let mut value = serde_json::to_value(&e).unwrap();
-                value["mutation"]["capture"]
+                value["mutation"]["ImportCapture"]["capture"]
                     .as_object_mut()
                     .map(|c| c.remove("captured_at"));
                 for key in ["id", "created_at", "uid"] {
