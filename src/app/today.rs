@@ -742,10 +742,7 @@ impl PonteApp {
                             widgets::muted(ui, "Nenhuma tarefa atrasada ou para hoje.");
                             ui.add_space(S1);
                             if ui
-                                .add(widgets::secondary(format!(
-                                    "{} Nova tarefa",
-                                    icon::PLUS
-                                )))
+                                .add(widgets::secondary(format!("{} Nova tarefa", icon::PLUS)))
                                 .clicked()
                             {
                                 *asked = Some(Asked::NewTask);

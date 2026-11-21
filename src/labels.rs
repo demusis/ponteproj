@@ -507,70 +507,71 @@ fn date_field_with(
     }
     let today = chrono::Local::now().date_naive();
     let valid = value.trim().is_empty() || parse_typed_date_on(value, today).is_some();
-    let response = ui.vertical(|ui| {
-        let response = ui
-        .horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let mut edit = egui::TextEdit::singleline(&mut state.0)
-                .hint_text("dd/mm/aaaa")
-                .desired_width(120.0);
+    let response = ui
+        .vertical(|ui| {
+            let response = ui
+                .horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let mut edit = egui::TextEdit::singleline(&mut state.0)
+                        .hint_text("dd/mm/aaaa")
+                        .desired_width(120.0);
+                    if !valid {
+                        edit = edit.text_color(crate::theme::error());
+                    }
+                    let response = ui.add(edit);
+                    if !valid {
+                        crate::widgets::outline(ui, response.rect, crate::theme::error());
+                    }
+                    if response.changed() {
+                        *value = match parse_typed_date_on(&state.0, today) {
+                            Some(iso) => iso,
+                            None if state.0.trim().is_empty() => String::new(),
+                            None => state.0.clone(),
+                        };
+                        state.1 = value.clone();
+                    }
+                    let picker = crate::widgets::icon_button(
+                        ui,
+                        crate::theme::icon::CALENDAR,
+                        "Escolher a data num calendário",
+                    );
+                    if let Some(chosen) = calendar_popup(id, &picker, value) {
+                        *value = chosen;
+                        state = (date(value), value.clone());
+                    }
+                    if today_shortcut
+                        && ui
+                            .add(crate::widgets::quiet("Hoje"))
+                            .on_hover_text("Preenche com a data de hoje")
+                            .clicked()
+                    {
+                        *value = chrono::Local::now().format("%Y-%m-%d").to_string();
+                        state = (date(value), value.clone());
+                    }
+                    if today_shortcut
+                        && ui
+                            .add(crate::widgets::quiet("Amanhã"))
+                            .on_hover_text("Preenche com a data de amanhã")
+                            .clicked()
+                    {
+                        *value = (today + chrono::Duration::days(1))
+                            .format("%Y-%m-%d")
+                            .to_string();
+                        state = (date(value), value.clone());
+                    }
+                    response
+                })
+                .inner;
             if !valid {
-                edit = edit.text_color(crate::theme::error());
-            }
-            let response = ui.add(edit);
-            if !valid {
-                crate::widgets::outline(ui, response.rect, crate::theme::error());
-            }
-            if response.changed() {
-                *value = match parse_typed_date_on(&state.0, today) {
-                    Some(iso) => iso,
-                    None if state.0.trim().is_empty() => String::new(),
-                    None => state.0.clone(),
-                };
-                state.1 = value.clone();
-            }
-            let picker = crate::widgets::icon_button(
-                ui,
-                crate::theme::icon::CALENDAR,
-                "Escolher a data num calendário",
-            );
-            if let Some(chosen) = calendar_popup(id, &picker, value) {
-                *value = chosen;
-                state = (date(value), value.clone());
-            }
-            if today_shortcut
-                && ui
-                    .add(crate::widgets::quiet("Hoje"))
-                    .on_hover_text("Preenche com a data de hoje")
-                    .clicked()
-            {
-                *value = chrono::Local::now().format("%Y-%m-%d").to_string();
-                state = (date(value), value.clone());
-            }
-            if today_shortcut
-                && ui
-                    .add(crate::widgets::quiet("Amanhã"))
-                    .on_hover_text("Preenche com a data de amanhã")
-                    .clicked()
-            {
-                *value = (today + chrono::Duration::days(1))
-                    .format("%Y-%m-%d")
-                    .to_string();
-                state = (date(value), value.clone());
+                ui.label(
+                    egui::RichText::new("Use dd/mm/aaaa, ex.: 15/12/2026.")
+                        .size(crate::theme::SIZE_SMALL)
+                        .color(crate::theme::error()),
+                );
             }
             response
         })
         .inner;
-        if !valid {
-            ui.label(
-                egui::RichText::new("Use dd/mm/aaaa, ex.: 15/12/2026.")
-                    .size(crate::theme::SIZE_SMALL)
-                    .color(crate::theme::error()),
-            );
-        }
-        response
-    })
-    .inner;
     ui.data_mut(|d| d.insert_temp(id, state));
     response
 }

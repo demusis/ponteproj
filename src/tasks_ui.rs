@@ -4471,12 +4471,20 @@ mod navigation_tests {
 
     #[test]
     fn removed_checklist_step_goes_back_to_its_place() {
-        let mut list = vec![(false, "a".to_owned()), (true, "b".to_owned()), (false, "c".to_owned())];
+        let mut list = vec![
+            (false, "a".to_owned()),
+            (true, "b".to_owned()),
+            (false, "c".to_owned()),
+        ];
         let step = list.remove(1);
         restore_step(&mut list, 1, step);
         assert_eq!(
             list,
-            vec![(false, "a".to_owned()), (true, "b".to_owned()), (false, "c".to_owned())]
+            vec![
+                (false, "a".to_owned()),
+                (true, "b".to_owned()),
+                (false, "c".to_owned())
+            ]
         );
         let step = list.remove(2);
         list.clear();
