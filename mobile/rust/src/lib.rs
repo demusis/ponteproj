@@ -1507,11 +1507,12 @@ fn create_photo_record(store: &mut Store, input: &mut Value, image_path: &str) -
 /// optionally a file (`file_path` empty: none). The file becomes the record's
 /// attachment, the text its text; at least one of the two is needed. The file
 /// is read and checked BEFORE the record exists, so a file the core refuses
-/// leaves nothing behind; if the attachment still fails afterwards, the new
-/// record goes to the trash (recoverable there), so there is never a record
-/// without the file the person meant to keep.
+/// leaves nothing behind; the record and its file are then stored by the core in
+/// one transaction (nothing at all if the file cannot be stored), so there is never
+/// a record without the file the person meant to keep.
 fn create_record(store: &mut Store, input: &Value, file_path: &str) -> Result<Value> {
-    use ponteproj::attachments::{validate_description, validate_file, Owner};
+    use ponteproj::attachments::{validate_description, validate_file};
+    use ponteproj::record_import::{Created, NewAttachment, NewRecord};
     let str_of = |key: &str| input[key].as_str().unwrap_or("").trim().to_owned();
     let title = str_of("title");
     let mut text = str_of("text");
@@ -1539,17 +1540,22 @@ fn create_record(store: &mut Store, input: &Value, file_path: &str) -> Result<Va
         document_date: str_of("date"),
         text,
     };
-    let receipt = store.create_manual_document(&fields)?;
-    if let Some((name, description, bytes)) = file {
-        if let Err(error) = store.add_attachment(Owner::Document(receipt.document_id), &name, &description, &bytes) {
-            let _ = store.trash_item(ponteproj::trash::Target {
-                kind: ponteproj::trash::Kind::Document,
-                id: receipt.document_id,
-            });
-            return Err(error.context("O arquivo não pôde ser anexado; o registro não foi criado."));
-        }
+    let Some((name, description, bytes)) = file else {
+        let receipt = store.create_manual_document(&fields)?;
+        return Ok(json!({ "document_id": receipt.document_id }));
+    };
+    // The record and its file are written by the core in ONE transaction:
+    // if the file cannot be stored, there is no record, nothing is queued for
+    // the other computers and nothing has to be cleaned up afterwards.
+    let record = NewRecord {
+        fields,
+        metadata: Default::default(),
+        request_id: uuid::Uuid::new_v4().to_string(),
+    };
+    let attachment = NewAttachment { name, bytes, description };
+    match store.create_record_with_attachments(&record, &[attachment])? {
+        Created::New { document_id, .. } | Created::Already { document_id } => Ok(json!({ "document_id": document_id })),
     }
-    Ok(json!({ "document_id": receipt.document_id }))
 }
 
 /// A manual record from a file and/or a text (see [`create_record`]); `file_path`
@@ -3664,6 +3670,46 @@ mod tests {
         // An invalid title is refused by the core, also with nothing left over.
         assert!(create_record(&mut store, &fields("ab", ""), &file).is_err());
         assert_eq!(store.list_documents("").unwrap().len(), before);
+    }
+
+    /// What a failed import must not leave in the phone's library.
+    fn traces(store: &Store) -> (i64, usize, usize, usize) {
+        (
+            store.cabinet_revision().unwrap(),
+            store.list_team_events(500).unwrap().len(),
+            store.list_offline_outbox().unwrap().len(),
+            store.list_documents("").unwrap().len(),
+        )
+    }
+
+    #[test]
+    fn a_failure_after_the_record_leaves_no_record_and_nothing_queued() {
+        use ponteproj::record_import::INJECT_FAILURE_AFTER_RECORD as INJECT;
+        use std::sync::atomic::Ordering;
+        struct Disarm;
+        impl Drop for Disarm {
+            fn drop(&mut self) {
+                INJECT.store(false, Ordering::SeqCst);
+            }
+        }
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _disarm = Disarm;
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let before = traces(&store);
+        let file = work_file(&dir.0, "w.bin", b"conteudo do recibo");
+        // The record is written, then the attachment cannot be: the phone
+        // (always in shared-folder mode) used to queue the record, then try
+        // to delete it, and swallow a failure of that.
+        INJECT.store(true, Ordering::SeqCst);
+        let error = create_record(&mut store, &fields("Recibo que falha", "texto"), &file).unwrap_err();
+        assert!(!format!("{error:#}").is_empty());
+        assert_eq!(traces(&store), before, "no record, no journal, no queue");
+        assert!(store.trash_entries().unwrap().is_empty());
+        // The failure was one-off: the same import now works.
+        let made = create_record(&mut store, &fields("Recibo que falha", "texto"), &file).unwrap();
+        let id = made["document_id"].as_i64().unwrap();
+        assert_eq!(attachments_of(&store, id), ["recibo.txt"]);
     }
 
     #[test]

@@ -150,10 +150,34 @@ pub trait Frame {
     fn link_by_identity(&self, source: i64, target: i64, kind_hash: &[u8]) -> Result<Option<i64>>;
 }
 
+/// The lookups on a bare connection, such as an open write transaction.
+pub(crate) struct ConnFrame<'a>(pub(crate) &'a Connection);
+
 impl Frame for Store {
     fn files_of_capture(&self, capture: i64) -> Result<Vec<i64>> {
+        ConnFrame(&self.conn).files_of_capture(capture)
+    }
+    fn first_task_of(&self, document: i64) -> Result<Option<i64>> {
+        ConnFrame(&self.conn).first_task_of(document)
+    }
+    fn import_attendance_of(&self, document: i64, number: &str) -> Result<Option<i64>> {
+        ConnFrame(&self.conn).import_attendance_of(document, number)
+    }
+    fn rows_of_batch(&self, batch: i64) -> Result<Vec<(i64, i64)>> {
+        ConnFrame(&self.conn).rows_of_batch(batch)
+    }
+    fn link_identity(&self, id: i64) -> Result<Option<(i64, i64, Vec<u8>)>> {
+        ConnFrame(&self.conn).link_identity(id)
+    }
+    fn link_by_identity(&self, source: i64, target: i64, kind_hash: &[u8]) -> Result<Option<i64>> {
+        ConnFrame(&self.conn).link_by_identity(source, target, kind_hash)
+    }
+}
+
+impl Frame for ConnFrame<'_> {
+    fn files_of_capture(&self, capture: i64) -> Result<Vec<i64>> {
         let mut statement = self
-            .conn
+            .0
             .prepare("SELECT id FROM files WHERE capture_id=?1 ORDER BY id")?;
         let ids = statement
             .query_map([capture], |r| r.get::<_, i64>(0))?
@@ -162,13 +186,13 @@ impl Frame for Store {
     }
 
     fn first_task_of(&self, document: i64) -> Result<Option<i64>> {
-        self.triage_task_of(document)
+        Store::triage_task_in(self.0, document)
     }
 
     fn import_attendance_of(&self, document: i64, number: &str) -> Result<Option<i64>> {
         let key = crate::saiop::reference_key(&crate::saiop::normalize_reference(number));
         Ok(self
-            .conn
+            .0
             .query_row(
                 "SELECT min(id) FROM saiop_attendances WHERE document_id=?1 AND reference_norm=?2",
                 params![document, key],
@@ -179,7 +203,7 @@ impl Frame for Store {
     }
 
     fn rows_of_batch(&self, batch: i64) -> Result<Vec<(i64, i64)>> {
-        let mut statement = self.conn.prepare(
+        let mut statement = self.0.prepare(
             "SELECT source_row,id FROM saiop_attendances
              WHERE batch_id=?1 AND source_row IS NOT NULL ORDER BY id",
         )?;
@@ -191,7 +215,7 @@ impl Frame for Store {
 
     fn link_identity(&self, id: i64) -> Result<Option<(i64, i64, Vec<u8>)>> {
         Ok(self
-            .conn
+            .0
             .query_row(
                 "SELECT source_id,target_id,kind_hash FROM document_links WHERE id=?1",
                 [id],
@@ -202,7 +226,7 @@ impl Frame for Store {
 
     fn link_by_identity(&self, source: i64, target: i64, kind_hash: &[u8]) -> Result<Option<i64>> {
         Ok(self
-            .conn
+            .0
             .query_row(
                 "SELECT id FROM document_links WHERE source_id=?1 AND target_id=?2 AND kind_hash=?3
                  ORDER BY active DESC, id DESC LIMIT 1",
