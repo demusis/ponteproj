@@ -515,6 +515,8 @@ pub(super) enum Asked {
     OpenResources,
     /// The queue "Cobranças de hoje" of Atendimentos.
     OpenFollowUps,
+    /// "Nova tarefa" from the empty list: what the command of the same name does.
+    NewTask,
 }
 
 impl PonteApp {
@@ -738,6 +740,16 @@ impl PonteApp {
                         ui.add_space(S1);
                         widgets::card(ui, |ui| {
                             widgets::muted(ui, "Nenhuma tarefa atrasada ou para hoje.");
+                            ui.add_space(S1);
+                            if ui
+                                .add(widgets::secondary(format!(
+                                    "{} Nova tarefa",
+                                    icon::PLUS
+                                )))
+                                .clicked()
+                            {
+                                *asked = Some(Asked::NewTask);
+                            }
                         });
                         ui.add_space(S3);
                     }
@@ -833,6 +845,7 @@ impl PonteApp {
                 self.saiop.show_follow_ups();
                 self.area = Area::Saiop;
             }
+            Some(Asked::NewTask) => self.navigate(Leave::NewTask(None)),
         }
     }
 
