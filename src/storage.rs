@@ -566,9 +566,17 @@ impl Store {
                 existing_captured_at: None,
                 previous_version: false,
             };
-            // A retry of an import whose files did not all arrive: it
-            // completes the record with the ones that are missing.
-            let added = finish_import_extras(&tx, extras, queued_capture, &actor, &receipt, true)?;
+            // A retry: if this import has its receipt nothing is added; a
+            // record an older version left with no file at all gets them once.
+            let added = finish_import_extras(
+                &tx,
+                extras,
+                queued_capture,
+                &actor,
+                &receipt,
+                &request_key,
+                false,
+            )?;
             tx.commit()?;
             return Ok((receipt, added));
         }
@@ -623,8 +631,15 @@ impl Store {
                     existing_captured_at: Some(created_at.clone()),
                     previous_version: false,
                 };
-                let added =
-                    finish_import_extras(&tx, extras, queued_capture, &actor, &receipt, true)?;
+                let added = finish_import_extras(
+                    &tx,
+                    extras,
+                    queued_capture,
+                    &actor,
+                    &receipt,
+                    &request_key,
+                    false,
+                )?;
                 tx.commit()?;
                 return Ok((receipt, added));
             }
@@ -677,7 +692,15 @@ impl Store {
             existing_captured_at: existing.map(|(_, created_at)| created_at),
             previous_version: duplicate,
         };
-        let added = finish_import_extras(&tx, extras, queued_capture, &actor, &receipt, duplicate)?;
+        let added = finish_import_extras(
+            &tx,
+            extras,
+            queued_capture,
+            &actor,
+            &receipt,
+            &request_key,
+            new_document,
+        )?;
         tx.commit()
             .context("Não foi possível concluir a importação; tente de novo.")?;
         // The capture is already committed; a failure here must not undo the
@@ -1444,33 +1467,243 @@ pub(crate) struct ImportExtras<'a> {
     /// Shared-folder mode: whose changes these are; the copies that wait for
     /// the next exchange are queued in the same transaction.
     pub queue_actor: Option<&'a str>,
+    /// The phone's operation id (see [`record_operation`]), written in the
+    /// same transaction as the record.
+    pub operation: Option<&'a str>,
+}
+
+/// What a committed phone operation left (see [`record_operation`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationRecord {
+    /// `create_record` or `attach`.
+    pub kind: String,
+    pub document_id: i64,
+    /// The attachment an `attach` stored.
+    pub attachment_id: Option<i64>,
+    /// Its size in bytes.
+    pub size: Option<i64>,
+}
+
+/// Writes the row of a phone operation: the idempotency key of one action of
+/// the app (a share saved as a record, a file attached to a document). It is
+/// written INSIDE the transaction of the action, so "the row is there" and
+/// "the action was committed" are the same fact. A repeated id is refused by the
+/// primary key (the whole transaction with it): callers look the id up first.
+/// Local to this library: never queued, never sent to the team.
+pub(crate) fn record_operation(
+    conn: &rusqlite::Connection,
+    operation_id: &str,
+    kind: &str,
+    document_id: i64,
+    attachment_id: Option<i64>,
+    size: Option<i64>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO phone_operations(operation_id,kind,document_id,attachment_id,size,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![operation_id, kind, document_id, attachment_id, size, now()],
+    )?;
+    Ok(())
+}
+
+impl Store {
+    /// What the operation `operation_id` committed, or `None` when it did not
+    /// (unknown, empty, or never committed). Read only.
+    pub fn operation_record(&self, operation_id: &str) -> Result<Option<OperationRecord>> {
+        let id = operation_id.trim();
+        if id.is_empty() {
+            return Ok(None);
+        }
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT kind,document_id,attachment_id,size FROM phone_operations WHERE operation_id=?1",
+                [id],
+                |r| {
+                    Ok(OperationRecord {
+                        kind: r.get(0)?,
+                        document_id: r.get(1)?,
+                        attachment_id: r.get(2)?,
+                        size: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Forgets the operations older than `days` days (the app only asks about
+    /// an operation after a process death, so a month is plenty).
+    pub fn prune_operations(&self, days: i64) -> Result<usize> {
+        let cutoff = (Utc::now() - chrono::Duration::days(days))
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        Ok(self.conn.execute(
+            "DELETE FROM phone_operations WHERE created_at < ?1",
+            [cutoff],
+        )?)
+    }
+
+    /// The number (`MANUAL-2026/0003`) of the current version of a document
+    /// that is not in the trash; `None` when there is no such document.
+    pub(crate) fn live_document_number(
+        conn: &rusqlite::Connection,
+        document_id: i64,
+    ) -> Result<Option<String>> {
+        if crate::trash::require_active_document(conn, document_id).is_err() {
+            return Ok(None);
+        }
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id AND c.document_id=d.id WHERE d.id=?1",
+                [document_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(blob) = blob else {
+            return Ok(None);
+        };
+        let capture: Capture = decode(&blob)?;
+        Ok(Some(capture.document_number))
+    }
+}
+
+/// The sorted SHA-256 digests of the files of an import: what its receipt keeps.
+fn manifest_of(hashes: impl IntoIterator<Item = String>) -> String {
+    let sorted: BTreeSet<String> = hashes.into_iter().collect();
+    serde_json::to_string(&sorted).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// Whether the import with this request id was completed here (its receipt is
+/// in the library, in the state "done"). The receipts are local: never sent to
+/// the team. A receipt "in progress" (see [`ReceiptState`]) does not count.
+pub(crate) fn import_receipt_exists(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM import_receipts WHERE request_id=?1 AND state='done')",
+        [request_key],
+        |r| r.get(0),
+    )?)
+}
+
+/// What the local receipt of an import says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ReceiptState {
+    /// Every file of the import is on the record.
+    Completed,
+    /// A connected computer started sending the files (one request each) and
+    /// did not finish: the sorted digests of the files of that import.
+    InProgress(BTreeSet<String>),
+}
+
+pub(crate) fn import_receipt_state(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+) -> Result<Option<ReceiptState>> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT state,manifest FROM import_receipts WHERE request_id=?1",
+            [request_key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        None => None,
+        Some((state, _)) if state != "in_progress" => Some(ReceiptState::Completed),
+        Some((_, manifest)) => Some(ReceiptState::InProgress(serde_json::from_str::<
+            BTreeSet<String>,
+        >(&manifest)?)),
+    })
+}
+
+/// Writes the receipt of an import that has begun but whose files are not all
+/// on the record yet (state "in progress", with the manifest of the import),
+/// before the first request to the main computer. Only when there is no
+/// receipt: a completed one is never taken back.
+pub(crate) fn write_import_receipt_in_progress(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+    hashes: impl IntoIterator<Item = String>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO import_receipts(request_id,manifest,completed_at,state) VALUES(?1,?2,?3,'in_progress')",
+        params![request_key, manifest_of(hashes), now()],
+    )?;
+    Ok(())
+}
+
+/// Removes the receipt of an import that never got to exist (only while it is
+/// still "in progress").
+pub(crate) fn remove_in_progress_import_receipt(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM import_receipts WHERE request_id=?1 AND state='in_progress'",
+        [request_key],
+    )?;
+    Ok(())
+}
+
+/// Writes (or replaces) the receipt of an import: the request id and the sorted
+/// digests of the files the record has because of it. Inside the transaction
+/// that stored the record and its files, so that "completed" is never claimed
+/// for an import that did not commit.
+pub(crate) fn write_import_receipt(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+    hashes: impl IntoIterator<Item = String>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO import_receipts(request_id,manifest,completed_at,state) VALUES(?1,?2,?3,'done')",
+        params![request_key, manifest_of(hashes), now()],
+    )?;
+    Ok(())
 }
 
 /// The tail of an import, still inside its transaction: the files of the
-/// record that are not on it yet (in order, each with its own version and
-/// team-event entries, as `add_attachment` writes them), then the queued
-/// copies of the changes in shared-folder mode. `completing` is true when
-/// the record was already in the library.
+/// record (in order, each with its own version and team-event entries, as
+/// `add_attachment` writes them), then the queued copies of the changes in
+/// shared-folder mode, then the receipt of the import.
+///
+/// The files are only added to a record this very import created (`fresh`) or,
+/// for a record that was already there without a receipt (an older version
+/// left it), when it has no attachment at all, not even in the trash: that is a
+/// record whose files never arrived. A request id that has its receipt never
+/// adds anything, whatever happened to the files afterwards (a request id can be
+/// reused for other content, and a file the person purged must not come back).
 fn finish_import_extras(
     tx: &rusqlite::Connection,
     extras: Option<&ImportExtras<'_>>,
     capture: &Capture,
     actor: &str,
     receipt: &ImportReceipt,
-    completing: bool,
+    request_key: &str,
+    fresh: bool,
 ) -> Result<usize> {
     let Some(extras) = extras else {
         return Ok(0);
     };
     let step = |source: anyhow::Error| {
-        anyhow::Error::new(crate::attachments::AttachmentStepFailed { completing, source })
+        anyhow::Error::new(crate::attachments::AttachmentStepFailed {
+            completing: !fresh,
+            source,
+        })
     };
-    if !extras.attachments.is_empty() {
+    if !fresh && import_receipt_exists(tx, request_key)? {
+        return Ok(0);
+    }
+    let owner = crate::attachments::Owner::Document(receipt.document_id);
+    let present = crate::attachments::hashes_including_trash(tx, owner).map_err(&step)?;
+    let to_add: &[crate::attachments::AttachmentInput<'_>] = if fresh || present.is_empty() {
+        extras.attachments
+    } else {
+        &[]
+    };
+    if !to_add.is_empty() {
         crate::record_import::injected_failure().map_err(&step)?;
     }
-    let added =
-        crate::attachments::attach_missing(tx, actor, receipt.document_id, extras.attachments)
-            .map_err(&step)?;
+    let added = crate::attachments::attach_missing(tx, actor, receipt.document_id, to_add)
+        .map_err(&step)?;
     if let Some(queue_actor) = extras.queue_actor {
         crate::intranet::queue_import_locally(
             tx,
@@ -1479,6 +1712,25 @@ fn finish_import_extras(
             receipt,
             extras.attachments,
             &added,
+        )?;
+    }
+    let in_the_record = if to_add.is_empty() {
+        present
+    } else {
+        to_add
+            .iter()
+            .map(|file| format!("{:x}", Sha256::digest(file.data)))
+            .collect()
+    };
+    write_import_receipt(tx, request_key, in_the_record)?;
+    if let Some(operation) = extras.operation {
+        record_operation(
+            tx,
+            operation,
+            "create_record",
+            receipt.document_id,
+            None,
+            None,
         )?;
     }
     Ok(added.len())

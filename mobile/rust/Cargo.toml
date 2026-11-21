@@ -19,6 +19,11 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 
+[dev-dependencies]
+# The failure-injection hooks of the core, for the tests only (never in the
+# library that ships).
+ponteproj = { path = "../..", default-features = false, features = ["test-support"] }
+
 [profile.release]
 opt-level = 2
 strip = true

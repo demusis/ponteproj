@@ -1706,6 +1706,45 @@ pub(crate) fn queue_import_locally(
     Ok(())
 }
 
+/// What `queue_locally` leaves in the queue for one `AddAttachment` (the file
+/// stored as attachment `attachment_id` of document `document_id`), written
+/// inside the caller's transaction: the same entry, with the same content.
+pub(crate) fn queue_attachment_locally(
+    tx: &Connection,
+    actor: &str,
+    document_id: i64,
+    name: &str,
+    description: &str,
+    data: &[u8],
+    attachment_id: i64,
+) -> Result<()> {
+    let frame = crate::idmap::ConnFrame(tx);
+    let mutation = IntranetMutation::AddAttachment {
+        owner_kind: crate::attachments::Owner::Document(document_id)
+            .kind()
+            .into(),
+        owner_id: document_id,
+        name: name.trim().into(),
+        description: description.trim().into(),
+        data_base64: STANDARD.encode(data),
+    };
+    let created = crate::idmap::created_ids(&frame, &mutation, &MutationReply::Id(attachment_id))?;
+    insert_outbox_row(
+        tx,
+        &OutboxEntry {
+            id: 0,
+            created_at: now_iso(),
+            actor: actor.to_owned(),
+            label: mutation_label(&mutation),
+            mutation,
+            base: None,
+            uid: uuid::Uuid::new_v4().simple().to_string(),
+            created,
+            attempted: false,
+        },
+    )
+}
+
 /// The version number of an item inside a transaction; 0 when it never had one.
 pub(crate) fn version_of(tx: &Connection, kind: &str, item_id: i64) -> Result<i64> {
     Ok(read_version_tx(tx, kind, item_id)?.version)
@@ -1806,11 +1845,38 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS mutation_receipts_by_time ON mutation_receipts(created_at);
             CREATE INDEX IF NOT EXISTS applied_mutations_by_time ON applied_mutations(created_at);
+            CREATE TABLE IF NOT EXISTS phone_operations(
+                operation_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                document_id INTEGER NOT NULL,
+                attachment_id INTEGER,
+                size INTEGER,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS import_receipts(
+                request_id TEXT PRIMARY KEY,
+                manifest TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'done'
+            );
             CREATE TABLE IF NOT EXISTS host_generation(
                 id INTEGER PRIMARY KEY CHECK(id=1),
                 value TEXT NOT NULL
             );",
         )?;
+        // `state` ('done' or 'in_progress': an import of a connected computer
+        // whose files are still being sent) came after the table itself.
+        let has_state: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('import_receipts') WHERE name='state')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_state {
+            tx.execute(
+                "ALTER TABLE import_receipts ADD COLUMN state TEXT NOT NULL DEFAULT 'done'",
+                [],
+            )?;
+        }
         // A library whose receipts predate the compact record (the table is
         // new here) gets the record from them: what they cover must not be
         // forgotten when the full answers are pruned.
@@ -5475,6 +5541,7 @@ impl Store {
         &mut self,
         capture: &Capture,
         attachments: &[crate::attachments::AttachmentInput<'_>],
+        operation: Option<&str>,
     ) -> Result<Option<(ImportReceipt, usize)>> {
         let queue_actor = match self.client_config()? {
             None => None,
@@ -5487,6 +5554,7 @@ impl Store {
         let extras = crate::storage::ImportExtras {
             attachments,
             queue_actor: queue_actor.as_deref(),
+            operation,
         };
         // Applied here as `execute_mutation` applies a queued change: as the
         // member, and without being sent anywhere.

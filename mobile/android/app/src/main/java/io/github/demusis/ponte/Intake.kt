@@ -69,7 +69,9 @@ internal data class ShareState(
     /** The draft could not be written to the disk: the form works, but a close of the app loses it. */
     val keepFailed: Boolean = false,
     /** A discreet note over the form (e.g. a restored save the core could not confirm); empty for none. */
-    val note: String = ""
+    val note: String = "",
+    /** The document that holds the earlier version of this item (see [ShareDraftRules.earlierNote]); 0 for none. */
+    val earlierDocumentId: Long = 0L
 )
 
 /**
@@ -536,6 +538,12 @@ internal object Intake {
     /** The save marker: set before the core is called, cleared when the save ends (see [DraftSaving]). */
     private var saving: DraftSaving? = null
 
+    /**
+     * Older saves whose outcome the core could not tell yet (oldest first). They stay on the draft, untouched by any
+     * edit, until the core answers; a new save of edited content is tracked next to them.
+     */
+    private var unresolved: List<DraftSaving> = emptyList()
+
     /** The operation id the last save of this form used (the same form saved again reuses it). */
     private var pending: ShareDraftRules.PendingOp? = null
 
@@ -564,7 +572,7 @@ internal object Intake {
             hash = item.hash, text = item.text, subject = item.subject, mode = s.mode.name, kind = s.kind,
             title = s.title, date = s.date, origin = s.origin, notes = s.notes,
             targetId = s.target?.id ?: 0L, targetNumber = s.target?.number ?: "", targetTitle = s.target?.title ?: "",
-            description = s.description, saving = saving
+            description = s.description, saving = saving, unresolved = unresolved
         )
     }
 
@@ -587,6 +595,7 @@ internal object Intake {
     private fun startDraft() {
         draftCreatedAt = System.currentTimeMillis()
         saving = null
+        unresolved = emptyList()
         pending = null
         flushNow()
     }
@@ -625,6 +634,7 @@ internal object Intake {
     private fun forgetDraft(copyName: String?) {
         main.removeCallbacks(saveTick)
         saving = null
+        unresolved = emptyList()
         pending = null
         draftCreatedAt = 0L
         if (!draftBlocked) writer.clear(copyName)
@@ -639,7 +649,13 @@ internal object Intake {
      * no marker can be kept (the slot is blocked: there is no draft to come back to either).
      */
     private fun beginSaving(op: ShareDraftRules.PendingOp): java.util.concurrent.Future<ShareDraftStore.Wrote>? {
-        saving = DraftSaving(op.op, op.id, System.currentTimeMillis())
+        val base = snapshot() ?: return null
+        val now = System.currentTimeMillis()
+        // The marker is bound to what is being sent (taken from the same snapshot the operation id came from).
+        // One that is still unresolved stays beside it, unless it is this very operation (its id is reused).
+        val begun = ShareDraftRules.begin(base.copy(saving = null, unresolved = unresolved), op.op, op.id, now)
+        saving = begun.saving
+        unresolved = begun.unresolved
         return flushNow()
     }
 
@@ -711,9 +727,12 @@ internal object Intake {
         seen = true
         kindTouched = true
         draftCreatedAt = d.createdAt
+        // The markers stay exactly as they were until the core has been asked (see [applyChecked]): a write of the
+        // form before then must not lose them.
         saving = d.saving
+        unresolved = d.unresolved
         pending = null
-        val checkFirst = d.saving != null
+        val checkFirst = d.markers.isNotEmpty()
         share = ShareState(
             item = item, mode = mode, kinds = Controller.photo.kinds, kind = d.kind.ifEmpty { "outro" },
             title = d.title, date = d.date, origin = d.origin, notes = d.notes, target = target,
@@ -724,47 +743,71 @@ internal object Intake {
         if (checkFirst || d.targetId > 0) verifyRestored(d, mine)
     }
 
-    /** What the core says about a restored draft (see [verifyRestored]). */
-    private class Checked(val status: ShareDraftRules.OperationStatus?, val targetNumber: String?)
+    /** What the core says about a restored draft (see [verifyRestored]): one status per marker, newest first. */
+    private class Checked(val statuses: List<ShareDraftRules.OperationStatus?>, val targetNumber: String?)
 
     /**
-     * A restored draft is checked against the library, off the UI thread. One that was saving: the core is asked
-     * whether ITS operation (the id in the marker) was committed, and only a "yes" ends the draft. And the target
-     * document: when its number is no longer the one the form shows, the form must not keep it.
+     * A restored draft is checked against the library, off the UI thread. For every marker the draft carries, the
+     * core is asked whether ITS operation (the id in the marker) was committed (see [ShareDraftRules.recover] for
+     * what each answer means). And the target document: when its number is no longer the one the form shows, the
+     * form must not keep it.
      */
     private fun verifyRestored(d: ShareDraft, mine: Int) {
         SyncRunner.background({
-            val sv = d.saving
-            val st = if (sv != null && sv.usable) Api.operationStatus(sv.operationId) else null
-            val tn = if (d.targetId > 0 && d.targetNumber.isNotEmpty() && st !is ShareDraftRules.OperationStatus.Done) {
+            val sts = d.markers.map { m -> if (m.usable) Api.operationStatus(m.operationId, m.op) else null }
+            val tn = if (d.targetId > 0 && d.targetNumber.isNotEmpty() &&
+                sts.none { it is ShareDraftRules.OperationStatus.Done }
+            ) {
                 try { Api.document(d.targetId).s("number") } catch (_: Throwable) { null }
             } else null
-            Checked(st, tn)
+            Checked(sts, tn)
         }, { c ->
             if (gen == mine) applyChecked(d, c)
         }, {
             // The check itself could not run: nothing is known, nothing is lost.
-            if (gen == mine) applyChecked(d, Checked(ShareDraftRules.OperationStatus.Unknown, null))
+            if (gen == mine) applyChecked(d, Checked(d.markers.map { ShareDraftRules.OperationStatus.Unknown }, null))
         }, fail = ShareDraftRules.MSG_CANNOT_CHECK)
     }
 
+    /** The draft as the form shows it now, with the markers [d] carries (the content is judged as it is NOW). */
+    private fun currentWithMarkers(d: ShareDraft): ShareDraft =
+        (snapshot() ?: d).copy(saving = d.saving, unresolved = d.unresolved)
+
+    /** The note, the snackbar with a way to open the document, for an earlier version the core says was saved. */
+    private fun showEarlier(e: ShareDraftRules.Earlier) {
+        val message = ShareDraftRules.earlierNote(e.documentId, e.number)
+        share = share.copy(note = message, earlierDocumentId = e.documentId)
+        if (e.documentId > 0) Controller.say(message, action = "Abrir", long = true) { openEarlier() }
+    }
+
+    /** Opens the document that holds the earlier version of this item (the form stays under it). */
+    fun openEarlier() {
+        val id = share.earlierDocumentId
+        if (id > 0 && !Controller.locked) Controller.openDocument(id)
+    }
+
     private fun applyChecked(d: ShareDraft, c: Checked) {
-        when (val rec = ShareDraftRules.recover(d, c.status)) {
+        // The markers stay on the draft until each is settled by the core; the CURRENT content (what the form shows
+        // now) is what a "done" is compared with, so an edit is never mistaken for the saved content.
+        when (val rec = ShareDraftRules.recover(currentWithMarkers(d), c.statuses)) {
             is ShareDraftRules.Recovery.Saved -> {
                 dropShare(removeRoute = true)
                 finished(rec.documentId, ShareDraftRules.MSG_SAVED_BEFORE)
                 return
             }
             is ShareDraftRules.Recovery.Form -> {
-                saving = if (rec.keepMarker) d.saving else null
-                val sv = d.saving
-                pending = if (sv != null && rec.reuseId != null) {
-                    ShareDraftRules.PendingOp(sv.op, rec.reuseId, ShareDraftRules.fingerprint(d, sv.op))
-                } else null
-                share = share.copy(
-                    busy = false, progress = "",
-                    note = if (rec.unconfirmed) ShareDraftRules.MSG_CANNOT_CHECK else ""
-                )
+                saving = null
+                unresolved = rec.keep
+                pending = rec.reuse?.let { ShareDraftRules.PendingOp(it.op, it.operationId, it.fingerprint) }
+                val earlier = rec.earlier
+                val note = listOfNotNull(
+                    earlier?.let { ShareDraftRules.earlierNote(it.documentId, it.number) },
+                    ShareDraftRules.MSG_CANNOT_CHECK.takeIf { rec.unconfirmed }
+                ).joinToString(" ")
+                share = share.copy(busy = false, progress = "", note = note, earlierDocumentId = earlier?.documentId ?: 0L)
+                if (earlier != null && earlier.documentId > 0) {
+                    Controller.say(note, action = "Abrir", long = true) { openEarlier() }
+                }
             }
         }
         // The target is still the document the form shows? Not when the library changed under it (a sync).
@@ -787,6 +830,7 @@ internal object Intake {
         restoreToken++
         main.removeCallbacks(saveTick)
         saving = null
+        unresolved = emptyList()
         pending = null
         draftCreatedAt = 0L
         draftBlocked = false
@@ -996,16 +1040,76 @@ internal object Intake {
         return p
     }
 
-    /** Creates the manual record: the file becomes its attachment, a text its text. */
-    fun saveRecord() {
-        val s = share
-        val item = s.item ?: return
-        if (s.busy) return
-        val title = s.title.trim()
-        if (title.codePointCount(0, title.length) < 3) {
-            share = s.copy(titleError = "Informe um título com pelo menos 3 caracteres.")
+    /** False (and the error told on the form) when the title is too short for a record. */
+    private fun titleOk(): Boolean {
+        val title = share.title.trim()
+        if (title.codePointCount(0, title.length) >= 3) return true
+        share = share.copy(titleError = "Informe um título com pelo menos 3 caracteres.")
+        return false
+    }
+
+    /**
+     * Before a save goes to the core: when the draft still carries saves whose outcome was unknown, the core is asked
+     * about each of them AGAIN and the answer decides (see [ShareDraftRules.beforeSave]): this very content already
+     * saved → done; an earlier version saved and these are edits → told, nothing sent; this very content still
+     * unconfirmed → no second create under a new id; otherwise [go] (edited content gets a NEW id, the old marker
+     * stays beside the new one). With nothing unresolved, [go] runs at once.
+     */
+    private fun gate(op: String, go: () -> Unit) {
+        val held = unresolved
+        if (held.isEmpty()) {
+            go()
             return
         }
+        val mine = gen
+        share = share.copy(busy = true, progress = ShareDraftRules.MSG_CHECKING, error = "", titleError = "", note = "")
+        SyncRunner.background({
+            held.map { m -> if (m.usable) Api.operationStatus(m.operationId, m.op) else null }
+        }, { sts ->
+            if (gen == mine) afterGate(op, held, sts, go)
+        }, {
+            if (gen == mine) afterGate(op, held, held.map { ShareDraftRules.OperationStatus.Unknown }, go)
+        }, fail = ShareDraftRules.MSG_CANNOT_CHECK)
+    }
+
+    private fun afterGate(op: String, held: List<DraftSaving>, statuses: List<ShareDraftRules.OperationStatus?>, go: () -> Unit) {
+        share = share.copy(busy = false, progress = "")
+        val d = (snapshot() ?: return).copy(saving = null, unresolved = held)
+        when (val g = ShareDraftRules.beforeSave(d, op, statuses)) {
+            is ShareDraftRules.SaveGate.AlreadySaved -> {
+                dropShare(removeRoute = true)
+                finished(g.documentId, ShareDraftRules.MSG_SAVED_BEFORE)
+            }
+            is ShareDraftRules.SaveGate.EarlierSaved -> {
+                unresolved = g.keep
+                pending = null
+                showEarlier(g.earlier)
+                flushNow()
+            }
+            is ShareDraftRules.SaveGate.Unconfirmed -> {
+                unresolved = g.keep
+                share = share.copy(error = ShareDraftRules.MSG_CANNOT_CONFIRM_SAVE)
+                flushNow()
+            }
+            is ShareDraftRules.SaveGate.Go -> {
+                unresolved = g.keep
+                g.reuse?.let { pending = ShareDraftRules.PendingOp(it.op, it.operationId, it.fingerprint) }
+                go()
+            }
+        }
+    }
+
+    /** Creates the manual record: the file becomes its attachment, a text its text. */
+    fun saveRecord() {
+        if (share.item == null || share.busy || !titleOk()) return
+        gate(ShareDraftRules.OP_RECORD) { sendRecord() }
+    }
+
+    private fun sendRecord() {
+        val s = share
+        val item = s.item ?: return
+        if (s.busy || !titleOk()) return
+        val title = s.title.trim()
         val text = item.text.ifEmpty { ShareRules.plainText(s.notes, AttachLimits.maxTextBytes) }
         val op = operationFor(ShareDraftRules.OP_RECORD) ?: return
         // "operation_id": the core makes the record once for this id, whatever happens to the process or to
@@ -1051,6 +1155,12 @@ internal object Intake {
 
     /** Attaches the file to the chosen document. */
     fun saveAttach() {
+        val s = share
+        if (s.busy || s.item?.path == null || s.target == null) return
+        gate(ShareDraftRules.OP_ATTACH) { sendAttach() }
+    }
+
+    private fun sendAttach() {
         val s = share
         val item = s.item ?: return
         val target = s.target ?: return

@@ -163,11 +163,14 @@ internal object Api {
     /**
      * What the core says about the operation [operationId]: committed or not. Anything else (an error, an answer
      * without "done", an older core that does not have the call) is "unknown": never thrown, never guessed.
+     * [expectedKind] is the kind of the marker asking ("record" or "attach"): an answer whose optional "kind" says
+     * another is "unknown" too (see [ShareDraftRules.statusFrom]).
      */
-    fun operationStatus(operationId: String): ShareDraftRules.OperationStatus = try {
+    fun operationStatus(operationId: String, expectedKind: String? = null): ShareDraftRules.OperationStatus = try {
         val o = JSONObject(core.operationStatus(JSONObject().put("operation_id", operationId).toString()))
         val done = if (o.has("done") && !o.isNull("done")) o.optBoolean("done") else null
-        ShareDraftRules.statusFrom(o.optBoolean("ok"), done, o.optLong("document_id"))
+        val kind = if (o.has("kind") && !o.isNull("kind")) o.optString("kind") else null
+        ShareDraftRules.statusFrom(o.optBoolean("ok"), done, o.optLong("document_id"), kind, expectedKind)
     } catch (_: Throwable) {
         ShareDraftRules.OperationStatus.Unknown
     }

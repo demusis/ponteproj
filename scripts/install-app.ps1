@@ -185,7 +185,9 @@ if ($SemCopia) {
         # Start-Process -Wait: ponteproj.exe is a Windows GUI program, which the
         # call operator does not wait for.
         $backupProcess = Start-Process -FilePath $sourceExecutable -ArgumentList @('--copia-antes-de-atualizar', '--rotulo', $backupLabel, '--resultado', ('"' + $reportFile + '"')) -WindowStyle Hidden -Wait -PassThru
-        $report = if (Test-Path -LiteralPath $reportFile -PathType Leaf) { @(Get-Content -LiteralPath $reportFile -Encoding UTF8) } else { @() }
+        # @(if ...) keeps an array even when the report is absent (nothing) or has a single line
+        # (a bare string): .Count and [1..] need an array under Set-StrictMode on Windows PowerShell 5.1.
+        $report = @(if (Test-Path -LiteralPath $reportFile -PathType Leaf) { Get-Content -LiteralPath $reportFile -Encoding UTF8 })
         $status = if ($report.Count -gt 0) { $report[0].Trim() } else { '' }
         $detail = if ($report.Count -gt 1) { ($report[1..($report.Count - 1)] -join ' ').Trim() } else { '' }
         if ($backupProcess.ExitCode -ne 0) {

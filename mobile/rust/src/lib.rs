@@ -6,7 +6,8 @@
 //! meanwhile.
 //!
 //! Every function answers a JSON string, `{"ok":true,...}` or
-//! `{"ok":false,"error":"..."}`; nothing panics across the JNI boundary.
+//! `{"ok":false,"error":"..."}` (an error can also carry a `"code"`, today only
+//! `"target_changed"`); nothing panics across the JNI boundary.
 use anyhow::{Context, Result};
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jlong, jstring};
@@ -16,6 +17,9 @@ use ponteproj::storage::Store;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+/// How long the id of a committed operation is kept (see `operationStatus`).
+const OPERATION_DAYS: i64 = 30;
 
 /// The one library of this app, opened by `init`.
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
@@ -30,6 +34,16 @@ fn with_store<T>(work: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
     work(store)
 }
 
+/// The answer for an error: `{"ok":false,"error":"..."}`, plus `"code"` for the
+/// errors the app tells apart (today `target_changed`).
+fn error_answer(error: &anyhow::Error) -> Value {
+    let mut value = json!({"ok": false, "error": format!("{error:#}")});
+    if error.downcast_ref::<ponteproj::attachments::TargetChanged>().is_some() {
+        value["code"] = json!("target_changed");
+    }
+    value
+}
+
 /// Runs `work`, turning its result (or a panic) into the JSON answer.
 fn answer(env: &mut JNIEnv, work: impl FnOnce(&mut JNIEnv) -> Result<Value>) -> jstring {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(env)));
@@ -40,7 +54,7 @@ fn answer(env: &mut JNIEnv, work: impl FnOnce(&mut JNIEnv) -> Result<Value>) -> 
             }
             value
         }
-        Ok(Err(error)) => json!({"ok": false, "error": format!("{error:#}")}),
+        Ok(Err(error)) => error_answer(&error),
         Err(_) => json!({"ok": false, "error": "Falha interna no núcleo do Ponte."}),
     };
     env.new_string(value.to_string())
@@ -97,6 +111,9 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_init<'local>(
                 };
                 store.save_intranet_config(&cfg)?;
             }
+            // Once per process start: the operation ids older than a month
+            // (the app asks about one only after a process death) go away.
+            let _ = store.prune_operations(OPERATION_DAYS);
             *guard = Some(store);
         }
         Ok(json!({}))
@@ -1473,15 +1490,69 @@ fn read_attachment_file(path: &str, name: &str) -> Result<Vec<u8>> {
 
 /// Attaches the file at `path` to a document with the very function the
 /// desktop uses (`Store::add_attachment`): same limits, type checks (by name
-/// and by content), duplicate and per-document checks, same texts.
+/// and by content), duplicate and per-document checks, same texts. (The plain
+/// call, for the tests; the app's entry point is [`attach_file_with`].)
+#[cfg(test)]
 fn attach_file(store: &mut Store, document_id: i64, path: &str, name: &str, description: &str) -> Result<Value> {
+    attach_file_with(store, document_id, path, name, description, "")
+}
+
+/// The optional string field `key` of the app's JSON (absent, empty or not a
+/// string: none).
+fn optional_text(input: &Value, key: &str) -> Option<String> {
+    input[key].as_str().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned)
+}
+
+/// [`attach_file`] with the app's `options` (`{}`, an empty string or an
+/// unparsable one: nothing to say, exactly the plain call):
+/// - `operation_id`: the idempotency key. An id that was committed adds nothing
+///   and answers what the first call answered (the file is not even read); a new
+///   one is written in the same transaction as the attachment and its queue entry.
+/// - `expected_number`: the number the person saw when choosing the document;
+///   if the document is gone, in the trash or has another number nothing is
+///   written and the error carries `code: target_changed`.
+fn attach_file_with(
+    store: &mut Store,
+    document_id: i64,
+    path: &str,
+    name: &str,
+    description: &str,
+    options: &str,
+) -> Result<Value> {
+    let options: Value = serde_json::from_str(options).unwrap_or(Value::Null);
+    let operation = optional_text(&options, "operation_id");
+    let expected = optional_text(&options, "expected_number");
+    if let Some(id) = &operation {
+        if let Some(done) = store.operation_record(id)? {
+            anyhow::ensure!(
+                done.kind == "attach",
+                "Este identificador de operação já foi usado por outra operação."
+            );
+            return Ok(json!({
+                "attachment_id": done.attachment_id,
+                "name": name.trim(),
+                "size": done.size,
+            }));
+        }
+    }
     let bytes = read_attachment_file(path, name)?;
-    let id = store.add_attachment(
-        ponteproj::attachments::Owner::Document(document_id),
-        name,
-        description,
-        &bytes,
-    )?;
+    let id = if operation.is_none() && expected.is_none() {
+        store.add_attachment(
+            ponteproj::attachments::Owner::Document(document_id),
+            name,
+            description,
+            &bytes,
+        )?
+    } else {
+        store.attach_to_document(&ponteproj::attachments::AttachRequest {
+            document_id,
+            name,
+            description,
+            data: &bytes,
+            operation_id: operation.as_deref(),
+            expected_number: expected.as_deref(),
+        })?
+    };
     Ok(json!({"attachment_id": id, "name": name.trim(), "size": bytes.len()}))
 }
 
@@ -1514,6 +1585,20 @@ fn create_record(store: &mut Store, input: &Value, file_path: &str) -> Result<Va
     use ponteproj::attachments::{validate_description, validate_file};
     use ponteproj::record_import::{Created, NewAttachment, NewRecord};
     let str_of = |key: &str| input[key].as_str().unwrap_or("").trim().to_owned();
+    // The app's idempotency key: a committed operation creates nothing again.
+    let operation = optional_text(input, "operation_id");
+    if let Some(id) = &operation {
+        if let Some(done) = store.operation_record(id)? {
+            // The id of an attachment is not the id of a record: nothing is
+            // written and the document of that other operation is not
+            // answered as if a record had been created.
+            anyhow::ensure!(
+                done.kind == "create_record",
+                "Este identificador de operação já foi usado por outra operação."
+            );
+            return Ok(json!({ "document_id": done.document_id }));
+        }
+    }
     let title = str_of("title");
     let mut text = str_of("text");
     let file = if file_path.is_empty() {
@@ -1541,8 +1626,21 @@ fn create_record(store: &mut Store, input: &Value, file_path: &str) -> Result<Va
         text,
     };
     let Some((name, description, bytes)) = file else {
-        let receipt = store.create_manual_document(&fields)?;
-        return Ok(json!({ "document_id": receipt.document_id }));
+        let Some(operation) = &operation else {
+            let receipt = store.create_manual_document(&fields)?;
+            return Ok(json!({ "document_id": receipt.document_id }));
+        };
+        // With an operation id the record is made by the same single-transaction
+        // operation as a record with a file (without any file), so the row of
+        // the id is committed with the record.
+        let record = NewRecord {
+            fields,
+            metadata: Default::default(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+        };
+        return match store.create_record_for_operation(&record, &[], Some(operation))? {
+            Created::New { document_id, .. } | Created::Already { document_id } => Ok(json!({ "document_id": document_id })),
+        };
     };
     // The record and its file are written by the core in ONE transaction:
     // if the file cannot be stored, there is no record, nothing is queued for
@@ -1553,7 +1651,7 @@ fn create_record(store: &mut Store, input: &Value, file_path: &str) -> Result<Va
         request_id: uuid::Uuid::new_v4().to_string(),
     };
     let attachment = NewAttachment { name, bytes, description };
-    match store.create_record_with_attachments(&record, &[attachment])? {
+    match store.create_record_for_operation(&record, &[attachment], operation.as_deref())? {
         Created::New { document_id, .. } | Created::Already { document_id } => Ok(json!({ "document_id": document_id })),
     }
 }
@@ -1575,7 +1673,10 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_createRecord<'loca
 }
 
 /// Attaches a file (a private working copy at `path`, named `name`) to a document.
-/// Answer: `{attachment_id, name, size}`.
+/// `options_json` is an object with the optional `operation_id` and
+/// `expected_number` (see [`attach_file_with`]); `{}`, an empty or an unparsable
+/// string is the plain call. Answer: `{attachment_id, name, size}`, or
+/// `{ok:false, code:"target_changed", error}`.
 #[no_mangle]
 pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_attachFile<'local>(
     mut env: JNIEnv<'local>,
@@ -1584,12 +1685,57 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_attachFile<'local>
     path: JString<'local>,
     name: JString<'local>,
     description: JString<'local>,
+    options_json: JString<'local>,
 ) -> jstring {
     answer(&mut env, |env| {
         let path = text(env, &path)?;
         let name = text(env, &name)?;
         let description = text(env, &description)?;
-        with_store(|store| attach_file(store, document_id, &path, &name, &description))
+        let options = text(env, &options_json)?;
+        with_store(|store| attach_file_with(store, document_id, &path, &name, &description, &options))
+    })
+}
+
+/// Whether the operation `{"operation_id":"<uuid>"}` was committed:
+/// `{done:true, document_id:N, kind:"record"}` for a created record,
+/// `{done:true, document_id:N, kind:"attach"}` for a file attached to an existing
+/// document, or `{done:false}` (also for an unknown, empty or unreadable id).
+/// Read only.
+fn operation_status(store: &Store, input: &str) -> Result<Value> {
+    let input: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    let done = match optional_text(&input, "operation_id") {
+        Some(id) => store.operation_record(&id)?,
+        None => None,
+    };
+    Ok(match done {
+        Some(done) => {
+            let mut answer = json!({"done": true, "document_id": done.document_id});
+            let kind = match done.kind.as_str() {
+                "create_record" => Some("record"),
+                "attach" => Some("attach"),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                answer["kind"] = json!(kind);
+            }
+            answer
+        }
+        None => json!({"done": false}),
+    })
+}
+
+/// `{"operation_id":"<uuid>"}` -> `{ok:true, done:bool[, document_id:N, kind:"record"|"attach"]}`:
+/// after a process death, the app asks whether the save it had started was
+/// committed, and whether it made a record or attached a file.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_operationStatus<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    json: JString<'local>,
+) -> jstring {
+    answer(&mut env, |env| {
+        let input = text(env, &json)?;
+        with_store(|store| operation_status(store, &input))
     })
 }
 
@@ -3710,6 +3856,308 @@ mod tests {
         let made = create_record(&mut store, &fields("Recibo que falha", "texto"), &file).unwrap();
         let id = made["document_id"].as_i64().unwrap();
         assert_eq!(attachments_of(&store, id), ["recibo.txt"]);
+    }
+
+    // ---- operation ids: certainty about what a save committed ----
+
+    const OP_A: &str = "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a01";
+    const OP_B: &str = "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a02";
+
+    fn with_operation(mut input: Value, operation: &str) -> Value {
+        input["operation_id"] = json!(operation);
+        input
+    }
+
+    fn status(store: &Store, operation: &str) -> Value {
+        operation_status(store, &json!({ "operation_id": operation }).to_string()).unwrap()
+    }
+
+    fn number_of(store: &Store, document: i64) -> String {
+        store.load_document(document).unwrap().capture.document_number
+    }
+
+    fn live(store: &Store) -> usize {
+        store.list_documents("").unwrap().len()
+    }
+
+    /// The queue as another computer would get it, without clocks and ids.
+    fn queue_shape(store: &Store) -> Vec<Value> {
+        store
+            .list_offline_outbox()
+            .unwrap()
+            .into_iter()
+            .map(|entry| {
+                let mut value = serde_json::to_value(&entry).unwrap();
+                for key in ["id", "created_at", "uid"] {
+                    value.as_object_mut().unwrap().remove(key);
+                }
+                if let Some(capture) = value["mutation"]["ImportCapture"]["capture"].as_object_mut() {
+                    for key in ["request_id", "captured_at"] {
+                        capture.remove(key);
+                    }
+                }
+                value
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_same_operation_id_twice_creates_one_record_with_a_file_and_answers_alike() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let before = live(&store);
+        let file = work_file(&dir.0, "w.bin", b"conteudo do recibo");
+        let input = with_operation(fields("Recibo", "texto"), OP_A);
+        assert_eq!(status(&store, OP_A), json!({"done": false}));
+        let first = create_record(&mut store, &input, &file).unwrap();
+        let id = first["document_id"].as_i64().unwrap();
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": id, "kind": "record"}));
+        let queued = store.list_offline_outbox().unwrap().len();
+        let events = store.list_team_events(500).unwrap().len();
+        // Again, also with the working file gone and the text changed: nothing is made.
+        std::fs::remove_file(&file).unwrap();
+        let second = create_record(&mut store, &with_operation(fields("Outro título", "outro"), OP_A), &file).unwrap();
+        assert_eq!(second, first);
+        assert_eq!(live(&store), before + 1);
+        assert_eq!(attachments_of(&store, id), ["recibo.txt"]);
+        assert_eq!(store.list_offline_outbox().unwrap().len(), queued);
+        assert_eq!(store.list_team_events(500).unwrap().len(), events);
+        // Another id is another operation.
+        let file = work_file(&dir.0, "w.bin", b"outro conteudo");
+        let other = create_record(&mut store, &with_operation(fields("Recibo 2", "texto"), OP_B), &file).unwrap();
+        assert_ne!(other["document_id"], first["document_id"]);
+        assert_eq!(live(&store), before + 2);
+    }
+
+    #[test]
+    fn the_same_operation_id_twice_creates_one_text_record_and_answers_alike() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let before = live(&store);
+        let input = with_operation(fields("Aviso", "linha 1\nlinha 2"), OP_A);
+        let first = create_record(&mut store, &input, "").unwrap();
+        let id = first["document_id"].as_i64().unwrap();
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": id, "kind": "record"}));
+        assert_eq!(store.load_document(id).unwrap().capture.text, "linha 1\nlinha 2");
+        let queued = store.list_offline_outbox().unwrap().len();
+        let second = create_record(&mut store, &input, "").unwrap();
+        assert_eq!(second, first);
+        assert_eq!(live(&store), before + 1);
+        assert_eq!(store.list_offline_outbox().unwrap().len(), queued);
+    }
+
+    #[test]
+    fn the_same_operation_id_twice_attaches_once_and_answers_alike() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, document) = library(&dir.0);
+        let path = work_file(&dir.0, "w.bin", b"conteudo anexado");
+        let options = json!({"operation_id": OP_A}).to_string();
+        let first = attach_file_with(&mut store, document, &path, "oficio.txt", "", &options).unwrap();
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach"}));
+        let queued = store.list_offline_outbox().unwrap().len();
+        let events = store.list_team_events(500).unwrap().len();
+        std::fs::remove_file(&path).unwrap();
+        let second = attach_file_with(&mut store, document, &path, "oficio.txt", "", &options).unwrap();
+        assert_eq!(second, first);
+        assert_eq!(attachments_of(&store, document), ["oficio.txt"]);
+        assert_eq!(store.list_offline_outbox().unwrap().len(), queued);
+        assert_eq!(store.list_team_events(500).unwrap().len(), events);
+        // The id of a record is not the id of an attachment.
+        let made = create_record(&mut store, &with_operation(fields("Aviso", "texto"), OP_B), "").unwrap();
+        assert!(made["document_id"].is_i64());
+        let clash = json!({"operation_id": OP_B}).to_string();
+        assert!(attach_file_with(&mut store, document, &path, "x.txt", "", &clash).is_err());
+    }
+
+    #[test]
+    fn an_attach_operation_id_cannot_create_a_record_and_the_status_says_the_kind() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, document) = library(&dir.0);
+        let path = work_file(&dir.0, "w.bin", b"conteudo anexado");
+        let options = json!({"operation_id": OP_A}).to_string();
+        attach_file_with(&mut store, document, &path, "oficio.txt", "", &options).unwrap();
+        let made = create_record(&mut store, &with_operation(fields("Aviso", "texto"), OP_B), "").unwrap();
+        let record = made["document_id"].as_i64().unwrap();
+        // The exact answers of `operationStatus`.
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach"}));
+        assert_eq!(status(&store, OP_B), json!({"done": true, "document_id": record, "kind": "record"}));
+        assert_eq!(status(&store, "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0aff"), json!({"done": false}));
+        // `createRecord` with the id of the attach: an error, nothing written
+        // (with a file, with a text only, and through the photo entry point).
+        let before = (traces(&store), live(&store), attachments_of(&store, document));
+        let file = work_file(&dir.0, "novo.bin", b"outro conteudo");
+        for (path, kind) in [("", "texto"), (file.as_str(), "arquivo")] {
+            let err = create_record(&mut store, &with_operation(fields("Clone", "texto"), OP_A), path).unwrap_err();
+            assert!(err.to_string().contains("outra operação"), "{kind}: {err}");
+        }
+        assert_eq!((traces(&store), live(&store), attachments_of(&store, document)), before);
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach"}));
+    }
+
+    #[test]
+    fn a_failure_in_the_middle_leaves_the_operation_not_done_and_nothing_behind() {
+        use ponteproj::record_import::INJECT_FAILURE_AFTER_RECORD as INJECT;
+        use std::sync::atomic::Ordering;
+        struct Disarm;
+        impl Drop for Disarm {
+            fn drop(&mut self) {
+                INJECT.store(false, Ordering::SeqCst);
+            }
+        }
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _disarm = Disarm;
+        let dir = Dir::new();
+        let (mut store, document) = library(&dir.0);
+        let before = traces(&store);
+        let file = work_file(&dir.0, "w.bin", b"conteudo do recibo");
+        // A record with a file, failing after the record was written.
+        INJECT.store(true, Ordering::SeqCst);
+        assert!(create_record(&mut store, &with_operation(fields("Recibo", "texto"), OP_A), &file).is_err());
+        assert_eq!(status(&store, OP_A), json!({"done": false}));
+        assert_eq!(traces(&store), before);
+        // The retry with the same id works and is then done.
+        let made = create_record(&mut store, &with_operation(fields("Recibo", "texto"), OP_A), &file).unwrap();
+        assert_eq!(status(&store, OP_A)["document_id"], made["document_id"]);
+        // An attachment that cannot be stored.
+        let after_create = traces(&store);
+        let path = work_file(&dir.0, "w2.bin", b"outro conteudo");
+        let options = json!({"operation_id": OP_B}).to_string();
+        // Past the twenty of the limit the core refuses it: nothing is written.
+        for n in 0..20 {
+            let p = work_file(&dir.0, "w3.bin", format!("conteudo {n}").as_bytes());
+            attach_file(&mut store, document, &p, &format!("a{n}.txt"), "").unwrap();
+        }
+        let full = traces(&store);
+        assert_ne!(full, after_create);
+        assert!(attach_file_with(&mut store, document, &path, "a21.txt", "", &options).is_err());
+        assert_eq!(status(&store, OP_B), json!({"done": false}));
+        assert_eq!(traces(&store), full);
+        assert_eq!(attachments_of(&store, document).len(), 20);
+    }
+
+    #[test]
+    fn expected_number_protects_the_target_of_an_attachment() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let document = manual(&mut store, "Documento escolhido", "texto");
+        let number = number_of(&store, document);
+        assert!(number.starts_with("MANUAL-"), "{number}");
+        let path = work_file(&dir.0, "w.bin", b"conteudo");
+        let options = |number: &str, operation: &str| json!({"expected_number": number, "operation_id": operation}).to_string();
+
+        // The right number: attached, with the row of the operation.
+        let ok = attach_file_with(&mut store, document, &path, "a.txt", "", &options(&number, OP_A)).unwrap();
+        assert!(ok["attachment_id"].is_i64());
+        assert_eq!(status(&store, OP_A)["done"], json!(true));
+        // Without an operation id too.
+        let path2 = work_file(&dir.0, "w2.bin", b"conteudo 2");
+        let only_number = json!({"expected_number": number}).to_string();
+        attach_file_with(&mut store, document, &path2, "b.txt", "", &only_number).unwrap();
+        assert_eq!(attachments_of(&store, document), ["a.txt", "b.txt"]);
+
+        let nothing_written = |store: &Store, document: i64, expected: usize| {
+            assert_eq!(attachments_of(store, document).len(), expected);
+        };
+        let before = traces(&store);
+        let path3 = work_file(&dir.0, "w3.bin", b"conteudo 3");
+        // Another number, a document that does not exist, a document in the trash.
+        let wrong = attach_file_with(&mut store, document, &path3, "c.txt", "", &options("MANUAL-1999/0001", OP_B)).unwrap_err();
+        let answer = error_answer(&wrong);
+        assert_eq!(answer["ok"], json!(false));
+        assert_eq!(answer["code"], json!("target_changed"));
+        assert!(answer["error"].as_str().unwrap().contains("Escolha o documento de novo"), "{answer}");
+        let missing = attach_file_with(&mut store, 99_999, &path3, "c.txt", "", &options(&number, OP_B)).unwrap_err();
+        assert_eq!(error_answer(&missing)["code"], json!("target_changed"));
+        store
+            .trash_item(ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id: document })
+            .unwrap();
+        let trashed_before = traces(&store);
+        let trashed = attach_file_with(&mut store, document, &path3, "c.txt", "", &options(&number, OP_B)).unwrap_err();
+        assert_eq!(error_answer(&trashed)["code"], json!("target_changed"));
+        assert_eq!(traces(&store), trashed_before);
+        assert_ne!(before, trashed_before, "the trash itself is a change");
+        assert_eq!(status(&store, OP_B), json!({"done": false}));
+        store
+            .restore_item(ponteproj::trash::Target { kind: ponteproj::trash::Kind::Document, id: document })
+            .unwrap();
+        nothing_written(&store, document, 2);
+        // Other errors carry no code.
+        let plain = attach_file_with(&mut store, document, "/nao/existe", "d.txt", "", &options(&number, OP_B)).unwrap_err();
+        assert!(error_answer(&plain).get("code").is_none());
+    }
+
+    #[test]
+    fn without_the_optional_fields_everything_is_as_before() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, document) = library(&dir.0);
+        // `{}`, an empty string and garbage all mean "nothing to say".
+        for (n, options) in ["{}", "", "isto nao e json", "[1,2]", r#"{"operation_id":"","expected_number":""}"#].iter().enumerate() {
+            let path_n = work_file(&dir.0, "w.bin", format!("conteudo {n}").as_bytes());
+            let done = attach_file_with(&mut store, document, &path_n, &format!("a{n}.txt"), "", options).unwrap();
+            assert!(done["attachment_id"].is_i64() && done["size"].is_u64(), "{options}: {done}");
+            assert_eq!(done["name"], json!(format!("a{n}.txt")));
+        }
+        assert_eq!(attachments_of(&store, document).len(), 5);
+        let path = work_file(&dir.0, "w.bin", b"conteudo do anexo simples");
+        let plain = attach_file(&mut store, document, &path, "plano.txt", "").unwrap();
+        assert!(plain["attachment_id"].is_i64());
+        // A record without the field: as before, no operation is remembered.
+        let made = create_record(&mut store, &fields("Sem operação", "texto"), "").unwrap();
+        assert!(made["document_id"].is_i64());
+        assert_eq!(status(&store, ""), json!({"done": false}));
+        // The status of unknown, empty or unreadable input is "not done".
+        assert_eq!(status(&store, "desconhecido"), json!({"done": false}));
+        assert_eq!(operation_status(&store, "").unwrap(), json!({"done": false}));
+        assert_eq!(operation_status(&store, "{}").unwrap(), json!({"done": false}));
+        assert_eq!(operation_status(&store, "lixo").unwrap(), json!({"done": false}));
+        // The error answer is the old one when there is no code.
+        let answer = error_answer(&anyhow::anyhow!("falhou"));
+        assert_eq!(answer, json!({"ok": false, "error": "falhou"}));
+    }
+
+    #[test]
+    fn what_is_queued_for_an_operation_is_what_is_queued_today() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let plain_dir = Dir::new();
+        let (mut plain, plain_doc) = library(&plain_dir.0);
+        let plain_queue_before = plain.list_offline_outbox().unwrap().len();
+        let file = work_file(&plain_dir.0, "w.bin", b"conteudo do recibo");
+        create_record(&mut plain, &fields("Recibo", "texto"), &file).unwrap();
+        create_record(&mut plain, &fields("Aviso", "so texto"), "").unwrap();
+        attach_file(&mut plain, plain_doc, &file, "anexo.txt", "uma descricao").unwrap();
+        let plain_events: Vec<String> = plain.list_team_events(500).unwrap().iter().map(|e| format!("{}|{}|{}", e.actor, e.action, e.details)).collect();
+
+        let op_dir = Dir::new();
+        let (mut with_ops, op_doc) = library(&op_dir.0);
+        let file = work_file(&op_dir.0, "w.bin", b"conteudo do recibo");
+        create_record(&mut with_ops, &with_operation(fields("Recibo", "texto"), OP_A), &file).unwrap();
+        create_record(&mut with_ops, &with_operation(fields("Aviso", "so texto"), OP_B), "").unwrap();
+        let options = json!({"operation_id": "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a03", "expected_number": number_of(&with_ops, op_doc)}).to_string();
+        attach_file_with(&mut with_ops, op_doc, &file, "anexo.txt", "uma descricao", &options).unwrap();
+        let op_events: Vec<String> = with_ops.list_team_events(500).unwrap().iter().map(|e| format!("{}|{}|{}", e.actor, e.action, e.details)).collect();
+
+        assert_eq!(queue_shape(&with_ops), queue_shape(&plain));
+        assert_eq!(queue_shape(&plain).len() - plain_queue_before, 4, "import + file, import, attachment");
+        assert_eq!(op_events, plain_events);
+    }
+
+    #[test]
+    fn the_operations_older_than_a_month_are_pruned_and_the_recent_ones_stay() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        create_record(&mut store, &with_operation(fields("Aviso", "texto"), OP_A), "").unwrap();
+        assert_eq!(store.prune_operations(OPERATION_DAYS).unwrap(), 0);
+        assert_eq!(status(&store, OP_A)["done"], json!(true));
+        // Everything is older than "tomorrow".
+        assert_eq!(store.prune_operations(-1).unwrap(), 1);
+        assert_eq!(status(&store, OP_A), json!({"done": false}));
     }
 
     #[test]

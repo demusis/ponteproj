@@ -164,7 +164,9 @@ class PonteCore {
 
     /**
      * Whether an operation was committed. Input {"operation_id":"<uuid>"}; answer {"ok":true,"done":true,
-     * "document_id":N} when it was, {"ok":true,"done":false} when not. Read-only.
+     * "document_id":N} when it was, {"ok":true,"done":false} when not. Read-only. The answer may also carry an
+     * optional string "kind": "record" (a created record) or "attach" (a file attached to an existing document);
+     * an older core leaves it out.
      */
     external fun operationStatus(json: String): String
     external fun listMailAccounts(): String
