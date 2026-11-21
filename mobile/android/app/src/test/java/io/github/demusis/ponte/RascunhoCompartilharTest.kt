@@ -46,7 +46,7 @@ class RascunhoCompartilharTest {
     )
 
     private fun marker(op: String = ShareDraftRules.OP_RECORD) =
-        DraftSaving(op, "0a1b2c3d-0000-4000-8000-123456789abc", 41L, now - 100, nasty)
+        DraftSaving(op, "0a1b2c3d-0000-4000-8000-123456789abc", now - 100)
 
     private fun writeCopy(name: String = "in-1.bin", bytes: ByteArray = ByteArray(10) { it.toByte() }): File {
         val f = store.newCopy("in")
@@ -115,7 +115,7 @@ class RascunhoCompartilharTest {
         for (t in bad) assertTrue("devia ser corrompido: $t", ShareDraftRules.decode(t) is ShareDraftRules.Decoded.Corrupt)
         assertTrue(ShareDraftRules.decode(ShareDraftRules.encode(draft(copy = "").copy(text = ""))) is ShareDraftRules.Decoded.Corrupt)
         // A save marker with an operation that does not exist, or an attach without a document.
-        assertTrue(ShareDraftRules.decode(good.replace("}", ",\"sop\":\"voar\",\"sid\":\"1\",\"sbase\":0,\"sat\":1,\"stext\":\"\"}")) is ShareDraftRules.Decoded.Corrupt)
+        assertTrue(ShareDraftRules.decode(good.removeSuffix("}") + ",\"sop\":\"voar\",\"sat\":1,\"sopid\":\"$opId\"}") is ShareDraftRules.Decoded.Corrupt)
         val attachNoDoc = ShareDraftRules.encode(draft(saving = marker(ShareDraftRules.OP_ATTACH)).copy(targetId = 0))
         assertTrue(ShareDraftRules.decode(attachNoDoc) is ShareDraftRules.Decoded.Corrupt)
     }
@@ -139,11 +139,11 @@ class RascunhoCompartilharTest {
         val f = File(dir, "rascunho/${ShareDraftStore.FILE}")
         f.writeBytes(ByteArray(5_000) { (it * 31).toByte() })
         assertEquals(ShareDraftStore.Read.Corrupt, store.read())
-        f.writeBytes(ByteArray(5 * 1024 * 1024) { 'a'.code.toByte() })
+        f.writeBytes(ByteArray(9 * 1024 * 1024) { 'a'.code.toByte() })
         assertEquals(ShareDraftStore.Read.Corrupt, store.read())
     }
 
-    @Test fun aNewerVersionIsNotCorruptAndIsLeftUntouchedWithItsCopy() {
+    @Test fun aNewerVersionIsNotCorruptAndIsPutAsideWithItsCopyNotDeleted() {
         File(dir, "rascunho").mkdirs()
         val newer = "{\"v\":2,\"cria\":{\"quando\":1},\"itens\":[1,2,3],\"copia\":\"qualquer.bin\"}"
         val f = File(dir, "rascunho/${ShareDraftStore.FILE}")
@@ -151,15 +151,22 @@ class RascunhoCompartilharTest {
         val copyOfTheNewer = writeCopy("qualquer.bin")
         val stray = writeCopy("solto.bin")
         assertEquals(ShareDraftStore.Read.Newer, store.read())
-        assertEquals(ShareDraftStore.Start.Blocked, store.start(now, setUp = true))
-        // Untouched: the file as it was, and no sweep of what it may point to.
-        assertEquals(newer, f.readText())
-        assertTrue(copyOfTheNewer.exists())
-        assertTrue(stray.exists())
+        val s = store.start(now, setUp = true)
+        assertEquals(ShareDraftRules.MSG_NEWER, (s as ShareDraftStore.Start.Dropped).message)
+        // Out of the active slot, but every byte kept in the quarantine for the newer version.
+        assertFalse(f.exists())
+        val boxes = File(dir, "rascunho/${ShareDraftStore.QUARANTINE}").listFiles()!!
+        assertEquals(1, boxes.size)
+        assertEquals(newer, File(boxes[0], ShareDraftStore.FILE).readText())
+        assertTrue(File(boxes[0], "qualquer.bin").exists())
+        assertTrue(File(boxes[0], "solto.bin").exists())
+        assertFalse(copyOfTheNewer.exists())
+        assertTrue(stray.name.isNotEmpty())
         assertTrue(ShareDraftRules.decode(newer) is ShareDraftRules.Decoded.Newer)
         // A bigger number with a structure this reader cannot parse is still "newer", never "corrupt".
         assertTrue(ShareDraftRules.decode("{\"v\":7,\"x\":{{{") is ShareDraftRules.Decoded.Newer)
         assertTrue(ShareDraftRules.decode("{ \"v\" : 3 , \"x\":1}") is ShareDraftRules.Decoded.Newer)
+        assertTrue(ShareDraftRules.decode("{\"v\":2}") is ShareDraftRules.Decoded.Newer)
     }
 
     // ------------------------------------------------------------------ 7 days
@@ -261,12 +268,15 @@ class RascunhoCompartilharTest {
 
     // ------------------------------------------------------------------ the save marker
 
+    private val opId = "0a1b2c3d-0000-4000-8000-123456789abc"
+
     @Test fun theMarkerGoesEditingToSavingAndBackOnAFailure() {
         val d = draft()
         assertNull(d.saving)
-        val saving = ShareDraftRules.begin(d, ShareDraftRules.OP_RECORD, "op-1", 41L, "texto", now)
-        assertEquals(DraftSaving(ShareDraftRules.OP_RECORD, "op-1", 41L, now, "texto"), saving.saving)
-        // The marker is part of what is written: it survives the disk.
+        val saving = ShareDraftRules.begin(d, ShareDraftRules.OP_RECORD, opId, now)
+        assertEquals(DraftSaving(ShareDraftRules.OP_RECORD, opId, now), saving.saving)
+        assertTrue(saving.saving!!.usable)
+        // The marker is part of what is written: it survives the disk, with its operation id.
         assertEquals(saving, (ShareDraftRules.decode(ShareDraftRules.encode(saving)) as ShareDraftRules.Decoded.Ok).draft)
         val rolled = ShareDraftRules.rollback(saving, now + 5)
         assertNull(rolled.saving)
@@ -284,53 +294,160 @@ class RascunhoCompartilharTest {
         assertEquals(marker(), s.draft.saving)
     }
 
-    @Test fun diedWhileSavingWithTheRecordAlreadyThereTheDraftIsOverAndNothingIsSavedAgain() {
-        assertEquals(ShareDraftRules.Resolution.ALREADY_SAVED, ShareDraftRules.afterDeath(draft(saving = marker()), found = true))
+    // ------------------------------------------------------------------ recovery: only the core's word ends a draft
+
+    private fun saved(r: ShareDraftRules.Recovery) = r as ShareDraftRules.Recovery.Saved
+    private fun form(r: ShareDraftRules.Recovery) = r as ShareDraftRules.Recovery.Form
+
+    @Test fun anOperationTheCoreCommittedEndsTheDraftAndOpensTheDocument() {
+        val r = ShareDraftRules.recover(draft(saving = marker()), ShareDraftRules.OperationStatus.Done(91))
+        assertEquals(91L, saved(r).documentId)
+        // An attach whose answer carries no document id opens the document it was aimed at.
+        val attach = ShareDraftRules.recover(
+            draft(saving = marker(ShareDraftRules.OP_ATTACH)), ShareDraftRules.OperationStatus.Done(0)
+        )
+        assertEquals(77L, saved(attach).documentId)
+        // A record with no id in the answer: nothing to open, but still over.
+        assertEquals(0L, saved(ShareDraftRules.recover(draft(saving = marker()), ShareDraftRules.OperationStatus.Done(0))).documentId)
     }
 
-    @Test fun diedWhileSavingWithoutTheRecordTheFormIsBackReadyToSave() {
-        assertEquals(ShareDraftRules.Resolution.SHOW_FORM, ShareDraftRules.afterDeath(draft(saving = marker()), found = false))
-        // A draft that was only being edited is the form whatever the library holds.
-        assertEquals(ShareDraftRules.Resolution.SHOW_FORM, ShareDraftRules.afterDeath(draft(), found = true))
-        assertEquals(ShareDraftRules.Resolution.SHOW_FORM, ShareDraftRules.afterDeath(draft(), found = false))
+    @Test fun anOperationNotCommittedBringsTheFormBackReadyToSaveWithTheSameId() {
+        val f = form(ShareDraftRules.recover(draft(saving = marker()), ShareDraftRules.OperationStatus.NotDone))
+        assertEquals(opId, f.reuseId)
+        assertFalse(f.unconfirmed)
+        assertFalse(f.keepMarker)
     }
 
-    private val docs = listOf(DocRow(40, true), DocRow(41, true), DocRow(42, false), DocRow(43, true), DocRow(50, true))
-
-    @Test fun onlyManualRecordsNewerThanTheMarkerAreCandidatesNewestFirst() {
-        assertEquals(listOf(50L, 43L), ShareDraftRules.candidateIds(41, docs))
-        assertEquals(listOf(50L, 43L, 41L, 40L), ShareDraftRules.candidateIds(0, docs))
-        assertEquals(emptyList<Long>(), ShareDraftRules.candidateIds(50, docs))
-        assertEquals(2, ShareDraftRules.candidateIds(0, (1L..100L).map { DocRow(it, true) }, limit = 2).size)
+    @Test fun anUnreadableStatusKeepsTheDraftAndShowsTheFormWithANote() {
+        for (status in listOf(ShareDraftRules.OperationStatus.Unknown, null)) {
+            val f = form(ShareDraftRules.recover(draft(saving = marker()), status))
+            assertTrue(f.unconfirmed)
+            // The marker stays, so the next start asks again; the id stays, so saving the same form again is safe.
+            assertTrue(f.keepMarker)
+            assertEquals(opId, f.reuseId)
+        }
     }
 
-    @Test fun aFileRecordIsRecognisedByTheNameAndSizeOfItsAttachment() {
-        val d = draft(saving = marker())
-        val name = d.name
-        assertTrue(ShareDraftRules.sameRecord(d, DocFacts(listOf(name to d.size), "qualquer")))
-        assertTrue(ShareDraftRules.sameRecord(d, DocFacts(listOf("outro.txt" to 3L, name to d.size), "")))
-        assertFalse(ShareDraftRules.sameRecord(d, DocFacts(listOf(name to d.size + 1), "")))
-        assertFalse(ShareDraftRules.sameRecord(d, DocFacts(listOf("outro.pdf" to d.size), "")))
-        assertFalse(ShareDraftRules.sameRecord(d, DocFacts(emptyList(), "")))
-        // Without a marker nothing is "the record of a save".
-        assertFalse(ShareDraftRules.sameRecord(draft(), DocFacts(listOf(name to d.size), "")))
+    @Test fun aMarkerWithNoUsableIdIsNeverResolvedByAGuess() {
+        // What the previous build wrote: a marker whose id never reached the core, plus fields only a guess could use.
+        val legacyText = ShareDraftRules.encode(draft(copy = "")).removeSuffix("}") +
+            ",\"sop\":\"record\",\"sid\":\"$opId\",\"sbase\":41,\"sat\":$now,\"stext\":\"Corpo\"}"
+        val legacy = (ShareDraftRules.decode(legacyText) as ShareDraftRules.Decoded.Ok).draft
+        assertNotNull(legacy.saving)
+        assertFalse(legacy.saving!!.usable)
+        // Whatever the core would say, the draft is the form, with the note, nothing deleted.
+        for (status in listOf(ShareDraftRules.OperationStatus.Done(5), ShareDraftRules.OperationStatus.NotDone, null)) {
+            val f = form(ShareDraftRules.recover(legacy, status))
+            assertTrue(f.unconfirmed)
+            assertNull(f.reuseId)
+            assertFalse(f.keepMarker)
+        }
+        // And it is a draft that is kept by the start, not dropped.
+        File(dir, "rascunho").mkdirs()
+        File(dir, "rascunho/${ShareDraftStore.FILE}").writeText(legacyText)
+        val s = store.start(now, setUp = true)
+        assertTrue(s is ShareDraftStore.Start.Resume)
+        assertTrue((s as ShareDraftStore.Start.Resume).checkFirst)
+        // A marker whose id is not a UUID is the same.
+        val junk = ShareDraftRules.encode(draft(copy = "", saving = marker().copy(operationId = "não-é-uuid")))
+        assertFalse((ShareDraftRules.decode(junk) as ShareDraftRules.Decoded.Ok).draft.saving!!.usable)
     }
 
-    @Test fun aTextRecordIsRecognisedByItsText() {
-        val d = draft(copy = "", saving = marker().copy(text = "Linha um\nlinha dois"))
-        assertTrue(ShareDraftRules.sameRecord(d, DocFacts(emptyList(), "Linha um\nlinha dois")))
-        assertTrue(ShareDraftRules.sameRecord(d, DocFacts(emptyList(), "  Linha um\r\nlinha dois \n")))
-        assertFalse(ShareDraftRules.sameRecord(d, DocFacts(emptyList(), "Linha um")))
-        assertFalse(ShareDraftRules.sameRecord(d, DocFacts(emptyList(), "")))
-        // An empty expected text never matches everything.
-        assertFalse(ShareDraftRules.sameRecord(draft(copy = "", saving = marker().copy(text = "")), DocFacts(emptyList(), "")))
+    @Test fun aDraftThatWasOnlyBeingEditedIsTheFormWhateverTheCoreSays() {
+        for (status in listOf(ShareDraftRules.OperationStatus.Done(9), ShareDraftRules.OperationStatus.NotDone, null)) {
+            val f = form(ShareDraftRules.recover(draft(), status))
+            assertNull(f.reuseId)
+            assertFalse(f.unconfirmed)
+            assertFalse(f.keepMarker)
+        }
     }
 
-    @Test fun anAttachIsAlreadyDoneWhenTheDocumentHoldsTheSameNameAndSize() {
-        val d = draft(saving = marker(ShareDraftRules.OP_ATTACH))
-        assertTrue(ShareDraftRules.alreadyAttached(d, listOf("x.txt" to 1L, d.name to d.size)))
-        assertFalse(ShareDraftRules.alreadyAttached(d, listOf(d.name to d.size + 1)))
-        assertFalse(ShareDraftRules.alreadyAttached(d, emptyList()))
+    @Test fun theCoreAnswerIsReadIntoItsThreeCases() {
+        assertTrue(ShareDraftRules.statusFrom(true, true, 12) is ShareDraftRules.OperationStatus.Done)
+        assertEquals(12L, (ShareDraftRules.statusFrom(true, true, 12) as ShareDraftRules.OperationStatus.Done).documentId)
+        assertEquals(ShareDraftRules.OperationStatus.NotDone, ShareDraftRules.statusFrom(true, false, 0))
+        // An error, an answer with no "done" (an older core) and the like are "not known", never "not done".
+        assertEquals(ShareDraftRules.OperationStatus.Unknown, ShareDraftRules.statusFrom(false, true, 12))
+        assertEquals(ShareDraftRules.OperationStatus.Unknown, ShareDraftRules.statusFrom(false, null, 0))
+        assertEquals(ShareDraftRules.OperationStatus.Unknown, ShareDraftRules.statusFrom(true, null, 0))
+    }
+
+    @Test fun noRuleGuessesFromNamesSizesOrTextsAnymore() {
+        // The unrelated "scan.pdf" of the same size on the target document, or an older record with the same text,
+        // must never end a draft: there is no function left that compares them.
+        val names = ShareDraftRules::class.java.methods.map { it.name }.toSet()
+        for (gone in listOf("sameRecord", "alreadyAttached", "candidateIds", "afterDeath")) assertFalse(gone, gone in names)
+        // The same name and size in "files of the target" changes nothing: only the core's operation status counts.
+        val attach = draft(saving = marker(ShareDraftRules.OP_ATTACH))
+        assertTrue(ShareDraftRules.recover(attach, ShareDraftRules.OperationStatus.NotDone) is ShareDraftRules.Recovery.Form)
+        assertTrue(ShareDraftRules.recover(attach, null) is ShareDraftRules.Recovery.Form)
+    }
+
+    // ------------------------------------------------------------------ the operation id of a save
+
+    private fun pending(id: String = opId, fp: String = "f", op: String = ShareDraftRules.OP_RECORD) =
+        ShareDraftRules.PendingOp(op, id, fp)
+
+    @Test fun theSameFormSavedAgainReusesItsOperationIdAndAChangedOneGetsANewId() {
+        val same = ShareDraftRules.operationFor(pending(), ShareDraftRules.OP_RECORD, "f") { "NOVO" }
+        assertEquals(opId, same.id)
+        assertEquals("NOVO", ShareDraftRules.operationFor(pending(), ShareDraftRules.OP_RECORD, "outro") { "NOVO" }.id)
+        assertEquals("NOVO", ShareDraftRules.operationFor(pending(), ShareDraftRules.OP_ATTACH, "f") { "NOVO" }.id)
+        assertEquals("NOVO", ShareDraftRules.operationFor(null, ShareDraftRules.OP_RECORD, "f") { "NOVO" }.id)
+        assertEquals("NOVO", ShareDraftRules.operationFor(pending(id = "x"), ShareDraftRules.OP_RECORD, "f") { "NOVO" }.id)
+    }
+
+    @Test fun theFingerprintFollowsWhatTheCallIsMadeOfAndNothingElse() {
+        val d = draft(copy = "")
+        val op = ShareDraftRules.OP_RECORD
+        val fp = ShareDraftRules.fingerprint(d, op)
+        assertEquals(fp, ShareDraftRules.fingerprint(d.copy(mode = "RECORD", subject = "outro assunto", updatedAt = 1), op))
+        assertFalse(fp == ShareDraftRules.fingerprint(d.copy(title = "outro"), op))
+        assertFalse(fp == ShareDraftRules.fingerprint(d.copy(targetId = 78), op))
+        assertFalse(fp == ShareDraftRules.fingerprint(d.copy(targetNumber = "SEI 0413/2026"), op))
+        assertFalse(fp == ShareDraftRules.fingerprint(d.copy(description = "x"), op))
+        assertFalse(fp == ShareDraftRules.fingerprint(d, ShareDraftRules.OP_ATTACH))
+        // A restored draft fingerprints the same as the call it was saved with.
+        val back = (ShareDraftRules.decode(ShareDraftRules.encode(d)) as ShareDraftRules.Decoded.Ok).draft
+        assertEquals(fp, ShareDraftRules.fingerprint(back, op))
+    }
+
+    // ------------------------------------------------------------------ the document an attach is aimed at
+
+    @Test fun aTargetWhoseNumberChangedIsToBeChosenAgain() {
+        assertEquals(ShareDraftRules.TargetCheck.OK, ShareDraftRules.targetCheck("MANUAL-2026/0003", "MANUAL-2026/0003"))
+        assertEquals(ShareDraftRules.TargetCheck.CHANGED, ShareDraftRules.targetCheck("MANUAL-2026/0003", "MANUAL-2026/0009"))
+        assertEquals(ShareDraftRules.TargetCheck.CHANGED, ShareDraftRules.targetCheck("MANUAL-2026/0003", ""))
+        // Could not be read, or no number kept: not known; the core's own check at save time decides.
+        assertEquals(ShareDraftRules.TargetCheck.UNKNOWN, ShareDraftRules.targetCheck("MANUAL-2026/0003", null))
+        assertEquals(ShareDraftRules.TargetCheck.UNKNOWN, ShareDraftRules.targetCheck("", "MANUAL-2026/0003"))
+    }
+
+    @Test fun theTargetNumberIsKeptWithTheDraftAndTheCoreCodeIsRecognised() {
+        val back = (ShareDraftRules.decode(ShareDraftRules.encode(draft())) as ShareDraftRules.Decoded.Ok).draft
+        assertEquals("SEI 0412/2026", back.targetNumber)
+        assertTrue(ShareDraftRules.isTargetChanged("target_changed"))
+        assertFalse(ShareDraftRules.isTargetChanged(""))
+        assertFalse(ShareDraftRules.isTargetChanged(null))
+        assertFalse(ShareDraftRules.isTargetChanged("outro"))
+        assertTrue(ShareDraftRules.MSG_TARGET_CHANGED.contains("escolha o documento de novo"))
+    }
+
+    @Test fun theCoreIsCalledOnlyAfterTheMarkerIsDurable() {
+        val log = ArrayList<String>()
+        val r = ShareDraftRules.callAfterMarker({ log += "marcador"; true }) { log += "núcleo"; 7 }
+        assertEquals(7, r)
+        assertEquals(listOf("marcador", "núcleo"), log)
+
+        // The marker did not reach the disk: the core is never called and the person is told.
+        var called = false
+        try {
+            ShareDraftRules.callAfterMarker({ false }) { called = true }
+            org.junit.Assert.fail("devia recusar")
+        } catch (e: PonteException) {
+            assertEquals(ShareDraftRules.MSG_CANNOT_PREPARE, e.message)
+        }
+        assertFalse(called)
     }
 
     // ------------------------------------------------------------------ the disk

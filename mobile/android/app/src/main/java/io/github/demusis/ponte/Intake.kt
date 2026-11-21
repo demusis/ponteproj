@@ -67,7 +67,9 @@ internal data class ShareState(
     /** The draft came back after the app was closed ([ShareDraftRules.MSG_RECOVERED] on the form). */
     val recovered: Boolean = false,
     /** The draft could not be written to the disk: the form works, but a close of the app loses it. */
-    val keepFailed: Boolean = false
+    val keepFailed: Boolean = false,
+    /** A discreet note over the form (e.g. a restored save the core could not confirm); empty for none. */
+    val note: String = ""
 )
 
 /**
@@ -84,7 +86,7 @@ internal data class ShareState(
  *    (see [ShareDraft]), so a process death, or leaving the app to copy a number, loses nothing. The draft
  *    is removed when it is saved, cancelled, reset, or older than 7 days ([ShareDraftRules.MAX_AGE_MS]).
  *  - What arrives from other apps is untrusted: see [ShareRules] and [stage].
- *  - Everything runs on the UI thread except the copy and the core calls.
+ *  - Everything runs on the UI thread except the copy, the core calls and the draft folder (one thread of its own).
  */
 @Suppress("StaticFieldLeak") // Only the application context is retained.
 internal object Intake {
@@ -113,7 +115,10 @@ internal object Intake {
 
     fun init(ctx: Context) {
         app = ctx.applicationContext
-        store = ShareDraftStore(File(app.filesDir, ShareDraftStore.DIR))
+        if (!::store.isInitialized) {
+            store = ShareDraftStore(File(app.filesDir, ShareDraftStore.DIR))
+            writer = DraftWriter(store, writerExec)
+        }
     }
 
     private fun ui(block: () -> Unit) {
@@ -514,11 +519,16 @@ internal object Intake {
     // A share with an item is a DRAFT: [snapshot] is written (atomically) to the draft folder shortly after
     // every change, when the app goes to the background, and before the core is asked to save. It is
     // removed when saved, cancelled, reset, or after 7 days. At start, [restoreDraft] puts it back.
+    //
+    // Every touch of the draft folder goes through [writer], one job at a time, in the order asked. A snapshot
+    // takes the next revision on the UI thread and the store refuses a lower one than it has written, so an
+    // older snapshot never lands over a newer one (the save marker above all).
 
     private val saveTick = Runnable { flushAsync() }
 
-    /** Writes of the draft run here, in order, so a slow disk never holds the screen. */
-    private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "ponte-draft").apply { isDaemon = true } }
+    /** The ONE thread of the draft folder: writes, removals and the restore at start run here, in order. */
+    private val writerExec = Executors.newSingleThreadExecutor { r -> Thread(r, "ponte-draft").apply { isDaemon = true } }
+    private lateinit var writer: DraftWriter
 
     /** When the share arrived (the 7 days count from here). */
     private var draftCreatedAt = 0L
@@ -526,8 +536,21 @@ internal object Intake {
     /** The save marker: set before the core is called, cleared when the save ends (see [DraftSaving]). */
     private var saving: DraftSaving? = null
 
-    /** A draft written by a newer app sits in the folder: it is left untouched, and nothing of ours is written over it. */
+    /** The operation id the last save of this form used (the same form saved again reuses it). */
+    private var pending: ShareDraftRules.PendingOp? = null
+
+    /** A draft written by a newer app could not be put aside: nothing of ours is written over it. */
     private var draftBlocked = false
+
+    /** The last revision handed out (UI thread only). */
+    private var rev = 0L
+
+    /** The draft is being read from the disk (off the UI thread): a share that arrives meanwhile waits for it. */
+    private var restoring = false
+    private var deferredReceive = false
+
+    /** Grows when the data is reset, so a restore that was still running discards itself. */
+    private var restoreToken = 0
 
     private fun snapshot(): ShareDraft? {
         val s = share
@@ -545,11 +568,27 @@ internal object Intake {
         )
     }
 
-    /** The item is ready: the draft is born (written at once, so even an immediate kill finds it). */
+    /**
+     * The snapshot of now, with the next revision, queued for writing: all on the UI thread, so the order of the
+     * queue is the order of the revisions. The form is told how it came out (see [reportWrite]). Null when there
+     * is nothing to write or the slot is blocked.
+     */
+    private fun enqueue(): java.util.concurrent.Future<ShareDraftStore.Wrote>? {
+        val mine = gen
+        if (draftBlocked) {
+            reportWrite(ShareDraftStore.Wrote.FAILED)
+            return null
+        }
+        val d = snapshot() ?: return null
+        return writer.write(d, ++rev) { w -> ui { if (gen == mine) reportWrite(w) } }
+    }
+
+    /** The item is ready: the draft is born (queued at once, so even an immediate kill finds it). */
     private fun startDraft() {
         draftCreatedAt = System.currentTimeMillis()
         saving = null
-        writeNow()
+        pending = null
+        flushNow()
     }
 
     /** A field changed: the draft is written a moment after the last change. */
@@ -559,72 +598,107 @@ internal object Intake {
         main.postDelayed(saveTick, SAVE_DELAY_MS)
     }
 
-    /** Written now, on the calling (UI) thread: the draft is small, and the app may be gone a moment later. */
-    private fun writeNow() {
+    /** Queued now (and the pending debounce is no longer needed). */
+    private fun flushNow(): java.util.concurrent.Future<ShareDraftStore.Wrote>? {
         main.removeCallbacks(saveTick)
-        val d = snapshot() ?: return
-        reportWrite(!draftBlocked && store.write(d))
+        return enqueue()
     }
 
     private fun flushAsync() {
-        val d = snapshot() ?: return
-        val mine = gen
-        writer.execute {
-            // Under the lock the removal of a draft takes too: a draft dropped meanwhile is never brought back.
-            val ok = synchronized(ShareDraftStore.lock) { if (gen != mine) null else !draftBlocked && store.write(d) }
-            if (ok != null) ui { if (gen == mine) reportWrite(ok) }
-        }
+        enqueue()
     }
 
     /** The form is told whether the draft is being kept: a discreet warning when the disk refuses it. */
-    private fun reportWrite(ok: Boolean) {
+    private fun reportWrite(w: ShareDraftStore.Wrote) {
         if (share.item == null) return
-        if (!ok && !share.keepFailed) share = share.copy(keepFailed = true)
-        else if (ok && share.keepFailed) share = share.copy(keepFailed = false)
-    }
-
-    /** The draft file is gone, with every pending write (the copy is deleted by the caller). */
-    private fun forgetDraft() {
-        main.removeCallbacks(saveTick)
-        saving = null
-        draftCreatedAt = 0L
-        if (!draftBlocked) store.deleteDraft()
-    }
-
-    /** The marker is written before the core is called: if the process dies now, the restored draft looks first. */
-    private fun beginSaving(op: String, expectedText: String) {
-        val baseline = if (op == ShareDraftRules.OP_RECORD) SyncRunner.docs.maxOfOrNull { it.id } ?: 0L else 0L
-        saving = DraftSaving(op, java.util.UUID.randomUUID().toString(), baseline, System.currentTimeMillis(), expectedText)
-        writeNow()
-    }
-
-    /** The save failed: the draft is a form again. */
-    private fun endSaving() {
-        saving = null
-        flushAsync()
-    }
-
-    /**
-     * At a cold start (before anything is shown): puts back the share that was in progress when the app
-     * closed, with every field, on the share route. The lock comes first by itself: the route waits
-     * on the stack and nothing of it is composed (or said) until the app is unlocked. A draft that is too old, or
-     * whose copy is gone or changed, is removed and the person is told once ([tell] waits for the unlock).
-     * Never throws: whatever is wrong means no draft.
-     */
-    fun restoreDraft() {
-        if (share.item != null || share.reading) return
-        try {
-            when (val s = store.start(System.currentTimeMillis(), Controller.isSetUp())) {
-                ShareDraftStore.Start.None -> {}
-                ShareDraftStore.Start.Blocked -> draftBlocked = true
-                is ShareDraftStore.Start.Dropped -> s.message?.let { tell(it) }
-                is ShareDraftStore.Start.Resume -> adopt(s.draft, s.checkFirst)
-            }
-        } catch (_: Throwable) {
+        when (w) {
+            ShareDraftStore.Wrote.FAILED -> if (!share.keepFailed) share = share.copy(keepFailed = true)
+            ShareDraftStore.Wrote.OK -> if (share.keepFailed) share = share.copy(keepFailed = false)
+            ShareDraftStore.Wrote.STALE -> {}
         }
     }
 
-    private fun adopt(d: ShareDraft, checkFirst: Boolean) {
+    /**
+     * The draft file is gone, with every pending write (the copy [copyName] goes right after it, in the same
+     * queue: a write asked earlier never comes back after this).
+     */
+    private fun forgetDraft(copyName: String?) {
+        main.removeCallbacks(saveTick)
+        saving = null
+        pending = null
+        draftCreatedAt = 0L
+        if (!draftBlocked) writer.clear(copyName)
+        else if (!copyName.isNullOrEmpty() && ShareDraftRules.safeName(copyName)) {
+            try { File(store.path(copyName)).delete() } catch (_: Throwable) { }
+        }
+    }
+
+    /**
+     * The marker (with the operation id) is queued before the core is called: if the process dies now, the
+     * restored draft asks the core about that very operation. The result is the write to wait for, or null when
+     * no marker can be kept (the slot is blocked: there is no draft to come back to either).
+     */
+    private fun beginSaving(op: ShareDraftRules.PendingOp): java.util.concurrent.Future<ShareDraftStore.Wrote>? {
+        saving = DraftSaving(op.op, op.id, System.currentTimeMillis())
+        return flushNow()
+    }
+
+    /** The core is called only once the marker is on the disk (see [ShareDraftRules.callAfterMarker]). */
+    private fun markerGate(marker: java.util.concurrent.Future<ShareDraftStore.Wrote>?, needed: Boolean): () -> Boolean =
+        { !needed || (marker != null && ShareDraftRules.durable(marker)) }
+
+    /** The save failed: the draft is a form again (the operation id stays, to be reused by the same form). */
+    private fun endSaving() {
+        saving = null
+        flushNow()
+    }
+
+    /**
+     * At a cold start: asks for the share that was in progress when the app closed, with every field. The
+     * draft is read, checked and its copy hashed on the draft thread, never on the Activity's: the lock
+     * screen or the home shows meanwhile, and the share route appears when the answer is ready. The lock
+     * comes first by itself: the route waits on the stack and nothing of it is composed (or said) until the
+     * app is unlocked. A draft that is too old, or whose copy is gone or changed, is removed and the person is
+     * told once ([tell] waits for the unlock). Never throws: whatever is wrong means no draft.
+     */
+    fun restoreDraft() {
+        if (share.item != null || share.reading || restoring) return
+        restoring = true
+        val token = restoreToken
+        val setUp = Controller.isSetUp()
+        val now = System.currentTimeMillis()
+        try {
+            writer.submit {
+                val r = try { store.start(now, setUp) } catch (_: Throwable) { ShareDraftStore.Start.None }
+                ui { restored(r, token) }
+            }
+        } catch (_: Throwable) {
+            restoring = false
+        }
+    }
+
+    private fun restored(s: ShareDraftStore.Start, token: Int) {
+        restoring = false
+        try {
+            if (token == restoreToken && share.item == null && !share.reading) {
+                when (s) {
+                    ShareDraftStore.Start.None -> {}
+                    ShareDraftStore.Start.Blocked -> draftBlocked = true
+                    is ShareDraftStore.Start.Dropped -> s.message?.let { tell(it) }
+                    is ShareDraftStore.Start.Resume -> adopt(s.draft)
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        Controller.render()
+        // A share that came while the draft was being read now meets it (and is refused if there is one).
+        if (deferredReceive) {
+            deferredReceive = false
+            receive()
+        }
+    }
+
+    private fun adopt(d: ShareDraft) {
         gen++
         val mine = gen
         val item = ShareItem(
@@ -638,6 +712,8 @@ internal object Intake {
         kindTouched = true
         draftCreatedAt = d.createdAt
         saving = d.saving
+        pending = null
+        val checkFirst = d.saving != null
         share = ShareState(
             item = item, mode = mode, kinds = Controller.photo.kinds, kind = d.kind.ifEmpty { "outro" },
             title = d.title, date = d.date, origin = d.origin, notes = d.notes, target = target,
@@ -645,59 +721,79 @@ internal object Intake {
             busy = checkFirst, progress = if (checkFirst) ShareDraftRules.MSG_CHECKING else ""
         )
         if (Route.Share !in Controller.stack) Controller.stack.add(Route.Share)
-        if (checkFirst) resolveSaving(d, mine)
+        if (checkFirst || d.targetId > 0) verifyRestored(d, mine)
     }
 
+    /** What the core says about a restored draft (see [verifyRestored]). */
+    private class Checked(val status: ShareDraftRules.OperationStatus?, val targetNumber: String?)
+
     /**
-     * A draft that died while saving: before the form comes back, look whether the core already made the record
-     * (or took the attachment). If so the draft is over; if not, the form is back, ready to save.
+     * A restored draft is checked against the library, off the UI thread. One that was saving: the core is asked
+     * whether ITS operation (the id in the marker) was committed, and only a "yes" ends the draft. And the target
+     * document: when its number is no longer the one the form shows, the form must not keep it.
      */
-    private fun resolveSaving(d: ShareDraft, mine: Int) {
-        SyncRunner.background({ alreadySaved(d) }, { id ->
-            if (gen == mine) {
-                if (ShareDraftRules.afterDeath(d, id != null) == ShareDraftRules.Resolution.ALREADY_SAVED && id != null) {
-                    dropShare(removeRoute = true)
-                    finished(id, ShareDraftRules.MSG_SAVED_BEFORE)
-                } else {
-                    saving = null
-                    share = share.copy(busy = false, progress = "")
-                    flushAsync()
-                }
-            }
+    private fun verifyRestored(d: ShareDraft, mine: Int) {
+        SyncRunner.background({
+            val sv = d.saving
+            val st = if (sv != null && sv.usable) Api.operationStatus(sv.operationId) else null
+            val tn = if (d.targetId > 0 && d.targetNumber.isNotEmpty() && st !is ShareDraftRules.OperationStatus.Done) {
+                try { Api.document(d.targetId).s("number") } catch (_: Throwable) { null }
+            } else null
+            Checked(st, tn)
+        }, { c ->
+            if (gen == mine) applyChecked(d, c)
         }, {
-            // The library could not be read: the form is back but the marker stays; the person is told to look first.
-            if (gen == mine) share = share.copy(busy = false, progress = "", error = ShareDraftRules.MSG_CANNOT_CHECK)
+            // The check itself could not run: nothing is known, nothing is lost.
+            if (gen == mine) applyChecked(d, Checked(ShareDraftRules.OperationStatus.Unknown, null))
         }, fail = ShareDraftRules.MSG_CANNOT_CHECK)
     }
 
-    /** Blocking (core calls): the id of the document that holds what the dead save made, or null. */
-    private fun alreadySaved(d: ShareDraft): Long? {
-        val sv = d.saving ?: return null
-        if (sv.op == ShareDraftRules.OP_ATTACH) {
-            val files = try { docFacts(d.targetId).files } catch (_: Throwable) { return null }
-            return if (ShareDraftRules.alreadyAttached(d, files)) d.targetId else null
+    private fun applyChecked(d: ShareDraft, c: Checked) {
+        when (val rec = ShareDraftRules.recover(d, c.status)) {
+            is ShareDraftRules.Recovery.Saved -> {
+                dropShare(removeRoute = true)
+                finished(rec.documentId, ShareDraftRules.MSG_SAVED_BEFORE)
+                return
+            }
+            is ShareDraftRules.Recovery.Form -> {
+                saving = if (rec.keepMarker) d.saving else null
+                val sv = d.saving
+                pending = if (sv != null && rec.reuseId != null) {
+                    ShareDraftRules.PendingOp(sv.op, rec.reuseId, ShareDraftRules.fingerprint(d, sv.op))
+                } else null
+                share = share.copy(
+                    busy = false, progress = "",
+                    note = if (rec.unconfirmed) ShareDraftRules.MSG_CANNOT_CHECK else ""
+                )
+            }
         }
-        val err = SyncRunner.refreshDocs()
-        if (err != null) throw PonteException(err)
-        val ids = ShareDraftRules.candidateIds(sv.baseline, SyncRunner.docs.map { DocRow(it.id, it.manual) })
-        return ids.firstOrNull { ShareDraftRules.sameRecord(d, docFacts(it)) }
-    }
-
-    private fun docFacts(id: Long): DocFacts {
-        val o = Api.document(id)
-        return DocFacts(o.optJSONArray("attachments").objs().map { it.s("name") to it.optLong("size") }, o.s("text"))
+        // The target is still the document the form shows? Not when the library changed under it (a sync).
+        val shown = share.target
+        if (shown != null && shown.id == d.targetId &&
+            ShareDraftRules.targetCheck(d.targetNumber, c.targetNumber) == ShareDraftRules.TargetCheck.CHANGED
+        ) {
+            pending = null
+            share = share.copy(
+                target = null, mode = if (share.mode == ShareMode.ATTACH) ShareMode.CHOOSE else share.mode,
+                error = ShareDraftRules.MSG_TARGET_CHANGED
+            )
+        }
+        flushNow()
     }
 
     /** "Recomeçar": the draft and its copy go with the rest of the phone's data. */
     fun wipeForReset() {
         gen++
+        restoreToken++
         main.removeCallbacks(saveTick)
         saving = null
+        pending = null
         draftCreatedAt = 0L
         draftBlocked = false
         share = ShareState()
         Controller.stack.removeAll { it == Route.Share || it == Route.SharePick }
-        store.wipe()
+        // In the draft queue, behind every write asked before it (a late write never brings the draft back).
+        writer.submit { store.wipe() }
     }
 
     /**
@@ -706,6 +802,12 @@ internal object Intake {
      * stack at once, so behind a lock it simply waits there (nothing of it is composed while locked).
      */
     fun receive() {
+        // The draft of an earlier run is still being read: whether it exists decides what a new share meets
+        // (one share at a time), so the offer waits (it stays where it is) and is taken when the read ends.
+        if (restoring) {
+            deferredReceive = true
+            return
+        }
         val o = takeOffer() ?: return
         val verdict = ShareRules.check(
             o.action, o.mime, o.uri?.scheme, o.uri?.authority, o.streamCount,
@@ -783,8 +885,7 @@ internal object Intake {
      */
     private fun dropShare(removeRoute: Boolean) {
         gen++
-        forgetDraft()
-        share.item?.path?.let { try { File(it).delete() } catch (_: Throwable) { } }
+        forgetDraft(share.item?.path?.let { File(it).name })
         share = ShareState()
         if (removeRoute) Controller.stack.removeAll { it == Route.Share || it == Route.SharePick }
     }
@@ -827,9 +928,14 @@ internal object Intake {
                 changingConfiguration, Controller.locked, unlocking, share.busy, seen, hasShare()
             )
         ) dropShare(removeRoute = true)
-        // Going to the background (or being stopped for any reason): the draft is on the disk before the
-        // system may kill the process.
-        if (share.item != null && !share.reading) writeNow()
+        // Going to the background (or being stopped for any reason): the last snapshot is queued and the thread
+        // waits for it only a moment (the disk may be slow; the app is leaving anyway).
+        if (share.item != null && !share.reading) {
+            val f = flushNow()
+            if (f != null) {
+                try { f.get(ShareDraftRules.STOP_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: Throwable) { }
+            }
+        }
     }
 
     /** A result parked for the unlock is thrown away (the person left without unlocking). */
@@ -880,6 +986,16 @@ internal object Intake {
         scheduleSave()
     }
 
+    /** The operation id this form saves under: the one of the last try when nothing changed, else a new one. */
+    private fun operationFor(op: String): ShareDraftRules.PendingOp? {
+        val base = snapshot() ?: return null
+        val p = ShareDraftRules.operationFor(pending, op, ShareDraftRules.fingerprint(base, op)) {
+            java.util.UUID.randomUUID().toString()
+        }
+        pending = p
+        return p
+    }
+
     /** Creates the manual record: the file becomes its attachment, a text its text. */
     fun saveRecord() {
         val s = share
@@ -891,6 +1007,9 @@ internal object Intake {
             return
         }
         val text = item.text.ifEmpty { ShareRules.plainText(s.notes, AttachLimits.maxTextBytes) }
+        val op = operationFor(ShareDraftRules.OP_RECORD) ?: return
+        // "operation_id": the core makes the record once for this id, whatever happens to the process or to
+        // the answer; the marker below carries the same id, so a restored draft can ask about it.
         val fields = JSONObject()
             .put("kind", s.kind.ifEmpty { "outro" })
             .put("title", ShareRules.cutBytes(title, AttachLimits.maxTitleBytes))
@@ -899,16 +1018,21 @@ internal object Intake {
             .put("text", text)
             .put("file_name", item.name)
             .put("file_description", "Recebido de outro aplicativo")
+            .put("operation_id", op.id)
             .toString()
         val mine = gen
-        share = s.copy(busy = true, progress = "Guardando o registro…", error = "", titleError = "")
-        // Written to the disk BEFORE the core is asked: a process that dies from here to the end of the save
-        // comes back knowing a save was under way, and looks for the record before showing the form again.
-        beginSaving(ShareDraftRules.OP_RECORD, text)
+        share = s.copy(busy = true, progress = "Guardando o registro…", error = "", titleError = "", note = "")
+        // The marker is queued BEFORE the core is asked and the core is called only once it is on the disk:
+        // a process that dies from here to the end of the save comes back knowing a save was under way, with
+        // the id to ask the core about. If the marker cannot be written the core is not called at all.
+        val needed = !draftBlocked
+        val marker = beginSaving(op)
         SyncRunner.background({
-            val id = Api.createRecord(fields, item.path ?: "")
-            SyncRunner.refreshDocs()
-            id
+            ShareDraftRules.callAfterMarker(markerGate(marker, needed)) {
+                val id = Api.createRecord(fields, item.path ?: "")
+                SyncRunner.refreshDocs()
+                id
+            }
         }, { id ->
             if (gen == mine) {
                 dropShare(removeRoute = true)
@@ -922,6 +1046,9 @@ internal object Intake {
         }, fail = "Não foi possível guardar o registro. Confira o espaço livre no aparelho e tente de novo.")
     }
 
+    /** What an attach came to: done, or the document is not the one the person chose anymore. */
+    private enum class AttachResult { DONE, TARGET_CHANGED }
+
     /** Attaches the file to the chosen document. */
     fun saveAttach() {
         val s = share
@@ -929,18 +1056,42 @@ internal object Intake {
         val target = s.target ?: return
         val path = item.path ?: return
         if (s.busy) return
+        val op = operationFor(ShareDraftRules.OP_ATTACH) ?: return
         val mine = gen
         val description = ShareRules.capChars(s.description.trim(), AttachLimits.maxDescriptionChars)
             .ifEmpty { "Recebido de outro aplicativo" }
-        share = s.copy(busy = true, progress = "Anexando o arquivo…", error = "")
-        beginSaving(ShareDraftRules.OP_ATTACH, "")
+        share = s.copy(busy = true, progress = "Anexando o arquivo…", error = "", note = "")
+        val needed = !draftBlocked
+        val marker = beginSaving(op)
         SyncRunner.background({
-            Api.attachFile(target.id, path, item.name, description)
-            SyncRunner.refreshDocs()
-        }, {
+            ShareDraftRules.callAfterMarker(markerGate(marker, needed)) {
+                try {
+                    // "expected_number": the number the form shows. The id of a row is not enough: a sync may have
+                    // replaced the library, and the same id may be another document now.
+                    Api.attachFile(target.id, path, item.name, description, op.id, target.number)
+                    SyncRunner.refreshDocs()
+                    AttachResult.DONE
+                } catch (e: CoreException) {
+                    if (!ShareDraftRules.isTargetChanged(e.code)) throw e
+                    // Nothing was written. The list is read again so the picker shows what exists now.
+                    SyncRunner.refreshDocs()
+                    AttachResult.TARGET_CHANGED
+                }
+            }
+        }, { r ->
             if (gen == mine) {
-                dropShare(removeRoute = true)
-                finished(target.id, "Anexo adicionado.")
+                if (r == AttachResult.DONE) {
+                    dropShare(removeRoute = true)
+                    finished(target.id, "Anexo adicionado.")
+                } else {
+                    // The draft and its copy stay; the document must be chosen again.
+                    pending = null
+                    share = share.copy(
+                        busy = false, progress = "", target = null,
+                        mode = ShareMode.CHOOSE, error = ShareDraftRules.MSG_TARGET_CHANGED
+                    )
+                    endSaving()
+                }
             }
         }, { m ->
             if (gen == mine) {

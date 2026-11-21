@@ -145,8 +145,32 @@ internal object Api {
     /** Answers the new document's id. [filePath] is "" for a record of text only. */
     fun createRecord(fields: String, filePath: String): Long = c(core.createRecord(fields, filePath)).optLong("document_id")
 
-    fun attachFile(documentId: Long, path: String, name: String, description: String) =
-        c(core.attachFile(documentId, path, name, description))
+    /**
+     * [operationId] (a UUID) makes the attach idempotent; [expectedNumber] is the number of the document the person
+     * chose: the core writes nothing, and answers the code "target_changed", when the document is not that one anymore.
+     * Both are sent only when given.
+     */
+    fun attachFile(
+        documentId: Long, path: String, name: String, description: String,
+        operationId: String = "", expectedNumber: String = ""
+    ) {
+        val options = JSONObject()
+        if (operationId.isNotEmpty()) options.put("operation_id", operationId)
+        if (expectedNumber.isNotEmpty()) options.put("expected_number", expectedNumber)
+        c(core.attachFile(documentId, path, name, description, options.toString()))
+    }
+
+    /**
+     * What the core says about the operation [operationId]: committed or not. Anything else (an error, an answer
+     * without "done", an older core that does not have the call) is "unknown": never thrown, never guessed.
+     */
+    fun operationStatus(operationId: String): ShareDraftRules.OperationStatus = try {
+        val o = JSONObject(core.operationStatus(JSONObject().put("operation_id", operationId).toString()))
+        val done = if (o.has("done") && !o.isNull("done")) o.optBoolean("done") else null
+        ShareDraftRules.statusFrom(o.optBoolean("ok"), done, o.optLong("document_id"))
+    } catch (_: Throwable) {
+        ShareDraftRules.OperationStatus.Unknown
+    }
 
     fun mailAccounts(): List<JSONObject> = c(core.listMailAccounts()).optJSONArray("accounts").objs()
     fun saveMailAccount(json: String): String = c(core.saveMailAccount(json)).s("uid")

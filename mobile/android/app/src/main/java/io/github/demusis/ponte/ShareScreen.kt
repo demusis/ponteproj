@@ -90,6 +90,7 @@ internal fun ShareScreen(
                 )
             }
             if (item != null && state.keepFailed) Notice(ShareDraftRules.MSG_CANNOT_KEEP, tone = Tone.WARNING)
+            if (item != null && state.note.isNotEmpty()) Notice(state.note, tone = Tone.NEUTRAL)
             // The first step has no footer: the look at a save that was under way says what it is doing here.
             if (item != null && mode == ShareMode.CHOOSE && state.busy && state.progress.isNotEmpty()) {
                 Notice(state.progress, tone = Tone.NEUTRAL)

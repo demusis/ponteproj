@@ -53,7 +53,7 @@ internal data class Doc(
 )
 
 /** Raised when the core answers {"ok":false}. */
-internal class CoreException(message: String) : PonteException(message)
+internal class CoreException(message: String, val code: String = "") : PonteException(message)
 
 /** Raised when the Keystore cannot decrypt the stored library key. */
 internal class KeyUnavailableException(cause: Throwable?) : Exception("key unavailable", cause)
@@ -261,7 +261,8 @@ internal object SyncRunner {
         val o = JSONObject(json)
         if (!o.optBoolean("ok")) {
             // The one place where the core's texts reach the screen: worded for the phone here.
-            throw CoreException(PhoneWords.adapt(o.optString("error", "Não foi possível concluir a operação.")))
+            // "code" is optional (an older core never sends it): a machine-readable reason next to the text.
+            throw CoreException(PhoneWords.adapt(o.optString("error", "Não foi possível concluir a operação.")), o.s("code"))
         }
         return o
     }
