@@ -18,7 +18,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
 | **Celular (Android)** | **Ponte de bolso**, que acompanha o Ponte pela pasta compartilhada: [`mobile/README.md`](mobile/README.md) |
 | **Para quem mexe no código** | [`CONTRIBUINDO.md`](CONTRIBUINDO.md): módulos, build, testes e publicação |
-| **Versão** | 0.48.2 (extensão 0.4.1; Ponte de bolso 0.21.2) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.49.0 (extensão 0.4.1; Ponte de bolso 0.22.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -65,7 +65,7 @@ Tudo é instalado na sua conta do Windows. Não é preciso senha de administrado
 | Onde olhar | O que deve aparecer |
 |---|---|
 | Tela inicial do Ponte, card **Primeiros passos** | **Ponte ligado ao navegador** marcado, com *Registrado para o Chrome e Edge.* |
-| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.48.2.* (a versão instalada) |
+| Ícone da extensão, na barra do navegador | *✓ Ligado ao Ponte 0.49.0.* (a versão instalada) |
 | Uma ficha de documento no SIGADOC | o painel **Importar para o assistente**, no canto inferior direito |
 
 O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega pela extensão; **Primeiro documento importado**, quando o acervo já tem documentos do SIGADOC. Se algum dos três itens da tabela não aparecer, vá para [Solução de problemas](#11-solução-de-problemas).
@@ -183,7 +183,7 @@ Quando nada está atrasado nem para hoje, a tela diz *Nenhuma tarefa atrasada ou
 
 **Calendário de prazos.** No alto de Hoje, os botões **Lista** e **Calendário** trocam a visão. O calendário mostra o mês com as tarefas e os atendimentos que têm prazo: vermelho é atraso, âmbar é para hoje, azul está no prazo, e os atendimentos levam um ícone. As setas trocam de mês e **Hoje** volta ao mês atual. Clique num item para abri-lo; clique em "+N", ou num dia com itens, para listar os desse dia sob o calendário (**Fechar** esconde a lista). Tarefas concluídas e atendimentos encerrados não aparecem. Também mostra o **trabalho planejado**: cada dia do período de uma tarefa aberta traz uma linha só contornada, *▭ título*, depois dos prazos. Na lista do dia, o planejado aparece com o horário e *(planejado)*, e com *↳ depende de: …* ou *⚠ começa antes de terminar …* quando for o caso. Uma legenda sob o mês resume: faixa cheia é prazo, contorno é trabalho planejado, *⇢* é previsto (calculado pelas dependências e pela estimativa), e as ligações entre tarefas se veem na **Semana**.
 
-**Semana.** O terceiro botão, **Semana**, mostra os sete dias (de segunda a domingo) com os blocos de trabalho das tarefas e as reservas de recursos, e os **Prazos de entrega** à parte, em cada dia. Sob o cabeçalho, a **Carga da semana** (por exemplo, *26 h de 45 h planejadas*, com uma barra) compara os períodos planejados com o expediente de 9h às 18h dos dias úteis, e cada dia mostra suas horas; um dia com mais horas que o expediente fica em âmbar, com ⚠. Tarefas sem período planejado não entram, e uma tarefa com subtarefas planejadas conta pelas subtarefas. No fim, **Ainda não planejadas** lista as tarefas abertas sem horário de trabalho. Veja [6.8](#68-planejar-o-trabalho). Quando uma tarefa tem aviso agendado, o card **Avisos agendados** aparece no alto de Hoje ([6.6](#66-lembretes-de-prazos)).
+**Semana.** O terceiro botão, **Semana**, mostra os sete dias (de segunda a domingo) com os blocos de trabalho das tarefas e as reservas de recursos, e os **Prazos de entrega** à parte, em cada dia. Sob o cabeçalho, a **Carga da semana** (por exemplo, *26 h planejadas de 45 h de expediente*, com uma barra) compara os períodos planejados com o expediente de 9h às 18h dos dias úteis, e cada dia mostra suas horas; um dia com mais horas que o expediente fica em âmbar, com ⚠. Tarefas sem período planejado não entram, e uma tarefa com subtarefas planejadas conta pelas subtarefas. No fim, **Ainda não planejadas** lista as tarefas abertas sem horário de trabalho. Veja [6.8](#68-planejar-o-trabalho). Quando uma tarefa tem aviso agendado, o card **Avisos agendados** aparece no alto de Hoje ([6.6](#66-lembretes-de-prazos)).
 
 **Buscar em todo o acervo.** **Buscar**, no alto da barra lateral, ou **Ctrl+K**, abre uma caixa de busca sobre qualquer área. Digite pelo menos duas letras: o Ponte procura em documentos (número, assunto, texto, notas e PDFs), tarefas e atendimentos, e agrupa os resultados em **Documentos**, **Tarefas** e **Atendimentos**, com até 8 de cada e uma linha "e mais N" quando há outros. Nas tarefas e nos atendimentos, a busca ignora maiúsculas e acentos. As setas movem o destaque, **Enter** (ou o clique) abre o item, levando à ficha, à tarefa ou ao atendimento, e **Esc** fecha. Os projetos (pelo nome e pelo objetivo), os recursos e as reservas de recursos também são encontrados, em grupos próprios. A busca da própria área (**Ctrl+F**) continua como antes.
 
@@ -617,7 +617,7 @@ Um **projeto** reúne as tarefas de um mesmo objetivo (a organização de uma re
 
 ### 6.11 Atualizar entre versões: formato do acervo
 
-Algumas versões mudam o formato do acervo (o arquivo do Ponte no computador) e o do arquivo da pasta compartilhada. Desde a 0.48.0 o acervo está no formato **21** e o arquivo da pasta, no **8** (a 0.48.0 trouxe os projetos; a 0.48.1 e a 0.48.2 não mudaram o formato). O que fazer:
+Algumas versões mudam o formato do acervo (o arquivo do Ponte no computador) e o do arquivo da pasta compartilhada. Desde a 0.48.0 o acervo está no formato **21** e o arquivo da pasta, no **8** (a 0.48.0 trouxe os projetos; as versões 0.48.1 a 0.49.0 não mudaram o formato). O que fazer:
 
 1. **Atualize primeiro o computador principal**, depois os outros computadores e o celular. Com a pasta compartilhada, atualize todos os aparelhos que usam a pasta.
 2. Uma versão mais antiga **recusa o acervo e o arquivo novos e não muda nada neles**: o Ponte 0.47.x e o Ponte de bolso 0.20.x dizem para atualizar (*Este acervo foi criado por uma versão mais nova do Ponte; atualize o Ponte antes de abri-lo.*, ou *O arquivo de sincronização foi gravado por uma versão mais nova do Ponte. Atualize o Ponte.*). Nada se perde: instale a versão nova e abra de novo.

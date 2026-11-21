@@ -2,7 +2,7 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (versão 0.21.2)
+## O que faz (versão 0.22.0)
 
 Cada item abaixo traz a versão em que entrou; vale o que está aqui, e a versão instalada aparece no aplicativo.
 

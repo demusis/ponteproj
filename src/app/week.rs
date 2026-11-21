@@ -427,7 +427,7 @@ pub(super) fn show(
     }
 }
 
-/// "Carga da semana: 26 h de 45 h planejadas", a thin bar and the help.
+/// "Carga da semana: 26 h planejadas de 45 h de expediente", a thin bar and the help.
 fn week_load_line(ui: &mut egui::Ui, total: Load) {
     let text = if total.capacity_minutes == 0 {
         if total.planned_minutes == 0 {
@@ -440,7 +440,7 @@ fn week_load_line(ui: &mut egui::Ui, total: Load) {
         }
     } else {
         format!(
-            "Carga da semana: {} de {} planejadas",
+            "Carga da semana: {} planejadas de {} de expediente",
             workload::hours_label(total.planned_minutes),
             workload::hours_label(total.capacity_minutes)
         )
