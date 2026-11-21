@@ -17,6 +17,14 @@ use anyhow::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::atomic::AtomicBool;
+
+/// Test hook: when set, the next import that has attachments fails right
+/// after its record was written and before its attachments are, as a full
+/// disk or an interrupted process would. The flag is consumed by that
+/// import. Never set outside tests.
+#[doc(hidden)]
+pub static INJECT_FAILURE_AFTER_RECORD: AtomicBool = AtomicBool::new(false);
 
 /// All the attachments of one request together (decoded bytes).
 pub const MAX_TOTAL_ATTACHMENT_BYTES: usize = 16 * 1024 * 1024;
@@ -621,5 +629,275 @@ mod tests {
         // Without files the library still works.
         let other = record("[04/11/2026 10:05] Servidor A: outra");
         assert!(store.create_record_with_attachments(&other, &[]).is_ok());
+    }
+
+    // ---- record and attachments are one operation ----
+
+    use crate::intranet::{IntranetConfig, IntranetMode, OutboxEntry};
+
+    fn shared_folder(store: &mut Store) {
+        let cfg = IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: "Celular de teste".into(),
+            folder_files: vec!["ponte-sync-teste.ponte".into()],
+            folder_writer: uuid::Uuid::new_v4().simple().to_string(),
+            ..store.load_intranet_config().unwrap()
+        };
+        store.save_intranet_config(&cfg).unwrap();
+    }
+
+    /// Everything a failed import must not leave in the library.
+    fn traces(store: &Store) -> (i64, usize, usize, usize) {
+        (
+            store.cabinet_revision().unwrap(),
+            store.list_team_events(500).unwrap().len(),
+            store.list_offline_outbox().unwrap().len(),
+            store.list_documents("").unwrap().len(),
+        )
+    }
+
+    fn fail_on(store: &Store, trigger: &str) {
+        store
+            .conn
+            .execute_batch(&format!(
+                "CREATE TRIGGER {trigger} BEFORE INSERT ON {} BEGIN SELECT RAISE(ABORT,'falha simulada'); END;",
+                if trigger.contains("trash") { "trash" } else { "attachments" }
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_failure_while_attaching_leaves_no_trace_in_any_mode() {
+        for queued in [false, true] {
+            let (_dir, mut store) = store();
+            if queued {
+                shared_folder(&mut store);
+            }
+            let before = traces(&store);
+            fail_on(&store, "fail_attachments");
+            let err = store
+                .create_record_with_attachments(
+                    &record(TEXT),
+                    &[file("a.png", png(1)), file("b.pdf", pdf(2))],
+                )
+                .unwrap_err();
+            assert!(matches!(
+                err.downcast_ref::<RecordError>(),
+                Some(RecordError::Failed(_))
+            ));
+            assert_eq!(
+                traces(&store),
+                before,
+                "no record, no journal, no queue (queued: {queued})"
+            );
+            assert!(store.trash_entries().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_failure_cannot_leave_a_record_even_when_the_cleanup_would_fail() {
+        for queued in [false, true] {
+            let (_dir, mut store) = store();
+            if queued {
+                shared_folder(&mut store);
+            }
+            // Before: the attachment failed and the cleanup (trash, purge)
+            // failed too, leaving the record without its file.
+            fail_on(&store, "fail_attachments");
+            fail_on(&store, "fail_trash");
+            assert!(store
+                .create_record_with_attachments(&record(TEXT), &[file("a.png", png(1))])
+                .is_err());
+            assert_eq!(documents(&store), 0, "queued: {queued}");
+        }
+    }
+
+    #[test]
+    fn a_retry_completes_a_record_that_lost_its_files() {
+        let (_dir, mut store) = store();
+        let rec = record(TEXT);
+        // The state an interrupted import (or an older version) left: the
+        // record is there, the files are not.
+        let Created::New { document_id, .. } =
+            store.create_record_with_attachments(&rec, &[]).unwrap()
+        else {
+            panic!()
+        };
+        let both = [file("a.png", png(1)), file("b.pdf", pdf(2))];
+        let again = store.create_record_with_attachments(&rec, &both).unwrap();
+        assert_eq!(
+            again,
+            Created::New {
+                document_id,
+                attachments_added: 2
+            }
+        );
+        assert_eq!(documents(&store), 1);
+        let names = |store: &Store| -> Vec<String> {
+            store
+                .list_attachments(Owner::Document(document_id))
+                .unwrap()
+                .into_iter()
+                .map(|a| a.name)
+                .collect()
+        };
+        assert_eq!(names(&store), ["a.png", "b.pdf"]);
+        // Nothing is missing any more: the next retry is "already".
+        assert_eq!(
+            store.create_record_with_attachments(&rec, &both).unwrap(),
+            Created::Already { document_id }
+        );
+        assert_eq!(names(&store).len(), 2);
+    }
+
+    #[test]
+    fn a_retry_adds_only_the_missing_file_and_never_a_second_copy() {
+        for queued in [false, true] {
+            let (_dir, mut store) = store();
+            if queued {
+                shared_folder(&mut store);
+            }
+            let rec = record(TEXT);
+            let Created::New { document_id, .. } = store
+                .create_record_with_attachments(&rec, &[file("a.png", png(1))])
+                .unwrap()
+            else {
+                panic!()
+            };
+            let events_before = store.list_team_events(500).unwrap().len();
+            let created = store
+                .create_record_with_attachments(
+                    &rec,
+                    // The same content of a.png under another name still counts as present.
+                    &[
+                        file("outro-nome.png", png(1)),
+                        file("b.pdf", pdf(2)),
+                    ],
+                )
+                .unwrap();
+            assert_eq!(
+                created,
+                Created::New {
+                    document_id,
+                    attachments_added: 1
+                },
+                "queued: {queued}"
+            );
+            let list = store
+                .list_attachments(Owner::Document(document_id))
+                .unwrap();
+            let names: Vec<&str> = list.iter().map(|a| a.name.as_str()).collect();
+            assert_eq!(names, ["a.png", "b.pdf"]);
+            assert_eq!(
+                store.list_team_events(500).unwrap().len(),
+                events_before + 1,
+                "one event: the file that was missing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_retry_does_not_bring_back_a_file_the_person_deleted() {
+        let (_dir, mut store) = store();
+        let rec = record(TEXT);
+        let Created::New { document_id, .. } = store
+            .create_record_with_attachments(&rec, &[file("a.png", png(1))])
+            .unwrap()
+        else {
+            panic!()
+        };
+        let id = store.list_attachments(Owner::Document(document_id)).unwrap()[0].id;
+        store
+            .trash_item(Target {
+                kind: Kind::Attachment,
+                id,
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .create_record_with_attachments(&rec, &[file("a.png", png(1))])
+                .unwrap(),
+            Created::Already { document_id }
+        );
+    }
+
+    /// What the journal and the queue hold, without clocks and row numbers.
+    fn journal(store: &Store) -> (Vec<String>, Vec<(i64, String, i64)>, Vec<serde_json::Value>) {
+        let mut events: Vec<_> = store.list_team_events(500).unwrap();
+        events.sort_by_key(|e| e.id);
+        let events = events
+            .into_iter()
+            .map(|e| format!("{}|{}|{:?}|{}", e.actor, e.action, e.document_id, e.details))
+            .collect();
+        let versions = store
+            .conn
+            .prepare("SELECT version,kind,item_id FROM item_versions ORDER BY kind,item_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let outbox = store
+            .list_offline_outbox()
+            .unwrap()
+            .into_iter()
+            .map(|e: OutboxEntry| {
+                let mut value = serde_json::to_value(&e).unwrap();
+                value["mutation"]["capture"]
+                    .as_object_mut()
+                    .map(|c| c.remove("captured_at"));
+                for key in ["id", "created_at", "uid"] {
+                    value.as_object_mut().unwrap().remove(key);
+                }
+                value
+            })
+            .collect();
+        (events, versions, outbox)
+    }
+
+    #[test]
+    fn a_successful_import_writes_what_the_two_steps_wrote() {
+        for queued in [false, true] {
+            let rec = record(TEXT);
+            let files = [file("foto:1.png", png(1)), file("nota.pdf", pdf(2))];
+
+            // The sequence the importer used to run: the record, then each file.
+            let (_old_dir, mut old) = store();
+            if queued {
+                shared_folder(&mut old);
+            }
+            let actor = old.active_actor();
+            let capture = rec.fields.capture_with(
+                MANUAL_PENDING,
+                &actor,
+                rec.request_id.clone(),
+                rec.metadata.clone(),
+            );
+            let receipt = old.import_capture(&capture).unwrap();
+            for (name, f) in prepared(&files).unwrap() {
+                old.add_attachment(
+                    Owner::Document(receipt.document_id),
+                    &name,
+                    f.description.trim(),
+                    &f.bytes,
+                )
+                .unwrap();
+            }
+
+            let (_new_dir, mut new) = store();
+            if queued {
+                shared_folder(&mut new);
+            }
+            new.create_record_with_attachments(&rec, &files).unwrap();
+
+            let (old_events, old_versions, old_outbox) = journal(&old);
+            let (new_events, new_versions, new_outbox) = journal(&new);
+            assert_eq!(new_events, old_events, "team events (queued: {queued})");
+            assert_eq!(new_versions, old_versions, "item versions (queued: {queued})");
+            assert_eq!(new_outbox, old_outbox, "outbox (queued: {queued})");
+            assert_eq!(new_events.len(), 3, "import + two attachments");
+            assert_eq!(new_outbox.len(), if queued { 3 } else { 0 });
+            assert_eq!(new.cabinet_revision().unwrap(), old.cabinet_revision().unwrap());
+        }
     }
 }

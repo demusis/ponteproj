@@ -3666,6 +3666,46 @@ mod tests {
         assert_eq!(store.list_documents("").unwrap().len(), before);
     }
 
+    /// What a failed import must not leave in the phone's library.
+    fn traces(store: &Store) -> (i64, usize, usize, usize) {
+        (
+            store.cabinet_revision().unwrap(),
+            store.list_team_events(500).unwrap().len(),
+            store.list_offline_outbox().unwrap().len(),
+            store.list_documents("").unwrap().len(),
+        )
+    }
+
+    #[test]
+    fn a_failure_after_the_record_leaves_no_record_and_nothing_queued() {
+        use ponteproj::record_import::INJECT_FAILURE_AFTER_RECORD as INJECT;
+        use std::sync::atomic::Ordering;
+        struct Disarm;
+        impl Drop for Disarm {
+            fn drop(&mut self) {
+                INJECT.store(false, Ordering::SeqCst);
+            }
+        }
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _disarm = Disarm;
+        let dir = Dir::new();
+        let (mut store, _) = library(&dir.0);
+        let before = traces(&store);
+        let file = work_file(&dir.0, "w.bin", b"conteudo do recibo");
+        // The record is written, then the attachment cannot be: the phone
+        // (always in shared-folder mode) used to queue the record, then try
+        // to delete it, and swallow a failure of that.
+        INJECT.store(true, Ordering::SeqCst);
+        let error = create_record(&mut store, &fields("Recibo que falha", "texto"), &file).unwrap_err();
+        assert!(!format!("{error:#}").is_empty());
+        assert_eq!(traces(&store), before, "no record, no journal, no queue");
+        assert!(store.trash_entries().unwrap().is_empty());
+        // The failure was one-off: the same import now works.
+        let made = create_record(&mut store, &fields("Recibo que falha", "texto"), &file).unwrap();
+        let id = made["document_id"].as_i64().unwrap();
+        assert_eq!(attachments_of(&store, id), ["recibo.txt"]);
+    }
+
     #[test]
     fn the_photo_record_keeps_working_through_the_general_function() {
         let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
