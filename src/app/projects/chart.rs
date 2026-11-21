@@ -79,7 +79,7 @@ impl Scale {
     /// Where a deadline is marked: the end of its day, which is where a bar
     /// that ends on time stops.
     pub(super) fn deadline_x(&self, day: NaiveDate) -> f32 {
-        self.x_of_date(day + Duration::days(1))
+        self.x_of_date(day.succ_opt().unwrap_or(day))
     }
 
     /// Middle of a day.
