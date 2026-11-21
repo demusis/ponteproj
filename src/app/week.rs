@@ -3,6 +3,7 @@ use super::today::{day_time_label, working_day, Asked, TodayData};
 use crate::resources::parse_moment;
 use crate::theme::{self, S1, S2};
 use crate::widgets::{self, Tone};
+use crate::workload::{self, Load};
 use chrono::{Datelike, Duration, NaiveDate};
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
@@ -94,6 +95,8 @@ pub(super) struct WeekCache {
     warnings: HashMap<i64, Vec<i64>>,
     unscheduled: Vec<usize>,
     rows: Vec<Vec<(String, String, Asked)>>,
+    loads: [Load; 7],
+    total: Load,
 }
 
 fn build_week_cache(data: &TodayData, start: NaiveDate) -> WeekCache {
@@ -208,7 +211,10 @@ fn build_week_cache(data: &TodayData, start: NaiveDate) -> WeekCache {
             rows
         })
         .collect();
+    let (loads, total) = workload::week_load(&data.planning_tasks, start, working_day);
     WeekCache {
+        loads,
+        total,
         rows,
         warnings,
         unscheduled,
@@ -255,6 +261,8 @@ pub(super) fn show(
         *cache = Some(build_week_cache(data, start));
     }
     let cache = cache.as_ref().unwrap();
+    week_load_line(ui, cache.total);
+    ui.add_space(S2);
     let projections = &data.projections;
     let links = &cache.links;
     let outside = &cache.outside;
@@ -273,8 +281,9 @@ pub(super) fn show(
         let card = widgets::card_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             let arrow_slot = ui.painter().add(egui::Shape::Noop);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 widgets::section(ui, super::calendar::long_date(day));
+                day_load_label(ui, cache.loads[offset as usize]);
                 if let Some(name) = crate::holidays::holiday(day) {
                     ui.label(
                         egui::RichText::new(format!("· feriado: {name}")).color(theme::c().warn),
@@ -415,6 +424,83 @@ pub(super) fn show(
         {
             *asked = Some(Asked::OpenTask(task.clone()));
         }
+    }
+}
+
+/// "Carga da semana: 26 h de 45 h planejadas", a thin bar and the help.
+fn week_load_line(ui: &mut egui::Ui, total: Load) {
+    let text = if total.capacity_minutes == 0 {
+        if total.planned_minutes == 0 {
+            "Carga da semana: sem dias úteis".to_owned()
+        } else {
+            format!(
+                "Carga da semana: {} planejadas, sem dias úteis",
+                workload::hours_label(total.planned_minutes)
+            )
+        }
+    } else {
+        format!(
+            "Carga da semana: {} de {} planejadas",
+            workload::hours_label(total.planned_minutes),
+            workload::hours_label(total.capacity_minutes)
+        )
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(text).color(if total.is_over() {
+            theme::c().warn
+        } else {
+            theme::c().text
+        }));
+        crate::help_ui::help(
+            ui,
+            "Soma os períodos planejados das tarefas abertas, dentro e fora do expediente de 9h às 18h, contra os dias úteis da semana (feriados e folgas conforme Ajustes). Tarefas sem período planejado não entram.",
+        );
+        let width = ui.available_width().clamp(60.0, 160.0);
+        load_bar(ui, total, width);
+    });
+}
+
+/// The thin bar: normal up to 100 %, the warning tone above.
+fn load_bar(ui: &mut egui::Ui, load: Load, width: f32) {
+    let p = theme::c();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 6.0), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let radius = egui::CornerRadius::same(3);
+    ui.painter().rect_filled(rect, radius, p.outline);
+    if load.planned_minutes > 0 {
+        let fraction = if load.capacity_minutes == 0 {
+            1.0
+        } else {
+            (load.planned_minutes as f32 / load.capacity_minutes as f32).clamp(0.0, 1.0)
+        };
+        let filled = egui::Rect::from_min_size(rect.min, egui::vec2(width * fraction, 6.0));
+        let color = if load.is_over() { p.warn } else { p.primary };
+        ui.painter().rect_filled(filled, radius, color);
+    }
+}
+
+/// The planned hours of a day beside its date; the warning tone when over.
+fn day_load_label(ui: &mut egui::Ui, load: Load) {
+    if load.planned_minutes == 0 {
+        return;
+    }
+    let hours = workload::hours_label(load.planned_minutes);
+    if load.is_over() {
+        ui.label(egui::RichText::new(format!("⚠ {hours}")).color(theme::c().warn))
+            .on_hover_text(format!(
+                "Dia com mais horas planejadas ({hours}) que o expediente ({}).",
+                workload::hours_label(load.capacity_minutes)
+            ));
+    } else {
+        let note = if load.capacity_minutes == 0 {
+            "Horas planejadas neste dia, que não tem expediente."
+        } else {
+            "Horas planejadas neste dia."
+        };
+        ui.label(egui::RichText::new(hours).color(theme::c().muted))
+            .on_hover_text(note);
     }
 }
 

@@ -3,15 +3,19 @@ use crate::{holidays::is_working_day, resources::parse_moment, tasks::Task};
 use chrono::{NaiveDateTime, Timelike};
 use std::collections::{HashMap, HashSet};
 
+/// The planning working window, 09:00–18:00, on working days.
+pub const WORK_START_HOUR: u32 = 9;
+pub const WORK_END_HOUR: u32 = 18;
+
 pub fn next_work_start(after: NaiveDateTime) -> NaiveDateTime {
     let mut date = after.date();
-    if is_working_day(date) && after.time().num_seconds_from_midnight() < 18 * 3600 {
-        return after.max(date.and_hms_opt(9, 0, 0).unwrap());
+    if is_working_day(date) && after.time().num_seconds_from_midnight() < WORK_END_HOUR * 3600 {
+        return after.max(date.and_hms_opt(WORK_START_HOUR, 0, 0).unwrap());
     }
     loop {
         date = date.succ_opt().unwrap();
         if is_working_day(date) {
-            return date.and_hms_opt(9, 0, 0).unwrap();
+            return date.and_hms_opt(WORK_START_HOUR, 0, 0).unwrap();
         }
     }
 }
@@ -30,7 +34,7 @@ pub fn work_end(start: NaiveDateTime, days: u32) -> NaiveDateTime {
             }
         }
     }
-    date.and_hms_opt(18, 0, 0).unwrap()
+    date.and_hms_opt(WORK_END_HOUR, 0, 0).unwrap()
 }
 
 pub fn project(tasks: &[Task]) -> HashMap<i64, (NaiveDateTime, NaiveDateTime)> {

@@ -17,7 +17,7 @@ use crate::work_templates::{
     WorkTemplate,
 };
 use anyhow::{Context, Result};
-use chrono::{Duration, Local, NaiveDate, Utc};
+use chrono::{Datelike, Duration, Local, NaiveDate, Utc};
 use std::collections::BTreeMap;
 
 /// Days from today of the room asked for in the sample ofício (free at that
@@ -863,7 +863,16 @@ fn projects(store: &mut Store) -> Result<()> {
     }
     let mut roster = find(store, "Atualizar a escala da equipe do Projeto Alfa")?;
     roster.project_uid = staff.uid.clone();
+    // Two blocks on this week's Wednesday: 11 h against the 9 h working
+    // window, so the week view shows an overbooked day.
+    let busy = 2 - i64::from(day(0).weekday().num_days_from_monday());
+    roster.scheduled_start = at(busy, 9);
+    roster.scheduled_end = at(busy, 17);
     store.save_task(&roster)?;
+    let mut room = find(store, "Conferir o quadro de pessoal")?;
+    room.scheduled_start = at(busy, 13);
+    room.scheduled_end = at(busy, 16);
+    store.save_task(&room)?;
     Ok(())
 }
 
