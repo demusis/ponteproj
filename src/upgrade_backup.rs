@@ -117,14 +117,9 @@ pub fn backup_library(
     label: &str,
     stamp: &str,
 ) -> Result<Outcome> {
-    if !database.exists() {
+    if !library_exists(database)? {
         return Ok(Outcome::NoLibrary);
     }
-    ensure!(
-        database.is_file(),
-        "O acervo em {} não é um arquivo.",
-        database.display()
-    );
     std::fs::create_dir_all(destination).with_context(|| {
         format!(
             "Não foi possível criar ou usar a pasta da cópia de segurança ({}).",
@@ -143,6 +138,65 @@ pub fn backup_library(
     })?;
     partial.disarm();
     Ok(Outcome::BackedUp(final_path))
+}
+
+/// Whether the library file is there. `Path::exists` folds every error into
+/// "no", which would turn a library on a drive that cannot be reached right now
+/// into "first installation, nothing to copy" and let the installer go on without
+/// a copy. Here "there is no library" is only answered when the place it would be
+/// in is reachable; anything else that goes wrong is an error.
+fn library_exists(database: &Path) -> Result<bool> {
+    match std::fs::metadata(database) {
+        Ok(meta) => {
+            ensure!(
+                meta.is_file(),
+                "O acervo em {} não é um arquivo.",
+                database.display()
+            );
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ensure_place_is_reachable(database)?;
+            Ok(false)
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Não foi possível verificar o acervo em {} (o disco ou a pasta está acessível?).",
+                database.display()
+            )
+        }),
+    }
+}
+
+/// A library file that is not there is a first installation only if the nearest
+/// folder above it that exists can be read: a first installation has no data
+/// folder yet, but its parent (`%LOCALAPPDATA%`) is there; a drive or share that
+/// is gone has no folder at all, and one that answers with an error is no better.
+fn ensure_place_is_reachable(database: &Path) -> Result<()> {
+    let absolute = std::path::absolute(database).unwrap_or_else(|_| database.to_path_buf());
+    for ancestor in absolute.ancestors().skip(1) {
+        match std::fs::metadata(ancestor) {
+            Ok(meta) if meta.is_dir() => return Ok(()),
+            Ok(_) => bail!(
+                "{} não é uma pasta; o acervo não pode estar em {}.",
+                ancestor.display(),
+                database.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Não foi possível acessar {} para procurar o acervo.",
+                        ancestor.display()
+                    )
+                })
+            }
+        }
+    }
+    bail!(
+        "Não foi possível alcançar a pasta do acervo ({}): confira o disco ou a pasta definida em PONTEPROJ_DATA_DIR.",
+        database.display()
+    )
 }
 
 /// `antes-de-instalar-<label>-<stamp>.sqlite3`, or the same with `-2`, `-3`…
@@ -766,5 +820,51 @@ mod tests {
         assert_eq!(files_in(root.path()), vec![RESULT_FILE_NAME.to_owned()]);
         assert!(write_new_file(&note, "x").is_err());
         assert_eq!(std::fs::read_to_string(&note).unwrap(), "dois\n");
+    }
+
+    #[test]
+    fn a_library_that_cannot_be_reached_is_an_error_not_a_first_installation() {
+        let root = tempfile::tempdir().unwrap();
+        // A first installation: the data folder is not there yet, its parent is.
+        let fresh = root.path().join("Local").join("PonteProj");
+        assert_eq!(
+            execute(&Options::default(), &fresh, "0.48.2", STAMP).unwrap(),
+            Outcome::NoLibrary
+        );
+        // Something that is not a folder on the way is an error.
+        let blocker = root.path().join("bloqueado");
+        std::fs::write(&blocker, "x").unwrap();
+        let error = backup_library(
+            &blocker.join("dados").join("acervo.sqlite3"),
+            &root.path().join("copias"),
+            "v1",
+            STAMP,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("não é uma pasta"),
+            "{error:#}"
+        );
+        assert!(!root.path().join("copias").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_library_on_a_drive_that_is_gone_is_an_error() {
+        // A drive letter with no drive behind it (the unreachable disk of a
+        // PONTEPROJ_DATA_DIR that points to removable storage).
+        let gone = ('D'..='Z')
+            .map(|letter| PathBuf::from(format!("{letter}:\\")))
+            .find(|root| std::fs::metadata(root).is_err())
+            .expect("há uma letra de unidade livre");
+        let root = tempfile::tempdir().unwrap();
+        let error = backup_library(
+            &gone.join("Acervo").join("acervo.sqlite3"),
+            &root.path().join("copias"),
+            "v1",
+            STAMP,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("alcançar"), "{error:#}");
     }
 }
