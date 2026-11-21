@@ -36,7 +36,11 @@ internal data class ShareItem(
     val text: String,
     val subject: String,
     /** The private working file, or null for text only. */
-    val path: String?
+    val path: String?,
+    /** What the sender said the type is (only a hint); empty when unknown. */
+    val mime: String = "",
+    /** SHA-256 of the working file when it was made (to tell, after a restart, that it is intact); empty for text. */
+    val hash: String = ""
 ) {
     val isFile get() = path != null
 }
@@ -59,7 +63,11 @@ internal data class ShareState(
     val busy: Boolean = false,
     val progress: String = "",
     /** Shown over the footer; the item stays so the person can choose the other path or cancel. */
-    val error: String = ""
+    val error: String = "",
+    /** The draft came back after the app was closed ([ShareDraftRules.MSG_RECOVERED] on the form). */
+    val recovered: Boolean = false,
+    /** The draft could not be written to the disk: the form works, but a close of the app loses it. */
+    val keepFailed: Boolean = false
 )
 
 /**
@@ -71,6 +79,10 @@ internal data class ShareState(
  *    its own folder ([DIR]); the core then reads that file, never the Uri.
  *  - Working files are deleted when the work ends (success or failure), when a share is cancelled,
  *    replaced or dropped, and all of them at a cold start.
+ *  - The one exception is a share in progress ("Guardar no Ponte"): it is a DRAFT. The received item's
+ *    copy lives in the private files folder ([ShareDraftStore.DIR]) and the form is written next to it
+ *    (see [ShareDraft]), so a process death, or leaving the app to copy a number, loses nothing. The draft
+ *    is removed when it is saved, cancelled, reset, or older than 7 days ([ShareDraftRules.MAX_AGE_MS]).
  *  - What arrives from other apps is untrusted: see [ShareRules] and [stage].
  *  - Everything runs on the UI thread except the copy and the core calls.
  */
@@ -86,6 +98,9 @@ internal object Intake {
     private const val IMAGE_INPUT_CAP = 40L * 1024 * 1024
     private const val OFFER_LIFETIME_MS = 5L * 60 * 1000
 
+    /** The draft is written this long after the last change (typing does not write at every key). */
+    private const val SAVE_DELAY_MS = 700L
+
     @Suppress("StaticFieldLeak") // Assigned ctx.applicationContext in init.
     private lateinit var app: Context
     private val main = Handler(Looper.getMainLooper())
@@ -93,8 +108,12 @@ internal object Intake {
     /** ONE worker for every copy and decode: they run one after the other, never in parallel. */
     private val stager = Executors.newSingleThreadExecutor { r -> Thread(r, "ponte-intake").apply { isDaemon = true } }
 
+    /** The draft folder, inside the app's private files (never the cache, never external storage). */
+    private lateinit var store: ShareDraftStore
+
     fun init(ctx: Context) {
         app = ctx.applicationContext
+        store = ShareDraftStore(File(app.filesDir, ShareDraftStore.DIR))
     }
 
     private fun ui(block: () -> Unit) {
@@ -104,18 +123,30 @@ internal object Intake {
     private fun dir(): File = File(app.cacheDir, DIR).apply { mkdirs() }
 
     /** A new, uniquely named empty file in the private folder (the system makes the name, so no two collide). */
-    private fun workFile(prefix: String): File = File.createTempFile(prefix + "-", ".tmp", dir())
+    private fun workFile(prefix: String, durable: Boolean = false): File =
+        if (durable) store.newCopy(prefix) else File.createTempFile(prefix + "-", ".tmp", dir())
 
-    /** Cold start: nothing left from an earlier run is kept (the share is lost with the process; see [receive]). */
+    /**
+     * Cold start: the working files of an earlier run (attachments being prepared) are not kept. A share in
+     * progress is not among them: its copy lives in the draft folder, which this never looks at, and
+     * whatever path a draft points to is never deleted here even if it were found in this folder.
+     */
     fun cleanAll(ctx: Context) {
         try {
-            File(ctx.cacheDir, DIR).listFiles()?.forEach { if (it.isFile) it.delete() }
+            val keep = livePaths()
+            File(ctx.cacheDir, DIR).listFiles()?.forEach {
+                if (it.isFile && ShareDraftRules.mayDelete(it.absolutePath, keep)) it.delete()
+            }
         } catch (_: Throwable) {
         }
     }
 
-    /** Camera pictures taken for an "Anexar…" that must survive a lock while the camera is in front. */
-    fun keepPaths(): Set<String> = setOfNotNull(attachPhoto?.absolutePath, resizing?.absolutePath)
+    /** The copy a share in progress points to (nothing to delete or clean may touch it). */
+    private fun livePaths(): Set<String> = setOfNotNull(share.item?.path)
+
+    /** Camera pictures taken for an "Anexar…" that must survive a lock while the camera is in front, and the share's copy. */
+    fun keepPaths(): Set<String> =
+        setOfNotNull(attachPhoto?.absolutePath, resizing?.absolutePath) + livePaths()
 
     // ------------------------------------------------------------------ reading a Uri
 
@@ -170,7 +201,10 @@ internal object Intake {
      * is cleaned, and gets the extension of the MIME hint when it has none. The type of the content
      * is not judged here: the core does it when the file is stored.
      */
-    private fun stage(uri: Uri, mimeHint: String?, allowBigImage: Boolean, cancelled: () -> Boolean = { false }): Staged {
+    private fun stage(
+        uri: Uri, mimeHint: String?, allowBigImage: Boolean, cancelled: () -> Boolean = { false },
+        durable: Boolean = false
+    ): Staged {
         val auth = uri.authority
         if (!"content".equals(uri.scheme, ignoreCase = true) || auth.isNullOrBlank()) {
             throw PonteException(ShareRules.MSG_NOT_CONTENT)
@@ -204,7 +238,7 @@ internal object Intake {
         // The size the provider announces is only a hint: it lets an obvious case fail early.
         if (declared > cap) throw PonteException(tooBig)
 
-        val work = workFile("in")
+        val work = workFile("in", durable)
         var done = false
         try {
             try {
@@ -216,7 +250,7 @@ internal object Intake {
             // Re-encoded to JPEG when over the limit, or when what the decoder really finds in it is a
             // type the core does not take (HEIC, WebP...): by content, never by the sender's label.
             if (image && ShareRules.needsReencode(realImageType(work), work.length(), limit)) {
-                val shrunk = workFile("img")
+                val shrunk = workFile("img", durable)
                 try {
                     Images.resizeForUpload(work, shrunk)
                 } catch (e: OutOfMemoryError) {
@@ -456,7 +490,7 @@ internal object Intake {
     /** What to tell once the app is unlocked (a refusal that came while it was locked). */
     private var pendingNotice: String? = null
 
-    /** The pending share is in memory only; a process death loses it and the person shares again. */
+    /** A share is on the stack: being received, a form being filled, or a draft that came back (see [restoreDraft]). */
     fun hasShare() = Route.Share in Controller.stack
 
     private fun tell(message: String) {
@@ -475,6 +509,197 @@ internal object Intake {
         seen = true
     }
 
+    // ------------------------------------------------------------------ the draft on disk
+    //
+    // A share with an item is a DRAFT: [snapshot] is written (atomically) to the draft folder shortly after
+    // every change, when the app goes to the background, and before the core is asked to save. It is
+    // removed when saved, cancelled, reset, or after 7 days. At start, [restoreDraft] puts it back.
+
+    private val saveTick = Runnable { flushAsync() }
+
+    /** Writes of the draft run here, in order, so a slow disk never holds the screen. */
+    private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "ponte-draft").apply { isDaemon = true } }
+
+    /** When the share arrived (the 7 days count from here). */
+    private var draftCreatedAt = 0L
+
+    /** The save marker: set before the core is called, cleared when the save ends (see [DraftSaving]). */
+    private var saving: DraftSaving? = null
+
+    /** A draft written by a newer app sits in the folder: it is left untouched, and nothing of ours is written over it. */
+    private var draftBlocked = false
+
+    private fun snapshot(): ShareDraft? {
+        val s = share
+        val item = s.item ?: return null
+        if (s.reading) return null
+        val now = System.currentTimeMillis()
+        if (draftCreatedAt <= 0L) draftCreatedAt = now
+        return ShareDraft(
+            createdAt = draftCreatedAt, updatedAt = now,
+            copy = item.path?.let { File(it).name } ?: "", name = item.name, size = item.size, mime = item.mime,
+            hash = item.hash, text = item.text, subject = item.subject, mode = s.mode.name, kind = s.kind,
+            title = s.title, date = s.date, origin = s.origin, notes = s.notes,
+            targetId = s.target?.id ?: 0L, targetNumber = s.target?.number ?: "", targetTitle = s.target?.title ?: "",
+            description = s.description, saving = saving
+        )
+    }
+
+    /** The item is ready: the draft is born (written at once, so even an immediate kill finds it). */
+    private fun startDraft() {
+        draftCreatedAt = System.currentTimeMillis()
+        saving = null
+        writeNow()
+    }
+
+    /** A field changed: the draft is written a moment after the last change. */
+    private fun scheduleSave() {
+        if (share.item == null || share.reading) return
+        main.removeCallbacks(saveTick)
+        main.postDelayed(saveTick, SAVE_DELAY_MS)
+    }
+
+    /** Written now, on the calling (UI) thread: the draft is small, and the app may be gone a moment later. */
+    private fun writeNow() {
+        main.removeCallbacks(saveTick)
+        val d = snapshot() ?: return
+        reportWrite(!draftBlocked && store.write(d))
+    }
+
+    private fun flushAsync() {
+        val d = snapshot() ?: return
+        val mine = gen
+        writer.execute {
+            // Under the lock the removal of a draft takes too: a draft dropped meanwhile is never brought back.
+            val ok = synchronized(ShareDraftStore.lock) { if (gen != mine) null else !draftBlocked && store.write(d) }
+            if (ok != null) ui { if (gen == mine) reportWrite(ok) }
+        }
+    }
+
+    /** The form is told whether the draft is being kept: a discreet warning when the disk refuses it. */
+    private fun reportWrite(ok: Boolean) {
+        if (share.item == null) return
+        if (!ok && !share.keepFailed) share = share.copy(keepFailed = true)
+        else if (ok && share.keepFailed) share = share.copy(keepFailed = false)
+    }
+
+    /** The draft file is gone, with every pending write (the copy is deleted by the caller). */
+    private fun forgetDraft() {
+        main.removeCallbacks(saveTick)
+        saving = null
+        draftCreatedAt = 0L
+        if (!draftBlocked) store.deleteDraft()
+    }
+
+    /** The marker is written before the core is called: if the process dies now, the restored draft looks first. */
+    private fun beginSaving(op: String, expectedText: String) {
+        val baseline = if (op == ShareDraftRules.OP_RECORD) SyncRunner.docs.maxOfOrNull { it.id } ?: 0L else 0L
+        saving = DraftSaving(op, java.util.UUID.randomUUID().toString(), baseline, System.currentTimeMillis(), expectedText)
+        writeNow()
+    }
+
+    /** The save failed: the draft is a form again. */
+    private fun endSaving() {
+        saving = null
+        flushAsync()
+    }
+
+    /**
+     * At a cold start (before anything is shown): puts back the share that was in progress when the app
+     * closed, with every field, on the share route. The lock comes first by itself: the route waits
+     * on the stack and nothing of it is composed (or said) until the app is unlocked. A draft that is too old, or
+     * whose copy is gone or changed, is removed and the person is told once ([tell] waits for the unlock).
+     * Never throws: whatever is wrong means no draft.
+     */
+    fun restoreDraft() {
+        if (share.item != null || share.reading) return
+        try {
+            when (val s = store.start(System.currentTimeMillis(), Controller.isSetUp())) {
+                ShareDraftStore.Start.None -> {}
+                ShareDraftStore.Start.Blocked -> draftBlocked = true
+                is ShareDraftStore.Start.Dropped -> s.message?.let { tell(it) }
+                is ShareDraftStore.Start.Resume -> adopt(s.draft, s.checkFirst)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun adopt(d: ShareDraft, checkFirst: Boolean) {
+        gen++
+        val mine = gen
+        val item = ShareItem(
+            d.name, d.size, d.text, d.subject, if (d.copy.isEmpty()) null else store.path(d.copy), d.mime, d.hash
+        )
+        val mode = ShareMode.valueOf(ShareDraftRules.normalMode(d.mode, item.isFile, d.targetId > 0))
+        val target = if (d.targetId > 0) Doc(d.targetId, d.targetNumber, d.targetTitle, "", null) else null
+        // A restored form counts as seen: it waits behind a lock like any form in progress, and is not dropped
+        // by the rule for a share nobody has looked at.
+        seen = true
+        kindTouched = true
+        draftCreatedAt = d.createdAt
+        saving = d.saving
+        share = ShareState(
+            item = item, mode = mode, kinds = Controller.photo.kinds, kind = d.kind.ifEmpty { "outro" },
+            title = d.title, date = d.date, origin = d.origin, notes = d.notes, target = target,
+            description = d.description, recovered = true,
+            busy = checkFirst, progress = if (checkFirst) ShareDraftRules.MSG_CHECKING else ""
+        )
+        if (Route.Share !in Controller.stack) Controller.stack.add(Route.Share)
+        if (checkFirst) resolveSaving(d, mine)
+    }
+
+    /**
+     * A draft that died while saving: before the form comes back, look whether the core already made the record
+     * (or took the attachment). If so the draft is over; if not, the form is back, ready to save.
+     */
+    private fun resolveSaving(d: ShareDraft, mine: Int) {
+        SyncRunner.background({ alreadySaved(d) }, { id ->
+            if (gen == mine) {
+                if (ShareDraftRules.afterDeath(d, id != null) == ShareDraftRules.Resolution.ALREADY_SAVED && id != null) {
+                    dropShare(removeRoute = true)
+                    finished(id, ShareDraftRules.MSG_SAVED_BEFORE)
+                } else {
+                    saving = null
+                    share = share.copy(busy = false, progress = "")
+                    flushAsync()
+                }
+            }
+        }, {
+            // The library could not be read: the form is back but the marker stays; the person is told to look first.
+            if (gen == mine) share = share.copy(busy = false, progress = "", error = ShareDraftRules.MSG_CANNOT_CHECK)
+        }, fail = ShareDraftRules.MSG_CANNOT_CHECK)
+    }
+
+    /** Blocking (core calls): the id of the document that holds what the dead save made, or null. */
+    private fun alreadySaved(d: ShareDraft): Long? {
+        val sv = d.saving ?: return null
+        if (sv.op == ShareDraftRules.OP_ATTACH) {
+            val files = try { docFacts(d.targetId).files } catch (_: Throwable) { return null }
+            return if (ShareDraftRules.alreadyAttached(d, files)) d.targetId else null
+        }
+        val err = SyncRunner.refreshDocs()
+        if (err != null) throw PonteException(err)
+        val ids = ShareDraftRules.candidateIds(sv.baseline, SyncRunner.docs.map { DocRow(it.id, it.manual) })
+        return ids.firstOrNull { ShareDraftRules.sameRecord(d, docFacts(it)) }
+    }
+
+    private fun docFacts(id: Long): DocFacts {
+        val o = Api.document(id)
+        return DocFacts(o.optJSONArray("attachments").objs().map { it.s("name") to it.optLong("size") }, o.s("text"))
+    }
+
+    /** "Recomeçar": the draft and its copy go with the rest of the phone's data. */
+    fun wipeForReset() {
+        gen++
+        main.removeCallbacks(saveTick)
+        saving = null
+        draftCreatedAt = 0L
+        draftBlocked = false
+        share = ShareState()
+        Controller.stack.removeAll { it == Route.Share || it == Route.SharePick }
+        store.wipe()
+    }
+
     /**
      * An offer came in through [MainActivity]. Order: the checks that need no content; "not set up"
      * (told, nothing read); the file is copied under the cap; and the screen is put on the
@@ -489,8 +714,9 @@ internal object Intake {
         if (!verdict.ok) { tell(verdict.message); return }
         if (!Controller.isSetUp()) { tell(ShareRules.MSG_NOT_SET_UP); return }
         // One share at a time: while one is being received or is on the screen (a form being filled,
-        // a save running) the first is kept untouched and the person is told. Nothing of the second
-        // is read. Only a share whose copy failed (nothing to keep) is replaced.
+        // a save running, a draft that came back after a restart) the first is kept untouched and the
+        // person is told. Nothing of the second is read. Only a share whose copy failed (nothing to
+        // keep) is replaced.
         if (IntakeRules.arrival(share.reading, share.item != null) == IntakeRules.Arrival.KEEP_FIRST) {
             tell(ShareRules.MSG_KEEP_FIRST)
             return
@@ -507,23 +733,28 @@ internal object Intake {
         val uri = o.uri
         if (uri == null) {
             val title = subject.ifEmpty { ShareRules.oneLine(text.lineSequence().firstOrNull { it.isNotBlank() }, 120) }
-            share = ShareState(item = ShareItem("", 0, text, subject, null), kinds = kinds, kind = kind, title = title)
+            share = ShareState(item = ShareItem("", 0, text, subject, null, o.mime.orEmpty()), kinds = kinds, kind = kind, title = title)
             Controller.stack.add(Route.Share)
+            startDraft()
             return
         }
         share = ShareState(reading = true, kinds = kinds, kind = kind)
         Controller.stack.add(Route.Share)
         stager.execute {
             try {
-                val s = stage(uri, o.mime, allowBigImage = true, cancelled = { IntakeRules.isLate(gen, mine) })
+                // The copy is made in the draft folder: it must outlive the process while the form is open.
+                val s = stage(uri, o.mime, allowBigImage = true, cancelled = { IntakeRules.isLate(gen, mine) }, durable = true)
+                val hash = try { ShareDraftStore.hashOf(s.file) } catch (_: Throwable) { "" }
+                val mime = o.mime?.takeIf { ShareRules.plausibleMime(it) }.orEmpty()
                 ui {
                     if (!IntakeRules.isLate(gen, mine)) {
                         val title = subject.ifEmpty { ShareRules.oneLine(ShareRules.titleFromName(s.name), AttachLimits.maxTitleBytes) }
                         share = share.copy(
                             reading = false, error = "",
-                            item = ShareItem(s.name, s.size, text, subject, s.file.absolutePath),
+                            item = ShareItem(s.name, s.size, text, subject, s.file.absolutePath, mime, hash),
                             title = title
                         )
+                        startDraft()
                     } else s.file.delete()
                 }
             } catch (_: CopyCancelled) {
@@ -541,12 +772,18 @@ internal object Intake {
     fun onKinds(kinds: List<Choice>) {
         if (kinds.isEmpty() || share.item == null && !share.reading) return
         val keep = kindTouched && kinds.any { it.key == share.kind }
+        val before = share.kind
         share = share.copy(kinds = kinds, kind = if (keep) share.kind else ShareRules.defaultKind(kinds.map { it.key }))
+        if (share.kind != before) scheduleSave()
     }
 
-    /** Deletes the pending share's working file and forgets it; optionally takes its screens off the stack. */
+    /**
+     * Deletes the pending share's draft (first) and its working file, and forgets it; optionally takes its
+     * screens off the stack. This is every way a draft ends: saved, cancelled, replaced, never seen.
+     */
     private fun dropShare(removeRoute: Boolean) {
         gen++
+        forgetDraft()
         share.item?.path?.let { try { File(it).delete() } catch (_: Throwable) { } }
         share = ShareState()
         if (removeRoute) Controller.stack.removeAll { it == Route.Share || it == Route.SharePick }
@@ -558,12 +795,21 @@ internal object Intake {
         dropShare(removeRoute = true)
     }
 
-    /** A fresh start of the app (the person had left with Back): nothing pending survives. */
-    fun reset() {
-        if (share.busy) return
+    /**
+     * A fresh start of the app (the person had left with Back and came again while the process was alive):
+     * what was being attached waits for nothing, but a share in progress is a draft and stays, exactly as it
+     * would after a restart. True when it stays (the caller puts its screen back on the stack).
+     */
+    fun reset(): Boolean {
+        if (share.busy) return true
         pendingNotice = null
         dropParked()
+        if (share.item != null && !share.reading) {
+            Controller.stack.removeAll { it == Route.SharePick }
+            return true
+        }
         dropShare(removeRoute = true)
+        return false
     }
 
     /**
@@ -581,6 +827,9 @@ internal object Intake {
                 changingConfiguration, Controller.locked, unlocking, share.busy, seen, hasShare()
             )
         ) dropShare(removeRoute = true)
+        // Going to the background (or being stopped for any reason): the draft is on the disk before the
+        // system may kill the process.
+        if (share.item != null && !share.reading) writeNow()
     }
 
     /** A result parked for the unlock is thrown away (the person left without unlocking). */
@@ -594,13 +843,16 @@ internal object Intake {
     /** Back on the screen: from a form to the first step, from the first step out. */
     fun back() {
         if (share.busy) return
-        if (share.mode != ShareMode.CHOOSE) share = share.copy(mode = ShareMode.CHOOSE, error = "", titleError = "")
-        else cancel()
+        if (share.mode != ShareMode.CHOOSE) {
+            share = share.copy(mode = ShareMode.CHOOSE, error = "", titleError = "")
+            scheduleSave()
+        } else cancel()
     }
 
     fun chooseRecord() {
         if (share.item == null || share.busy) return
         share = share.copy(mode = ShareMode.RECORD, error = "")
+        scheduleSave()
     }
 
     /** Only a file can be attached to a document; a shared text can only become a new record. */
@@ -615,14 +867,18 @@ internal object Intake {
         if (share.item == null) return
         Controller.stack.removeAll { it == Route.SharePick }
         share = share.copy(mode = ShareMode.ATTACH, target = d, error = "")
+        scheduleSave()
     }
 
-    fun setTitle(v: String) { share = share.copy(title = v, titleError = "") }
-    fun setKind(v: String) { kindTouched = true; share = share.copy(kind = v) }
-    fun setDate(v: String) { share = share.copy(date = v) }
-    fun setOrigin(v: String) { share = share.copy(origin = v) }
-    fun setNotes(v: String) { share = share.copy(notes = v) }
-    fun setDescription(v: String) { share = share.copy(description = ShareRules.capChars(v, AttachLimits.maxDescriptionChars)) }
+    fun setTitle(v: String) { share = share.copy(title = v, titleError = ""); scheduleSave() }
+    fun setKind(v: String) { kindTouched = true; share = share.copy(kind = v); scheduleSave() }
+    fun setDate(v: String) { share = share.copy(date = v); scheduleSave() }
+    fun setOrigin(v: String) { share = share.copy(origin = v); scheduleSave() }
+    fun setNotes(v: String) { share = share.copy(notes = v); scheduleSave() }
+    fun setDescription(v: String) {
+        share = share.copy(description = ShareRules.capChars(v, AttachLimits.maxDescriptionChars))
+        scheduleSave()
+    }
 
     /** Creates the manual record: the file becomes its attachment, a text its text. */
     fun saveRecord() {
@@ -646,6 +902,9 @@ internal object Intake {
             .toString()
         val mine = gen
         share = s.copy(busy = true, progress = "Guardando o registro…", error = "", titleError = "")
+        // Written to the disk BEFORE the core is asked: a process that dies from here to the end of the save
+        // comes back knowing a save was under way, and looks for the record before showing the form again.
+        beginSaving(ShareDraftRules.OP_RECORD, text)
         SyncRunner.background({
             val id = Api.createRecord(fields, item.path ?: "")
             SyncRunner.refreshDocs()
@@ -656,7 +915,10 @@ internal object Intake {
                 finished(id, "Registro salvo.")
             }
         }, { m ->
-            if (gen == mine) share = share.copy(busy = false, progress = "", error = m)
+            if (gen == mine) {
+                share = share.copy(busy = false, progress = "", error = m)
+                endSaving()
+            }
         }, fail = "Não foi possível guardar o registro. Confira o espaço livre no aparelho e tente de novo.")
     }
 
@@ -671,6 +933,7 @@ internal object Intake {
         val description = ShareRules.capChars(s.description.trim(), AttachLimits.maxDescriptionChars)
             .ifEmpty { "Recebido de outro aplicativo" }
         share = s.copy(busy = true, progress = "Anexando o arquivo…", error = "")
+        beginSaving(ShareDraftRules.OP_ATTACH, "")
         SyncRunner.background({
             Api.attachFile(target.id, path, item.name, description)
             SyncRunner.refreshDocs()
@@ -680,16 +943,22 @@ internal object Intake {
                 finished(target.id, "Anexo adicionado.")
             }
         }, { m ->
-            if (gen == mine) share = share.copy(busy = false, progress = "", error = m)
+            if (gen == mine) {
+                share = share.copy(busy = false, progress = "", error = m)
+                endSaving()
+            }
         }, fail = "Não foi possível anexar o arquivo. Tente de novo.")
     }
 
-    /** The person stays in the app, on the record or the ficha that now holds what came. */
+    /**
+     * The person stays in the app, on the record or the ficha that now holds what came. Said behind the lock
+     * (a draft that was found already saved at start) it waits for the unlock.
+     */
     private fun finished(documentId: Long, message: String) {
         Controller.render()
         Controller.selectTab(2)
         Controller.openDocument(documentId)
-        Controller.say(message)
+        if (Controller.locked) pendingNotice = message else Controller.say(message)
         Controller.requestSync(null, auto = true)
     }
 }

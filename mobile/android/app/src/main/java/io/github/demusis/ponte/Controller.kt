@@ -86,8 +86,9 @@ internal sealed class Route {
     object Photo : Route() { override val key get() = "photo" }
 
     /**
-     * "Guardar no Ponte": what another app shared. Never restored after the process dies (its
-     * content lives in memory only; [parse] answers null), and the document picker of it likewise.
+     * "Guardar no Ponte": what another app shared. Not restored from the saved state of the screen ([parse]
+     * answers null): after the process dies the share comes back from its own draft on the disk
+     * ([Intake.restoreDraft]), which keeps the item and the form. The document picker of it is not restored.
      */
     object Share : Route() { override val key get() = "share" }
 
@@ -308,7 +309,8 @@ internal object Controller {
             if (locked) lockEpoch++
             val b = saved?.getBundle("photo")
             cleanHandedFiles(setOfNotNull(b?.getString("photo"), b?.getString("new")))
-            // A share or an attachment being prepared dies with the process: its files go too.
+            // An attachment being prepared dies with the process: its files go too. A share in progress is a
+            // draft kept in the private files folder: it is not among them (see restoreDraft below).
             Intake.cleanAll(app)
         }
         if (!SyncRunner.ready && !SyncRunner.keyBroken && !SyncRunner.running.get()) {
@@ -317,15 +319,20 @@ internal object Controller {
         if (!started) {
             started = true
             if (saved != null) restore(saved) else idleTask = { startup() }
+            // The share that was in progress when the process died comes back on top of the stack (behind the
+            // lock when it is in force: nothing of it is composed or said before the unlock).
+            Intake.restoreDraft()
             loadChoices()
             refreshTasks()
         } else if (fresh) {
             // The person left with Back and came again while the process was still alive.
             if (!photo.saving) {
                 closePhoto()
-                Intake.reset()
+                val keepShare = Intake.reset()
                 stack.clear()
                 tab = 0
+                // A share in progress is a draft: it stays, as it would after a restart.
+                if (keepShare) stack.add(Route.Share)
             }
             dialog = null
             idleTask = { startup() }
@@ -2901,6 +2908,8 @@ internal object Controller {
             // kept behind the fingerprint and the one in memory.
             Secrets.forget(app)
             SyncRunner.passphrase = ""
+            // A share in progress (its draft and its copy) goes with the rest of the phone's data.
+            Intake.wipeForReset()
         }
         render()
     }

@@ -213,6 +213,8 @@ internal object SyncRunner {
         for (n in listOf("acervo.sqlite3", "acervo.sqlite3-wal", "acervo.sqlite3-shm", PENDING)) {
             File(ctx.filesDir, n).delete()
         }
+        // A share in progress belonged to the data that is going away: its draft and copy are removed too.
+        ShareDraftStore(File(ctx.filesDir, ShareDraftStore.DIR)).wipe()
         // The calendar sync remembers events of the old library: forget them and turn it off.
         CalendarSyncRunner.forget(ctx)
         @Suppress("ApplySharedPref") // Persist removal before deleting or replacing the keystore key.
