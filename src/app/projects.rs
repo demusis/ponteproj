@@ -668,7 +668,8 @@ impl ProjectsPanel {
                                     .font(theme::font_strong(theme::SIZE_TITLE)),
                             )
                             .truncate(),
-                        );
+                        )
+                        .on_hover_text(&project.name);
                     });
                 });
             });
