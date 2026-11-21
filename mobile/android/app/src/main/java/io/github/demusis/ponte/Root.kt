@@ -184,7 +184,8 @@ internal fun AppRoot() {
                         onClear = { c.taskCatFilter = emptySet(); c.taskProjectFilter = ""; c.taskDocumentFilter = null },
                         onDone = { filterOpen = false },
                         documents = if (c.docs.isNotEmpty() || c.taskDocumentFilter != null) c.docs else null,
-                        documentChosen = c.taskDocumentFilter, onDocument = { c.taskDocumentFilter = it }
+                        documentChosen = c.taskDocumentFilter, onDocument = { c.taskDocumentFilter = it },
+                        resultCount = FilterSummary.openCount(c.tasks.tasks, c.taskCatFilter, c.taskProjectFilter, c.taskDocumentFilter)
                     )
                 } else {
                     FilterSheetContent(

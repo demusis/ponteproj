@@ -2,11 +2,13 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (versão 0.24.0)
+## O que faz (versão 0.25.0)
 
 Cada item abaixo traz a versão em que entrou; vale o que está aqui, e a versão instalada aparece no aplicativo.
 
-- **Filtro por documento (0.24.0):** em Tarefas, o painel do **filtro** ganhou a seção **Documento**: busque pelo número ou título (sem diferença de acentos ou maiúsculas) e toque no documento para ver só as tarefas dele; há também **Todos os documentos** e **Sem documento**. O filtro combina com Categoria e Projeto, aparece na linha do alto da lista e sai com **Limpar**. Se o documento deixar de existir após sincronizar, o filtro é desfeito.
+- **Painel de filtros renovado (0.25.0):** as **categorias** viraram pílulas coloridas (toque para marcar várias); **Projeto** e **Documento** são seções que abrem uma por vez e, fechadas, mostram a escolha atual ou **Todos**. Cada seção aceita uma escolha: o ✓ aparece só nela, e tocar de novo desfaz. Em Documento, cada linha traz o título e, abaixo, o número e quantas tarefas em aberto tem; a lista mostra os documentos com tarefas em aberto (o escolhido primeiro) e a busca, que aparece quando há mais de 8 documentos, alcança todos. O botão do rodapé diz o que o filtro deixa: **Ver 10 tarefas**.
+
+- **Filtro por documento (0.24.0):** em Tarefas, o painel do **filtro** ganhou a seção **Documento**: busque pelo número ou título (sem diferença de acentos ou maiúsculas) e toque no documento para ver só as tarefas dele; há também **Sem documento**. O filtro combina com Categoria e Projeto, aparece na linha do alto da lista e sai com **Limpar**. Se o documento deixar de existir após sincronizar, o filtro é desfeito.
 
 - **Botões flutuantes (0.23.2):** os botões de criar tarefa, criar projeto e registrar foto ficam sobre o conteúdo, no canto inferior direito. O fim das listas tem espaço para rolar o último item acima do botão.
 

@@ -5,6 +5,40 @@ internal object TaskDocumentFilter {
     /** How many documents the filter sheet lists at once; the search narrows the rest. */
     const val MAX_SHOWN = 30
 
+    /** The search box of the sheet shows only when the library has more documents than this. */
+    const val SEARCH_FROM = 8
+
+    fun showSearch(docs: List<Doc>) = docs.size > SEARCH_FROM
+
+    /**
+     * What the sheet lists. Without a search: the chosen one first (whatever it has), then the documents with open
+     * tasks. With a search: every match, the ones with open tasks first.
+     */
+    fun sheetOptions(docs: List<Doc>, query: String, chosen: Long?): List<Doc> {
+        val matches = options(docs, query)
+        return if (query.isBlank()) matches.filter { it.openTasks > 0 || it.id == chosen }.sortedBy { it.id != chosen }
+        else matches.sortedBy { it.openTasks == 0 }
+    }
+
+    /** What the closed section shows: the title of the chosen document (its number when it has no title). */
+    fun shortLabel(chosen: Long?, docs: List<Doc>): String = when (chosen) {
+        null, 0L -> label(chosen, docs)
+        else -> docs.find { it.id == chosen }?.let { headline(it) } ?: label(chosen, docs)
+    }
+
+    /** The second line of a document in the sheet: "MANUAL-2026/0006 · 10 tarefas". */
+    fun detail(doc: Doc): String {
+        val tasks = when (doc.openTasks) {
+            0 -> "sem tarefas em aberto"
+            1 -> "1 tarefa"
+            else -> "${doc.openTasks} tarefas"
+        }
+        return listOf(doc.number, tasks).filter { it.isNotBlank() }.joinToString(" · ")
+    }
+
+    /** The first line: the title, or the number of a document without one. */
+    fun headline(doc: Doc): String = doc.title.ifBlank { doc.number }
+
     fun matches(documentId: Long, chosen: Long?): Boolean = when (chosen) {
         null -> true
         0L -> documentId <= 0

@@ -100,6 +100,24 @@ internal object FilterSummary {
 
     fun isActive(categoryChosen: Set<String>, projectChosen: String, documentChosen: Long? = null) = categoryChosen.isNotEmpty() || projectChosen.isNotEmpty() || documentChosen != null
 
+    /** How many open tasks the three filters leave. */
+    fun openCount(tasks: List<TaskItem>, categoryChosen: Set<String>, projectChosen: String, documentChosen: Long?): Int =
+        tasks.count {
+            !it.done && CategoryRules.matches(it.categories, categoryChosen) && ProjectRules.matchesTask(it.projectUid, projectChosen) &&
+                TaskDocumentFilter.matches(it.documentId, documentChosen)
+        }
+
+    /** The button that closes the sheet says what the filter leaves; "Pronto" where nothing is counted. */
+    fun doneLabel(count: Int?): String = when (count) {
+        null -> "Pronto"
+        0 -> "Nenhuma tarefa em aberto"
+        1 -> "Ver 1 tarefa"
+        else -> "Ver $count tarefas"
+    }
+
+    /** What a closed section shows at its right: the choice, or "Todos". */
+    fun sectionValue(chosenLabel: String): String = chosenLabel.ifEmpty { "Todos" }
+
     /** The sections the sheet has: categories when the library has any (or one is chosen), projects likewise. */
     fun hasCategories(all: List<Category>, chosen: Set<String>) = all.isNotEmpty() || chosen.isNotEmpty()
     fun hasProjects(projects: List<ProjectItem>, chosen: String) = projects.isNotEmpty() || chosen.isNotEmpty()
@@ -171,6 +189,24 @@ internal object PullRules {
 
     /** Hoje, Tarefas (all four areas) and Documentos refresh; E-mail has its own list and button. */
     fun enabled(tab: Int) = tab in 0..2
+}
+
+/** The sections of the filter sheet that open and close (Projeto, Documento); one is open at a time. */
+internal enum class FilterSection { NONE, PROJECT, DOCUMENT }
+
+internal object FilterSections {
+    /** A section that is the only thing in the sheet starts open; otherwise all start closed, showing their choice. */
+    fun initial(hasCategories: Boolean, hasProjects: Boolean, hasDocuments: Boolean): FilterSection = when {
+        hasCategories || (hasProjects && hasDocuments) -> FilterSection.NONE
+        hasProjects -> FilterSection.PROJECT
+        hasDocuments -> FilterSection.DOCUMENT
+        else -> FilterSection.NONE
+    }
+
+    fun toggle(open: FilterSection, tapped: FilterSection): FilterSection = if (open == tapped) FilterSection.NONE else tapped
+
+    /** One choice at a time: tapping the chosen one again clears it. */
+    fun <T> pick(chosen: T, tapped: T, none: T): T = if (chosen == tapped) none else tapped
 }
 
 /** Which tabs and areas have a filter icon. */
