@@ -658,7 +658,7 @@ impl PonteApp {
                 widgets::section(ui, "Exportação");
                 Self::settings_card(
                     ui,
-                    "Grava documentos, tarefas, atendimentos, recursos e usos de recursos em cinco arquivos .csv (sem textos, notas ou anexos), prontos para os painéis do CERES ou para o Excel.",
+                    "Grava documentos, tarefas, atendimentos, recursos, usos de recursos e projetos em seis arquivos .csv (sem textos, notas ou anexos), prontos para os painéis do CERES ou para o Excel.",
                     |ui| {
                         export = ui
                             .add_enabled(idle, secondary("Exportar dados para CSV…"))

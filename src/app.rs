@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 /// Public repository with the installer, the source and the release notes.
 const PROJECT_URL: &str = "https://github.com/demusis/ponteproj";
 /// Version of the browser extension shipped with this build (extension/manifest.json).
-const EXTENSION_VERSION: &str = "0.4.0";
+const EXTENSION_VERSION: &str = "0.4.1";
 
 /// "1 documento" / "3 documentos".
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -4315,6 +4315,20 @@ mod tests {
         DocTaskStatusSummary, LIBRARY_DEFAULT_WIDTH, LIBRARY_MAX_FRACTION, LIBRARY_MIN_WIDTH,
     };
     use crate::tasks::Task;
+
+    #[test]
+    fn extension_version_matches_the_manifest() {
+        let manifest = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("extension/manifest.json"),
+        )
+        .unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(
+            manifest["version"].as_str(),
+            Some(super::EXTENSION_VERSION),
+            "EXTENSION_VERSION em src/app.rs deve acompanhar extension/manifest.json"
+        );
+    }
 
     fn app_with_dirty_task() -> (tempfile::TempDir, super::PonteApp) {
         let dir = tempfile::tempdir().unwrap();
