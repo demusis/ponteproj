@@ -96,19 +96,24 @@ internal fun openExported(a: MainActivity, kind: String, id: Long, captureId: Lo
     val epoch = Controller.lockEpoch
     Controller.say("Preparando o arquivo…")
     SyncRunner.background({
-        dir.mkdirs()
-        val old = System.currentTimeMillis() - 5L * 60 * 1000
-        dir.listFiles()?.forEach { if (it.isFile && it.lastModified() < old) it.delete() }
-        val r = Api.exportFile(kind, id, captureId, dir.absolutePath)
-        val src = File(r.s("path"))
-        val safe = src.name.replace("..", "_").replace('/', '_').replace('\\', '_').ifEmpty { "arquivo" }
-        val dest = File(dir, safe)
-        if (src.canonicalPath != dest.canonicalPath) src.copyTo(dest, overwrite = true)
-        var mime = r.s("mime", "application/octet-stream").ifEmpty { "application/octet-stream" }
-        if (mime == "application/octet-stream") {
-            MimeTypeMap.getSingleton().getMimeTypeFromExtension(dest.extension.lowercase())?.let { mime = it }
+        // Under the lock the background cleaner also takes before it deletes: it can never remove the
+        // file of this export after deciding, from an earlier look, that the old one with the same name
+        // was stale.
+        synchronized(TempRules.lock) {
+            dir.mkdirs()
+            val old = System.currentTimeMillis() - 5L * 60 * 1000
+            dir.listFiles()?.forEach { if (it.isFile && it.lastModified() < old) it.delete() }
+            val r = Api.exportFile(kind, id, captureId, dir.absolutePath)
+            val src = File(r.s("path"))
+            val safe = src.name.replace("..", "_").replace('/', '_').replace('\\', '_').ifEmpty { "arquivo" }
+            val dest = File(dir, safe)
+            if (src.canonicalPath != dest.canonicalPath) src.copyTo(dest, overwrite = true)
+            var mime = r.s("mime", "application/octet-stream").ifEmpty { "application/octet-stream" }
+            if (mime == "application/octet-stream") {
+                MimeTypeMap.getSingleton().getMimeTypeFromExtension(dest.extension.lowercase())?.let { mime = it }
+            }
+            Pair(safe, mime)
         }
-        Pair(safe, mime)
     }, { res ->
         val act = MainActivity.live ?: a
         if (Controller.locked || Controller.lockEpoch != epoch) {
@@ -148,4 +153,21 @@ internal object TempRules {
 
     fun mayDelete(path: String, lastModified: Long, now: Long, inProgress: Set<String>, saving: Boolean): Boolean =
         !saving && path !in inProgress && lastModified < now - MAX_AGE_MS
+
+    /**
+     * Held while an export writes into the shared folder and while the cleaner deletes from it, so the
+     * two never interleave.
+     */
+    val lock = Any()
+
+    /**
+     * Deletes [file] when it was stale at the time of the decision ([decidedModified], read when the
+     * folder was listed) AND still is: under [lock], right before deleting, it must still be the same
+     * file (same last-modified) and still old. A file an export recreated meanwhile is kept.
+     */
+    fun deleteIfStale(file: File, decidedModified: Long, now: Long, inProgress: Set<String>, saving: Boolean): Boolean =
+        synchronized(lock) {
+            file.isFile && file.lastModified() == decidedModified &&
+                mayDelete(file.absolutePath, file.lastModified(), now, inProgress, saving) && file.delete()
+        }
 }
