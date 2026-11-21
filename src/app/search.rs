@@ -549,6 +549,21 @@ fn day_month(iso: &str) -> String {
     }
 }
 
+/// Whether the text is an action or a capture line (empty or starting with `>`):
+/// what [`GlobalSearch::run`] answers without touching the library.
+fn is_command_text(text: &str) -> bool {
+    let text = text.trim();
+    text.is_empty() || text.starts_with('>')
+}
+
+/// A row made from the text itself (an action, the capture row) is only valid
+/// while it was made from the text now in the field: a click on one that
+/// belongs to an older text is ignored, so it never opens a task with the
+/// previous title or deadline.
+fn pick_is_current(pick: &Pick, query: &str, searched: &str) -> bool {
+    !matches!(pick, Pick::Capture(_) | Pick::Command(_)) || query == searched
+}
+
 impl GlobalSearch {
     /// Runs the search for the text in the field.
     fn run(
@@ -831,7 +846,11 @@ impl PonteApp {
             Some(at) => at.elapsed() >= DEBOUNCE,
             None => false,
         };
-        if search.immediate || due {
+        // The actions and the capture row ("> revisar 15/12") are a pure parse
+        // of the text: they follow every keystroke at once, never a pause
+        // behind it (a click in that pause would open the previous text).
+        let parse_only = search.query != search.searched && is_command_text(&search.query);
+        if search.immediate || due || parse_only {
             search.run(&self.store, &self.today.index);
         } else if let Some(at) = search.edited_at {
             ctx.request_repaint_after(DEBOUNCE.saturating_sub(at.elapsed()));
@@ -955,6 +974,8 @@ impl PonteApp {
                         }
                     });
             });
+        let search = &self.global_search;
+        let clicked = clicked.filter(|pick| pick_is_current(pick, &search.query, &search.searched));
         let picked = picked.or(clicked);
         if let Some(pick) = picked {
             self.global_search.open = false;
@@ -2096,5 +2117,61 @@ mod tests {
         assert!(matches!(search.pick_at(1), Some(Pick::Project(uid)) if uid == "p1"));
         assert!(matches!(search.pick_at(2), Some(Pick::Attendance(30))));
         assert!(matches!(search.pick_at(3), Some(Pick::Command(_))) || search.pick_at(3).is_none());
+    }
+
+    #[test]
+    fn a_row_made_from_the_text_is_not_clickable_once_the_text_has_changed() {
+        let capture = capture_for("> revisar parecer 15/12", friday()).unwrap();
+        let pick = Pick::Capture(capture);
+        // Edited and clicked at once: the row still shows the previous text.
+        assert!(!pick_is_current(
+            &pick,
+            "> revisar laudo hoje",
+            "> revisar parecer 15/12"
+        ));
+        assert!(!pick_is_current(
+            &Pick::Command(Command::Week),
+            "abc",
+            "> semana"
+        ));
+        assert!(pick_is_current(
+            &pick,
+            "> revisar parecer 15/12",
+            "> revisar parecer 15/12"
+        ));
+        // Rows of the library do not depend on the text they were found with.
+        assert!(pick_is_current(&Pick::Document(1), "outro", "antigo"));
+        // The capture is a pure parse: the text of an action or capture is
+        // answered at once, a search of the library waits for the pause.
+        assert!(is_command_text("> revisar"));
+        assert!(is_command_text("  >"));
+        assert!(is_command_text(""));
+        assert!(!is_command_text("ofício 12"));
+    }
+
+    #[test]
+    fn running_the_search_makes_the_capture_row_of_the_current_text() {
+        let store =
+            crate::storage::Store::open(&tempfile::tempdir().unwrap().path().join("a.sqlite3"))
+                .unwrap();
+        let index = std::collections::BTreeMap::new();
+        let mut search = GlobalSearch {
+            query: "> revisar parecer".into(),
+            ..GlobalSearch::default()
+        };
+        search.run(&store, &index);
+        assert_eq!(
+            search.results.capture.as_ref().unwrap().title,
+            "revisar parecer"
+        );
+        // The text changes: the row is made again from it, at once.
+        search.query = "> revisar laudo".into();
+        assert!(is_command_text(&search.query) && search.query != search.searched);
+        search.run(&store, &index);
+        assert_eq!(
+            search.results.capture.as_ref().unwrap().title,
+            "revisar laudo"
+        );
+        assert_eq!(search.searched, search.query);
     }
 }

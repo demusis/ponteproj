@@ -671,6 +671,104 @@ impl Store {
         Ok(id)
     }
 
+    /// [`Store::add_attachment`] to a document, for an action of the phone app:
+    /// with an `operation_id` the row that says "this was committed" is written
+    /// in the same transaction as the attachment and its queue entry (an id that
+    /// is already there adds nothing: the caller looks it up first), and with
+    /// `expected_number` the target must still be a document that is not in the
+    /// trash and has exactly that number; otherwise nothing at all is written and
+    /// the error is [`TargetChanged`]. Returns the attachment id.
+    pub fn attach_to_document(&mut self, request: &AttachRequest<'_>) -> Result<i64> {
+        let kind = validate_file(request.name, request.data)?;
+        validate_description(request.description)?;
+        let operation = request
+            .operation_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        let queue_actor = match self.client_config()? {
+            None => None,
+            Some(cfg) if cfg.mode == crate::intranet::IntranetMode::SharedFolder => {
+                cfg.validate()?;
+                Some(cfg.member_name.trim().to_owned())
+            }
+            Some(_) => {
+                // Every change is a request to a main computer here: no single
+                // transaction. The check comes first; the row after the change.
+                if let Some(number) = request.expected_number {
+                    if Store::live_document_number(&self.conn, request.document_id)?
+                        .as_deref()
+                        .map(str::trim)
+                        != Some(number.trim())
+                    {
+                        return Err(TargetChanged.into());
+                    }
+                }
+                let id = self.add_attachment(
+                    Owner::Document(request.document_id),
+                    request.name,
+                    request.description,
+                    request.data,
+                )?;
+                if let Some(operation) = operation {
+                    let _ = crate::storage::record_operation(
+                        &self.conn,
+                        operation,
+                        "attach",
+                        request.document_id,
+                        Some(id),
+                        Some(request.data.len() as i64),
+                    );
+                }
+                return Ok(id);
+            }
+        };
+        let actor = queue_actor.clone().unwrap_or_else(|| self.active_actor());
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(number) = request.expected_number {
+            if Store::live_document_number(&tx, request.document_id)?
+                .as_deref()
+                .map(str::trim)
+                != Some(number.trim())
+            {
+                return Err(TargetChanged.into());
+            }
+        }
+        let id = insert_attachment(
+            &tx,
+            &actor,
+            Owner::Document(request.document_id),
+            request.name,
+            request.description,
+            request.data,
+            kind,
+        )?;
+        if let Some(queue_actor) = &queue_actor {
+            crate::intranet::queue_attachment_locally(
+                &tx,
+                queue_actor,
+                request.document_id,
+                request.name,
+                request.description,
+                request.data,
+                id,
+            )?;
+        }
+        if let Some(operation) = operation {
+            crate::storage::record_operation(
+                &tx,
+                operation,
+                "attach",
+                request.document_id,
+                Some(id),
+                Some(request.data.len() as i64),
+            )?;
+        }
+        tx.commit()?;
+        Ok(id)
+    }
+
     /// Active attachments of one document, task or atendimento, oldest first.
     pub fn list_attachments(&self, owner: Owner) -> Result<Vec<AttachmentMeta>> {
         list_active(&self.conn, owner)
@@ -893,6 +991,30 @@ fn insert_attachment(
     )?;
     Ok(id)
 }
+
+/// What [`Store::attach_to_document`] is asked to do.
+pub struct AttachRequest<'a> {
+    pub document_id: i64,
+    pub name: &'a str,
+    pub description: &'a str,
+    pub data: &'a [u8],
+    /// The phone app's idempotency key for this action.
+    pub operation_id: Option<&'a str>,
+    /// The number the person saw when choosing the document.
+    pub expected_number: Option<&'a str>,
+}
+
+/// The document chosen for an attachment is no longer the one the person saw
+/// (it was trashed, deleted or has another number): nothing was written.
+#[derive(Debug)]
+pub struct TargetChanged;
+
+impl std::fmt::Display for TargetChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("O documento escolhido mudou (foi para a Lixeira, excluído ou renumerado) desde que você o escolheu. Escolha o documento de novo.")
+    }
+}
+impl std::error::Error for TargetChanged {}
 
 /// A file to attach to a record, as the importer hands it over: the name is
 /// already sanitised.
