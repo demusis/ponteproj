@@ -76,6 +76,8 @@ const SECONDARY_VIEWS: [usize; 5] = [8, 1, 5, 6, 7];
 const FORM_WIDTH: f32 = 420.0;
 /// Narrowest the task form gets when the window is small.
 const FORM_MIN_WIDTH: f32 = 340.0;
+/// Below this width the Tarefas area stacks its header controls.
+const NARROW_AREA: f32 = 620.0;
 /// Room kept on the right of a row for the priority and deadline pills.
 const PILLS_WIDTH: f32 = 170.0;
 /// Size of the round conclude control of a row.
@@ -2793,6 +2795,10 @@ impl TaskPanel {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = S2;
+                // With the task form open in a small window the area is narrow:
+                // the search and the list controls take rows of their own, so
+                // nothing is pushed out of sight.
+                let narrow = ui.available_width() < NARROW_AREA;
                 // Area header: name, search and the one primary action.
                 ui.horizontal(|ui| {
                     widgets::heading(ui, "Tarefas");
@@ -2811,10 +2817,16 @@ impl TaskPanel {
                         if new_task.clicked() && !self.start_new(target) {
                             self.blocked = Some(Intent::New(target));
                         }
-                        let search =
-                            widgets::search(ui, &mut self.query, "Buscar tarefa ou documento", 280.0);
-                        if std::mem::take(&mut self.focus_search) {
-                            search.request_focus();
+                        if !narrow {
+                            let search = widgets::search(
+                                ui,
+                                &mut self.query,
+                                "Buscar tarefa ou documento",
+                                280.0,
+                            );
+                            if std::mem::take(&mut self.focus_search) {
+                                search.request_focus();
+                            }
                         }
                         if !self.selecting
                             && ui
@@ -2827,8 +2839,29 @@ impl TaskPanel {
                         }
                     });
                 });
+                if narrow {
+                    let width = (ui.available_width() - 48.0).max(120.0);
+                    let search =
+                        widgets::search(ui, &mut self.query, "Buscar tarefa ou documento", width);
+                    if std::mem::take(&mut self.focus_search) {
+                        search.request_focus();
+                    }
+                }
                 // Second row: the views as chips, and the checkbox on the right.
-                let checkbox_width = 330.0;
+                let checkbox_width = if narrow { 0.0 } else { 330.0 };
+                let sort_controls = |ui: &mut egui::Ui, show_done: &mut bool, sort: &mut usize| {
+                    ui.add_space(S1);
+                    ui.checkbox(show_done, "Mostrar concluídas");
+                    egui::ComboBox::from_id_salt("task-sort")
+                        .selected_text(format!("Ordenar: {}", SORTS[(*sort).min(2)]))
+                        .show_ui(ui, |ui| {
+                            for (index, name) in SORTS.iter().enumerate() {
+                                ui.selectable_value(sort, index, *name);
+                            }
+                        })
+                        .response
+                        .on_hover_text("Ordem das tarefas dentro de cada grupo.");
+                };
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
                         egui::vec2((ui.available_width() - checkbox_width).max(200.0), 0.0),
@@ -2890,20 +2923,15 @@ impl TaskPanel {
                             }
                         },
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        ui.add_space(S1);
-                        ui.checkbox(&mut self.show_done, "Mostrar concluídas");
-                        egui::ComboBox::from_id_salt("task-sort")
-                            .selected_text(format!("Ordenar: {}", SORTS[self.sort.min(2)]))
-                            .show_ui(ui, |ui| {
-                                for (index, name) in SORTS.iter().enumerate() {
-                                    ui.selectable_value(&mut self.sort, index, *name);
-                                }
-                            })
-                            .response
-                            .on_hover_text("Ordem das tarefas dentro de cada grupo.");
-                    });
+                    if !narrow {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            sort_controls(ui, &mut self.show_done, &mut self.sort);
+                        });
+                    }
                 });
+                if narrow {
+                    ui.horizontal(|ui| sort_controls(ui, &mut self.show_done, &mut self.sort));
+                }
                 if self.selecting {
                     self.selection_band(ui, &visible_ids);
                 }
