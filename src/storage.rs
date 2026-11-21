@@ -124,15 +124,32 @@ impl Store {
     }
 }
 
+fn document_active_guard_name(table: &str, operation: &str) -> String {
+    format!("ponte_active_{table}_{}", operation.to_lowercase())
+}
+fn document_active_guard_sql(table: &str, column: &str, operation: &str) -> String {
+    let name = document_active_guard_name(table, operation);
+    format!("CREATE TRIGGER {name} BEFORE {operation} ON {table} WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.{column}) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END;")
+}
 fn create_document_active_guard(
     conn: &Connection,
     table: &str,
     column: &str,
     operation: &str,
 ) -> Result<()> {
-    let name = format!("ponte_active_{table}_{}", operation.to_lowercase());
-    conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE {operation} ON {table} WHEN EXISTS(SELECT 1 FROM trash WHERE kind='document' AND item_id=NEW.{column}) BEGIN SELECT RAISE(ABORT,'Documento na lixeira; restaure antes de editar.'); END;"))?;
+    let name = document_active_guard_name(table, operation);
+    conn.execute_batch(&format!(
+        "DROP TRIGGER IF EXISTS {name}; {}",
+        document_active_guard_sql(table, column, operation)
+    ))?;
     Ok(())
+}
+fn item_active_guard_name(table: &str) -> String {
+    format!("ponte_item_active_{table}")
+}
+fn item_active_guard_sql(table: &str, column: &str, kind: &str) -> String {
+    let name = item_active_guard_name(table);
+    format!("CREATE TRIGGER {name} BEFORE UPDATE ON {table} WHEN EXISTS(SELECT 1 FROM trash WHERE kind='{kind}' AND item_id=NEW.{column}) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END;")
 }
 fn create_item_active_guard(
     conn: &Connection,
@@ -140,8 +157,11 @@ fn create_item_active_guard(
     column: &str,
     kind: &str,
 ) -> Result<()> {
-    let name = format!("ponte_item_active_{table}");
-    conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE UPDATE ON {table} WHEN EXISTS(SELECT 1 FROM trash WHERE kind='{kind}' AND item_id=NEW.{column}) BEGIN SELECT RAISE(ABORT,'Item na lixeira; restaure antes de editar.'); END;"))?;
+    let name = item_active_guard_name(table);
+    conn.execute_batch(&format!(
+        "DROP TRIGGER IF EXISTS {name}; {}",
+        item_active_guard_sql(table, column, kind)
+    ))?;
     Ok(())
 }
 pub(crate) fn restore_task_write_guards(conn: &Connection) -> Result<()> {
@@ -150,7 +170,24 @@ pub(crate) fn restore_task_write_guards(conn: &Connection) -> Result<()> {
 }
 
 impl Store {
+    /// Opens the library as the application does: besides the migrations, the
+    /// missing juntada links between documents are created (this reads every
+    /// document, so only the main opening and the command line pay for it).
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with(path, true)
+    }
+
+    /// Opens the library for a service that opens it again and again (the
+    /// main computer answering a client, the synchronization and the other
+    /// background jobs of the window): the same migrations and guards, without
+    /// reading every document to look for juntada links. A library whose
+    /// schema this opening upgrades is still linked, once; the main opening
+    /// of the application does the rest.
+    pub(crate) fn open_service(path: &Path) -> Result<Self> {
+        Self::open_with(path, false)
+    }
+
+    fn open_with(path: &Path, link_juntadas: bool) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).context("Não foi possível criar a pasta do acervo.")?;
         }
@@ -171,8 +208,12 @@ impl Store {
             version <= SCHEMA_VERSION,
             "Este acervo foi criado por uma versão mais nova do Ponte; atualize o Ponte antes de abri-lo."
         );
+        let upgrading = version < SCHEMA_VERSION;
+        // `cache_size` is in KiB when negative: 64 MB of pages kept in memory
+        // (the default, about 2 MB, made a library of some size read its
+        // pages from the file again at every query).
         conn.execute_batch(
-            "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA secure_delete=ON;",
+            "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA secure_delete=ON; PRAGMA cache_size=-65536;",
         )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -282,15 +323,54 @@ impl Store {
         }
         // Lazy, idempotent: libraries imported before this feature gain the
         // juntada links too. Unreadable content never prevents opening.
-        let _ = store.link_juntadas();
+        if link_juntadas || upgrading {
+            let _ = store.link_juntadas();
+        }
         // A main computer notes its history at every opening, so a backup put
         // in place of the file is noticed before the library moves forward.
         store.note_host_history();
         Ok(store)
     }
 
+    /// Writes the guard triggers that are missing or differ from the expected
+    /// text. A library whose guards are all in place is not written to at
+    /// all: this runs at every opening, and a commit would move SQLite's
+    /// `data_version` for every other connection (the window's memo of reads
+    /// is emptied by it).
     fn ensure_write_guards(&mut self) -> Result<()> {
+        // `sqlite_master` keeps the statement as written, without the final
+        // semicolon.
+        let normal = |sql: &str| sql.trim().trim_end_matches(';').trim_end().to_owned();
+        let existing: std::collections::HashMap<String, String> = self
+            .conn
+            .prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'ponte\\_%' ESCAPE '\\'")?
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?
+            .filter_map(|row| row.ok())
+            .filter_map(|(name, sql)| Some((name, normal(&sql?))))
+            .collect();
+        let stale: Vec<(String, String)> = Self::expected_guards()
+            .into_iter()
+            .filter(|(name, sql)| existing.get(name) != Some(&normal(sql)))
+            .collect();
+        if stale.is_empty() {
+            return Ok(());
+        }
         let tx = self.conn.transaction()?;
+        for (name, sql) in stale {
+            tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {sql}"))?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every guard trigger of the library as (name, `CREATE TRIGGER` text).
+    /// Names and texts must stay as they are: an older Ponte rewrites the
+    /// guards it knows under the same names, and the library is compared
+    /// with this.
+    fn expected_guards() -> Vec<(String, String)> {
+        let mut guards = Vec::new();
         for table in [
             "documents",
             "captures",
@@ -331,7 +411,8 @@ impl Store {
         ] {
             for operation in ["INSERT", "UPDATE", "DELETE"] {
                 let name = format!("ponte_guard_{table}_{}", operation.to_lowercase());
-                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {SCHEMA_VERSION} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;"))?;
+                let sql = format!("CREATE TRIGGER {name} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {SCHEMA_VERSION} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;");
+                guards.push((name, sql));
                 // The same guard under a name that carries the schema: an
                 // older Ponte that opens the library meanwhile drops and
                 // writes again the guard it knows by the name above, with
@@ -340,7 +421,8 @@ impl Store {
                     "ponte_guard_v{SCHEMA_VERSION}_{table}_{}",
                     operation.to_lowercase()
                 );
-                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {versioned}; CREATE TRIGGER {versioned} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {SCHEMA_VERSION} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;"))?;
+                let sql = format!("CREATE TRIGGER {versioned} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN ponte_client_schema() < {SCHEMA_VERSION} THEN RAISE(ABORT,'Use a versão atual do Ponte para salvar alterações.') END; END;");
+                guards.push((versioned, sql));
             }
         }
         for (table, column) in [
@@ -355,7 +437,10 @@ impl Store {
             ("attachments", "document_id"),
         ] {
             for operation in ["INSERT", "UPDATE"] {
-                create_document_active_guard(&tx, table, column, operation)?;
+                guards.push((
+                    document_active_guard_name(table, operation),
+                    document_active_guard_sql(table, column, operation),
+                ));
             }
         }
         for (table, column, kind) in [
@@ -367,7 +452,10 @@ impl Store {
             ("drafts", "capture_id", "capture"),
             ("analyses", "capture_id", "capture"),
         ] {
-            create_item_active_guard(&tx, table, column, kind)?;
+            guards.push((
+                item_active_guard_name(table),
+                item_active_guard_sql(table, column, kind),
+            ));
         }
         for operation in ["INSERT", "UPDATE"] {
             for (table,condition) in [
@@ -376,15 +464,16 @@ impl Store {
                 ("document_links","EXISTS(SELECT 1 FROM trash t WHERE t.kind='document' AND t.item_id IN (NEW.source_id,NEW.target_id))")
             ] {
                 let name=format!("ponte_parent_active_{table}_{}",operation.to_lowercase());
-                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} BEFORE {operation} ON {table} WHEN {condition} BEGIN SELECT RAISE(ABORT,'Item ou documento na lixeira; restaure antes de editar.'); END;"))?;
+                let sql = format!("CREATE TRIGGER {name} BEFORE {operation} ON {table} WHEN {condition} BEGIN SELECT RAISE(ABORT,'Item ou documento na lixeira; restaure antes de editar.'); END;");
+                guards.push((name, sql));
             }
         }
         for (table, kind) in [("drafts", "draft"), ("analyses", "analysis")] {
             let name = format!("ponte_refs_cleanup_{table}");
-            tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} AFTER DELETE ON {table} BEGIN DELETE FROM capture_refs WHERE owner_kind='{kind}' AND owner_id=OLD.id; END;"))?;
+            let sql = format!("CREATE TRIGGER {name} AFTER DELETE ON {table} BEGIN DELETE FROM capture_refs WHERE owner_kind='{kind}' AND owner_id=OLD.id; END;");
+            guards.push((name, sql));
         }
-        tx.commit()?;
-        Ok(())
+        guards
     }
 
     /// Imports a page captured by the extension. A new document or new content
@@ -3083,5 +3172,118 @@ mod proposal_id_tests {
         let mut other = saved.clone();
         other.proposal_id.clear();
         assert!(!saved.same_content(&other));
+    }
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::*;
+
+    /// What another connection sees move when a library is opened again.
+    fn stamp_seen_by(observer: &Store) -> (i64, i64) {
+        observer.library_stamp().unwrap()
+    }
+
+    #[test]
+    fn opening_a_current_library_again_commits_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reopen.sqlite3");
+        // The first opening creates the library; a document makes the
+        // migrations and the juntada links have something to look at.
+        let mut first = Store::open(&path).unwrap();
+        first.import_capture(&sample_capture()).unwrap();
+        drop(first);
+        let observer = Store::open(&path).unwrap();
+        let before = stamp_seen_by(&observer);
+        let a = Store::open(&path).unwrap();
+        let b = Store::open_service(&path).unwrap();
+        drop((a, b));
+        assert_eq!(
+            stamp_seen_by(&observer),
+            before,
+            "an opening of an up-to-date library committed something"
+        );
+    }
+
+    fn guard_sql(store: &Store, name: &str) -> Option<String> {
+        store
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    #[test]
+    fn missing_or_altered_guards_are_written_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("guards.sqlite3");
+        let store = Store::open(&path).unwrap();
+        let expected = Store::expected_guards();
+        assert!(expected.len() > 200, "{}", expected.len());
+        // What is on file is exactly what is expected (otherwise every
+        // opening would rewrite them).
+        for (name, sql) in &expected {
+            let on_file = guard_sql(&store, name).unwrap_or_default();
+            assert_eq!(on_file.trim_end_matches(';'), sql.trim_end_matches(';'));
+        }
+        // Dropped.
+        store
+            .conn
+            .execute_batch(
+                "DROP TRIGGER ponte_guard_tasks_update; DROP TRIGGER ponte_item_active_tasks;",
+            )
+            .unwrap();
+        // Altered: an older Ponte writes the unversioned guard with its own
+        // number.
+        store
+            .conn
+            .execute_batch(
+                "DROP TRIGGER ponte_guard_notes_insert; CREATE TRIGGER ponte_guard_notes_insert BEFORE INSERT ON notes BEGIN SELECT CASE WHEN ponte_client_schema() < 1 THEN RAISE(ABORT,'x') END; END;",
+            )
+            .unwrap();
+        drop(store);
+        let again = Store::open_service(&path).unwrap();
+        for (name, sql) in &expected {
+            let on_file = guard_sql(&again, name).unwrap_or_default();
+            assert_eq!(
+                on_file.trim_end_matches(';'),
+                sql.trim_end_matches(';'),
+                "{name}"
+            );
+        }
+        // And once they are back, the next opening leaves the library alone.
+        let observer = Store::open(&path).unwrap();
+        let before = stamp_seen_by(&observer);
+        drop(Store::open_service(&path).unwrap());
+        assert_eq!(stamp_seen_by(&observer), before);
+    }
+}
+
+#[cfg(test)]
+mod pragma_tests {
+    use super::*;
+
+    #[test]
+    fn the_page_cache_is_64_mb_and_the_durability_pragmas_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("p.sqlite3")).unwrap();
+        let pragma = |name: &str| -> i64 {
+            store
+                .conn
+                .pragma_query_value(None, name, |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(pragma("cache_size"), -65536);
+        assert_eq!(pragma("synchronous"), 2, "FULL");
+        assert_eq!(pragma("secure_delete"), 1);
+        let mode: String = store
+            .conn
+            .pragma_query_value(None, "journal_mode", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
     }
 }

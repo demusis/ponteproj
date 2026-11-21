@@ -202,6 +202,38 @@ struct Loaded {
     documents: Vec<crate::model::DocumentSummary>,
     attachment_counts: std::collections::BTreeMap<i64, usize>,
     contexts: Contexts,
+    /// For each task (same order as `tasks`), the lowercase text a search
+    /// looks into; built the first time someone searches after a load.
+    haystacks: Option<Vec<String>>,
+}
+
+/// What the derived view depends on besides the loaded data itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ViewKey {
+    /// `Store::library_stamp` at the load of the data; `None` when it could
+    /// not be read, and then the view is never taken for current.
+    stamp: Option<(i64, i64)>,
+    view: usize,
+    /// Search text, trimmed and in lower case.
+    query: String,
+    show_done: bool,
+    document: Option<i64>,
+    categories: CategoryFilter,
+    project: ProjectFilter,
+    unplanned_only: bool,
+    sort: usize,
+    /// The day the deadlines are compared with.
+    today: String,
+}
+
+/// The list of one frame, derived from the loaded data and the controls:
+/// the numbers on the chips (Todas, Hoje, Próximos 7 dias, Atrasadas) and the
+/// tasks listed, as positions in `Loaded::tasks`, in the order they are shown.
+#[derive(Default)]
+struct Derived {
+    key: ViewKey,
+    counts: [usize; 4],
+    visible: Vec<usize>,
 }
 
 /// The rules that narrow the list besides the chosen view.
@@ -218,31 +250,13 @@ struct Scope<'a> {
     project: &'a ProjectFilter,
 }
 
-/// True when the task belongs to the document filter and the search text.
-fn in_scope(
+/// The lowercase text a search looks into for a task: its own words, its
+/// document's number and subject, and the work context of the document.
+fn search_haystack(
     task: &Task,
     document: Option<&crate::model::DocumentSummary>,
     context: Option<&crate::work_context::WorkContext>,
-    scope: &Scope,
-) -> bool {
-    if scope
-        .document
-        .is_some_and(|id| task.document_id != Some(id))
-    {
-        return false;
-    }
-    if !scope.show_done && task.status == "concluida" {
-        return false;
-    }
-    if !scope.categories.matches(&task.categories) {
-        return false;
-    }
-    if !scope.project.matches(&task.project_uid) {
-        return false;
-    }
-    if scope.query.is_empty() {
-        return true;
-    }
+) -> String {
     let extra = context
         .map(|c| {
             format!(
@@ -267,7 +281,66 @@ fn in_scope(
         task.assignee
     )
     .to_lowercase()
-    .contains(scope.query)
+}
+
+/// The search text of the task at `position`: the one built for the load
+/// when there is one, otherwise built now.
+fn haystack_of<'a>(
+    haystacks: Option<&'a [String]>,
+    position: usize,
+    task: &Task,
+    documents: &DocumentIndex,
+    contexts: &Contexts,
+) -> std::borrow::Cow<'a, str> {
+    match haystacks.and_then(|all| all.get(position)) {
+        Some(text) => std::borrow::Cow::Borrowed(text.as_str()),
+        None => std::borrow::Cow::Owned(search_haystack(
+            task,
+            task.document_id.and_then(|id| documents.get(&id).copied()),
+            task.document_id.and_then(|id| contexts.get(&id)),
+        )),
+    }
+}
+
+/// True when the task belongs to the document filter and the search text.
+#[cfg(test)]
+fn in_scope(
+    task: &Task,
+    document: Option<&crate::model::DocumentSummary>,
+    context: Option<&crate::work_context::WorkContext>,
+    scope: &Scope,
+) -> bool {
+    in_scope_with(task, scope, || {
+        std::borrow::Cow::Owned(search_haystack(task, document, context))
+    })
+}
+
+/// As [`in_scope`], with the search text given by `haystack` (called only
+/// when there is a search and the other rules let the task through).
+fn in_scope_with<'a>(
+    task: &Task,
+    scope: &Scope,
+    haystack: impl FnOnce() -> std::borrow::Cow<'a, str>,
+) -> bool {
+    if scope
+        .document
+        .is_some_and(|id| task.document_id != Some(id))
+    {
+        return false;
+    }
+    if !scope.show_done && task.status == "concluida" {
+        return false;
+    }
+    if !scope.categories.matches(&task.categories) {
+        return false;
+    }
+    if !scope.project.matches(&task.project_uid) {
+        return false;
+    }
+    if scope.query.is_empty() {
+        return true;
+    }
+    haystack().contains(scope.query)
 }
 
 /// True when the task belongs to the view with this index of `VIEWS`.
@@ -348,6 +421,7 @@ fn view_counts(
     view_counts_filtered(tasks, documents, contexts, deps, scope, false)
 }
 
+#[cfg(test)]
 fn view_counts_filtered(
     tasks: &[Task],
     documents: &DocumentIndex,
@@ -356,18 +430,29 @@ fn view_counts_filtered(
     scope: &Scope,
     unplanned: bool,
 ) -> [usize; 4] {
+    view_counts_with(tasks, documents, contexts, deps, scope, unplanned, None)
+}
+
+/// As [`view_counts_filtered`], with the search text of each task (same
+/// order as `tasks`) when it was built already.
+fn view_counts_with(
+    tasks: &[Task],
+    documents: &DocumentIndex,
+    contexts: &Contexts,
+    deps: &crate::tasks::Dependencies,
+    scope: &Scope,
+    unplanned: bool,
+    haystacks: Option<&[String]>,
+) -> [usize; 4] {
     let mut counts = [0; 4];
-    for task in tasks {
+    for (position, task) in tasks.iter().enumerate() {
         if unplanned && (task.is_done() || !task.scheduled_start.is_empty()) {
             continue;
         }
         let context = task.document_id.and_then(|id| contexts.get(&id));
-        if !in_scope(
-            task,
-            task.document_id.and_then(|id| documents.get(&id).copied()),
-            context,
-            scope,
-        ) {
+        if !in_scope_with(task, scope, || {
+            haystack_of(haystacks, position, task, documents, contexts)
+        }) {
             continue;
         }
         for (slot, view) in [0, 2, 3, 4].into_iter().enumerate() {
@@ -1639,6 +1724,11 @@ pub struct TaskPanel {
     sort: usize,
     /// What the store returned at the last frame (its reads are memoized).
     data: Loaded,
+    /// `Store::library_stamp` when `data` was read; the data is read again
+    /// only when it differs (`None`: read at the next frame).
+    loaded_stamp: Option<(i64, i64)>,
+    /// The list derived from `data` and the controls (see `Derived`).
+    derived: Option<Derived>,
     load_error: Option<String>,
     /// Give the keyboard focus to the search box / the title at the next frame.
     focus_search: bool,
@@ -2588,7 +2678,7 @@ impl TaskPanel {
         selected_document: Option<i64>,
     ) -> Option<i64> {
         let mut open = None;
-        self.reload(store);
+        self.ensure_view(store);
         if let Some(error) = self.load_error.clone() {
             let (fg, bg) = Tone::Danger.colors();
             egui::Frame::new()
@@ -2620,7 +2710,6 @@ impl TaskPanel {
         let data = std::mem::take(&mut self.data);
         let tasks = &data.tasks;
         let documents = &data.documents;
-        let contexts = &data.contexts;
         let index: DocumentIndex = documents.iter().map(|d| (d.id, d)).collect();
         let number_of = |id: i64| {
             index
@@ -2630,42 +2719,13 @@ impl TaskPanel {
         };
         let today = chrono::Local::now().date_naive();
         let today_text = today.format("%Y-%m-%d").to_string();
-        let week_text = (today + chrono::Duration::days(7))
-            .format("%Y-%m-%d")
-            .to_string();
         let deps = crate::tasks::Dependencies::new(tasks);
-        let query_lower = self.query.trim().to_lowercase();
-        let scope = Scope {
-            document: self.document_filter,
-            query: &query_lower,
-            show_done: self.show_done,
-            today: &today_text,
-            week: &week_text,
-            categories: &self.category_filter,
-            project: &self.project_filter,
-        };
-        // The chips count what each view would list right now.
-        let [all_count, today_count, week_count, overdue_count] =
-            view_counts_filtered(tasks, &index, contexts, &deps, &scope, self.unplanned_only);
-        let visible: Vec<&Task> = tasks
-            .iter()
-            .filter(|task| {
-                let context = task.document_id.and_then(|id| contexts.get(&id));
-                in_scope(
-                    task,
-                    task.document_id.and_then(|id| index.get(&id).copied()),
-                    context,
-                    &scope,
-                ) && in_view(self.view, task, context, &deps, &scope)
-                    // "Ainda não planejadas": open tasks without working hours,
-                    // the same rule as the list at the end of the Semana view.
-                    && (!self.unplanned_only
-                        || (!task.is_done() && task.scheduled_start.is_empty()))
-            })
-            .collect();
-        // Each task after the ones it depends on; ties keep the usual order.
-        // Another sort is applied on top of that, keeping it for ties.
-        let visible = sort_tasks(deps.order(&visible), self.sort, &index);
+        // The chip counts and the listed tasks come from the view kept for
+        // this library and these controls (see `ensure_view`).
+        let derived = self.derived.take().unwrap_or_default();
+        let [all_count, today_count, week_count, overdue_count] = derived.counts;
+        let visible: Vec<&Task> = derived.visible.iter().map(|&i| &tasks[i]).collect();
+        self.derived = Some(derived);
 
         // Only what can be seen can stay selected, so no action ever reaches
         // a task the person cannot see.
@@ -3101,9 +3161,138 @@ impl TaskPanel {
         open
     }
 
+    /// Reads the library again only when it changed since the data in hand
+    /// was read: a save on this connection (this screen's or another's), a
+    /// synchronization or the team server (`Store::library_stamp`). A failed
+    /// read is tried again at the next frame.
+    fn reload_if_changed(&mut self, store: &Store) {
+        let stamp = store.library_stamp();
+        if stamp.is_none()
+            || stamp != self.loaded_stamp
+            || self.load_error.is_some()
+            || self.loaded_stamp.is_none()
+        {
+            self.reload(store);
+        }
+    }
+
+    /// Brings the loaded data and the view derived from it up to date for
+    /// this frame: the chip counts and the tasks listed, in order. The view is
+    /// rebuilt only when the library (as read), the controls or the day
+    /// changed; the lowercase text each task is searched in is built once
+    /// per load, when someone first searches.
+    fn ensure_view(&mut self, store: &Store) {
+        self.reload_if_changed(store);
+        if self.load_error.is_some() {
+            return;
+        }
+        let today = chrono::Local::now().date_naive();
+        let key = ViewKey {
+            stamp: self.loaded_stamp,
+            view: self.view,
+            query: self.query.trim().to_lowercase(),
+            show_done: self.show_done,
+            document: self.document_filter,
+            categories: self.category_filter.clone(),
+            project: self.project_filter.clone(),
+            unplanned_only: self.unplanned_only,
+            sort: self.sort,
+            today: today.format("%Y-%m-%d").to_string(),
+        };
+        if key.stamp.is_some() && self.derived.as_ref().is_some_and(|d| d.key == key) {
+            return;
+        }
+        self.derived = Some(self.derive(key, today));
+    }
+
+    fn derive(&mut self, key: ViewKey, today: chrono::NaiveDate) -> Derived {
+        if !key.query.is_empty() && self.data.haystacks.is_none() {
+            let index: DocumentIndex = self.data.documents.iter().map(|d| (d.id, d)).collect();
+            let haystacks = self
+                .data
+                .tasks
+                .iter()
+                .map(|task| {
+                    let id = task.document_id;
+                    search_haystack(
+                        task,
+                        id.and_then(|id| index.get(&id).copied()),
+                        id.and_then(|id| self.data.contexts.get(&id)),
+                    )
+                })
+                .collect();
+            self.data.haystacks = Some(haystacks);
+        }
+        let data = &self.data;
+        let tasks = &data.tasks;
+        let index: DocumentIndex = data.documents.iter().map(|d| (d.id, d)).collect();
+        let deps = crate::tasks::Dependencies::new(tasks);
+        let week_text = (today + chrono::Duration::days(7))
+            .format("%Y-%m-%d")
+            .to_string();
+        let scope = Scope {
+            document: key.document,
+            query: &key.query,
+            show_done: key.show_done,
+            today: &key.today,
+            week: &week_text,
+            categories: &key.categories,
+            project: &key.project,
+        };
+        let haystacks = data.haystacks.as_deref();
+        // The chips count what each view would list right now.
+        let counts = view_counts_with(
+            tasks,
+            &index,
+            &data.contexts,
+            &deps,
+            &scope,
+            key.unplanned_only,
+            haystacks,
+        );
+        let visible: Vec<&Task> = tasks
+            .iter()
+            .enumerate()
+            .filter(|(position, task)| {
+                let context = task.document_id.and_then(|id| data.contexts.get(&id));
+                in_scope_with(task, &scope, || {
+                    haystack_of(
+                        haystacks,
+                        *position,
+                        task,
+                        &index,
+                        &data.contexts,
+                    )
+                }) && in_view(key.view, task, context, &deps, &scope)
+                    // "Ainda não planejadas": open tasks without working hours,
+                    // the same rule as the list at the end of the Semana view.
+                    && (!key.unplanned_only
+                        || (!task.is_done() && task.scheduled_start.is_empty()))
+            })
+            .map(|(_, task)| task)
+            .collect();
+        // Each task after the ones it depends on; ties keep the usual order.
+        // Another sort is applied on top of that, keeping it for ties.
+        let visible = sort_tasks(deps.order(&visible), key.sort, &index);
+        let position: std::collections::HashMap<i64, usize> = tasks
+            .iter()
+            .enumerate()
+            .map(|(position, task)| (task.id, position))
+            .collect();
+        let visible = visible.iter().map(|task| position[&task.id]).collect();
+        Derived {
+            key,
+            counts,
+            visible,
+        }
+    }
+
     /// Reads the library again: tasks, documents, attachment counts and the
     /// work context of each document. A failure is kept to be shown.
     fn reload(&mut self, store: &Store) {
+        // Read before the data: a commit while reading shows up as a change
+        // at the next frame.
+        let stamp = store.library_stamp();
         let read = store.list_tasks().and_then(|tasks| {
             let documents = store.list_documents("")?;
             Ok((tasks, documents))
@@ -3114,15 +3303,20 @@ impl TaskPanel {
                     .iter()
                     .filter_map(|d| store.load_work_context(d.id).ok().map(|c| (d.id, c)))
                     .collect();
+                let attachment_counts = store.attachment_counts("task");
+                // What could not be read is read again at the next frame.
+                self.loaded_stamp = attachment_counts.is_ok().then_some(stamp).flatten();
                 self.data = Loaded {
                     tasks,
                     documents,
-                    attachment_counts: store.attachment_counts("task").unwrap_or_default(),
+                    attachment_counts: attachment_counts.unwrap_or_default(),
                     contexts,
+                    haystacks: None,
                 };
                 self.load_error = None;
             }
             Err(e) => {
+                self.loaded_stamp = None;
                 self.load_error = Some(format!("Não foi possível ler as tarefas: {e}"));
             }
         }
@@ -5375,5 +5569,136 @@ mod proposal_tests {
         assert_eq!(draft.proposal_id, "p1");
         // A second one is refused while this one is open.
         assert!(!panel.prepare_proposal(7, &proposal()));
+    }
+}
+
+#[cfg(test)]
+mod view_cache_tests {
+    use super::*;
+    use crate::storage::Store;
+
+    fn titled(document: Option<i64>, title: &str, due: &str) -> Task {
+        let mut task = match document {
+            Some(id) => Task::new(id),
+            None => Task::standalone(),
+        };
+        task.title = title.to_owned();
+        task.action = "responder".into();
+        task.due_date = due.to_owned();
+        task
+    }
+
+    fn listed(panel: &TaskPanel) -> Vec<String> {
+        let derived = panel.derived.as_ref().unwrap();
+        derived
+            .visible
+            .iter()
+            .map(|&i| panel.data.tasks[i].title.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_screen_reads_the_library_again_only_when_it_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks-cache.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let mut panel = TaskPanel::default();
+        panel.ensure_view(&store);
+        let before = panel.data.tasks.len();
+        assert!(panel.loaded_stamp.is_some());
+
+        // Nothing changed: the loaded data and the view are the ones in hand.
+        panel.data.attachment_counts.insert(-1, 7);
+        panel.derived.as_mut().unwrap().counts = [9; 4];
+        panel.ensure_view(&store);
+        assert_eq!(panel.data.attachment_counts.get(&-1), Some(&7));
+        assert_eq!(panel.derived.as_ref().unwrap().counts, [9; 4]);
+
+        // A save here (the screen's own).
+        store.save_task(&titled(None, "Daqui", "")).unwrap();
+        panel.ensure_view(&store);
+        assert_eq!(panel.data.tasks.len(), before + 1);
+        assert!(!panel.data.attachment_counts.contains_key(&-1));
+        assert_ne!(panel.derived.as_ref().unwrap().counts, [9; 4]);
+        assert!(listed(&panel).contains(&"Daqui".to_owned()));
+
+        // A commit of another connection (the team server, a sync).
+        panel.data.attachment_counts.insert(-1, 7);
+        let mut other = Store::open(&path).unwrap();
+        other.save_task(&titled(None, "De lá", "")).unwrap();
+        panel.ensure_view(&store);
+        assert_eq!(panel.data.tasks.len(), before + 2);
+        assert!(!panel.data.attachment_counts.contains_key(&-1));
+        assert!(listed(&panel).contains(&"De lá".to_owned()));
+    }
+
+    #[test]
+    fn the_search_text_and_the_listed_tasks_follow_the_library_the_controls_and_the_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks-search.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .save_task(&titled(None, "Renovar o certificado", "2026-11-01"))
+            .unwrap();
+        store
+            .save_task(&titled(None, "Outra coisa", "2026-12-01"))
+            .unwrap();
+        let mut panel = TaskPanel {
+            query: "  CERTIFICADO ".into(),
+            ..Default::default()
+        };
+        panel.ensure_view(&store);
+        assert_eq!(listed(&panel), vec!["Renovar o certificado".to_owned()]);
+        assert!(panel.data.haystacks.is_some());
+
+        // A task saved afterwards that the search matches: the search text of
+        // the load before is not reused.
+        store
+            .save_task(&titled(None, "Certificado digital", ""))
+            .unwrap();
+        panel.ensure_view(&store);
+        let mut found = listed(&panel);
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "Certificado digital".to_owned(),
+                "Renovar o certificado".to_owned()
+            ]
+        );
+
+        // The text that is searched changes with the controls...
+        panel.query = "outra".into();
+        panel.ensure_view(&store);
+        assert_eq!(listed(&panel), vec!["Outra coisa".to_owned()]);
+        panel.query.clear();
+        panel.view = 4;
+        panel.ensure_view(&store);
+        assert!(panel.derived.as_ref().unwrap().key.view == 4);
+
+        // ...and with the day: the same library, a day on which the first
+        // task is not late (and a day on which it is).
+        let stamp = panel.loaded_stamp;
+        let key = |today: &str| ViewKey {
+            stamp,
+            view: 4,
+            query: String::new(),
+            show_done: false,
+            document: None,
+            categories: Default::default(),
+            project: Default::default(),
+            unplanned_only: false,
+            sort: 0,
+            today: today.to_owned(),
+        };
+        let day = |text: &str| chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap();
+
+        let late = panel.derive(key("2026-11-20"), day("2026-11-20"));
+        let early = panel.derive(key("2026-10-01"), day("2026-10-01"));
+        assert_eq!(late.counts[3], 1);
+        assert_eq!(early.counts[3], 0);
+        assert_eq!(late.visible.len(), 1);
+        assert!(early.visible.is_empty());
+        assert_ne!(late.key, early.key);
     }
 }

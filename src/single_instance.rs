@@ -111,6 +111,12 @@ pub fn hand_over(data_dir: &Path, request: Request) -> bool {
     false
 }
 
+/// Whether another start left a request that nobody took yet (a look at the
+/// file, nothing is read or removed).
+pub fn request_pending(data_dir: &Path) -> bool {
+    request_path(data_dir).exists()
+}
+
 /// The request another start left, if any; taking it removes it. A request
 /// that cannot be taken away is not acted on (it would be acted on forever).
 pub fn take_request(data_dir: &Path) -> Option<Request> {
@@ -148,6 +154,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_pending_request_is_seen_without_taking_it() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!request_pending(dir.path()));
+        std::fs::write(request_path(dir.path()), Request::Focus.encode()).unwrap();
+        assert!(request_pending(dir.path()));
+        // Looking does not take it.
+        assert!(request_pending(dir.path()));
+        assert_eq!(take_request(dir.path()), Some(Request::Focus));
+        assert!(!request_pending(dir.path()));
+    }
     #[test]
     fn a_request_is_taken_once() {
         let dir = tempfile::tempdir().unwrap();
