@@ -319,8 +319,9 @@ internal object Controller {
         if (!started) {
             started = true
             if (saved != null) restore(saved) else idleTask = { startup() }
-            // The share that was in progress when the process died comes back on top of the stack (behind the
-            // lock when it is in force: nothing of it is composed or said before the unlock).
+            // The share that was in progress when the process died is read OFF this thread (the draft, its copy, the
+            // library check) and comes back on top of the stack when ready (behind the lock when it is in force:
+            // nothing of it is composed or said before the unlock).
             Intake.restoreDraft()
             loadChoices()
             refreshTasks()

@@ -145,14 +145,28 @@ class PonteCore {
      * A manual record from a file and/or a text: {kind, title, origin, date, text, file_name,
      * file_description}; filePath "" means no file (then the text is needed). The file is checked
      * before the record exists. Answer: {document_id}.
+     *
+     * An optional "operation_id" (a UUID) makes the operation idempotent, with or without a file: a second call
+     * with the same id creates nothing and answers the same success (see [operationStatus]).
      */
     external fun createRecord(fieldsJson: String, filePath: String): String
 
     /**
      * Attaches the private working file at [path] to a document, with the desktop's own limits and
      * checks. Answer: {attachment_id, name, size}.
+     *
+     * [optionsJson] is a JSON object, "{}" when there is nothing to say, with two optional fields: "operation_id"
+     * (a UUID; same guarantee as in [createRecord]) and "expected_number" (the number of the document the person
+     * chose, e.g. "MANUAL-2026/0003"). A document that no longer exists, is in the trash or has another number
+     * writes NOTHING and answers {"ok":false,"code":"target_changed","error":"..."}.
      */
-    external fun attachFile(documentId: Long, path: String, name: String, description: String): String
+    external fun attachFile(documentId: Long, path: String, name: String, description: String, optionsJson: String): String
+
+    /**
+     * Whether an operation was committed. Input {"operation_id":"<uuid>"}; answer {"ok":true,"done":true,
+     * "document_id":N} when it was, {"ok":true,"done":false} when not. Read-only.
+     */
+    external fun operationStatus(json: String): String
     external fun listMailAccounts(): String
     external fun saveMailAccount(json: String): String
     external fun deleteMailAccount(uid: String): String
