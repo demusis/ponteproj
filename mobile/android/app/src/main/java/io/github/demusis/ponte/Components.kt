@@ -9,6 +9,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.semantics
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.background
@@ -172,7 +173,7 @@ internal fun MainShell(
     Column(Modifier.fillMaxSize().background(c.ground)) {
         Column(Modifier.statusBarsPadding().fillMaxWidth().animateContentSize()) {
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 8.dp, end = 4.dp),
+                Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 4.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
@@ -211,7 +212,8 @@ internal fun MainShell(
                         .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 8.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = if (state.statusKind == StatusKind.ERROR) c.error else c.muted,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                    // A problem gets two lines; the rest of it is one tap away (the details window).
+                    maxLines = if (state.statusKind == StatusKind.ERROR) 2 else 1, overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -232,10 +234,13 @@ internal fun MainShell(
 private fun RowScope.ShellTitle(state: ShellState, onArea: (Int) -> Unit) {
     val c = Ponte.colors
     val heading = AreaSelector.heading(state)
+    // The title grows with the font setting only up to a point, so "Atendimentos" and the buttons still fit 320 dp.
+    val density = LocalDensity.current
+    val titleSize = with(density) { (20f * minOf(density.fontScale, 1.1f)).dp.toSp() }
     if (!AreaSelector.selectable(state)) {
         Text(
-            heading, Modifier.weight(1f, fill = false).padding(start = 8.dp),
-            fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, color = c.text,
+            heading, Modifier.weight(1f, fill = false).padding(start = 12.dp),
+            fontSize = titleSize, lineHeight = titleSize * 1.25f, fontWeight = FontWeight.SemiBold, color = c.text,
             maxLines = 1, overflow = TextOverflow.Ellipsis
         )
         return
@@ -247,15 +252,15 @@ private fun RowScope.ShellTitle(state: ShellState, onArea: (Int) -> Unit) {
             Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
                 .semantics { contentDescription = AreaSelector.description(area) }
                 .clickable(role = Role.Button, onClickLabel = "Trocar a área") { open = true }
-                .padding(start = 8.dp, end = 4.dp),
+                .padding(start = 12.dp, end = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 heading, Modifier.weight(1f, fill = false),
-                fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, color = c.text,
+                fontSize = titleSize, lineHeight = titleSize * 1.25f, fontWeight = FontWeight.SemiBold, color = c.text,
                 maxLines = 1, overflow = TextOverflow.Ellipsis
             )
-            Icon(Icons.Outlined.ExpandMore, contentDescription = null, tint = c.secondary, modifier = Modifier.size(22.dp))
+            Icon(Icons.Outlined.ExpandMore, contentDescription = null, tint = c.secondary, modifier = Modifier.size(20.dp))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             AreaMenuItems(area) { open = false; onArea(it) }
@@ -274,7 +279,7 @@ private fun SyncDotButton(state: ShellState, onTap: () -> Unit) {
         StatusKind.NEUTRAL -> c.outline
     }
     Box(
-        Modifier.size(width = 36.dp, height = 48.dp)
+        Modifier.size(width = 28.dp, height = 48.dp)
             .semantics { contentDescription = SyncDot.description(state) }
             .clickable(role = Role.Button, onClickLabel = "Ver o estado da sincronização", onClick = onTap),
         contentAlignment = Alignment.Center

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -260,10 +261,14 @@ private fun MarkAtom(mark: TaskRowText.Mark, separator: Boolean) {
     val tint = if (mark.key == "urgente") c.error else c.warning
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (separator) Separator()
-        Icon(
-            if (mark.key == "urgente") Icons.Filled.KeyboardDoubleArrowUp else Icons.Filled.ArrowDropUp,
-            contentDescription = null, tint = tint, modifier = Modifier.size(if (mark.key == "urgente") 14.dp else 20.dp)
-        )
+        // The triangle is drawn larger than the room it takes, so the line stays as tall as its text.
+        Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+            Icon(
+                if (mark.key == "urgente") Icons.Filled.KeyboardDoubleArrowUp else Icons.Filled.ArrowDropUp,
+                contentDescription = null, tint = tint,
+                modifier = Modifier.requiredSize(if (mark.key == "urgente") 16.dp else 26.dp)
+            )
+        }
         Text(mark.word, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, color = tint, maxLines = 1)
     }
 }
