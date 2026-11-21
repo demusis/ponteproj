@@ -896,6 +896,7 @@ fn draw_results(
     if results.total() == 0 {
         if results.error.is_none() {
             widgets::muted(ui, format!("Nada encontrado para \"{query}\"."));
+            widgets::small_muted(ui, "Tente outra palavra ou só parte do número.");
         }
         return None;
     }
