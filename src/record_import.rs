@@ -312,6 +312,13 @@ impl Store {
         let operation_id = operation_id.map(str::trim).filter(|id| !id.is_empty());
         if let Some(id) = operation_id {
             if let Some(done) = self.operation_record(id).map_err(|e| store_refusal(&e))? {
+                // The id of another kind of operation (a file attached) is not
+                // the id of a record: nothing is written.
+                if done.kind != "create_record" {
+                    return Err(invalid(
+                        "Este identificador de operação já foi usado por outra operação.",
+                    ));
+                }
                 return Ok(Created::Already {
                     document_id: done.document_id,
                 });
@@ -1464,6 +1471,39 @@ mod tests {
             .unwrap();
         assert_eq!(state, "done");
         assert!(crate::storage::import_receipt_exists(&store.conn, "antigo").unwrap());
+    }
+
+    #[test]
+    fn an_operation_id_recorded_for_an_attach_does_not_create_a_record() {
+        let (_dir, mut store) = store();
+        let Created::New { document_id, .. } = store
+            .create_record_with_attachments(&record(TEXT), &[])
+            .unwrap()
+        else {
+            panic!()
+        };
+        crate::storage::record_operation(
+            &store.conn,
+            "op-anexo",
+            "attach",
+            document_id,
+            Some(1),
+            Some(10),
+        )
+        .unwrap();
+        let other = record("[04/11/2026 10:05] Servidor A: outro texto");
+        let err = store
+            .create_record_for_operation(&other, &[], Some("op-anexo"))
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<RecordError>(),
+            Some(RecordError::Invalid(_))
+        ));
+        assert_eq!(documents(&store), 1);
+        assert_eq!(
+            store.operation_record("op-anexo").unwrap().unwrap().kind,
+            "attach"
+        );
     }
 
     /// What the journal and the queue hold, without clocks and row numbers.

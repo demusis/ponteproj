@@ -1589,6 +1589,13 @@ fn create_record(store: &mut Store, input: &Value, file_path: &str) -> Result<Va
     let operation = optional_text(input, "operation_id");
     if let Some(id) = &operation {
         if let Some(done) = store.operation_record(id)? {
+            // The id of an attachment is not the id of a record: nothing is
+            // written and the document of that other operation is not
+            // answered as if a record had been created.
+            anyhow::ensure!(
+                done.kind == "create_record",
+                "Este identificador de operação já foi usado por outra operação."
+            );
             return Ok(json!({ "document_id": done.document_id }));
         }
     }
@@ -1690,8 +1697,10 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_attachFile<'local>
 }
 
 /// Whether the operation `{"operation_id":"<uuid>"}` was committed:
-/// `{done:true, document_id:N}` or `{done:false}` (also for an unknown, empty or
-/// unreadable id). Read only.
+/// `{done:true, document_id:N, kind:"record"}` for a created record,
+/// `{done:true, document_id:N, kind:"attach"}` for a file attached to an existing
+/// document, or `{done:false}` (also for an unknown, empty or unreadable id).
+/// Read only.
 fn operation_status(store: &Store, input: &str) -> Result<Value> {
     let input: Value = serde_json::from_str(input).unwrap_or(Value::Null);
     let done = match optional_text(&input, "operation_id") {
@@ -1699,13 +1708,25 @@ fn operation_status(store: &Store, input: &str) -> Result<Value> {
         None => None,
     };
     Ok(match done {
-        Some(done) => json!({"done": true, "document_id": done.document_id}),
+        Some(done) => {
+            let mut answer = json!({"done": true, "document_id": done.document_id});
+            let kind = match done.kind.as_str() {
+                "create_record" => Some("record"),
+                "attach" => Some("attach"),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                answer["kind"] = json!(kind);
+            }
+            answer
+        }
         None => json!({"done": false}),
     })
 }
 
-/// `{"operation_id":"<uuid>"}` -> `{ok:true, done:bool[, document_id:N]}`: after a
-/// process death, the app asks whether the save it had started was committed.
+/// `{"operation_id":"<uuid>"}` -> `{ok:true, done:bool[, document_id:N, kind:"record"|"attach"]}`:
+/// after a process death, the app asks whether the save it had started was
+/// committed, and whether it made a record or attached a file.
 #[no_mangle]
 pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_operationStatus<'local>(
     mut env: JNIEnv<'local>,
@@ -3891,7 +3912,7 @@ mod tests {
         assert_eq!(status(&store, OP_A), json!({"done": false}));
         let first = create_record(&mut store, &input, &file).unwrap();
         let id = first["document_id"].as_i64().unwrap();
-        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": id}));
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": id, "kind": "record"}));
         let queued = store.list_offline_outbox().unwrap().len();
         let events = store.list_team_events(500).unwrap().len();
         // Again, also with the working file gone and the text changed: nothing is made.
@@ -3918,7 +3939,7 @@ mod tests {
         let input = with_operation(fields("Aviso", "linha 1\nlinha 2"), OP_A);
         let first = create_record(&mut store, &input, "").unwrap();
         let id = first["document_id"].as_i64().unwrap();
-        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": id}));
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": id, "kind": "record"}));
         assert_eq!(store.load_document(id).unwrap().capture.text, "linha 1\nlinha 2");
         let queued = store.list_offline_outbox().unwrap().len();
         let second = create_record(&mut store, &input, "").unwrap();
@@ -3935,7 +3956,7 @@ mod tests {
         let path = work_file(&dir.0, "w.bin", b"conteudo anexado");
         let options = json!({"operation_id": OP_A}).to_string();
         let first = attach_file_with(&mut store, document, &path, "oficio.txt", "", &options).unwrap();
-        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document}));
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach"}));
         let queued = store.list_offline_outbox().unwrap().len();
         let events = store.list_team_events(500).unwrap().len();
         std::fs::remove_file(&path).unwrap();
@@ -3949,6 +3970,32 @@ mod tests {
         assert!(made["document_id"].is_i64());
         let clash = json!({"operation_id": OP_B}).to_string();
         assert!(attach_file_with(&mut store, document, &path, "x.txt", "", &clash).is_err());
+    }
+
+    #[test]
+    fn an_attach_operation_id_cannot_create_a_record_and_the_status_says_the_kind() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, document) = library(&dir.0);
+        let path = work_file(&dir.0, "w.bin", b"conteudo anexado");
+        let options = json!({"operation_id": OP_A}).to_string();
+        attach_file_with(&mut store, document, &path, "oficio.txt", "", &options).unwrap();
+        let made = create_record(&mut store, &with_operation(fields("Aviso", "texto"), OP_B), "").unwrap();
+        let record = made["document_id"].as_i64().unwrap();
+        // The exact answers of `operationStatus`.
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach"}));
+        assert_eq!(status(&store, OP_B), json!({"done": true, "document_id": record, "kind": "record"}));
+        assert_eq!(status(&store, "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0aff"), json!({"done": false}));
+        // `createRecord` with the id of the attach: an error, nothing written
+        // (with a file, with a text only, and through the photo entry point).
+        let before = (traces(&store), live(&store), attachments_of(&store, document));
+        let file = work_file(&dir.0, "novo.bin", b"outro conteudo");
+        for (path, kind) in [("", "texto"), (file.as_str(), "arquivo")] {
+            let err = create_record(&mut store, &with_operation(fields("Clone", "texto"), OP_A), path).unwrap_err();
+            assert!(err.to_string().contains("outra operação"), "{kind}: {err}");
+        }
+        assert_eq!((traces(&store), live(&store), attachments_of(&store, document)), before);
+        assert_eq!(status(&store, OP_A), json!({"done": true, "document_id": document, "kind": "attach"}));
     }
 
     #[test]
