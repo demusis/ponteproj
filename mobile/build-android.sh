@@ -8,7 +8,12 @@
 #   JAVA_HOME, the newest NDK under the SDK, gradle on PATH or PONTE_GRADLE).
 set -e
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEV="${PONTE_DEVTOOLS:-/c/Users/CARLO/AppData/Local/Programs/PonteProj/devtools}"
+if [ -n "${LOCALAPPDATA:-}" ] && command -v cygpath >/dev/null 2>&1; then
+    LOCAL_APPS="$(cygpath -u "$LOCALAPPDATA")"
+else
+    LOCAL_APPS="$HOME/AppData/Local"
+fi
+DEV="${PONTE_DEVTOOLS:-$LOCAL_APPS/Programs/PonteProj/devtools}"
 
 if [ -d "$DEV" ]; then
     A=$DEV/android
