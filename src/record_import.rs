@@ -13,7 +13,10 @@ use crate::{
     },
     manual::ManualFields,
     model::{ImportOutcome, ImportReceipt, MANUAL_PENDING},
-    storage::{import_receipt_exists, write_import_receipt, Store},
+    storage::{
+        import_receipt_state, remove_in_progress_import_receipt, write_import_receipt,
+        write_import_receipt_in_progress, ReceiptState, Store,
+    },
     trash::{Kind, Target},
 };
 use anyhow::{Error, Result};
@@ -280,7 +283,10 @@ impl Store {
     /// On a computer connected to a main computer every change is a request
     /// to it, so one transaction is not possible there: the record is created
     /// first and then each file is sent (`import_capture`, `add_attachment`);
-    /// if one fails the new record is removed, and a retry starts clean.
+    /// if one fails the new record is removed, and a retry starts clean. If the
+    /// process dies in the middle, the receipt written before the first
+    /// request (in progress, with the manifest) lets the retry send only the
+    /// files still missing.
     pub fn create_record_with_attachments(
         &mut self,
         record: &NewRecord,
@@ -349,53 +355,97 @@ impl Store {
         Ok(created)
     }
 
+    /// The record and then each file, as separate requests to the main
+    /// computer. A process that dies between two of them leaves a record with
+    /// some of its files, so the local receipt is written BEFORE the first
+    /// request, "in progress", with the manifest (the sorted digests of the
+    /// files of this import), and completed after the last file went through.
+    /// A retry of the same request id then knows what it was doing:
+    ///
+    /// - receipt completed: `Already`, nothing is added;
+    /// - in progress with the SAME manifest: the files of the manifest whose
+    ///   digest is not on the record (live or in the trash) are added, the
+    ///   receipt is completed;
+    /// - in progress with ANOTHER manifest (the id was reused for other
+    ///   content): `Already`, nothing is added;
+    /// - no receipt and the record already there (an older version left it):
+    ///   the rule of the single transaction, a record with no attachment at all
+    ///   is completed once.
+    ///
+    /// If the record itself cannot be created, the receipt written here goes
+    /// away.
     fn create_record_through_the_main_computer(
         &mut self,
         capture: &crate::model::Capture,
         files: &[AttachmentInput<'_>],
     ) -> Result<Created> {
-        let receipt = self
-            .import_capture(capture)
-            .map_err(|e| store_refusal(&e))?;
         let request_key = uuid::Uuid::parse_str(&capture.request_id)
             .map_err(|_| invalid("O identificador da importação é inválido."))?
             .hyphenated()
             .to_string();
-        self.send_files_of_import(&receipt, &request_key, files)
+        let manifest: BTreeSet<String> = files
+            .iter()
+            .map(|file| format!("{:x}", Sha256::digest(file.data)))
+            .collect();
+        let before =
+            import_receipt_state(&self.conn, &request_key).map_err(|e| store_refusal(&e))?;
+        if before.is_none() {
+            write_import_receipt_in_progress(&self.conn, &request_key, manifest.iter().cloned())
+                .map_err(|e| store_refusal(&e))?;
+        }
+        let receipt = match self.import_capture(capture) {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                if before.is_none() {
+                    let _ = remove_in_progress_import_receipt(&self.conn, &request_key);
+                }
+                return Err(store_refusal(&err));
+            }
+        };
+        self.send_files_of_import(&receipt, &request_key, files, &manifest, before)
     }
 
     /// The files of an import on a computer connected to a main computer, one
-    /// request each, after the record exists there (`receipt` is the record's).
-    /// The rule is the one of the single transaction: a request id that has its
-    /// local receipt adds nothing; a record that was already there without a
-    /// receipt gets the files only if it has no attachment at all (not even in
-    /// the trash); the receipt is written here after the last file went through.
+    /// request each, after the record exists there (`receipt` is the record's;
+    /// `before` is what the local receipt said before this call, `None` for no
+    /// receipt). See `create_record_through_the_main_computer` for the rules.
     fn send_files_of_import(
         &mut self,
         receipt: &ImportReceipt,
         request_key: &str,
         files: &[AttachmentInput<'_>],
+        manifest: &BTreeSet<String>,
+        before: Option<ReceiptState>,
     ) -> Result<Created> {
         let document_id = receipt.document_id;
         let completing = receipt.effective_outcome() != ImportOutcome::Imported;
-        let in_the_library = if completing {
-            if import_receipt_exists(&self.conn, request_key).map_err(|e| store_refusal(&e))? {
-                return Ok(Created::Already { document_id });
+        let in_the_library: BTreeSet<String> = if completing {
+            match &before {
+                Some(ReceiptState::Completed) => return Ok(Created::Already { document_id }),
+                // The request id was used for other content: not ours to touch.
+                Some(ReceiptState::InProgress(other)) if other != manifest => {
+                    return Ok(Created::Already { document_id });
+                }
+                _ => {}
             }
             hashes_including_trash(&self.conn, Owner::Document(document_id))
                 .map_err(|e| store_refusal(&e))?
+                .into_iter()
+                .collect()
         } else {
-            Vec::new()
+            BTreeSet::new()
         };
-        if !in_the_library.is_empty() {
+        if before.is_none() && !in_the_library.is_empty() {
             // The record has files that are not this import's to complete.
             let _ = write_import_receipt(&self.conn, request_key, in_the_library);
             return Ok(Created::Already { document_id });
         }
-        let mut sent = BTreeSet::new();
         let mut added = 0;
         for file in files {
-            if !sent.insert(format!("{:x}", Sha256::digest(file.data))) {
+            let digest = format!("{:x}", Sha256::digest(file.data));
+            // Already on the record (a previous run sent it) or in the trash
+            // (the person removed it meanwhile): not sent again.
+            if in_the_library.contains(&digest) {
                 continue;
             }
             let result = self.add_attachment(
@@ -406,10 +456,15 @@ impl Store {
             );
             let Err(err) = result else {
                 added += 1;
+                #[cfg(test)]
+                if let Some(err) = simulated_death(added) {
+                    return Err(err);
+                }
                 continue;
             };
             if completing {
-                // The record was there before this import: it stays.
+                // The record was there before this import: it stays, and the
+                // receipt stays "in progress" for the next try.
                 return Err(refusal_of_import(&Error::new(AttachmentStepFailed {
                     completing: true,
                     source: err,
@@ -426,6 +481,7 @@ impl Store {
             // Lixeira and the person is told.
             let removed = trashed.is_ok() && self.purge_trash_item(target).is_ok();
             if removed {
+                let _ = remove_in_progress_import_receipt(&self.conn, request_key);
                 return Err(failed("Um dos arquivos não pôde ser guardado, então a conversa não foi guardada. Tente de novo."));
             }
             return Err(match trashed {
@@ -433,9 +489,10 @@ impl Store {
                 Err(_) => failed("Um dos arquivos não pôde ser guardado e o registro ficou incompleto. Exclua-o na lista de documentos e tente de novo."),
             });
         }
-        // Every file went through: this import is complete. (If this write
-        // fails the record still has its files, and a retry finds them.)
-        let _ = write_import_receipt(&self.conn, request_key, sent);
+        // Every file of the manifest is on the record: this import is
+        // complete. (If this write fails the receipt stays "in progress" and a
+        // retry finds every file already there and completes it.)
+        let _ = write_import_receipt(&self.conn, request_key, manifest.iter().cloned());
         Ok(if completing && added == 0 {
             Created::Already { document_id }
         } else {
@@ -445,6 +502,23 @@ impl Store {
             }
         })
     }
+}
+
+// Test hook: the process "dies" (the call returns an error and nothing is
+// cleaned up) right after this many files of an import went through.
+#[cfg(test)]
+thread_local! {
+    static DIE_AFTER_FILES: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn simulated_death(files_sent: usize) -> Option<Error> {
+    DIE_AFTER_FILES.with(|limit| {
+        (limit.get() == Some(files_sent)).then(|| {
+            limit.set(None);
+            anyhow::anyhow!("processo interrompido")
+        })
+    })
 }
 
 #[cfg(test)]
@@ -1180,6 +1254,216 @@ mod tests {
         );
         assert_eq!(attachment_names(&store, document_id).len(), 2);
         assert_eq!(manifest(&store, &other).map(|m| m.len()), Some(2));
+    }
+
+    /// The state of the local receipt of a request ("done" / "in_progress").
+    fn receipt_state(store: &Store, rec: &NewRecord) -> Option<String> {
+        store
+            .conn
+            .query_row(
+                "SELECT state FROM import_receipts WHERE request_id=?1",
+                [&rec.request_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    fn die_after(files: usize) {
+        DIE_AFTER_FILES.with(|limit| limit.set(Some(files)));
+    }
+
+    #[test]
+    fn a_connected_import_that_died_after_the_first_file_is_completed_by_the_retry() {
+        let (_dir, mut store) = store();
+        let rec = record(TEXT);
+        let (a, b) = (png(1), pdf(2));
+        let both = [file("a.png", a.clone()), file("b.pdf", b.clone())];
+        // The importer dies after the first of the two file requests.
+        die_after(1);
+        assert!(sequential(&mut store, &rec, &both).is_err());
+        let document_id = store.list_documents("").unwrap()[0].id;
+        assert_eq!(attachment_names(&store, document_id), ["a.png"]);
+        // The receipt was written before the first request, in progress, with
+        // the manifest of the whole import.
+        assert_eq!(receipt_state(&store, &rec).as_deref(), Some("in_progress"));
+        let mut expected = vec![sha(&a), sha(&b)];
+        expected.sort();
+        assert_eq!(manifest(&store, &rec), Some(expected));
+        // The retry adds exactly the missing file and completes the import.
+        assert_eq!(
+            sequential(&mut store, &rec, &both).unwrap(),
+            Created::New {
+                document_id,
+                attachments_added: 1
+            }
+        );
+        assert_eq!(attachment_names(&store, document_id), ["a.png", "b.pdf"]);
+        assert_eq!(receipt_state(&store, &rec).as_deref(), Some("done"));
+        assert_eq!(documents(&store), 1);
+        // The next retry has nothing to do.
+        assert_eq!(
+            sequential(&mut store, &rec, &both).unwrap(),
+            Created::Already { document_id }
+        );
+        assert_eq!(attachment_names(&store, document_id).len(), 2);
+    }
+
+    #[test]
+    fn a_connected_import_that_died_before_any_file_gets_all_of_them() {
+        let (_dir, mut store) = store();
+        let rec = record(TEXT);
+        let both = [file("a.png", png(1)), file("b.pdf", pdf(2))];
+        let actor = store.active_actor();
+        let capture = rec.fields.capture_with(
+            MANUAL_PENDING,
+            &actor,
+            rec.request_id.clone(),
+            rec.metadata.clone(),
+        );
+        let key = uuid::Uuid::parse_str(&rec.request_id)
+            .unwrap()
+            .hyphenated()
+            .to_string();
+        // What a run that died right after the record leaves: the record and
+        // the receipt in progress, no file.
+        crate::storage::write_import_receipt_in_progress(
+            &store.conn,
+            &key,
+            [sha(&png(1)), sha(&pdf(2))],
+        )
+        .unwrap();
+        let document_id = store.import_capture(&capture).unwrap().document_id;
+        assert_eq!(
+            sequential(&mut store, &rec, &both).unwrap(),
+            Created::New {
+                document_id,
+                attachments_added: 2
+            }
+        );
+        assert_eq!(attachment_names(&store, document_id), ["a.png", "b.pdf"]);
+        assert_eq!(receipt_state(&store, &rec).as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn a_receipt_in_progress_with_another_manifest_adds_nothing() {
+        let (_dir, mut store) = store();
+        let rec = record(TEXT);
+        die_after(1);
+        assert!(sequential(
+            &mut store,
+            &rec,
+            &[file("a.png", png(1)), file("b.pdf", pdf(2))]
+        )
+        .is_err());
+        let document_id = store.list_documents("").unwrap()[0].id;
+        // The same request id arrives with other files: not this import.
+        let others = [file("x.png", png(7)), file("y.pdf", pdf(8))];
+        assert_eq!(
+            sequential(&mut store, &rec, &others).unwrap(),
+            Created::Already { document_id }
+        );
+        assert_eq!(attachment_names(&store, document_id), ["a.png"]);
+        // And the receipt still waits for the import it belongs to.
+        assert_eq!(receipt_state(&store, &rec).as_deref(), Some("in_progress"));
+        assert_eq!(
+            sequential(
+                &mut store,
+                &rec,
+                &[file("a.png", png(1)), file("b.pdf", pdf(2))]
+            )
+            .unwrap(),
+            Created::New {
+                document_id,
+                attachments_added: 1
+            }
+        );
+        assert_eq!(attachment_names(&store, document_id), ["a.png", "b.pdf"]);
+    }
+
+    #[test]
+    fn a_file_the_person_moved_to_the_lixeira_during_the_gap_is_not_added_again() {
+        let (_dir, mut store) = store();
+        let rec = record(TEXT);
+        let both = [file("a.png", png(1)), file("b.pdf", pdf(2))];
+        die_after(1);
+        assert!(sequential(&mut store, &rec, &both).is_err());
+        let document_id = store.list_documents("").unwrap()[0].id;
+        let id = store
+            .list_attachments(Owner::Document(document_id))
+            .unwrap()[0]
+            .id;
+        // In the gap the person sends the first file to the Lixeira.
+        store
+            .trash_item(Target {
+                kind: Kind::Attachment,
+                id,
+            })
+            .unwrap();
+        assert_eq!(
+            sequential(&mut store, &rec, &both).unwrap(),
+            Created::New {
+                document_id,
+                attachments_added: 1
+            }
+        );
+        // Only the second file was added; the first stays in the Lixeira.
+        assert_eq!(attachment_names(&store, document_id), ["b.pdf"]);
+        assert_eq!(receipt_state(&store, &rec).as_deref(), Some("done"));
+        // Completed now: nothing comes back, whatever happens to the files.
+        assert_eq!(
+            sequential(&mut store, &rec, &both).unwrap(),
+            Created::Already { document_id }
+        );
+        assert_eq!(attachment_names(&store, document_id), ["b.pdf"]);
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_created_leaves_no_receipt_in_progress() {
+        let (_dir, mut store) = store();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_documents BEFORE INSERT ON documents BEGIN SELECT RAISE(ABORT,'falha simulada'); END;",
+            )
+            .unwrap();
+        let rec = record(TEXT);
+        assert!(sequential(&mut store, &rec, &[file("a.png", png(1))]).is_err());
+        assert_eq!(receipt_state(&store, &rec), None);
+        // A failure of a file on a fresh record removes the record and the receipt too.
+        store
+            .conn
+            .execute_batch("DROP TRIGGER fail_documents")
+            .unwrap();
+        fail_on(&store, "fail_attachments");
+        assert!(sequential(&mut store, &rec, &[file("a.png", png(1))]).is_err());
+        assert_eq!(receipt_state(&store, &rec), None);
+        assert_eq!(documents(&store), 0);
+    }
+
+    #[test]
+    fn a_library_whose_receipts_have_no_state_column_gets_it_once() {
+        let (_dir, mut store) = store();
+        store
+            .conn
+            .execute_batch(
+                "DROP TABLE import_receipts;
+                 CREATE TABLE import_receipts(request_id TEXT PRIMARY KEY, manifest TEXT NOT NULL, completed_at TEXT NOT NULL);
+                 INSERT INTO import_receipts VALUES('antigo','[]','2026-01-01T00:00:00.000Z');",
+            )
+            .unwrap();
+        store.ensure_intranet().unwrap();
+        store.ensure_intranet().unwrap();
+        let state: String = store
+            .conn
+            .query_row(
+                "SELECT state FROM import_receipts WHERE request_id='antigo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "done");
+        assert!(crate::storage::import_receipt_exists(&store.conn, "antigo").unwrap());
     }
 
     /// What the journal and the queue hold, without clocks and row numbers.

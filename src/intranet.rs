@@ -1856,13 +1856,27 @@ impl Store {
             CREATE TABLE IF NOT EXISTS import_receipts(
                 request_id TEXT PRIMARY KEY,
                 manifest TEXT NOT NULL,
-                completed_at TEXT NOT NULL
+                completed_at TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'done'
             );
             CREATE TABLE IF NOT EXISTS host_generation(
                 id INTEGER PRIMARY KEY CHECK(id=1),
                 value TEXT NOT NULL
             );",
         )?;
+        // `state` ('done' or 'in_progress': an import of a connected computer
+        // whose files are still being sent) came after the table itself.
+        let has_state: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('import_receipts') WHERE name='state')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_state {
+            tx.execute(
+                "ALTER TABLE import_receipts ADD COLUMN state TEXT NOT NULL DEFAULT 'done'",
+                [],
+            )?;
+        }
         // A library whose receipts predate the compact record (the table is
         // new here) gets the record from them: what they cover must not be
         // forgotten when the full answers are pruned.
