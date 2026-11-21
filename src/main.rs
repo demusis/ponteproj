@@ -134,6 +134,9 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
+        // The installers' safety copy: no window, no migration, and the
+        // library is only read (see `upgrade_backup`).
+        Some(ponteproj::upgrade_backup::COMMAND) => ponteproj::upgrade_backup::run(&args[1..]),
         Some("--list") => {
             let store = Store::open(&paths::db_path()?)?;
             println!(
