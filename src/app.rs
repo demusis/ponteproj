@@ -2124,13 +2124,23 @@ impl PonteApp {
             return;
         }
         let today = key.day.clone();
-        self.derived_for = Some(key);
         self.today = today::TodayData::load_with(&self.store, &today, self.saiop.stale_days());
         self.task_badge = self.today.pending_tasks();
-        self.resources_overdue = self.overdue_returns();
-        if let Some(id) = self.selected_id {
-            self.reload(id);
+        let mut complete = self.today.error.is_none();
+        match self.overdue_returns() {
+            Some(count) => self.resources_overdue = count,
+            None => {
+                self.resources_overdue = 0;
+                complete = false;
+            }
         }
+        if let Some(id) = self.selected_id {
+            complete &= self.reload(id);
+        }
+        // Remembered only once every read worked: a section that failed is
+        // read again at the next poll, not served from the cache until the
+        // day, the minute or the library change.
+        self.derived_for = complete.then_some(key);
     }
 
     fn refresh_documents_if_changed(&mut self, stamp: Option<(i64, i64)>, force: bool) {
@@ -2192,8 +2202,9 @@ impl PonteApp {
         }
     }
 
-    /// Returns past their expected end, for the badge of "Recursos".
-    fn overdue_returns(&self) -> usize {
+    /// Returns past their expected end, for the badge of "Recursos"; `None`
+    /// when the uses could not be read.
+    fn overdue_returns(&self) -> Option<usize> {
         let now = crate::resources::now_moment();
         let today = crate::resources::parse_moment(&now)
             .map(|moment| moment.date())
@@ -2201,10 +2212,12 @@ impl PonteApp {
         self.store
             .list_resource_uses()
             .map(|uses| crate::resources::day_counts(&uses, today, &now).overdue)
-            .unwrap_or(0)
+            .ok()
     }
 
-    fn reload(&mut self, id: i64) {
+    /// Reads the document again into the editor and the page; `false` when it
+    /// could not be read.
+    fn reload(&mut self, id: i64) -> bool {
         let note_version = self
             .store
             .item_version("note", id)
@@ -2251,8 +2264,12 @@ impl PonteApp {
                         )),
                     }
                 }
+                true
             }
-            Err(error) => self.document_unavailable(id, &error.to_string()),
+            Err(error) => {
+                self.document_unavailable(id, &error.to_string());
+                false
+            }
         }
     }
 
@@ -4788,6 +4805,44 @@ mod refresh_tests {
             .item_version("note", document)
             .ok()
             .map(|meta| meta.version)
+    }
+
+    #[test]
+    fn a_failed_read_is_retried_at_the_next_poll() {
+        let _guard = ConfigGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(&dir);
+        app.store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        app.refresh();
+        assert!(app.today.error.is_none());
+
+        // Another connection leaves the library unreadable for the tasks.
+        let other = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        other
+            .conn
+            .execute("ALTER TABLE tasks RENAME TO tasks_fora", [])
+            .unwrap();
+        app.refresh_polled();
+        assert!(app.today.error.is_some(), "the failure is shown");
+
+        // The table is back through this window's own connection (which does
+        // not change what the poll watches); the next poll reads again.
+        app.store
+            .conn
+            .execute("ALTER TABLE tasks_fora RENAME TO tasks", [])
+            .unwrap();
+        app.refresh_polled();
+        assert!(
+            app.today.error.is_none(),
+            "the failed section stayed cached until the key changed"
+        );
+        // And once everything worked the poll leaves it alone again.
+        mark(&mut app);
+        app.refresh_polled();
+        assert!(marked(&app));
+        drop(other);
     }
 
     #[test]
