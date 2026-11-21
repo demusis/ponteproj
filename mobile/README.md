@@ -2,10 +2,11 @@
 
 Aplicativo de celular (Android) que acompanha o Ponte do computador no modo **pasta compartilhada**: o celular é mais um participante do arquivo `ponte-sync.ponte` guardado no Google Drive.
 
-## O que faz (versão 0.22.0)
+## O que faz (versão 0.23.0)
 
 Cada item abaixo traz a versão em que entrou; vale o que está aqui, e a versão instalada aparece no aplicativo.
 
+- **Telas mais limpas (0.23.0):** a barra de baixo mostra só os ícones (Hoje, Tarefas, Documentos, E-mail); na aba Tarefas, o **título** é o seletor de área: toque em **Tarefas ▾** para trocar entre Tarefas, Projetos, Atendimentos e Recursos. A sincronização aparece como um ponto ao lado do título, e o texto só surge enquanto sincroniza, em erro ou quando algo pede atenção (toque no ponto para vê-lo). No alto ficam **Buscar**, o **filtro** (abre um painel com Categorias e Projeto; com filtro ativo, uma linha no alto da lista mostra o filtro e **Limpar**) e o menu **⋮**, com **Sincronizar agora** e **Ajustes**; puxar a lista para baixo também sincroniza. As listas são linhas com um traço fino, sem cartões: prioridade, categorias e prazo aparecem como texto com ícone. O botão de criar é um **+** redondo. Fichas, formulários e Ajustes usam seções com rótulo no lugar de caixas; ações pouco usadas (como **Desvincular do documento** e **Excluir conta**) ficam no **⋮** da tela. Em Hoje, a frase do alto leva às tarefas atrasadas.
 - **Dependências:** No celular, ao editar uma tarefa, em **Depende de**, **Escolher tarefas…** abre **Escolher tarefas**: marque várias, use **Buscar tarefa** e **Confirmar**; as concluídas aparecem com **· Concluída**. Tarefas que criariam ciclo não são oferecidas; o núcleo ainda recusa escolhas inválidas e o formulário mostra o motivo. Essa escolha não está em **Nova tarefa**.
 
 - **Sincronização pedida por você:** em **Sincronizar agora**, na tela de documento ou no diálogo de status, ela acontece ou informa por que não; sem Wi-Fi, oferece **Usar dados móveis desta vez**. As mensagens podem ser: “Escolha primeiro o arquivo ponte-sync.ponte em Ajustes.”, “Informe a senha de sincronização em Ajustes para sincronizar.”, “Abra o aplicativo para liberar a senha e sincronizar.”, “Sincronização cancelada: a senha não foi liberada.” ou “Já há uma sincronização em andamento.” As sincronizações automáticas continuam silenciosas. A versão 0.10.0 instala por cima da 0.9.x.

@@ -18,7 +18,7 @@ Ele tem duas partes, que funcionam juntas:
 | **Guia rápido** | [`GUIA_DO_USUARIO.md`](GUIA_DO_USUARIO.md), em onze seções curtas. Dentro do programa: **Ajuda**, na barra lateral |
 | **Celular (Android)** | **Ponte de bolso**, que acompanha o Ponte pela pasta compartilhada: [`mobile/README.md`](mobile/README.md) |
 | **Para quem mexe no código** | [`CONTRIBUINDO.md`](CONTRIBUINDO.md): módulos, build, testes e publicação |
-| **Versão** | 0.49.0 (extensão 0.4.1; Ponte de bolso 0.22.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
+| **Versão** | 0.49.0 (extensão 0.4.1; Ponte de bolso 0.23.0) — notas de cada versão em [Releases](https://github.com/demusis/ponteproj/releases) |
 | **Requisitos** | Windows 10 ou 11, Chrome ou Edge, acesso ao SIGADOC. Não precisa de administrador |
 | **Autoria** | Carlo Ralph De Musis e João Gabriel Bezerra Estrela — ver [Autoria e licença](#14-autoria-e-licença) |
 | **Licença** | [MIT](LICENSE) |
@@ -613,7 +613,7 @@ Um **projeto** reúne as tarefas de um mesmo objetivo (a organização de uma re
 - **Em equipe**, a lista de projetos é a mesma para todos, como a de categorias; uma edição feita sobre uma versão antiga do projeto é um conflito (o Ponte oferece **Recarregar**), e um computador cujo principal ainda não guarda projetos avisa para atualizar o principal. O formato do acervo e o dos arquivos estão em [6.11](#611-atualizar-entre-versões-formato-do-acervo).
 - **Regras do projeto.** O nome é único no acervo (sem diferenciar maiúsculas e acentos); a situação é *ativo*, *pausado*, *concluído* ou *arquivado*; início e data-alvo são opcionais. Uma subtarefa nova herda o projeto da tarefa-mãe, e mudar depois o projeto da mãe não mexe nas subtarefas. Apagar um projeto nunca apaga tarefas: elas ficam sem projeto, na mesma gravação. O andamento (tarefas, concluídas, atrasadas, próximo prazo), o risco (entregas em risco e data-alvo ameaçada) e a linha do tempo são calculados na hora a partir das tarefas, nunca gravados. Se dois aparelhos mudarem o mesmo projeto, vale a mudança aplicada por último, ou a tela de conflitos mostra as duas versões quando uma foi feita sobre uma versão antiga; um projeto apagado em outro aparelho não volta por uma edição feita a partir de uma versão antiga dele, e uma tarefa que chegar apontando para um projeto apagado nesse meio-tempo fica sem projeto.
 - **Busca e exportação.** **Ctrl+K** e a busca da própria área encontram projetos pelo nome e pelo objetivo. A exportação em CSV ganhou a coluna *Projeto* em `tarefas.csv` e o arquivo `projetos.csv` ([10.5](#105-exportar-dados-csv)).
-- **No celular**, **Projetos** é o segundo segmento da área **Tarefas** (Tarefas, Projetos, Atendimentos, Recursos): lista com filtros e busca, projeto aberto com **Tarefas** e **Linha do tempo**, e o campo **Projeto** na tarefa ([`mobile/README.md`](mobile/README.md)).
+- **No celular**, **Projetos** fica no seletor da área **Tarefas**, aberto pelo título (Tarefas, Projetos, Atendimentos, Recursos): lista com filtros e busca, projeto aberto com **Tarefas** e **Linha do tempo**, e o campo **Projeto** na tarefa ([`mobile/README.md`](mobile/README.md)).
 
 ### 6.11 Atualizar entre versões: formato do acervo
 
