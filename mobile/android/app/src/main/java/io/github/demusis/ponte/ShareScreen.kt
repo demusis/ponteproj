@@ -82,6 +82,18 @@ internal fun ShareScreen(
                 .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // A draft that came back after the app was closed says so, quietly; one the disk refuses warns.
+            if (item != null && state.recovered) {
+                Text(
+                    ShareDraftRules.MSG_RECOVERED, Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.bodySmall, color = c.muted
+                )
+            }
+            if (item != null && state.keepFailed) Notice(ShareDraftRules.MSG_CANNOT_KEEP, tone = Tone.WARNING)
+            // The first step has no footer: the look at a save that was under way says what it is doing here.
+            if (item != null && mode == ShareMode.CHOOSE && state.busy && state.progress.isNotEmpty()) {
+                Notice(state.progress, tone = Tone.NEUTRAL)
+            }
             when {
                 state.reading -> {
                     ReceivedCard(null, reading = true)
