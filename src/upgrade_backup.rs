@@ -256,6 +256,33 @@ impl Drop for Partial {
     }
 }
 
+/// The copy has [`BUSY_LIMIT`] to get further than it has ever got. A copy that
+/// keeps going (however big the library) keeps setting new highs of "pages
+/// copied"; one that is busy, or restarted again and again by a writer, never
+/// gets past its best and runs out of time.
+struct Stall {
+    best: i32,
+    since: Instant,
+}
+
+impl Stall {
+    fn new(now: Instant) -> Self {
+        Stall {
+            best: 0,
+            since: now,
+        }
+    }
+
+    /// Notes the pages copied so far at `now`; whether the limit has run out.
+    fn stalled(&mut self, copied: i32, now: Instant) -> bool {
+        if copied > self.best {
+            self.best = copied;
+            self.since = now;
+        }
+        now.saturating_duration_since(self.since) >= BUSY_LIMIT
+    }
+}
+
 /// SQLite's online backup from a read-only connection: a snapshot of what is
 /// committed, WAL included, taken while another process may be writing.
 fn copy_consistently(database: &Path, target_path: &Path) -> Result<()> {
@@ -270,22 +297,25 @@ fn copy_consistently(database: &Path, target_path: &Path) -> Result<()> {
     {
         let backup = Backup::new(&source, &mut target)
             .context("Não foi possível iniciar a cópia consistente do acervo.")?;
-        let started = Instant::now();
+        let mut stall = Stall::new(Instant::now());
         loop {
-            match backup
+            let step = backup
                 .step(512)
-                .context("Não foi possível criar uma cópia de segurança consistente.")?
-            {
-                StepResult::Done => break,
-                StepResult::More => {}
-                _ => {
-                    ensure!(
-                        started.elapsed() < BUSY_LIMIT,
-                        "O acervo ficou ocupado por mais de {} segundos; tente de novo com o Ponte fechado.",
-                        BUSY_LIMIT.as_secs()
-                    );
-                    std::thread::sleep(Duration::from_millis(100));
-                }
+                .context("Não foi possível criar uma cópia de segurança consistente.")?;
+            if step == StepResult::Done {
+                break;
+            }
+            // Checked on every turn, not only when the library is busy: a
+            // writer that keeps committing makes SQLite restart the copy, and
+            // each turn then answers `More`.
+            let progress = backup.progress();
+            ensure!(
+                !stall.stalled(progress.pagecount - progress.remaining, Instant::now()),
+                "O acervo ficou ocupado ou em mudança constante por mais de {} segundos; tente de novo com o Ponte fechado.",
+                BUSY_LIMIT.as_secs()
+            );
+            if step != StepResult::More {
+                std::thread::sleep(Duration::from_millis(100));
             }
         }
     }
@@ -866,5 +896,29 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("alcançar"), "{error:#}");
+    }
+
+    #[test]
+    fn the_time_limit_runs_out_when_the_copy_does_not_get_further() {
+        let start = Instant::now();
+        let at = |secs: u64| start + Duration::from_secs(secs);
+        // A copy that a writer restarts over and over: it keeps answering
+        // "More" but never gets past its best.
+        let mut stall = Stall::new(start);
+        assert!(!stall.stalled(100, at(1)));
+        assert!(!stall.stalled(20, at(10)));
+        assert!(!stall.stalled(150, at(20)));
+        assert!(!stall.stalled(30, at(40)));
+        assert!(!stall.stalled(140, at(70)));
+        assert!(stall.stalled(10, at(81))); // 60 s since the last best (150 at 20 s)
+                                            // A big library that keeps going is never cut off.
+        let mut stall = Stall::new(start);
+        for n in 1..1000 {
+            assert!(!stall.stalled(n, at(n as u64 * 5)));
+        }
+        // Busy from the start, nothing copied.
+        let mut stall = Stall::new(start);
+        assert!(!stall.stalled(0, at(59)));
+        assert!(stall.stalled(0, at(60)));
     }
 }
