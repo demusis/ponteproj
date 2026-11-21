@@ -323,7 +323,13 @@ impl PonteApp {
                             RichText::new("Excluir…")
                                 .color(if can_delete { p.danger } else { p.muted }),
                         );
-                        if ui.add_enabled(can_delete, item).clicked() {
+                        if ui
+                            .add_enabled(can_delete, item)
+                            .on_disabled_hover_text(
+                                "Espere o trabalho em andamento terminar (barra inferior).",
+                            )
+                            .clicked()
+                        {
                             delete = true;
                             ui.close();
                         }
