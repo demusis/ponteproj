@@ -2159,9 +2159,12 @@ impl PonteApp {
             self.save_note(id);
         }
         if discard {
-            let editor = self.editors.get_mut(&id).expect("editor exists");
-            editor.note = editor.saved_note.clone();
+            self.discard_note(id);
             self.message("Notas restauradas para a última gravação.");
+        } else if dirty && !self.editors[&id].note_dirty() {
+            // Typed back to the text it had when it was loaded: what another
+            // connection saved meanwhile must not stay hidden behind it.
+            self.reload_note_if_clean(id);
         }
     }
 }

@@ -3209,6 +3209,24 @@ impl PonteApp {
         }
     }
 
+    /// "Desfazer alterações": drops the unsaved text and shows the note as
+    /// the library has it now, with its current version (another connection
+    /// may have saved it since this editor was loaded).
+    fn discard_note(&mut self, id: i64) {
+        if let Some(editor) = self.editors.get_mut(&id) {
+            editor.note = editor.saved_note.clone();
+        }
+        self.reload_note_if_clean(id);
+    }
+
+    /// The note editor holds no unsaved change: takes the text and the version
+    /// from the library, so a later save checks against what is really there.
+    fn reload_note_if_clean(&mut self, id: i64) {
+        if self.editors.get(&id).is_some_and(|e| !e.note_dirty()) {
+            self.reload(id);
+        }
+    }
+
     fn save_draft(&mut self, id: i64) {
         let Some(editor) = self.editors.get(&id) else {
             return;
@@ -4742,6 +4760,70 @@ mod refresh_tests {
     }
     fn marked(app: &PonteApp) -> bool {
         app.today.error.as_deref() == Some("marca")
+    }
+
+    /// An open document whose note editor holds unsaved text while another
+    /// connection saved a different note.
+    fn note_edited_here_and_saved_elsewhere(dir: &tempfile::TempDir) -> (PonteApp, i64) {
+        let mut app = app(dir);
+        let document = app
+            .store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        app.refresh();
+        app.select(document);
+        app.editors.get_mut(&document).unwrap().note = "minha edição".into();
+        let mut other = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        other.save_note(document, "versão externa").unwrap();
+        app.refresh_polled();
+        // The poll keeps the unsaved edit but shows the stored note.
+        assert_eq!(app.editors[&document].note, "minha edição");
+        assert_eq!(app.detail.as_ref().unwrap().note, "versão externa");
+        (app, document)
+    }
+
+    fn stored_note_version(app: &PonteApp, document: i64) -> Option<i64> {
+        app.store
+            .item_version("note", document)
+            .ok()
+            .map(|meta| meta.version)
+    }
+
+    #[test]
+    fn discarding_the_note_shows_what_another_connection_saved() {
+        let _guard = ConfigGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, document) = note_edited_here_and_saved_elsewhere(&dir);
+        app.discard_note(document);
+        let editor = &app.editors[&document];
+        assert_eq!(editor.note, "versão externa");
+        assert_eq!(editor.saved_note, "versão externa");
+        assert!(!editor.note_dirty());
+        assert!(editor.note_version.is_some());
+        assert_eq!(editor.note_version, stored_note_version(&app, document));
+        // And the next save checks against the current version: it goes through.
+        app.editors.get_mut(&document).unwrap().note = "depois".into();
+        app.save_note(document);
+        assert_eq!(app.store.load_document(document).unwrap().note, "depois");
+    }
+
+    #[test]
+    fn typing_the_note_back_to_the_loaded_text_adopts_the_stored_one() {
+        let _guard = ConfigGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, document) = note_edited_here_and_saved_elsewhere(&dir);
+        let editor = app.editors.get_mut(&document).unwrap();
+        editor.note = editor.saved_note.clone();
+        app.reload_note_if_clean(document);
+        let editor = &app.editors[&document];
+        assert_eq!(editor.note, "versão externa");
+        assert_eq!(editor.note_version, stored_note_version(&app, document));
+        // A note still being edited is never replaced.
+        let dir2 = tempfile::tempdir().unwrap();
+        let (mut app2, doc2) = note_edited_here_and_saved_elsewhere(&dir2);
+        app2.reload_note_if_clean(doc2);
+        assert_eq!(app2.editors[&doc2].note, "minha edição");
     }
 
     #[test]
