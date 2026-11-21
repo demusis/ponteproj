@@ -333,6 +333,9 @@ pub fn item_kind(kind: &str) -> &str {
 
 /// Parses what a person types as a date: `dd/mm/aaaa`, `dd/mm/aa`, `dd-mm-aaaa`
 /// or `aaaa-mm-dd`. Returns the ISO form used in storage.
+///
+/// Strict form: the year is mandatory. Use [`parse_typed_date_on`] for fields a
+/// person types in, where `dd/mm` is also welcome.
 pub fn parse_typed_date(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
@@ -353,6 +356,31 @@ pub fn parse_typed_date(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// [`parse_typed_date`] that also accepts `dd/mm` and `d/m` (separators `/`, `-`
+/// or `.`) without a year: the date falls in the year of `today`, or in a later
+/// year when it has already passed (`29/02` waits for the next leap year).
+/// Nonexistent days such as `31/02` are refused.
+pub fn parse_typed_date_on(text: &str, today: chrono::NaiveDate) -> Option<String> {
+    if let Some(full) = parse_typed_date(text) {
+        return Some(full);
+    }
+    use chrono::Datelike;
+    let parts: Vec<&str> = text.trim().split(['/', '-', '.']).collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let number = |s: &str| {
+        (!s.is_empty() && s.len() <= 2 && s.chars().all(|c| c.is_ascii_digit()))
+            .then(|| s.parse::<u32>().ok())
+            .flatten()
+    };
+    let (day, month) = (number(parts[0])?, number(parts[1])?);
+    (today.year()..=today.year() + 8)
+        .filter_map(|year| chrono::NaiveDate::from_ymd_opt(year, month, day))
+        .find(|date| *date >= today && date.year() <= 9999)
+        .map(|date| date.format("%Y-%m-%d").to_string())
 }
 
 /// Reads what a person types as a time of day: `9`, `930`, `0930`, `9:30`,
@@ -477,8 +505,10 @@ fn date_field_with(
     if state.1 != *value {
         state = (date(value), value.clone());
     }
-    let valid = value.trim().is_empty() || parse_typed_date(value).is_some();
-    let response = ui
+    let today = chrono::Local::now().date_naive();
+    let valid = value.trim().is_empty() || parse_typed_date_on(value, today).is_some();
+    let response = ui.vertical(|ui| {
+        let response = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let mut edit = egui::TextEdit::singleline(&mut state.0)
@@ -492,7 +522,7 @@ fn date_field_with(
                 crate::widgets::outline(ui, response.rect, crate::theme::error());
             }
             if response.changed() {
-                *value = match parse_typed_date(&state.0) {
+                *value = match parse_typed_date_on(&state.0, today) {
                     Some(iso) => iso,
                     None if state.0.trim().is_empty() => String::new(),
                     None => state.0.clone(),
@@ -517,17 +547,19 @@ fn date_field_with(
                 *value = chrono::Local::now().format("%Y-%m-%d").to_string();
                 state = (date(value), value.clone());
             }
-            if !valid {
-                ui.label(
-                    egui::RichText::new(crate::theme::icon::WARNING)
-                        .size(16.0)
-                        .color(crate::theme::error()),
-                )
-                .on_hover_text("Data inválida. Use o formato dd/mm/aaaa.");
-            }
             response
         })
         .inner;
+        if !valid {
+            ui.label(
+                egui::RichText::new("Use dd/mm/aaaa, ex.: 15/12/2026.")
+                    .size(crate::theme::SIZE_SMALL)
+                    .color(crate::theme::error()),
+            );
+        }
+        response
+    })
+    .inner;
     ui.data_mut(|d| d.insert_temp(id, state));
     response
 }
@@ -1028,6 +1060,29 @@ mod tests {
         assert_eq!(parse_typed_date("31/02/2026"), None);
         assert_eq!(parse_typed_date("amanhã"), None);
         assert_eq!(parse_typed_date("  "), None);
+    }
+
+    #[test]
+    fn typed_date_without_year_uses_this_or_next_year() {
+        let d = |y, m, day| chrono::NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        let today = d(2026, 11, 20);
+        let on = |t: &str| parse_typed_date_on(t, today);
+        assert_eq!(on("15/12").as_deref(), Some("2026-12-15"));
+        assert_eq!(on("5/12").as_deref(), Some("2026-12-05"));
+        assert_eq!(on("20/11").as_deref(), Some("2026-11-20"));
+        assert_eq!(on("19/11").as_deref(), Some("2027-11-19"));
+        assert_eq!(on("1/1").as_deref(), Some("2027-01-01"));
+        assert_eq!(on("29/02").as_deref(), Some("2028-02-29"));
+        assert_eq!(on("31/02"), None);
+        assert_eq!(on("32/01"), None);
+        assert_eq!(on("15/13"), None);
+        assert_eq!(on("15/"), None);
+        assert_eq!(on("amanhã"), None);
+        // With a year, the old behaviour stays (and the 1900-9999 limit too).
+        assert_eq!(on("03/11/2026").as_deref(), Some("2026-11-03"));
+        assert_eq!(on("03/11/1800"), None);
+        // The strict parser still refuses a missing year.
+        assert_eq!(parse_typed_date("15/12"), None);
     }
 
     #[test]

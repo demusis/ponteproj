@@ -2469,7 +2469,10 @@ impl TaskPanel {
                                             }
                                         }
                                     });
-                                    let typed = crate::labels::parse_typed_date(&self.batch_due);
+                                    let typed = crate::labels::parse_typed_date_on(
+                                        &self.batch_due,
+                                        chrono::Local::now().date_naive(),
+                                    );
                                     match (self.batch_due_clear, typed) {
                                         (true, _) => (
                                             format!("Tirar o prazo de {tasks_text}?"),
@@ -3636,7 +3639,11 @@ impl TaskPanel {
                                 let response =
                                     crate::labels::date_field(ui, ("task-due", task_id), &mut task.due_date);
                                 if !task.due_date.trim().is_empty()
-                                    && crate::labels::parse_typed_date(&task.due_date).is_none()
+                                    && crate::labels::parse_typed_date_on(
+                                        &task.due_date,
+                                        chrono::Local::now().date_naive(),
+                                    )
+                                    .is_none()
                                 {
                                     widgets::outline(ui, response.rect.expand(2.0), c().danger);
                                 }
