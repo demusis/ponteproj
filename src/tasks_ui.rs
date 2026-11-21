@@ -1973,6 +1973,19 @@ impl TaskPanel {
         self.focus_title = true;
         true
     }
+    /// Opens a blank task without document with this title and deadline
+    /// (`AAAA-MM-DD`, or empty for none), unless another edit is pending.
+    /// Nothing is saved: the form holds unsaved work until "Salvar".
+    pub fn start_new_captured(&mut self, title: &str, due_date: &str) -> bool {
+        if !self.start_new(None) {
+            return false;
+        }
+        if let Some(task) = self.draft.as_mut() {
+            task.title = title.to_owned();
+            task.due_date = due_date.to_owned();
+        }
+        true
+    }
     /// Opens a blank task for this project (without document), unless
     /// another edit is pending.
     pub fn start_new_in_project(&mut self, project_uid: &str) -> bool {
@@ -4518,6 +4531,25 @@ mod navigation_tests {
         list.clear();
         restore_step(&mut list, 2, step);
         assert_eq!(list, vec![(false, "c".to_owned())]);
+    }
+
+    #[test]
+    fn a_captured_task_opens_filled_in_and_unsaved() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("captura.sqlite3")).unwrap();
+        let before = store.list_tasks().unwrap().len();
+        let mut panel = TaskPanel::default();
+        assert!(panel.start_new_captured("revisar parecer", "2026-12-15"));
+        let draft = panel.draft.as_ref().unwrap();
+        assert_eq!(draft.title, "revisar parecer");
+        assert_eq!(draft.due_date, "2026-12-15");
+        assert_eq!(draft.document_id, None);
+        assert_eq!(draft.id, 0, "not saved");
+        assert!(panel.dirty(), "the guard protects it from now on");
+        assert_eq!(store.list_tasks().unwrap().len(), before);
+        // With the form dirty, another capture is refused untouched.
+        assert!(!panel.start_new_captured("outra", ""));
+        assert_eq!(panel.draft.as_ref().unwrap().title, "revisar parecer");
     }
 
     #[test]

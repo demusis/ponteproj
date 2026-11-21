@@ -1172,6 +1172,9 @@ enum Leave {
     Select(i64),
     /// Start a blank task for this document.
     NewTask(Option<i64>),
+    /// Start a task without document with the title and deadline typed in
+    /// the quick capture of Ctrl+K (`due_date` is `AAAA-MM-DD` or empty).
+    NewTaskCaptured { title: String, due_date: String },
     /// Open this task in the form, keeping the panel's view and filter.
     OpenTask(crate::tasks::Task),
     /// Open this task from its document's Resumo, filtering the panel to it.
@@ -1195,6 +1198,7 @@ impl Leave {
         matches!(
             self,
             Leave::NewTask(_)
+                | Leave::NewTaskCaptured { .. }
                 | Leave::NewProjectTask(_)
                 | Leave::OpenTask(_)
                 | Leave::EditTask(_)
@@ -1897,6 +1901,13 @@ impl PonteApp {
             Leave::Select(id) => self.select(id),
             Leave::NewTask(document_id) => {
                 if self.tasks.start_new(document_id) {
+                    self.area = Area::Tasks;
+                } else {
+                    self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");
+                }
+            }
+            Leave::NewTaskCaptured { title, due_date } => {
+                if self.tasks.start_new_captured(&title, &due_date) {
                     self.area = Area::Tasks;
                 } else {
                     self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");

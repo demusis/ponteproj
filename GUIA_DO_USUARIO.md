@@ -38,6 +38,8 @@ Os dados ficam só na sua conta do Windows, cifrados. Outra conta no mesmo compu
 
 **Ações no Ctrl+K.** Com a caixa vazia, ou começando com `>`, a lista mostra **Ações**, e não resultados: **Nova tarefa**, **Novo registro manual**, **Nova entrada em Atendimentos**, **Nova reserva**, **Abrir Hoje e pendências**, **Planejar a semana**, **Abrir documentos**, **Abrir tarefas**, **Abrir projetos**, **Abrir atendimentos**, **Abrir reservas e recursos**, **Abrir modelos**, **Abrir ajustes e sincronização** e **Abrir a ajuda (guia do usuário)**; há também **Novo projeto**. Depois do `>`, escreva parte do nome para filtrar (`> semana`, `> projetos`). **Enter** executa a ação escolhida. Se há algo sem salvar, o Ponte pergunta antes de sair da tela, como sempre.
 
+**Criar uma tarefa numa linha.** No Ctrl+K, escreva `>` e a tarefa, por exemplo `> revisar parecer 15/12`: a primeira linha da lista passa a ser *Nova tarefa: "revisar parecer" · prazo 15/12/2026* (ou *sem prazo*), e **Enter** abre o formulário de tarefa já preenchido, sem salvar nada até você apertar **Salvar**. O prazo só é reconhecido no **fim** da linha: `hoje`, `amanhã`, um dia da semana (`segunda`, `terça-feira`… sempre o próximo depois de hoje) ou uma data (`15/12`, `15/12/2026`); uma hora depois da data (`14:00`, `14h`, `às 14h30`) fica no título, pois o prazo da tarefa é só a data. Palavras como *hoje* no meio do título não contam. A tarefa nasce sem documento, como em **Nova tarefa**.
+
 ## 3. Importar um documento
 
 1. No SIGADOC, abra o documento (a ficha dele, não a lista).

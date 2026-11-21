@@ -7,6 +7,7 @@ use crate::saiop::SaiopAttendance;
 use crate::tasks::Task;
 use crate::theme::{self, S1, S2, S3};
 use crate::widgets::{self, Tone};
+use chrono::Datelike;
 use eframe::egui::{self, RichText};
 use std::time::{Duration, Instant};
 
@@ -115,6 +116,10 @@ struct Results {
     categories: Vec<crate::categories::Category>,
     /// Why the library could not be read, if it could not.
     error: Option<String>,
+    /// The task the text after `>` describes ("> revisar parecer 15/12").
+    capture: Option<Capture>,
+    /// The capture row comes before the actions (no action matches the text).
+    capture_first: bool,
 }
 
 impl Results {
@@ -126,12 +131,15 @@ impl Results {
             + self.resources.rows.len()
             + self.resource_uses.rows.len()
             + self.commands.len()
+            + usize::from(self.capture.is_some())
     }
 }
 
 /// What the person chose.
 enum Pick {
     Command(Command),
+    /// A task typed in one line: the form opens filled in.
+    Capture(Capture),
     Document(i64),
     Task(i64),
     /// A project, by uid.
@@ -226,6 +234,129 @@ fn commands(query: &str) -> Vec<Command> {
         .into_iter()
         .filter(|command| fields_match(&needle, &[command.label()]))
         .collect()
+}
+
+/// A task typed in one line after `>`: the title and, when the line ends in
+/// a recognised date, the deadline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Capture {
+    pub title: String,
+    pub due: Option<chrono::NaiveDate>,
+    /// A time written after the date. The task has a deadline date but no
+    /// deadline time, so it is only kept as text in the title (`form_title`).
+    pub time: Option<chrono::NaiveTime>,
+}
+
+impl Capture {
+    /// The title the form is filled with: the time, which the task cannot
+    /// hold as data, stays at the end of the title ("ligar amanhã 14:00"
+    /// gives "ligar 14:00").
+    fn form_title(&self) -> String {
+        match self.time {
+            Some(time) => format!("{} {}", self.title, time.format("%H:%M")),
+            None => self.title.clone(),
+        }
+    }
+
+    /// The deadline as stored (`AAAA-MM-DD`), empty when there is none.
+    fn due_iso(&self) -> String {
+        self.due
+            .map(|date| date.format("%Y-%m-%d").to_string())
+            .unwrap_or_default()
+    }
+
+    /// The row's text: exactly what the form will be filled with.
+    fn row_text(&self) -> String {
+        let due = match self.due {
+            Some(date) => format!("prazo {}", date.format("%d/%m/%Y")),
+            None => "sem prazo".to_owned(),
+        };
+        format!("Nova tarefa: \"{}\" · {due}", self.form_title())
+    }
+}
+
+/// The next `weekday` strictly after `today` (a week ahead when it is that
+/// very weekday).
+fn next_weekday(today: chrono::NaiveDate, weekday: chrono::Weekday) -> chrono::NaiveDate {
+    let from = i64::from(today.weekday().num_days_from_monday());
+    let to = i64::from(weekday.num_days_from_monday());
+    today + chrono::Duration::days((to - from + 6).rem_euclid(7) + 1)
+}
+
+/// A date the end of a capture line may hold: `hoje`, `amanhã`, a weekday
+/// (`segunda`…`domingo`, with or without `-feira`) or a typed date.
+fn capture_date(token: &str, today: chrono::NaiveDate) -> Option<chrono::NaiveDate> {
+    let word = fold(token);
+    let word = word.strip_suffix("-feira").unwrap_or(&word);
+    let weekday = match word {
+        "hoje" => return Some(today),
+        "amanha" => return Some(today + chrono::Duration::days(1)),
+        "segunda" => chrono::Weekday::Mon,
+        "terca" => chrono::Weekday::Tue,
+        "quarta" => chrono::Weekday::Wed,
+        "quinta" => chrono::Weekday::Thu,
+        "sexta" => chrono::Weekday::Fri,
+        "sabado" => chrono::Weekday::Sat,
+        "domingo" => chrono::Weekday::Sun,
+        _ => {
+            if !word.starts_with(|c: char| c.is_ascii_digit()) {
+                return None;
+            }
+            let iso = crate::labels::parse_typed_date_on(token, today)?;
+            return chrono::NaiveDate::parse_from_str(&iso, "%Y-%m-%d").ok();
+        }
+    };
+    Some(next_weekday(today, weekday))
+}
+
+/// `14:00`, `14h`, `14h30`; a bare number is not a time here.
+fn capture_time(token: &str) -> Option<chrono::NaiveTime> {
+    let token = token.to_lowercase();
+    if !token.starts_with(|c: char| c.is_ascii_digit()) || !token.contains([':', 'h']) {
+        return None;
+    }
+    let iso = crate::labels::parse_typed_time(&token)?;
+    chrono::NaiveTime::parse_from_str(&iso, "%H:%M").ok()
+}
+
+/// Reads the line typed after `>`. A date is recognised only at the end of
+/// the line (`hoje`, `amanhã`, a weekday, or `dd/mm`, `dd/mm/aaaa`…),
+/// optionally followed by a time (`14:00`, `14h`, `14h30`, with an optional
+/// `às` before it); everything before is the title. A date word inside the
+/// title stays title text. The title is empty when the line has nothing else.
+pub(super) fn parse_capture(text: &str, today: chrono::NaiveDate) -> Capture {
+    let mut tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut time = None;
+    let mut due = None;
+    // The date is the last token, or the one before a final time.
+    if let Some(found) = tokens.last().and_then(|t| capture_date(t, today)) {
+        due = Some(found);
+        tokens.pop();
+    } else if tokens.len() >= 2 {
+        if let Some(clock) = tokens.last().and_then(|t| capture_time(t)) {
+            let mut before = tokens.len() - 1;
+            if before >= 2 && fold(tokens[before - 1]) == "as" {
+                before -= 1;
+            }
+            if let Some(found) = capture_date(tokens[before - 1], today) {
+                due = Some(found);
+                time = Some(clock);
+                tokens.truncate(before - 1);
+            }
+        }
+    }
+    Capture {
+        title: tokens.join(" "),
+        due,
+        time,
+    }
+}
+
+/// The capture the text asks for: it starts with `>` and has a title.
+fn capture_for(text: &str, today: chrono::NaiveDate) -> Option<Capture> {
+    let rest = text.trim().strip_prefix('>')?;
+    let capture = parse_capture(rest, today);
+    (!capture.title.is_empty()).then_some(capture)
 }
 
 /// What the search box holds between frames.
@@ -431,11 +562,17 @@ impl GlobalSearch {
         self.highlight = None;
         let text = self.query.trim().to_owned();
         if text.is_empty() || text.starts_with('>') {
+            let commands = commands(&text);
+            let capture = capture_for(&text, chrono::Local::now().date_naive());
             self.results = Results {
-                commands: commands(&text),
+                // An action that matches the whole text ("> semana") keeps
+                // coming first, so Enter still runs it.
+                capture_first: commands.is_empty(),
+                commands,
+                capture,
                 ..Results::default()
             };
-            self.highlight = (!self.results.commands.is_empty()).then_some(0);
+            self.highlight = (self.results.total() > 0).then_some(0);
             return;
         }
         if text.chars().count() < MIN_CHARS {
@@ -569,7 +706,17 @@ impl GlobalSearch {
         let records =
             documents + tasks + projects + attendances + resources + r.resource_uses.rows.len();
         if index >= records {
-            return r.commands.get(index - records).copied().map(Pick::Command);
+            let mut rest = index - records;
+            let capture = r.capture.clone().map(Pick::Capture);
+            if r.capture_first {
+                if rest == 0 {
+                    return capture;
+                }
+                rest -= 1;
+            } else if rest == r.commands.len() {
+                return capture;
+            }
+            return r.commands.get(rest).copied().map(Pick::Command);
         }
         if index < documents {
             Some(Pick::Document(r.documents.rows[index].id))
@@ -788,6 +935,13 @@ impl PonteApp {
                         }
                         ui.add_space(S2);
                         let trimmed = search.query.trim();
+                        if trimmed.is_empty() || trimmed == ">" {
+                            widgets::small_muted(
+                                ui,
+                                "Digite > para criar uma tarefa: > revisar parecer 15/12",
+                            );
+                            ui.add_space(S1);
+                        }
                         if trimmed.chars().count() < MIN_CHARS && !trimmed.is_empty() && !trimmed.starts_with('>') {
                             widgets::muted(
                                 ui,
@@ -838,6 +992,10 @@ impl PonteApp {
     fn open_pick(&mut self, pick: Pick, ctx: &egui::Context) {
         match pick {
             Pick::Command(command) => self.run_command(command, ctx),
+            Pick::Capture(capture) => self.navigate(Leave::NewTaskCaptured {
+                title: capture.form_title(),
+                due_date: capture.due_iso(),
+            }),
             Pick::Document(id) => self.navigate(Leave::Select(id)),
             Pick::Task(id) => {
                 let current = self
@@ -871,6 +1029,39 @@ impl PonteApp {
             Pick::ResourceUse(uid) => self.open_use(&uid),
         }
     }
+}
+
+/// The row "Nova tarefa: "…" · prazo …"; returns whether it was clicked.
+fn capture_row(
+    ui: &mut egui::Ui,
+    search: &GlobalSearch,
+    capture: &Capture,
+    index: usize,
+    scroll: bool,
+) -> bool {
+    let p = theme::c();
+    result_row(
+        ui,
+        "gs-capture",
+        search.highlight == Some(index),
+        scroll,
+        false,
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = S2;
+                ui.label(
+                    RichText::new("›")
+                        .font(theme::font_strong(theme::SIZE_BODY))
+                        .color(p.primary),
+                );
+                ui.add(
+                    egui::Label::new(capture.row_text())
+                        .selectable(false)
+                        .truncate(),
+                );
+            });
+        },
+    )
 }
 
 /// The groups of results in a scroll area; returns the row clicked, if any.
@@ -1269,8 +1460,14 @@ fn draw_results(
                 }
                 more_line(ui, results.resource_uses.more);
             }
-            if !results.commands.is_empty() {
+            if results.capture.is_some() || !results.commands.is_empty() {
                 heading(ui, "Ações");
+                if let (Some(capture), true) = (&results.capture, results.capture_first) {
+                    if capture_row(ui, search, capture, index, scroll_to_highlight) {
+                        clicked = Some(Pick::Capture(capture.clone()));
+                    }
+                    index += 1;
+                }
                 for command in &results.commands {
                     let on = search.highlight == Some(index);
                     if result_row(
@@ -1302,6 +1499,11 @@ fn draw_results(
                     }
                     index += 1;
                 }
+                if let (Some(capture), false) = (&results.capture, results.capture_first) {
+                    if capture_row(ui, search, capture, index, scroll_to_highlight) {
+                        clicked = Some(Pick::Capture(capture.clone()));
+                    }
+                }
             }
         });
     clicked
@@ -1327,6 +1529,171 @@ mod tests {
         assert!(commands("> tarefa").contains(&Command::NewTask));
         assert!(commands("> tarefa").contains(&Command::Tasks));
         assert!(commands("> xyz").is_empty());
+    }
+
+    fn day(year: i32, month: u32, date: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(year, month, date).unwrap()
+    }
+
+    /// Friday, 20 November 2026.
+    fn friday() -> chrono::NaiveDate {
+        day(2026, 11, 20)
+    }
+
+    #[test]
+    fn capture_reads_date_words_at_the_end() {
+        let c = parse_capture(" conferir laudo hoje", friday());
+        assert_eq!(c.title, "conferir laudo");
+        assert_eq!(c.due, Some(friday()));
+        assert_eq!(c.time, None);
+        for word in ["amanhã", "amanha", "AMANHÃ"] {
+            let c = parse_capture(&format!("ligar {word}"), friday());
+            assert_eq!(
+                (c.title.as_str(), c.due),
+                ("ligar", Some(day(2026, 11, 21)))
+            );
+        }
+    }
+
+    #[test]
+    fn capture_weekday_is_the_next_one_after_today() {
+        // Today is a Friday: "sexta" means next week's.
+        let due = |text: &str| parse_capture(text, friday()).due;
+        assert_eq!(due("relatório mensal sexta"), Some(day(2026, 11, 27)));
+        assert_eq!(due("x sexta-feira"), Some(day(2026, 11, 27)));
+        assert_eq!(due("x sábado"), Some(day(2026, 11, 21)));
+        assert_eq!(due("x sabado"), Some(day(2026, 11, 21)));
+        assert_eq!(due("x domingo"), Some(day(2026, 11, 22)));
+        assert_eq!(due("x segunda"), Some(day(2026, 11, 23)));
+        assert_eq!(due("x Segunda-Feira"), Some(day(2026, 11, 23)));
+        assert_eq!(due("x terça"), Some(day(2026, 11, 24)));
+        assert_eq!(due("x terca-feira"), Some(day(2026, 11, 24)));
+        assert_eq!(due("x quarta"), Some(day(2026, 11, 25)));
+        assert_eq!(due("x quinta"), Some(day(2026, 11, 26)));
+        assert_eq!(
+            parse_capture("relatório mensal sexta", friday()).title,
+            "relatório mensal"
+        );
+    }
+
+    #[test]
+    fn capture_typed_dates_roll_into_the_next_year() {
+        let due = |text: &str| parse_capture(text, friday()).due;
+        assert_eq!(due("revisar parecer 15/12"), Some(day(2026, 12, 15)));
+        assert_eq!(due("x 20/11"), Some(day(2026, 11, 20)));
+        // Already passed this year: next year.
+        assert_eq!(due("x 10/11"), Some(day(2027, 11, 10)));
+        assert_eq!(due("x 5/1"), Some(day(2027, 1, 5)));
+        assert_eq!(due("x 15/12/2027"), Some(day(2027, 12, 15)));
+        assert_eq!(due("x 31/02"), None);
+        let c = parse_capture("revisar parecer 15/12", friday());
+        assert_eq!(c.title, "revisar parecer");
+    }
+
+    #[test]
+    fn capture_ignores_date_words_inside_the_title() {
+        let c = parse_capture("conferir hoje o laudo", friday());
+        assert_eq!(c.title, "conferir hoje o laudo");
+        assert_eq!(c.due, None);
+        let c = parse_capture("reunião 15/12 com a equipe", friday());
+        assert_eq!(c.title, "reunião 15/12 com a equipe");
+        assert_eq!(c.due, None);
+        // A number that is not a date stays in the title.
+        let c = parse_capture("ofício 123", friday());
+        assert_eq!((c.title.as_str(), c.due), ("ofício 123", None));
+    }
+
+    #[test]
+    fn capture_needs_a_title() {
+        assert_eq!(parse_capture("hoje", friday()).title, "");
+        assert_eq!(parse_capture("   ", friday()).title, "");
+        assert!(capture_for("> hoje", friday()).is_none());
+        assert!(capture_for(">", friday()).is_none());
+        assert!(capture_for(">   ", friday()).is_none());
+        assert!(capture_for("revisar", friday()).is_none(), "no >");
+        assert!(capture_for("> revisar", friday()).is_some());
+    }
+
+    #[test]
+    fn capture_reads_a_time_after_the_date() {
+        let time = |h, m| chrono::NaiveTime::from_hms_opt(h, m, 0);
+        for (text, expected) in [
+            ("ligar para a secretaria amanhã 14:00", time(14, 0)),
+            ("ligar para a secretaria amanhã 14h", time(14, 0)),
+            ("ligar para a secretaria amanhã 14h30", time(14, 30)),
+            ("ligar para a secretaria amanhã às 14h", time(14, 0)),
+            ("ligar para a secretaria amanha as 9:05", time(9, 5)),
+        ] {
+            let c = parse_capture(text, friday());
+            assert_eq!(c.title, "ligar para a secretaria", "{text}");
+            assert_eq!(c.due, Some(day(2026, 11, 21)), "{text}");
+            assert_eq!(c.time, expected, "{text}");
+        }
+        // A time alone, or a bare number, is not a deadline.
+        let c = parse_capture("ligar 14:00", friday());
+        assert_eq!(
+            (c.title.as_str(), c.due, c.time),
+            ("ligar 14:00", None, None)
+        );
+        let c = parse_capture("ligar amanhã 14", friday());
+        assert_eq!((c.title.as_str(), c.due), ("ligar amanhã 14", None));
+        let c = parse_capture("ligar amanhã 25:00", friday());
+        assert_eq!((c.title.as_str(), c.due), ("ligar amanhã 25:00", None));
+    }
+
+    #[test]
+    fn capture_row_shows_what_the_form_gets() {
+        let c = capture_for("> revisar parecer 15/12", friday()).unwrap();
+        assert_eq!(
+            c.row_text(),
+            "Nova tarefa: \"revisar parecer\" · prazo 15/12/2026"
+        );
+        assert_eq!(c.form_title(), "revisar parecer");
+        assert_eq!(c.due_iso(), "2026-12-15");
+        let c = capture_for(">ligar para a secretaria amanhã 14:00", friday()).unwrap();
+        // The task has no deadline time: it stays in the title.
+        assert_eq!(c.form_title(), "ligar para a secretaria 14:00");
+        assert_eq!(
+            c.row_text(),
+            "Nova tarefa: \"ligar para a secretaria 14:00\" · prazo 21/11/2026"
+        );
+        let c = capture_for("> conferir laudo", friday()).unwrap();
+        assert_eq!(c.row_text(), "Nova tarefa: \"conferir laudo\" · sem prazo");
+        assert_eq!(c.due_iso(), "");
+    }
+
+    #[test]
+    fn the_capture_row_is_first_unless_an_action_matches_the_text() {
+        let capture = capture_for("> revisar parecer", friday());
+        let first = GlobalSearch {
+            results: Results {
+                capture: capture.clone(),
+                capture_first: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(first.results.total(), 1);
+        assert!(
+            matches!(first.pick_at(0), Some(Pick::Capture(ref c)) if c.title == "revisar parecer")
+        );
+        assert!(first.pick_at(1).is_none());
+        let after = GlobalSearch {
+            results: Results {
+                commands: commands("> semana"),
+                capture: capture_for("> semana", friday()),
+                capture_first: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(after.results.total(), 2);
+        assert!(matches!(
+            after.pick_at(0),
+            Some(Pick::Command(Command::Week))
+        ));
+        assert!(matches!(after.pick_at(1), Some(Pick::Capture(_))));
+        assert!(after.pick_at(2).is_none());
     }
 
     #[test]

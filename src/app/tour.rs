@@ -14,6 +14,7 @@ impl PonteApp {
         // the one before is not settled when the picture is taken.
         "busca-nome-do-projeto",
         "busca-tarefas",
+        "busca-captura",
         "busca-sala",
         "busca-projetor",
         "hoje-calendario",
@@ -312,6 +313,7 @@ impl PonteApp {
             }
             "busca"
             | "busca-tarefas"
+            | "busca-captura"
             | "busca-sala"
             | "busca-projetor"
             | "busca-nome-do-projeto" => {
@@ -322,6 +324,7 @@ impl PonteApp {
                     "busca-sala" => "sala",
                     "busca-projetor" => "projetor",
                     "busca-nome-do-projeto" => "comitê gestor",
+                    "busca-captura" => "> ligar para a secretaria amanhã 14:00",
                     _ => "veículos",
                 });
             }
