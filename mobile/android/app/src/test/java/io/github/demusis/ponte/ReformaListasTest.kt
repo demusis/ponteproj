@@ -114,6 +114,16 @@ class ReformaListasTest {
         assertEquals("Sincronização: Ainda não sincronizado", SyncDot.description(ShellState()))
     }
 
+    @Test fun sincronizarAgoraNoMenuSegueAsRegrasDoBotaoAntigo() {
+        val shell = ShellState()
+        assertTrue(SyncDot.canSync(shell))
+        // Running, or the key of the device broken: not tappable.
+        assertFalse(SyncDot.canSync(shell.copy(syncing = true)))
+        assertFalse(SyncDot.canSync(shell.copy(syncEnabled = false)))
+        assertEquals("Sincronizar agora", SyncDot.syncItemLabel(shell))
+        assertEquals("Sincronizando…", SyncDot.syncItemLabel(shell.copy(syncing = true)))
+    }
+
     @Test fun aLinhaDoFiltroDizOQueEstaLigado() {
         val library = listOf(Category("u1", "Estudo", 1), Category("u2", "Viagem", 2), Category("u3", "Casa", 3), Category("u4", "Antiga", 4, archived = true))
         val projects = listOf(ProjectItem("p1", "Projeto X", "", "", "ativo", "Ativo", "", "", 1, ProjectProgress()))
@@ -424,7 +434,7 @@ class ReformaListasTest {
 
     private fun areaMenu(dark: Boolean, name: String, area: Int) = paparazzi.shotInShell(name, 1, dark = dark, shell = Samples.shell.copy(
         projects = area == TasksSegments.PROJECTS, attendances = area == TasksSegments.ATTENDANCES, resources = area == TasksSegments.RESOURCES
-    ), filter = inactive) {
+    ), filter = if (area == TasksSegments.TASKS) inactive else null) {
         Box(Modifier.fillMaxSize()) {
             withLibrary { TasksScreen(TasksState(false, null, tarefas), {}, {}, projects = projetos) }()
             MenuCard(Modifier.padding(start = 8.dp, top = 4.dp)) { AreaMenuItems(area) {} }

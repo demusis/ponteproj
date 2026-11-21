@@ -298,12 +298,11 @@ private fun OverflowMenu(state: ShellState, onSync: () -> Unit, onSettings: () -
             Icon(Icons.Outlined.MoreVert, contentDescription = "Mais opções", tint = c.secondary)
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            val canSync = state.syncEnabled && !state.syncing
             DropdownMenuItem(
                 // While it runs the item says so: that is why it cannot be tapped.
-                text = { Text(if (state.syncing) "Sincronizando…" else "Sincronizar agora", fontSize = 16.sp) },
+                text = { Text(SyncDot.syncItemLabel(state), fontSize = 16.sp) },
                 onClick = { open = false; onSync() },
-                enabled = canSync,
+                enabled = SyncDot.canSync(state),
                 leadingIcon = { Icon(Icons.Outlined.Sync, contentDescription = null) }
             )
             DropdownMenuItem(

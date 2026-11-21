@@ -54,6 +54,12 @@ internal object SyncDot {
     fun lineVisible(state: ShellState, recentlyEnded: Boolean, peek: Boolean): Boolean =
         state.syncing || peek || recentlyEnded || state.statusKind != StatusKind.OK
 
+    /** "Sincronizar agora" can be tapped: the key of the device is fine and no sync is running (same rule as the old button). */
+    fun canSync(state: ShellState): Boolean = state.syncEnabled && !state.syncing
+
+    /** The label of that menu item: while it runs, it says so (that is why it cannot be tapped). */
+    fun syncItemLabel(state: ShellState): String = if (state.syncing) "Sincronizando…" else "Sincronizar agora"
+
     /** What the screen reader says for the dot: the whole status text, and its kind. */
     fun description(state: ShellState): String {
         val kind = when {
