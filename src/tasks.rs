@@ -456,17 +456,17 @@ impl Store {
     /// one an import creates with the document (`ensure_document_task`).
     /// Read straight from the rows (not memoized, trash included: it is the
     /// identity of a row that matters, not whether it is shown); payloads are
-    /// decoded, never queried.
-    pub(crate) fn triage_task_of(&self, document_id: i64) -> Result<Option<i64>> {
-        let rows = self
-            .conn
+    /// decoded, never queried. Works on any connection, such as an open write
+    /// transaction.
+    pub(crate) fn triage_task_in(conn: &Connection, document_id: i64) -> Result<Option<i64>> {
+        let rows = conn
             .prepare("SELECT id,payload FROM tasks WHERE document_id=?1 ORDER BY id")?
             .query_map([document_id], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (id, blob) in rows {
-            let Some(task) = decode_task_or_skip_trashed(&self.conn, id, &blob)? else {
+            let Some(task) = decode_task_or_skip_trashed(conn, id, &blob)? else {
                 continue;
             };
             if task.action == "triar" {

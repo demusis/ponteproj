@@ -1644,6 +1644,68 @@ pub(crate) fn record_mutation(
     Ok(next_version)
 }
 
+fn insert_outbox_row(conn: &Connection, entry: &OutboxEntry) -> Result<()> {
+    conn.execute(
+        "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
+        params![entry.created_at, seal(&serde_json::to_vec(entry)?)?],
+    )?;
+    Ok(())
+}
+
+/// What `queue_locally` leaves in the queue for an import and then one
+/// `AddAttachment` per file stored (`added`: index in `files`, attachment
+/// id), written inside the caller's transaction: the same entries, in the
+/// same order, with the same content. `capture` is the capture as requested
+/// (a manual record still without its number).
+pub(crate) fn queue_import_locally(
+    tx: &Connection,
+    actor: &str,
+    capture: &Capture,
+    receipt: &ImportReceipt,
+    files: &[crate::attachments::AttachmentInput<'_>],
+    added: &[(usize, i64)],
+) -> Result<()> {
+    let frame = crate::idmap::ConnFrame(tx);
+    let mut entries = Vec::with_capacity(1 + added.len());
+    let import = IntranetMutation::ImportCapture {
+        capture: capture.clone(),
+    };
+    let created =
+        crate::idmap::created_ids(&frame, &import, &MutationReply::Receipt(receipt.clone()))?;
+    entries.push((import, created));
+    for (index, id) in added {
+        let file = &files[*index];
+        let mutation = IntranetMutation::AddAttachment {
+            owner_kind: crate::attachments::Owner::Document(receipt.document_id)
+                .kind()
+                .into(),
+            owner_id: receipt.document_id,
+            name: file.name.trim().into(),
+            description: file.description.trim().into(),
+            data_base64: STANDARD.encode(file.data),
+        };
+        let created = crate::idmap::created_ids(&frame, &mutation, &MutationReply::Id(*id))?;
+        entries.push((mutation, created));
+    }
+    for (mutation, created) in entries {
+        insert_outbox_row(
+            tx,
+            &OutboxEntry {
+                id: 0,
+                created_at: now_iso(),
+                actor: actor.to_owned(),
+                label: mutation_label(&mutation),
+                mutation,
+                base: None,
+                uid: uuid::Uuid::new_v4().simple().to_string(),
+                created,
+                attempted: false,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 /// The version number of an item inside a transaction; 0 when it never had one.
 pub(crate) fn version_of(tx: &Connection, kind: &str, item_id: i64) -> Result<i64> {
     Ok(read_version_tx(tx, kind, item_id)?.version)
@@ -5400,11 +5462,44 @@ impl Store {
             created,
             attempted,
         };
-        self.conn.execute(
-            "INSERT INTO offline_outbox(created_at,payload) VALUES(?1,?2)",
-            params![entry.created_at, seal(&serde_json::to_vec(&entry)?)?],
-        )?;
-        Ok(())
+        insert_outbox_row(&self.conn, &entry)
+    }
+
+    /// A record and its attachments, written in ONE transaction: all of it
+    /// is in the library or none of it (see `import_capture_core`). Where
+    /// changes are queued (shared-folder mode) the queued copies are part of
+    /// that transaction. `None` when that cannot be done: on a computer
+    /// connected to a main computer each change is a request to it, so the
+    /// caller must send them one by one.
+    pub(crate) fn import_with_attachments_atomically(
+        &mut self,
+        capture: &Capture,
+        attachments: &[crate::attachments::AttachmentInput<'_>],
+    ) -> Result<Option<(ImportReceipt, usize)>> {
+        let queue_actor = match self.client_config()? {
+            None => None,
+            Some(cfg) if cfg.mode == IntranetMode::SharedFolder => {
+                cfg.validate()?;
+                Some(cfg.member_name.trim().to_owned())
+            }
+            Some(_) => return Ok(None),
+        };
+        let extras = crate::storage::ImportExtras {
+            attachments,
+            queue_actor: queue_actor.as_deref(),
+        };
+        // Applied here as `execute_mutation` applies a queued change: as the
+        // member, and without being sent anywhere.
+        let prev_suppress = self.suppress_remote;
+        let prev_actor = self.actor_override.clone();
+        if let Some(actor) = &queue_actor {
+            self.suppress_remote = true;
+            self.actor_override = actor.clone();
+        }
+        let result = self.import_capture_core(capture, &[], Some(&extras));
+        self.suppress_remote = prev_suppress;
+        self.actor_override = prev_actor;
+        result.map(Some)
     }
 
     /// Changes saved here and not yet sent, oldest first; memoized until the

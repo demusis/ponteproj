@@ -1,15 +1,18 @@
 //! A record created together with its attachments, all or nothing: the
 //! files are validated before the record exists, and a record whose
-//! attachment still fails goes to the Lixeira.
+//! attachment cannot be stored is not stored at all (one transaction).
 //!
 //! The input of this module may come from an untrusted web page (through the
 //! browser extension), so everything that can be checked without the store is
 //! checked first, and the messages of the errors are fixed Portuguese
 //! sentences (never a raw store error, which can carry names or paths).
 use crate::{
-    attachments::{sanitize_file_name, validate_description, validate_file, Owner, MAX_PER_OWNER},
+    attachments::{
+        hashes_including_trash, sanitize_file_name, validate_description, validate_file,
+        AttachmentInput, AttachmentStepFailed, Owner, MAX_PER_OWNER,
+    },
     manual::ManualFields,
-    model::{ImportOutcome, MANUAL_PENDING},
+    model::{ImportOutcome, ImportReceipt, MANUAL_PENDING},
     storage::Store,
     trash::{Kind, Target},
 };
@@ -17,7 +20,7 @@ use anyhow::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Test hook: when set, the next import that has attachments fails right
 /// after its record was written and before its attachments are, as a full
@@ -215,19 +218,62 @@ fn store_refusal(err: &Error) -> Error {
     failed("O Ponte não conseguiu guardar o registro no acervo. Tente de novo.")
 }
 
+/// Called by an import with attachments after its record is written and
+/// before its files are (see [`INJECT_FAILURE_AFTER_RECORD`]).
+pub(crate) fn injected_failure() -> Result<()> {
+    if INJECT_FAILURE_AFTER_RECORD.swap(false, Ordering::SeqCst) {
+        anyhow::bail!("falha simulada depois de gravar o registro");
+    }
+    Ok(())
+}
+
+/// The answer for a failed import: a fixed sentence, never the raw error.
+fn refusal_of_import(err: &Error) -> Error {
+    if let Some(step) = err.downcast_ref::<AttachmentStepFailed>() {
+        return failed(if step.completing {
+            "Um dos arquivos não pôde ser guardado. A conversa já estava no Ponte e continua como estava. Tente de novo."
+        } else {
+            "Um dos arquivos não pôde ser guardado, então a conversa não foi guardada. Tente de novo."
+        });
+    }
+    store_refusal(err)
+}
+
+/// What the caller is told: `Already` only when nothing at all was stored
+/// now and the record was there before.
+fn created_from(receipt: &ImportReceipt, attachments_added: usize) -> Created {
+    if receipt.effective_outcome() != ImportOutcome::Imported && attachments_added == 0 {
+        return Created::Already {
+            document_id: receipt.document_id,
+        };
+    }
+    Created::New {
+        document_id: receipt.document_id,
+        attachments_added,
+    }
+}
+
 impl Store {
     /// Creates a manual record with its attachments, all or nothing.
     ///
     /// 1. Everything that does not need the store is checked first.
-    /// 2. The record is created like a manual one, with the given request id:
-    ///    the same id again answers `Already` (nothing is added).
-    /// 3. The attachments are added; if one fails, the record goes to the
-    ///    Lixeira and the error is returned.
+    /// 2. The record and its attachments are written in ONE transaction (with
+    ///    the queued copies of the changes, in shared-folder mode): either the
+    ///    record, its files and every version and team-event entry they
+    ///    carry are in the library, or nothing is. The attachments are rows
+    ///    of the library itself (sealed), so no file outside it takes part.
+    /// 3. The record is created like a manual one, with the given request id.
+    ///    The same id again does not create a second record: it completes the
+    ///    record with the files of this import that it lacks (same content
+    ///    as one already there, in the trash too, counts as present). That
+    ///    repairs a record an interrupted import (or an older version) left
+    ///    without its files. It answers `New` with the files added now, or
+    ///    `Already` when nothing was missing.
     ///
-    /// In team client mode the record travels like any manual one
-    /// (`import_capture`): the main computer numbers it, or the change is
-    /// queued while it is unreachable; attachments and the Lixeira step use
-    /// the same relay (`add_attachment`, `trash_item`).
+    /// On a computer connected to a main computer every change is a request
+    /// to it, so one transaction is not possible there: the record is created
+    /// first and then each file is sent (`import_capture`, `add_attachment`);
+    /// if one fails the new record is removed, and a retry completes it.
     pub fn create_record_with_attachments(
         &mut self,
         record: &NewRecord,
@@ -242,47 +288,91 @@ impl Store {
             record.request_id.clone(),
             record.metadata.clone(),
         );
-        let receipt = self
-            .import_capture(&capture)
-            .map_err(|e| store_refusal(&e))?;
-        if receipt.effective_outcome() != ImportOutcome::Imported {
-            return Ok(Created::Already {
-                document_id: receipt.document_id,
-            });
+        let inputs: Vec<AttachmentInput<'_>> = files
+            .iter()
+            .map(|(name, file)| AttachmentInput {
+                name,
+                description: file.description.trim(),
+                data: &file.bytes,
+            })
+            .collect();
+        match self.import_with_attachments_atomically(&capture, &inputs) {
+            Ok(Some((receipt, added))) => return Ok(created_from(&receipt, added)),
+            Ok(None) => {}
+            Err(err) => return Err(refusal_of_import(&err)),
         }
+        self.create_record_through_the_main_computer(&capture, &inputs)
+    }
+
+    fn create_record_through_the_main_computer(
+        &mut self,
+        capture: &crate::model::Capture,
+        files: &[AttachmentInput<'_>],
+    ) -> Result<Created> {
+        let receipt = self
+            .import_capture(capture)
+            .map_err(|e| store_refusal(&e))?;
         let document_id = receipt.document_id;
+        let completing = receipt.effective_outcome() != ImportOutcome::Imported;
+        let mut present: BTreeSet<String> = if completing {
+            hashes_including_trash(&self.conn, Owner::Document(document_id))
+                .map_err(|e| store_refusal(&e))?
+                .into_iter()
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         let mut added = 0;
-        for (name, file) in files {
+        for file in files {
+            if !present.insert(format!("{:x}", Sha256::digest(file.data))) {
+                continue;
+            }
             let result = self.add_attachment(
                 Owner::Document(document_id),
-                &name,
-                file.description.trim(),
-                &file.bytes,
+                file.name,
+                file.description,
+                file.data,
             );
-            if result.is_err() {
-                let target = Target {
-                    kind: Kind::Document,
-                    id: document_id,
-                };
-                let trashed = self.trash_item(target.clone());
-                // The record was made a moment ago by this very request and
-                // nobody has seen it: it is removed for good, so that trying
-                // again starts clean. If that cannot be done it stays in the
-                // Lixeira and the person is told.
-                let removed = trashed.is_ok() && self.purge_trash_item(target).is_ok();
-                if removed {
-                    return Err(failed("Um dos arquivos não pôde ser guardado, então a conversa não foi guardada. Tente de novo."));
+            let Err(err) = result else {
+                added += 1;
+                continue;
+            };
+            if completing {
+                // The record was there before this import: it stays, and the
+                // next retry brings the rest.
+                if err.to_string().contains("já está anexado") {
+                    continue;
                 }
-                return Err(match trashed {
-                    Ok(_) => failed("Um dos arquivos não pôde ser guardado, então a conversa não foi guardada. Ela foi para a Lixeira; tente de novo."),
-                    Err(_) => failed("Um dos arquivos não pôde ser guardado e o registro ficou incompleto. Exclua-o na lista de documentos e tente de novo."),
-                });
+                return Err(refusal_of_import(&Error::new(AttachmentStepFailed {
+                    completing: true,
+                    source: err,
+                })));
             }
-            added += 1;
+            let target = Target {
+                kind: Kind::Document,
+                id: document_id,
+            };
+            let trashed = self.trash_item(target.clone());
+            // The record was made a moment ago by this very request and
+            // nobody has seen it: it is removed for good, so that trying
+            // again starts clean. If that cannot be done it stays in the
+            // Lixeira and the person is told.
+            let removed = trashed.is_ok() && self.purge_trash_item(target).is_ok();
+            if removed {
+                return Err(failed("Um dos arquivos não pôde ser guardado, então a conversa não foi guardada. Tente de novo."));
+            }
+            return Err(match trashed {
+                Ok(_) => failed("Um dos arquivos não pôde ser guardado, então a conversa não foi guardada. Ela foi para a Lixeira; tente de novo."),
+                Err(_) => failed("Um dos arquivos não pôde ser guardado e o registro ficou incompleto. Exclua-o na lista de documentos e tente de novo."),
+            });
         }
-        Ok(Created::New {
-            document_id,
-            attachments_added: added,
+        Ok(if completing && added == 0 {
+            Created::Already { document_id }
+        } else {
+            Created::New {
+                document_id,
+                attachments_added: added,
+            }
         })
     }
 }
@@ -430,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn the_same_request_id_answers_already_and_adds_nothing() {
+    fn the_same_request_id_answers_already_and_adds_nothing_when_nothing_is_missing() {
         let (_dir, mut store) = store();
         let rec = record(TEXT);
         let first = store
@@ -440,7 +530,7 @@ mod tests {
             panic!()
         };
         let again = store
-            .create_record_with_attachments(&rec, &[file("a.png", png(1)), file("b.pdf", pdf(2))])
+            .create_record_with_attachments(&rec, &[file("a.png", png(1))])
             .unwrap();
         assert_eq!(again, Created::Already { document_id });
         assert_eq!(
@@ -769,10 +859,7 @@ mod tests {
                 .create_record_with_attachments(
                     &rec,
                     // The same content of a.png under another name still counts as present.
-                    &[
-                        file("outro-nome.png", png(1)),
-                        file("b.pdf", pdf(2)),
-                    ],
+                    &[file("outro-nome.png", png(1)), file("b.pdf", pdf(2))],
                 )
                 .unwrap();
             assert_eq!(
@@ -806,7 +893,10 @@ mod tests {
         else {
             panic!()
         };
-        let id = store.list_attachments(Owner::Document(document_id)).unwrap()[0].id;
+        let id = store
+            .list_attachments(Owner::Document(document_id))
+            .unwrap()[0]
+            .id;
         store
             .trash_item(Target {
                 kind: Kind::Attachment,
@@ -822,7 +912,9 @@ mod tests {
     }
 
     /// What the journal and the queue hold, without clocks and row numbers.
-    fn journal(store: &Store) -> (Vec<String>, Vec<(i64, String, i64)>, Vec<serde_json::Value>) {
+    type Journal = (Vec<String>, Vec<(i64, String, i64)>, Vec<serde_json::Value>);
+
+    fn journal(store: &Store) -> Journal {
         let mut events: Vec<_> = store.list_team_events(500).unwrap();
         events.sort_by_key(|e| e.id);
         let events = events
@@ -893,11 +985,17 @@ mod tests {
             let (old_events, old_versions, old_outbox) = journal(&old);
             let (new_events, new_versions, new_outbox) = journal(&new);
             assert_eq!(new_events, old_events, "team events (queued: {queued})");
-            assert_eq!(new_versions, old_versions, "item versions (queued: {queued})");
+            assert_eq!(
+                new_versions, old_versions,
+                "item versions (queued: {queued})"
+            );
             assert_eq!(new_outbox, old_outbox, "outbox (queued: {queued})");
             assert_eq!(new_events.len(), 3, "import + two attachments");
             assert_eq!(new_outbox.len(), if queued { 3 } else { 0 });
-            assert_eq!(new.cabinet_revision().unwrap(), old.cabinet_revision().unwrap());
+            assert_eq!(
+                new.cabinet_revision().unwrap(),
+                old.cabinet_revision().unwrap()
+            );
         }
     }
 }

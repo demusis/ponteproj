@@ -500,7 +500,22 @@ impl Store {
         capture: &Capture,
         files: &[crate::files::PreparedFile],
     ) -> Result<ImportReceipt> {
+        self.import_capture_core(capture, files, None)
+            .map(|(receipt, _)| receipt)
+    }
+
+    /// [`Store::import_capture_with_files`], and with `extras` the attachments
+    /// of the record (and, in shared-folder mode, the queued copies of the
+    /// changes) written in the very same transaction: all of it is in the
+    /// library or none of it. Also answers how many attachments were stored.
+    pub(crate) fn import_capture_core(
+        &mut self,
+        capture: &Capture,
+        files: &[crate::files::PreparedFile],
+        extras: Option<&ImportExtras<'_>>,
+    ) -> Result<(ImportReceipt, usize)> {
         capture.validate()?;
+        let queued_capture = capture;
         let actor = self.active_actor();
         let request_key = uuid::Uuid::parse_str(&capture.request_id)?
             .hyphenated()
@@ -542,8 +557,7 @@ impl Store {
                 "Este identificador de importação já foi usado em outra importação."
             );
             crate::trash::require_active_capture(&tx, capture_id)?;
-            tx.commit()?;
-            return Ok(ImportReceipt {
+            let receipt = ImportReceipt {
                 request_id: capture.request_id.clone(),
                 document_id,
                 capture_id,
@@ -551,7 +565,12 @@ impl Store {
                 outcome: Some(ImportOutcome::Confirmed),
                 existing_captured_at: None,
                 previous_version: false,
-            });
+            };
+            // A retry of an import whose files did not all arrive: it
+            // completes the record with the ones that are missing.
+            let added = finish_import_extras(&tx, extras, queued_capture, &actor, &receipt, true)?;
+            tx.commit()?;
+            return Ok((receipt, added));
         }
         let mut new_document = false;
         let document_id: i64 = match tx
@@ -595,8 +614,7 @@ impl Store {
             if latest == Some(*capture_id) {
                 // The page shows exactly what is already current: nothing to
                 // store, not even the request. The person is warned instead.
-                tx.commit()?;
-                return Ok(ImportReceipt {
+                let receipt = ImportReceipt {
                     request_id: capture.request_id.clone(),
                     document_id,
                     capture_id: *capture_id,
@@ -604,7 +622,11 @@ impl Store {
                     outcome: Some(ImportOutcome::Unchanged),
                     existing_captured_at: Some(created_at.clone()),
                     previous_version: false,
-                });
+                };
+                let added =
+                    finish_import_extras(&tx, extras, queued_capture, &actor, &receipt, true)?;
+                tx.commit()?;
+                return Ok((receipt, added));
             }
         }
         // Identical to an older version: that version becomes current again,
@@ -642,6 +664,20 @@ impl Store {
                 ),
             )?;
         }
+        let receipt = ImportReceipt {
+            request_id: capture.request_id.clone(),
+            document_id,
+            capture_id,
+            duplicate,
+            outcome: Some(if duplicate {
+                ImportOutcome::Unchanged
+            } else {
+                ImportOutcome::Imported
+            }),
+            existing_captured_at: existing.map(|(_, created_at)| created_at),
+            previous_version: duplicate,
+        };
+        let added = finish_import_extras(&tx, extras, queued_capture, &actor, &receipt, duplicate)?;
         tx.commit()
             .context("Não foi possível concluir a importação; tente de novo.")?;
         // The capture is already committed; a failure here must not undo the
@@ -655,19 +691,7 @@ impl Store {
             let outcome = self.attendance_for_import(document_id, capture);
             self.note_auto_attendance(document_id, &capture.document_number, outcome);
         }
-        Ok(ImportReceipt {
-            request_id: capture.request_id.clone(),
-            document_id,
-            capture_id,
-            duplicate,
-            outcome: Some(if duplicate {
-                ImportOutcome::Unchanged
-            } else {
-                ImportOutcome::Imported
-            }),
-            existing_captured_at: existing.map(|(_, created_at)| created_at),
-            previous_version: duplicate,
-        })
+        Ok((receipt, added))
     }
 
     /// Active documents matching `query` (empty: all), memoized per query
@@ -1413,6 +1437,53 @@ fn identity_hash_for_number(number: &str) -> Vec<u8> {
 /// year, looking at every document (trashed ones included, so a number is
 /// never reused). Runs inside the import transaction, so two creations
 /// cannot pick the same number.
+/// What an import writes in its own transaction besides the record.
+pub(crate) struct ImportExtras<'a> {
+    /// The files of the record, in order.
+    pub attachments: &'a [crate::attachments::AttachmentInput<'a>],
+    /// Shared-folder mode: whose changes these are; the copies that wait for
+    /// the next exchange are queued in the same transaction.
+    pub queue_actor: Option<&'a str>,
+}
+
+/// The tail of an import, still inside its transaction: the files of the
+/// record that are not on it yet (in order, each with its own version and
+/// team-event entries, as `add_attachment` writes them), then the queued
+/// copies of the changes in shared-folder mode. `completing` is true when
+/// the record was already in the library.
+fn finish_import_extras(
+    tx: &rusqlite::Connection,
+    extras: Option<&ImportExtras<'_>>,
+    capture: &Capture,
+    actor: &str,
+    receipt: &ImportReceipt,
+    completing: bool,
+) -> Result<usize> {
+    let Some(extras) = extras else {
+        return Ok(0);
+    };
+    let step = |source: anyhow::Error| {
+        anyhow::Error::new(crate::attachments::AttachmentStepFailed { completing, source })
+    };
+    if !extras.attachments.is_empty() {
+        crate::record_import::injected_failure().map_err(&step)?;
+    }
+    let added =
+        crate::attachments::attach_missing(tx, actor, receipt.document_id, extras.attachments)
+            .map_err(&step)?;
+    if let Some(queue_actor) = extras.queue_actor {
+        crate::intranet::queue_import_locally(
+            tx,
+            queue_actor,
+            capture,
+            receipt,
+            extras.attachments,
+            &added,
+        )?;
+    }
+    Ok(added.len())
+}
+
 fn next_manual_number(tx: &rusqlite::Transaction<'_>, kind_prefix: &str) -> Result<String> {
     next_manual_number_in(tx, kind_prefix, None)
 }

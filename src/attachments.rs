@@ -666,64 +666,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let document = Self::attachment_owner_document(&tx, owner)?;
-        let existing = list_active(&tx, owner)?;
-        ensure!(
-            existing.len() < MAX_PER_OWNER,
-            "{} {} já tem {MAX_PER_OWNER} anexos, o máximo. {} ou junte vários arquivos num único PDF.",
-            if matches!(owner, Owner::Task(_)) { "Esta" } else { "Este" },
-            owner.noun(),
-            if owner.deletes_for_good() {
-                "Apague de vez um anexo que não seja mais necessário"
-            } else {
-                "Exclua um anexo que não seja mais necessário (ele vai para a Lixeira e pode ser restaurado)"
-            }
-        );
-        let sha256 = format!("{:x}", Sha256::digest(data));
-        if let Some(same) = existing.iter().find(|a| a.sha256 == sha256) {
-            bail!(
-                "Este arquivo já está anexado como “{}” (conteúdo idêntico). Se quiser outra descrição, edite a do anexo existente.",
-                same.name
-            );
-        }
-        let meta = AttachmentMeta {
-            id: 0,
-            name: name.trim().into(),
-            kind: kind.into(),
-            size: data.len(),
-            sha256,
-            description: description.trim().into(),
-            added_by: actor.clone(),
-            added_at: now(),
-        };
-        tx.execute(
-            "INSERT INTO attachments(owner_kind,owner_id,document_id,metadata,payload) VALUES(?1,?2,?3,?4,?5)",
-            params![
-                owner.kind(),
-                owner.id(),
-                document,
-                protection::seal(&serde_json::to_vec(&meta)?)?,
-                protection::seal(data)?
-            ],
-        )?;
-        let id = tx.last_insert_rowid();
-        crate::intranet::record_mutation(
-            &tx,
-            &actor,
-            "attachment",
-            id,
-            None,
-            "add_attachment",
-            document,
-            &format!(
-                "Anexou “{}” ({}, {}) a {} #{}",
-                meta.name,
-                meta.kind,
-                labels::file_size(meta.size as u64),
-                owner.noun(),
-                owner.id()
-            ),
-        )?;
+        let id = insert_attachment(&tx, &actor, owner, name, description, data, kind)?;
         tx.commit()?;
         Ok(id)
     }
@@ -871,6 +814,141 @@ pub(crate) fn hashes_including_trash(
             Ok(meta.sha256)
         })
         .collect()
+}
+
+/// Stores one attachment inside the caller's write transaction: owner and
+/// limit checks, duplicate check, the sealed rows, and the library's version
+/// and team-event entries. `kind` is what `validate_file` answered for these
+/// bytes. Nothing is committed here.
+fn insert_attachment(
+    tx: &rusqlite::Connection,
+    actor: &str,
+    owner: Owner,
+    name: &str,
+    description: &str,
+    data: &[u8],
+    kind: &str,
+) -> Result<i64> {
+    let document = Store::attachment_owner_document(tx, owner)?;
+    let existing = list_active(tx, owner)?;
+    ensure!(
+        existing.len() < MAX_PER_OWNER,
+        "{} {} já tem {MAX_PER_OWNER} anexos, o máximo. {} ou junte vários arquivos num único PDF.",
+        if matches!(owner, Owner::Task(_)) {
+            "Esta"
+        } else {
+            "Este"
+        },
+        owner.noun(),
+        if owner.deletes_for_good() {
+            "Apague de vez um anexo que não seja mais necessário"
+        } else {
+            "Exclua um anexo que não seja mais necessário (ele vai para a Lixeira e pode ser restaurado)"
+        }
+    );
+    let sha256 = format!("{:x}", Sha256::digest(data));
+    if let Some(same) = existing.iter().find(|a| a.sha256 == sha256) {
+        bail!(
+            "Este arquivo já está anexado como “{}” (conteúdo idêntico). Se quiser outra descrição, edite a do anexo existente.",
+            same.name
+        );
+    }
+    let meta = AttachmentMeta {
+        id: 0,
+        name: name.trim().into(),
+        kind: kind.into(),
+        size: data.len(),
+        sha256,
+        description: description.trim().into(),
+        added_by: actor.to_owned(),
+        added_at: now(),
+    };
+    tx.execute(
+        "INSERT INTO attachments(owner_kind,owner_id,document_id,metadata,payload) VALUES(?1,?2,?3,?4,?5)",
+        params![
+            owner.kind(),
+            owner.id(),
+            document,
+            protection::seal(&serde_json::to_vec(&meta)?)?,
+            protection::seal(data)?
+        ],
+    )?;
+    let id = tx.last_insert_rowid();
+    crate::intranet::record_mutation(
+        tx,
+        actor,
+        "attachment",
+        id,
+        None,
+        "add_attachment",
+        document,
+        &format!(
+            "Anexou “{}” ({}, {}) a {} #{}",
+            meta.name,
+            meta.kind,
+            labels::file_size(meta.size as u64),
+            owner.noun(),
+            owner.id()
+        ),
+    )?;
+    Ok(id)
+}
+
+/// A file to attach to a record, as the importer hands it over: the name is
+/// already sanitised.
+pub(crate) struct AttachmentInput<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    pub data: &'a [u8],
+}
+
+/// The attachment step of an import failed. `completing` tells whether the
+/// record was there before this import (a retry) and so is kept.
+#[derive(Debug)]
+pub(crate) struct AttachmentStepFailed {
+    pub completing: bool,
+    pub source: anyhow::Error,
+}
+
+impl std::fmt::Display for AttachmentStepFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.source)
+    }
+}
+impl std::error::Error for AttachmentStepFailed {}
+
+/// Attaches to the document, inside the caller's transaction, every file
+/// whose content is not on it yet (the trash counts as "there": a file the
+/// person deleted does not come back). Returns the files stored, as (index
+/// in `files`, attachment id), in order.
+pub(crate) fn attach_missing(
+    tx: &rusqlite::Connection,
+    actor: &str,
+    document_id: i64,
+    files: &[AttachmentInput<'_>],
+) -> Result<Vec<(usize, i64)>> {
+    let owner = Owner::Document(document_id);
+    let mut present: std::collections::BTreeSet<String> =
+        hashes_including_trash(tx, owner)?.into_iter().collect();
+    let mut added = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        if !present.insert(format!("{:x}", Sha256::digest(file.data))) {
+            continue;
+        }
+        let kind = validate_file(file.name, file.data)?;
+        validate_description(file.description)?;
+        let id = insert_attachment(
+            tx,
+            actor,
+            owner,
+            file.name,
+            file.description,
+            file.data,
+            kind,
+        )?;
+        added.push((index, id));
+    }
+    Ok(added)
 }
 
 fn list_active(conn: &rusqlite::Connection, owner: Owner) -> Result<Vec<AttachmentMeta>> {
