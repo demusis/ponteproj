@@ -131,7 +131,9 @@ internal fun TaskListRow(
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
     /** The project is left out where the project is the screen itself. */
-    showProject: Boolean = true
+    showProject: Boolean = true,
+    /** A control after the row (a "⋮" menu); the press of the row does not cover it. */
+    trailing: (@Composable () -> Unit)? = null
 ) {
     val c = Ponte.colors
     val names = CategoryRules.resolve(task.categories, LocalCategories.current).map { it.name }
@@ -140,7 +142,7 @@ internal fun TaskListRow(
             Modifier.fillMaxWidth().heightIn(min = 56.dp)
                 .semantics(mergeDescendants = true) { contentDescription = TaskRowText.description(task, names, showProject) }
                 .clickable(onClick = onOpen)
-                .padding(start = 4.dp, end = ROW_MARGIN, top = 4.dp, bottom = 4.dp),
+                .padding(start = 4.dp, end = if (trailing == null) ROW_MARGIN else 0.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             RoundCheck(task.done, onToggle, if (task.done) "Reabrir a tarefa" else "Concluir a tarefa", size = 48.dp)
@@ -162,6 +164,7 @@ internal fun TaskListRow(
                 }
                 TaskSecondaryLine(task, showProject)
             }
+            trailing?.invoke()
         }
         RowDivider(TASK_TEXT_START)
     }

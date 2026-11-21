@@ -167,13 +167,11 @@ internal fun AttendancesScreen(
         if (chase.isNotEmpty()) {
             item(key = "h-chase") { SectionLabel(FollowUpRules.title(chase.size), Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp)) }
             items(chase, key = { "f-${it.id}" }) { a ->
-                Box(pad) {
-                    FollowUpCard(
-                        a, onOpen = { onOpen(a) },
-                        onRegister = { dialogContact = true; dialogId = a.id },
-                        onSchedule = { dialogContact = false; dialogId = a.id }
-                    )
-                }
+                FollowUpCard(
+                    a, onOpen = { onOpen(a) },
+                    onRegister = { dialogContact = true; dialogId = a.id },
+                    onSchedule = { dialogContact = false; dialogId = a.id }
+                )
             }
         }
         if (state.rows.isEmpty()) {

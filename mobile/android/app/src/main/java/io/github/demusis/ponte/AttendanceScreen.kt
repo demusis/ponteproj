@@ -64,85 +64,55 @@ private fun AttendanceBody(
     onOpenFile: (FileItem) -> Unit
 ) {
     val c = Ponte.colors
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(d.reference, fontSize = 22.sp, lineHeight = 29.sp, fontWeight = FontWeight.SemiBold, color = c.text)
-            if (d.subject.isNotBlank() && d.subject != d.reference) {
-                Text(d.subject, style = MaterialTheme.typography.bodyLarge, color = c.secondary)
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (d.statusLabel.isNotBlank()) Pill(d.statusLabel, tone = if (d.open) Tone.ACCENT else Tone.NEUTRAL, modifier = Modifier.weight(1f, fill = false))
-                if (d.open && d.dueLabel.isNotBlank()) {
-                    Pill(
-                        when {
-                            d.late -> "Vencido em ${d.dueLabel}"
-                            d.dueToday -> "Vence hoje"
-                            else -> "Prazo ${d.dueLabel}"
-                        }, tone = if (d.late) Tone.ERROR else if (d.dueToday) Tone.WARNING else Tone.NEUTRAL)
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 32.dp)) {
+        FichaHeader(
+            d.reference,
+            lines = if (d.subject.isNotBlank() && d.subject != d.reference) listOf(d.subject) else emptyList(),
+            extra = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    if (d.statusLabel.isNotBlank()) Pill(d.statusLabel, tone = if (d.open) Tone.ACCENT else Tone.NEUTRAL, modifier = Modifier.weight(1f, fill = false))
+                    if (d.open && d.dueLabel.isNotBlank()) {
+                        Pill(
+                            when {
+                                d.late -> "Vencido em ${d.dueLabel}"
+                                d.dueToday -> "Vence hoje"
+                                else -> "Prazo ${d.dueLabel}"
+                            }, tone = if (d.late) Tone.ERROR else if (d.dueToday) Tone.WARNING else Tone.NEUTRAL)
+                    }
                 }
             }
-        }
-        Notice(ATTENDANCE_READ_ONLY, tone = Tone.NEUTRAL)
+        )
+        SectionBody { Notice(ATTENDANCE_READ_ONLY, tone = Tone.NEUTRAL) }
 
         if (d.reviewFlags.isNotEmpty()) {
-            Notice(
-                "Alertas de conferência (${d.reviewFlags.size})\n" + d.reviewFlags.joinToString("\n") { "• $it" }, tone = Tone.WARNING)
+            SectionBody {
+                Notice(
+                    "Alertas de conferência (${d.reviewFlags.size})\n" + d.reviewFlags.joinToString("\n") { "• $it" }, tone = Tone.WARNING)
+            }
         }
 
         if (d.fields.isNotEmpty() || d.flags.isNotEmpty()) {
-            PonteCard {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    SectionLabel("Dados", Modifier.padding(start = 0.dp))
-                    for (f in d.fields) {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(f.label, style = FieldLabelStyle, color = c.secondary)
-                            Text(f.value, fontSize = 16.sp, lineHeight = 22.sp, color = c.text)
-                        }
-                    }
-                    if (d.flags.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            for (flag in d.flags) Tag(flag, tone = Tone.NEUTRAL)
-                        }
+            FlatSection("Dados") {
+                for (f in d.fields) FactRow(f.label, f.value)
+                if (d.flags.isNotEmpty()) {
+                    Row(Modifier.padding(horizontal = ROW_MARGIN, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        for (flag in d.flags) Tag(flag, tone = Tone.NEUTRAL)
                     }
                 }
             }
         }
 
         if (d.documentId > 0) {
-            PonteCard(onClick = { onOpenDocument(d.documentId) }) {
-                Row(
-                    Modifier.heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Outlined.Description, contentDescription = null, tint = c.secondary, modifier = Modifier.size(22.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Documento ligado", style = FieldLabelStyle, color = c.secondary)
-                        Text(
-                            d.documentLine.ifEmpty { "Documento" },
-                            fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = c.text,
-                            maxLines = 3, overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Text("Abrir", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.padding(start = 8.dp))
-                }
+            FlatSection(null) {
+                LinkRow(Icons.Outlined.Description, "Documento ligado", d.documentLine.ifEmpty { "Documento" }, { onOpenDocument(d.documentId) })
             }
         }
 
         if (d.tasks.isNotEmpty()) {
-            PonteCard {
-                Column(Modifier.padding(top = 14.dp, bottom = 6.dp)) {
-                    SectionLabel("Tarefas deste atendimento · ${d.tasks.size}", Modifier.padding(start = 12.dp, bottom = 4.dp))
-                    for (t in d.tasks) {
-                        Column(
-                            Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(onClickLabel = "Abrir a tarefa") { onOpenTask(t.id) }
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.Center
-                        ) {
+            FlatSection("Tarefas deste atendimento · ${d.tasks.size}") {
+                for (t in d.tasks) {
+                    FlatRow({ onOpenTask(t.id) }) {
+                        Column {
                             Text(
                                 t.title, fontSize = 15.sp, fontWeight = FontWeight.Medium,
                                 color = if (t.done) c.muted else c.text,
@@ -159,20 +129,15 @@ private fun AttendanceBody(
         }
 
         if (d.attachments.isNotEmpty()) {
-            PonteCard {
-                Column(Modifier.padding(top = 14.dp, bottom = 6.dp)) {
-                    SectionLabel("Anexos · ${d.attachments.size}", Modifier.padding(start = 12.dp, bottom = 4.dp))
-                    for (f in d.attachments) FileRow(f) { onOpenFile(f) }
-                }
+            FlatSection("Anexos · ${d.attachments.size}") {
+                for (f in d.attachments) FileRow(f) { onOpenFile(f) }
             }
         }
 
         if (d.events.isNotEmpty()) {
-            PonteCard {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SectionLabel("Linha do tempo", Modifier.padding(start = 0.dp))
-                    d.events.forEachIndexed { i, e ->
-                        if (i > 0) HorizontalDivider(color = c.divider)
+            FlatSection("Linha do tempo", divider = false) {
+                d.events.forEachIndexed { i, e ->
+                    FlatRow(null, divider = i < d.events.lastIndex) {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
                                 listOf(e.whenText, e.actor).filter { it.isNotBlank() }.joinToString(" · "),

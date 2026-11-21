@@ -44,8 +44,8 @@ internal fun FollowUpCard(
     onSchedule: () -> Unit
 ) {
     val c = Ponte.colors
-    PonteCard(onClick = onOpen) {
-        Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 12.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    FlatRow(onOpen) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     a.reference, Modifier.weight(1f), fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium,
@@ -72,11 +72,7 @@ internal fun FollowUpCard(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent)
                 ) { Text("Registrar cobrança", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                OutlinedButton(
-                    onClick = onSchedule, modifier = Modifier.weight(1f).height(44.dp), shape = RoundedCornerShape(22.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = c.accent)
-                ) { Text("Próxima cobrança", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                TextAction("Próxima cobrança", onSchedule, Modifier.weight(1f).height(44.dp), centered = true)
             }
         }
     }

@@ -41,7 +41,8 @@ internal fun PlanningFields(
         e ?: end
     }
     val currentDays = TaskRules.parseDays(daysText) ?: 0
-    SectionLabel("Planejamento")
+    SectionHeader("Planejamento")
+    SectionBody(spacing = 18.dp) {
     Text(TaskRules.PLANNING_HINT, style = MaterialTheme.typography.bodySmall, color = c.muted)
     PlanningMoment(
         "Início", "09:00", startDate, startHour,
@@ -82,6 +83,7 @@ internal fun PlanningFields(
         },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
     )
+    }
 }
 
 /** True while an hour box holds text that is not an hour of the day (a date is set, so the hour counts). */
@@ -98,8 +100,9 @@ internal fun planningHourInvalid(start: String, end: String, startHour: String, 
 internal fun ReminderChips(
     offsets: List<Int>, onChange: (List<Int>) -> Unit, remindersBlocked: Boolean, onRemindersChosen: () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Avisos antes do início planejado", style = FieldLabelStyle, color = Ponte.colors.secondary)
+    Column {
+        SectionHeader("Avisos antes do início planejado")
+        SectionBody(spacing = 6.dp) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             TaskRules.reminderOptions(offsets).forEach { (minutes, label) ->
                 FilterChip(
@@ -116,6 +119,7 @@ internal fun ReminderChips(
         }
         if (TaskRules.remindersBlockedShown(offsets, remindersBlocked)) {
             Notice(TaskRules.REMINDERS_BLOCKED, tone = Tone.WARNING)
+        }
         }
     }
 }

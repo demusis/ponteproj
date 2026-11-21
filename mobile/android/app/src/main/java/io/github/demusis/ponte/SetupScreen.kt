@@ -155,26 +155,16 @@ private fun StepFile(state: SetupState, onPickFile: () -> Unit) {
             "ponte-sync.ponte, na pasta do Google Drive que o computador usa."
     )
     if (state.fileName.isNotEmpty()) {
-        PonteCard {
-            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.CheckCircle, contentDescription = "Arquivo escolhido", tint = c.success)
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    state.fileName, Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium,
-                    color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis
-                )
-            }
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.CheckCircle, contentDescription = "Arquivo escolhido", tint = c.success)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                state.fileName, Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium,
+                color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis
+            )
         }
     }
-    OutlinedButton(
-        onPickFile, Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(26.dp),
-        border = BorderStroke(1.dp, c.outline)
-    ) {
-        Text(
-            if (state.fileName.isEmpty()) "Escolher arquivo" else "Trocar arquivo",
-            fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = c.accent
-        )
-    }
+    TextAction(if (state.fileName.isEmpty()) "Escolher arquivo" else "Trocar arquivo", onPickFile, Modifier.fillMaxWidth(), centered = true)
 }
 
 @Composable
@@ -186,24 +176,19 @@ private fun StepPassphrase(state: SetupState, onPassphrase: (String) -> Unit, on
     Body("Digite a mesma senha que você criou no Ponte do computador. Sem ela, o arquivo de sincronização não abre.")
     LabeledField("Senha de sincronização", state.passphrase, onPassphrase, password = true)
     if (state.canRemember) {
-        PonteCard {
-            Row(
-                Modifier.padding(start = 16.dp, top = 12.dp, end = 12.dp, bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Guardar neste aparelho", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = c.text)
-                    Text(
-                        "Para sincronizar, o celular vai pedir a digital ou o PIN de bloqueio da tela.",
-                        fontSize = 13.sp, lineHeight = 18.sp, color = c.muted
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Switch(
-                    checked = state.remember, onCheckedChange = onRemember,
-                    colors = SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.onAccent)
+        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Guardar neste aparelho", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = c.text)
+                Text(
+                    "Para sincronizar, o celular vai pedir a digital ou o PIN de bloqueio da tela.",
+                    fontSize = 13.sp, lineHeight = 18.sp, color = c.muted
                 )
             }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = state.remember, onCheckedChange = onRemember,
+                colors = SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.onAccent)
+            )
         }
     } else {
         Text(

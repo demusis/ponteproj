@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -121,9 +122,7 @@ internal fun ShareScreen(
                             Caption("Junta o arquivo a um documento que já existe.")
                         }
                     }
-                    TextButton(onClick = onCancel, modifier = Modifier.fillMaxWidth().height(48.dp)) {
-                        Text("Cancelar", color = c.secondary, fontWeight = FontWeight.SemiBold)
-                    }
+                    TextAction("Cancelar", onCancel, Modifier.fillMaxWidth(), centered = true)
                 }
                 mode == ShareMode.RECORD -> {
                     ReceivedCard(item, reading = false, compact = true)
@@ -142,9 +141,9 @@ internal fun ShareScreen(
                 }
                 else -> {
                     ReceivedCard(item, reading = false, compact = true)
-                    PonteCard {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            SectionLabel("Anexar a")
+                    run {
+                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SectionLabel("Anexar a", Modifier.offset(x = (-4).dp))
                             val doc = state.target
                             Text(
                                 doc?.let { it.number.ifBlank { it.title } } ?: "Nenhum documento escolhido",
@@ -156,9 +155,7 @@ internal fun ShareScreen(
                                     maxLines = 2, overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            TextButton(onClick = onChangeTarget, enabled = !state.busy) {
-                                Text("Escolher outro documento", color = c.accent, fontWeight = FontWeight.SemiBold)
-                            }
+                            TextAction("Escolher outro documento", onChangeTarget, Modifier.offset(x = (-12).dp), enabled = !state.busy)
                         }
                     }
                     LabeledField(
@@ -193,16 +190,14 @@ private fun iconFor(name: String): ImageVector {
 @Composable
 private fun ReceivedCard(item: ShareItem?, reading: Boolean, compact: Boolean = false) {
     val c = Ponte.colors
-    PonteCard {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionLabel("Recebido", Modifier.padding(start = 0.dp))
+    run {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SectionLabel("Recebido", Modifier.offset(x = (-4).dp))
             when {
                 reading || item == null -> Text("Um arquivo", fontSize = 16.sp, color = c.secondary)
                 item.isFile -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(40.dp).background(c.chip, RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
-                        Icon(iconFor(item.name), contentDescription = null, tint = c.secondary, modifier = Modifier.size(22.dp))
-                    }
-                    Spacer(Modifier.width(12.dp))
+                    Icon(iconFor(item.name), contentDescription = null, tint = c.secondary, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
                             item.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text,

@@ -108,7 +108,7 @@ internal fun ProjectScreen(
     ) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = 32.dp)) {
             state.error?.let { item(key = "error") { Notice(it, modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) } }
-            item(key = "head") { ProjectHeader(p, Modifier.padding(horizontal = 16.dp)) }
+            item(key = "head") { ProjectHeader(p) }
             item(key = "actions") {
                 Row(Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     PrimaryButton("Nova tarefa", onNewTask, Modifier.weight(1f), enabled = !state.busy)
@@ -122,7 +122,7 @@ internal fun ProjectScreen(
                 tasksTab(detail, showDone, { showDone = !showDone }, onToggleTask, onOpenTask, onRemoveTask)
             } else {
                 item(key = "timeline") {
-                    TimelineSection(detail, today, onOpenTask, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    TimelineSection(detail, today, onOpenTask, Modifier.padding(vertical = 8.dp))
                 }
             }
         }
@@ -146,8 +146,8 @@ internal fun ProjectScreen(
 @Composable
 private fun ProjectHeader(p: ProjectItem, modifier: Modifier = Modifier) {
     val c = Ponte.colors
-    PonteCard(modifier) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    run {
+        Column(modifier.fillMaxWidth().padding(horizontal = ROW_MARGIN, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Text(
                     p.name, Modifier.weight(1f), fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.SemiBold, color = c.text,
@@ -249,13 +249,9 @@ private fun DoneHeader(count: Int, open: Boolean, onToggle: () -> Unit) {
 internal fun ProjectTaskCard(t: TaskItem, onToggle: (TaskItem) -> Unit, onOpen: (Long) -> Unit, onRemove: (TaskItem) -> Unit) {
     val c = Ponte.colors
     var menu by remember { mutableStateOf(false) }
-    PonteCard(Modifier.padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 4.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TaskRow(
-                t, t.secondLine, onToggle = { onToggle(t) }, onOpen = { onOpen(t.id) },
-                modifier = Modifier.weight(1f).padding(start = 6.dp, top = 6.dp, bottom = 6.dp),
-                showProject = false
-            )
+    TaskListRow(
+        t, { onToggle(t) }, { onOpen(t.id) }, showProject = false,
+        trailing = {
             Column {
                 IconButton(onClick = { menu = true }) {
                     Icon(Icons.Outlined.MoreVert, contentDescription = "Mais ações da tarefa ${t.title}", tint = c.muted)
@@ -265,5 +261,5 @@ internal fun ProjectTaskCard(t: TaskItem, onToggle: (TaskItem) -> Unit, onOpen: 
                 }
             }
         }
-    }
+    )
 }

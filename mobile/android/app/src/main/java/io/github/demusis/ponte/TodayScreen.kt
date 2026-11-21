@@ -122,11 +122,11 @@ internal fun TodayScreen(
             }
         }
         if (followUpCount > 0) item(key = "follow-ups") {
-            Box(pad) { ResourceCountCard("Cobranças de hoje", followUpCount, Tone.ACCENT, onOpenFollowUps) }
+            ResourceCountCard("Cobranças de hoje", followUpCount, Tone.ACCENT, onOpenFollowUps)
         }
-        if (risks.isNotEmpty()) item(key = "risks") { Box(pad) { RiskCard(risks, onOpenTask) } }
+        if (risks.isNotEmpty()) item(key = "risks") { RiskCard(risks, onOpenTask) }
         if (week.isNotEmpty()) {
-            item(key = "week") { Box(pad) { WeekModule(week, weekStart, onMoveWeek, onOpenWeekEntry) } }
+            item(key = "week") { WeekModule(week, weekStart, onMoveWeek, onOpenWeekEntry) }
         }
         section("late", "Atrasadas", state.late, onToggle, onOpen, late = true)
         section("today", "Para hoje", state.today, onToggle, onOpen)
@@ -140,10 +140,10 @@ internal fun TodayScreen(
         if (state.reservationsToday > 0 || state.overdueReturns > 0) {
             item(key = "h-res") { SectionLabel(PhoneWords.RES_AREA, Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp)) }
             if (state.overdueReturns > 0) {
-                item(key = "res-overdue") { Box(pad) { ResourceCountCard(PhoneWords.RES_OVERDUE_LINE, state.overdueReturns, Tone.ERROR, onOpenResources) } }
+                item(key = "res-overdue") { ResourceCountCard(PhoneWords.RES_OVERDUE_LINE, state.overdueReturns, Tone.ERROR, onOpenResources) }
             }
             if (state.reservationsToday > 0) {
-                item(key = "res-today") { Box(pad) { ResourceCountCard(PhoneWords.RES_TODAY_LINE, state.reservationsToday, Tone.ACCENT, onOpenResources) } }
+                item(key = "res-today") { ResourceCountCard(PhoneWords.RES_TODAY_LINE, state.reservationsToday, Tone.ACCENT, onOpenResources) }
             }
         }
     }
@@ -170,31 +170,18 @@ internal fun RiskCard(risks: List<RiskItem>, onOpen: (Long) -> Unit) {
     val c = Ponte.colors
     var all by rememberSaveable { mutableStateOf(false) }
     val shown = if (all) risks else risks.take(3)
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        SectionLabel("Entregas em risco · ${risks.size}", Modifier.padding(top = 4.dp), color = c.warning)
-        PonteCard {
-            Column {
-                shown.forEachIndexed { i, r ->
-                    Column(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onOpen(RiskRules.openTarget(r)) }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(r.title, fontSize = 15.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(RiskRules.riskLine(r), fontSize = 13.sp, color = c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                    if (i < shown.size - 1) HorizontalDivider(color = c.divider)
-                }
-                if (risks.size > 3) {
-                    HorizontalDivider(color = c.divider)
-                    Text(
-                        if (all) "ver menos" else "ver todas (${risks.size})",
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { all = !all }
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        fontSize = 14.sp, color = c.accent
-                    )
+    Column(Modifier.fillMaxWidth()) {
+        SectionHeader("Entregas em risco · ${risks.size}", color = c.warning)
+        shown.forEach { r ->
+            FlatRow({ onOpen(RiskRules.openTarget(r)) }) {
+                Column {
+                    Text(r.title, fontSize = 15.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(RiskRules.riskLine(r), fontSize = 13.sp, color = c.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
+        }
+        if (risks.size > 3) {
+            SectionAction(if (all) "ver menos" else "ver todas (${risks.size})", { all = !all })
         }
     }
 }
@@ -223,7 +210,7 @@ internal fun WeekModule(
     val selected = week.firstOrNull { it.date.toString() == selectedText } ?: week.first()
     val current = weekStart != null && weekStart == WeekPlan.mondayOf(today)
     val threshold = with(LocalDensity.current) { 48.dp.toPx() }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.padding(horizontal = ROW_MARGIN), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (weekStart != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton({ onMove(-1) }) {
@@ -270,7 +257,7 @@ internal fun WeekModule(
         if (selected.isEmpty) {
             Text("Dia livre.", Modifier.padding(start = 4.dp), fontSize = 14.sp, color = c.muted)
         } else {
-            PonteCard {
+            run {
                 Column {
                     val rows = selected.blocks.size + selected.deadlines.size
                     var n = 0
@@ -301,7 +288,7 @@ internal fun WeekModule(
 private fun WeekRow(title: String, onClick: () -> Unit, second: @Composable () -> Unit) {
     val c = Ponte.colors
     Column(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onClick).padding(horizontal = 4.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.Center
     ) {
         Text(title, fontSize = 15.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -339,11 +326,8 @@ private fun DayCell(day: WeekDay, isToday: Boolean, isSelected: Boolean, modifie
 @Composable
 internal fun ResourceCountCard(title: String, count: Int, tone: Tone, onClick: () -> Unit) {
     val c = Ponte.colors
-    PonteCard(onClick = onClick) {
-        Row(
-            Modifier.heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+    FlatRow(onClick) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, color = c.text, maxLines = 2)
             Spacer(Modifier.width(8.dp))
             Pill(count.toString(), tone = tone)

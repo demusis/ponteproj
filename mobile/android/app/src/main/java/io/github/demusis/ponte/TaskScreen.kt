@@ -2,6 +2,7 @@ package io.github.demusis.ponte
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +25,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -148,6 +150,14 @@ private fun TaskLoaded(
 
     DetailScaffold(
         title = "Tarefa", onBack = leave, close = true,
+        // Unlinking is rare and destructive: it lives in the "⋮" menu (and keeps its confirmation).
+        menu = if (linked) ({ dismiss ->
+            DropdownMenuItem(
+                text = { Text("Desvincular do documento", fontSize = 16.sp, color = if (!changed && !state.busy) c.error else c.muted) },
+                enabled = !changed && !state.busy,
+                onClick = { dismiss(); unlinking = true }
+            )
+        }) else null,
         footer = {
             if (message.isNotEmpty()) {
                 Notice(message, tone = Tone.ERROR, modifier = Modifier.padding(bottom = if (conflict) 4.dp else 12.dp))
@@ -157,7 +167,7 @@ private fun TaskLoaded(
                     Text("Ver a versão atual", color = c.accent, fontWeight = FontWeight.SemiBold)
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 SecondaryButton(
                     if (task.done) "Reabrir" else "Concluir",
                     onClick = { if (titleMissing) tried = true else onFinish(draft.toSave(task.id)) },
@@ -171,22 +181,20 @@ private fun TaskLoaded(
             }
         }
     ) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-                .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 24.dp)) {
             DocumentLine(task, onOpenDocument)
-            LabeledField(
-                "Título", form.title, { v -> tried = false; edit { it.copy(title = v) } },
-                placeholder = "O que precisa ser feito",
-                error = if (tried && titleMissing) "Informe o título." else "",
-                singleLine = false,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
-            )
-            if (shownActions.isNotEmpty()) ChoiceField("Ação", shownActions, form.action, { v -> edit { it.copy(action = v) } })
-            ChoiceField("Prioridade", priorities.ifEmpty { DefaultPriorities }, form.priority, { v -> edit { it.copy(priority = v) } })
-            DateField("Prazo", form.dueDate, { v -> edit { it.copy(dueDate = v) } }, emptyText = "Sem prazo")
+            SectionBody(spacing = 18.dp) {
+                LabeledField(
+                    "Título", form.title, { v -> tried = false; edit { it.copy(title = v) } },
+                    placeholder = "O que precisa ser feito",
+                    error = if (tried && titleMissing) "Informe o título." else "",
+                    singleLine = false,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
+                )
+                if (shownActions.isNotEmpty()) ChoiceField("Ação", shownActions, form.action, { v -> edit { it.copy(action = v) } })
+                ChoiceField("Prioridade", priorities.ifEmpty { DefaultPriorities }, form.priority, { v -> edit { it.copy(priority = v) } })
+                DateField("Prazo", form.dueDate, { v -> edit { it.copy(dueDate = v) } }, emptyText = "Sem prazo")
+            }
             PlanningFields(
                 form.dueDate, form.scheduledStart, form.scheduledEnd, form.estimateMinutes,
                 startHour, endHour, daysText,
@@ -194,50 +202,59 @@ private fun TaskLoaded(
                 onChange = { st, en, min -> edit { it.copy(scheduledStart = st, scheduledEnd = en, estimateMinutes = min) } }
             )
             TaskRules.legacyEstimateNote(form.estimateMinutes).takeIf { it.isNotEmpty() }?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = c.muted)
+                SectionBody { Text(it, style = MaterialTheme.typography.bodySmall, color = c.muted) }
             }
-            SectionLabel("Tarefa pai")
+            SectionHeader("Tarefa pai")
             val parentTitle = relations.tasks.firstOrNull { it.id == form.parentTaskId }?.title
-            Text(if (form.parentTaskId == null) "Sem tarefa pai" else parentTitle ?: "Tarefa pai #${form.parentTaskId}")
-            SecondaryButton("Escolher tarefa pai…", onClick = { parentPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
-            if (relations.loading) Text("Carregando tarefas…")
-            relations.error?.let { Notice(it, tone = Tone.ERROR) }
+            SectionBody(spacing = 4.dp) {
+                Text(if (form.parentTaskId == null) "Sem tarefa pai" else parentTitle ?: "Tarefa pai #${form.parentTaskId}")
+                if (relations.loading) Text("Carregando tarefas…")
+                relations.error?.let { Notice(it, tone = Tone.ERROR) }
+            }
+            SectionAction("Escolher tarefa pai…", { parentPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
             ReminderChips(
                 form.reminderOffsetsMinutes, { v -> edit { it.copy(reminderOffsetsMinutes = v) } },
                 remindersBlocked, onRemindersChosen
             )
             // "Eu" and the suggestions only fill the typed form: the draft rules above stay as they are.
-            AssigneeField(form.assignee, { v -> edit { it.copy(assignee = v) } }, assignees, myName)
+            SectionBody(Modifier.padding(top = 12.dp)) {
+                AssigneeField(form.assignee, { v -> edit { it.copy(assignee = v) } }, assignees, myName)
+            }
             // Part of the draft like the other fields: saved with Salvar, refused with the rest on a conflict.
             CategoryField(form.categories, { v -> edit { it.copy(categories = v) } }, onCreateCategory, enabled = !state.busy)
             // Part of the draft too: "Sem projeto" and the projects that are not archived (plus this task's own).
-            ProjectField(form.projectUid, projects, task.projectName, { v -> edit { it.copy(projectUid = v) } })
-            LabeledField(
-                "Observações", form.notes, { v -> edit { it.copy(notes = v) } },
-                singleLine = false, minLines = 4,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
-            )
+            SectionBody(spacing = 18.dp) {
+                ProjectField(form.projectUid, projects, task.projectName, { v -> edit { it.copy(projectUid = v) } })
+                LabeledField(
+                    "Observações", form.notes, { v -> edit { it.copy(notes = v) } },
+                    singleLine = false, minLines = 4,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
+                )
+            }
             val prerequisites = TaskRules.prerequisites(form.dependencies, relations.tasks)
-            SectionLabel("Depende de")
-            SecondaryButton("Escolher tarefas…", onClick = { dependencyPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
+            SectionHeader("Depende de")
             if (form.dependencies.isNotEmpty()) {
                 prerequisites.forEach { prerequisite ->
-                    PonteCard(onClick = { if (changed) { pendingSubtask = prerequisite.id; asking = true } else onOpenTask(prerequisite.id) }) {
-                        Text("${TaskRules.prerequisiteSymbol(prerequisite)} ${prerequisite.title}", Modifier.padding(16.dp))
+                    FlatRow({ if (changed) { pendingSubtask = prerequisite.id; asking = true } else onOpenTask(prerequisite.id) }) {
+                        Text("${TaskRules.prerequisiteSymbol(prerequisite)} ${prerequisite.title}", style = MaterialTheme.typography.bodyLarge, color = c.text)
                     }
                 }
             }
+            SectionAction("Escolher tarefas…", { dependencyPicker = true }, enabled = !state.busy && !relations.loading && relations.error == null)
             val subtasks = relations.tasks.filter { it.parentTaskId == task.id }
             if (subtasks.isNotEmpty()) {
-                SectionLabel("Subtarefas · ${subtasks.count { it.done }} de ${subtasks.size} concluídas")
+                SectionHeader("Subtarefas · ${subtasks.count { it.done }} de ${subtasks.size} concluídas")
                 subtasks.forEach { child ->
-                    PonteCard(onClick = { if (changed) { pendingSubtask = child.id; asking = true } else onOpenTask(child.id) }) {
-                        Text(child.title + if (child.done) " · Concluída" else "", Modifier.padding(16.dp))
+                    FlatRow({ if (changed) { pendingSubtask = child.id; asking = true } else onOpenTask(child.id) }) {
+                        Text(
+                            child.title + if (child.done) " · Concluída" else "", style = MaterialTheme.typography.bodyLarge,
+                            color = if (child.done) c.muted else c.text
+                        )
                     }
                 }
             }
             if (task.checklist.isNotEmpty()) Checklist(task.checklist)
-            DocumentActions(linked, enabled = !changed && !state.busy, changed = changed, onLink = onLink, onUnlink = { unlinking = true })
+            DocumentActions(linked, enabled = !changed && !state.busy, changed = changed, onLink = onLink)
         }
     }
 
@@ -278,68 +295,53 @@ private fun TaskLoaded(
 private fun DocumentLine(task: TaskDetail, onOpenDocument: (Long) -> Unit) {
     val c = Ponte.colors
     if (task.documentId <= 0) {
-        Text("Sem documento", style = MaterialTheme.typography.bodyMedium, color = c.muted)
+        Text(
+            "Sem documento", Modifier.padding(horizontal = ROW_MARGIN, vertical = 8.dp),
+            style = MaterialTheme.typography.bodyMedium, color = c.muted
+        )
         return
     }
-    PonteCard(onClick = { onOpenDocument(task.documentId) }) {
-        Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Description, contentDescription = null, tint = c.secondary, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.width(12.dp))
-            Text(
-                task.documentLine.ifEmpty { "Documento" }, Modifier.weight(1f),
-                fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = c.text,
-                maxLines = 3, overflow = TextOverflow.Ellipsis
-            )
-            Text("Abrir", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.padding(start = 8.dp))
-        }
-    }
+    LinkRow(Icons.Outlined.Description, "Documento", task.documentLine.ifEmpty { "Documento" }, { onOpenDocument(task.documentId) })
 }
 
 /** The checklist, to read only: it is edited on the computer. */
 @Composable
 private fun Checklist(items: List<ChecklistItem>) {
     val c = Ponte.colors
-    PonteCard {
-        Column(Modifier.padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SectionLabel("Lista de verificação · ${items.count { it.done }} de ${items.size}", Modifier.padding(start = 0.dp))
-            for (i in items) {
-                Row(verticalAlignment = Alignment.Top) {
-                    if (i.done) {
-                        Box(Modifier.padding(top = 1.dp).size(20.dp).background(c.success, CircleShape), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Rounded.Check, contentDescription = "Feito", tint = c.surface, modifier = Modifier.size(14.dp))
-                        }
-                    } else {
-                        Box(Modifier.padding(top = 1.dp).size(20.dp).border(2.dp, c.muted, CircleShape))
+    SectionHeader("Lista de verificação · ${items.count { it.done }} de ${items.size}")
+    SectionBody(spacing = 8.dp) {
+        for (i in items) {
+            Row(verticalAlignment = Alignment.Top) {
+                if (i.done) {
+                    Box(Modifier.padding(top = 1.dp).size(20.dp).background(c.success, CircleShape), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Check, contentDescription = "Feito", tint = c.surface, modifier = Modifier.size(14.dp))
                     }
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        i.text, fontSize = 15.sp, lineHeight = 21.sp,
-                        color = if (i.done) c.muted else c.text,
-                        textDecoration = if (i.done) TextDecoration.LineThrough else null
-                    )
+                } else {
+                    Box(Modifier.padding(top = 1.dp).size(20.dp).border(2.dp, c.muted, CircleShape))
                 }
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    i.text, fontSize = 15.sp, lineHeight = 21.sp,
+                    color = if (i.done) c.muted else c.text,
+                    textDecoration = if (i.done) TextDecoration.LineThrough else null
+                )
             }
-            Text("Para mudar a lista, use o Ponte no computador.", style = MaterialTheme.typography.bodySmall, color = c.muted)
         }
+        Text("Para mudar a lista, use o Ponte no computador.", style = MaterialTheme.typography.bodySmall, color = c.muted)
     }
 }
 
-/** Link, change or remove the document. Waits for the changes to be saved first. */
+/** Link or change the document. Waits for the changes to be saved first. (Unlinking is in the "⋮" menu.) */
 @Composable
-private fun DocumentActions(
-    linked: Boolean, enabled: Boolean, changed: Boolean, onLink: () -> Unit, onUnlink: () -> Unit
-) {
+private fun DocumentActions(linked: Boolean, enabled: Boolean, changed: Boolean, onLink: () -> Unit) {
     val c = Ponte.colors
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SectionLabel("Documento da tarefa")
-        SecondaryButton(
-            if (linked) "Trocar de documento…" else "Vincular a um documento…",
-            onClick = onLink, enabled = enabled
+    SectionHeader("Documento da tarefa")
+    SectionAction(if (linked) "Trocar de documento…" else "Vincular a um documento…", onLink, enabled = enabled)
+    if (changed) {
+        Text(
+            "Salve as alterações antes de trocar o documento.", Modifier.padding(horizontal = ROW_MARGIN, vertical = 4.dp),
+            style = MaterialTheme.typography.bodySmall, color = c.muted
         )
-        if (linked) SecondaryButton("Desvincular do documento", onClick = onUnlink, enabled = enabled, danger = true)
-        if (changed) {
-            Text("Salve as alterações antes de trocar o documento.", style = MaterialTheme.typography.bodySmall, color = c.muted)
-        }
     }
 }
 
@@ -352,13 +354,15 @@ private fun ParentTaskPicker(tasks: List<TaskItem>, taskId: Long, onDismiss: () 
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Escolher tarefa pai", style = MaterialTheme.typography.titleMedium)
             SearchBox(query, { query = it }, "Buscar tarefa")
-            TextButton(onClick = { onPick(null) }) { Text("Sem tarefa pai") }
+            TextAction("Sem tarefa pai", { onPick(null) })
             Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
                 if (candidates.isEmpty()) Text("Nenhuma tarefa encontrada", Modifier.padding(16.dp))
                 candidates.forEach { candidate ->
-                    TextButton(onClick = { onPick(candidate.id) }, modifier = Modifier.fillMaxWidth()) {
-                        Text(candidate.title, modifier = Modifier.weight(1f))
-                    }
+                    Text(
+                        candidate.title, Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onPick(candidate.id) }
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.bodyLarge, color = Ponte.colors.text
+                    )
                 }
             }
         }
@@ -379,13 +383,19 @@ private fun DependencyPicker(tasks: List<TaskItem>, taskId: Long, selected: List
                 if (candidates.isEmpty()) Text("Nenhuma tarefa encontrada", Modifier.padding(16.dp))
                 candidates.forEach { candidate ->
                     val toggle = { chosen = if (candidate.id in chosen) chosen - candidate.id else chosen + candidate.id }
-                    TextButton(onClick = toggle, modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = toggle),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Checkbox(checked = candidate.id in chosen, onCheckedChange = { toggle() })
-                        Text(candidate.title + if (candidate.done) " · Concluída" else "", modifier = Modifier.weight(1f), color = if (candidate.done) Ponte.colors.muted else Ponte.colors.text)
+                        Text(
+                            candidate.title + if (candidate.done) " · Concluída" else "", style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f), color = if (candidate.done) Ponte.colors.muted else Ponte.colors.text
+                        )
                     }
                 }
             }
-            TextButton(onClick = { onPick(chosen) }) { Text("Confirmar") }
+            TextAction("Confirmar", { onPick(chosen) })
         }
     }
 }

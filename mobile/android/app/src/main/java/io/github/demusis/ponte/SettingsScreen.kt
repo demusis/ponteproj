@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -87,19 +88,18 @@ internal fun SettingsScreen(
 ) {
     val c = Ponte.colors
     DetailScaffold(title = "Ajustes", onBack = onBack) {
-        Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 16.dp)) {
             if (state.keyBroken) {
-                Notice(
-                    "O acervo deste aparelho não pôde ser aberto. Para voltar a usar o aplicativo, " +
-                        "use a opção “Recomeçar o acervo deste aparelho”, no fim desta tela."
-                )
+                SectionBody {
+                    Notice(
+                        "O acervo deste aparelho não pôde ser aberto. Para voltar a usar o aplicativo, " +
+                            "use a opção “Recomeçar o acervo deste aparelho”, no fim desta tela."
+                    )
+                }
             }
 
-            SectionLabel("Sincronização")
-            PonteCard {
+            SectionHeader("Sincronização")
+            FlatBlock {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -114,11 +114,7 @@ internal fun SettingsScreen(
                                 if (state.fileSize >= 0) Text(formatSize(state.fileSize), fontSize = 13.sp, color = c.muted)
                             }
                         }
-                        OutlinedButton(
-                            onClick = onPickFile, modifier = Modifier.heightIn(min = 48.dp),
-                            border = BorderStroke(1.dp, c.outline),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = c.accent)
-                        ) { Text(if (state.fileName.isEmpty()) "Escolher arquivo" else "Trocar arquivo", fontSize = 14.sp) }
+                        TextAction(if (state.fileName.isEmpty()) "Escolher arquivo" else "Trocar arquivo", onPickFile)
                     }
 
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -167,8 +163,8 @@ internal fun SettingsScreen(
                 }
             }
 
-            SectionLabel("Seu nome", Modifier.padding(top = 8.dp))
-            PonteCard {
+            SectionHeader("Seu nome")
+            FlatBlock {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     LabeledField(
                         "Seu nome nas tarefas", state.personName, onName,
@@ -178,8 +174,8 @@ internal fun SettingsScreen(
                 }
             }
 
-            SectionLabel("Aviso de prazos", Modifier.padding(top = 8.dp))
-            PonteCard {
+            SectionHeader("Aviso de prazos")
+            FlatBlock {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     SwitchRow(
                         "Avisar dos prazos todos os dias",
@@ -203,14 +199,14 @@ internal fun SettingsScreen(
                 }
             }
 
-            SectionLabel("Agenda do celular", Modifier.padding(top = 8.dp))
+            SectionHeader("Agenda do celular")
             CalendarCard(state, onCalendar, onCalendarChoice, onCalendarRefresh)
 
-            SectionLabel("Feriados", Modifier.padding(top = 8.dp))
+            SectionHeader("Feriados")
             HolidaysCard(state, onHolidayState, onAddHolidayDay, onRemoveHolidayDay)
 
-            SectionLabel("Contas de e-mail", Modifier.padding(top = 8.dp))
-            PonteCard {
+            SectionHeader("Contas de e-mail")
+            FlatBlock {
                 Column {
                     for (a in state.accounts) {
                         Row(
@@ -244,8 +240,8 @@ internal fun SettingsScreen(
                 }
             }
 
-            SectionLabel("Segurança", Modifier.padding(top = 8.dp))
-            PonteCard {
+            SectionHeader("Segurança")
+            FlatBlock {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     if (!state.lockAvailable) {
                         Notice(
@@ -271,31 +267,25 @@ internal fun SettingsScreen(
                 }
             }
 
-            SectionLabel("Sobre", Modifier.padding(top = 8.dp))
-            PonteCard {
+            SectionHeader("Sobre")
+            FlatBlock {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Ponte de bolso", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
                     if (state.version.isNotEmpty()) Text("Versão ${state.version}", fontSize = 14.sp, color = c.muted)
                 }
             }
 
-            SectionLabel("Recomeçar o acervo deste aparelho", Modifier.padding(top = 8.dp), color = c.error)
-            PonteCard {
+            SectionHeader("Recomeçar o acervo deste aparelho", color = c.error)
+            FlatBlock {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
                         "Apaga a cópia do acervo guardada neste aparelho e a senha de sincronização guardada. " +
                             "Nada é apagado no computador nem no Drive: na próxima sincronização, tudo volta para cá.",
                         style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, lineHeight = 20.sp, color = c.secondary
                     )
-                    OutlinedButton(
-                        onClick = onReset, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                        shape = RoundedCornerShape(24.dp),
-                        border = BorderStroke(1.dp, c.error),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = c.error)
-                    ) { Text("Recomeçar…", fontSize = 15.sp, fontWeight = FontWeight.Medium) }
+                    TextAction("Recomeçar…", onReset, Modifier.offset(x = (-12).dp), danger = true)
                 }
             }
-            Box(Modifier.height(16.dp))
         }
     }
 }
@@ -319,7 +309,7 @@ private fun CalendarCard(
     state: SettingsState, onSwitch: (Boolean) -> Unit, onChoice: (String) -> Unit, onRefresh: () -> Unit
 ) {
     val c = Ponte.colors
-    PonteCard {
+    FlatBlock {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SwitchRow(
                 "Sincronizar tarefas com a agenda",
@@ -428,7 +418,7 @@ private fun HolidaysCard(
     var date by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("") }
     var yearly by rememberSaveable { mutableStateOf(false) }
-    PonteCard {
+    FlatBlock {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(HOLIDAYS_NOTE, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
             ChoiceField(

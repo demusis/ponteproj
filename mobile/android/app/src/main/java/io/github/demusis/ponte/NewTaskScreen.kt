@@ -81,40 +81,38 @@ internal fun NewTaskScreen(
             })
         }
     ) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-                .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
-            if (document.isNotBlank()) {
-                Text(
-                    "No documento $document", Modifier,
-                    style = MaterialTheme.typography.bodyMedium, color = Ponte.colors.muted,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 24.dp)) {
+            SectionBody(spacing = 18.dp) {
+                if (document.isNotBlank()) {
+                    Text(
+                        "No documento $document", Modifier,
+                        style = MaterialTheme.typography.bodyMedium, color = Ponte.colors.muted,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis
+                    )
+                } else if (withoutDocument) {
+                    Text(
+                        "Tarefa sem documento. Depois você pode vinculá-la a um documento.", Modifier,
+                        style = MaterialTheme.typography.bodyMedium, color = Ponte.colors.muted
+                    )
+                }
+                LabeledField(
+                    "Título", title, { title = it },
+                    placeholder = "O que precisa ser feito",
+                    error = if (tried && title.isBlank()) "Informe o título." else "",
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
                 )
-            } else if (withoutDocument) {
-                Text(
-                    "Tarefa sem documento. Depois você pode vinculá-la a um documento.", Modifier,
-                    style = MaterialTheme.typography.bodyMedium, color = Ponte.colors.muted
-                )
+                if (actions.isNotEmpty()) ChoiceField("Ação", actions, action, { action = it })
+                DateField("Prazo (opcional)", due, { due = it }, emptyText = "Sem prazo")
             }
-            LabeledField(
-                "Título", title, { title = it },
-                placeholder = "O que precisa ser feito",
-                error = if (tried && title.isBlank()) "Informe o título." else "",
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
-            )
-            if (actions.isNotEmpty()) ChoiceField("Ação", actions, action, { action = it })
-            DateField("Prazo (opcional)", due, { due = it }, emptyText = "Sem prazo")
             PlanningFields(
                 due, start, end, estimate, startHour, endHour, daysText,
                 onStartHour = { startHour = it }, onEndHour = { endHour = it }, onDaysText = { daysText = it },
                 onChange = { s, e, m -> start = s; end = e; estimate = m }
             )
             ReminderChips(reminders, { reminders = it }, remindersBlocked, onRemindersChosen)
-            AssigneeField(assignee, { assignee = it }, assignees, myName)
+            SectionBody(Modifier.padding(top = 12.dp)) { AssigneeField(assignee, { assignee = it }, assignees, myName) }
             CategoryField(categories, { categories = it }, onCreateCategory)
-            ProjectField(project, projects, "", { project = it })
+            SectionBody { ProjectField(project, projects, "", { project = it }) }
         }
     }
 }

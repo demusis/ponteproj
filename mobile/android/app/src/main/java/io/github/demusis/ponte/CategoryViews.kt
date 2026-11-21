@@ -58,21 +58,19 @@ import androidx.compose.ui.unit.sp
 /** The library's categories, for every chip to find the name and colour of an uid. */
 internal val LocalCategories = staticCompositionLocalOf { emptyList<Category>() }
 
-/** One category as a small rounded label: a colour dot and the name (muted when archived). */
+/** One category as a colour dot and its name (muted when archived), not a filled chip. */
 @Composable
 internal fun CategoryChip(category: Category, modifier: Modifier = Modifier) {
     val p = Ponte.colors
     val tint = CategoryRules.colors(category.color, p.dark)
-    val bg = if (category.archived) p.chip else Color(tint.background)
-    val fg = if (category.archived) p.muted else Color(tint.text)
     val dot = if (category.archived) p.muted else Color(tint.dot)
-    Row(
-        modifier.background(bg, RoundedCornerShape(50)).padding(start = 8.dp, end = 10.dp, top = 3.dp, bottom = 3.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(8.dp).background(dot, CircleShape))
         Spacer(Modifier.width(5.dp))
-        Text(category.name, fontSize = 12.sp, lineHeight = 15.sp, fontWeight = FontWeight.Medium, color = fg, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            category.name, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium,
+            color = if (category.archived) p.muted else p.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -120,14 +118,16 @@ internal fun CategoryField(
 ) {
     val p = Ponte.colors
     var open by rememberSaveable { mutableStateOf(false) }
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionLabel("Categorias")
-        if (selected.isEmpty()) {
-            Text("Nenhuma categoria.", style = MaterialTheme.typography.bodyMedium, color = p.muted)
-        } else {
-            CategoryChipsAll(selected)
+    Column(modifier.fillMaxWidth()) {
+        SectionHeader("Categorias")
+        SectionBody {
+            if (selected.isEmpty()) {
+                Text("Nenhuma categoria.", style = MaterialTheme.typography.bodyMedium, color = p.muted)
+            } else {
+                CategoryChipsAll(selected)
+            }
         }
-        SecondaryButton(
+        SectionAction(
             if (selected.isEmpty()) "Escolher categorias…" else "Alterar categorias…",
             onClick = { open = true }, enabled = enabled
         )

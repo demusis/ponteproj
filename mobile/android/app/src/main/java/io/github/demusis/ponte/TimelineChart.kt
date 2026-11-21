@@ -85,7 +85,7 @@ internal fun TimelineSection(detail: ProjectDetail, today: LocalDate, onOpenTask
     val unplanned = ProjectRules.unplanned(detail.timeline)
     val hasChart = remember(detail) { ProjectRules.hasChart(detail.timeline) }
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = ROW_MARGIN)) {
             val labelWidth = minOf(maxWidth * LABEL_SHARE, LABEL_MAX)
             val timeWidth = maxWidth - labelWidth
             val layout = remember(detail, today, timeWidth) {
@@ -103,8 +103,10 @@ internal fun TimelineSection(detail: ProjectDetail, today: LocalDate, onOpenTask
             }
         }
         if (unplanned.isNotEmpty()) {
-            SectionLabel("Sem período planejado · ${unplanned.size}")
-            for (item in unplanned) UnplannedCard(item) { onOpenTask(item.id) }
+            Column {
+                SectionHeader("Sem período planejado · ${unplanned.size}")
+                for (item in unplanned) UnplannedRow(item) { onOpenTask(item.id) }
+            }
         }
         if (hasChart) Legend()
     }
@@ -173,10 +175,10 @@ private fun RowLabel(item: TimelineItem, rowHeight: androidx.compose.ui.unit.Dp,
 }
 
 @Composable
-private fun UnplannedCard(item: TimelineItem, onClick: () -> Unit) {
+private fun UnplannedRow(item: TimelineItem, onClick: () -> Unit) {
     val c = Ponte.colors
-    PonteCard(onClick = onClick) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+    FlatRow(onClick) {
+        Column {
             Text(
                 item.title, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium,
                 color = if (item.done) c.muted else c.text, textDecoration = if (item.done) TextDecoration.LineThrough else null,
@@ -247,7 +249,7 @@ private fun DrawScope.drawTimeline(layout: TimelineLayout, k: ChartColors, measu
 private fun Legend() {
     val k = chartColors()
     FlowRow(
-        Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        Modifier.fillMaxWidth().padding(horizontal = ROW_MARGIN),
         horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         LegendItem("Plano fixo") { Box(Modifier.size(18.dp, 10.dp).background(k.plan, RoundedCornerShape(3.dp))) }

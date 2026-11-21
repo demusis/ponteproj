@@ -6,7 +6,10 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalDensity
@@ -388,10 +391,10 @@ internal object NavLabel {
 }
 
 /**
- * Frame of a full-screen detail: back arrow (or X when [close]), one-line title, optional
- * actions on the right, the content, and an optional footer fixed above the keyboard
- * (white band with a top border — put the main button in it).
- * The content gets the whole remaining area and does its own scrolling and padding.
+ * Frame of a full-screen detail, the same slim bar everywhere: back arrow (or X when [close]), a one-line
+ * title, at most two visible [actions], and a "⋮" menu for the rest ([menu] draws its entries and gets the
+ * function that closes it). Under it the content, which does its own scrolling and padding, and an optional
+ * footer fixed above the keyboard (put the one main button in it).
  */
 @Composable
 internal fun DetailScaffold(
@@ -400,12 +403,14 @@ internal fun DetailScaffold(
     close: Boolean = false,
     actions: @Composable RowScope.() -> Unit = {},
     footer: (@Composable ColumnScope.() -> Unit)? = null,
+    menu: (@Composable (dismiss: () -> Unit) -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
     val c = Ponte.colors
+    var menuOpen by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(c.ground).imePadding()) {
         Row(
-            Modifier.statusBarsPadding().fillMaxWidth().height(64.dp).padding(horizontal = 8.dp),
+            Modifier.statusBarsPadding().fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
@@ -418,6 +423,14 @@ internal fun DetailScaffold(
                 maxLines = 1, overflow = TextOverflow.Ellipsis
             )
             actions()
+            if (menu != null) {
+                Box {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Outlined.MoreVert, contentDescription = "Mais ações", tint = c.secondary)
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) { menu { menuOpen = false } }
+                }
+            }
         }
         Box(Modifier.weight(1f).fillMaxWidth()) { content() }
         if (footer != null) {
@@ -435,21 +448,6 @@ internal fun DetailScaffold(
 
 // ---------------------------------------------------------------- small pieces
 
-/** White rounded card (radius 16, no shadow). Clickable when [onClick] is given. */
-@Composable
-internal fun PonteCard(
-    modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null,
-    content: @Composable () -> Unit
-) {
-    val shape = RoundedCornerShape(16.dp)
-    if (onClick != null) {
-        Surface(onClick = onClick, modifier = modifier.fillMaxWidth(), shape = shape, color = Ponte.colors.surface, content = content)
-    } else {
-        Surface(modifier = modifier.fillMaxWidth(), shape = shape, color = Ponte.colors.surface, content = content)
-    }
-}
-
 /** Small uppercase label above a group ("ATRASADAS · 2"). */
 @Composable
 internal fun SectionLabel(text: String, modifier: Modifier = Modifier, color: Color = Ponte.colors.muted) {
@@ -459,23 +457,41 @@ internal fun SectionLabel(text: String, modifier: Modifier = Modifier, color: Co
     )
 }
 
-/** Rounded pill with short text: due dates, priority, state. */
+/**
+ * A short status or deadline ("há 4 dias", "Ativo", "2 em risco"): coloured text, with a small icon where the
+ * colour carries a meaning (late, today, done) so it never rests on colour alone. Not a pill: only what the person
+ * toggles or filters is a pill.
+ */
 @Composable
 internal fun Pill(text: String, modifier: Modifier = Modifier, tone: Tone = Tone.NEUTRAL) {
-    val (bg, fg) = toneColors(tone)
-    Text(
-        text, modifier.background(bg, RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 4.dp),
-        style = MaterialTheme.typography.labelMedium, color = fg, maxLines = 1
-    )
+    val (_, fg) = toneColors(tone)
+    val color = if (tone == Tone.NEUTRAL) Ponte.colors.muted else fg
+    val icon = when (tone) {
+        Tone.ERROR -> Icons.Outlined.ErrorOutline
+        Tone.WARNING -> Icons.Outlined.WarningAmber
+        Tone.SUCCESS -> Icons.Outlined.CheckCircle
+        else -> null
+    }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(3.dp))
+        }
+        Text(
+            text, style = MaterialTheme.typography.labelMedium, fontSize = 13.sp, color = color,
+            fontWeight = if (tone == Tone.NEUTRAL) FontWeight.Medium else FontWeight.SemiBold,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)
+        )
+    }
 }
 
-/** Squarish tag with the kind of a document ("Ofício", "E-mail"). */
+/** The kind of a document ("Ofício", "E-mail"): small accent text. */
 @Composable
 internal fun Tag(text: String, modifier: Modifier = Modifier, tone: Tone = Tone.ACCENT) {
-    val (bg, fg) = toneColors(tone)
+    val (_, fg) = toneColors(tone)
     Text(
-        text, modifier.background(bg, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 2.dp),
-        style = MaterialTheme.typography.labelMedium, color = fg, maxLines = 1, overflow = TextOverflow.Ellipsis
+        text, modifier, style = MaterialTheme.typography.labelMedium, color = if (tone == Tone.NEUTRAL) Ponte.colors.muted else fg,
+        maxLines = 1, overflow = TextOverflow.Ellipsis
     )
 }
 
@@ -497,52 +513,6 @@ internal fun RoundCheck(
             }
         } else {
             Box(Modifier.size(22.dp).border(2.dp, c.muted, CircleShape))
-        }
-    }
-}
-
-/**
- * One task: round check, title, a second line, and the due pill. Used inside a card in Tarefas
- * and inside the "Tarefas" card of the ficha. Tapping the text calls [onOpen] when given.
- */
-@Composable
-internal fun TaskRow(
-    task: TaskItem,
-    secondLine: String,
-    onToggle: () -> Unit,
-    modifier: Modifier = Modifier,
-    onOpen: (() -> Unit)? = null,
-    /** The project chip is left out where the project is the screen itself. */
-    showProject: Boolean = true
-) {
-    val c = Ponte.colors
-    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        RoundCheck(task.done, onToggle, if (task.done) "Reabrir a tarefa" else "Concluir a tarefa")
-        Spacer(Modifier.width(4.dp))
-        Column(
-            Modifier.weight(1f)
-                .then(if (onOpen != null) Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onOpen) else Modifier)
-                .padding(vertical = 4.dp)
-        ) {
-            Text(
-                task.title,
-                fontSize = 16.sp, lineHeight = 21.sp,
-                fontWeight = if (task.done) FontWeight.Normal else FontWeight.Medium,
-                color = if (task.done) c.muted else c.text,
-                textDecoration = if (task.done) TextDecoration.LineThrough else null
-            )
-            if (secondLine.isNotEmpty()) {
-                Text(secondLine, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            // Only what is not the usual: a normal priority says nothing.
-            val flag = priorityFlag(task)
-            if (flag != null) Pill(flag.first, tone = flag.second, modifier = Modifier.padding(top = 4.dp))
-            CategoryChips(task.categories, Modifier.padding(top = 4.dp))
-            if (showProject && task.projectName.isNotEmpty()) ProjectChip(task.projectName, Modifier.padding(top = 4.dp))
-        }
-        if (!task.done && task.dueChip.isNotEmpty()) {
-            Spacer(Modifier.width(8.dp))
-            Pill(task.dueChip, tone = if (task.overdue) Tone.ERROR else if (task.dueToday) Tone.WARNING else Tone.NEUTRAL)
         }
     }
 }
@@ -627,7 +597,7 @@ internal fun PrimaryButton(
     }
 }
 
-/** Full-width second button (52 dp, pill, outlined): the other choice beside or under [PrimaryButton]. */
+/** The other choice beside or under [PrimaryButton]: a text button, centered, full width. */
 @Composable
 internal fun SecondaryButton(
     text: String,
@@ -636,17 +606,7 @@ internal fun SecondaryButton(
     enabled: Boolean = true,
     danger: Boolean = false
 ) {
-    val c = Ponte.colors
-    val color = if (danger) c.error else c.accent
-    androidx.compose.material3.OutlinedButton(
-        onClick = onClick, enabled = enabled,
-        modifier = modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(26.dp),
-        border = BorderStroke(1.dp, if (enabled) color else c.outline),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = color, disabledContentColor = c.muted)
-    ) {
-        Text(text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
+    TextAction(text, onClick, modifier.fillMaxWidth().heightIn(min = 52.dp), enabled, danger, centered = true)
 }
 
 /** Centered message for an empty list, with an optional icon and action below. */
@@ -692,10 +652,21 @@ internal fun LoadingBox(modifier: Modifier = Modifier, text: String = "Carregand
     }
 }
 
-/** Message band: red for an error, amber for a warning, neutral otherwise. */
+/**
+ * A message: an error (red) or a warning (amber) keeps its band, because it must not be missed; a neutral or
+ * brand hint is only muted text with a small info icon.
+ */
 @Composable
 internal fun Notice(text: String, modifier: Modifier = Modifier, tone: Tone = Tone.ERROR) {
     val (bg, fg) = toneColors(tone)
+    if (tone == Tone.NEUTRAL || tone == Tone.ACCENT) {
+        Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Icon(Icons.Outlined.Info, contentDescription = null, tint = Ponte.colors.muted, modifier = Modifier.padding(top = 2.dp).size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(text, fontSize = 14.sp, lineHeight = 20.sp, color = Ponte.colors.secondary)
+        }
+        return
+    }
     Text(
         text, modifier.fillMaxWidth().background(bg, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
         fontSize = 14.sp, lineHeight = 20.sp, color = fg

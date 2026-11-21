@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -51,6 +52,13 @@ internal fun AccountFormScreen(
     DetailScaffold(
         title = if (acc == null) "Nova conta" else "Conta de e-mail",
         onBack = onBack, close = true,
+        // Deleting is destructive and rare: it lives in the "⋮" menu (the controller still asks before it deletes).
+        menu = if (acc != null) ({ dismiss ->
+            DropdownMenuItem(
+                text = { Text("Excluir conta", fontSize = 16.sp, color = if (enabled) c.error else c.muted) },
+                enabled = enabled, onClick = { dismiss(); onDelete() }
+            )
+        }) else null,
         footer = {
             PrimaryButton(
                 "Salvar conta", loading = state.busy,
@@ -58,20 +66,12 @@ internal fun AccountFormScreen(
                     onSave(AccountInput(name.trim(), host.trim(), port.trim().toIntOrNull() ?: 993, user.trim(), password, keep))
                 }
             )
-            if (acc != null) {
-                TextButton(
-                    onClick = onDelete, enabled = enabled,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(top = 4.dp),
-                    colors = ButtonDefaults.textButtonColors(contentColor = c.error, disabledContentColor = c.muted)
-                ) { Text("Excluir conta", fontSize = 15.sp) }
-            }
         }
     ) {
-        Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            if (state.error.isNotEmpty()) Notice(state.error)
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 8.dp)) {
+            if (state.error.isNotEmpty()) SectionBody { Notice(state.error) }
+            SectionHeader("Servidor")
+            SectionBody(spacing = 16.dp) {
             LabeledField(
                 "Nome (opcional)", name, { name = it }, enabled = enabled,
                 placeholder = "Como aparece na lista"
@@ -88,6 +88,9 @@ internal fun AccountFormScreen(
                 "Servidor e porta: os dados de entrada de e-mail (IMAP) do seu provedor. No Gmail, imap.gmail.com e 993.",
                 style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, lineHeight = 19.sp, color = c.muted
             )
+            }
+            SectionHeader("Acesso")
+            SectionBody(spacing = 16.dp) {
             LabeledField(
                 "Usuário", user, { user = it }, enabled = enabled,
                 placeholder = "nome@exemplo.com",
@@ -113,6 +116,7 @@ internal fun AccountFormScreen(
                     colors = CheckboxDefaults.colors(checkedColor = c.accent, checkmarkColor = c.onAccent, uncheckedColor = c.secondary)
                 )
                 Text("Lembrar a senha neste aparelho", Modifier.padding(start = 12.dp), fontSize = 15.sp, color = c.text)
+            }
             }
         }
     }

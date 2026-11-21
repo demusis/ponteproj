@@ -219,49 +219,18 @@ internal fun ResourceRow(r: ResourceItem, usage: String, onClick: (() -> Unit)? 
 
 // ---------------------------------------------------------------- detail screens
 
-/** A card of label and text pairs, the way the atendimento's ficha shows its data. */
+/** The label and text pairs of a ficha, as a flat section. */
 @Composable
-private fun DataCard(title: String, fields: List<Pair<String, String>>) {
-    val c = Ponte.colors
+private fun DataSection(title: String, fields: List<Pair<String, String>>) {
     val shown = fields.filter { it.second.isNotBlank() }
     if (shown.isEmpty()) return
-    PonteCard {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionLabel(title, Modifier.padding(start = 0.dp))
-            for ((label, value) in shown) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(label, style = FieldLabelStyle, color = c.secondary)
-                    Text(value, fontSize = 16.sp, lineHeight = 22.sp, color = c.text)
-                }
-            }
-        }
-    }
+    FlatSection(title) { for ((label, value) in shown) FactRow(label, value) }
 }
 
-/** A tappable card that leads to another screen: small label, one text, "Abrir". */
+/** A row that leads to another screen: small label, one text, chevron. */
 @Composable
-private fun LinkCard(icon: ImageVector, label: String, text: String, onClick: () -> Unit, secondary: String = "") {
-    val c = Ponte.colors
-    PonteCard(onClick = onClick) {
-        Row(
-            Modifier.heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(icon, contentDescription = null, tint = c.secondary, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(label, style = FieldLabelStyle, color = c.secondary)
-                Text(
-                    text, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = c.text,
-                    maxLines = 3, overflow = TextOverflow.Ellipsis
-                )
-                if (secondary.isNotBlank()) {
-                    Text(secondary, style = MaterialTheme.typography.bodySmall, color = c.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            Text("Abrir", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.padding(start = 8.dp))
-        }
-    }
+private fun LinkSection(icon: ImageVector, label: String, text: String, onClick: () -> Unit, secondary: String = "") {
+    LinkRow(icon, label, text, onClick, secondary = secondary)
 }
 
 /**
@@ -304,25 +273,19 @@ private fun ResourceUseBody(
 ) {
     val c = Ponte.colors
     val resource = state.resources.firstOrNull { it.uid == u.resourceUid }
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                u.resourceName.ifEmpty { PhoneWords.RES_RESOURCE_TITLE },
-                fontSize = 22.sp, lineHeight = 29.sp, fontWeight = FontWeight.SemiBold, color = c.text
-            )
-            val who = ResourceRules.whoLine(u)
-            if (who.isNotEmpty()) Text(who, style = MaterialTheme.typography.bodyLarge, color = c.secondary)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                UsePill(u)
-                if (u.overdue) Pill("Fim previsto ${ResourceRules.momentText(u.end)}", tone = Tone.NEUTRAL, modifier = Modifier.weight(1f, fill = false))
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 32.dp)) {
+        FichaHeader(
+            u.resourceName.ifEmpty { PhoneWords.RES_RESOURCE_TITLE },
+            lines = listOf(ResourceRules.whoLine(u)),
+            extra = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    UsePill(u)
+                    if (u.overdue) Pill("Fim previsto ${ResourceRules.momentText(u.end)}", tone = Tone.NEUTRAL, modifier = Modifier.weight(1f, fill = false))
+                }
             }
-        }
-        Notice(RESOURCE_READ_ONLY, tone = Tone.NEUTRAL)
-        DataCard(
+        )
+        SectionBody { Notice(RESOURCE_READ_ONLY, tone = Tone.NEUTRAL) }
+        DataSection(
             "Dados",
             listOf(
                 PhoneWords.RES_WHO to u.who,
@@ -336,18 +299,18 @@ private fun ResourceUseBody(
                 PhoneWords.RES_NOTES to u.notes
             )
         )
-        LinkCard(
+        LinkSection(
             Icons.Outlined.CalendarMonth, PhoneWords.RES_RESOURCE_TITLE, u.resourceName.ifEmpty { PhoneWords.RES_RESOURCE_TITLE },
             onClick = { onOpenResource(u.resourceUid) }, secondary = resource?.location.orEmpty()
         )
         if (u.documentId > 0) {
-            LinkCard(Icons.Outlined.Description, "Documento ligado", u.documentLine.ifEmpty { "Documento" }, onClick = { onOpenDocument(u.documentId) })
+            LinkSection(Icons.Outlined.Description, "Documento ligado", u.documentLine.ifEmpty { "Documento" }, onClick = { onOpenDocument(u.documentId) })
         }
         if (u.attendanceId > 0) {
-            LinkCard(Icons.Outlined.Inbox, "Atendimento ligado", u.attendanceReference.ifEmpty { "Atendimento" }, onClick = { onOpenAttendance(u.attendanceId) })
+            LinkSection(Icons.Outlined.Inbox, "Atendimento ligado", u.attendanceReference.ifEmpty { "Atendimento" }, onClick = { onOpenAttendance(u.attendanceId) })
         }
         if (u.taskId > 0) {
-            LinkCard(Icons.Outlined.Description, "Tarefa ligada", u.taskTitle.ifEmpty { "Tarefa" }, onClick = { onOpenTask(u.taskId) })
+            LinkSection(Icons.Outlined.Description, "Tarefa ligada", u.taskTitle.ifEmpty { "Tarefa" }, onClick = { onOpenTask(u.taskId) })
         }
     }
 }
@@ -383,23 +346,14 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, onOpenUse: (Str
     val c = Ponte.colors
     val next = state.usesOf(r.nextUids)
     val today = state.usesOf(r.todayUids)
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(r.name, fontSize = 22.sp, lineHeight = 29.sp, fontWeight = FontWeight.SemiBold, color = c.text)
-            if (!r.active) Pill(PhoneWords.RES_INACTIVE, tone = Tone.NEUTRAL)
-            if (r.active) {
-                Text(
-                    r.usageLine + " · " + r.freeText,
-                    style = MaterialTheme.typography.bodyMedium, color = c.secondary
-                )
-            }
-        }
-        Notice(RESOURCE_READ_ONLY, tone = Tone.NEUTRAL)
-        DataCard(
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 32.dp)) {
+        FichaHeader(
+            r.name,
+            lines = if (r.active) listOf(r.usageLine + " · " + r.freeText) else emptyList(),
+            extra = if (!r.active) ({ Pill(PhoneWords.RES_INACTIVE, tone = Tone.NEUTRAL) }) else null
+        )
+        SectionBody { Notice(RESOURCE_READ_ONLY, tone = Tone.NEUTRAL) }
+        DataSection(
             "Dados",
             listOf(
                 PhoneWords.RES_QUANTITY to r.quantity.toString(),
@@ -409,14 +363,12 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, onOpenUse: (Str
                 PhoneWords.RES_NOTES to r.notes
             )
         )
-        PonteCard {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                SectionLabel("Ocupação de hoje", Modifier.padding(start = 0.dp))
-                if (today.isEmpty()) {
-                    Text("Nenhum uso hoje.", style = MaterialTheme.typography.bodyMedium, color = c.muted)
-                }
-                today.forEachIndexed { i, u ->
-                    if (i > 0) HorizontalDivider(color = c.divider)
+        FlatSection("Ocupação de hoje", divider = next.isNotEmpty()) {
+            if (today.isEmpty()) {
+                Text("Nenhum uso hoje.", Modifier.padding(horizontal = ROW_MARGIN, vertical = 6.dp), style = MaterialTheme.typography.bodyMedium, color = c.muted)
+            }
+            today.forEachIndexed { i, u ->
+                FlatRow(null, divider = i < today.lastIndex) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(u.period, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = c.text)
                         Text(
@@ -429,15 +381,10 @@ private fun ResourceBody(r: ResourceItem, state: ResourcesState, onOpenUse: (Str
             }
         }
         if (next.isNotEmpty()) {
-            PonteCard {
-                Column(Modifier.padding(top = 14.dp, bottom = 6.dp)) {
-                    SectionLabel("Próximos usos · ${next.size}", Modifier.padding(start = 12.dp, bottom = 4.dp))
-                    for (u in next) {
-                        Row(
-                            Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(onClickLabel = "Abrir o uso") { onOpenUse(u.uid) }
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+            FlatSection("Próximos usos · ${next.size}", divider = false) {
+                for ((i, u) in next.withIndex()) {
+                    FlatRow({ onOpenUse(u.uid) }, divider = i < next.lastIndex) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     u.period, fontSize = 15.sp, fontWeight = FontWeight.Medium,
