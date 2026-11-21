@@ -42,7 +42,8 @@ pub struct Options {
     /// Text in the file name, `antes-de-instalar-<rótulo>-<data>.sqlite3`; the
     /// version of this program (`vX.Y.Z`) when absent.
     pub label: Option<String>,
-    /// A file that receives the same report that the output carries.
+    /// A NEW file that receives the same report that the output carries (an
+    /// existing path is refused, see [`check_result_file`]).
     pub result_file: Option<PathBuf>,
 }
 
@@ -273,6 +274,103 @@ fn report(outcome: &Result<Outcome>) -> String {
     }
 }
 
+/// A path in the form used to compare two of them: the case does not tell
+/// files apart on Windows.
+fn comparable(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(path.to_string_lossy().to_lowercase())
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// The folder with its links resolved when it exists, else as an absolute path.
+fn resolved_folder(folder: &Path) -> PathBuf {
+    std::fs::canonicalize(folder)
+        .or_else(|_| std::path::absolute(folder))
+        .unwrap_or_else(|_| folder.to_path_buf())
+}
+
+/// Whether `--resultado` may be written at `file`, as the library in `data_dir`
+/// is found. The report is a favour to the caller and must never become a way to
+/// overwrite data: the file has to be new (an existing path of any kind is
+/// refused and left alone), and it may not be the library, its `-wal`/`-shm`, the
+/// generation note, or anything else in the library folder (links and `..`
+/// resolved) except in the `backups` folder, where the copies are.
+pub fn check_result_file(file: &Path, data_dir: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(file) {
+        Ok(_) => bail!(
+            "O arquivo de resultado {} já existe; informe um arquivo novo (ele nunca é sobrescrito).",
+            file.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Não foi possível verificar o arquivo de resultado {}.",
+                    file.display()
+                )
+            })
+        }
+    }
+    let name = file
+        .file_name()
+        .with_context(|| format!("{} não é um nome de arquivo.", file.display()))?;
+    let parent = match file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let target = std::fs::canonicalize(parent)
+        .with_context(|| {
+            format!(
+                "A pasta do arquivo de resultado ({}) não existe ou não está acessível.",
+                parent.display()
+            )
+        })?
+        .join(name);
+    let mut folders = vec![resolved_folder(data_dir)];
+    // A library file that is itself a link lives (with its -wal) where it points.
+    if let Ok(real) = std::fs::canonicalize(paths::db_path_in(data_dir)) {
+        if let Some(folder) = real.parent() {
+            folders.push(folder.to_path_buf());
+        }
+    }
+    let target = comparable(&target);
+    for folder in folders {
+        let folder = comparable(&folder);
+        ensure!(
+            !target.starts_with(&folder) || target.starts_with(folder.join("backups")),
+            "O arquivo de resultado {} ficaria na pasta do acervo; escolha outra pasta (ele nunca pode ser o acervo nem ficar ao lado dele).",
+            file.display()
+        );
+    }
+    Ok(())
+}
+
+/// Writes `text` to a file that must not exist yet (`create_new`): the report the
+/// caller asked for never replaces anything.
+fn write_new_file(file: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(file)?;
+    out.write_all(text.as_bytes())?;
+    out.sync_all()
+}
+
+/// The helper's own note beside the copies: written to a file of its own and
+/// renamed over the old one, so a reader sees the old or the new, never half.
+fn write_replacing(file: &Path, text: &str) -> std::io::Result<()> {
+    let temp = append(file, &format!(".{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let result = write_new_file(&temp, text).and_then(|()| std::fs::rename(&temp, file));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
 /// The command as `main` runs it: copies, prints the path of the copy, writes
 /// the report where the options and the destination folder say. Fails (exit
 /// code 1, message on the error output) when there is no good copy of a library
@@ -280,28 +378,36 @@ fn report(outcome: &Result<Outcome>) -> String {
 pub fn run(args: &[String]) -> Result<()> {
     let options = parse_options(args)?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let outcome = paths::data_dir_path()
-        .and_then(|dir| execute(&options, &dir, env!("CARGO_PKG_VERSION"), &stamp));
+    let data_dir = paths::data_dir_path();
+    if let (Some(file), Ok(dir)) = (&options.result_file, &data_dir) {
+        // Before anything is done: a report path that would hurt data is a
+        // mistake of the caller, not something to find out afterwards.
+        check_result_file(file, dir)?;
+    }
+    let outcome =
+        data_dir.and_then(|dir| execute(&options, &dir, env!("CARGO_PKG_VERSION"), &stamp));
     finish(&options, outcome)
 }
 
 fn finish(options: &Options, outcome: Result<Outcome>) -> Result<()> {
     let text = report(&outcome);
-    let mut files = Vec::new();
     if let Some(file) = &options.result_file {
-        files.push(file.clone());
-    }
-    if let Ok(Outcome::BackedUp(path)) = &outcome {
-        if let Some(folder) = path.parent() {
-            files.push(folder.join(RESULT_FILE_NAME));
-        }
-    }
-    for file in files {
-        if let Err(error) = std::fs::write(&file, &text) {
+        if let Err(error) = write_new_file(file, &text) {
             eprintln!(
                 "Não foi possível gravar o resultado em {}: {error}",
                 file.display()
             );
+        }
+    }
+    if let Ok(Outcome::BackedUp(path)) = &outcome {
+        if let Some(folder) = path.parent() {
+            let note = folder.join(RESULT_FILE_NAME);
+            if let Err(error) = write_replacing(&note, &text) {
+                eprintln!(
+                    "Não foi possível gravar o resultado em {}: {error}",
+                    note.display()
+                );
+            }
         }
     }
     match outcome {
@@ -550,18 +656,115 @@ mod tests {
         finish(&options, outcome).unwrap();
         let text = std::fs::read_to_string(&result).unwrap();
         assert_eq!(text, format!("ok\n{}\n", copy.display()));
-        assert_eq!(
-            std::fs::read_to_string(copy.parent().unwrap().join(RESULT_FILE_NAME)).unwrap(),
-            text
-        );
-        let failure = finish(&options, Err(anyhow::anyhow!("sem espaço")));
+        let note = copy.parent().unwrap().join(RESULT_FILE_NAME);
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), text);
+        // The caller's file is new every time; the helper's note is replaced.
+        let options = |name: &str| Options {
+            result_file: Some(root.path().join(name)),
+            ..Options::default()
+        };
+        let failed = options("falha.txt");
+        let failure = finish(&failed, Err(anyhow::anyhow!("sem espaço")));
         assert!(format!("{:#}", failure.unwrap_err()).contains("sem espaço"));
-        let text = std::fs::read_to_string(&result).unwrap();
+        let text = std::fs::read_to_string(failed.result_file.as_ref().unwrap()).unwrap();
         assert!(text.starts_with("erro\n"), "{text}");
         assert!(text.contains("sem espaço"));
-        finish(&options, Ok(Outcome::NoLibrary)).unwrap();
-        assert!(std::fs::read_to_string(&result)
+        let none = options("sem-acervo.txt");
+        finish(&none, Ok(Outcome::NoLibrary)).unwrap();
+        assert!(std::fs::read_to_string(none.result_file.as_ref().unwrap())
             .unwrap()
             .starts_with("sem-acervo\n"));
+        // A failure does not touch the note of the last good copy.
+        assert!(std::fs::read_to_string(&note).unwrap().starts_with("ok\n"));
+        assert!(files_in(copy.parent().unwrap())
+            .iter()
+            .all(|n| !n.ends_with(".tmp")));
+    }
+
+    #[test]
+    fn a_report_path_that_exists_is_refused_and_never_touched_even_on_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("dados");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let database = paths::db_path_in(&data_dir);
+        drop(library_with(&database, 2));
+        let before = std::fs::read(&database).unwrap();
+        // The library itself, and a file that is already there.
+        let other = root.path().join("meu.txt");
+        std::fs::write(&other, "meu").unwrap();
+        for path in [database.clone(), other.clone()] {
+            let error = check_result_file(&path, &data_dir).unwrap_err();
+            assert!(format!("{error:#}").contains("já existe"), "{error:#}");
+            let options = Options {
+                result_file: Some(path),
+                ..Options::default()
+            };
+            // Even when finish is reached (a race), nothing is overwritten.
+            let _ = finish(&options, Err(anyhow::anyhow!("falhou")));
+        }
+        assert_eq!(std::fs::read(&database).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "meu");
+    }
+
+    #[test]
+    fn a_report_path_inside_the_library_folder_is_refused_except_in_backups() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("dados");
+        std::fs::create_dir_all(data_dir.join("backups")).unwrap();
+        drop(library_with(&paths::db_path_in(&data_dir), 1));
+        let refused = [
+            // Sidecars that may not exist right now, the generation note, any file.
+            data_dir.join("acervo.sqlite3-wal"),
+            data_dir.join("acervo.sqlite3-shm"),
+            data_dir.join("acervo.sqlite3-journal"),
+            data_dir.join("acervo.geracao.json"),
+            data_dir.join("qualquer.txt"),
+            // An alias for the same place: `..`.
+            data_dir
+                .join("backups")
+                .join("..")
+                .join("acervo.sqlite3-wal"),
+        ];
+        for path in refused {
+            let error = check_result_file(&path, &data_dir).expect_err(&path.display().to_string());
+            assert!(
+                format!("{error:#}").contains("pasta do acervo"),
+                "{error:#}"
+            );
+            assert!(!path.exists());
+        }
+        if cfg!(windows) {
+            // The case does not tell files apart here.
+            assert!(check_result_file(&data_dir.join("ACERVO.SQLITE3-WAL"), &data_dir).is_err());
+        }
+        // The backups folder and a folder elsewhere are fine.
+        check_result_file(&data_dir.join("backups").join("r.txt"), &data_dir).unwrap();
+        check_result_file(&root.path().join("r.txt"), &data_dir).unwrap();
+        // A folder that does not exist is an error, not something to create.
+        assert!(check_result_file(&root.path().join("nada").join("r.txt"), &data_dir).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_report_path_reached_through_a_link_to_the_library_folder_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("dados");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        drop(library_with(&paths::db_path_in(&data_dir), 1));
+        let link = root.path().join("atalho");
+        std::os::unix::fs::symlink(&data_dir, &link).unwrap();
+        assert!(check_result_file(&link.join("acervo.sqlite3-wal"), &data_dir).is_err());
+    }
+
+    #[test]
+    fn the_note_beside_the_copies_is_replaced_whole_and_leaves_no_temp_file() {
+        let root = tempfile::tempdir().unwrap();
+        let note = root.path().join(RESULT_FILE_NAME);
+        write_replacing(&note, "um\n").unwrap();
+        write_replacing(&note, "dois\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "dois\n");
+        assert_eq!(files_in(root.path()), vec![RESULT_FILE_NAME.to_owned()]);
+        assert!(write_new_file(&note, "x").is_err());
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "dois\n");
     }
 }
