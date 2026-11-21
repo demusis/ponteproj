@@ -49,6 +49,8 @@ pub mod tasks_ui;
 pub mod template_bundle;
 #[cfg(feature = "desktop")]
 pub mod templates_ui;
+/// The safety copy of the library that the installers make before an update.
+pub mod upgrade_backup;
 /// Messages copied from a WhatsApp conversation, read into a record.
 pub mod whatsapp;
 pub mod work_context;
