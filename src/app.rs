@@ -522,8 +522,10 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
         }
     };
     let store = Store::open(&db_path).context("Não foi possível abrir o acervo protegido")?;
-    // Temporary copies of attachments opened in other programs do not outlive a session.
-    crate::attachments::clear_temp_dir();
+    // Temporary copies of attachments opened in other programs do not outlive a
+    // session: what crashed or older sessions left goes now (never another
+    // window's live folder), this one's goes at close.
+    crate::attachments::sweep_stale_temp();
     let mut app = PonteApp::new(store, db_path);
     app.requests_dir = window.is_some().then_some(data_dir);
     app.intranet.initialize(&mut app.store, &app.db_path);
