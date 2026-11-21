@@ -1572,16 +1572,76 @@ fn manifest_of(hashes: impl IntoIterator<Item = String>) -> String {
 }
 
 /// Whether the import with this request id was completed here (its receipt is
-/// in the library). The receipts are local: never sent to the team.
+/// in the library, in the state "done"). The receipts are local: never sent to
+/// the team. A receipt "in progress" (see [`ReceiptState`]) does not count.
 pub(crate) fn import_receipt_exists(
     conn: &rusqlite::Connection,
     request_key: &str,
 ) -> Result<bool> {
     Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM import_receipts WHERE request_id=?1)",
+        "SELECT EXISTS(SELECT 1 FROM import_receipts WHERE request_id=?1 AND state='done')",
         [request_key],
         |r| r.get(0),
     )?)
+}
+
+/// What the local receipt of an import says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ReceiptState {
+    /// Every file of the import is on the record.
+    Completed,
+    /// A connected computer started sending the files (one request each) and
+    /// did not finish: the sorted digests of the files of that import.
+    InProgress(BTreeSet<String>),
+}
+
+pub(crate) fn import_receipt_state(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+) -> Result<Option<ReceiptState>> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT state,manifest FROM import_receipts WHERE request_id=?1",
+            [request_key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        None => None,
+        Some((state, _)) if state != "in_progress" => Some(ReceiptState::Completed),
+        Some((_, manifest)) => Some(ReceiptState::InProgress(serde_json::from_str::<
+            BTreeSet<String>,
+        >(&manifest)?)),
+    })
+}
+
+/// Writes the receipt of an import that has begun but whose files are not all
+/// on the record yet (state "in progress", with the manifest of the import),
+/// before the first request to the main computer. Only when there is no
+/// receipt: a completed one is never taken back.
+pub(crate) fn write_import_receipt_in_progress(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+    hashes: impl IntoIterator<Item = String>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO import_receipts(request_id,manifest,completed_at,state) VALUES(?1,?2,?3,'in_progress')",
+        params![request_key, manifest_of(hashes), now()],
+    )?;
+    Ok(())
+}
+
+/// Removes the receipt of an import that never got to exist (only while it is
+/// still "in progress").
+pub(crate) fn remove_in_progress_import_receipt(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM import_receipts WHERE request_id=?1 AND state='in_progress'",
+        [request_key],
+    )?;
+    Ok(())
 }
 
 /// Writes (or replaces) the receipt of an import: the request id and the sorted
@@ -1594,7 +1654,7 @@ pub(crate) fn write_import_receipt(
     hashes: impl IntoIterator<Item = String>,
 ) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO import_receipts(request_id,manifest,completed_at) VALUES(?1,?2,?3)",
+        "INSERT OR REPLACE INTO import_receipts(request_id,manifest,completed_at,state) VALUES(?1,?2,?3,'done')",
         params![request_key, manifest_of(hashes), now()],
     )?;
     Ok(())

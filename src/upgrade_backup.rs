@@ -127,16 +127,15 @@ pub fn backup_library(
         )
     })?;
     remove_abandoned_partials(destination, std::time::SystemTime::now());
-    let final_path = free_name(destination, label, stamp)?;
-    let mut partial = Partial::create(&final_path)?;
+    let first_choice = free_name(destination, label, stamp)?;
+    let mut partial = Partial::create(&first_choice)?;
     copy_consistently(database, &partial.path)?;
     verify(&partial.path)?;
-    std::fs::rename(&partial.path, &final_path).with_context(|| {
-        format!(
-            "Não foi possível dar o nome final à cópia ({}).",
-            final_path.display()
-        )
-    })?;
+    // Another run of the same second and label may have taken the name since
+    // it was chosen: the copy is published under a name nobody has, never over
+    // a copy that is there.
+    let final_path = publish_without_replacing(&partial.path, destination, label, stamp)?;
+    partial.remove();
     partial.disarm();
     Ok(Outcome::BackedUp(final_path))
 }
@@ -200,16 +199,25 @@ fn ensure_place_is_reachable(database: &Path) -> Result<()> {
     )
 }
 
-/// `antes-de-instalar-<label>-<stamp>.sqlite3`, or the same with `-2`, `-3`…
-/// when a copy of that second is already there.
+/// The `n`-th name for a copy of this label and second:
+/// `antes-de-instalar-<label>-<stamp>.sqlite3`, then the same with `-2`, `-3`…
+fn candidate_name(destination: &Path, label: &str, stamp: &str, n: u32) -> PathBuf {
+    let suffix = if n == 1 {
+        String::new()
+    } else {
+        format!("-{n}")
+    };
+    destination.join(format!("antes-de-instalar-{label}-{stamp}{suffix}.sqlite3"))
+}
+
+/// The most names tried for one label and second.
+const MAX_NAMES: u32 = 200;
+
+/// The first name no copy has yet (a hint: it is only claimed by
+/// [`publish_without_replacing`]).
 fn free_name(destination: &Path, label: &str, stamp: &str) -> Result<PathBuf> {
-    for n in 1..=200 {
-        let suffix = if n == 1 {
-            String::new()
-        } else {
-            format!("-{n}")
-        };
-        let path = destination.join(format!("antes-de-instalar-{label}-{stamp}{suffix}.sqlite3"));
+    for n in 1..=MAX_NAMES {
+        let path = candidate_name(destination, label, stamp, n);
         if !path.exists() {
             return Ok(path);
         }
@@ -218,6 +226,77 @@ fn free_name(destination: &Path, label: &str, stamp: &str) -> Result<PathBuf> {
         "Já existem cópias demais com este nome em {}.",
         destination.display()
     )
+}
+
+/// Gives the finished copy `partial` its final name without ever replacing a
+/// file that is there: `rename` replaces an existing destination, so two runs
+/// of the same second that both saw a name free would let the second wipe the
+/// first (verified) copy. The name is claimed atomically instead, and on a
+/// collision the next one (`-2`, `-3`…) is tried. Answers the name used.
+///
+/// A hard link from the partial to the name fails if the name exists and shows
+/// the name already complete; the partial is removed by the caller. Where hard
+/// links are not supported (a network share, a synchronised folder) the name is
+/// claimed by creating it exclusively (an empty file only this run owns) and
+/// the finished copy then replaces that file.
+fn publish_without_replacing(
+    partial: &Path,
+    destination: &Path,
+    label: &str,
+    stamp: &str,
+) -> Result<PathBuf> {
+    for n in 1..=MAX_NAMES {
+        let candidate = candidate_name(destination, label, stamp, n);
+        match std::fs::hard_link(partial, &candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error)
+                if candidate.exists() || error.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                continue;
+            }
+            Err(_) => {}
+        }
+        // No hard links here: claim the name, then fill it.
+        if claim_and_fill(partial, &candidate)? {
+            return Ok(candidate);
+        }
+    }
+    bail!(
+        "Já existem cópias demais com este nome em {}.",
+        destination.display()
+    )
+}
+
+/// Creates `candidate` exclusively (an empty file only this run owns) and
+/// replaces it with the finished copy. `false`: the name was taken.
+fn claim_and_fill(partial: &Path, candidate: &Path) -> Result<bool> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(candidate)
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Não foi possível dar o nome final à cópia ({}).",
+                    candidate.display()
+                )
+            })
+        }
+    }
+    // The claimed file is empty and this run's: replacing it is safe.
+    if let Err(error) = std::fs::rename(partial, candidate) {
+        let _ = std::fs::remove_file(candidate);
+        return Err(error).with_context(|| {
+            format!(
+                "Não foi possível dar o nome final à cópia ({}).",
+                candidate.display()
+            )
+        });
+    }
+    Ok(true)
 }
 
 fn append(path: &Path, suffix: &str) -> PathBuf {
@@ -697,6 +776,54 @@ mod tests {
             .unwrap();
         assert_eq!(rows_in(&database), 26);
         assert_eq!(rows_in(&copy), 25);
+    }
+
+    #[test]
+    fn two_publications_to_the_same_name_keep_both_copies() {
+        let folder = tempfile::tempdir().unwrap();
+        let first = folder.path().join("a.parcial");
+        let second = folder.path().join("b.parcial");
+        std::fs::write(&first, b"primeira copia verificada").unwrap();
+        std::fs::write(&second, b"segunda copia verificada").unwrap();
+        let one = publish_without_replacing(&first, folder.path(), "v1", STAMP).unwrap();
+        std::fs::remove_file(&first).unwrap();
+        // The second run had also seen the name free: it must take another.
+        let two = publish_without_replacing(&second, folder.path(), "v1", STAMP).unwrap();
+        std::fs::remove_file(&second).unwrap();
+        assert_eq!(
+            one.file_name().unwrap().to_string_lossy(),
+            "antes-de-instalar-v1-20261120-120000.sqlite3"
+        );
+        assert_eq!(
+            two.file_name().unwrap().to_string_lossy(),
+            "antes-de-instalar-v1-20261120-120000-2.sqlite3"
+        );
+        assert_eq!(std::fs::read(&one).unwrap(), b"primeira copia verificada");
+        assert_eq!(std::fs::read(&two).unwrap(), b"segunda copia verificada");
+        assert_eq!(files_in(folder.path()).len(), 2);
+    }
+
+    #[test]
+    fn where_hard_links_do_not_work_the_name_is_claimed_before_it_is_filled() {
+        let folder = tempfile::tempdir().unwrap();
+        let taken = folder.path().join("antes-de-instalar-v1-x.sqlite3");
+        std::fs::write(&taken, b"copia que ja estava la").unwrap();
+        let partial = folder.path().join("c.parcial");
+        std::fs::write(&partial, b"copia nova").unwrap();
+        // A taken name is never replaced.
+        assert!(!claim_and_fill(&partial, &taken).unwrap());
+        assert_eq!(std::fs::read(&taken).unwrap(), b"copia que ja estava la");
+        assert!(partial.exists());
+        // A free name is claimed and receives the copy.
+        let free = folder.path().join("antes-de-instalar-v1-x-2.sqlite3");
+        assert!(claim_and_fill(&partial, &free).unwrap());
+        assert_eq!(std::fs::read(&free).unwrap(), b"copia nova");
+        assert!(!partial.exists());
+        // A copy that cannot be moved leaves no claimed empty file behind.
+        let missing = folder.path().join("nao-existe.parcial");
+        let other = folder.path().join("antes-de-instalar-v1-x-3.sqlite3");
+        assert!(claim_and_fill(&missing, &other).is_err());
+        assert!(!other.exists());
     }
 
     #[test]
