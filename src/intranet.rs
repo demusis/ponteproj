@@ -1806,6 +1806,11 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS mutation_receipts_by_time ON mutation_receipts(created_at);
             CREATE INDEX IF NOT EXISTS applied_mutations_by_time ON applied_mutations(created_at);
+            CREATE TABLE IF NOT EXISTS import_receipts(
+                request_id TEXT PRIMARY KEY,
+                manifest TEXT NOT NULL,
+                completed_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS host_generation(
                 id INTEGER PRIMARY KEY CHECK(id=1),
                 value TEXT NOT NULL

@@ -566,9 +566,17 @@ impl Store {
                 existing_captured_at: None,
                 previous_version: false,
             };
-            // A retry of an import whose files did not all arrive: it
-            // completes the record with the ones that are missing.
-            let added = finish_import_extras(&tx, extras, queued_capture, &actor, &receipt, true)?;
+            // A retry: if this import has its receipt nothing is added; a
+            // record an older version left with no file at all gets them once.
+            let added = finish_import_extras(
+                &tx,
+                extras,
+                queued_capture,
+                &actor,
+                &receipt,
+                &request_key,
+                false,
+            )?;
             tx.commit()?;
             return Ok((receipt, added));
         }
@@ -623,8 +631,15 @@ impl Store {
                     existing_captured_at: Some(created_at.clone()),
                     previous_version: false,
                 };
-                let added =
-                    finish_import_extras(&tx, extras, queued_capture, &actor, &receipt, true)?;
+                let added = finish_import_extras(
+                    &tx,
+                    extras,
+                    queued_capture,
+                    &actor,
+                    &receipt,
+                    &request_key,
+                    false,
+                )?;
                 tx.commit()?;
                 return Ok((receipt, added));
             }
@@ -677,7 +692,15 @@ impl Store {
             existing_captured_at: existing.map(|(_, created_at)| created_at),
             previous_version: duplicate,
         };
-        let added = finish_import_extras(&tx, extras, queued_capture, &actor, &receipt, duplicate)?;
+        let added = finish_import_extras(
+            &tx,
+            extras,
+            queued_capture,
+            &actor,
+            &receipt,
+            &request_key,
+            new_document,
+        )?;
         tx.commit()
             .context("Não foi possível concluir a importação; tente de novo.")?;
         // The capture is already committed; a failure here must not undo the
@@ -1446,31 +1469,85 @@ pub(crate) struct ImportExtras<'a> {
     pub queue_actor: Option<&'a str>,
 }
 
+/// The sorted SHA-256 digests of the files of an import: what its receipt keeps.
+fn manifest_of(hashes: impl IntoIterator<Item = String>) -> String {
+    let sorted: BTreeSet<String> = hashes.into_iter().collect();
+    serde_json::to_string(&sorted).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// Whether the import with this request id was completed here (its receipt is
+/// in the library). The receipts are local: never sent to the team.
+pub(crate) fn import_receipt_exists(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM import_receipts WHERE request_id=?1)",
+        [request_key],
+        |r| r.get(0),
+    )?)
+}
+
+/// Writes (or replaces) the receipt of an import: the request id and the sorted
+/// digests of the files the record has because of it. Inside the transaction
+/// that stored the record and its files, so that "completed" is never claimed
+/// for an import that did not commit.
+pub(crate) fn write_import_receipt(
+    conn: &rusqlite::Connection,
+    request_key: &str,
+    hashes: impl IntoIterator<Item = String>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO import_receipts(request_id,manifest,completed_at) VALUES(?1,?2,?3)",
+        params![request_key, manifest_of(hashes), now()],
+    )?;
+    Ok(())
+}
+
 /// The tail of an import, still inside its transaction: the files of the
-/// record that are not on it yet (in order, each with its own version and
-/// team-event entries, as `add_attachment` writes them), then the queued
-/// copies of the changes in shared-folder mode. `completing` is true when
-/// the record was already in the library.
+/// record (in order, each with its own version and team-event entries, as
+/// `add_attachment` writes them), then the queued copies of the changes in
+/// shared-folder mode, then the receipt of the import.
+///
+/// The files are only added to a record this very import created (`fresh`) or,
+/// for a record that was already there without a receipt (an older version
+/// left it), when it has no attachment at all, not even in the trash: that is a
+/// record whose files never arrived. A request id that has its receipt never
+/// adds anything, whatever happened to the files afterwards (a request id can be
+/// reused for other content, and a file the person purged must not come back).
 fn finish_import_extras(
     tx: &rusqlite::Connection,
     extras: Option<&ImportExtras<'_>>,
     capture: &Capture,
     actor: &str,
     receipt: &ImportReceipt,
-    completing: bool,
+    request_key: &str,
+    fresh: bool,
 ) -> Result<usize> {
     let Some(extras) = extras else {
         return Ok(0);
     };
     let step = |source: anyhow::Error| {
-        anyhow::Error::new(crate::attachments::AttachmentStepFailed { completing, source })
+        anyhow::Error::new(crate::attachments::AttachmentStepFailed {
+            completing: !fresh,
+            source,
+        })
     };
-    if !extras.attachments.is_empty() {
+    if !fresh && import_receipt_exists(tx, request_key)? {
+        return Ok(0);
+    }
+    let owner = crate::attachments::Owner::Document(receipt.document_id);
+    let present = crate::attachments::hashes_including_trash(tx, owner).map_err(&step)?;
+    let to_add: &[crate::attachments::AttachmentInput<'_>] = if fresh || present.is_empty() {
+        extras.attachments
+    } else {
+        &[]
+    };
+    if !to_add.is_empty() {
         crate::record_import::injected_failure().map_err(&step)?;
     }
-    let added =
-        crate::attachments::attach_missing(tx, actor, receipt.document_id, extras.attachments)
-            .map_err(&step)?;
+    let added = crate::attachments::attach_missing(tx, actor, receipt.document_id, to_add)
+        .map_err(&step)?;
     if let Some(queue_actor) = extras.queue_actor {
         crate::intranet::queue_import_locally(
             tx,
@@ -1481,6 +1558,15 @@ fn finish_import_extras(
             &added,
         )?;
     }
+    let in_the_record = if to_add.is_empty() {
+        present
+    } else {
+        to_add
+            .iter()
+            .map(|file| format!("{:x}", Sha256::digest(file.data)))
+            .collect()
+    };
+    write_import_receipt(tx, request_key, in_the_record)?;
     Ok(added.len())
 }
 
