@@ -2004,6 +2004,11 @@ impl TaskPanel {
         }
         if !self.dirty() && !self.attachments.dirty() {
             self.close_form();
+        } else {
+            self.notice(
+                "Há alterações não salvas. Salve ou cancele para fechar.",
+                false,
+            );
         }
         true
     }
@@ -4446,6 +4451,11 @@ mod navigation_tests {
         assert!(panel.focus_task(&open));
         panel.draft.as_mut().unwrap().notes = "ainda escrevendo".into();
         assert!(panel.key_escape(), "handled, even though it stays open");
+        assert_eq!(
+            panel.message,
+            "Há alterações não salvas. Salve ou cancele para fechar."
+        );
+        assert!(!panel.message_is_error);
         assert!(panel.draft.is_some());
         assert!(panel.dirty());
         assert_eq!(panel.open_task_id(), Some(10));
