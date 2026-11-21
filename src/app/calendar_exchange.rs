@@ -47,7 +47,7 @@ impl PonteApp {
                         "ponte-agenda.ics",
                         &[("Calendário", "*.ics")],
                     ) {
-                        std::fs::write(path, text)?;
+                        crate::atomic_file::write_atomic(&path, text.as_bytes())?;
                         self.message("Calendário exportado.");
                     }
                     Ok(())

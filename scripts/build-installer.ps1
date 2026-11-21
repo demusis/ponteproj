@@ -11,7 +11,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-installer.ps
 #>
 [CmdletBinding()]
 param(
-    [string]$InnoCompiler
+    [string]$InnoCompiler,
+    # Pula so a conferencia de data (nao a de versao): use apenas se souber que
+    # os fontes mudaram depois do build sem alterar o programa.
+    [switch]$IgnoreFreshness
 )
 
 Set-StrictMode -Version Latest
@@ -28,6 +31,58 @@ $executable = Join-Path $projectRoot 'dist\ponteproj.exe'
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw "dist\ponteproj.exe nao encontrado. Gere o release antes (scripts\build.ps1 -Action Release) e copie para dist."
 }
+
+# O instalador nao pode levar um executavel velho: a versao dele tem de ser a de
+# Cargo.toml e ele nao pode ser mais antigo que os fontes.
+function Get-ExecutableVersion([string]$Path) {
+    # O executavel nao traz recurso de versao do Windows; ele responde a --version
+    # ("PonteProj X.Y.Z"). Se nao responder (versao antiga demais), devolve $null.
+    $out = Join-Path ([System.IO.Path]::GetTempPath()) ("ponte-version-" + [guid]::NewGuid().ToString('N') + '.txt')
+    try {
+        $process = Start-Process -FilePath $Path -ArgumentList '--version' -RedirectStandardOutput $out -WindowStyle Hidden -PassThru
+        if (-not $process.WaitForExit(15000)) {
+            try { $process.Kill() } catch { }
+            return $null
+        }
+        if (Test-Path -LiteralPath $out) {
+            $text = Get-Content -LiteralPath $out -Raw -ErrorAction SilentlyContinue
+            if ($text -and $text -match 'PonteProj\s+([0-9]+\.[0-9]+\.[0-9]+)') { return $Matches[1] }
+        }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$exeVersion = Get-ExecutableVersion $executable
+if ($exeVersion -and $exeVersion -ne $version) {
+    throw "dist\ponteproj.exe e da versao $exeVersion, mas Cargo.toml esta na $version. Gere o release de novo (scripts\build.ps1 -Action Release) e copie o executavel novo para dist."
+}
+if (-not $exeVersion) {
+    Write-Warning 'Nao foi possivel ler a versao de dist\ponteproj.exe (--version); conferindo so a data de gravacao.'
+}
+if (-not $IgnoreFreshness) {
+    $sources = @(Get-Item -LiteralPath (Join-Path $projectRoot 'Cargo.toml'))
+    foreach ($relative in @('src', 'assets')) {
+        $folder = Join-Path $projectRoot $relative
+        if (Test-Path -LiteralPath $folder -PathType Container) {
+            $sources += Get-ChildItem -LiteralPath $folder -Recurse -File
+        }
+    }
+    foreach ($relative in @('build.rs', 'Cargo.lock')) {
+        $file = Join-Path $projectRoot $relative
+        if (Test-Path -LiteralPath $file -PathType Leaf) { $sources += Get-Item -LiteralPath $file }
+    }
+    $newest = $sources | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    $built = (Get-Item -LiteralPath $executable).LastWriteTimeUtc
+    if ($newest.LastWriteTimeUtc -gt $built) {
+        $newestName = $newest.FullName.Substring($projectRoot.Length + 1)
+        throw ("dist\ponteproj.exe ({0:yyyy-MM-dd HH:mm:ss} UTC) e mais antigo que {1} ({2:yyyy-MM-dd HH:mm:ss} UTC). Gere o release de novo e copie o executavel novo para dist (ou use -IgnoreFreshness se tiver certeza)." -f $built, $newestName, $newest.LastWriteTimeUtc)
+    }
+}
+
 $script = Join-Path $projectRoot 'installer\Ponte.iss'
 if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
     throw "Script do instalador nao encontrado: $script"

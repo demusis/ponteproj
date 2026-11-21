@@ -244,6 +244,14 @@ fn add_detail(details: &mut Vec<String>, detail: &str) {
     }
 }
 
+/// O bloco de trabalho que o próprio exportador do Ponte gera tem UID `<uid da tarefa>-work@ponte`
+/// e a tarefa tem UID `<uid>@ponte`; qualquer outro evento relacionado é só um evento externo.
+fn is_ponte_work_block_uid(task_uid: &str, block_uid: &str) -> bool {
+    task_uid
+        .strip_suffix("@ponte")
+        .is_some_and(|stem| !stem.is_empty() && block_uid == format!("{stem}-work@ponte"))
+}
+
 pub fn parse_calendar(text: &str) -> Result<CalendarReview> {
     ensure!(
         text.len() <= 4_000_000,
@@ -528,6 +536,7 @@ pub fn parse_calendar(text: &str) -> Result<CalendarReview> {
         if let Some(task) = review.entries.iter_mut().find(|e| {
             !e.event
                 && e.uid == block.related_to
+                && is_ponte_work_block_uid(&e.uid, &block.uid)
                 && e.start.is_empty()
                 && block.notes.is_empty()
                 && block.due.is_empty()
@@ -760,6 +769,21 @@ mod tests {
             .iter()
             .any(|d| d == "propriedade X-MICROSOFT-CDO-BUSYSTATUS"));
         assert!(review.skipped[0].reason.contains("repetição"));
+    }
+    #[test]
+    fn unrelated_event_related_to_a_todo_is_not_merged_as_work_block() {
+        let text = wrap("BEGIN:VTODO\r\nUID:t1@ponte\r\nSUMMARY:Tarefa\r\nDUE;VALUE=DATE:20261122\r\nEND:VTODO\r\nBEGIN:VEVENT\r\nUID:externo-1\r\nSUMMARY:Reunião externa\r\nRELATED-TO:t1@ponte\r\nDTSTART:20261118T090000\r\nDTEND:20261118T100000\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:t1-work@ponte\r\nSUMMARY:Tarefa\r\nRELATED-TO:t1@ponte\r\nDTSTART:20261119T090000\r\nDTEND:20261119T100000\r\nEND:VEVENT\r\n");
+        let review = parse_calendar(&text).unwrap();
+        // A tarefa absorve só o bloco gerado pelo Ponte; o evento externo continua como entrada própria.
+        assert_eq!(review.entries.len(), 2);
+        let task = review.entries.iter().find(|e| e.uid == "t1@ponte").unwrap();
+        assert_eq!(task.start, "2026-11-19T09:00");
+        let external = review
+            .entries
+            .iter()
+            .find(|e| e.uid == "externo-1")
+            .expect("evento externo preservado");
+        assert_eq!(external.start, "2026-11-18T09:00");
     }
     #[test]
     fn event_ending_at_midnight_is_an_open_end() {

@@ -36,6 +36,52 @@ jobs:
       - name: Testes
         run: cargo test --all-targets --locked
 
+  movel:
+    name: Núcleo do celular (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust estável
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            mobile/rust/target
+          key: cargo-movel-${{ runner.os }}-${{ hashFiles('mobile/rust/Cargo.lock', 'Cargo.lock') }}
+      # Sem verificação de formatação: este código ainda não está no rustfmt.
+      - name: Verificador
+        working-directory: mobile/rust
+        run: cargo clippy --all-targets --locked
+      - name: Testes
+        working-directory: mobile/rust
+        run: cargo test --locked
+
+  # Aviso apenas: um novo aviso de segurança numa dependência não deve impedir
+  # a integração; o resultado fica visível no registro da execução.
+  avisos-de-seguranca:
+    name: Avisos de segurança das dependências (informativo)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust estável
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Instalar cargo-audit
+        continue-on-error: true
+        run: cargo install cargo-audit --locked
+      - name: Aplicativo
+        continue-on-error: true
+        run: cargo audit --file Cargo.lock
+      - name: Núcleo do celular
+        continue-on-error: true
+        run: cargo audit --file mobile/rust/Cargo.lock
+
   extensao:
     name: Extensão do navegador
     runs-on: windows-latest

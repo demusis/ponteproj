@@ -342,7 +342,7 @@ pub fn parse_typed_date(text: &str) -> Option<String> {
     for format in ["%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y-%m-%d"] {
         // `%Y` also accepts "26"; a two-digit year is handled by `%y` below.
         if let Ok(date) = chrono::NaiveDate::parse_from_str(text, format) {
-            if date.year() >= 1900 {
+            if (1900..=9999).contains(&date.year()) {
                 return Some(date.format("%Y-%m-%d").to_string());
             }
         }
