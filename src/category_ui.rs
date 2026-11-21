@@ -712,7 +712,7 @@ impl CategoryManager {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = S3;
-                    if ui.add(widgets::quiet("Apagar…")).clicked() {
+                    if ui.add(widgets::quiet("Apagar de vez…")).clicked() {
                         self.open = Some((category.uid.clone(), RowMode::Delete));
                     }
                     let (label, hint) = if category.archived {
@@ -810,7 +810,7 @@ impl CategoryManager {
                                 .wrap(),
                             );
                             ui.horizontal(|ui| {
-                                if ui.add(widgets::danger("Apagar")).clicked() {
+                                if ui.add(widgets::danger("Apagar de vez")).clicked() {
                                     match store.delete_category(&category.uid) {
                                         Ok(()) => {
                                             out.changed = true;

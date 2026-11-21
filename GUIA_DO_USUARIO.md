@@ -156,7 +156,7 @@ Uma **categoria** é uma palavra que você escolhe para organizar o trabalho, co
 - **Em várias tarefas:** em **Tarefas**, clique em **Selecionar**, marque as tarefas e use **Adicionar categoria…** ou **Remover categoria…**; **Desfazer** vale por 30 segundos.
 - **Na busca e em Hoje:** as categorias aparecem ao lado das tarefas (e dos documentos, na busca), até duas por linha.
 - **Filtrar:** em **Tarefas**, use o botão **Categorias** ao lado das visões; em **Documentos**, **Filtros ▸ Categorias**. A lista mostra o que tem qualquer uma das categorias marcadas; **Sem categoria** mostra o que não tem nenhuma.
-- **Gerenciar:** em **Ajustes ▸ Categorias** (ou **Gerenciar categorias…**, na lista de escolha) você vê quantas tarefas e documentos usam cada uma e pode **Renomear**, mudar a **Cor**, **Arquivar** (a categoria deixa de ser oferecida, mas continua em quem já a tem; **Desarquivar** desfaz) e **Apagar…**. Ao apagar, o Ponte diz de quantas tarefas e documentos a categoria vai sair; as tarefas e os documentos continuam.
+- **Gerenciar:** em **Ajustes ▸ Categorias** (ou **Gerenciar categorias…**, na lista de escolha) você vê quantas tarefas e documentos usam cada uma e pode **Renomear**, mudar a **Cor**, **Arquivar** (a categoria deixa de ser oferecida, mas continua em quem já a tem; **Desarquivar** desfaz) e **Apagar de vez…**. Ao apagar, o Ponte diz de quantas tarefas e documentos a categoria vai sair; as tarefas e os documentos continuam.
 - **Em equipe:** a lista de categorias é a mesma para todos. O que alguém cria, renomeia, arquiva ou apaga chega aos outros na próxima sincronização.
 
 ### Projetos
