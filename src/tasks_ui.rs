@@ -1700,6 +1700,12 @@ struct BatchUndo {
     trash: bool,
 }
 
+/// Puts a removed checklist step back where it was (or at the end, when the
+/// list got shorter meanwhile).
+fn restore_step(list: &mut Vec<(bool, String)>, index: usize, step: (bool, String)) {
+    list.insert(index.min(list.len()), step);
+}
+
 #[derive(Default)]
 pub struct TaskPanel {
     /// Categories the list is narrowed to.
@@ -1711,6 +1717,9 @@ pub struct TaskPanel {
     open_categories: bool,
     draft: Option<Task>,
     original: Option<Task>,
+    /// Last step removed from the checklist of the open task (task id,
+    /// position, step), for "Desfazer remoção".
+    removed_step: Option<(i64, usize, (bool, String))>,
     base_version: Option<i64>,
     show_done: bool,
     query: String,
@@ -1856,6 +1865,7 @@ impl TaskPanel {
         };
         match saved {
             Ok(id) => {
+                self.removed_step = None;
                 self.draft = store
                     .list_tasks()
                     .ok()
@@ -1882,6 +1892,7 @@ impl TaskPanel {
     /// Drops the unsaved changes: an existing task goes back to what is
     /// saved, a new one disappears.
     pub fn discard_draft(&mut self) {
+        self.removed_step = None;
         self.draft = self.original.clone();
         self.message.clear();
         if self.draft.is_none() {
@@ -1952,6 +1963,7 @@ impl TaskPanel {
         }
         self.end_selection();
         self.keep_filter_for(document_id);
+        self.removed_step = None;
         self.draft = Some(Task::blank(document_id));
         self.original = None;
         self.base_version = None;
@@ -1982,6 +1994,7 @@ impl TaskPanel {
         }
         self.end_selection();
         self.keep_filter_for(task.document_id);
+        self.removed_step = None;
         self.draft = Some(task.clone());
         self.original = Some(task.clone());
         self.base_version = None;
@@ -3332,6 +3345,7 @@ impl TaskPanel {
 
     /// Closes the form of a task nobody has changed.
     fn close_form(&mut self) {
+        self.removed_step = None;
         self.draft = None;
         self.original = None;
         self.base_version = None;
@@ -3901,25 +3915,41 @@ impl TaskPanel {
                             ui.add_space(S2);
                             ui.collapsing("Lista de providências", |ui| {
                                 let mut remove = None;
+                                let mut edited = false;
                                 for (index, (done, text)) in task.checklist.iter_mut().enumerate() {
                                     ui.horizontal(|ui| {
-                                        ui.checkbox(done, "");
-                                        ui.add(
-                                            egui::TextEdit::singleline(text)
-                                                .desired_width((ui.available_width() - 40.0).max(60.0)),
-                                        );
+                                        edited |= ui.checkbox(done, "").changed();
+                                        edited |= ui
+                                            .add(
+                                                egui::TextEdit::singleline(text)
+                                                    .desired_width((ui.available_width() - 40.0).max(60.0)),
+                                            )
+                                            .changed();
                                         if widgets::icon_button(ui, icon::CLOSE, "Remover etapa").clicked() {
                                             remove = Some(index);
                                         }
                                     });
                                 }
                                 if let Some(index) = remove {
-                                    task.checklist.remove(index);
+                                    let step = task.checklist.remove(index);
+                                    self.removed_step = Some((task.id, index, step));
+                                    edited = false;
                                 }
                                 if task.checklist.len() < 100
                                     && ui.add(widgets::secondary(format!("{} Adicionar etapa", icon::PLUS))).clicked()
                                 {
                                     task.checklist.push((false, String::new()));
+                                    edited = true;
+                                }
+                                if edited {
+                                    self.removed_step = None;
+                                }
+                                if self.removed_step.as_ref().is_some_and(|(id, _, _)| *id == task.id)
+                                    && ui.add(widgets::quiet("Desfazer remoção")).clicked()
+                                {
+                                    if let Some((_, index, step)) = self.removed_step.take() {
+                                        restore_step(&mut task.checklist, index, step);
+                                    }
                                 }
                             });
                             if let Some(doc) = document_id.and_then(|id| store.load_document(id).ok()) {
@@ -4437,6 +4467,21 @@ mod navigation_tests {
         assert_eq!(panel.document_filter(), Some(document));
         panel.clear_document_filter();
         assert_eq!(panel.document_filter(), None);
+    }
+
+    #[test]
+    fn removed_checklist_step_goes_back_to_its_place() {
+        let mut list = vec![(false, "a".to_owned()), (true, "b".to_owned()), (false, "c".to_owned())];
+        let step = list.remove(1);
+        restore_step(&mut list, 1, step);
+        assert_eq!(
+            list,
+            vec![(false, "a".to_owned()), (true, "b".to_owned()), (false, "c".to_owned())]
+        );
+        let step = list.remove(2);
+        list.clear();
+        restore_step(&mut list, 2, step);
+        assert_eq!(list, vec![(false, "c".to_owned())]);
     }
 
     #[test]
