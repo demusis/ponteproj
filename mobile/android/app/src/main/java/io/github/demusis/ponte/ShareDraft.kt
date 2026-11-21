@@ -17,11 +17,27 @@ import java.util.concurrent.TimeUnit
  * process death the core itself says whether that operation was committed (see [ShareDraftRules.recover]);
  * nothing is ever guessed from names, sizes or texts.
  *
- * [op] is "record" or "attach". An empty (or malformed) [operationId] is the marker of the previous build,
- * whose id never reached the core: it can never be resolved, so its draft is kept and shown as a form.
+ * The marker is SELF-CONTAINED and bound to the snapshot it was written for: [op] ("record" or "attach"),
+ * the document the call was aimed at ([targetId], [targetNumber]; none for a record) and [fingerprint], the
+ * fingerprint of the content that was sent (see [ShareDraftRules.fingerprint]). Editing the form never changes
+ * it: a later "done" from the core ends the draft only when the CURRENT content still has this fingerprint.
+ *
+ * An empty (or malformed) [operationId] is the marker of an older build, whose id never reached the core: it can
+ * never be resolved. A marker with an empty [fingerprint] (written before the fingerprint was kept) cannot say
+ * what it was sent with, so it never counts as "the same content".
  */
-internal data class DraftSaving(val op: String, val operationId: String, val at: Long) {
+internal data class DraftSaving(
+    val op: String,
+    val operationId: String,
+    val at: Long,
+    val targetId: Long = 0L,
+    val targetNumber: String = "",
+    val fingerprint: String = ""
+) {
     val usable: Boolean get() = ShareDraftRules.validOperationId(operationId)
+
+    /** Whether it knows the content it was sent with. */
+    val bound: Boolean get() = fingerprint.isNotEmpty()
 }
 
 /**
@@ -54,8 +70,17 @@ internal data class ShareDraft(
     val targetNumber: String,
     val targetTitle: String,
     val description: String,
-    val saving: DraftSaving?
-)
+    /** The save under way (or the last one sent), if any. */
+    val saving: DraftSaving?,
+    /**
+     * Older saves whose outcome is still unknown (the core could not say), oldest first: each is tracked on its own,
+     * next to [saving], until the core answers. Never more than [ShareDraftRules.MAX_UNRESOLVED].
+     */
+    val unresolved: List<DraftSaving> = emptyList()
+) {
+    /** Every marker, the newest first. */
+    val markers: List<DraftSaving> get() = listOfNotNull(saving) + unresolved.asReversed()
+}
 
 /** What is found of the copy a draft points to. [hash] is null when it was not worked out. */
 internal class CopyFacts(val size: Long, val hash: String?)
@@ -255,6 +280,18 @@ internal object ShareDraftRules {
     const val MSG_CANNOT_CHECK =
         "Não foi possível confirmar se este item já tinha sido salvo. Veja em Documentos antes de salvar de novo."
     const val MSG_SAVED_BEFORE = "Este item já tinha sido salvo antes de o aplicativo fechar."
+    const val MSG_CANNOT_CONFIRM_SAVE =
+        "Não foi possível confirmar se este item já foi salvo. Tente de novo quando o aplicativo conseguir ler a biblioteca."
+
+    /** The version saved before the person edited the form (the core said so): the edits are still unsaved. */
+    fun earlierNote(documentId: Long, number: String): String {
+        val which = when {
+            number.isNotEmpty() -> " (documento $number)"
+            documentId > 0 -> " (documento $documentId)"
+            else -> ""
+        }
+        return "A versão anterior deste item já tinha sido salva$which. Estas alterações ainda não foram salvas."
+    }
     const val MSG_CANNOT_PREPARE =
         "Não foi possível preparar o item para salvar. Nada foi salvo; o formulário continua aqui, tente de novo."
     const val MSG_TARGET_CHANGED =
@@ -290,7 +327,11 @@ internal object ShareDraftRules {
 
     /** What the clamped fields can take at the very most once written (every character as wide as it gets). */
     fun worstCaseBytes(): Long =
-        (MAX_TEXT + MAX_NOTES).toLong() * WORST_CHAR_BYTES + 12L * MAX_FIELD * WORST_CHAR_BYTES + 4_096
+        (MAX_TEXT + MAX_NOTES).toLong() * WORST_CHAR_BYTES + 12L * MAX_FIELD * WORST_CHAR_BYTES +
+            (MAX_UNRESOLVED + 1L) * (MAX_FIELD * WORST_CHAR_BYTES + 512) + 4_096
+
+    /** Most older, still unresolved saves a draft keeps track of (the oldest is forgotten beyond this). */
+    const val MAX_UNRESOLVED = 8
 
     private val MODES = setOf("CHOOSE", "RECORD", "ATTACH")
 
@@ -313,8 +354,12 @@ internal object ShareDraftRules {
         subject = cut(d.subject, MAX_FIELD), kind = cut(d.kind, MAX_FIELD), title = cut(d.title, MAX_FIELD),
         date = cut(d.date, MAX_FIELD), origin = cut(d.origin, MAX_FIELD), notes = cut(d.notes, MAX_NOTES),
         targetNumber = cut(d.targetNumber, MAX_FIELD), targetTitle = cut(d.targetTitle, MAX_FIELD),
-        description = cut(d.description, MAX_FIELD)
+        description = cut(d.description, MAX_FIELD),
+        saving = d.saving?.let { clampedMarker(it) },
+        unresolved = d.unresolved.takeLast(MAX_UNRESOLVED).map { clampedMarker(it) }
     )
+
+    private fun clampedMarker(m: DraftSaving): DraftSaving = m.copy(targetNumber = cut(m.targetNumber, MAX_FIELD))
 
     fun encode(d: ShareDraft): String {
         val c = clamped(d)
@@ -339,12 +384,48 @@ internal object ShareDraftRules {
         f += "tnum" to c.targetNumber
         f += "ttitle" to c.targetTitle
         f += "desc" to c.description
-        c.saving?.let {
-            f += "sop" to it.op
-            f += "sat" to it.at
-            f += "sopid" to it.operationId
-        }
+        c.saving?.let { putMarker(f, "s", it) }
+        c.unresolved.forEachIndexed { n, m -> putMarker(f, "u$n", m) }
         return FlatJson.write(f)
+    }
+
+    /** A marker as flat fields: "<p>op", "<p>at", "<p>opid", "<p>tid", "<p>num", "<p>fp". */
+    private fun putMarker(f: MutableList<Pair<String, Any?>>, p: String, m: DraftSaving) {
+        f += "${p}op" to m.op
+        f += "${p}at" to m.at
+        f += "${p}opid" to m.operationId
+        f += "${p}tid" to m.targetId
+        f += "${p}num" to m.targetNumber
+        f += "${p}fp" to m.fingerprint
+    }
+
+    private sealed class MarkerRead {
+        object None : MarkerRead()
+        object Bad : MarkerRead()
+        class Ok(val marker: DraftSaving) : MarkerRead()
+    }
+
+    /**
+     * The marker under prefix [p], judged by its OWN fields only: whatever the form shows now (an empty target,
+     * another mode) never makes a draft corrupt because of its marker. A marker with no "<p>tid" is of the build
+     * that did not keep the target or the fingerprint: it takes the form's [formTarget] as its (guessed) document and
+     * has no fingerprint, so it never counts as "the same content".
+     */
+    private fun readMarker(m: Map<String, Any?>, p: String, copy: String, formTarget: Long, formNumber: String): MarkerRead {
+        if (!m.containsKey("${p}op")) return MarkerRead.None
+        val op = m["${p}op"] as? String ?: return MarkerRead.Bad
+        val at = m["${p}at"] as? Long ?: return MarkerRead.Bad
+        if (op != OP_RECORD && op != OP_ATTACH) return MarkerRead.Bad
+        // An attach needs a file (a text can only become a record); nothing is asked of the form's target.
+        if (op == OP_ATTACH && copy.isEmpty()) return MarkerRead.Bad
+        // No usable id (the marker of the first build): kept, so the form comes back with a note.
+        val id = (m["${p}opid"] as? String)?.takeIf { validOperationId(it) } ?: ""
+        val own = m.containsKey("${p}tid")
+        val tid = if (own) (m["${p}tid"] as? Long ?: return MarkerRead.Bad) else formTarget
+        val num = if (own) (m["${p}num"] as? String ?: return MarkerRead.Bad) else formNumber
+        val fp = if (own) (m["${p}fp"] as? String ?: return MarkerRead.Bad) else ""
+        if (tid < 0) return MarkerRead.Bad
+        return MarkerRead.Ok(DraftSaving(op, id, at, if (op == OP_ATTACH) tid else 0L, if (op == OP_ATTACH) num else "", fp))
     }
 
     /** The bytes a draft takes on the disk. */
@@ -407,20 +488,23 @@ internal object ShareDraftRules {
             return Decoded.Corrupt
         }
         var saving: DraftSaving? = null
-        if (m.containsKey("sop")) {
-            val op = s("sop") ?: return Decoded.Corrupt
-            val at = n("sat") ?: return Decoded.Corrupt
-            if (op != OP_RECORD && op != OP_ATTACH) return Decoded.Corrupt
-            if (op == OP_ATTACH && (copy.isEmpty() || tid <= 0)) return Decoded.Corrupt
-            // A marker of the previous build has no "sopid" (its "sid" never reached the core): it is kept, with
-            // no usable id, and its draft is shown as a form, never judged by a guess.
-            val id = (m["sopid"] as? String)?.takeIf { validOperationId(it) } ?: ""
-            saving = DraftSaving(op, id, at)
+        when (val r = readMarker(m, "s", copy, tid, tnum)) {
+            MarkerRead.None -> {}
+            MarkerRead.Bad -> return Decoded.Corrupt
+            is MarkerRead.Ok -> saving = r.marker
+        }
+        val unresolved = ArrayList<DraftSaving>()
+        for (i in 0 until MAX_UNRESOLVED) {
+            when (val r = readMarker(m, "u$i", copy, tid, tnum)) {
+                MarkerRead.None -> break
+                MarkerRead.Bad -> return Decoded.Corrupt
+                is MarkerRead.Ok -> unresolved += r.marker
+            }
         }
         return Decoded.Ok(
             ShareDraft(
                 createdAt, updatedAt, copy, name, size, mime, hash, body, subject, mode, kind, title, date, origin,
-                notes, tid, tnum, ttitle, desc, saving
+                notes, tid, tnum, ttitle, desc, saving, unresolved
             )
         )
     }
@@ -454,61 +538,166 @@ internal object ShareDraftRules {
             if (facts == null || facts.size != d.size) return Verdict.COPY_LOST
             if (d.hash.isNotEmpty() && facts.hash != null && facts.hash != d.hash) return Verdict.COPY_LOST
         }
-        return if (d.saving != null) Verdict.CHECK_FIRST else Verdict.READY
+        return if (d.markers.isNotEmpty()) Verdict.CHECK_FIRST else Verdict.READY
     }
 
     // ------------------------------------------------------------------ the save marker
 
-    /** editing → saving: the marker that is written before the core is called. */
+    /**
+     * The marker of a save of [d] under [operationId]: bound to what is sent (the fingerprint, the target of an
+     * attach), so it can be judged later without trusting whatever the form shows by then.
+     */
+    fun markerFor(d: ShareDraft, op: String, operationId: String, now: Long): DraftSaving = DraftSaving(
+        op, operationId, now,
+        targetId = if (op == OP_ATTACH) d.targetId else 0L,
+        targetNumber = if (op == OP_ATTACH) d.targetNumber else "",
+        fingerprint = fingerprint(d, op)
+    )
+
+    /**
+     * editing → saving: the marker that is written before the core is called. A marker already on the draft is not
+     * lost: it moves to the unresolved ones (unless it is the same operation, which the new marker replaces).
+     */
     fun begin(d: ShareDraft, op: String, operationId: String, now: Long): ShareDraft =
-        d.copy(updatedAt = now, saving = DraftSaving(op, operationId, now))
+        d.copy(
+            updatedAt = now, saving = markerFor(d, op, operationId, now),
+            unresolved = (d.unresolved + listOfNotNull(d.saving)).filter { it.operationId != operationId }.takeLast(MAX_UNRESOLVED)
+        )
 
     /** saving → editing: the save failed, the person still has the form. (Success clears the draft: no state.) */
     fun rollback(d: ShareDraft, now: Long): ShareDraft = d.copy(updatedAt = now, saving = null)
 
     /** What the core says about one operation id (see [recover]); [Unknown] when it could not be read. */
     sealed class OperationStatus {
-        class Done(val documentId: Long) : OperationStatus()
+        /** [kind]: what the core says the operation was ("record" or "attach"), or null when it does not say. */
+        class Done(val documentId: Long, val kind: String? = null) : OperationStatus()
         object NotDone : OperationStatus()
         object Unknown : OperationStatus()
     }
 
     /**
-     * The core's answer {"ok":true,"done":bool,"document_id":N} as plain values: anything else (an error, an
-     * answer with no "done", a core that does not know the call) is [OperationStatus.Unknown].
+     * The core's answer {"ok":true,"done":bool,"document_id":N,"kind":"record"|"attach"} as plain values: anything
+     * else (an error, an answer with no "done", a core that does not know the call) is [OperationStatus.Unknown].
+     * The "kind" is optional (an older core does not send it): when it is there and is not the [expectedKind] (the
+     * kind of the marker asking), the id is not what the marker thinks it is, and the answer is [OperationStatus.Unknown].
      */
-    fun statusFrom(ok: Boolean, done: Boolean?, documentId: Long): OperationStatus = when {
+    fun statusFrom(
+        ok: Boolean, done: Boolean?, documentId: Long, kind: String? = null, expectedKind: String? = null
+    ): OperationStatus = when {
         !ok || done == null -> OperationStatus.Unknown
-        done -> OperationStatus.Done(documentId)
+        kind != null && expectedKind != null && kind != expectedKind -> OperationStatus.Unknown
+        done -> OperationStatus.Done(documentId, kind)
         else -> OperationStatus.NotDone
     }
 
+    /** What the core's answer means for marker [m]: a "done" of another kind is not known, never "done". */
+    fun effective(m: DraftSaving, status: OperationStatus?): OperationStatus = when {
+        status == null -> OperationStatus.Unknown
+        status is OperationStatus.Done && status.kind != null && status.kind != m.op -> OperationStatus.Unknown
+        else -> status
+    }
+
+    /** An earlier version of the item that the core says was saved, while the form holds other content. */
+    class Earlier(val documentId: Long, val number: String)
+
     sealed class Recovery {
-        /** The operation was committed: the draft is over; open [documentId] (0: unknown) and say so. */
+        /** The operation was committed and the draft still holds what was sent: it is over; open [documentId] (0: unknown). */
         class Saved(val documentId: Long) : Recovery()
 
         /**
-         * The form is back, ready to save. [reuseId]: the operation id a save of the SAME form reuses (the core
-         * does nothing twice for it), or null. [unconfirmed]: the discreet note that this could not be confirmed.
-         * [keepMarker]: the marker stays on the draft (the next start looks again).
+         * The form is back as an ordinary unsaved draft. [keep]: the markers that stay, oldest first (their status
+         * could not be read: the next start asks again). [reuse]: a marker the core says was NOT committed, for the very
+         * same content: its id is reused by a save of that content. [earlier]: the core says an earlier version of the
+         * item (the content a marker was bound to) was saved, but the form holds other content: nothing is deleted,
+         * the marker is dropped. [unconfirmed]: the discreet note that something could not be confirmed.
          */
-        class Form(val reuseId: String?, val unconfirmed: Boolean, val keepMarker: Boolean) : Recovery()
+        class Form(
+            val keep: List<DraftSaving>, val reuse: DraftSaving?, val earlier: Earlier?, val unconfirmed: Boolean
+        ) : Recovery()
+    }
+
+    /** Whether the content of [d] is what marker [m] was sent with. A marker with no fingerprint never is. */
+    fun sameContent(d: ShareDraft, m: DraftSaving): Boolean = m.bound && m.fingerprint == fingerprint(d, m.op)
+
+    private fun documentOf(m: DraftSaving, status: OperationStatus.Done): Long =
+        if (status.documentId > 0) status.documentId else if (m.op == OP_ATTACH) m.targetId else 0L
+
+    /**
+     * What becomes of a restored draft, marker by marker ([statuses] go with [ShareDraft.markers], newest first;
+     * a missing one is unknown). A draft with no marker is the form. For each marker:
+     *  - the core says "done" and the CURRENT content is the one the marker was sent with → the save is confirmed:
+     *    the draft is over ([Recovery.Saved]);
+     *  - "done" but the content was edited since → nothing is deleted: the marker is dropped and the edited draft
+     *    stays as an ordinary unsaved one, with [Recovery.Form.earlier] for the note;
+     *  - "not done" → the marker is dropped (the same content may reuse its id);
+     *  - unreadable (error, older core, another kind) → the marker is kept, however many restarts and edits come;
+     *  - no usable id (an older build) → dropped, with the note, nothing guessed.
+     */
+    fun recover(d: ShareDraft, statuses: List<OperationStatus?>): Recovery {
+        var confirmed: Long? = null
+        var earlier: Earlier? = null
+        var reuse: DraftSaving? = null
+        var unconfirmed = false
+        val keep = ArrayList<DraftSaving>()
+        d.markers.forEachIndexed { i, m ->
+            if (!m.usable) {
+                unconfirmed = true
+                return@forEachIndexed
+            }
+            when (val st = effective(m, statuses.getOrNull(i))) {
+                is OperationStatus.Done -> {
+                    val doc = documentOf(m, st)
+                    if (sameContent(d, m)) {
+                        if (confirmed == null) confirmed = doc
+                    } else if (earlier == null) {
+                        earlier = Earlier(doc, if (m.op == OP_ATTACH) m.targetNumber else "")
+                    }
+                }
+                OperationStatus.NotDone -> if (reuse == null && sameContent(d, m)) reuse = m
+                else -> {
+                    keep += m
+                    unconfirmed = true
+                }
+            }
+        }
+        confirmed?.let { return Recovery.Saved(it) }
+        return Recovery.Form(keep.asReversed().takeLast(MAX_UNRESOLVED), reuse, earlier, unconfirmed)
+    }
+
+    /** [recover] with one status for the only marker (for a caller that has just one). */
+    fun recover(d: ShareDraft, status: OperationStatus?): Recovery = recover(d, d.markers.map { status })
+
+    // ------------------------------------------------------------------ saving again while a save is unresolved
+
+    sealed class SaveGate {
+        /** An unresolved save of this very content was committed: nothing to save; open [documentId]. */
+        class AlreadySaved(val documentId: Long) : SaveGate()
+
+        /** An earlier version was committed and this is edited content: not saved now; the person is told. */
+        class EarlierSaved(val earlier: Earlier, val keep: List<DraftSaving>) : SaveGate()
+
+        /** A save of this very content is unresolved and still cannot be read: no second create under a new id. */
+        class Unconfirmed(val keep: List<DraftSaving>) : SaveGate()
+
+        /** Go on: the markers in [keep] stay (tracked apart); [reuse] is a not-committed marker of this very content. */
+        class Go(val keep: List<DraftSaving>, val reuse: DraftSaving?) : SaveGate()
     }
 
     /**
-     * What becomes of a restored draft. A draft that was only being edited is the form. A draft that was saving
-     * is cleared ONLY when the core says its operation was committed; "not committed" is the form, ready to save
-     * again with the same id; an unreadable status (error, older core) keeps the draft and its copy and shows the
-     * form with a note; a marker with no usable id (previous build) is the form, with the note, nothing guessed.
+     * Saving [d] as [op] while it carries unresolved markers: the core is asked again ([statuses], from the markers
+     * of [d]) and the answer decides before anything is sent. A marker for the same content that is still unknown
+     * blocks the save ([SaveGate.Unconfirmed]); for other (edited) content the save goes on under a NEW id, and the
+     * old marker stays beside the new one.
      */
-    fun recover(d: ShareDraft, status: OperationStatus?): Recovery {
-        val s = d.saving ?: return Recovery.Form(null, unconfirmed = false, keepMarker = false)
-        if (!s.usable) return Recovery.Form(null, unconfirmed = true, keepMarker = false)
-        return when (status) {
-            is OperationStatus.Done ->
-                Recovery.Saved(if (status.documentId > 0) status.documentId else if (s.op == OP_ATTACH) d.targetId else 0L)
-            OperationStatus.NotDone -> Recovery.Form(s.operationId, unconfirmed = false, keepMarker = false)
-            else -> Recovery.Form(s.operationId, unconfirmed = true, keepMarker = true)
+    fun beforeSave(d: ShareDraft, op: String, statuses: List<OperationStatus?>): SaveGate {
+        when (val r = recover(d, statuses)) {
+            is Recovery.Saved -> return SaveGate.AlreadySaved(r.documentId)
+            is Recovery.Form -> {
+                r.earlier?.let { return SaveGate.EarlierSaved(it, r.keep) }
+                val fp = fingerprint(d, op)
+                if (r.keep.any { it.bound && it.fingerprint == fp }) return SaveGate.Unconfirmed(r.keep)
+                return SaveGate.Go(r.keep, r.reuse)
+            }
         }
     }
 
@@ -517,11 +706,23 @@ internal object ShareDraftRules {
     /** The operation a form's save used, so the same form saved again reuses its id. */
     class PendingOp(val op: String, val id: String, val fingerprint: String)
 
-    /** Everything the call to the core is made of: the same fingerprint means the same call. */
-    fun fingerprint(d: ShareDraft, op: String): String = listOf(
-        op, d.copy, d.name, d.size.toString(), d.hash, d.text, d.kind, d.title, d.date, d.origin, d.notes,
-        d.targetId.toString(), d.targetNumber, d.description
-    ).joinToString("\u0000")
+    /**
+     * Everything the call to the core is made of, as a SHA-256 (hex): the same fingerprint means the same call.
+     * For a record: the mode and kind, the title, date, origin, text and notes, and the file's identity (copy,
+     * name, size, hash). For an attach: the mode, the file's identity, the document (id and number) and the
+     * description. Taken over the draft as it is written (cut to what a draft holds), so the fingerprint of a
+     * draft read back from the disk is the one it had when it was sent.
+     */
+    fun fingerprint(d: ShareDraft, op: String): String {
+        val c = clamped(d)
+        val parts = if (op == OP_ATTACH) {
+            listOf(op, c.mode, c.copy, c.name, c.size.toString(), c.hash, c.targetId.toString(), c.targetNumber, c.description)
+        } else {
+            listOf(op, c.mode, c.copy, c.name, c.size.toString(), c.hash, c.kind.ifEmpty { "outro" }, c.title, c.date, c.origin, c.text, c.notes)
+        }
+        val md = MessageDigest.getInstance("SHA-256")
+        return md.digest(parts.joinToString("\u0000").toByteArray(Charsets.UTF_8)).joinToString("") { String.format("%02x", it) }
+    }
 
     /** [prev] when this is the same call again (the first never failed for good), else a new operation id. */
     fun operationFor(prev: PendingOp?, op: String, fingerprint: String, fresh: () -> String): PendingOp =
