@@ -53,6 +53,7 @@ pub mod templates_ui;
 pub mod whatsapp;
 pub mod work_context;
 pub mod work_templates;
+pub mod workload;
 
 pub mod dossier;
 
