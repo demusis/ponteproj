@@ -3,7 +3,11 @@
 ; existir, /DStoreExtensionId (ID da extensão publicada na Chrome Web Store).
 ;
 ; O que o instalador faz:
-;   1. faz uma cópia de segurança do acervo (acervo.sqlite3) antes de tudo;
+;   1. faz uma cópia de segurança consistente do acervo (acervo.sqlite3) antes de
+;      tudo, com o próprio programa novo (ponteproj.exe --copia-antes-de-atualizar):
+;      ele acha o acervo como o Ponte acha (inclusive em PONTEPROJ_DATA_DIR),
+;      confere a cópia e grava em <pasta do acervo>\backups. Se a cópia falhar, a
+;      instalação não segue (na instalação silenciosa, termina com código 8);
 ;   2. copia o programa para %LOCALAPPDATA%\Programs\PonteProj\vX.Y.Z;
 ;   3. copia a extensão do navegador para ...\PonteProj\extension (pasta fixa);
 ;   4. grava o manifesto do host nativo e as chaves HKCU para Chrome e Edge;
@@ -65,6 +69,8 @@ Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; Flags: un
 [Files]
 Source: "{#Root}\dist\ponteproj.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\dist\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; O mesmo executável, só para a cópia de segurança antes de instalar (ExtractTemporaryFile).
+Source: "{#Root}\dist\ponteproj.exe"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "{#Root}\extension\manifest.json"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
 Source: "{#Root}\extension\capture-core.js"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
 Source: "{#Root}\extension\files.js"; DestDir: "{localappdata}\Programs\PonteProj\extension"; Flags: ignoreversion
@@ -110,33 +116,143 @@ begin
   StringChangeEx(Result, '"', '\"', True);
 end;
 
-{ Cópia de segurança do acervo antes de qualquer alteração. Só roda com o
-  Ponte fechado (CloseApplications já pediu para fechar). }
-procedure BackupLibrary;
+{ Cópia por arquivo, só para quando o programa novo nem consegue rodar (um
+  antivírus que o bloqueou, por exemplo). Não é uma cópia consistente se o Ponte
+  estiver aberto; por isso qualquer falha, inclusive a do -wal, conta como falha. }
+function BackupByPlainCopy(var Detail: String): Boolean;
 var
-  DataDir, Source, Stamp: String;
+  DataDir, Source, Target, Stamp: String;
 begin
+  Result := True;
+  Detail := '';
   BackupPath := '';
-  DataDir := ExpandConstant('{localappdata}\PonteProj');
+  DataDir := GetEnv('PONTEPROJ_DATA_DIR');
+  if DataDir = '' then
+    DataDir := ExpandConstant('{localappdata}\PonteProj');
   Source := DataDir + '\acervo.sqlite3';
   if not FileExists(Source) then
     exit;
   Stamp := GetDateTimeString('yyyymmdd-hhnnss', '-', '-');
-  ForceDirectories(DataDir + '\backups');
-  BackupPath := DataDir + '\backups\antes-de-instalar-v{#AppVersion}-' + Stamp + '.sqlite3';
-  if CopyFile(Source, BackupPath, False) then
+  Target := DataDir + '\backups\antes-de-instalar-v{#AppVersion}-' + Stamp + '.sqlite3';
+  if not ForceDirectories(DataDir + '\backups') then
+    Result := False
+  else if not CopyFile(Source, Target, False) then
+    Result := False
+  else if FileExists(Source + '-wal') and not CopyFile(Source + '-wal', Target + '-wal', False) then
+    Result := False
+  else if FileExists(Source + '-shm') and not CopyFile(Source + '-shm', Target + '-shm', False) then
+    Result := False;
+  if Result then
+    BackupPath := Target
+  else
   begin
-    Log('Cópia de segurança do acervo: ' + BackupPath);
-    if FileExists(Source + '-wal') then
-      CopyFile(Source + '-wal', BackupPath + '-wal', False);
-    if FileExists(Source + '-shm') then
-      CopyFile(Source + '-shm', BackupPath + '-shm', False);
+    Detail := 'Não foi possível copiar os arquivos do acervo para ' + DataDir + '\backups.';
+    DeleteFile(Target);
+    DeleteFile(Target + '-wal');
+    DeleteFile(Target + '-shm');
+  end;
+end;
+
+{ O relatório que ponteproj.exe --copia-antes-de-atualizar grava (UTF-8): a
+  primeira linha é ok, sem-acervo ou erro; o resto é o detalhe. }
+function ReadBackupReport(const ReportFile: String; var Detail: String): String;
+var
+  Raw: AnsiString;
+  Text: String;
+  Cut: Integer;
+begin
+  Result := '';
+  Detail := '';
+  if not LoadStringFromFile(ReportFile, Raw) then
+    exit;
+  Text := UTF8Decode(Raw);
+  Cut := Pos(#10, Text);
+  if Cut = 0 then
+    Result := Trim(Text)
+  else
+  begin
+    Result := Trim(Copy(Text, 1, Cut - 1));
+    Detail := Trim(Copy(Text, Cut + 1, Length(Text)));
+  end;
+end;
+
+{ Cópia de segurança consistente do acervo, feita pelo programa que vai ser
+  instalado, antes de qualquer arquivo ser trocado. Devolve True quando há uma
+  cópia conferida ou quando ainda não existe acervo. Detail diz o motivo da falha. }
+function BackupLibrary(var Detail: String): Boolean;
+var
+  Exe, ReportFile, Params, Status, ReportDetail: String;
+  ResultCode: Integer;
+begin
+  Result := False;
+  Detail := '';
+  BackupPath := '';
+  Exe := ExpandConstant('{tmp}\ponteproj.exe');
+  ReportFile := ExpandConstant('{tmp}\copia-do-acervo.txt');
+  try
+    ExtractTemporaryFile('ponteproj.exe');
+  except
+    Log('Não foi possível extrair o programa novo para a cópia de segurança: ' + GetExceptionMessage);
+    Result := BackupByPlainCopy(Detail);
+    exit;
+  end;
+  DeleteFile(ReportFile);
+  Params := '--copia-antes-de-atualizar --rotulo v{#AppVersion} --resultado "' + ReportFile + '"';
+  if not Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('O programa novo não pôde ser executado para a cópia de segurança: ' + SysErrorMessage(ResultCode));
+    Result := BackupByPlainCopy(Detail);
+    exit;
+  end;
+  Status := ReadBackupReport(ReportFile, ReportDetail);
+  Log('Cópia de segurança do acervo: código ' + IntToStr(ResultCode) + ', ' + Status + ' ' + ReportDetail);
+  if ResultCode = 0 then
+  begin
+    Result := True;
+    if Status = 'ok' then
+      BackupPath := ReportDetail;
   end
   else
   begin
-    Log('Falha na cópia de segurança do acervo.');
-    BackupPath := '';
+    Detail := ReportDetail;
+    if Detail = '' then
+      Detail := 'O programa de cópia terminou com o código ' + IntToStr(ResultCode) + '.';
   end;
+end;
+
+{ Antes de qualquer arquivo ser trocado: sem cópia conferida do acervo, a
+  instalação não segue. Na instalação silenciosa não há pergunta: termina com
+  código 8. Na interativa, a pessoa escolhe entre cancelar (o padrão) e seguir
+  sem cópia. }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Detail, Message: String;
+  Labels: TArrayOfString;
+begin
+  Result := '';
+  if BackupLibrary(Detail) then
+  begin
+    if BackupPath <> '' then
+      Log('Cópia de segurança do acervo: ' + BackupPath);
+    exit;
+  end;
+  Message := 'Não foi possível fazer a cópia de segurança do acervo antes de atualizar.' + #13#10#13#10
+    + Detail + #13#10#13#10
+    + 'Onde olhar: a pasta backups do acervo (%LOCALAPPDATA%\PonteProj\backups, ou a pasta backups dentro da pasta definida em PONTEPROJ_DATA_DIR): confira o espaço em disco e a permissão de gravação. '
+    + 'O Ponte instalado e o acervo não foram alterados.';
+  Log('Falha na cópia de segurança do acervo: ' + Detail);
+  if WizardSilent then
+  begin
+    Result := Message;
+    exit;
+  end;
+  SetArrayLength(Labels, 2);
+  Labels[0] := 'Cancelar a instalação (recomendado)';
+  Labels[1] := 'Continuar sem cópia de segurança';
+  if TaskDialogMsgBox('A cópia de segurança do acervo falhou', Message, mbError, MB_YESNO, Labels, 0) <> IDNO then
+    Result := 'A instalação foi cancelada. O Ponte instalado e o acervo continuam como estavam.'
+  else
+    Log('A pessoa escolheu continuar sem cópia de segurança do acervo.');
 end;
 
 { Manifesto do host nativo: aponta o navegador para o executável instalado. }
@@ -200,8 +316,6 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssInstall then
-    BackupLibrary;
   if CurStep = ssPostInstall then
   begin
     WriteHostManifest;

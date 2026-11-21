@@ -248,10 +248,11 @@ ponteproj.exe --serve 0.0.0.0:7878             # computador principal sem janela
 ponteproj.exe --guide                          # abre o guia do usuário no navegador
 ponteproj.exe --guide .\guia.html              # grava o guia como página, sem abrir
 ponteproj.exe --native-host                    # atende a extensão pela entrada e saída padrão, como o navegador faz
+ponteproj.exe --copia-antes-de-atualizar [PASTA] [--rotulo TEXTO] [--resultado ARQ.txt]   # cópia consistente do acervo, a que os instaladores fazem antes de atualizar
 ponteproj.exe --version | --help
 ```
 
-O binário `release` não abre console (subsistema gráfico); para ver a saída de `--list`, `--version` e `--help` num terminal comum, use `target\debug\ponteproj.exe` ou redirecione a saída. Existe ainda `--shots PASTA [FILTRO]`, só em compilações com `--features shots` (imagens das telas, sobre um acervo de exemplo; `PONTEPROJ_SHOTS_SIZE` escolhe o tamanho da janela).
+O binário `release` não abre console (subsistema gráfico); para ver a saída de `--list`, `--version` e `--help` num terminal comum, use `target\debug\ponteproj.exe` ou redirecione a saída. `--copia-antes-de-atualizar` usa o backup online do SQLite sobre o acervo aberto só para leitura (sem migrar, sem janela, mesmo de um esquema mais novo e com o Ponte aberto), confere a cópia com `PRAGMA quick_check` e a grava em `PASTA` (padrão: `backups` da pasta de dados, a de `PONTEPROJ_DATA_DIR` quando definida). Sai com 0 (cópia feita, ou ainda não há acervo) ou 1 (mensagem em português na saída de erro, sem arquivo parcial); como o binário `release` não tem console, o mesmo relatório (`ok`, `sem-acervo` ou `erro` na primeira linha, o detalhe na seguinte) vai para `--resultado ARQ.txt` e para `ultima-copia-antes-de-atualizar.txt` ao lado da cópia. `Ponte.iss` e `scripts\install-app.ps1` chamam esse comando com o executável novo antes de trocar qualquer arquivo. Existe ainda `--shots PASTA [FILTRO]`, só em compilações com `--features shots` (imagens das telas, sobre um acervo de exemplo; `PONTEPROJ_SHOTS_SIZE` escolhe o tamanho da janela).
 
 Variáveis de ambiente: `PONTEPROJ_DATA_DIR` (outra pasta de dados, sempre em disco local), `PONTEPROJ_AI_TOKEN` (chave da IA sem gravá-la), `PONTEPROJ_NO_UI` (o host não abre a janela após importar; útil em testes), e, nos testes da extensão, `PONTEPROJ_PLAYWRIGHT_DIR` e `PONTEPROJ_BROWSER_CHANNEL`.
 

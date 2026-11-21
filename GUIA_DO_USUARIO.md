@@ -16,7 +16,7 @@ Este é o guia curto. A documentação completa, com exemplos e todas as opçõe
 
 **Deu certo quando:** na tela inicial do Ponte, **Ponte ligado ao navegador** aparece marcado; o ícone da extensão diz *✓ Ligado ao Ponte*; e, numa ficha de documento do SIGADOC, aparece o painel **Importar para o assistente**. O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o primeiro documento chega por ela.
 
-**Atualizar:** feche o Ponte e rode o instalador novo. Seus dados são mantidos, e o instalador faz uma cópia de segurança antes. Para saber se há versão nova, use **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** (veja a seção 11).
+**Atualizar:** feche o Ponte e rode o instalador novo. Seus dados são mantidos, e o instalador faz uma cópia de segurança antes (se ela falhar, ele avisa e a instalação só segue se você escolher continuar sem cópia). Para saber se há versão nova, use **Ajustes ▸ Sobre o Ponte ▸ Verificar se há versão nova** (veja a seção 11).
 
 **Desinstalar:** em *Aplicativos instalados* do Windows. Seus dados não são apagados.
 

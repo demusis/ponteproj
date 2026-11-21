@@ -7,13 +7,21 @@ Copia dist/ponteproj.exe, dist/*.dll, os arquivos de runtime da extensao e sua
 identidade fixa para a pasta pessoal real LOCALAPPDATA/Programs/PonteProj.
 Cria PonteProj.lnk no menu Iniciar e chama o install-native-host.ps1 original.
 Nao remove arquivos preexistentes nem instala testes/dependencias de desenvolvimento.
+Antes de copiar qualquer arquivo, pede ao ponteproj.exe que vai ser instalado uma
+copia de seguranca consistente do acervo (ponteproj.exe --copia-antes-de-atualizar):
+ele acha o acervo como o Ponte acha (inclusive em PONTEPROJ_DATA_DIR), usa o backup
+online do SQLite (o conteudo ainda no -wal entra na copia), confere a copia e a grava
+em <pasta do acervo>\backups. Se a copia falhar, a instalacao para; -SemCopia ignora
+essa protecao (nao recomendado).
 Use -WhatIf para conferir o plano completo sem criar pastas, copiar arquivos,
 gravar o atalho, alterar o ambiente ou registrar o host.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+$')]
-    [string]$VersionSubdirectory
+    [string]$VersionSubdirectory,
+    # Instala mesmo sem a copia de seguranca do acervo. Nao recomendado.
+    [switch]$SemCopia
 )
 
 Set-StrictMode -Version Latest
@@ -148,36 +156,45 @@ if ($runningPonte.Count -gt 0) {
     throw 'O Ponte esta aberto. Feche a janela do Ponte (e espere a janela da extensao terminar) antes de instalar.'
 }
 
-# Safety copy of the library before anything changes. The database is only
-# copied while no Ponte is running, so the copy is consistent.
-$dataDirectory = Join-Path $localAppData 'PonteProj'
-$databasePath = Join-Path $dataDirectory 'acervo.sqlite3'
-$backupDirectory = Join-Path $dataDirectory 'backups'
-$backupPath = $null
-if (Test-Path -LiteralPath $databasePath -PathType Leaf) {
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $version = if ($VersionSubdirectory) { $VersionSubdirectory } else { 'sem-versao' }
-    $backupPath = Join-Path $backupDirectory "antes-de-instalar-$version-$stamp.sqlite3"
-}
+# Safety copy of the library: made by the executable being installed, which finds
+# the library the way Ponte does (PONTEPROJ_DATA_DIR included) and takes a
+# consistent SQLite backup (the WAL is part of it), so it works with Ponte open
+# and does not depend on a fixed folder. The name is kept: backups\antes-de-instalar-<versao>-<data>.sqlite3.
+$backupLabel = if ($VersionSubdirectory) { $VersionSubdirectory } else { 'sem-versao' }
 
 Write-Host "Pasta do aplicativo: $installDirectory"
 Write-Host "Extensao para carregar no navegador: $installedExtension"
 Write-Host "Atalho no menu Iniciar: $shortcutPath"
-if ($backupPath) { Write-Host "Copia de seguranca do acervo: $backupPath" }
+if ($SemCopia) {
+    Write-Host 'Copia de seguranca do acervo: DESLIGADA (-SemCopia)'
+} else {
+    Write-Host 'Copia de seguranca do acervo: feita pelo ponteproj.exe novo, na pasta backups do acervo'
+}
 
 $operation = 'Copiar/atualizar somente o runtime, criar PonteProj.lnk e registrar o host nativo para este usuario'
 if (-not $PSCmdlet.ShouldProcess("$installDirectory; $shortcutPath; host com.ponteproj.assistente em HKCU", $operation)) {
     return
 }
 
-if ($backupPath) {
-    [void][System.IO.Directory]::CreateDirectory($backupDirectory)
-    Copy-Item -LiteralPath $databasePath -Destination $backupPath -Force
-    foreach ($suffix in @('-wal', '-shm')) {
-        $sidecar = "$databasePath$suffix"
-        if (Test-Path -LiteralPath $sidecar -PathType Leaf) {
-            Copy-Item -LiteralPath $sidecar -Destination "$backupPath$suffix" -Force
+$backupPath = $null
+if ($SemCopia) {
+    Write-Warning 'Instalando SEM copia de seguranca do acervo (-SemCopia).'
+} else {
+    $reportFile = Join-Path ([System.IO.Path]::GetTempPath()) ('ponte-copia-' + [guid]::NewGuid().ToString('N') + '.txt')
+    try {
+        # Start-Process -Wait: ponteproj.exe is a Windows GUI program, which the
+        # call operator does not wait for.
+        $backupProcess = Start-Process -FilePath $sourceExecutable -ArgumentList @('--copia-antes-de-atualizar', '--rotulo', $backupLabel, '--resultado', ('"' + $reportFile + '"')) -WindowStyle Hidden -Wait -PassThru
+        $report = if (Test-Path -LiteralPath $reportFile -PathType Leaf) { @(Get-Content -LiteralPath $reportFile -Encoding UTF8) } else { @() }
+        $status = if ($report.Count -gt 0) { $report[0].Trim() } else { '' }
+        $detail = if ($report.Count -gt 1) { ($report[1..($report.Count - 1)] -join ' ').Trim() } else { '' }
+        if ($backupProcess.ExitCode -ne 0) {
+            if (-not $detail) { $detail = "O programa de copia terminou com o codigo $($backupProcess.ExitCode)." }
+            throw "Nao foi possivel fazer a copia de seguranca do acervo; nada foi instalado. $detail Confira o espaco em disco e a permissao de gravacao na pasta backups do acervo (LOCALAPPDATA\PonteProj\backups, ou a pasta definida em PONTEPROJ_DATA_DIR). Para instalar mesmo assim, use -SemCopia (nao recomendado)."
         }
+        if ($status -eq 'ok' -and $detail) { $backupPath = $detail }
+    } finally {
+        Remove-Item -LiteralPath $reportFile -Force -ErrorAction SilentlyContinue
     }
 }
 

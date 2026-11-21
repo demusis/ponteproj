@@ -75,7 +75,7 @@ O passo **Extensão instalada no Chrome ou no Edge** só é marcado depois que o
 - Copia o programa para `%LOCALAPPDATA%\Programs\PonteProj\vX.Y.Z` e a extensão para `%LOCALAPPDATA%\Programs\PonteProj\extension`.
 - Registra a ligação entre o navegador e o Ponte, para o Chrome e para o Edge, só na sua conta do Windows.
 - Cria o atalho **Ponte** no menu Iniciar (e na área de trabalho, se você marcar).
-- **Faz uma cópia de segurança do acervo** antes de mudar qualquer coisa.
+- **Faz uma cópia de segurança do acervo** antes de mudar qualquer coisa: uma cópia consistente e conferida, feita pelo próprio programa novo, da pasta de dados que o Ponte usa (inclusive a definida em `PONTEPROJ_DATA_DIR`), em `backups\antes-de-instalar-vX.Y.Z-AAAAMMDD-HHMMSS.sqlite3`, mesmo com o Ponte aberto. Se a cópia falhar, o instalador avisa e deixa você **cancelar a instalação** (o padrão) ou continuar sem cópia; na instalação silenciosa, ele cancela sozinho (código de saída 8).
 - Remove as versões antigas do programa.
 
 ### Atualizar e desinstalar
@@ -1010,7 +1010,7 @@ Por isso, **trocar de computador ou reinstalar o Windows exige planejamento**: u
 
 ### 10.3 Backup
 
-**Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora** cria uma cópia consistente na pasta de backups. A página mostra onde as cópias ficam, com o botão **Abrir pasta** (a pasta só existe depois da primeira cópia), e a data da última cópia feita nesta sessão; **Copiar o caminho da última cópia** copia o caminho dela. O instalador também faz uma cópia antes de cada atualização.
+**Ajustes ▸ Cópia de segurança e exportação ▸ Fazer cópia agora** cria uma cópia consistente na pasta de backups. A página mostra onde as cópias ficam, com o botão **Abrir pasta** (a pasta só existe depois da primeira cópia), e a data da última cópia feita nesta sessão; **Copiar o caminho da última cópia** copia o caminho dela. O instalador também faz uma cópia consistente antes de cada atualização, na mesma pasta de backups do acervo em uso (`antes-de-instalar-…`); se ela falhar, a instalação não segue sem a sua escolha.
 
 ### 10.4 Lixeira
 

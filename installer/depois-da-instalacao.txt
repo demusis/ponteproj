@@ -12,4 +12,4 @@ Sem acesso à loja? Abra o Ponte pelo menu Iniciar, clique em "Copiar caminho" a
 
 Depois disso, em qualquer documento do SIGADOC aparece o botão "Importar para o assistente". Se a importação falhar, clique no ícone da extensão: ele diz se o navegador está ligado ao Ponte e o que fazer.
 
-Seus dados ficam em %LOCALAPPDATA%\PonteProj (acervo e backups) e não são apagados ao desinstalar. Uma cópia de segurança do acervo foi feita antes desta instalação, na pasta backups.
+Seus dados ficam em %LOCALAPPDATA%\PonteProj (acervo e backups) e não são apagados ao desinstalar. Se já havia acervo, uma cópia de segurança dele foi feita antes desta instalação, na pasta backups.
