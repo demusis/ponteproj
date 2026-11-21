@@ -64,14 +64,22 @@ if (-not $exeVersion) {
     Write-Warning 'Nao foi possivel ler a versao de dist\ponteproj.exe (--version); conferindo so a data de gravacao.'
 }
 if (-not $IgnoreFreshness) {
-    $sources = @(Get-Item -LiteralPath (Join-Path $projectRoot 'Cargo.toml'))
-    foreach ($relative in @('src', 'assets')) {
-        $folder = Join-Path $projectRoot $relative
-        if (Test-Path -LiteralPath $folder -PathType Container) {
-            $sources += Get-ChildItem -LiteralPath $folder -Recurse -File
-        }
+    # Exactly what the executable is built from: the crate (Cargo.toml,
+    # Cargo.lock, build.rs, every file under src), the files the sources
+    # embed from outside src (grep include_str!/include_bytes! outside tests:
+    # GUIA_DO_USUARIO.md, extension-id.txt, extension-store-id.txt and the
+    # Phosphor font) and what build.rs turns into the Windows icon resource.
+    # Anything else in the repository (the other assets, extension\, mobile\,
+    # docs) does not change ponteproj.exe.
+    $sources = @()
+    $srcFolder = Join-Path $projectRoot 'src'
+    if (Test-Path -LiteralPath $srcFolder -PathType Container) {
+        $sources += Get-ChildItem -LiteralPath $srcFolder -Recurse -File
     }
-    foreach ($relative in @('build.rs', 'Cargo.lock')) {
+    foreach ($relative in @(
+            'Cargo.toml', 'Cargo.lock', 'build.rs',
+            'GUIA_DO_USUARIO.md', 'extension-id.txt', 'extension-store-id.txt',
+            'assets\fonts\Phosphor.ttf', 'assets\app.rc', 'assets\ponteproj.ico')) {
         $file = Join-Path $projectRoot $relative
         if (Test-Path -LiteralPath $file -PathType Leaf) { $sources += Get-Item -LiteralPath $file }
     }
@@ -79,7 +87,7 @@ if (-not $IgnoreFreshness) {
     $built = (Get-Item -LiteralPath $executable).LastWriteTimeUtc
     if ($newest.LastWriteTimeUtc -gt $built) {
         $newestName = $newest.FullName.Substring($projectRoot.Length + 1)
-        throw ("dist\ponteproj.exe ({0:yyyy-MM-dd HH:mm:ss} UTC) e mais antigo que {1} ({2:yyyy-MM-dd HH:mm:ss} UTC). Gere o release de novo e copie o executavel novo para dist (ou use -IgnoreFreshness se tiver certeza)." -f $built, $newestName, $newest.LastWriteTimeUtc)
+        throw ("dist\ponteproj.exe ({0:yyyy-MM-dd HH:mm:ss} UTC) e mais antigo que {1} ({2:yyyy-MM-dd HH:mm:ss} UTC). Gere o release de novo (scripts\build.ps1 -Action Release) e copie o executavel novo para dist. Um 'git checkout' ou 'git pull' recente tambem muda a data dos arquivos sem mudar o programa: se for o caso, recompile mesmo assim (o cargo so refaz o que mudou), copie o executavel novo para dist e rode este script de novo com -IgnoreFreshness." -f $built, $newestName, $newest.LastWriteTimeUtc)
     }
 }
 

@@ -176,6 +176,34 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.check(None, false)
+    }
+
+    /// [`Project::validate`] for a project that already exists: a date the
+    /// person did not change keeps being accepted even when the stricter rule
+    /// for new dates (years 1900 to 9999) would refuse it, so a project saved
+    /// under the older rule can still be renamed or archived.
+    pub fn validate_from(&self, previous: Option<&Project>) -> Result<()> {
+        self.check(previous, false)
+    }
+
+    /// The check of a change that comes from another computer: its dates were
+    /// accepted there, and nothing sent must be lost, so any real calendar
+    /// date passes.
+    fn validate_applied(&self) -> Result<()> {
+        self.check(None, true)
+    }
+
+    fn check(&self, previous: Option<&Project>, lenient: bool) -> Result<()> {
+        // New or changed dates follow the strict rule; unchanged ones (or any,
+        // for an applied change) only need to be real dates.
+        let day = |text: &str, before: Option<&str>| {
+            if lenient || before == Some(text) {
+                parse_day(text)
+            } else {
+                parse_project_day(text)
+            }
+        };
         ensure!(!self.name.trim().is_empty(), "Informe o nome do projeto.");
         ensure!(
             self.name.chars().count() <= MAX_NAME,
@@ -206,7 +234,7 @@ impl Project {
             None
         } else {
             Some(
-                parse_project_day(&self.start_date)
+                day(&self.start_date, previous.map(|p| p.start_date.as_str()))
                     .context("Data de início inválida. Use o formato dd/mm/aaaa.")?,
             )
         };
@@ -214,7 +242,7 @@ impl Project {
             None
         } else {
             Some(
-                parse_project_day(&self.target_date)
+                day(&self.target_date, previous.map(|p| p.target_date.as_str()))
                     .context("Data-alvo inválida. Use o formato dd/mm/aaaa.")?,
             )
         };
@@ -243,9 +271,12 @@ impl Project {
         crate::labels::fold(&self.name)
     }
 
-    /// The target date, when it is set.
+    /// The target date, when it is set. A date saved under the older rule
+    /// (before 1900, say) still shows; only the extremes of the calendar, where
+    /// the day before or after does not exist, are left out.
     pub fn target(&self) -> Option<NaiveDate> {
-        parse_project_day(&self.target_date)
+        let date = parse_day(&self.target_date)?;
+        (date.pred_opt().is_some() && date.succ_opt().is_some()).then_some(date)
     }
 }
 
@@ -647,7 +678,7 @@ impl Store {
         expected_version: Option<i64>,
     ) -> Result<Project> {
         let mut project = project.normalized();
-        project.validate()?;
+        project.validate_applied()?;
         if !project.uid.is_empty() {
             let all = read_all(&self.conn)?;
             let own_uid = project.uid.clone();
@@ -683,7 +714,17 @@ impl Store {
         if project.uid.is_empty() {
             project.uid = new_uid();
         }
-        project.validate()?;
+        // Dates this project already had are not held to the rule for new ones.
+        let before = read_all(&self.conn)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| p.uid == project.uid);
+        if enforce_max {
+            project.validate_from(before.as_ref())?;
+        } else {
+            // Applied from another computer (see `save_project_applied`).
+            project.validate_applied()?;
+        }
         if let Some(cfg) = self.client_config()? {
             self.ensure_host_stores_projects(&cfg)?;
             // The rules are checked here first, so a refusal is told now and

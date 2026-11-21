@@ -431,11 +431,11 @@ internal object Controller {
                 val now = System.currentTimeMillis()
                 for (d in listOf(PonteFiles.DIR_SHARED, PonteFiles.DIR_PHOTOS)) {
                     File(cache, d).listFiles()?.forEach {
-                        if (it.isFile && TempRules.mayDelete(it.absolutePath, it.lastModified(), now, keep, saving)) it.delete()
+                        if (it.isFile) TempRules.deleteIfStale(it, it.lastModified(), now, keep, saving)
                     }
                 }
                 cache.listFiles()?.forEach {
-                    if (it.isFile && TempRules.isSyncExport(it.name) && TempRules.mayDelete(it.absolutePath, it.lastModified(), now, keep, saving)) it.delete()
+                    if (it.isFile && TempRules.isSyncExport(it.name)) TempRules.deleteIfStale(it, it.lastModified(), now, keep, saving)
                 }
             } catch (_: Throwable) {
             }

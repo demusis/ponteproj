@@ -139,6 +139,51 @@ fn the_rules_of_names_dates_and_the_limit_are_enforced() {
 }
 
 #[test]
+fn a_project_with_a_date_the_older_rule_accepted_can_still_be_edited() {
+    let (_dir, mut store) = store();
+    // Stored before dates were limited to the years 1900 to 9999.
+    let mut old = Project::new("Antigo");
+    old.uid = "1".repeat(32);
+    old.start_date = "1899-06-01".into();
+    old.target_date = "1899-12-31".into();
+    apply_projects(&store.conn, &[old.clone()]).unwrap();
+    assert!(store.list_projects().unwrap()[0].target().is_some());
+
+    // Renaming and archiving revalidate dates nobody changed: accepted.
+    let mut edited = store.list_projects().unwrap()[0].clone();
+    edited.name = "Antigo renomeado".into();
+    edited.status = ProjectStatus::Arquivado;
+    let saved = store.save_project(&edited).unwrap();
+    assert_eq!(saved.name, "Antigo renomeado");
+    assert_eq!(saved.target_date, "1899-12-31");
+
+    // A date that is changed (or new) follows the strict rule.
+    let mut changed = saved.clone();
+    changed.target_date = "1850-01-01".into();
+    assert!(store.save_project(&changed).is_err());
+    changed.target_date = "2030-01-01".into();
+    assert!(store.save_project(&changed).is_ok());
+    let mut fresh = Project::new("Novo");
+    fresh.target_date = "1899-12-31".into();
+    assert!(store.save_project(&fresh).is_err());
+
+    // A change replayed from another computer is not lost over such a date.
+    let mut remote = Project::new("De outro computador");
+    remote.uid = "2".repeat(32);
+    remote.start_date = "1800-01-01".into();
+    store.save_project_applied(&remote, None).unwrap();
+
+    // It still shows in the overview, the target date included.
+    let mut overview_old = Project::new("Visível");
+    overview_old.uid = "3".repeat(32);
+    overview_old.target_date = "1899-12-31".into();
+    assert_eq!(
+        overview_old.target(),
+        chrono::NaiveDate::from_ymd_opt(1899, 12, 31)
+    );
+}
+
+#[test]
 fn versions_refuse_a_stale_edit_and_a_deleted_project_is_not_brought_back() {
     let (_dir, mut store) = store();
     let project = make(&mut store, "Mudança");

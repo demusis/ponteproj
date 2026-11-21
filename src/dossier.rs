@@ -984,6 +984,40 @@ mod tests {
     }
 
     #[test]
+    fn restoring_a_parent_from_the_lixeira_links_the_juntada_that_arrived_meanwhile() {
+        use crate::trash::{Kind, Target};
+        // `open_service` is how the host serves a client's request: it never
+        // reconciles juntadas on opening.
+        for service in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("juntada.sqlite3");
+            drop(Store::open(&path).unwrap());
+            let mut store = if service {
+                Store::open_service(&path).unwrap()
+            } else {
+                Store::open(&path).unwrap()
+            };
+            let parent = store
+                .import_capture(&capture_for(PARENT, "Processo principal."))
+                .unwrap()
+                .document_id;
+            let target = Target {
+                kind: Kind::Document,
+                id: parent,
+            };
+            store.trash_item(target.clone()).unwrap();
+            let child = store.import_capture(&joined_child()).unwrap().document_id;
+            assert!(juntada_links(&store, child).is_empty(), "service={service}");
+            store.restore_item(target).unwrap();
+            let links = juntada_links(&store, child);
+            assert_eq!(links.len(), 1, "service={service}");
+            assert_eq!((links[0].source, links[0].target), (child, parent));
+            assert!(links[0].active);
+            assert_eq!(store.joined_children(parent).unwrap()[0].id, child);
+        }
+    }
+
+    #[test]
     fn juntada_link_is_created_automatically_in_both_import_orders_and_stays_encrypted() {
         for parent_first in [true, false] {
             let temp = tempfile::tempdir().unwrap();

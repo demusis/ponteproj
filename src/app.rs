@@ -522,8 +522,10 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
         }
     };
     let store = Store::open(&db_path).context("Não foi possível abrir o acervo protegido")?;
-    // Temporary copies of attachments opened in other programs do not outlive a session.
-    crate::attachments::clear_temp_dir();
+    // Temporary copies of attachments opened in other programs do not outlive a
+    // session: what crashed or older sessions left goes now (never another
+    // window's live folder), this one's goes at close.
+    crate::attachments::sweep_stale_temp();
     let mut app = PonteApp::new(store, db_path);
     app.requests_dir = window.is_some().then_some(data_dir);
     app.intranet.initialize(&mut app.store, &app.db_path);
@@ -2122,13 +2124,23 @@ impl PonteApp {
             return;
         }
         let today = key.day.clone();
-        self.derived_for = Some(key);
         self.today = today::TodayData::load_with(&self.store, &today, self.saiop.stale_days());
         self.task_badge = self.today.pending_tasks();
-        self.resources_overdue = self.overdue_returns();
-        if let Some(id) = self.selected_id {
-            self.reload(id);
+        let mut complete = self.today.error.is_none();
+        match self.overdue_returns() {
+            Some(count) => self.resources_overdue = count,
+            None => {
+                self.resources_overdue = 0;
+                complete = false;
+            }
         }
+        if let Some(id) = self.selected_id {
+            complete &= self.reload(id);
+        }
+        // Remembered only once every read worked: a section that failed is
+        // read again at the next poll, not served from the cache until the
+        // day, the minute or the library change.
+        self.derived_for = complete.then_some(key);
     }
 
     fn refresh_documents_if_changed(&mut self, stamp: Option<(i64, i64)>, force: bool) {
@@ -2190,8 +2202,9 @@ impl PonteApp {
         }
     }
 
-    /// Returns past their expected end, for the badge of "Recursos".
-    fn overdue_returns(&self) -> usize {
+    /// Returns past their expected end, for the badge of "Recursos"; `None`
+    /// when the uses could not be read.
+    fn overdue_returns(&self) -> Option<usize> {
         let now = crate::resources::now_moment();
         let today = crate::resources::parse_moment(&now)
             .map(|moment| moment.date())
@@ -2199,10 +2212,12 @@ impl PonteApp {
         self.store
             .list_resource_uses()
             .map(|uses| crate::resources::day_counts(&uses, today, &now).overdue)
-            .unwrap_or(0)
+            .ok()
     }
 
-    fn reload(&mut self, id: i64) {
+    /// Reads the document again into the editor and the page; `false` when it
+    /// could not be read.
+    fn reload(&mut self, id: i64) -> bool {
         let note_version = self
             .store
             .item_version("note", id)
@@ -2249,8 +2264,12 @@ impl PonteApp {
                         )),
                     }
                 }
+                true
             }
-            Err(error) => self.document_unavailable(id, &error.to_string()),
+            Err(error) => {
+                self.document_unavailable(id, &error.to_string());
+                false
+            }
         }
     }
 
@@ -3204,6 +3223,24 @@ impl PonteApp {
                 self.reload(id);
             }
             Err(error) => self.error(format!("Não foi possível salvar as notas: {error}")),
+        }
+    }
+
+    /// "Desfazer alterações": drops the unsaved text and shows the note as
+    /// the library has it now, with its current version (another connection
+    /// may have saved it since this editor was loaded).
+    fn discard_note(&mut self, id: i64) {
+        if let Some(editor) = self.editors.get_mut(&id) {
+            editor.note = editor.saved_note.clone();
+        }
+        self.reload_note_if_clean(id);
+    }
+
+    /// The note editor holds no unsaved change: takes the text and the version
+    /// from the library, so a later save checks against what is really there.
+    fn reload_note_if_clean(&mut self, id: i64) {
+        if self.editors.get(&id).is_some_and(|e| !e.note_dirty()) {
+            self.reload(id);
         }
     }
 
@@ -4754,6 +4791,108 @@ mod refresh_tests {
     }
     fn marked(app: &PonteApp) -> bool {
         app.today.error.as_deref() == Some("marca")
+    }
+
+    /// An open document whose note editor holds unsaved text while another
+    /// connection saved a different note.
+    fn note_edited_here_and_saved_elsewhere(dir: &tempfile::TempDir) -> (PonteApp, i64) {
+        let mut app = app(dir);
+        let document = app
+            .store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap()
+            .document_id;
+        app.refresh();
+        app.select(document);
+        app.editors.get_mut(&document).unwrap().note = "minha edição".into();
+        let mut other = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        other.save_note(document, "versão externa").unwrap();
+        app.refresh_polled();
+        // The poll keeps the unsaved edit but shows the stored note.
+        assert_eq!(app.editors[&document].note, "minha edição");
+        assert_eq!(app.detail.as_ref().unwrap().note, "versão externa");
+        (app, document)
+    }
+
+    fn stored_note_version(app: &PonteApp, document: i64) -> Option<i64> {
+        app.store
+            .item_version("note", document)
+            .ok()
+            .map(|meta| meta.version)
+    }
+
+    #[test]
+    fn a_failed_read_is_retried_at_the_next_poll() {
+        let _guard = ConfigGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(&dir);
+        app.store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        app.refresh();
+        assert!(app.today.error.is_none());
+
+        // Another connection leaves the library unreadable for the tasks.
+        let other = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        other
+            .conn
+            .execute("ALTER TABLE tasks RENAME TO tasks_fora", [])
+            .unwrap();
+        app.refresh_polled();
+        assert!(app.today.error.is_some(), "the failure is shown");
+
+        // The table is back through this window's own connection (which does
+        // not change what the poll watches); the next poll reads again.
+        app.store
+            .conn
+            .execute("ALTER TABLE tasks_fora RENAME TO tasks", [])
+            .unwrap();
+        app.refresh_polled();
+        assert!(
+            app.today.error.is_none(),
+            "the failed section stayed cached until the key changed"
+        );
+        // And once everything worked the poll leaves it alone again.
+        mark(&mut app);
+        app.refresh_polled();
+        assert!(marked(&app));
+        drop(other);
+    }
+
+    #[test]
+    fn discarding_the_note_shows_what_another_connection_saved() {
+        let _guard = ConfigGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, document) = note_edited_here_and_saved_elsewhere(&dir);
+        app.discard_note(document);
+        let editor = &app.editors[&document];
+        assert_eq!(editor.note, "versão externa");
+        assert_eq!(editor.saved_note, "versão externa");
+        assert!(!editor.note_dirty());
+        assert!(editor.note_version.is_some());
+        assert_eq!(editor.note_version, stored_note_version(&app, document));
+        // And the next save checks against the current version: it goes through.
+        app.editors.get_mut(&document).unwrap().note = "depois".into();
+        app.save_note(document);
+        assert_eq!(app.store.load_document(document).unwrap().note, "depois");
+    }
+
+    #[test]
+    fn typing_the_note_back_to_the_loaded_text_adopts_the_stored_one() {
+        let _guard = ConfigGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, document) = note_edited_here_and_saved_elsewhere(&dir);
+        let editor = app.editors.get_mut(&document).unwrap();
+        editor.note = editor.saved_note.clone();
+        app.reload_note_if_clean(document);
+        let editor = &app.editors[&document];
+        assert_eq!(editor.note, "versão externa");
+        assert_eq!(editor.note_version, stored_note_version(&app, document));
+        // A note still being edited is never replaced.
+        let dir2 = tempfile::tempdir().unwrap();
+        let (mut app2, doc2) = note_edited_here_and_saved_elsewhere(&dir2);
+        app2.reload_note_if_clean(doc2);
+        assert_eq!(app2.editors[&doc2].note, "minha edição");
     }
 
     #[test]

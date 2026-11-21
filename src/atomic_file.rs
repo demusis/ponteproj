@@ -5,16 +5,23 @@ use std::io::Write;
 use std::path::Path;
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "sem nome de arquivo")
-        })?
-        .to_string_lossy()
-        .into_owned();
-    let temp = path.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    if path.file_name().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "sem nome de arquivo",
+        ));
+    }
+    // A short name of its own, independent of the destination's: a valid
+    // destination name of 255 UTF-16 units leaves no room to add to it.
+    let temp = path.with_file_name(format!(".ponte-{}.tmp", uuid::Uuid::new_v4().simple()));
+    // `create_new`: never opens (and so never later removes) a file that was
+    // already there.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    // From here the file is this call's own.
     let result = (|| {
-        let mut file = std::fs::File::create(&temp)?;
         file.write_all(bytes)?;
         file.flush()?;
         file.sync_all()?;
@@ -52,5 +59,20 @@ mod tests {
         assert!(path.join("dentro.txt").exists());
         let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(leftovers, 1, "temporary file removed");
+    }
+
+    #[test]
+    fn a_destination_name_at_the_windows_limit_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        // 250 units: the old sibling name added about 38 to it.
+        let path = dir.path().join(format!("{}.txt", "a".repeat(246)));
+        write_atomic(&path, b"um").unwrap();
+        write_atomic(&path, b"dois").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"dois");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // The longest name Windows accepts, in UTF-16 units.
+        let path = dir.path().join(format!("{}.txt", "é".repeat(251)));
+        write_atomic(&path, b"tres").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"tres");
     }
 }

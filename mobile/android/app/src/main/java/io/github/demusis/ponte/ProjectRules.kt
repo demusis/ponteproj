@@ -553,6 +553,19 @@ internal object ProjectRules {
         return if (i in 0 until rowCount) i else null
     }
 
+    /**
+     * A length in dp as the whole pixels the layout gives it (at least 1). The chart measures its header and
+     * rows with this, so the labels, the canvas and the taps all use the same pixel row height.
+     */
+    fun pixels(dp: Float, density: Float): Int = maxOf(1, kotlin.math.round(dp * density).toInt())
+
+    /** [rowAt] with everything in whole pixels ([y] from the top of the chart, header included). */
+    fun rowAtPx(y: Float, rowCount: Int, headerPx: Int, rowPx: Int): Int? {
+        if (rowPx <= 0 || y < headerPx) return null
+        val i = ((y - headerPx) / rowPx).toInt()
+        return if (i in 0 until rowCount) i else null
+    }
+
     /** "24/11 a 26/11" (or "24/11" in one day) for the period of [item]; empty without one. */
     fun periodLabel(item: TimelineItem): String {
         val from = shortDate(item.start)

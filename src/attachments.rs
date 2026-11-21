@@ -277,7 +277,8 @@ pub fn sanitize_file_name(name: &str) -> String {
 
 /// Where decrypted working copies live: `%LOCALAPPDATA%/PonteProj/temp` of the
 /// local user profile, never inside the library folder (which may be synced to
-/// the cloud when `PONTEPROJ_DATA_DIR` points there).
+/// the cloud when `PONTEPROJ_DATA_DIR` points there). Each running Ponte keeps
+/// its copies in a private subfolder of it (see [`temp_dir`]).
 fn production_temp_dir() -> Result<PathBuf> {
     Ok(directories::BaseDirs::new()
         .context("Perfil local do usuário indisponível")?
@@ -286,9 +287,8 @@ fn production_temp_dir() -> Result<PathBuf> {
         .join("temp"))
 }
 
-/// Folder for temporary copies opened in other programs. Emptied when the
-/// Ponte starts and when it closes.
-pub fn temp_dir() -> Result<PathBuf> {
+/// Shared parent of the per-session folders.
+fn temp_root() -> Result<PathBuf> {
     // Tests never touch the real profile: each test thread gets its own folder.
     #[cfg(test)]
     let dir = std::env::temp_dir().join(format!(
@@ -297,28 +297,166 @@ pub fn temp_dir() -> Result<PathBuf> {
     ));
     #[cfg(not(test))]
     let dir = production_temp_dir()?;
-    std::fs::create_dir_all(&dir).context("Não foi possível criar a pasta temporária.")?;
     Ok(dir)
 }
 
+/// File inside a session folder that its owner keeps open without sharing for
+/// as long as the process lives: another Ponte can tell a live folder from an
+/// abandoned one by trying to open it.
+const SESSION_LOCK: &str = ".ponte-sessao";
+
+/// A session folder untouched for this long and without a lock is abandoned.
+const STALE_SESSION: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Name of this process's session folder: unique per run, so two windows (for
+/// example on different libraries) never share working copies.
+fn session_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| format!("sessao-{}", uuid::Uuid::new_v4().simple()))
+}
+
+/// Locks held by this process, by session folder.
+fn held_locks() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, std::fs::File>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, std::fs::File>>,
+    > = std::sync::OnceLock::new();
+    LOCKS.get_or_init(Default::default)
+}
+
+/// Opens the lock file of a session folder so that nobody else can, creating
+/// it when `create` is set. `None` while another process holds it.
+fn open_session_lock(dir: &Path, create: bool) -> Option<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(create);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    options.open(dir.join(SESSION_LOCK)).ok()
+}
+
+/// Creates (once) and returns the private folder of this session inside `root`.
+fn session_dir_in(root: &Path) -> Result<PathBuf> {
+    let dir = root.join(session_name());
+    std::fs::create_dir_all(&dir).context("Não foi possível criar a pasta temporária.")?;
+    let mut locks = held_locks().lock().unwrap_or_else(|e| e.into_inner());
+    if !locks.contains_key(&dir) {
+        if let Some(lock) = open_session_lock(&dir, true) {
+            locks.insert(dir.clone(), lock);
+        }
+    }
+    Ok(dir)
+}
+
+/// Folder for temporary copies opened in other programs: private to this
+/// running Ponte. Removed when the Ponte closes; abandoned ones of crashed
+/// sessions are removed at the next start by [`sweep_stale_temp`].
+pub fn temp_dir() -> Result<PathBuf> {
+    session_dir_in(&temp_root()?)
+}
+
+/// Removes this session's working copies and its folder (called at close).
+/// A file still open in another program stays; the sweep at a later start
+/// retries once nothing holds the folder.
 pub fn clear_temp_dir() {
-    let mut folders = Vec::new();
-    if let Ok(dir) = temp_dir() {
-        folders.push(dir);
+    if let Ok(root) = temp_root() {
+        remove_session_dir(&root.join(session_name()));
     }
-    // Earlier versions kept the copies inside the library folder, where a
-    // cloud drive could have picked them up: clean what they left behind.
-    #[cfg(not(test))]
-    if let Ok(data) = crate::paths::data_dir() {
-        folders.push(data.join("temp"));
-    }
-    for dir in folders {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                // A file still open in another program stays; next start retries.
+}
+
+fn remove_session_dir(dir: &Path) {
+    let lock = held_locks()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(dir);
+    // The lock file must be closed before the folder can go.
+    drop(lock);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_name() != SESSION_LOCK {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
+    }
+    let _ = std::fs::remove_file(dir.join(SESSION_LOCK));
+    let _ = std::fs::remove_dir(dir);
+}
+
+/// Name of a working copy as `temp_file_name` writes it: `<record id>-<name>`.
+fn is_working_copy_name(name: &str) -> bool {
+    match name.split_once('-') {
+        Some((id, rest)) => {
+            !rest.is_empty()
+                && (1..=19).contains(&id.len())
+                && id.chars().all(|c| c.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
+/// Removes, at start, what dead sessions left in `root`: session folders no
+/// live process holds, and working copies of earlier versions that sat loose
+/// in the folder. Never touches this session's folder or another live one.
+fn sweep_stale_in(root: &Path) {
+    let own = root.join(session_name());
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_file() {
+            if is_working_copy_name(&entry.file_name().to_string_lossy()) {
+                let _ = std::fs::remove_file(&path);
+            }
+            continue;
+        }
+        let name = entry.file_name();
+        if !kind.is_dir() || path == own || !name.to_string_lossy().starts_with("sessao-") {
+            continue;
+        }
+        let abandoned = if path.join(SESSION_LOCK).exists() {
+            // The lock opens only when its owner is gone.
+            open_session_lock(&path, false).is_some()
+        } else {
+            std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > STALE_SESSION)
+        };
+        if abandoned {
+            // Closes the probe handle first inside, so the folder can go.
+            remove_session_dir(&path);
+        }
+    }
+}
+
+/// Earlier versions kept the copies inside the library folder, where a cloud
+/// drive could have picked them up. That folder can hold other things (it may
+/// be a shared Drive folder): only files named like a working copy go.
+fn sweep_legacy_in(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let is_file = entry.file_type().is_ok_and(|t| t.is_file());
+            if is_file && is_working_copy_name(&entry.file_name().to_string_lossy()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// At start: removes what earlier or crashed sessions left behind.
+pub fn sweep_stale_temp() {
+    if let Ok(root) = temp_root() {
+        sweep_stale_in(&root);
+    }
+    #[cfg(not(test))]
+    if let Ok(data) = crate::paths::data_dir() {
+        sweep_legacy_in(&data.join("temp"));
     }
 }
 
@@ -1651,7 +1789,109 @@ mod tests {
         let local = directories::BaseDirs::new().unwrap();
         assert!(dir.starts_with(local.data_local_dir()));
         // And the test folder is never the real one.
-        assert_ne!(temp_dir().unwrap(), dir);
+        assert!(!temp_dir().unwrap().starts_with(&dir));
+    }
+
+    fn root_for_test(tag: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("ponteproj-sessions-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn each_session_keeps_its_working_copies_in_a_private_folder() {
+        let root = root_for_test("own");
+        let own = session_dir_in(&root).unwrap();
+        assert_ne!(own, root);
+        assert_eq!(own.parent().unwrap(), root);
+        // Another window (a dead or live session folder) in the same root.
+        let other = root.join("sessao-outra");
+        std::fs::create_dir_all(&other).unwrap();
+        let theirs = other.join(temp_file_name(7, "peticao.pdf"));
+        std::fs::write(&theirs, b"outra biblioteca").unwrap();
+        let mine = own.join(temp_file_name(7, "peticao.pdf"));
+        std::fs::write(&mine, b"esta biblioteca").unwrap();
+        assert_ne!(mine, theirs);
+        // Closing this session removes only its own folder.
+        remove_session_dir(&own);
+        assert!(!own.exists());
+        assert_eq!(std::fs::read(&theirs).unwrap(), b"outra biblioteca");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_start_sweep_spares_live_and_recent_sessions() {
+        let root = root_for_test("sweep");
+        let own = session_dir_in(&root).unwrap();
+        let own_file = own.join("1-a.txt");
+        std::fs::write(&own_file, b"x").unwrap();
+
+        // A live window of another process holds its lock open.
+        let live = root.join("sessao-viva");
+        std::fs::create_dir_all(&live).unwrap();
+        let live_lock = open_session_lock(&live, true);
+        assert!(live_lock.is_some());
+        std::fs::write(live.join("2-b.txt"), b"x").unwrap();
+
+        // A crashed one left its folder and a released lock.
+        let dead = root.join("sessao-morta");
+        std::fs::create_dir_all(&dead).unwrap();
+        drop(open_session_lock(&dead, true));
+        std::fs::write(dead.join("3-c.txt"), b"x").unwrap();
+
+        // A folder without a lock is only removed once old; this one is new.
+        let fresh = root.join("sessao-recente");
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::fs::write(fresh.join("4-d.txt"), b"x").unwrap();
+
+        // Unrelated things in the same root stay; loose copies of old versions go.
+        std::fs::write(root.join("notas.txt"), b"x").unwrap();
+        std::fs::write(root.join("5-antigo.pdf"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("outra-pasta")).unwrap();
+
+        sweep_stale_in(&root);
+        assert!(own_file.exists(), "own session untouched");
+        #[cfg(windows)]
+        assert!(live.join("2-b.txt").exists(), "live window untouched");
+        assert!(!dead.exists(), "abandoned session removed");
+        assert!(
+            fresh.join("4-d.txt").exists(),
+            "recent unlocked folder kept"
+        );
+        assert!(root.join("notas.txt").exists());
+        assert!(root.join("outra-pasta").is_dir());
+        assert!(!root.join("5-antigo.pdf").exists());
+        drop(live_lock);
+        remove_session_dir(&own);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_legacy_library_folder_only_loses_files_named_like_working_copies() {
+        let dir = root_for_test("legacy");
+        for name in [
+            "12-peticao.pdf",
+            "3-sem extensão",
+            "ata.docx",
+            "readme.txt",
+            "-x.pdf",
+            "abc-1.pdf",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        std::fs::create_dir_all(dir.join("9-pasta")).unwrap();
+        sweep_legacy_in(&dir);
+        let mut left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            ["-x.pdf", "9-pasta", "abc-1.pdf", "ata.docx", "readme.txt"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

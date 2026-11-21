@@ -2546,19 +2546,22 @@ fn column_index_to_letters(mut index: usize) -> String {
     out.into_iter().rev().collect()
 }
 
+/// The opening tags named `tag_name`, whatever the namespace prefix
+/// (`<workbookPr …>` and `<x:workbookPr …>` are the same element) and whatever
+/// white space follows the name.
 fn extract_xml_tags(xml: &str, tag_name: &str) -> Vec<String> {
-    let pattern = format!("<{tag_name}");
     let mut out = Vec::new();
     let mut pos = 0;
-    while let Some(idx) = xml[pos..].find(&pattern) {
+    while let Some(idx) = xml[pos..].find('<') {
         let abs = pos + idx;
-        let after = xml
-            .as_bytes()
-            .get(abs + pattern.len())
-            .copied()
-            .unwrap_or(b' ');
-        if after != b' ' && after != b'>' && after != b'/' {
-            pos = abs + pattern.len();
+        let name_start = abs + 1;
+        let name_len = xml[name_start..]
+            .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
+            .unwrap_or(xml.len() - name_start);
+        let name = &xml[name_start..name_start + name_len];
+        let local = name.rsplit_once(':').map_or(name, |(_, local)| local);
+        if local != tag_name {
+            pos = name_start;
             continue;
         }
         let Some(end) = xml[abs..].find('>') else {
@@ -2583,20 +2586,32 @@ fn extract_tag_text(xml: &str, tag_name: &str) -> Option<String> {
     Some(unescape_xml(&xml[content_start..content_start + end]))
 }
 
+/// The value of an attribute of an opening tag: its name preceded by white
+/// space, optional white space around `=`, and either kind of quote.
 fn xml_attr(tag: &str, attr_name: &str) -> Option<String> {
-    for quote in ['"', '\''] {
-        let pattern = format!("{attr_name}={quote}");
-        for (idx, _) in tag.match_indices(&pattern) {
-            if idx > 0 {
-                let prev = tag.as_bytes()[idx - 1];
-                if prev != b' ' && prev != b'\t' && prev != b'\n' && prev != b'\r' {
-                    continue;
-                }
-            }
-            let val_start = idx + pattern.len();
-            let val_end = tag[val_start..].find(quote)?;
-            return Some(unescape_xml(&tag[val_start..val_start + val_end]));
+    let bytes = tag.as_bytes();
+    for (idx, _) in tag.match_indices(attr_name) {
+        if idx > 0 && !bytes[idx - 1].is_ascii_whitespace() {
+            continue;
         }
+        let mut at = idx + attr_name.len();
+        let skip = |mut at: usize| {
+            while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+                at += 1;
+            }
+            at
+        };
+        at = skip(at);
+        if bytes.get(at) != Some(&b'=') {
+            continue;
+        }
+        at = skip(at + 1);
+        let Some(&quote) = bytes.get(at).filter(|q| matches!(**q, b'"' | b'\'')) else {
+            continue;
+        };
+        let val_start = at + 1;
+        let val_end = tag[val_start..].find(quote as char)?;
+        return Some(unescape_xml(&tag[val_start..val_start + val_end]));
     }
     None
 }
@@ -6259,6 +6274,52 @@ mod tests {
         ))
         .unwrap();
         assert!(!off.date1904);
+    }
+
+    #[test]
+    fn the_1904_flag_is_found_in_every_legal_spelling() {
+        let wb = |pr: &str| {
+            format!(
+                r#"<workbook xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">{pr}<sheets/></workbook>"#
+            )
+        };
+        let uses_1904 = |pr: &str| {
+            let entries = BTreeMap::from([("xl/workbook.xml".to_owned(), wb(pr).into_bytes())]);
+            workbook_uses_1904(&entries)
+        };
+        // Spelled as before.
+        assert!(uses_1904(r#"<workbookPr date1904="1"/>"#));
+        assert!(uses_1904(r#"<workbookPr date1904="true"/>"#));
+        // White space around `=`, single quotes, `true`, other attributes before it.
+        assert!(uses_1904(r#"<workbookPr date1904 = "1"/>"#));
+        assert!(uses_1904(
+            "<workbookPr date1904
+=	'true' />"
+        ));
+        assert!(uses_1904(r#"<workbookPr date1904='1'/>"#));
+        assert!(uses_1904(
+            r#"<workbookPr defaultThemeVersion="124226" date1904="TRUE"/>"#
+        ));
+        assert!(uses_1904(
+            "<workbookPr
+  date1904=\"1\"
+  codeName=\"X\"/>"
+        ));
+        // A namespace-prefixed element, with or without a space before `/>`.
+        assert!(uses_1904(r#"<x:workbookPr date1904="1"/>"#));
+        assert!(uses_1904(r#"<x:workbookPr date1904 = 'true' />"#));
+        assert!(uses_1904(r#"<x:workbookPr date1904="1"></x:workbookPr>"#));
+        // Not set, or set to false.
+        assert!(!uses_1904(r#"<workbookPr date1904="0"/>"#));
+        assert!(!uses_1904(r#"<workbookPr date1904 = 'false'/>"#));
+        assert!(!uses_1904(r#"<x:workbookPr date1904="0"/>"#));
+        assert!(!uses_1904(r#"<workbookPr/>"#));
+        assert!(!uses_1904(r#"<x:workbookPr/>"#));
+        assert!(!uses_1904(""));
+        // Another element or attribute that merely contains the words.
+        assert!(!uses_1904(r#"<workbookPrExtra date1904="1"/>"#));
+        assert!(!uses_1904(r#"<workbookPr notdate1904="1"/>"#));
+        assert!(!uses_1904(r#"<workbookPr other="date1904" />"#));
     }
 
     #[test]

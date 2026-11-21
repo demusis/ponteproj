@@ -1025,6 +1025,13 @@ impl Store {
             ),
         )?;
         tx.commit()?;
+        // A document that becomes active again may be the parent (or the
+        // child) of a juntada that arrived while it was in the Lixeira. Done
+        // here, so local restores and those a client asks of the host
+        // reconcile alike, whichever way the library was opened.
+        if matches!(target.kind, Kind::Document | Kind::Capture) {
+            let _ = self.link_juntadas();
+        }
         Ok(document)
     }
 }
