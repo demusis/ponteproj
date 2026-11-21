@@ -8323,8 +8323,13 @@ impl FolderSyncReport {
         }
         if !self.unwritten.is_empty() {
             parts.push(format!(
-                "⚠ {} não regravada",
-                plural(self.unwritten.len(), "pasta", "pastas")
+                "⚠ {} {}",
+                plural(self.unwritten.len(), "pasta", "pastas"),
+                if self.unwritten.len() == 1 {
+                    "não regravada"
+                } else {
+                    "não regravadas"
+                }
             ));
         }
         if parts.is_empty() {
@@ -17426,11 +17431,22 @@ mod tied_mirror_tests {
             "{report:?}"
         );
         assert!(
-            report.summary().contains("não regravada"),
+            report.summary().contains("⚠ 1 pasta não regravada"),
             "{}",
             report.summary()
         );
         assert_eq!(archives("pen"), 1, "the retry made no second archive");
+    }
+
+    #[test]
+    fn unwritten_summary_agrees_in_number() {
+        let mut report = FolderSyncReport {
+            unwritten: vec!["A".into()],
+            ..Default::default()
+        };
+        assert!(report.summary().contains("⚠ 1 pasta não regravada"));
+        report.unwritten.push("B".into());
+        assert!(report.summary().contains("⚠ 2 pastas não regravadas"));
     }
 
     #[test]
