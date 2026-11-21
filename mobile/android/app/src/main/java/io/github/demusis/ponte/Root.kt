@@ -131,7 +131,8 @@ internal fun AppRoot() {
                                     AttendancesScreen(
                                         c.attendances, query = c.attQuery, onQuery = { c.attQuery = it },
                                         onOpen = { c.openAttendance(it.id) },
-                                        onRegisterFollowUp = c::registerFollowUp, onScheduleFollowUp = c::scheduleFollowUp
+                                        onRegisterFollowUp = c::registerFollowUp, onScheduleFollowUp = c::scheduleFollowUp,
+                                        onSync = { c.requestSync(null) }
                                     )
                                 }
                             }

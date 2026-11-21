@@ -130,7 +130,9 @@ internal fun AttendancesScreen(
     /** (atendimento id, contact text, next date AAAA-MM-DD or empty). */
     onRegisterFollowUp: (Long, String, String) -> Unit = { _, _, _ -> },
     /** (atendimento id, next date AAAA-MM-DD). */
-    onScheduleFollowUp: (Long, String) -> Unit = { _, _ -> }
+    onScheduleFollowUp: (Long, String) -> Unit = { _, _ -> },
+    /** "Sincronizar agora" da lista vazia. */
+    onSync: () -> Unit = {}
 ) {
     val c = Ponte.colors
     var showClosed by rememberSaveable { mutableStateOf(false) }
@@ -180,7 +182,12 @@ internal fun AttendancesScreen(
                 EmptyState(
                     "Nenhum atendimento neste aparelho.",
                     text = "Os atendimentos do Ponte no computador aparecem aqui depois da sincronização.",
-                    icon = Icons.Outlined.Inbox
+                    icon = Icons.Outlined.Inbox,
+                    action = {
+                        TextButton(onClick = onSync) {
+                            Text("Sincronizar agora", color = c.accent, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 )
             }
         } else if (split.open.isEmpty() && split.closed.isEmpty()) {
