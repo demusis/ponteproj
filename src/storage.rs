@@ -1467,6 +1467,102 @@ pub(crate) struct ImportExtras<'a> {
     /// Shared-folder mode: whose changes these are; the copies that wait for
     /// the next exchange are queued in the same transaction.
     pub queue_actor: Option<&'a str>,
+    /// The phone's operation id (see [`record_operation`]), written in the
+    /// same transaction as the record.
+    pub operation: Option<&'a str>,
+}
+
+/// What a committed phone operation left (see [`record_operation`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationRecord {
+    /// `create_record` or `attach`.
+    pub kind: String,
+    pub document_id: i64,
+    /// The attachment an `attach` stored.
+    pub attachment_id: Option<i64>,
+    /// Its size in bytes.
+    pub size: Option<i64>,
+}
+
+/// Writes the row of a phone operation: the idempotency key of one action of
+/// the app (a share saved as a record, a file attached to a document). It is
+/// written INSIDE the transaction of the action, so "the row is there" and
+/// "the action was committed" are the same fact. A repeated id is refused by the
+/// primary key (the whole transaction with it): callers look the id up first.
+/// Local to this library: never queued, never sent to the team.
+pub(crate) fn record_operation(
+    conn: &rusqlite::Connection,
+    operation_id: &str,
+    kind: &str,
+    document_id: i64,
+    attachment_id: Option<i64>,
+    size: Option<i64>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO phone_operations(operation_id,kind,document_id,attachment_id,size,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![operation_id, kind, document_id, attachment_id, size, now()],
+    )?;
+    Ok(())
+}
+
+impl Store {
+    /// What the operation `operation_id` committed, or `None` when it did not
+    /// (unknown, empty, or never committed). Read only.
+    pub fn operation_record(&self, operation_id: &str) -> Result<Option<OperationRecord>> {
+        let id = operation_id.trim();
+        if id.is_empty() {
+            return Ok(None);
+        }
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT kind,document_id,attachment_id,size FROM phone_operations WHERE operation_id=?1",
+                [id],
+                |r| {
+                    Ok(OperationRecord {
+                        kind: r.get(0)?,
+                        document_id: r.get(1)?,
+                        attachment_id: r.get(2)?,
+                        size: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Forgets the operations older than `days` days (the app only asks about
+    /// an operation after a process death, so a month is plenty).
+    pub fn prune_operations(&self, days: i64) -> Result<usize> {
+        let cutoff = (Utc::now() - chrono::Duration::days(days))
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        Ok(self.conn.execute(
+            "DELETE FROM phone_operations WHERE created_at < ?1",
+            [cutoff],
+        )?)
+    }
+
+    /// The number (`MANUAL-2026/0003`) of the current version of a document
+    /// that is not in the trash; `None` when there is no such document.
+    pub(crate) fn live_document_number(
+        conn: &rusqlite::Connection,
+        document_id: i64,
+    ) -> Result<Option<String>> {
+        if crate::trash::require_active_document(conn, document_id).is_err() {
+            return Ok(None);
+        }
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id AND c.document_id=d.id WHERE d.id=?1",
+                [document_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(blob) = blob else {
+            return Ok(None);
+        };
+        let capture: Capture = decode(&blob)?;
+        Ok(Some(capture.document_number))
+    }
 }
 
 /// The sorted SHA-256 digests of the files of an import: what its receipt keeps.
@@ -1567,6 +1663,16 @@ fn finish_import_extras(
             .collect()
     };
     write_import_receipt(tx, request_key, in_the_record)?;
+    if let Some(operation) = extras.operation {
+        record_operation(
+            tx,
+            operation,
+            "create_record",
+            receipt.document_id,
+            None,
+            None,
+        )?;
+    }
     Ok(added.len())
 }
 

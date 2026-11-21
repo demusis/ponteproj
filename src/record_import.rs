@@ -286,6 +286,31 @@ impl Store {
         record: &NewRecord,
         files: &[NewAttachment],
     ) -> Result<Created> {
+        self.create_record_for_operation(record, files, None)
+    }
+
+    /// [`Store::create_record_with_attachments`] for an action of the phone app
+    /// that carries an `operation_id`: the id is its idempotency key. The row
+    /// that says "this operation was committed" is written in the very
+    /// transaction of the record, its files and its queue entries, so after a
+    /// process death the id alone tells whether the record exists. An id that
+    /// is already there creates nothing and answers `Already` with the record
+    /// of the first call. (On a computer connected to a main computer, where
+    /// the changes are sent one by one, the row is written after the last one.)
+    pub fn create_record_for_operation(
+        &mut self,
+        record: &NewRecord,
+        files: &[NewAttachment],
+        operation_id: Option<&str>,
+    ) -> Result<Created> {
+        let operation_id = operation_id.map(str::trim).filter(|id| !id.is_empty());
+        if let Some(id) = operation_id {
+            if let Some(done) = self.operation_record(id).map_err(|e| store_refusal(&e))? {
+                return Ok(Created::Already {
+                    document_id: done.document_id,
+                });
+            }
+        }
         validate_record(record)?;
         let files = prepared(files)?;
         let actor = self.active_actor();
@@ -303,12 +328,25 @@ impl Store {
                 data: &file.bytes,
             })
             .collect();
-        match self.import_with_attachments_atomically(&capture, &inputs) {
+        match self.import_with_attachments_atomically(&capture, &inputs, operation_id) {
             Ok(Some((receipt, added))) => return Ok(created_from(&receipt, added)),
             Ok(None) => {}
             Err(err) => return Err(refusal_of_import(&err)),
         }
-        self.create_record_through_the_main_computer(&capture, &inputs)
+        let created = self.create_record_through_the_main_computer(&capture, &inputs)?;
+        if let (Some(id), Created::New { document_id, .. }) = (operation_id, &created) {
+            // Not in one transaction here (every change is a request to the
+            // main computer): written once the record and its files are in.
+            let _ = crate::storage::record_operation(
+                &self.conn,
+                id,
+                "create_record",
+                *document_id,
+                None,
+                None,
+            );
+        }
+        Ok(created)
     }
 
     fn create_record_through_the_main_computer(
@@ -1229,6 +1267,59 @@ mod tests {
                 new.cabinet_revision().unwrap(),
                 old.cabinet_revision().unwrap()
             );
+        }
+    }
+
+    #[test]
+    fn an_operation_row_is_committed_with_the_record_or_not_at_all_and_old_ones_are_pruned() {
+        const OP: &str = "0b1f6c1e-52c5-4f0a-9a52-3c0d6b6f0a01";
+        for queued in [false, true] {
+            let (_dir, mut store) = store();
+            if queued {
+                shared_folder(&mut store);
+            }
+            // A failure takes the row away with the record.
+            fail_on(&store, "fail_attachments");
+            let rec = record(TEXT);
+            assert!(store
+                .create_record_for_operation(&rec, &[file("a.png", png(1))], Some(OP))
+                .is_err());
+            assert_eq!(store.operation_record(OP).unwrap(), None);
+            store
+                .conn
+                .execute_batch("DROP TRIGGER fail_attachments")
+                .unwrap();
+            // Success: the row says which record, a repeat creates nothing.
+            let Created::New { document_id, .. } = store
+                .create_record_for_operation(&rec, &[file("a.png", png(1))], Some(OP))
+                .unwrap()
+            else {
+                panic!()
+            };
+            let done = store.operation_record(OP).unwrap().unwrap();
+            assert_eq!(
+                (done.kind.as_str(), done.document_id),
+                ("create_record", document_id)
+            );
+            let other = record("[04/11/2026 10:05] Servidor A: outro texto");
+            assert_eq!(
+                store
+                    .create_record_for_operation(&other, &[], Some(OP))
+                    .unwrap(),
+                Created::Already { document_id }
+            );
+            assert_eq!(documents(&store), 1, "queued: {queued}");
+            // Pruning by age.
+            store
+                .conn
+                .execute(
+                    "INSERT INTO phone_operations(operation_id,kind,document_id,created_at) VALUES('velha','attach',1,'2020-01-01T00:00:00.000Z')",
+                    [],
+                )
+                .unwrap();
+            assert_eq!(store.prune_operations(30).unwrap(), 1);
+            assert_eq!(store.operation_record("velha").unwrap(), None);
+            assert!(store.operation_record(OP).unwrap().is_some());
         }
     }
 }
