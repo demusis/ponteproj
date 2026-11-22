@@ -1383,6 +1383,29 @@ impl Store {
         Ok(id)
     }
 
+    /// The document with this number as the library compares numbers (no
+    /// spaces, upper case), with whether it is in the Lixeira. One indexed
+    /// read on the unique identity; nothing is decoded. `None`: no such
+    /// document, not even in the Lixeira.
+    pub(crate) fn document_by_number_any(&self, number: &str) -> Result<Option<(i64, bool)>> {
+        let hash = identity_hash_for_number(number);
+        let id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT d.id FROM documents d WHERE d.identity_hash=?1 AND d.latest_capture_id IS NOT NULL",
+                [hash],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match id {
+            Some(id) => Ok(Some((
+                id,
+                crate::trash::contains(&self.conn, crate::trash::Kind::Document, id)?,
+            ))),
+            None => Ok(None),
+        }
+    }
+
     pub(crate) fn document_ids(&self) -> Result<Vec<i64>> {
         let mut stmt = self
             .conn
