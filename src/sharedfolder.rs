@@ -48,7 +48,13 @@ use std::path::{Path, PathBuf};
 /// loads with no facts, proposals or proposal ids (every new field has a
 /// default).
 pub const FORMAT: u32 = 8;
-const MAGIC: &[u8] = b"PONTE-SYNC1\n";
+/// How every transport file of a shared folder starts.
+pub const SYNC_MAGIC: &[u8] = b"PONTE-SYNC1\n";
+const MAGIC: &[u8] = SYNC_MAGIC;
+/// How every portable copy (`.pontecopia`, Ajustes ▸ Cópia de segurança)
+/// starts. No sync reader accepts it (they all want [`SYNC_MAGIC`]); this one
+/// says what the file is instead of only refusing it.
+pub const PORTABLE_MAGIC: &[u8] = b"PONTE-COPIA1\n";
 pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 /// Journal retention: enough for a few weeks of one person's work.
 pub const MAX_JOURNAL_ENTRIES: usize = 500;
@@ -271,6 +277,11 @@ fn read_header_up_to(path: &Path, newest: u32) -> Result<Option<Header>> {
             path.display()
         )
     })?;
+    ensure!(
+        !PORTABLE_MAGIC.starts_with(&magic),
+        "{} é uma cópia portátil do Ponte (.pontecopia), não um arquivo de sincronização: não pode ser usado como pasta compartilhada. Para abri-la, use Ajustes ▸ Cópia de segurança ▸ Importar cópia portátil…",
+        path.display()
+    );
     ensure!(
         magic == MAGIC,
         "{} não é um arquivo de sincronização do Ponte.",

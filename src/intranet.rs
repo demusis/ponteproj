@@ -119,6 +119,13 @@ pub struct IntranetConfig {
     /// first exchange of this build.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub folder_identity: String,
+    /// Client: this library already had content of its own when it was
+    /// pointed at a main computer it never exchanged with (a restored
+    /// library, a computer that worked alone). The first exchange then asks
+    /// before the main computer's library replaces it, and keeps a copy
+    /// first. Cleared when a copy of the main computer is applied.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub join_replaces_items: bool,
 }
 
 impl std::fmt::Debug for IntranetConfig {
@@ -193,6 +200,7 @@ impl Default for IntranetConfig {
             folder_lineage: String::new(),
             host_generation: String::new(),
             folder_identity: String::new(),
+            join_replaces_items: false,
         }
     }
 }
@@ -1914,6 +1922,28 @@ impl Store {
     }
 
     pub fn save_intranet_config(&mut self, config: &IntranetConfig) -> Result<()> {
+        let mut config = config.clone();
+        let never_exchanged = config.mode == IntranetMode::Client
+            && config.synced_revision == 0
+            && config.host_generation.is_empty();
+        config.join_replaces_items = if never_exchanged {
+            let previous = self.load_intranet_config().ok();
+            match previous {
+                // Still the same client that has not exchanged yet: as it was.
+                Some(previous) if previous.mode == IntranetMode::Client => {
+                    previous.join_replaces_items || config.join_replaces_items
+                }
+                // Becoming a client now: what is here (nothing queued yet)
+                // is this library's own, and the first exchange replaces it.
+                _ => {
+                    self.list_offline_outbox()?.is_empty()
+                        && self.local_items_summary()?.is_some()
+                }
+            }
+        } else {
+            false
+        };
+        let config = &config;
         write_intranet_config(&self.conn, config)?;
         // Out of the shared-folder mode, this computer's copy of the library
         // (passphrase-protected) has no use and is not left behind.
@@ -3037,6 +3067,8 @@ impl Store {
                 if let Ok(mut cfg) = serde_json::from_slice::<IntranetConfig>(&plain) {
                     cfg.synced_revision = snapshot.revision;
                     cfg.last_sync_at = now_iso();
+                    // This library is now the main computer's copy.
+                    cfg.join_replaces_items = false;
                     if !snapshot.generation.is_empty() {
                         cfg.host_generation = snapshot.generation.clone();
                     }
@@ -3418,6 +3450,48 @@ impl Store {
         ))
     }
 
+    /// What this library holds, in words ("2 documentos, 3 tarefas e 1
+    /// projeto"), or `None` when it holds nothing: what a first exchange with
+    /// a folder or a main computer would replace.
+    pub fn local_items_summary(&self) -> Result<Option<String>> {
+        let mut parts = Vec::new();
+        for (table, one, many) in [
+            ("documents", "documento", "documentos"),
+            ("tasks", "tarefa", "tarefas"),
+            ("projects", "projeto", "projetos"),
+            ("resources", "recurso", "recursos"),
+            ("resource_uses", "uso de recurso", "usos de recursos"),
+            ("categories", "categoria", "categorias"),
+            ("work_templates", "modelo", "modelos"),
+            ("instruction_blocks", "instrução", "instruções"),
+            ("saiop_batches", "lote de atendimentos", "lotes de atendimentos"),
+            ("trash", "item na lixeira", "itens na lixeira"),
+        ] {
+            let exists: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                continue;
+            }
+            let count: i64 =
+                self.conn
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?;
+            if count > 0 {
+                parts.push(plural(count as usize, one, many));
+            }
+        }
+        Ok(match parts.len() {
+            0 => None,
+            1 => parts.pop(),
+            _ => {
+                let last = parts.pop().unwrap_or_default();
+                Some(format!("{} e {last}", parts.join(", ")))
+            }
+        })
+    }
+
     /// The folder of the copies made before a replacement: beside the library
     /// file (the library's own, local folder), in a folder of its own.
     fn replacement_backup_dir(&self) -> Option<PathBuf> {
@@ -3482,6 +3556,29 @@ impl Store {
         );
         cfg.validate()?;
 
+        // A library that never exchanged with a main computer and already has
+        // something (a restored library, a computer that worked alone): the
+        // main computer's library replaces it, so the person confirms first,
+        // nothing is sent before that, and it is kept whole beforehand.
+        let joining_with_items = if cfg.join_replaces_items
+            && cfg.synced_revision == 0
+            && cfg.host_generation.is_empty()
+        {
+            self.local_items_summary()?
+        } else {
+            None
+        };
+        if let Some(items) = &joining_with_items {
+            ensure!(
+                accept_host_history,
+                "{CONFIRM_REPLACE} Este computador ainda não sincronizou com este computador principal e tem {items} no acervo. Ao sincronizar pela primeira vez, o acervo daqui será substituído pelo do computador principal; o que só existe aqui deixa de aparecer. Nada foi enviado nem substituído. Se você confirmar, uma cópia do acervo daqui é guardada primeiro{}.",
+                self.replacement_backup_dir()
+                    .map(|dir| format!(" em {}", dir.display()))
+                    .unwrap_or_default()
+            );
+        }
+        let joining_with_items = joining_with_items.is_some();
+
         // 1. Se houver alterações feitas offline nesta estação cliente, sincroniza mutuamente com o anfitrião:
         let outbox = self.list_offline_outbox()?;
         let mut pushed_offline = false;
@@ -3512,7 +3609,8 @@ impl Store {
             // Before anything is sent: is this still the history the queue
             // was made against? A restored backup may number new items like
             // the old ones, and a change would land on the wrong one.
-            let mut rolled_back = false;
+            let mut rolled_back = joining_with_items;
+            replacing |= joining_with_items;
             if let Some(snapshot) = host_snapshot.as_deref() {
                 if let Some(notice) =
                     self.host_history_notice(&cfg, snapshot.revision, &snapshot.generation)
@@ -3628,8 +3726,12 @@ impl Store {
         // same, nothing else of this library is replaced (it may hold work
         // that no queue protects, made in Local mode).
         let numbers_pending = crate::idmap::has_pending(&self.conn)?;
-        let projects_only =
-            !force_full && !pushed_offline && !numbers_pending && self.projects_cache_stale();
+        replacing |= joining_with_items;
+        let projects_only = !force_full
+            && !replacing
+            && !pushed_offline
+            && !numbers_pending
+            && self.projects_cache_stale();
         let since = if force_full || replacing || pushed_offline || numbers_pending || projects_only
         {
             None
@@ -3713,13 +3815,15 @@ impl Store {
                         Ok(())
                     },
                     |tx| {
-                        let reason = format!(
-                            "O computador principal voltou a uma história anterior; esta alteração não foi enviada. Uma cópia do acervo anterior a esta substituição ficou em {}.",
-                            backup.borrow().as_ref().map_or_else(
-                                || "(sem arquivo)".to_owned(),
-                                |p| p.display().to_string()
-                            )
+                        let kept = backup.borrow().as_ref().map_or_else(
+                            || "(sem arquivo)".to_owned(),
+                            |p| p.display().to_string(),
                         );
+                        let reason = if joining_with_items {
+                            format!("Este computador entrou na equipe com um acervo próprio, que foi substituído pelo do computador principal; esta alteração não foi enviada. Uma cópia do acervo anterior a esta substituição ficou em {kept}.")
+                        } else {
+                            format!("O computador principal voltou a uma história anterior; esta alteração não foi enviada. Uma cópia do acervo anterior a esta substituição ficou em {kept}.")
+                        };
                         ensure_queue_settled(tx, &moved)?;
                         for entry in &replaced_queue {
                             let mut conflict = build_sync_conflict(entry, &reason, Some(&snapshot));
@@ -3961,14 +4065,25 @@ impl Store {
             let wrote_a_copy = copies.iter().any(|c| c.header.writer == cfg.folder_writer);
             joining =
                 cfg.synced_revision == 0 && cfg.folder_lineage.trim().is_empty() && !wrote_a_copy;
-            if joining && !allow_replace {
-                let local_documents = self.list_documents("")?.len();
+            // Anything in the library counts (not only documents: tasks,
+            // projects, resources, templates, the Lixeira…): it is all
+            // replaced by the folder's library.
+            let local_items = if joining {
+                self.local_items_summary()?
+            } else {
+                None
+            };
+            if let Some(items) = &local_items {
                 ensure!(
-                    local_documents == 0,
-                    "[confirmar-substituicao] Este computador ainda não sincronizou com esta pasta e tem {} no acervo. Ao sincronizar pela primeira vez, o acervo daqui será substituído pelo da pasta ({}). Faça uma cópia de segurança antes, se quiser guardá-los.",
-                    plural(local_documents, "documento", "documentos"),
-                    sharedfolder::describe(&best.header)
+                    allow_replace,
+                    "{CONFIRM_REPLACE} Este computador ainda não sincronizou com esta pasta e tem {items} no acervo. Ao sincronizar pela primeira vez, o acervo daqui será substituído pelo da pasta ({}); o que só existe aqui deixa de aparecer. Nada foi gravado na pasta nem substituído aqui. Se você confirmar, uma cópia do acervo daqui é guardada primeiro{}.",
+                    sharedfolder::describe(&best.header),
+                    self.replacement_backup_dir()
+                        .map(|dir| format!(" em {}", dir.display()))
+                        .unwrap_or_default()
                 );
+                // Confirmed: kept whole and verified before anything changes.
+                self.backup_before_replacement()?;
             }
         }
         // The guard copy joins the copies read (never as a folder, never in
@@ -9617,6 +9732,11 @@ impl IntranetPanel {
 
     pub fn syncing(&self) -> bool {
         self.sync_in_flight
+    }
+
+    /// Whether this window runs a main computer or a synchronization thread.
+    pub fn sync_threads_running(&self) -> bool {
+        self.server.is_some() || self.sync.is_some()
     }
 
     /// Asks for a full synchronization on the next refresh, reporting the

@@ -365,7 +365,7 @@ pub fn plan_retention(
         .filter_map(|(i, e)| Some((i, e.moment()?, e.sequencia)))
         .collect();
     // Newest first.
-    candidates.sort_by(|a, b| (b.1, b.2).cmp(&(a.1, a.2)));
+    candidates.sort_by_key(|c| std::cmp::Reverse((c.1, c.2)));
     let mut keep: std::collections::BTreeSet<usize> = candidates
         .iter()
         .take(KEEP_RECENT)

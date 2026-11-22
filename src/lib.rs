@@ -41,6 +41,9 @@ pub mod prompting;
 pub mod protection;
 /// A record with its attachments created in one operation (all or nothing).
 pub mod record_import;
+/// "Restaurar cópia…": recovery libraries in folders of their own, and the
+/// choice of the library in use.
+pub mod recovery;
 pub mod risk;
 pub mod sharedfolder;
 pub mod storage;

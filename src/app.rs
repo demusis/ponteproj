@@ -494,6 +494,9 @@ pub fn run(initial_document: Option<i64>) -> Result<()> {
 
 /// Opens the window, on a document or on the "Modelos" area.
 pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Result<()> {
+    // Where the library is (the pointer of the main folder, or
+    // PONTEPROJ_DATA_DIR), read once for the whole process.
+    let resolution = crate::paths::resolution()?;
     let db_path = crate::paths::db_path()?;
     // One window per library: a second start hands its request to the window
     // already open and leaves. If that window does not answer, this start
@@ -528,8 +531,10 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     // window's live folder), this one's goes at close.
     crate::attachments::sweep_stale_temp();
     let mut app = PonteApp::new(store, db_path);
+    app.library = backup::LibraryPlace::detect(&resolution, &data_dir);
     app.requests_dir = window.is_some().then_some(data_dir);
-    app.auto_copy.allowed = !alone;
+    // A recovery library being looked at gets no automatic copies.
+    app.auto_copy.allowed = !alone && !app.library.only_looking();
     app.intranet.initialize(&mut app.store, &app.db_path);
     // Personal templates of versions before 0.20 become work templates.
     match app.store.migrate_personal_templates() {
@@ -962,6 +967,8 @@ enum WorkResult {
         result: std::result::Result<crate::ai::DraftConference, String>,
     },
     Backup(std::result::Result<PathBuf, String>),
+    /// "Restaurar cópia…": the recovery library built.
+    Recovery(std::result::Result<crate::recovery::Built, String>),
     Export(std::result::Result<crate::export::ExportReport, String>),
     MailFolders(std::result::Result<Vec<crate::imap::Folder>, String>),
     MailMessages(std::result::Result<Vec<crate::imap::MessageSummary>, String>),
@@ -981,6 +988,8 @@ enum WorkKind {
     Analysis,
     Draft,
     Backup,
+    /// Building a recovery library (Ajustes ▸ Cópia de segurança).
+    Recovery,
     Export,
     /// Talking to a mailbox (folders, list, fetch).
     Mail,
@@ -1373,6 +1382,8 @@ struct PonteApp {
     backup_path: Option<PathBuf>,
     /// The automatic copy of the day (Ajustes ▸ Cópia de segurança).
     auto_copy: backup::AutoCopy,
+    /// Which library this window has open (a recovery library, the one in use).
+    library: backup::LibraryPlace,
     doc_task_filter: DocTaskFilter,
     doc_priority_filter: DocPriorityFilter,
     doc_origin_filter: DocOriginFilter,
@@ -1490,6 +1501,7 @@ impl PonteApp {
             notice: None,
             backup_path: None,
             auto_copy: Default::default(),
+            library: Default::default(),
             doc_task_filter: DocTaskFilter::All,
             doc_priority_filter: DocPriorityFilter::All,
             doc_origin_filter: DocOriginFilter::All,
@@ -3155,6 +3167,7 @@ impl PonteApp {
                 }
                 self.ai_test_report = Some(result);
             }
+            WorkResult::Recovery(result) => self.accept_recovery(result),
             WorkResult::Export(result) => match result {
                 Ok(report) => {
                     self.message(format!(
@@ -3730,8 +3743,11 @@ impl PonteApp {
     /// and then daily, never while another operation runs.
     fn sweep_trash(&mut self) {
         const DAILY: Duration = Duration::from_secs(24 * 60 * 60);
+        // A recovery library being looked at keeps its Lixeira as the copy
+        // had it: nothing expires before the person decides to use it.
         if self.worker.is_some()
             || self.pdf_reader.busy()
+            || self.library.only_looking()
             || !self.last_trash_purge.is_none_or(|at| at.elapsed() > DAILY)
         {
             return;
@@ -3899,7 +3915,12 @@ impl eframe::App for PonteApp {
         self.poll_worker();
         self.start_queued();
         self.tick_auto_copy(&ctx);
-        self.reminders.update(&ctx, &self.store);
+        self.tick_library_place();
+        // The reminders are those of the library in use, never of a recovery
+        // library being looked at (they would ring twice).
+        if !self.library.only_looking() {
+            self.reminders.update(&ctx, &self.store);
+        }
         if self.reminders.take_open_today() {
             // The person clicked the Windows notice: show what is due.
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -3975,6 +3996,7 @@ impl eframe::App for PonteApp {
             self.route_settings_requests();
         }
         let palette = crate::theme::c();
+        self.library_banner(ui);
         egui::Panel::left("rail")
             .exact_size(88.0)
             .resizable(false)

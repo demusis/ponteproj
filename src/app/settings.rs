@@ -819,6 +819,10 @@ impl PonteApp {
             }
         }
         ui.add_space(S3);
+        self.restore_card(ui, ctx, idle);
+        ui.add_space(S3);
+        self.libraries_card(ui);
+        ui.add_space(S3);
         widgets::section(ui, "Exportação");
         Self::settings_card(
             ui,
@@ -842,6 +846,107 @@ impl PonteApp {
                 ctx.copy_text(path.display().to_string());
                 self.message("Caminho copiado.");
             }
+        }
+    }
+
+    /// "Restaurar uma cópia": what restoring does (and does not do).
+    fn restore_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, idle: bool) {
+        let mut restore = false;
+        widgets::section(ui, "Restaurar uma cópia");
+        widgets::card(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Restaurar não mexe no acervo em uso. O Ponte monta, a partir da cópia escolhida, um acervo de recuperação numa pasta nova e o abre numa janela separada, para você olhar. Esse acervo nunca sincroniza: fica «Só neste computador», sem pasta compartilhada, sem computador principal e sem alterações esperando envio. Se for o acervo que você quer, use «Usar este acervo neste computador» nessa janela; o acervo atual continua guardado, inteiro, e você pode voltar a ele aqui.")
+                        .color(theme::c().muted),
+                )
+                .wrap(),
+            );
+            ui.add_space(S1);
+            restore = ui
+                .add_enabled(idle, widgets::secondary("Restaurar cópia…"))
+                .clicked();
+            ui.add_space(S1);
+            widgets::small_muted(
+                ui,
+                "Para voltar a sincronizar depois, conecte o acervo restaurado em Ajustes ▸ Equipe e sincronização: o Ponte avisa que o conteúdo da pasta ou do computador principal vai substituir o dele e guarda uma cópia antes.",
+            );
+            widgets::small_muted(
+                ui,
+                "Se o Ponte não abre mais: no Prompt de Comando, ponteproj.exe --restaurar-copia \"caminho da cópia.sqlite3\".",
+            );
+        });
+        if restore {
+            self.restore_copy(ctx);
+        }
+    }
+
+    /// "Acervos deste computador": the main library and the restored ones,
+    /// which one the Ponte opens, and the switch between them.
+    fn libraries_card(&mut self, ui: &mut egui::Ui) {
+        if self.library.home.is_none() {
+            return;
+        }
+        let libraries = self.libraries();
+        let this = self.data_dir();
+        let mut chosen = None;
+        let mut look = None;
+        let mut reveal = None;
+        widgets::section(ui, "Acervos deste computador");
+        widgets::card(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Trocar de acervo não apaga nem altera nenhum deles: só muda qual o Ponte abre (a janela, o navegador e o instalador). O Ponte não apaga acervos antigos; para liberar espaço, apague a pasta pelo Windows quando tiver certeza.")
+                        .color(theme::c().muted),
+                )
+                .wrap(),
+            );
+            for library in &libraries {
+                ui.add_space(S2);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(library.title()).font(theme::font_strong(theme::SIZE_BODY)));
+                    if library.in_use {
+                        pill(ui, "em uso", Tone::Ok);
+                    }
+                    if crate::paths::same_folder(&library.folder, &this) {
+                        pill(ui, "nesta janela", Tone::Info);
+                    }
+                });
+                widgets::small_muted(ui, library.folder.display().to_string());
+                ui.horizontal_wrapped(|ui| {
+                    if !library.in_use
+                        && ui
+                            .add(widgets::secondary(if library.main {
+                                "Voltar a usar este acervo"
+                            } else {
+                                "Usar este acervo"
+                            }))
+                            .clicked()
+                    {
+                        chosen = Some(library.folder.clone());
+                    }
+                    if library.marker.is_some()
+                        && !library.in_use
+                        && !crate::paths::same_folder(&library.folder, &this)
+                        && ui.add(widgets::quiet("Abrir para olhar")).clicked()
+                    {
+                        look = Some(library.folder.clone());
+                    }
+                    if ui.add(widgets::quiet("Abrir a pasta")).clicked() {
+                        reveal = Some(library.folder.clone());
+                    }
+                });
+            }
+        });
+        if let Some(folder) = chosen {
+            self.use_library(&folder);
+        }
+        if let Some(folder) = look {
+            if let Err(error) = crate::recovery::open_window(&folder) {
+                self.error(format!("{error:#}"));
+            }
+        }
+        if let Some(folder) = reveal {
+            crate::windows_ui::reveal_in_explorer(&folder);
         }
     }
 

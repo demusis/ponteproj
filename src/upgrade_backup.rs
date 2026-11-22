@@ -465,11 +465,16 @@ pub(crate) fn copy_consistently(database: &Path, target_path: &Path) -> Result<(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .context("Não foi possível abrir o acervo para copiá-lo.")?;
+    copy_from(&source, target_path)
+}
+
+/// [`copy_consistently`] from a connection the caller opened (read-only).
+pub(crate) fn copy_from(source: &Connection, target_path: &Path) -> Result<()> {
     source.busy_timeout(Duration::from_secs(5))?;
     let mut target = Connection::open(target_path)
         .context("Não foi possível criar o arquivo da cópia de segurança.")?;
     {
-        let backup = Backup::new(&source, &mut target)
+        let backup = Backup::new(source, &mut target)
             .context("Não foi possível iniciar a cópia consistente do acervo.")?;
         let mut stall = Stall::new(Instant::now());
         loop {

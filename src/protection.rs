@@ -187,6 +187,11 @@ pub fn seal(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(protected)
 }
 
+/// Whether `bytes` is a payload sealed by a Ponte (on Windows, or on a phone).
+pub fn looks_sealed(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PONTE-DPAPI1\0") || bytes.starts_with(b"PONTE-AESK1\0")
+}
+
 pub fn unseal(bytes: &[u8]) -> Result<Vec<u8>> {
     if !bytes.starts_with(PREFIX) {
         bail!("Formato de proteção desconhecido; os dados não foram abertos");
