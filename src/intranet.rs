@@ -3512,6 +3512,24 @@ impl Store {
         Ok(Some(path))
     }
 
+    /// [`Store::sync_from_host_confirmed`] and, with it, the sentence that
+    /// tells the person which of their records the main computer numbered
+    /// differently (empty when none): the summary of a synchronization with
+    /// the main computer.
+    pub fn sync_from_host_with_summary(
+        &mut self,
+        force_full: bool,
+        accept_host_history: bool,
+    ) -> Result<(bool, String)> {
+        let last = self.last_renumber_notice_id();
+        let changed = self.sync_from_host_confirmed(force_full, accept_host_history)?;
+        let found = self.renumber_notices_after(last).unwrap_or_default();
+        Ok((
+            changed,
+            crate::renumber::summarize(&found).unwrap_or_default(),
+        ))
+    }
+
     /// [`Store::sync_from_host`]; `accept_host_history` is the person's
     /// confirmation that the main computer's history replaces this copy
     /// (see `host_history_notice`). Without it, a main computer whose history
@@ -9640,12 +9658,9 @@ fn run_sync(
         }
         _ => {
             reporter.step("Sincronizando com o computador principal…");
-            let changed =
-                store.sync_from_host_confirmed(request.force_full, request.allow_replace)?;
-            Ok(SyncDone {
-                changed,
-                summary: String::new(),
-            })
+            let (changed, summary) =
+                store.sync_from_host_with_summary(request.force_full, request.allow_replace)?;
+            Ok(SyncDone { changed, summary })
         }
     }
 }
@@ -11580,7 +11595,37 @@ impl IntranetPanel {
                 }
             }
             None if kind == CardKind::Unresolved => {
-                widgets::small_muted(ui, "Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.");
+                if let Some(edit) = crate::renumber::refused_manual_edit(conflict) {
+                    // What the person wrote is not lost with the notice: it is
+                    // here to be read and copied.
+                    ui.add(egui::Label::new(egui::RichText::new(&conflict.reason)).wrap());
+                    ui.add_space(theme::S1);
+                    widgets::field_label(
+                        ui,
+                        &format!(
+                            "Texto da edição do registro “{}” (número {} neste computador)",
+                            edit.title, edit.number
+                        ),
+                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt(("refused-edit-text", conflict.id))
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(&edit.text).wrap().selectable(true));
+                        });
+                    ui.add_space(theme::S1);
+                    if ui
+                        .add(widgets::secondary("Copiar o texto"))
+                        .on_hover_text("Copia o texto da edição para a área de transferência.")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(edit.text.clone());
+                    }
+                    ui.add_space(theme::S1);
+                    widgets::small_muted(ui, "Esta edição não foi aplicada em nenhum registro. Cole o texto no registro certo e, depois, dispense o aviso.");
+                } else {
+                    widgets::small_muted(ui, "Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.");
+                }
                 ui.add_space(theme::S1);
                 if ui.add(widgets::secondary("Dispensar o aviso")).clicked() {
                     choose(self, ConflictResolution::KeepHost);

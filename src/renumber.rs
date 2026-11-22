@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// How many dismissed notices this library remembers (they keep the old
 /// number findable). Pending ones are never dropped.
-const KEEP_DISMISSED: i64 = 300;
+pub(crate) const KEEP_DISMISSED: i64 = 300;
 
 /// How many request ids of a record a notice keeps to find it again.
 const KEEP_IDENTITIES: usize = 16;
@@ -380,6 +380,34 @@ pub(crate) fn retarget_manual_edit(
     }
 }
 
+/// What a refused edit of a manual record said, to be shown (and copied) on
+/// its conflict card: the text is the person's own work.
+pub struct RefusedEdit {
+    pub title: String,
+    pub number: String,
+    pub text: String,
+}
+
+/// The edit that a conflict that cannot be applied carries, when it is the
+/// edit of a manual record.
+pub fn refused_manual_edit(conflict: &crate::intranet::SyncConflict) -> Option<RefusedEdit> {
+    if !conflict.unresolved {
+        return None;
+    }
+    match &conflict.mutation {
+        IntranetMutation::ImportCapture { capture }
+            if capture.is_manual() && capture.document_number != MANUAL_PENDING =>
+        {
+            Some(RefusedEdit {
+                title: capture.title.clone(),
+                number: capture.document_number.clone(),
+                text: capture.text.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
 /// The documents (in the library the changes were written in) that
 /// creations waiting to be replayed made.
 pub(crate) fn pending_creations<'a>(
@@ -723,6 +751,7 @@ impl Store {
 mod tests {
     use crate::intranet::{IntranetConfig, IntranetMode};
     use crate::manual::ManualFields;
+    use crate::renumber::{refused_manual_edit, Presented, RenumberNotice, KEEP_DISMISSED};
     use crate::storage::Store;
 
     const KEY: &str = "senha-de-teste-123";
@@ -1543,5 +1572,262 @@ mod tests {
             a.list_sync_conflicts().unwrap()
         );
         assert_eq!(text_of(&a, &m_number), "Texto antigo, editado");
+    }
+
+    /// MAJOR 6a of the review: the synchronization with the main computer
+    /// returned an empty summary even when it renumbered a record of this
+    /// computer; the notice existed but the summary said nothing.
+    #[test]
+    fn the_summary_of_a_team_synchronization_tells_which_record_was_renumbered() {
+        let mut t = Team::new();
+        t.offline();
+        let (_, y_number) = create(&mut t.client, "Registro do cliente", "Texto do cliente");
+        let (_, x_number) = create(&mut t.host, "Registro do principal", "Texto do principal");
+        assert_eq!(x_number, y_number);
+        t.online();
+        let (changed, summary) = t.client.sync_from_host_with_summary(false, false).unwrap();
+        assert!(changed);
+        let now = number_of(&t.client, "Registro do cliente").unwrap();
+        assert_eq!(
+            summary,
+            format!(
+                "O registro “Registro do cliente” passou de {y_number} para {now} ao sincronizar."
+            )
+        );
+        // Told once: the next synchronization has nothing to say.
+        let (_, again) = t.client.sync_from_host_with_summary(false, false).unwrap();
+        assert!(again.is_empty(), "{again}");
+    }
+
+    /// The scenario of MAJOR 5: B creates Y and edits it (two versions), A
+    /// (whose copy is the base) merges B's copy and renumbers Y.
+    fn y_with_two_versions_renumbered_by_a(f: &mut Folders) -> (String, String) {
+        let (_, x_number) = create(&mut f.a, "Registro de A", "Texto de A");
+        busy_work(&mut f.a, 4);
+        f.sync_a(Where::Drive);
+        let (y, y_number) = create(&mut f.b, "Registro de B", "Texto de B");
+        assert_eq!(x_number, y_number);
+        f.b.update_manual_document(y, &fields("Registro de B", "Texto de B, segunda versão"))
+            .unwrap();
+        f.sync_b(Where::Pen);
+        f.sync_a(Where::Both);
+        assert_ne!(number_of(&f.a, "Registro de B").unwrap(), x_number);
+        (x_number, y_number)
+    }
+
+    /// A drops the first version of Y (trash, then purge): the request of that
+    /// version goes with it.
+    fn purge_first_version(store: &mut Store, title: &str) {
+        let document = id_of(store, title);
+        let versions = store.capture_versions(document).unwrap();
+        assert_eq!(versions.len(), 2);
+        let first = versions.last().unwrap().id;
+        let target = crate::trash::Target {
+            kind: crate::trash::Kind::Capture,
+            id: first,
+        };
+        store.trash_item(target.clone()).unwrap();
+        store.purge_trash_item(target).unwrap();
+    }
+
+    /// MAJOR 5 of the review: the notice is told even when the first version
+    /// of the record (the one whose request was the only identity) is gone
+    /// from the copy, because a later version identifies the record on both
+    /// sides.
+    #[test]
+    fn the_notice_is_told_when_the_first_version_of_the_record_was_purged_before_the_adoption() {
+        let mut f = Folders::new();
+        let (_, y_number) = y_with_two_versions_renumbered_by_a(&mut f);
+        purge_first_version(&mut f.a, "Registro de B");
+        f.sync_a(Where::Both);
+        let report = f.sync_b(Where::Both);
+        assert_eq!(report.renumbered.len(), 1, "{}", report.summary());
+        let notice = f.b.pending_renumber_notices().unwrap().remove(0);
+        assert_eq!(notice.from, y_number);
+        assert!(f.b.renumber_notice_document(&notice).is_some());
+    }
+
+    /// The other half of MAJOR 5: the notice already exists when the first
+    /// version is purged; the old number stays findable and the notice keeps
+    /// opening the record.
+    #[test]
+    fn the_old_number_stays_findable_after_the_first_version_of_the_record_is_purged() {
+        let mut f = Folders::new();
+        let (x_number, y_number) = y_with_two_versions_renumbered_by_a(&mut f);
+        f.sync_a(Where::Both);
+        f.sync_b(Where::Both);
+        let notice = f.b.pending_renumber_notices().unwrap().remove(0);
+        purge_first_version(&mut f.a, "Registro de B");
+        f.sync_a(Where::Both);
+        f.sync_b(Where::Both);
+        let y = id_of(&f.b, "Registro de B");
+        assert_eq!(f.b.previous_numbers(y), vec![y_number.clone()]);
+        assert!(f
+            .b
+            .list_documents(&y_number)
+            .unwrap()
+            .iter()
+            .any(|d| d.id == y));
+        assert_eq!(f.b.renumber_notice_document(&notice), Some(y));
+        assert_eq!(text_of(&f.b, &x_number), "Texto de A");
+    }
+
+    /// MAJOR 4 of the review: what the person wrote in an edit that could not
+    /// be applied is on the card, to be read and copied.
+    #[test]
+    fn a_refused_edit_keeps_its_text_on_the_conflict_card() {
+        let mut p = pair();
+        let (_, x) = create(&mut p.a, "Registro de A", "Texto de A");
+        sync(&mut p.a);
+        sync(&mut p.b);
+        // B edits the record and, before the exchange, throws it away.
+        let doc = id_of(&p.b, "Registro de A");
+        p.b.update_manual_document(doc, &fields("Registro de A", "Texto escrito por B"))
+            .unwrap();
+        let target = crate::trash::Target {
+            kind: crate::trash::Kind::Document,
+            id: doc,
+        };
+        p.b.trash_item(target.clone()).unwrap();
+        p.b.purge_trash_item(target).unwrap();
+        let report = sync(&mut p.b);
+        assert_eq!(report.conflicts, 1, "{}", report.summary());
+        let conflicts = p.b.list_sync_conflicts().unwrap();
+        let card = conflicts.iter().find(|c| c.unresolved).expect("the card");
+        let edit = refused_manual_edit(card).expect("the edit is on the card");
+        assert_eq!(edit.text, "Texto escrito por B");
+        assert_eq!(edit.title, "Registro de A");
+        assert_eq!(edit.number, x);
+        assert!(card.reason.contains("Registro de A"), "{}", card.reason);
+        assert!(card.reason.contains(&x), "{}", card.reason);
+        assert!(card.reason.contains("não foi aplicada"), "{}", card.reason);
+        // Another kind of change, or a conflict that can be decided, has none.
+        let mut ordinary = card.clone();
+        ordinary.unresolved = false;
+        assert!(refused_manual_edit(&ordinary).is_none());
+    }
+
+    /// MAJOR 2, the other side of the coin: edits of records that are in the
+    /// shared copy as they always were (MANUAL- and EMAIL-, a SIGADOC
+    /// document, a record another computer trashed) never become the new kind
+    /// of conflict.
+    #[test]
+    fn ordinary_edits_of_records_already_in_the_shared_copy_are_not_turned_into_conflicts() {
+        let mut p = pair();
+        let (_, m_number) = create(&mut p.a, "Registro antigo", "Texto antigo");
+        let mail = ManualFields {
+            kind: "email".into(),
+            ..fields("E-mail antigo", "Corpo antigo")
+        };
+        let mail_id = p.a.create_manual_document(&mail).unwrap().document_id;
+        let mail_number = p.a.load_document(mail_id).unwrap().summary.document_number;
+        assert!(mail_number.starts_with("EMAIL-"), "{mail_number}");
+        let (_, t_number) = create(&mut p.a, "Registro que será apagado", "Texto");
+        sync(&mut p.a);
+        sync(&mut p.b);
+
+        // B edits all of them, and the SIGADOC document too.
+        for (title, text) in [
+            ("Registro antigo", "Texto antigo, editado"),
+            ("Registro que será apagado", "Texto editado por B"),
+        ] {
+            let id = id_of(&p.b, title);
+            p.b.update_manual_document(id, &fields(title, text))
+                .unwrap();
+        }
+        let id = id_of(&p.b, "E-mail antigo");
+        p.b.update_manual_document(
+            id,
+            &ManualFields {
+                kind: "email".into(),
+                ..fields("E-mail antigo", "Corpo antigo, editado")
+            },
+        )
+        .unwrap();
+        let mut official = crate::model::sample_capture();
+        official.request_id = uuid::Uuid::new_v4().to_string();
+        official.text.push_str("\nEditado por B.");
+        p.b.import_capture(&official).unwrap();
+        // Meanwhile A throws the last one away.
+        let t = id_of(&p.a, "Registro que será apagado");
+        p.a.trash_item(crate::trash::Target {
+            kind: crate::trash::Kind::Document,
+            id: t,
+        })
+        .unwrap();
+        sync(&mut p.a);
+
+        let report = sync(&mut p.b);
+        let conflicts = p.b.list_sync_conflicts().unwrap();
+        // Only the edit of the trashed record is refused, for the reason that
+        // always applied to it, not for an uncertain target.
+        assert_eq!(report.conflicts, 1, "{conflicts:?}");
+        assert!(
+            !conflicts[0].reason.contains("não foi aplicada"),
+            "{}",
+            conflicts[0].reason
+        );
+        sync(&mut p.a);
+        for store in [&p.a, &p.b] {
+            assert_eq!(text_of(store, &m_number), "Texto antigo, editado");
+            assert_eq!(text_of(store, &mail_number), "Corpo antigo, editado");
+            let official_text = store
+                .list_documents("")
+                .unwrap()
+                .into_iter()
+                .find(|d| !d.manual)
+                .map(|d| store.load_document(d.id).unwrap().capture.text)
+                .unwrap();
+            assert!(official_text.ends_with("Editado por B."), "{official_text}");
+        }
+        assert!(number_of(&p.a, "Registro que será apagado").is_none());
+        let _ = t_number;
+    }
+
+    /// The history is capped, but only what was already read: a notice that
+    /// is still pending is never dropped to make room.
+    #[test]
+    fn the_history_cap_never_drops_a_pending_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        let notice = |n: usize, dismissed: bool| RenumberNotice {
+            id: 0,
+            uids: vec![format!("uid-{n}")],
+            title: format!("Registro {n}"),
+            from: "MANUAL-2026/0001".into(),
+            to: "MANUAL-2026/0002".into(),
+            at: "2026-11-22T10:00:00Z".into(),
+            dismissed,
+        };
+        // The three oldest are pending; 305 newer ones were read.
+        for n in 0..308 {
+            let read = n >= 3;
+            store
+                .conn
+                .execute(
+                    "INSERT INTO renumber_notices(dedup,dismissed,payload) VALUES(?1,?2,?3)",
+                    rusqlite::params![
+                        vec![n as u8, (n >> 8) as u8],
+                        i64::from(read),
+                        crate::protection::seal(&serde_json::to_vec(&notice(n, read)).unwrap())
+                            .unwrap()
+                    ],
+                )
+                .unwrap();
+        }
+        Presented::default().record_changes(&store.conn, "state");
+        let count = |dismissed: i64| -> i64 {
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM renumber_notices WHERE dismissed=?1",
+                    [dismissed],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(count(0), 3, "pending notices stay");
+        assert_eq!(count(1), KEEP_DISMISSED, "the read ones are capped");
+        assert_eq!(store.pending_renumber_notices().unwrap().len(), 3);
     }
 }

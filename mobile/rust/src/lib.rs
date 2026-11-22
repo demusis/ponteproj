@@ -310,6 +310,56 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_saveNote<'local>(
     })
 }
 
+/// The notices of records this phone shows under another number since the
+/// last exchange, until the person dismisses them. They live in the phone's
+/// own library, so they do not depend on the status line of an exchange:
+/// `{"notices":[{"id","title","from","to","sentence","document_id","at"}]}`,
+/// newest first (`document_id` is 0 when the record cannot be opened).
+fn renumber_notices_json(store: &Store) -> Result<Value> {
+    let notices = store
+        .pending_renumber_notices()?
+        .iter()
+        .map(|n| {
+            json!({
+                "id": n.id,
+                "title": n.title,
+                "from": n.from,
+                "to": n.to,
+                "sentence": n.sentence(),
+                "document_id": store.renumber_notice_document(n).unwrap_or(0),
+                "at": n.at,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "notices": notices }))
+}
+
+/// The pending renumber notices (see [`renumber_notices_json`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_renumberNotices<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    answer(&mut env, |_| with_store(|store| renumber_notices_json(store)))
+}
+
+/// Marks one notice as read (`id` from the list; an unknown or already read
+/// one is not an error). Answers what is still pending:
+/// `{"remaining":n}`.
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_dismissRenumberNotice<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    id: jlong,
+) -> jstring {
+    answer(&mut env, |_| {
+        with_store(|store| {
+            store.dismiss_renumber_notice(id)?;
+            Ok(json!({ "remaining": store.pending_renumber_notices()?.len() }))
+        })
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Version 2: the document file, tasks, a record from a photo, e-mail.
 // Everything is built on the same Store functions the desktop uses.
@@ -2779,6 +2829,28 @@ mod tests {
         // Told once.
         let again = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
         assert_eq!(again["renumbered"], json!([]));
+
+        // And kept in the phone's library until dismissed, whatever the
+        // status line shows afterwards (a failed publication, a later exchange).
+        let listed = renumber_notices_json(&phone).unwrap();
+        let notices = listed["notices"].as_array().unwrap();
+        assert_eq!(notices.len(), 1, "{listed}");
+        assert_eq!(notices[0]["sentence"], json!(sentence));
+        assert_eq!(notices[0]["from"], json!(before.document_number));
+        assert_eq!(notices[0]["to"], json!(after.document_number));
+        assert_eq!(notices[0]["title"], json!("Do celular"));
+        assert_eq!(notices[0]["document_id"], json!(after.id));
+        assert!(notices[0]["id"].as_i64().unwrap() > 0);
+        assert!(notices[0]["at"].as_str().unwrap().ends_with('Z'));
+        let id = notices[0]["id"].as_i64().unwrap();
+        assert_eq!(renumber_notices_json(&phone).unwrap(), listed, "listing changes nothing");
+        phone.dismiss_renumber_notice(id).unwrap();
+        phone.dismiss_renumber_notice(id).unwrap();
+        phone.dismiss_renumber_notice(id + 100).unwrap();
+        assert_eq!(renumber_notices_json(&phone).unwrap(), json!({"notices": []}));
+        let after_dismissal = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(after_dismissal["renumbered"], json!([]));
+        assert_eq!(renumber_notices_json(&phone).unwrap(), json!({"notices": []}));
     }
 
     #[test]
