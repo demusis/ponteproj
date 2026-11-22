@@ -40,13 +40,27 @@ pub const FORMAT: u32 = 1;
 pub const EXTENSION: &str = "pontecopia";
 /// The largest file read or written (the same bound as the shared folder's).
 pub const MAX_FILE_BYTES: u64 = sharedfolder::MAX_FILE_BYTES;
-/// The largest library exported: what SQLite holds in use (pages minus free
-/// pages), measured before anything is read. The file is smaller (no
-/// indexes, no DPAPI wrapping), but the export holds the content in memory
-/// two or three times while packing and encrypting it.
-pub const MAX_LIBRARY_BYTES: u64 = 480 * 1024 * 1024;
+/// The largest library exported, measured as the bytes of every value the
+/// export carries (sealed as stored, so a little more than the content), in
+/// the very read snapshot that is exported, before anything is read into
+/// memory. The export holds the content about three times at its peak (the
+/// items, their serialized form and the packed, encrypted body; the file is
+/// then written from that body): 200 MB of content keeps the peak near
+/// 600 MB.
+pub const MAX_LIBRARY_BYTES: u64 = 200 * 1024 * 1024;
 const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
+
+/// What travels besides the items, in the portable copy's own section (never
+/// in a sync file).
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Extras {
+    /// The completed import receipts: a retry of an import already completed
+    /// (from the browser, from WhatsApp) never brings back what the person
+    /// deleted for good afterwards.
+    #[serde(default)]
+    recibos_de_importacao: Vec<(String, String, String)>,
+}
 
 /// What does not travel in a portable copy, as the card says it.
 pub const NOT_CARRIED: &[&str] = &[
@@ -92,30 +106,77 @@ pub fn validate_password(password: &str) -> Result<()> {
     Ok(())
 }
 
-/// What SQLite holds in use in the library open in `store` (an estimate of
-/// the export's size, read without reading the content).
-fn library_bytes(store: &Store) -> Result<u64> {
-    let page: i64 = store
-        .conn
-        .pragma_query_value(None, "page_size", |r| r.get(0))?;
-    let pages: i64 = store
-        .conn
-        .pragma_query_value(None, "page_count", |r| r.get(0))?;
-    let free: i64 = store
-        .conn
-        .pragma_query_value(None, "freelist_count", |r| r.get(0))?;
-    Ok(((pages - free).max(0) as u64) * page.max(0) as u64)
+/// The bytes of every value the export carries, read inside the caller's
+/// read transaction (the same state that is then exported).
+fn content_bytes(conn: &rusqlite::Connection) -> Result<u64> {
+    let mut total = 0u64;
+    let tables = crate::intranet::LIBRARY_INVENTORY
+        .iter()
+        .map(|(_, table, ..)| *table)
+        .chain(["item_versions", "team_events"]);
+    for table in tables {
+        let columns: Vec<String> = conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if columns.is_empty() {
+            continue;
+        }
+        let sum = columns
+            .iter()
+            .map(|c| format!("coalesce(sum(length(\"{c}\")),0)"))
+            .collect::<Vec<_>>()
+            .join("+");
+        let bytes: i64 = conn.query_row(&format!("SELECT {sum} FROM {table}"), [], |r| r.get(0))?;
+        total += bytes.max(0) as u64;
+    }
+    Ok(total)
 }
 
-fn too_big(bytes: u64) -> String {
+fn too_big(bytes: u64, limit: u64) -> String {
     format!(
-        "O acervo tem cerca de {} MB, mais do que cabe numa cópia portátil (até {} MB). Nada foi gravado. Use «Fazer cópia agora» (que só abre nesta conta do Windows) ou leve para a Lixeira e esvazie PDFs e anexos de que não precisa mais.",
-        bytes / (1024 * 1024),
-        MAX_LIBRARY_BYTES / (1024 * 1024)
+        "O acervo tem cerca de {} MB de conteúdo, mais do que cabe numa cópia portátil (até {} MB). Nada foi gravado. Use «Fazer cópia agora» (que só abre nesta conta do Windows) ou leve para a Lixeira e esvazie PDFs e anexos de que não precisa mais.",
+        bytes.div_ceil(1024 * 1024),
+        limit / (1024 * 1024)
     )
 }
 
-/// The packed, encrypted file: magic, header line, ciphertext.
+/// Every item of the Lixeira must travel with the item it holds: one that
+/// could not be read (the snapshot leaves it out) refuses the export instead
+/// of a copy that silently loses it.
+fn ensure_trash_is_whole(snapshot: &CabinetSnapshot) -> Result<()> {
+    for row in &snapshot.trash {
+        let (present, what) = match row.kind.as_str() {
+            "document" => (
+                snapshot.documents.iter().any(|d| d.id == row.item_id),
+                "o documento",
+            ),
+            "capture" => (
+                snapshot.captures.iter().any(|c| c.id == row.item_id),
+                "a versão de documento",
+            ),
+            "task" => (
+                snapshot.tasks.iter().any(|t| t.id == row.item_id),
+                "a tarefa",
+            ),
+            "attachment" => (
+                snapshot.attachments.iter().any(|a| a.id == row.item_id),
+                "o anexo",
+            ),
+            _ => (true, ""),
+        };
+        ensure!(
+            present,
+            "A Lixeira tem {what} nº {} que não pode ser lido (o conteúdo está danificado ou foi gravado em outra conta do Windows). A cópia portátil não foi gravada, para não perder esse item sem avisar. Exclua esse item da Lixeira de vez (Ajustes ▸ Lixeira) e tente de novo, ou use «Fazer cópia agora».",
+            row.item_id
+        );
+    }
+    Ok(())
+}
+
+/// The header line and the encrypted body of the file (magic, header line,
+/// body). The body is `[u64 n][n bytes of the packed items][u64 m][m bytes of
+/// the extras]`, encrypted in place: no second copy of it is made.
 fn seal_file(
     password: &str,
     esquema: i64,
@@ -123,7 +184,8 @@ fn seal_file(
     gravada_em: &str,
     payload: &Payload,
     blobs: &sharedfolder::Blobs,
-) -> Result<Vec<u8>> {
+    extras: &Extras,
+) -> Result<(Vec<u8>, Vec<u8>)> {
     let salt = sharedfolder::random(SALT_BYTES)?;
     let nonce_bytes = sharedfolder::random(NONCE_BYTES)?;
     let header = Header {
@@ -140,7 +202,14 @@ fn seal_file(
         !header_bytes.contains(&b'\n'),
         "Não foi possível montar a cópia portátil."
     );
-    let mut body = sharedfolder::pack(payload, blobs)?;
+    let packed = sharedfolder::pack(payload, blobs)?;
+    let extras = serde_json::to_vec(extras)?;
+    let mut body = Vec::with_capacity(16 + packed.len() + extras.len() + 16);
+    body.extend_from_slice(&(packed.len() as u64).to_le_bytes());
+    body.extend_from_slice(&packed);
+    drop(packed);
+    body.extend_from_slice(&(extras.len() as u64).to_le_bytes());
+    body.extend_from_slice(&extras);
     let key = ring::aead::LessSafeKey::new(
         ring::aead::UnboundKey::new(
             &ring::aead::AES_256_GCM,
@@ -152,20 +221,15 @@ fn seal_file(
         .map_err(|_| anyhow::anyhow!("Não foi possível proteger a cópia portátil."))?;
     key.seal_in_place_append_tag(nonce, ring::aead::Aad::from(&header_bytes), &mut body)
         .map_err(|_| anyhow::anyhow!("Não foi possível proteger a cópia portátil."))?;
-    let mut out = Vec::with_capacity(PORTABLE_MAGIC.len() + header_bytes.len() + 1 + body.len());
-    out.extend_from_slice(PORTABLE_MAGIC);
-    out.extend_from_slice(&header_bytes);
-    out.push(b'\n');
-    out.extend_from_slice(&body);
-    Ok(out)
+    Ok((header_bytes, body))
 }
 
-/// Writes `bytes` at `path` without ever replacing a file: written to a
-/// temporary file of its own beside it, flushed, then given the final name
-/// with a hard link (which fails when the name exists) or, where links are
-/// not supported, by claiming the name exclusively and renaming over that
-/// empty, claimed file.
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+/// Writes `parts` one after the other in a new file at `path`, without ever
+/// replacing a file: written to a temporary file of its own beside it,
+/// flushed, then given its name by a move that fails when the name is taken
+/// (`atomic_file::move_no_replace`). On any failure the temporary file goes
+/// and nothing is left under the name.
+fn write_new(path: &Path, parts: &[&[u8]]) -> Result<()> {
     let exists = || {
         anyhow::anyhow!(
             "Já existe um arquivo em {}; escolha outro nome (o Ponte nunca grava por cima de um arquivo).",
@@ -188,7 +252,9 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
             .write(true)
             .create_new(true)
             .open(&temp)?;
-        file.write_all(bytes)?;
+        for part in parts {
+            file.write_all(part)?;
+        }
         file.sync_all()
     })();
     if let Err(error) = written {
@@ -200,40 +266,44 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
             )
         });
     }
-    let published = match std::fs::hard_link(&temp, path) {
+    match crate::atomic_file::move_no_replace(&temp, path) {
         Ok(()) => Ok(()),
-        Err(_) if std::fs::symlink_metadata(path).is_ok() => Err(exists()),
-        Err(_) => match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-        {
-            Ok(claimed) => {
-                drop(claimed);
-                // The claimed file is empty and this run's: replacing it is safe.
-                std::fs::rename(&temp, path).map_err(|error| {
-                    let _ = std::fs::remove_file(path);
-                    anyhow::anyhow!(
-                        "Não foi possível dar o nome final à cópia portátil ({}): {error}",
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            if error.kind() == std::io::ErrorKind::AlreadyExists
+                || std::fs::symlink_metadata(path).is_ok()
+            {
+                Err(exists())
+            } else {
+                Err(error).with_context(|| {
+                    format!(
+                        "Não foi possível dar o nome final à cópia portátil ({}).",
                         path.display()
                     )
                 })
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(exists()),
-            Err(error) => Err(anyhow::anyhow!(
-                "Não foi possível gravar a cópia portátil em {}: {error}",
-                path.display()
-            )),
-        },
-    };
-    let _ = std::fs::remove_file(&temp);
-    published
+        }
+    }
 }
 
 /// "Exportar cópia portátil…": the library at `database` in a new file at
 /// `path`, encrypted with `password`. The library is only read, in one read
-/// transaction (the snapshot and the bytes of the files agree).
+/// transaction: the size is measured in it before anything is read into
+/// memory, and the snapshot, the bytes of the files and the import receipts
+/// all come from that same state.
 pub fn export(database: &Path, path: &Path, password: &str) -> Result<Exported> {
+    export_limited(database, path, password, MAX_LIBRARY_BYTES, &|| {})
+}
+
+/// [`export`] with the limit given and a step run right after the size was
+/// measured (the tests commit a change there, from another connection).
+fn export_limited(
+    database: &Path,
+    path: &Path,
+    password: &str,
+    limit: u64,
+    after_measure: &dyn Fn(),
+) -> Result<Exported> {
     validate_password(password)?;
     ensure!(
         path.extension()
@@ -247,15 +317,27 @@ pub fn export(database: &Path, path: &Path, password: &str) -> Result<Exported> 
         );
     }
     let store = Store::open_service(database)?;
-    let used = library_bytes(&store)?;
-    ensure!(used <= MAX_LIBRARY_BYTES, "{}", too_big(used));
     let member = store
         .load_intranet_config()
         .map(|c| c.member_name)
         .unwrap_or_default();
     let read = store.conn.unchecked_transaction()?;
+    // The first read of the transaction: from here on it sees one state.
+    let measured = content_bytes(&store.conn)?;
+    after_measure();
+    ensure!(measured <= limit, "{}", too_big(measured, limit));
     let snapshot = store.export_snapshot()?;
+    ensure_trash_is_whole(&snapshot)?;
     let blobs = crate::intranet::collect_blobs(&store, &snapshot)?;
+    let extras = Extras {
+        recibos_de_importacao: store
+            .conn
+            .prepare(
+                "SELECT request_id, manifest, completed_at FROM import_receipts WHERE state='done' ORDER BY request_id",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?,
+    };
     drop(read);
     let documents = snapshot.documents.len();
     let payload = Payload {
@@ -264,24 +346,26 @@ pub fn export(database: &Path, path: &Path, password: &str) -> Result<Exported> 
         journal: Vec::new(),
     };
     let written_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let bytes = seal_file(
+    let (header, body) = seal_file(
         password,
         crate::storage::SCHEMA_VERSION,
         &member,
         &written_at,
         &payload,
         &blobs,
+        &extras,
     )?;
     drop((payload, blobs));
+    let total = (PORTABLE_MAGIC.len() + header.len() + 1 + body.len()) as u64;
     ensure!(
-        bytes.len() as u64 <= MAX_FILE_BYTES,
+        total <= MAX_FILE_BYTES,
         "{}",
-        too_big(bytes.len() as u64)
+        too_big(total, MAX_FILE_BYTES)
     );
-    write_new(path, &bytes)?;
+    write_new(path, &[PORTABLE_MAGIC, &header, b"\n", &body])?;
     Ok(Exported {
         path: path.to_path_buf(),
-        bytes: bytes.len() as u64,
+        bytes: total,
         documents,
     })
 }
@@ -291,6 +375,7 @@ pub struct Opened {
     pub header: Header,
     pub snapshot: CabinetSnapshot,
     pub blobs: sharedfolder::Blobs,
+    extras: Extras,
 }
 
 const DAMAGED: &str = "A cópia portátil está incompleta ou danificada (o arquivo terminou de ser copiado?). Nada foi criado.";
@@ -361,7 +446,24 @@ pub fn open(path: &Path, password: &str) -> Result<Opened> {
                 "Senha incorreta, ou a cópia portátil está danificada. Confira a senha (maiúsculas e minúsculas contam). Nada foi criado."
             )
         })?;
-    let (payload, blobs) = sharedfolder::unpack(plain).map_err(|_| anyhow::anyhow!(DAMAGED))?;
+    let section = |at: usize| -> Result<(usize, usize)> {
+        let len = plain
+            .get(at..at + 8)
+            .and_then(|b| b.try_into().ok())
+            .map(u64::from_le_bytes)
+            .context(DAMAGED)?;
+        let len = usize::try_from(len).map_err(|_| anyhow::anyhow!(DAMAGED))?;
+        let end = (at + 8).checked_add(len).context(DAMAGED)?;
+        ensure!(end <= plain.len(), DAMAGED);
+        Ok((at + 8, end))
+    };
+    let (start, end) = section(0)?;
+    let (extras_start, extras_end) = section(end)?;
+    ensure!(extras_end == plain.len(), DAMAGED);
+    let extras: Extras = serde_json::from_slice(&plain[extras_start..extras_end])
+        .map_err(|_| anyhow::anyhow!(DAMAGED))?;
+    let (payload, blobs) =
+        sharedfolder::unpack(&plain[start..end]).map_err(|_| anyhow::anyhow!(DAMAGED))?;
     drop(bytes);
     // Every file the snapshot lists comes in the copy, once.
     for meta in &payload.snapshot.files_meta {
@@ -379,6 +481,7 @@ pub fn open(path: &Path, password: &str) -> Result<Opened> {
         header,
         snapshot: payload.snapshot,
         blobs,
+        extras,
     })
 }
 
@@ -407,7 +510,15 @@ pub fn import(path: &Path, password: &str, place: &Place, now: NaiveDateTime) ->
                 |id| blobs.attachments.get(&id).cloned().context(DAMAGED),
                 |tx| {
                     // The numbers of this library are its own reference.
-                    crate::idmap::reset_frame(tx, true)
+                    crate::idmap::reset_frame(tx, true)?;
+                    // Imports already completed stay completed.
+                    for (request, manifest, completed) in &opened.extras.recibos_de_importacao {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO import_receipts(request_id,manifest,completed_at,state) VALUES(?1,?2,?3,'done')",
+                            rusqlite::params![request, manifest, completed],
+                        )?;
+                    }
+                    Ok(())
                 },
             )?;
         }
@@ -515,7 +626,11 @@ mod tests {
             "Ref. {{numero_documento}}",
         );
         store.save_template(&template, None).unwrap();
-        // Trash contents: the second document goes to the Lixeira.
+        // Trash contents: the second document goes to the Lixeira, with a
+        // task of its own.
+        let mut archived = crate::tasks::Task::new(second.document_id);
+        archived.title = "Tarefa do documento arquivado".into();
+        store.save_task(&archived).unwrap();
         store
             .trash_item(crate::trash::Target {
                 kind: crate::trash::Kind::Document,
@@ -729,7 +844,7 @@ mod tests {
         // name while the copy is written wins.
         let raced = dir.path().join("corrida.pontecopia");
         std::fs::write(&raced, b"chegou antes").unwrap();
-        assert!(write_new(&raced, b"copia").is_err());
+        assert!(write_new(&raced, &[b"copia"]).is_err());
         assert_eq!(std::fs::read(&raced).unwrap(), b"chegou antes");
         let leftovers: Vec<String> = folders(dir.path())
             .into_iter()
@@ -738,14 +853,171 @@ mod tests {
         assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
+    /// An attachment of `size` bytes, in a document of its own.
+    fn attachment_of(db: &Path, number: &str, size: usize) {
+        let mut store = Store::open(db).unwrap();
+        let receipt = store.import_capture(&capture(number)).unwrap();
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        bytes.extend((0..size).map(|n| (n % 251) as u8));
+        store
+            .add_attachment(
+                crate::attachments::Owner::Document(receipt.document_id),
+                "grande.pdf",
+                "anexo grande",
+                &bytes,
+            )
+            .unwrap();
+    }
+
     #[test]
-    fn a_library_too_big_is_refused_before_it_is_read() {
-        assert!(too_big(MAX_LIBRARY_BYTES + 1).contains("mais do que cabe"));
+    fn a_library_over_the_limit_is_refused_before_it_is_read() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("acervo.sqlite3");
-        drop(full_library(&db));
-        let store = Store::open(&db).unwrap();
-        let used = library_bytes(&store).unwrap();
-        assert!(used > 0 && used < MAX_LIBRARY_BYTES);
+        attachment_of(&db, "SEFAZ-PRO-2026/00001", 300 * 1024);
+        let file = dir.path().join("acervo.pontecopia");
+        let error = export_limited(&db, &file, PASSWORD, 256 * 1024, &|| {})
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("mais do que cabe"), "{error}");
+        assert!(!file.exists());
+        assert!(folders(dir.path()).iter().all(|n| !n.ends_with(".tmp")));
+        // Under the limit, it goes.
+        export_limited(&db, &file, PASSWORD, 2 * 1024 * 1024, &|| {}).unwrap();
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn what_is_measured_is_what_is_exported() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("PonteProj");
+        std::fs::create_dir_all(&home).unwrap();
+        let db = crate::paths::db_path_in(&home);
+        attachment_of(&db, "SEFAZ-PRO-2026/00001", 10 * 1024);
+        let file = dir.path().join("acervo.pontecopia");
+        // A large attachment arrives right after the measure (another
+        // connection, the browser for instance): it is not in this export,
+        // which is exactly the state that was measured.
+        let late = || attachment_of(&db, "SEFAZ-PRO-2026/00002", 400 * 1024);
+        export_limited(&db, &file, PASSWORD, 256 * 1024, &late).unwrap();
+        let other = dir.path().join("outro").join("PonteProj");
+        std::fs::create_dir_all(&other).unwrap();
+        let built = import(&file, PASSWORD, &Place::new(Some(&other), &other), now()).unwrap();
+        let restored = Store::open(&crate::paths::db_path_in(&built.folder)).unwrap();
+        assert_eq!(restored.list_documents("").unwrap().len(), 1);
+        // The library itself has both.
+        assert_eq!(
+            Store::open(&db).unwrap().list_documents("").unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_trashed_item_that_cannot_be_read_refuses_the_export() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        let mut store = full_library(&db);
+        let mut task = crate::tasks::Task::standalone();
+        task.title = "Tarefa que vai estragar".into();
+        let task = store.save_task(&task).unwrap();
+        store
+            .trash_item(crate::trash::Target {
+                kind: crate::trash::Kind::Task,
+                id: task,
+            })
+            .unwrap();
+        // Its sealed payload is damaged (the reader skips a trashed task it
+        // cannot read; the copy would silently lose it).
+        let mut damaged = crate::protection::seal(b"{}").unwrap();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 0x5a;
+        // The guards forbid editing what is in the Lixeira: the damage comes
+        // from outside the program (the next opening puts them back).
+        let guards: Vec<String> = store
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='tasks'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        for guard in guards {
+            store
+                .conn
+                .execute_batch(&format!("DROP TRIGGER {guard}"))
+                .unwrap();
+        }
+        store
+            .conn
+            .execute(
+                "UPDATE tasks SET payload=?1 WHERE id=?2",
+                rusqlite::params![damaged, task],
+            )
+            .unwrap();
+        drop(store);
+        let file = dir.path().join("acervo.pontecopia");
+        let error = export(&db, &file, PASSWORD).unwrap_err().to_string();
+        assert!(error.contains(&format!("a tarefa nº {task}")), "{error}");
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn an_import_completed_before_the_copy_stays_completed_after_it() {
+        use crate::record_import::{Created, NewAttachment, NewRecord};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        let mut store = Store::open(&db).unwrap();
+        let fields = crate::manual::ManualFields {
+            kind: "whatsapp".into(),
+            title: "Conversa com Servidor A — 04/11/2026".into(),
+            origin: "Servidor A".into(),
+            document_date: "2026-11-04".into(),
+            text: "[04/11/2026 10:00] Servidor A: bom dia".into(),
+        };
+        let record = NewRecord {
+            request_id: crate::record_import::whatsapp_request_id(&fields.origin, &fields.text),
+            fields,
+            metadata: Default::default(),
+        };
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&[0, 0, 0, 13, b'I', b'H', b'D', b'R', 1, 1, 2, 3]);
+        let files = [NewAttachment {
+            name: "foto.png".into(),
+            bytes: png,
+            description: String::new(),
+        }];
+        let Created::New { document_id, .. } = store
+            .create_record_with_attachments(&record, &files)
+            .unwrap()
+        else {
+            panic!("esperava um registro novo")
+        };
+        // The person deletes the file for good.
+        let id = store
+            .list_attachments(crate::attachments::Owner::Document(document_id))
+            .unwrap()[0]
+            .id;
+        let target = crate::trash::Target {
+            kind: crate::trash::Kind::Attachment,
+            id,
+        };
+        store.trash_item(target.clone()).unwrap();
+        store.purge_trash_item(target).unwrap();
+        drop(store);
+        let file = dir.path().join("acervo.pontecopia");
+        export(&db, &file, PASSWORD).unwrap();
+        let other = dir.path().join("outro").join("PonteProj");
+        std::fs::create_dir_all(&other).unwrap();
+        let built = import(&file, PASSWORD, &Place::new(Some(&other), &other), now()).unwrap();
+        let mut restored = Store::open(&crate::paths::db_path_in(&built.folder)).unwrap();
+        // The same import, sent again (the extension retries): nothing comes back.
+        let again = restored
+            .create_record_with_attachments(&record, &files)
+            .unwrap();
+        assert!(matches!(again, Created::Already { .. }), "{again:?}");
+        let restored_doc = restored.list_documents("").unwrap()[0].id;
+        assert!(restored
+            .list_attachments(crate::attachments::Owner::Document(restored_doc))
+            .unwrap()
+            .is_empty());
     }
 }

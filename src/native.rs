@@ -810,6 +810,20 @@ pub fn run_host() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_selection_that_cannot_be_followed_refuses_the_browser() {
+        let mut resolution = crate::paths::Resolution {
+            data_dir: std::path::PathBuf::from("C:/perfil/PonteProj"),
+            home: Some(std::path::PathBuf::from("C:/perfil/PonteProj")),
+            notice: None,
+        };
+        assert_eq!(refusal_for(&resolution), None);
+        resolution.notice = Some("O acervo que este computador usa não foi encontrado.".into());
+        let refusal = refusal_for(&resolution).unwrap();
+        assert!(refusal.contains("nada foi importado"), "{refusal}");
+        assert!(refusal.contains("não foi encontrado"), "{refusal}");
+    }
     #[test]
     fn unicode_roundtrip_uses_byte_length() {
         let value = json!({"texto":"Ofício — informação"});
