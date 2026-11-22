@@ -105,9 +105,33 @@ class FiltrosGuardadosTest {
         val kept = FilterMemory.savedDocument(1L, docs)
         val twins = listOf(doc(5, "SEI 0001/2026", "Plano de manejo da BNBO"), doc(6, "SEI 0001/2026", "Plano de manejo da BNBO"))
         assertNull(FilterMemory.restoreDocument(kept, twins))
-        // The one with the right id is still taken when it is among them.
-        val withOriginal = twins + doc(1, "SEI 0001/2026", "Plano de manejo da BNBO")
-        assertEquals(1L, FilterMemory.restoreDocument(kept, withOriginal))
+    }
+
+    @Test fun comGemeosOIdSalvoTambemNaoVale() {
+        val kept = FilterMemory.savedDocument(1L, docs)
+        // The saved id still exists and still has the same number and title, but so does another document:
+        // nothing says which one it was, so the filter is cleared (even if the id is one of the twins).
+        val twinsWithSavedId = listOf(doc(1, "SEI 0001/2026", "Plano de manejo da BNBO"), doc(6, "SEI 0001/2026", "Plano de manejo da BNBO"))
+        assertNull(FilterMemory.restoreDocument(kept, twinsWithSavedId))
+        // With a single match, the id that matches is restored (as is the unique document under another id).
+        assertEquals(1L, FilterMemory.restoreDocument(kept, docs))
+        assertEquals(6L, FilterMemory.restoreDocument(kept, listOf(doc(1, "Outro", "Outro"), doc(6, "SEI 0001/2026", "Plano de manejo da BNBO"))))
+    }
+
+    @Test fun umAcervoNovoAbreSemFiltrosEOArquivoOutroLimpa() {
+        // What a new library opens with: nothing chosen anywhere, the first area, the "all" chip, no document.
+        val cleared = FilterMemory.CLEARED
+        assertTrue(cleared.taskCategories.isEmpty() && cleared.docCategories.isEmpty())
+        assertEquals("", cleared.project)
+        assertNull(cleared.document)
+        assertEquals(TasksSegments.TASKS, cleared.segment)
+        assertEquals(DocFilter.ALL, cleared.docFilter)
+        // What is kept after clearing reads back as nothing, including "Sem documento".
+        assertEquals(SavedFilters(), FilterMemory.decode(FilterMemory.encode(cleared)))
+        // Picking another sync file clears; picking the same one again does not.
+        assertTrue(FilterMemory.clearsOnFilePick("content://drive/a", "content://drive/b"))
+        assertTrue(FilterMemory.clearsOnFilePick(null, "content://drive/b"))
+        assertFalse(FilterMemory.clearsOnFilePick("content://drive/a", "content://drive/a"))
     }
 
     @Test fun oDocumentoSumiuOuOAcervoAindaEstaVazio() {

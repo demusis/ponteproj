@@ -47,16 +47,23 @@ internal object FilterMemory {
     }
 
     /**
-     * The filter to put back: "Sem documento" always; a document when the one with that id is still the same
-     * (number and title), or else when exactly one document has them; otherwise none (never a different document).
+     * The filter to put back: "Sem documento" always; a document only when exactly ONE document of the library has
+     * the saved number and title (its id is then the one that matches, or else that document's own); otherwise none.
+     * With twins (same number and title) neither the saved id nor anything else can say which one it was, so the
+     * filter is cleared rather than risk filtering by the wrong document.
      */
     fun restoreDocument(saved: SavedDocument?, docs: List<Doc>): Long? {
         if (saved == null) return null
         if (saved.id == 0L) return 0L
         if (saved.fingerprint.isEmpty()) return null
-        docs.find { it.id == saved.id && fingerprint(it) == saved.fingerprint }?.let { return it.id }
         return docs.filter { fingerprint(it) == saved.fingerprint }.singleOrNull()?.id
     }
+
+    /** What a new library opens with: nothing filtered, the first area, the "all" chip. */
+    val CLEARED = SavedFilters()
+
+    /** Picking a sync file that is not the one in use belongs to another library: its lists start unfiltered. */
+    fun clearsOnFilePick(current: String?, picked: String) = current != picked
 
     // A value never carries a line break or the separators below.
     private fun clean(value: String) = value.filter { it >= ' ' && it != ',' && it != ':' }
@@ -109,15 +116,32 @@ internal object ForegroundSync {
     const val STALE_MS = 5 * 60_000L
 
     /**
+     * Whether the screen [route] can hold something the person typed and has not saved (a form, an editor, a draft,
+     * a picker with a choice in progress, the settings fields). The reading screens (a ficha, a text, a project,
+     * an atendimento, a use or a resource) and the search do not. Every route is decided here on purpose.
+     */
+    fun editing(route: Route): Boolean = when (route) {
+        is Route.Note, is Route.NewTask, is Route.EditTask, is Route.Pick,
+        is Route.ProjectEdit, is Route.ProjectInclude, is Route.Account,
+        Route.Photo, Route.Share, Route.SharePick, Route.Settings, Route.Setup -> true
+        is Route.Document, is Route.Text, is Route.Project, is Route.Attendance,
+        is Route.ResourceUse, is Route.Resource, Route.Search -> false
+    }
+
+    fun editing(stack: List<Route>): Boolean = stack.any { editing(it) }
+    /**
      * True when the app is back in front, [configured] (a file and a passphrase ready, the core open, setup over),
      * not [locked], nothing already [syncing], and the last good sync ([lastSync], 0: never) is [STALE_MS] old or more.
      * [lastAttempt] is the last time a return asked for a sync: one that failed (offline, say) is not asked again
      * before [STALE_MS], so coming and going never repeats the same error. A clock set back counts as old.
+     * [editing]: a screen where something is being typed is open ([editing] below): the sync is skipped for this
+     * return, so a newer version never replaces what the person is writing; it happens after the save or at the next return.
      */
     fun shouldSync(
-        now: Long, lastSync: Long, locked: Boolean, syncing: Boolean, configured: Boolean, lastAttempt: Long = 0L
+        now: Long, lastSync: Long, locked: Boolean, syncing: Boolean, configured: Boolean, lastAttempt: Long = 0L,
+        editing: Boolean = false
     ): Boolean {
-        if (!configured || locked || syncing) return false
+        if (!configured || locked || syncing || editing) return false
         if (lastAttempt > 0L && now >= lastAttempt && now - lastAttempt < STALE_MS) return false
         return lastSync <= 0L || now < lastSync || now - lastSync >= STALE_MS
     }

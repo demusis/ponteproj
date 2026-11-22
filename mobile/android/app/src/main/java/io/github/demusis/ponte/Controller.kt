@@ -557,8 +557,18 @@ internal object Controller {
     private var keptDocument: SavedDocument? = null
 
     /** Puts back the filters and the area of the last run; the document is checked when the documents are read. */
-    private fun restoreFilters() {
-        val kept = FilterMemory.decode(prefs.getString(FilterMemory.KEY, null))
+    private fun restoreFilters() = applyFilters(FilterMemory.decode(prefs.getString(FilterMemory.KEY, null)))
+
+    /** A new library (a reset, or another sync file): the lists start unfiltered, here and in the preferences. */
+    private fun clearFilters() {
+        applyFilters(FilterMemory.CLEARED)
+        try {
+            prefs.edit().remove(FilterMemory.KEY).apply()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun applyFilters(kept: SavedFilters) {
         restoringFilters = true
         try {
             taskCatFilter = kept.taskCategories
@@ -567,7 +577,8 @@ internal object Controller {
             tasksSegment = kept.segment
             docFilter = kept.docFilter
             // "Sem documento" needs no document; any other waits for the library to be read (a local id may have changed).
-            if (kept.document?.id == 0L) taskDocumentFilter = 0L else pendingDocumentFilter = kept.document
+            taskDocumentFilter = if (kept.document?.id == 0L) 0L else null
+            pendingDocumentFilter = kept.document.takeIf { it?.id != 0L }
             keptDocument = kept.document
         } finally {
             restoringFilters = false
@@ -644,7 +655,8 @@ internal object Controller {
         val configured = fileUri != null && !SyncRunner.keyBroken && SyncRunner.ready && SyncRunner.passphrase.isNotEmpty() &&
             idleTask == null && Route.Setup !in stack && !unlockBusy && !Secrets.busy
         val now = System.currentTimeMillis()
-        if (!ForegroundSync.shouldSync(now, lastSync, locked, SyncRunner.running.get(), configured, returnSyncAt)) return
+        val editing = ForegroundSync.editing(stack.toList())
+        if (!ForegroundSync.shouldSync(now, lastSync, locked, SyncRunner.running.get(), configured, returnSyncAt, editing)) return
         returnSyncAt = now
         requestSync(null, auto = true)
     }
@@ -2978,6 +2990,7 @@ internal object Controller {
             app.contentResolver.takePersistableUriPermission(
                 uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
+            if (FilterMemory.clearsOnFilePick(fileUri?.toString(), uri.toString())) clearFilters()
             prefs.edit().putString("uri", uri.toString()).apply()
             fileUri = uri
             fileName = ""
@@ -3041,6 +3054,8 @@ internal object Controller {
             // kept behind the fingerprint and the one in memory.
             Secrets.forget(app)
             SyncRunner.passphrase = ""
+            // The lists of the old library are not the new one's: nothing stays filtered.
+            clearFilters()
             // A share in progress (its draft and its copy) goes with the rest of the phone's data.
             Intake.wipeForReset()
         }

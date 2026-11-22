@@ -142,10 +142,11 @@ private fun TaskLoaded(
     // A task without document has nothing to triage.
     val shownActions = if (!linked && form.action != "triar") actions.filter { it.key != "triar" } else actions
     val titleMissing = form.title.isBlank()
-    // What is typed in the hour and days boxes starts over with a new epoch or stored version.
-    var startHour by rememberSaveable(state.epoch, task.version) { mutableStateOf(TaskRules.splitMoment(form.scheduledStart).second) }
-    var endHour by rememberSaveable(state.epoch, task.version) { mutableStateOf(TaskRules.splitMoment(form.scheduledEnd).second) }
-    var daysText by rememberSaveable(state.epoch, task.version) { mutableStateOf(TaskRules.estimateDays(form.estimateMinutes).toString()) }
+    // What is typed in the hour and days boxes starts over with a new epoch or when the draft starts over from a newer
+    // version (nothing typed); a newer version that arrives while there are edits is a conflict, and the typing stays.
+    var startHour by rememberSaveable(state.epoch, draft.baseVersion) { mutableStateOf(TaskRules.splitMoment(form.scheduledStart).second) }
+    var endHour by rememberSaveable(state.epoch, draft.baseVersion) { mutableStateOf(TaskRules.splitMoment(form.scheduledEnd).second) }
+    var daysText by rememberSaveable(state.epoch, draft.baseVersion) { mutableStateOf(TaskRules.estimateDays(form.estimateMinutes).toString()) }
     // The form only takes a valid hour; Salvar waits for the one that is not.
     val hourInvalid = planningHourInvalid(form.scheduledStart, form.scheduledEnd, startHour, endHour)
 
