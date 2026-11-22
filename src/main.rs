@@ -25,6 +25,28 @@ fn file_argument<'a>(args: &'a [String], usage: &str) -> Result<&'a String> {
     }
 }
 
+// Validate against a consistent temporary snapshot so opening an old or absent
+// library does not migrate or create it for an invalid plan or a dry run.
+fn preview_plan(plan: &ponteproj::plan_import::Plan) -> Result<ponteproj::plan_import::PlanResult> {
+    let dir = std::env::temp_dir().join(format!("ponte-plan-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir)?;
+    let result = (|| {
+        let copy = dir.join("acervo.sqlite3");
+        let original = paths::db_path_in(&paths::data_dir_path()?);
+        if original.exists() {
+            let source = rusqlite::Connection::open_with_flags(
+                &original,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            source.busy_timeout(std::time::Duration::from_secs(5))?;
+            source.backup("main", &copy, rusqlite::backup::NO_PROGRESS)?;
+        }
+        Store::open(&copy)?.import_plan(plan, true)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     if n == 1 {
         format!("1 {one}")
@@ -84,7 +106,12 @@ fn run() -> Result<()> {
             }
             let plan: ponteproj::plan_import::Plan =
                 serde_json::from_slice(&bytes).context("JSON do plano inválido")?;
-            let result = Store::open(&paths::db_path()?)?.import_plan(&plan, args.len() == 3)?;
+            let preview = preview_plan(&plan)?;
+            let result = if args.len() == 3 {
+                preview
+            } else {
+                Store::open(&paths::db_path()?)?.import_plan(&plan, false)?
+            };
             println!("{}", serde_json::to_string(&result)?);
             Ok(())
         }
