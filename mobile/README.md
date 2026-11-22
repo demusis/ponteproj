@@ -14,8 +14,7 @@ Cada item abaixo traz a versão em que entrou; vale o que está aqui, e a versã
 
 - **Situação da tarefa (0.26.0):** o formulário da tarefa tem o campo **Situação** (*Pendente*, *Em análise*, *Aguardando*), como no computador. Nas listas, as tarefas em análise ou aguardando mostram isso no início da segunda linha. Concluir e Reabrir continuam como estavam.
 
-- **Número de registro alterado (0.26.0):** se o número de um registro criado no celular mudar ao sincronizar, o resumo da sincronização traz a frase *O registro “…” passou de … para … ao sincronizar.* (a mesma do computador).
-<!-- A CONFIRMAR NA INTEGRAÇÃO: cartão do aviso de renumeração no celular -->
+- **Número de registro alterado (0.26.0):** quando uma sincronização muda o número de um registro criado no celular, **Hoje** mostra o cartão **Registro com número alterado**, com a frase do aviso (*O registro “…” passou de … para … ao sincronizar.*; os três mais novos e **e mais N**), **Abrir o registro** e **Entendi**. O aviso fica até ser dispensado, mesmo que a sincronização falhe depois. Registros criados no celular e ainda não enviados mostram **Número provisório** ao lado do número, na lista de Documentos e na ficha, com a nota de que o número pode mudar ao sincronizar.
 
 - **Entrar numa pasta com itens próprios (0.26.0):** um celular que já tem itens próprios e entra numa pasta guarda antes uma cópia conferida do seu acervo; se a cópia não puder ser feita, a entrada não acontece.
 - **Limite conhecido (0.26.0):** se uma sincronização já estiver em andamento e você digitar uma hora pela metade numa tarefa sem nenhuma outra edição, a chegada de uma versão mais nova da tarefa pode apagar esse texto.
