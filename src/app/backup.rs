@@ -154,6 +154,25 @@ impl PonteApp {
     }
 }
 
+/// What the portable copy's form is asking.
+#[derive(Default, Clone, PartialEq, Eq)]
+pub(super) enum PortableMode {
+    #[default]
+    Closed,
+    Export,
+    /// The chosen file waits for its password.
+    Import(PathBuf),
+}
+
+/// The password form of the portable copy. The password lives here only
+/// while it is typed; it is never saved.
+#[derive(Default)]
+pub(super) struct PortableForm {
+    pub(super) mode: PortableMode,
+    pub(super) password: String,
+    pub(super) confirm: String,
+}
+
 /// How often the window looks at the pointer again.
 const PLACE_CHECK_EVERY: Duration = Duration::from_secs(5);
 
@@ -374,9 +393,7 @@ impl PonteApp {
         }
         if open_in_use {
             match recovery::open_library_in_use() {
-                Ok(()) => ui
-                    .ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::Close),
+                Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
                 Err(error) => self.error(format!("{error:#}")),
             }
         }
@@ -437,6 +454,93 @@ impl PonteApp {
             move |_| {
                 WorkResult::Recovery(
                     recovery::restore_local_copy(&source, &place, now)
+                        .map_err(|error| format!("{error:#}")),
+                )
+            },
+            ctx,
+        );
+    }
+
+    /// "Exportar cópia portátil…" with the password typed twice: where to
+    /// save, then the file on the worker.
+    pub(super) fn export_portable(&mut self, ctx: &egui::Context) {
+        let password = std::mem::take(&mut self.portable.password);
+        let confirm = std::mem::take(&mut self.portable.confirm);
+        if password != confirm {
+            self.portable.password = password;
+            self.error("As duas senhas não são iguais. Digite a mesma senha nos dois campos.");
+            return;
+        }
+        if let Err(error) = crate::portable_copy::validate_password(&password) {
+            self.portable.password = password;
+            self.portable.confirm = confirm;
+            self.error(error.to_string());
+            return;
+        }
+        let suggested = format!(
+            "acervo-{}.{}",
+            chrono::Local::now().format("%Y%m%d-%H%M"),
+            crate::portable_copy::EXTENSION
+        );
+        let Some(mut path) = crate::windows_ui::save_file(
+            "Salvar cópia portátil",
+            &suggested,
+            &[("Cópia portátil do Ponte", "*.pontecopia")],
+        ) else {
+            self.portable.password = password;
+            self.portable.confirm = confirm;
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension(crate::portable_copy::EXTENSION);
+        }
+        self.portable.mode = PortableMode::Closed;
+        let database = self.db_path.clone();
+        self.spawn(
+            "Gravando a cópia portátil…".into(),
+            WorkKind::Backup,
+            move |_| {
+                WorkResult::PortableExport(
+                    crate::portable_copy::export(&database, &path, &password)
+                        .map_err(|error| format!("{error:#}")),
+                )
+            },
+            ctx,
+        );
+    }
+
+    pub(super) fn accept_portable_export(
+        &mut self,
+        result: std::result::Result<crate::portable_copy::Exported, String>,
+    ) {
+        match result {
+            Ok(done) => self.message(format!(
+                "Cópia portátil gravada em {} ({}, {}). Guarde a senha: sem ela a cópia não abre, e o Ponte não consegue recuperá-la.",
+                done.path.display(),
+                super::plural(done.documents, "documento", "documentos"),
+                auto_backup::human_size(done.bytes)
+            )),
+            Err(error) => self.error(format!("A cópia portátil não foi gravada. {error}")),
+        }
+    }
+
+    /// "Importar cópia portátil…": the file was chosen and the password
+    /// typed; the recovery library is built on the worker (the file is
+    /// opened with the password before anything is created).
+    pub(super) fn import_portable(&mut self, ctx: &egui::Context) {
+        let PortableMode::Import(source) = std::mem::take(&mut self.portable.mode) else {
+            return;
+        };
+        let password = std::mem::take(&mut self.portable.password);
+        self.portable.confirm.clear();
+        let place = recovery::Place::new(self.library.home.as_deref(), &self.data_dir());
+        let now = chrono::Local::now().naive_local();
+        self.spawn(
+            "Abrindo a cópia portátil e montando o acervo de recuperação…".into(),
+            WorkKind::Recovery,
+            move |_| {
+                WorkResult::Recovery(
+                    crate::portable_copy::import(&source, &password, &place, now)
                         .map_err(|error| format!("{error:#}")),
                 )
             },

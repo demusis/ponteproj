@@ -953,7 +953,17 @@ fn a_schema_20_mirror_with_the_higher_revision_does_not_erase_the_projects_of_a_
     a.delete_project(&gone.uid).unwrap();
     a.save_intranet_config(&folder_config("Servidor A", &files(&[&f1])))
         .unwrap();
-    sync(&mut a);
+    // A library with its own items joining a folder is asked first (and,
+    // confirmed, keeps a verified copy of itself before anything changes).
+    let cfg = a.load_intranet_config().unwrap();
+    let asked = a
+        .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+        .unwrap_err()
+        .to_string();
+    assert!(asked.starts_with("[confirmar-substituicao]"), "{asked}");
+    a.sync_with_folders(&cfg, KEY, true, &crate::ai::Reporter::silent())
+        .unwrap();
+    assert!(dir.path().join("copias-antes-da-substituicao").is_dir());
     assert_eq!(names(&a), ["Reforma"]);
     let mirror_of_a = read_copy(&f1);
     assert_eq!(mirror_of_a.header.schema_version, 21);

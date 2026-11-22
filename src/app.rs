@@ -7,8 +7,8 @@ use crate::theme::{self, icon, S1, S2, S3};
 use crate::widgets::{self, Tone};
 use anyhow::{Context, Result};
 
-pub(crate) mod calendar;
 mod backup;
+pub(crate) mod calendar;
 mod calendar_exchange;
 mod conference;
 mod ficha;
@@ -588,8 +588,13 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     }
     let viewport = egui::ViewportBuilder::default()
         .with_title(format!(
-            "Ponte {} • Assistente documental",
-            env!("CARGO_PKG_VERSION")
+            "Ponte {} • {}",
+            env!("CARGO_PKG_VERSION"),
+            if app.library.only_looking() {
+                "Acervo de recuperação (só para olhar)"
+            } else {
+                "Assistente documental"
+            }
         ))
         .with_icon(crate::icon::app_window_icon())
         .with_inner_size(window_size())
@@ -967,8 +972,11 @@ enum WorkResult {
         result: std::result::Result<crate::ai::DraftConference, String>,
     },
     Backup(std::result::Result<PathBuf, String>),
-    /// "Restaurar cópia…": the recovery library built.
+    /// "Restaurar cópia…" and "Importar cópia portátil…": the recovery
+    /// library built.
     Recovery(std::result::Result<crate::recovery::Built, String>),
+    /// "Exportar cópia portátil…": the file written.
+    PortableExport(std::result::Result<crate::portable_copy::Exported, String>),
     Export(std::result::Result<crate::export::ExportReport, String>),
     MailFolders(std::result::Result<Vec<crate::imap::Folder>, String>),
     MailMessages(std::result::Result<Vec<crate::imap::MessageSummary>, String>),
@@ -1384,6 +1392,8 @@ struct PonteApp {
     auto_copy: backup::AutoCopy,
     /// Which library this window has open (a recovery library, the one in use).
     library: backup::LibraryPlace,
+    /// The password form of the portable copy (export or import).
+    portable: backup::PortableForm,
     doc_task_filter: DocTaskFilter,
     doc_priority_filter: DocPriorityFilter,
     doc_origin_filter: DocOriginFilter,
@@ -1502,6 +1512,7 @@ impl PonteApp {
             backup_path: None,
             auto_copy: Default::default(),
             library: Default::default(),
+            portable: Default::default(),
             doc_task_filter: DocTaskFilter::All,
             doc_priority_filter: DocPriorityFilter::All,
             doc_origin_filter: DocOriginFilter::All,
@@ -3168,6 +3179,7 @@ impl PonteApp {
                 self.ai_test_report = Some(result);
             }
             WorkResult::Recovery(result) => self.accept_recovery(result),
+            WorkResult::PortableExport(result) => self.accept_portable_export(result),
             WorkResult::Export(result) => match result {
                 Ok(report) => {
                     self.message(format!(

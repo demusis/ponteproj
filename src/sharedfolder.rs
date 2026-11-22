@@ -223,7 +223,7 @@ pub fn keep_aside(path: &Path) -> Result<PathBuf> {
     Ok(aside)
 }
 
-fn random(bytes: usize) -> Result<Vec<u8>> {
+pub(crate) fn random(bytes: usize) -> Result<Vec<u8>> {
     use ring::rand::SecureRandom;
     let mut out = vec![0_u8; bytes];
     ring::rand::SystemRandom::new()
@@ -232,7 +232,7 @@ fn random(bytes: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn derive_key(password: &str, salt: &[u8]) -> [u8; KEY_BYTES] {
+pub(crate) fn derive_key(password: &str, salt: &[u8]) -> [u8; KEY_BYTES] {
     let mut key = [0_u8; KEY_BYTES];
     ring::pbkdf2::derive(
         ring::pbkdf2::PBKDF2_HMAC_SHA256,
@@ -454,7 +454,7 @@ fn put_i64(out: &mut Vec<u8>, value: i64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-fn pack(payload: &Payload, blobs: &Blobs) -> Result<Vec<u8>> {
+pub(crate) fn pack(payload: &Payload, blobs: &Blobs) -> Result<Vec<u8>> {
     let json = serde_json::to_vec(payload)?;
     let mut out = Vec::with_capacity(json.len() + 1024);
     out.push(CONTAINER_VERSION);
@@ -498,7 +498,7 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn unpack(plain: &[u8]) -> Result<(Payload, Blobs)> {
+pub(crate) fn unpack(plain: &[u8]) -> Result<(Payload, Blobs)> {
     let mut cursor = Cursor { data: plain, at: 0 };
     ensure!(
         cursor.take(1)?[0] == CONTAINER_VERSION,

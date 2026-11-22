@@ -65,9 +65,7 @@ pub fn read_pointer(home: &Path) -> PointerState {
             }
             bytes
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return PointerState::Absent
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return PointerState::Absent,
         Err(error) => return PointerState::Broken(error.to_string()),
     };
     match serde_json::from_slice::<Pointer>(&bytes) {

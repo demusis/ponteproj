@@ -1936,8 +1936,7 @@ impl Store {
                 // Becoming a client now: what is here (nothing queued yet)
                 // is this library's own, and the first exchange replaces it.
                 _ => {
-                    self.list_offline_outbox()?.is_empty()
-                        && self.local_items_summary()?.is_some()
+                    self.list_offline_outbox()?.is_empty() && self.local_items_summary()?.is_some()
                 }
             }
         } else {
@@ -3464,7 +3463,11 @@ impl Store {
             ("categories", "categoria", "categorias"),
             ("work_templates", "modelo", "modelos"),
             ("instruction_blocks", "instrução", "instruções"),
-            ("saiop_batches", "lote de atendimentos", "lotes de atendimentos"),
+            (
+                "saiop_batches",
+                "lote de atendimentos",
+                "lotes de atendimentos",
+            ),
             ("trash", "item na lixeira", "itens na lixeira"),
         ] {
             let exists: bool = self.conn.query_row(
@@ -8620,7 +8623,10 @@ impl FolderSyncReport {
 
 /// PDF and attachment bytes referenced by a snapshot, from the store that
 /// holds them.
-fn collect_blobs(store: &Store, snapshot: &CabinetSnapshot) -> Result<crate::sharedfolder::Blobs> {
+pub(crate) fn collect_blobs(
+    store: &Store,
+    snapshot: &CabinetSnapshot,
+) -> Result<crate::sharedfolder::Blobs> {
     let mut blobs = crate::sharedfolder::Blobs::default();
     for meta in &snapshot.files_meta {
         blobs

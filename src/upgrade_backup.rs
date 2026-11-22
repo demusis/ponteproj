@@ -734,6 +734,34 @@ mod tests {
     }
 
     #[test]
+    fn the_installers_copy_follows_the_library_in_use() {
+        // The computer uses a restored library: the copy before an update is
+        // of that one, in its own backups folder; the main one is not touched.
+        let local = tempfile::tempdir().unwrap();
+        let home = local.path().join("PonteProj");
+        std::fs::create_dir_all(&home).unwrap();
+        drop(library_with(&paths::db_path_in(&home), 1));
+        let restored = local.path().join("PonteProj-recuperacao-20261122-101500");
+        std::fs::create_dir_all(&restored).unwrap();
+        drop(library_with(&paths::db_path_in(&restored), 4));
+        paths::write_pointer(&home, &restored).unwrap();
+        let data_dir = paths::resolve_data_dir(None, || Ok(local.path().to_path_buf())).unwrap();
+        assert!(paths::same_folder(&data_dir, &restored));
+        let copy = backed_up(execute(&Options::default(), &data_dir, "0.50.0", STAMP).unwrap());
+        assert_eq!(rows_in(&copy), 4);
+        assert!(paths::same_folder(
+            copy.parent().unwrap(),
+            &restored.join("backups")
+        ));
+        assert!(!home.join("backups").exists());
+        // The report keeps its form: `ok`, then the path.
+        assert_eq!(
+            report(&Ok(Outcome::BackedUp(copy.clone()))),
+            format!("ok\n{}\n", copy.display())
+        );
+    }
+
+    #[test]
     fn the_default_library_is_copied_into_its_backups_folder() {
         let local = tempfile::tempdir().unwrap();
         let data_dir = paths::resolve_data_dir(None, || Ok(local.path().to_path_buf())).unwrap();
@@ -826,10 +854,20 @@ mod tests {
         let second = folder.path().join("b.parcial");
         std::fs::write(&first, b"primeira copia verificada").unwrap();
         std::fs::write(&second, b"segunda copia verificada").unwrap();
-        let one = publish_without_replacing(&first, folder.path(), &format!("antes-de-instalar-v1-{STAMP}")).unwrap();
+        let one = publish_without_replacing(
+            &first,
+            folder.path(),
+            &format!("antes-de-instalar-v1-{STAMP}"),
+        )
+        .unwrap();
         std::fs::remove_file(&first).unwrap();
         // The second run had also seen the name free: it must take another.
-        let two = publish_without_replacing(&second, folder.path(), &format!("antes-de-instalar-v1-{STAMP}")).unwrap();
+        let two = publish_without_replacing(
+            &second,
+            folder.path(),
+            &format!("antes-de-instalar-v1-{STAMP}"),
+        )
+        .unwrap();
         std::fs::remove_file(&second).unwrap();
         assert_eq!(
             one.file_name().unwrap().to_string_lossy(),
@@ -1197,7 +1235,10 @@ mod tests {
         let other = make("outro.parcial", day * 30);
         // Our family's start, but not the shape of a name this helper gives.
         let lookalike = make("antes-de-instalar-meu-arquivo.parcial", day * 30);
-        let other_family = make("automatica-20260101-000000.sqlite3.cccccccc.parcial", day * 30);
+        let other_family = make(
+            "automatica-20260101-000000.sqlite3.cccccccc.parcial",
+            day * 30,
+        );
         remove_abandoned_partials(folder, INSTALLER_PREFIX, std::time::SystemTime::now());
         assert!(!old.exists() && !old_wal.exists());
         assert!(young.exists() && finished.exists() && other.exists());

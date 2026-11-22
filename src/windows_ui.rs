@@ -215,8 +215,11 @@ pub fn installation_status() -> InstallStatus {
         .or(edge.clone())
         .map(PathBuf::from)
         .or_else(|| {
-            crate::paths::data_dir()
+            // The installer writes it in the main folder, whichever library
+            // the pointer names.
+            crate::paths::resolution()
                 .ok()
+                .map(|r| r.home.unwrap_or(r.data_dir))
                 .map(|d| d.join(format!("{host}.json")))
         });
     let manifest_valid = manifest.as_deref().is_some_and(manifest_names_existing_exe);

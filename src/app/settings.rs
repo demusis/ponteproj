@@ -723,7 +723,9 @@ impl PonteApp {
             );
             ui.add_space(S1);
             ui.horizontal_wrapped(|ui| {
-                backup = ui.add_enabled(idle, widgets::primary("Fazer cópia agora")).clicked();
+                backup = ui
+                    .add_enabled(idle, widgets::primary("Fazer cópia agora"))
+                    .clicked();
                 if has_backup {
                     copy_backup = ui
                         .add(widgets::quiet("Copiar o caminho da última cópia"))
@@ -795,10 +797,7 @@ impl PonteApp {
                 }
             });
             ui.horizontal_wrapped(|ui| {
-                widgets::small_muted(
-                    ui,
-                    format!("Automáticas: {}", summary.folder.display()),
-                );
+                widgets::small_muted(ui, format!("Automáticas: {}", summary.folder.display()));
                 if ui
                     .add(widgets::quiet(format!("{} Abrir pasta", icon::FOLDER)))
                     .clicked()
@@ -820,6 +819,8 @@ impl PonteApp {
         }
         ui.add_space(S3);
         self.restore_card(ui, ctx, idle);
+        ui.add_space(S3);
+        self.portable_card(ui, ctx, idle);
         ui.add_space(S3);
         self.libraries_card(ui);
         ui.add_space(S3);
@@ -880,6 +881,112 @@ impl PonteApp {
         }
     }
 
+    /// "Cópia portátil (com senha)": export and import, with what does not
+    /// travel.
+    fn portable_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, idle: bool) {
+        use super::backup::PortableMode;
+        let mut start_export = false;
+        let mut choose_import = false;
+        let mut go = false;
+        let mut cancel = false;
+        let mode = self.portable.mode.clone();
+        widgets::section(ui, "Cópia portátil (com senha)");
+        widgets::card(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Um arquivo .pontecopia com o acervo inteiro (documentos, PDFs, anexos, notas e o histórico delas, minutas, análises, tarefas, projetos, categorias, recursos, atendimentos, modelos, feriados e a Lixeira), protegido por uma senha que você escolhe. Ao contrário das cópias deste computador, ela abre em qualquer computador e em qualquer conta do Windows, com a senha. Use para trocar de computador ou para não depender desta conta do Windows. Importar nunca mexe no acervo em uso: monta um acervo de recuperação, como «Restaurar cópia…».")
+                        .color(theme::c().muted),
+                )
+                .wrap(),
+            );
+            ui.add_space(S1);
+            match &mode {
+                PortableMode::Closed => {
+                    ui.horizontal_wrapped(|ui| {
+                        start_export = ui
+                            .add_enabled(idle, widgets::secondary("Exportar cópia portátil…"))
+                            .clicked();
+                        choose_import = ui
+                            .add_enabled(idle, widgets::secondary("Importar cópia portátil…"))
+                            .clicked();
+                    });
+                }
+                PortableMode::Export => {
+                    widgets::field_label(ui, "Senha da cópia (pelo menos 8 caracteres)");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.portable.password)
+                            .password(true)
+                            .desired_width(320.0),
+                    );
+                    widgets::field_label(ui, "A mesma senha, de novo");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.portable.confirm)
+                            .password(true)
+                            .desired_width(320.0),
+                    );
+                    widgets::small_muted(ui, "Anote a senha: ela não fica guardada em lugar nenhum, e sem ela a cópia não abre nem o Ponte consegue recuperá-la.");
+                    ui.horizontal_wrapped(|ui| {
+                        go = ui
+                            .add_enabled(idle, widgets::primary("Escolher onde gravar…"))
+                            .clicked()
+                            || (response.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        cancel = ui.add(widgets::quiet("Cancelar")).clicked();
+                    });
+                }
+                PortableMode::Import(path) => {
+                    widgets::small_muted(ui, format!("Cópia escolhida: {}", path.display()));
+                    widgets::field_label(ui, "Senha da cópia");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.portable.password)
+                            .password(true)
+                            .desired_width(320.0),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        go = ui
+                            .add_enabled(idle, widgets::primary("Abrir a cópia"))
+                            .clicked()
+                            || (response.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        cancel = ui.add(widgets::quiet("Cancelar")).clicked();
+                    });
+                }
+            }
+            ui.add_space(S1);
+            widgets::small_muted(
+                ui,
+                format!(
+                    "Não vão na cópia portátil: {}.",
+                    crate::portable_copy::NOT_CARRIED.join("; ")
+                ),
+            );
+        });
+        if start_export {
+            self.portable.mode = PortableMode::Export;
+        }
+        if choose_import {
+            if let Some(path) = crate::windows_ui::pick_file(
+                "Importar cópia portátil",
+                &[
+                    ("Cópia portátil do Ponte", "*.pontecopia"),
+                    ("Todos os arquivos", "*.*"),
+                ],
+            ) {
+                self.portable.mode = PortableMode::Import(path);
+            }
+        }
+        if cancel {
+            self.portable = Default::default();
+        }
+        if go {
+            match mode {
+                PortableMode::Export => self.export_portable(ctx),
+                PortableMode::Import(_) => self.import_portable(ctx),
+                PortableMode::Closed => {}
+            }
+        }
+    }
+
     /// "Acervos deste computador": the main library and the restored ones,
     /// which one the Ponte opens, and the switch between them.
     fn libraries_card(&mut self, ui: &mut egui::Ui) {
@@ -903,7 +1010,9 @@ impl PonteApp {
             for library in &libraries {
                 ui.add_space(S2);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(library.title()).font(theme::font_strong(theme::SIZE_BODY)));
+                    ui.label(
+                        RichText::new(library.title()).font(theme::font_strong(theme::SIZE_BODY)),
+                    );
                     if library.in_use {
                         pill(ui, "em uso", Tone::Ok);
                     }

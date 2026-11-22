@@ -241,10 +241,7 @@ pub fn run(database: &Path, data_dir: &Path, now: NaiveDateTime) -> Result<RunRe
     let stem = format!("{PREFIX}{}", now.format("%Y%m%d-%H%M%S"));
     let path = match upgrade_backup::backup_named(database, &folder, &stem, PREFIX)? {
         Outcome::BackedUp(path) => path,
-        Outcome::NoLibrary => anyhow::bail!(
-            "Não há acervo em {} para copiar.",
-            database.display()
-        ),
+        Outcome::NoLibrary => anyhow::bail!("Não há acervo em {} para copiar.", database.display()),
     };
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     let name = path
@@ -511,11 +508,16 @@ mod tests {
 
     fn library(path: &Path, rows: usize) {
         let conn = Connection::open(path).unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE notas (id INTEGER PRIMARY KEY, texto TEXT);")
-            .unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; CREATE TABLE notas (id INTEGER PRIMARY KEY, texto TEXT);",
+        )
+        .unwrap();
         for n in 0..rows {
-            conn.execute("INSERT INTO notas (texto) VALUES (?1)", [format!("nota {n}")])
-                .unwrap();
+            conn.execute(
+                "INSERT INTO notas (texto) VALUES (?1)",
+                [format!("nota {n}")],
+            )
+            .unwrap();
         }
     }
 
@@ -669,7 +671,12 @@ mod tests {
         let db = data.path().join("acervo.sqlite3");
         library(&db, 1);
         for day in 0..12 {
-            run(&db, data.path(), at("2026-11-01 08:00") + chrono::Duration::days(day)).unwrap();
+            run(
+                &db,
+                data.path(),
+                at("2026-11-01 08:00") + chrono::Duration::days(day),
+            )
+            .unwrap();
         }
         let folder = folder(data.path());
         let before = names(&folder);
@@ -684,7 +691,10 @@ mod tests {
         assert!(!last.ok && !last.mensagem.is_empty());
         assert_ne!(state.ultimo_dia, "2026-12-30", "o dia não conta como feito");
         // Still due: the next opening tries again.
-        assert!(due(&load_state(data.path()), NaiveDate::from_ymd_opt(2026, 12, 30).unwrap()));
+        assert!(due(
+            &load_state(data.path()),
+            NaiveDate::from_ymd_opt(2026, 12, 30).unwrap()
+        ));
     }
 
     #[test]
@@ -693,7 +703,12 @@ mod tests {
         let db = data.path().join("acervo.sqlite3");
         library(&db, 1);
         for day in 0..10 {
-            run(&db, data.path(), at("2026-11-01 08:00") + chrono::Duration::days(day)).unwrap();
+            run(
+                &db,
+                data.path(),
+                at("2026-11-01 08:00") + chrono::Duration::days(day),
+            )
+            .unwrap();
         }
         let folder = folder(data.path());
         std::fs::write(folder.join(MANIFEST), b"{ estragado").unwrap();
@@ -709,7 +724,9 @@ mod tests {
             .filter(|n| n.starts_with(PREFIX))
             .count();
         assert_eq!(copies_after, copies_before + 1);
-        assert!(names(&folder).iter().any(|n| n.starts_with("manifesto-ilegivel-")));
+        assert!(names(&folder)
+            .iter()
+            .any(|n| n.starts_with("manifesto-ilegivel-")));
     }
 
     #[test]
@@ -745,7 +762,10 @@ mod tests {
         let report = run(&db, data.path(), at("2026-11-22 08:00")).unwrap();
         assert!(report.busy && report.copy.is_none());
         drop(held);
-        assert!(run(&db, data.path(), at("2026-11-22 08:00")).unwrap().copy.is_some());
+        assert!(run(&db, data.path(), at("2026-11-22 08:00"))
+            .unwrap()
+            .copy
+            .is_some());
     }
 
     #[test]
@@ -755,7 +775,10 @@ mod tests {
         library(&db, 3);
         let copy = manual_copy(&db, data.path()).unwrap();
         let name = copy.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.starts_with("ponte-") && name.ends_with(".sqlite3"), "{name}");
+        assert!(
+            name.starts_with("ponte-") && name.ends_with(".sqlite3"),
+            "{name}"
+        );
         assert_eq!(copy.parent().unwrap(), backups_folder(data.path()));
         // Not part of the automatic record.
         assert_eq!(summary(data.path()).count, 0);

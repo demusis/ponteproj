@@ -311,10 +311,7 @@ fn open_source(source: &Path) -> Result<Connection> {
     let conn = if has_wal {
         Connection::open_with_flags(source, flags)
     } else {
-        Connection::open_with_flags(
-            immutable_uri(source),
-            flags | OpenFlags::SQLITE_OPEN_URI,
-        )
+        Connection::open_with_flags(immutable_uri(source), flags | OpenFlags::SQLITE_OPEN_URI)
     };
     conn.with_context(|| {
         format!(
@@ -327,7 +324,9 @@ fn open_source(source: &Path) -> Result<Connection> {
 /// `file:///C:/…?immutable=1`, with the characters a URI cannot carry escaped.
 fn immutable_uri(path: &Path) -> String {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let text = paths::readable(&absolute).to_string_lossy().replace('\\', "/");
+    let text = paths::readable(&absolute)
+        .to_string_lossy()
+        .replace('\\', "/");
     let mut escaped = String::new();
     for c in text.chars() {
         match c {
@@ -671,9 +670,7 @@ pub fn libraries(home: &Path) -> Vec<Library> {
             .filter_map(|e| {
                 let folder = e.path();
                 let marker = read_marker(&folder)?;
-                let mine = marker
-                    .home()
-                    .is_some_and(|h| paths::same_folder(&h, home));
+                let mine = marker.home().is_some_and(|h| paths::same_folder(&h, home));
                 (mine && paths::db_path_in(&folder).is_file()).then(|| Library {
                     in_use: paths::same_folder(&in_use, &folder),
                     folder,
@@ -931,7 +928,9 @@ mod tests {
             let path = local.path().join(name);
             std::fs::write(&path, bytes).unwrap();
             let before = folders(local.path());
-            let error = restore_local_copy(&path, &place, now()).unwrap_err().to_string();
+            let error = restore_local_copy(&path, &place, now())
+                .unwrap_err()
+                .to_string();
             assert!(error.contains(expected), "{name}: {error}");
             assert_eq!(folders(local.path()), before);
         }
@@ -941,7 +940,9 @@ mod tests {
             .unwrap()
             .execute_batch("CREATE TABLE x(a); PRAGMA user_version=3;")
             .unwrap();
-        let error = restore_local_copy(&other, &place, now()).unwrap_err().to_string();
+        let error = restore_local_copy(&other, &place, now())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("não um acervo do Ponte"), "{error}");
     }
 
@@ -978,7 +979,15 @@ mod tests {
                 let names: Vec<String> = columns.iter().map(|(n, _)| n.clone()).collect();
                 let values: Vec<String> = columns
                     .iter()
-                    .map(|(n, _)| if n == "payload" { "?1".to_owned() } else if n == "id" { "1".to_owned() } else { "'x'".to_owned() })
+                    .map(|(n, _)| {
+                        if n == "payload" {
+                            "?1".to_owned()
+                        } else if n == "id" {
+                            "1".to_owned()
+                        } else {
+                            "'x'".to_owned()
+                        }
+                    })
                     .collect();
                 conn.execute(
                     &format!(
@@ -991,7 +1000,9 @@ mod tests {
                 .unwrap();
             } else {
                 conn.execute(
-                    &format!("UPDATE {table} SET {column}=?1 WHERE id=(SELECT max(id) FROM {table})"),
+                    &format!(
+                        "UPDATE {table} SET {column}=?1 WHERE id=(SELECT max(id) FROM {table})"
+                    ),
                     [foreign(b"{}")],
                 )
                 .unwrap();
@@ -1183,7 +1194,10 @@ mod tests {
         let mut task = crate::tasks::Task::standalone();
         task.title = "Tarefa feita só aqui".into();
         r.save_task(&task).unwrap();
-        assert_eq!(r.local_items_summary().unwrap().as_deref(), Some("1 tarefa"));
+        assert_eq!(
+            r.local_items_summary().unwrap().as_deref(),
+            Some("1 tarefa")
+        );
         r.save_intranet_config(&folder_config("Notebook")).unwrap();
         let cfg_r = r.load_intranet_config().unwrap();
         let header_before = crate::sharedfolder::read_header(&file).unwrap();
@@ -1196,7 +1210,10 @@ mod tests {
         // Nothing happened: the task is there, no copy yet, the folder as it was.
         assert_eq!(r.list_tasks().unwrap().len(), 1);
         assert!(backups_before_replacement(&db).is_empty());
-        assert_eq!(crate::sharedfolder::read_header(&file).unwrap(), header_before);
+        assert_eq!(
+            crate::sharedfolder::read_header(&file).unwrap(),
+            header_before
+        );
         // Confirmed: a verified copy first, then the folder's library.
         r.sync_with_folders(&cfg_r, key, true, &reporter).unwrap();
         let kept = backups_before_replacement(&db);
@@ -1208,13 +1225,19 @@ mod tests {
             .iter()
             .any(|t| t.title == "Tarefa feita só aqui"));
         assert_eq!(r.list_documents("").unwrap().len(), 1);
-        assert!(r.list_tasks().unwrap().iter().all(|t| t.title != "Tarefa feita só aqui"));
+        assert!(r
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .all(|t| t.title != "Tarefa feita só aqui"));
         // An empty library joins without the question.
         let mut empty = Store::open(&dir.path().join("e").join("acervo.sqlite3")).unwrap();
         assert_eq!(empty.local_items_summary().unwrap(), None);
         empty.save_intranet_config(&folder_config("Outro")).unwrap();
         let cfg_e = empty.load_intranet_config().unwrap();
-        empty.sync_with_folders(&cfg_e, key, false, &reporter).unwrap();
+        empty
+            .sync_with_folders(&cfg_e, key, false, &reporter)
+            .unwrap();
     }
 
     #[test]
@@ -1224,7 +1247,8 @@ mod tests {
         let host_db = dir.path().join("host").join("acervo.sqlite3");
         let token = generate_token();
         let mut host = Store::open(&host_db).unwrap();
-        host.import_capture(&capture("SEFAZ-PRO-2026/00007")).unwrap();
+        host.import_capture(&capture("SEFAZ-PRO-2026/00007"))
+            .unwrap();
         let mut host_cfg = IntranetConfig {
             mode: IntranetMode::Host,
             member_name: "Principal".into(),
@@ -1242,7 +1266,10 @@ mod tests {
         let mut r = Store::open(&db).unwrap();
         r.save_project(&crate::projects::Project::new("Projeto feito só aqui"))
             .unwrap();
-        assert_eq!(r.local_items_summary().unwrap().as_deref(), Some("1 projeto"));
+        assert_eq!(
+            r.local_items_summary().unwrap().as_deref(),
+            Some("1 projeto")
+        );
         r.save_intranet_config(&IntranetConfig {
             mode: IntranetMode::Client,
             member_name: "Restaurado".into(),
@@ -1256,7 +1283,11 @@ mod tests {
         assert!(error.contains("1 projeto"), "{error}");
         assert_eq!(r.list_projects().unwrap().len(), 1);
         assert!(backups_before_replacement(&db).is_empty());
-        assert_eq!(host.list_projects().unwrap().len(), host_projects, "nada enviado");
+        assert_eq!(
+            host.list_projects().unwrap().len(),
+            host_projects,
+            "nada enviado"
+        );
         // Confirmed: kept first, then the main computer's library.
         assert!(r.sync_from_host_confirmed(false, true).unwrap());
         let kept = backups_before_replacement(&db);

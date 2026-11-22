@@ -11,9 +11,9 @@ pub mod ai_roles;
 #[cfg(feature = "desktop")]
 pub mod app;
 pub mod atomic_file;
+pub mod attachments;
 /// The automatic copy of the day and "Fazer cópia agora", with their retention.
 pub mod auto_backup;
-pub mod attachments;
 pub mod chatgpt;
 /// Deterministic checks of a draft (Conferência da minuta).
 pub mod draft_check;
@@ -36,6 +36,8 @@ pub mod native;
 /// How the program reaches the internet: certificates, proxy, failures, the connection test.
 pub mod netdiag;
 pub mod paths;
+/// "Cópia portátil (com senha)": the library in one `.pontecopia` file.
+pub mod portable_copy;
 pub mod projection;
 pub mod prompting;
 pub mod protection;
