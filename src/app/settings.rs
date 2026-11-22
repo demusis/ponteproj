@@ -218,8 +218,10 @@ impl PonteApp {
             );
             widgets::small_muted(ui, "Os avisos individuais são escolhidos na tarefa. Contam a partir do início agendado ou, sem agendamento, das 9h do dia do prazo. Em Hoje, você pode abrir a tarefa, dispensar ou adiar o aviso por dez minutos.");
             ui.add_space(S1);
+            let looking = self.library.only_looking();
             if ui
-                .add(widgets::quiet("Mostrar um aviso de teste"))
+                .add_enabled(!looking, widgets::quiet("Mostrar um aviso de teste"))
+                .on_disabled_hover_text("Este acervo está aberto só para olhar: nesta janela não há avisos, nem de teste. Use a janela do acervo em uso.")
                 .clicked()
             {
                 self.reminders.test_notification();
@@ -908,7 +910,7 @@ impl PonteApp {
         widgets::card(ui, |ui| {
             ui.add(
                 egui::Label::new(
-                    RichText::new("Um arquivo .pontecopia com o acervo inteiro (documentos, PDFs, anexos, notas e o histórico delas, minutas, análises, tarefas, projetos, categorias, recursos, atendimentos, modelos, feriados e a Lixeira), protegido por uma senha que você escolhe. Ao contrário das cópias deste computador, ela abre em qualquer computador e em qualquer conta do Windows, com a senha. Use para trocar de computador ou para não depender desta conta do Windows. Importar nunca mexe no acervo em uso: monta um acervo de recuperação, como «Restaurar cópia…».")
+                    RichText::new("Um arquivo .pontecopia com o acervo inteiro (documentos, PDFs, anexos, notas e o histórico delas, minutas, análises, tarefas, projetos, categorias, recursos, atendimentos, modelos, feriados e a Lixeira), protegido por uma senha que você escolhe. Ao contrário das cópias deste computador, ela abre em qualquer computador e em qualquer conta do Windows, com a senha. Use para trocar de computador ou para não depender desta conta do Windows. Cabe até 200 MB de conteúdo (PDFs, anexos e textos); acima disso, o Ponte recusa antes de começar e indica «Fazer cópia agora». Importar nunca mexe no acervo em uso: monta um acervo de recuperação, como «Restaurar cópia…».")
                         .color(theme::c().muted),
                 )
                 .wrap(),
@@ -1017,6 +1019,8 @@ impl PonteApp {
         let libraries = self.libraries();
         let this = self.data_dir();
         let mut chosen = None;
+        let mut ask_switch = None;
+        let mut cancel_switch = false;
         let mut look = None;
         let mut reveal = None;
         widgets::section(ui, "Acervos deste computador");
@@ -1042,17 +1046,34 @@ impl PonteApp {
                     }
                 });
                 widgets::small_muted(ui, library.folder.display().to_string());
+                let confirming = self
+                    .library
+                    .confirm_switch
+                    .as_deref()
+                    .is_some_and(|f| crate::paths::same_folder(f, &library.folder));
+                if confirming {
+                    ui.add(egui::Label::new(super::backup::ADOPTION_TEXT).wrap());
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add(widgets::primary("Usar este acervo")).clicked() {
+                            chosen = Some(library.folder.clone());
+                        }
+                        if ui.add(widgets::quiet("Cancelar")).clicked() {
+                            cancel_switch = true;
+                        }
+                    });
+                }
                 ui.horizontal_wrapped(|ui| {
                     if !library.in_use
+                        && !confirming
                         && ui
                             .add(widgets::secondary(if library.main {
-                                "Voltar a usar este acervo"
+                                "Voltar a usar este acervo…"
                             } else {
-                                "Usar este acervo"
+                                "Usar este acervo…"
                             }))
                             .clicked()
                     {
-                        chosen = Some(library.folder.clone());
+                        ask_switch = Some(library.folder.clone());
                     }
                     if library.marker.is_some()
                         && !library.in_use
@@ -1067,8 +1088,15 @@ impl PonteApp {
                 });
             }
         });
+        if let Some(folder) = ask_switch {
+            self.library.confirm_switch = Some(folder);
+        }
+        if cancel_switch {
+            self.library.confirm_switch = None;
+        }
         if let Some(folder) = chosen {
-            self.use_library(&folder);
+            self.library.confirm_switch = None;
+            self.use_library(&folder, ui.ctx());
         }
         if let Some(folder) = look {
             if let Err(error) = crate::recovery::open_window(&folder) {

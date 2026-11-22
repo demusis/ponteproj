@@ -1259,6 +1259,10 @@ pub(crate) const SNAPSHOT_BOOKKEEPING: &[&str] = &[
     "generation",
 ];
 
+/// Said when a first-time client would contact its main computer before the
+/// replacement of its library was confirmed.
+pub const JOIN_PENDING: &str = "A substituição do acervo deste computador pelo do computador principal ainda não foi confirmada; até lá o Ponte não fala com o computador principal (nem para testar a conexão). Confirme ou cancele em Ajustes ▸ Equipe e sincronização.";
+
 /// Said when an exchange is asked of a library open only to be looked at.
 pub const TRANSPORT_OFF: &str = "Este acervo está aberto só para olhar (não é o acervo em uso neste computador): ele não sincroniza nem atende outros computadores. Para sincronizá-lo, use-o como acervo deste computador em Ajustes ▸ Cópia de segurança.";
 
@@ -1518,7 +1522,13 @@ impl Store {
     /// refused here: the change waits in the queue and is checked again when
     /// it is sent (see `mutation_carries_proposals`).
     fn ensure_host_schema(&self, cfg: &IntranetConfig, minimum: i64, message: &str) -> Result<()> {
-        if cfg.mode != IntranetMode::Client || self.host_known_unreachable() {
+        // No contact from a library open only to be looked at, nor before a
+        // first join is confirmed: the change is queued (`remote_mutate`) and
+        // checked when it is sent (`send_rpc_tracked`).
+        if cfg.mode != IntranetMode::Client
+            || self.host_known_unreachable()
+            || self.contact_allowed(cfg).is_err()
+        {
             return Ok(());
         }
         if let Ok(RpcResponse::Pong { schema_version, .. }) =
@@ -2101,22 +2111,23 @@ impl Store {
 
     pub fn save_intranet_config(&mut self, config: &IntranetConfig) -> Result<()> {
         let mut config = config.clone();
-        let never_exchanged = config.mode == IntranetMode::Client
-            && config.synced_revision == 0
-            && config.host_generation.is_empty();
-        config.join_replaces_items = if never_exchanged {
-            let previous = self.load_intranet_config().ok();
-            match previous {
-                // Still the same client that has not exchanged yet: as it was.
-                Some(previous) if previous.mode == IntranetMode::Client => {
-                    previous.join_replaces_items || config.join_replaces_items
-                }
-                // Becoming a client now: what is here (nothing queued yet)
-                // is this library's own, and the first exchange replaces it.
-                _ => {
-                    self.list_offline_outbox()?.is_empty() && self.local_items_summary()?.is_some()
-                }
-            }
+        // The unconfirmed origin of this library survives any change of
+        // mode (to "Só neste computador" and back included): only a copy of
+        // a main computer applied here clears it (`apply_snapshot`), or a
+        // first exchange that gave this library a revision.
+        let never_exchanged = config.synced_revision == 0 && config.host_generation.is_empty();
+        let previous = self.load_intranet_config().ok();
+        let was_pending = previous.as_ref().is_some_and(|p| p.join_replaces_items);
+        config.join_replaces_items = if !never_exchanged {
+            false
+        } else if was_pending || config.join_replaces_items {
+            true
+        } else if config.mode == IntranetMode::Client
+            && previous.is_none_or(|p| p.mode != IntranetMode::Client)
+        {
+            // Becoming a client now: what is here (nothing queued yet) is
+            // this library's own, and the first exchange replaces it.
+            self.list_offline_outbox()?.is_empty() && self.local_items_summary()?.is_some()
         } else {
             false
         };
@@ -2369,6 +2380,24 @@ impl Store {
 
     pub fn transport_off(&self) -> bool {
         self.transport_off
+    }
+
+    /// Whether this library may contact the main computer (or the folders)
+    /// of `cfg` at all: never when it is open only to be looked at, and
+    /// never a main computer before its first join is confirmed (only the
+    /// confirmed exchange itself, `sync_from_host_confirmed`, does). Every
+    /// path that can reach a principal or a folder asks this first.
+    pub fn contact_allowed(&self, cfg: &IntranetConfig) -> Result<()> {
+        ensure!(!self.transport_off, TRANSPORT_OFF);
+        let stored = self.load_intranet_config().unwrap_or_else(|_| cfg.clone());
+        ensure!(!(cfg.join_pending() || stored.join_pending()), JOIN_PENDING);
+        Ok(())
+    }
+
+    /// The setting of a substituted library's safety copy that is not a good
+    /// copy, for the person (drained by the synchronization's report).
+    pub(crate) fn take_replacement_notes(&self) -> Vec<String> {
+        std::mem::take(&mut *self.replacement_notes.borrow_mut())
     }
 
     pub(crate) fn client_config(&self) -> Result<Option<IntranetConfig>> {
@@ -3646,17 +3675,18 @@ impl Store {
     pub fn local_items_summary(&self) -> Result<Option<String>> {
         let mut parts = Vec::new();
         let mut others = 0i64;
-        // A setting whose value is still waiting in this computer's queue (its
-        // own holidays handed to the library, or set before the first
-        // exchange) is settled by design on the first exchange: the folder's
-        // value wins without a conflict, or this one is shared. A saved
-        // setting with nothing queued (a restored library has no queue) is
-        // replaced and is counted.
+        // A genuine seed (this computer's own local holidays, handed to the
+        // library and still waiting in the queue as a seed) is settled by
+        // design on the first exchange: the folder's value wins without a
+        // conflict, or the seed is shared. Only that is left out; any other
+        // saved setting, queued or not, is replaced and is counted.
         let seeds: std::collections::BTreeSet<String> = self
             .list_offline_outbox()?
             .into_iter()
             .filter_map(|entry| match entry.mutation {
-                IntranetMutation::SaveSetting { key, .. } => Some(key),
+                IntranetMutation::SaveSetting {
+                    key, seed: true, ..
+                } => Some(key),
                 _ => None,
             })
             .collect();
@@ -3747,6 +3777,7 @@ impl Store {
         std::fs::create_dir_all(&dir).context(fail)?;
         let path = dir.join(format!("{stem}-{}.sqlite3", self.library_state_identity()?));
         if path.is_file() && backup_checks_out(&path) {
+            self.note_copy_quality(&path);
             return Ok(Some(path));
         }
         let _ = std::fs::remove_file(&path);
@@ -3759,7 +3790,19 @@ impl Store {
             let _ = std::fs::remove_file(&part);
             return Err(error);
         }
+        self.note_copy_quality(&path);
         Ok(Some(path))
+    }
+
+    /// The check a restore requires, on the copy kept before a replacement
+    /// (kept either way): when it is not a good copy, the person is told.
+    fn note_copy_quality(&self, path: &std::path::Path) {
+        if let Some(problem) = crate::auto_backup::copy_problem(path) {
+            self.replacement_notes.borrow_mut().push(format!(
+                "A cópia guardada antes da substituição ({}) não conta como cópia boa: {problem}",
+                path.display()
+            ));
+        }
     }
 
     /// [`Store::sync_from_host`]; `accept_host_history` is the person's
@@ -3783,11 +3826,14 @@ impl Store {
         // something (a restored library, a computer that worked alone): the
         // main computer's library replaces it, so the person confirms first,
         // nothing is sent before that, and it is kept whole beforehand.
-        let joining_with_items = if cfg.join_replaces_items
-            && cfg.synced_revision == 0
-            && cfg.host_generation.is_empty()
-        {
-            self.local_items_summary()?
+        // The gate is the persisted pending state itself, whatever the
+        // inventory counts now (an edit of the only saved holiday, queued,
+        // must not open it).
+        let joining_with_items = if cfg.join_pending() {
+            Some(
+                self.local_items_summary()?
+                    .unwrap_or_else(|| "alterações feitas aqui".to_owned()),
+            )
         } else {
             None
         };
@@ -4312,6 +4358,13 @@ impl Store {
             } else {
                 None
             };
+            // A restored or imported library joins as a pure replacement,
+            // whatever the inventory counts now.
+            let restored = joining && self.is_recovery_library();
+            let local_items = match local_items {
+                None if restored => Some("conteúdo próprio (é um acervo restaurado)".to_owned()),
+                other => other,
+            };
             if let Some(items) = &local_items {
                 ensure!(
                     allow_replace,
@@ -4325,7 +4378,7 @@ impl Store {
                 self.backup_before_replacement()?;
                 // A restored or imported library: what the question says,
                 // nothing of it goes to the folder.
-                pure = self.is_recovery_library();
+                pure = restored;
             }
         }
         // The guard copy joins the copies read (never as a folder, never in
@@ -4701,7 +4754,7 @@ impl Store {
             }
             // A copy from a Ponte before the settings says nothing about
             // them: the ones this library has go into the copy being built.
-            if best.header.schema_version < SETTINGS_SCHEMA {
+            if best.header.schema_version < SETTINGS_SCHEMA && !pure {
                 crate::library_settings::apply_settings(
                     &store.conn,
                     &self.export_library_settings()?,
@@ -9051,6 +9104,13 @@ fn build_sync_conflict(
     }
 }
 
+/// [`ping_host`] from a library: refused, with nothing sent, when the library
+/// may not contact a main computer (see `Store::contact_allowed`).
+pub fn ping_host_from(store: &Store, cfg: &IntranetConfig) -> Result<(i64, String, usize, usize)> {
+    store.contact_allowed(cfg)?;
+    ping_host(cfg)
+}
+
 pub fn ping_host(cfg: &IntranetConfig) -> Result<(i64, String, usize, usize)> {
     validate_host_url(&cfg.host_url)?;
     validate_token(&cfg.cabinet_token)?;
@@ -9872,6 +9932,9 @@ impl SyncWorker {
 pub struct SyncDone {
     pub changed: bool,
     pub summary: String,
+    /// What the person must know although the exchange worked (a safety copy
+    /// that is not a good copy).
+    pub notes: Vec<String>,
 }
 
 #[cfg(feature = "desktop")]
@@ -9889,19 +9952,23 @@ fn run_sync(
                 }
             }
             let key = cfg.folder_key.clone();
-            let report = store.sync_with_folders(&cfg, &key, request.allow_replace, reporter)?;
+            let report = store.sync_with_folders(&cfg, &key, request.allow_replace, reporter);
+            let notes = store.take_replacement_notes();
+            let report = report?;
             Ok(SyncDone {
                 changed: report.changed,
                 summary: report.summary(),
+                notes,
             })
         }
         _ => {
             reporter.step("Sincronizando com o computador principal…");
-            let changed =
-                store.sync_from_host_confirmed(request.force_full, request.allow_replace)?;
+            let changed = store.sync_from_host_confirmed(request.force_full, request.allow_replace);
+            let notes = store.take_replacement_notes();
             Ok(SyncDone {
-                changed,
+                changed: changed?,
                 summary: String::new(),
+                notes,
             })
         }
     }
@@ -10009,6 +10076,11 @@ impl IntranetPanel {
         }
     }
 
+    /// Whether this window is serving as the main computer.
+    pub fn serving(&self) -> bool {
+        self.server.is_some()
+    }
+
     /// Whether this window runs a main computer or a synchronization thread.
     pub fn sync_threads_running(&self) -> bool {
         self.server.is_some() || self.sync.is_some()
@@ -10113,9 +10185,13 @@ impl IntranetPanel {
             let mut remove: Option<usize> = None;
             for (index, path) in self.draft.folder_files.clone().iter().enumerate() {
                 let generic_hint = "Confira se a pasta está disponível neste computador.";
-                let (line, pill_text, tone, what_to_do) = match crate::sharedfolder::read_header(
-                    std::path::Path::new(path),
-                ) {
+                let header = if self.transport_off {
+                    // Not even read: nothing of the folders is touched.
+                    Err(anyhow::anyhow!(TRANSPORT_OFF))
+                } else {
+                    crate::sharedfolder::read_header(std::path::Path::new(path))
+                };
+                let (line, pill_text, tone, what_to_do) = match header {
                     Ok(Some(header)) => {
                         let line = crate::sharedfolder::describe(&header);
                         if first_time {
@@ -10689,6 +10765,10 @@ impl IntranetPanel {
                         self.error = false;
                         self.message = format!("Sincronização concluída: {}.", done.summary);
                     }
+                    if !done.notes.is_empty() {
+                        self.error = true;
+                        self.message = done.notes.join(" ");
+                    }
                 }
                 Err(error) => {
                     self.offline = true;
@@ -10723,7 +10803,11 @@ impl IntranetPanel {
             return;
         }
         match outcome.result {
-            Ok(SyncDone { changed, .. }) => {
+            Ok(SyncDone { changed, notes, .. }) => {
+                if !notes.is_empty() {
+                    self.error = true;
+                    self.message = notes.join(" ");
+                }
                 self.offline = false;
                 store.note_host_reachability(true);
                 self.last_sync_finished = Some((Instant::now(), changed));
@@ -11183,7 +11267,7 @@ impl IntranetPanel {
                                     self.draft.host_url = host;
                                     self.draft.cabinet_token = key;
                                     self.connection_code_input.clear();
-                                    match ping_host(&self.draft) {
+                                    match ping_host_from(store, &self.draft) {
                                         Ok((_, host_member, docs, _)) => {
                                             self.message = format!(
                                                 "Código válido: computador principal de {host_member}, com {}. Clique em “Salvar e sincronizar acervo agora” para começar.",
@@ -11251,7 +11335,7 @@ impl IntranetPanel {
                     }
                     if ui.add(widgets::secondary("Testar conexão")).clicked() {
                         let url = self.draft.host_url.clone();
-                        match ping_host(&self.draft) {
+                        match ping_host_from(store, &self.draft) {
                             Ok((_, host_member, docs, tasks)) => {
                                 self.connection_test = Some((
                                     url,
@@ -14037,8 +14121,8 @@ anual 05-02 Recesso
         let mut c = Store::open(&dir.path().join("c.sqlite3")).unwrap();
         c.save_intranet_config(&config("Novo", &[folder.display().to_string()]))
             .unwrap();
-        // The migration of its own local file, before it ever synced.
-        c.set_library_setting(
+        // The migration of its own local file, before it ever synced (a seed).
+        c.seed_library_setting(
             crate::library_settings::HOLIDAYS,
             "uf PR
 ",

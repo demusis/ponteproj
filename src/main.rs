@@ -192,10 +192,12 @@ fn run() -> Result<()> {
         Some("--serve") => {
             tell_pointer_notice();
             let db_path = paths::db_path()?;
-            // Held while serving: the library in use is not switched under it.
-            let _serving = db_path
-                .parent()
-                .and_then(ponteproj::recovery::hold_server_lock);
+            // Held while serving, taken before anything else (the library is
+            // not opened, Host mode not saved, nothing listens without it):
+            // the library in use is not switched under it.
+            let _serving = ponteproj::recovery::hold_server_lock(
+                db_path.parent().context("Pasta do acervo inválida")?,
+            )?;
             let mut store = Store::open(&db_path)?;
             let mut config = store.load_intranet_config()?;
             config.mode = ponteproj::intranet::IntranetMode::Host;

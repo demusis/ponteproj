@@ -93,6 +93,10 @@ pub struct Entry {
     /// SHA-256 of the copy as published: checked again before deleting it.
     #[serde(default)]
     pub sha256: String,
+    /// Modification time of the copy as published (nanoseconds since 1970):
+    /// with the size, what makes a file count as this copy for retention.
+    #[serde(default)]
+    pub modificado_ns: i64,
     /// The copy passes everything a restore requires (a good copy).
     pub verificada: bool,
     /// What made it not a good copy (the table and the record).
@@ -112,8 +116,12 @@ impl Entry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
     pub sequencia: u64,
-    /// The name it is published under (`<nome>.sqlite3`, `<nome>-2.sqlite3`…).
-    pub nome: String,
+    /// The exact file name it is published under, chosen before publishing.
+    pub arquivo: String,
+    /// Size and SHA-256 of the finished, verified copy, taken right before it
+    /// was given that name: only a file with exactly these is adopted.
+    pub bytes: u64,
+    pub sha256: String,
     pub iniciada_em: String,
 }
 
@@ -294,8 +302,10 @@ fn validate(manifest: &Manifest) -> std::result::Result<(), String> {
         }
     }
     if let Some(pending) = &manifest.pendente {
-        let probe = format!("{}.sqlite3", pending.nome);
-        if !owned_name(&probe) || pending.sequencia >= manifest.proxima_sequencia {
+        if !owned_name(&pending.arquivo)
+            || pending.sequencia >= manifest.proxima_sequencia
+            || pending.sha256.len() != 64
+        {
             return Err("cópia anunciada inválida".to_owned());
         }
     }
@@ -416,6 +426,16 @@ fn check_copy(path: &Path) -> Result<Option<String>> {
     })
 }
 
+/// What makes the copy at `path` not a good one (the check a restore
+/// requires), or `None` for a good copy. A copy that cannot even be checked is
+/// not a good one either.
+pub(crate) fn copy_problem(path: &Path) -> Option<String> {
+    match check_copy(path) {
+        Ok(problem) => problem,
+        Err(error) => Some(format!("não foi possível conferi-la ({error:#}).")),
+    }
+}
+
 /// The automatic copy of the library `database`, now (local time `now`), in
 /// [`folder`]`(data_dir)`, then retention. Takes the lock itself; does not
 /// look at the state (see [`run_and_record`]).
@@ -457,6 +477,7 @@ fn create_folder(data_dir: &Path) -> Result<PathBuf> {
 fn record(manifest: &mut Manifest, path: &Path, sequence: u64, moment: &str) -> Result<Entry> {
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let problem = check_copy(path)?;
+    let modified = modified_ns(path).unwrap_or(0);
     let entry = Entry {
         arquivo: path
             .file_name()
@@ -466,6 +487,7 @@ fn record(manifest: &mut Manifest, path: &Path, sequence: u64, moment: &str) -> 
         criada_em: moment.to_owned(),
         bytes,
         sha256: file_sha256(path).context("Não foi possível identificar a cópia publicada.")?,
+        modificado_ns: modified,
         verificada: problem.is_none(),
         problema: problem.unwrap_or_default(),
         origem: format!("Ponte {}", env!("CARGO_PKG_VERSION")),
@@ -475,33 +497,42 @@ fn record(manifest: &mut Manifest, path: &Path, sequence: u64, moment: &str) -> 
     Ok(entry)
 }
 
-/// The copies a run that died before recording them published: found by the
-/// name it announced, recorded now. Answers the most recent one found.
-fn reconcile(manifest: &mut Manifest, folder: &Path) -> Result<Option<Entry>> {
-    let Some(pending) = manifest.pendente.clone() else {
+/// The copy a run that died published before recording it: adopted only when
+/// the exact name it announced holds exactly the copy it announced (same size
+/// and SHA-256), and it still passes `quick_check` and the check a restore
+/// requires. Anything else under that name is left alone and never recorded.
+fn reconcile(
+    manifest: &mut Manifest,
+    folder: &Path,
+    report: &mut RunReport,
+) -> Result<Option<Entry>> {
+    let Some(pending) = manifest.pendente.take() else {
         return Ok(None);
     };
-    let mut found = None;
-    let mut sequence = pending.sequencia;
-    for n in 1..=200u32 {
-        let name = if n == 1 {
-            format!("{}.sqlite3", pending.nome)
-        } else {
-            format!("{}-{n}.sqlite3", pending.nome)
-        };
-        let path = folder.join(&name);
-        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
-            continue;
-        }
-        if manifest.copias.iter().any(|e| e.arquivo == name) {
-            continue;
-        }
-        let entry = record(manifest, &path, sequence, &pending.iniciada_em)?;
-        sequence = manifest.proxima_sequencia;
-        found = Some(entry);
+    if manifest.copias.iter().any(|e| e.arquivo == pending.arquivo) {
+        return Ok(None);
     }
-    manifest.pendente = None;
-    Ok(found)
+    let path = folder.join(&pending.arquivo);
+    let matches = std::fs::symlink_metadata(&path)
+        .is_ok_and(|m| m.is_file() && m.len() == pending.bytes)
+        && file_sha256(&path).is_ok_and(|hash| hash == pending.sha256);
+    if !matches {
+        if path.exists() {
+            report.warn(format!(
+                "{} não é a cópia que uma execução anterior anunciou; foi deixado como está e não é registrado.",
+                path.display()
+            ));
+        }
+        return Ok(None);
+    }
+    if let Err(error) = upgrade_backup::verify(&path) {
+        report.warn(format!(
+            "A cópia {} de uma execução interrompida não passou na conferência ({error:#}); foi deixada como está e não é registrada.",
+            path.display()
+        ));
+        return Ok(None);
+    }
+    record(manifest, &path, pending.sequencia, &pending.iniciada_em).map(Some)
 }
 
 fn run_locked(
@@ -531,7 +562,7 @@ fn run_locked(
     let today = now.date();
     // A copy of today published by a run that died before recording it: it is
     // the copy of today.
-    let late = reconcile(&mut manifest, folder)?;
+    let late = reconcile(&mut manifest, folder, &mut report)?;
     let current = match late.filter(|e| e.moment().is_some_and(|m| m.date() == today)) {
         Some(entry) => {
             write_manifest(&manifest_path, &manifest)?;
@@ -556,18 +587,40 @@ fn run_locked(
             }
             let sequence = manifest.proxima_sequencia;
             let stem = format!("{PREFIX}{}", now.format("%Y%m%d-%H%M%S"));
-            manifest.pendente = Some(Pending {
-                sequencia: sequence,
-                nome: stem.clone(),
-                iniciada_em: moment_text(now),
-            });
+            let target = upgrade_backup::first_free_name(folder, &stem)?;
+            let arquivo = target
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             manifest.proxima_sequencia = sequence + 1;
-            // Announced before it starts: if this run dies after publishing,
-            // the next one finds and records it.
-            write_manifest(&manifest_path, &manifest)?;
-            let path = match upgrade_backup::backup_named(database, folder, &stem, PREFIX)? {
-                Outcome::BackedUp(path) => path,
-                Outcome::NoLibrary => bail!("Não há acervo em {} para copiar.", database.display()),
+            // Announced with its exact name and identity right before it is
+            // given that name: if this run dies after publishing, the next one
+            // finds exactly this copy and records it.
+            let announce = |partial: &Path| -> Result<()> {
+                manifest.pendente = Some(Pending {
+                    sequencia: sequence,
+                    arquivo: arquivo.clone(),
+                    bytes: std::fs::metadata(partial)?.len(),
+                    sha256: file_sha256(partial)
+                        .context("Não foi possível identificar a cópia antes de publicá-la.")?,
+                    iniciada_em: moment_text(now),
+                });
+                write_manifest(&manifest_path, &manifest)
+            };
+            let published = upgrade_backup::backup_exact(database, &target, PREFIX, announce);
+            let path = match published {
+                Ok(Outcome::BackedUp(path)) => path,
+                Ok(Outcome::NoLibrary) => {
+                    bail!("Não há acervo em {} para copiar.", database.display())
+                }
+                Err(error) => {
+                    // Not published: the announcement is withdrawn, so a file
+                    // that someone else put under that name is never taken.
+                    if manifest.pendente.take().is_some() {
+                        let _ = write_manifest(&manifest_path, &manifest);
+                    }
+                    return Err(error);
+                }
             };
             report.copy = Some(path.clone());
             let entry = record(&mut manifest, &path, sequence, &moment_text(now))?;
@@ -605,8 +658,10 @@ fn run_locked(
     if latest_other.is_some_and(|latest| latest > now) {
         return Ok(report);
     }
+    // Only a file that is still the recorded copy (same size and
+    // modification time) takes a place among the kept ones.
     let remove = plan_retention(&manifest.copias, today, current.sequencia, |entry| {
-        owned_file(folder, entry).is_some()
+        counts_as_recorded(folder, entry)
     });
     let mut forgotten = Vec::new();
     for index in remove {
@@ -614,18 +669,20 @@ fn run_locked(
         let Some(file) = owned_file(folder, entry) else {
             continue;
         };
-        if !same_identity(&file, entry) {
-            // Not the copy that was recorded under this name: not ours.
-            forgotten.push(index);
-            report.warn(format!(
-                "{} não é mais a cópia registrada com esse nome e foi deixado como está.",
-                file.display()
-            ));
-            continue;
-        }
-        if std::fs::remove_file(&file).is_ok() {
-            forgotten.push(index);
-            report.removed.push(entry.arquivo.clone());
+        match delete_if_recorded(&file, entry) {
+            Ok(true) => {
+                forgotten.push(index);
+                report.removed.push(entry.arquivo.clone());
+            }
+            Ok(false) => {
+                // Not the copy that was recorded under this name: not ours.
+                forgotten.push(index);
+                report.warn(format!(
+                    "{} não é mais a cópia registrada com esse nome e foi deixado como está.",
+                    file.display()
+                ));
+            }
+            Err(_) => {}
         }
     }
     if !forgotten.is_empty() {
@@ -644,11 +701,108 @@ fn run_locked(
     Ok(report)
 }
 
-/// Whether the file is still the copy recorded: same size, same SHA-256.
-fn same_identity(file: &Path, entry: &Entry) -> bool {
-    !entry.sha256.is_empty()
-        && std::fs::metadata(file).is_ok_and(|m| m.len() == entry.bytes)
-        && file_sha256(file).is_ok_and(|hash| hash == entry.sha256)
+/// Modification time of a file in nanoseconds since 1970.
+fn modified_ns(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(since.as_nanos()).ok()
+}
+
+/// Whether the file of a recorded copy still is that copy, cheaply: same size
+/// and same modification time as recorded. What counts for retention and in
+/// the card.
+fn counts_as_recorded(folder: &Path, entry: &Entry) -> bool {
+    entry.modificado_ns != 0
+        && owned_file(folder, entry).is_some_and(|file| {
+            std::fs::metadata(&file).is_ok_and(|m| m.len() == entry.bytes)
+                && modified_ns(&file) == Some(entry.modificado_ns)
+        })
+}
+
+/// Deletes `file` only when it is still the copy recorded: same size and
+/// SHA-256. `Ok(false)`: it is not, and it is left alone.
+///
+/// On Windows the file is opened once, sharing only reading, with the right
+/// to delete it; the SHA-256 is read through that handle and the deletion is
+/// asked through it too (`FileDispositionInfo`): while the handle is open
+/// nobody can write, rename or replace the file, so what is deleted is what
+/// was checked. Elsewhere the file is hashed through one handle and then
+/// removed by name: a file substituted in between those two steps would be
+/// removed (the residual interval of platforms without delete-by-handle).
+fn delete_if_recorded(file: &Path, entry: &Entry) -> std::io::Result<bool> {
+    use sha2::Digest;
+    use std::io::Read;
+    if entry.sha256.is_empty() {
+        return Ok(false);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const DELETE: u32 = 0x0001_0000;
+        const FILE_SHARE_READ: u32 = 0x1;
+        options.access_mode(GENERIC_READ | DELETE);
+        options.share_mode(FILE_SHARE_READ);
+    }
+    let mut handle = options.open(file)?;
+    if handle.metadata()?.len() != entry.bytes {
+        return Ok(false);
+    }
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = handle.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if format!("{:x}", hasher.finalize()) != entry.sha256 {
+        return Ok(false);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        #[repr(C)]
+        struct FileDispositionInfo {
+            delete_file: u8,
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetFileInformationByHandle(
+                file: *mut std::ffi::c_void,
+                class: i32,
+                information: *const std::ffi::c_void,
+                size: u32,
+            ) -> i32;
+        }
+        const FILE_DISPOSITION_INFO_CLASS: i32 = 4;
+        let info = FileDispositionInfo { delete_file: 1 };
+        // SAFETY: a live handle opened with DELETE access and a valid
+        // FILE_DISPOSITION_INFO of the size given.
+        let ok = unsafe {
+            SetFileInformationByHandle(
+                handle.as_raw_handle(),
+                FILE_DISPOSITION_INFO_CLASS,
+                &info as *const FileDispositionInfo as *const std::ffi::c_void,
+                std::mem::size_of::<FileDispositionInfo>() as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // Deleted when the handle closes.
+        drop(handle);
+        Ok(true)
+    }
+    #[cfg(not(windows))]
+    {
+        drop(handle);
+        std::fs::remove_file(file)?;
+        Ok(true)
+    }
 }
 
 /// The file of a recorded copy, only when it is one this feature may delete:
@@ -743,6 +897,19 @@ pub fn run_and_record_with(
         if !due(&load_state(data_dir), now.date()) {
             return Ok(None);
         }
+        // A copy of today already recorded (a run that died between the
+        // record and the day stamp): the day is done, no second copy.
+        let made_today = read_manifest(&folder.join(MANIFEST)).is_ok_and(|m| {
+            m.copias
+                .iter()
+                .any(|e| e.moment().is_some_and(|at| at.date() == now.date()))
+        });
+        if made_today {
+            let mut state = load_state(data_dir);
+            state.ultimo_dia = day_text(now.date());
+            let _ = save_state(data_dir, &state);
+            return Ok(None);
+        }
         Ok(Some((lock, run_locked(database, &folder, now, space))))
     });
     let (lock, outcome) = match outcome {
@@ -790,14 +957,19 @@ pub fn run_and_record_with(
 
 /// "Fazer cópia agora": a verified copy in the `backups` folder, named as
 /// before (`ponte-<data UTC>-<id>.sqlite3`). Never part of retention.
-pub fn manual_copy(database: &Path, data_dir: &Path) -> Result<PathBuf> {
+/// Answers the copy and, when it is not a good copy (the check a restore
+/// requires), what is damaged: the copy is kept either way.
+pub fn manual_copy(database: &Path, data_dir: &Path) -> Result<(PathBuf, Option<String>)> {
     let stem = format!(
         "{MANUAL_PREFIX}{}-{}",
         chrono::Utc::now().format("%Y%m%d-%H%M%S"),
         uuid::Uuid::new_v4()
     );
     match upgrade_backup::backup_named(database, &backups_folder(data_dir), &stem, MANUAL_PREFIX)? {
-        Outcome::BackedUp(path) => Ok(path),
+        Outcome::BackedUp(path) => {
+            let problem = copy_problem(&path);
+            Ok((path, problem))
+        }
         Outcome::NoLibrary => anyhow::bail!("Não há acervo em {} para copiar.", database.display()),
     }
 }
@@ -826,10 +998,10 @@ pub fn summary(data_dir: &Path) -> Summary {
     if let Ok(manifest) = read_manifest(&folder.join(MANIFEST)) {
         let mut latest_bad: Option<&Entry> = None;
         for entry in &manifest.copias {
-            let Some(file) = owned_file(&folder, entry) else {
+            if !counts_as_recorded(&folder, entry) {
                 continue;
-            };
-            summary.bytes += std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+            }
+            summary.bytes += entry.bytes;
             if !entry.verificada {
                 if latest_bad.is_none_or(|b| b.sequencia < entry.sequencia) {
                     latest_bad = Some(entry);
@@ -923,6 +1095,7 @@ mod tests {
             criada_em: moment.into(),
             bytes: 1,
             sha256: String::new(),
+            modificado_ns: 0,
             verificada: true,
             problema: String::new(),
             origem: "teste".into(),
@@ -931,6 +1104,122 @@ mod tests {
 
     fn plenty(_: &Path) -> std::io::Result<u64> {
         Ok(u64::MAX)
+    }
+
+    /// What a run writes right before it publishes `path`: the exact name and
+    /// the identity of the copy, under the sequence `seq`.
+    fn announce(folder: &Path, path: &Path, seq: u64) {
+        let mut manifest = read_manifest(&folder.join(MANIFEST)).unwrap();
+        manifest.pendente = Some(Pending {
+            sequencia: seq,
+            arquivo: path.file_name().unwrap().to_string_lossy().into_owned(),
+            bytes: std::fs::metadata(path).unwrap().len(),
+            sha256: file_sha256(path).unwrap(),
+            iniciada_em: "2026-11-22T08:00:00".into(),
+        });
+        manifest.proxima_sequencia = manifest.proxima_sequencia.max(seq + 1);
+        write_manifest(&folder.join(MANIFEST), &manifest).unwrap();
+    }
+
+    #[test]
+    fn a_file_under_or_beside_an_announced_name_that_is_not_the_copy_is_never_adopted() {
+        let data = tempfile::tempdir().unwrap();
+        let db = data.path().join("acervo.sqlite3");
+        library(&db, 2);
+        let folder = create_folder(data.path()).unwrap();
+        // A run announced `…080000.sqlite3` and died before publishing it;
+        // somebody's own SQLite copy is now under that very name, and another
+        // one under the next name of the family.
+        let theirs = folder.join("automatica-20261122-080000.sqlite3");
+        let other_db = data.path().join("outro.sqlite3");
+        library(&other_db, 9);
+        std::fs::copy(&other_db, &theirs).unwrap();
+        let beside = folder.join("automatica-20261122-080000-2.sqlite3");
+        std::fs::copy(&other_db, &beside).unwrap();
+        let mut manifest = Manifest::new();
+        manifest.pendente = Some(Pending {
+            sequencia: 1,
+            arquivo: "automatica-20261122-080000.sqlite3".into(),
+            bytes: 12345,
+            sha256: "0".repeat(64),
+            iniciada_em: "2026-11-22T08:00:00".into(),
+        });
+        manifest.proxima_sequencia = 2;
+        write_manifest(&folder.join(MANIFEST), &manifest).unwrap();
+        let their_bytes = std::fs::read(&theirs).unwrap();
+        let report = run_and_record(&db, data.path(), at("2026-11-22 10:00"))
+            .unwrap()
+            .unwrap();
+        // Neither is taken: the day gets a copy of its own.
+        let manifest = read_manifest(&folder.join(MANIFEST)).unwrap();
+        assert_eq!(manifest.copias.len(), 1);
+        assert!(manifest
+            .copias
+            .iter()
+            .all(|e| e.arquivo != "automatica-20261122-080000.sqlite3"
+                && e.arquivo != "automatica-20261122-080000-2.sqlite3"));
+        assert!(manifest.pendente.is_none());
+        assert_eq!(std::fs::read(&theirs).unwrap(), their_bytes);
+        assert!(beside.is_file());
+        assert!(report
+            .warning
+            .unwrap()
+            .contains("não é a cópia que uma execução anterior anunciou"));
+    }
+
+    #[test]
+    fn the_record_bridges_a_day_whose_stamp_was_not_written() {
+        let data = tempfile::tempdir().unwrap();
+        let db = data.path().join("acervo.sqlite3");
+        library(&db, 1);
+        assert!(run_and_record(&db, data.path(), at("2026-11-22 08:00"))
+            .unwrap()
+            .is_some());
+        // The run died after recording the copy, before stamping the day.
+        let mut state = load_state(data.path());
+        state.ultimo_dia.clear();
+        save_state(data.path(), &state).unwrap();
+        assert!(run_and_record(&db, data.path(), at("2026-11-22 12:00"))
+            .unwrap()
+            .is_none());
+        assert_eq!(copies_in(&folder(data.path())).len(), 1);
+        assert_eq!(load_state(data.path()).ultimo_dia, "2026-11-22");
+    }
+
+    #[test]
+    fn a_substituted_file_takes_no_place_among_the_kept_copies() {
+        let data = tempfile::tempdir().unwrap();
+        let db = data.path().join("acervo.sqlite3");
+        library(&db, 1);
+        // Thursday 1 to Saturday 10 of October 2026, one copy a day.
+        for day in 0..10 {
+            run(
+                &db,
+                data.path(),
+                at("2026-10-01 08:00") + chrono::Duration::days(day),
+            )
+            .unwrap();
+        }
+        let folder = folder(data.path());
+        // The copy of the 10th is replaced by somebody's file under its name.
+        let substituted = folder.join("automatica-20261010-080000.sqlite3");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&substituted, b"outro arquivo").unwrap();
+        // Sunday the 11th: the seven kept are the seven genuine most recent
+        // (11, 9, 8, 7, 6, 5, 4) plus the anchors of each week (1 and 5).
+        run(&db, data.path(), at("2026-10-11 08:00")).unwrap();
+        for day in ["04", "05", "06", "07", "08", "09", "11", "01"] {
+            assert!(
+                folder
+                    .join(format!("automatica-202610{day}-080000.sqlite3"))
+                    .is_file(),
+                "dia {day}"
+            );
+        }
+        assert_eq!(std::fs::read(&substituted).unwrap(), b"outro arquivo");
+        // The card counts the same way: the substituted file is not a copy.
+        let summary = summary(data.path());
+        assert_eq!(summary.count, 8);
     }
 
     #[test]
@@ -1156,13 +1445,19 @@ mod tests {
             b"outro arquivo, de outra pessoa"
         );
         assert!(!report.removed.contains(&oldest));
-        assert!(report
-            .warning
-            .unwrap()
-            .contains("não é mais a cópia registrada"));
-        // And it is forgotten: never considered again.
+        // It does not count as the recorded copy (size and modification time),
+        // so it takes no part in retention at all.
         let manifest = read_manifest(&folder.join(MANIFEST)).unwrap();
-        assert!(manifest.copias.iter().all(|e| e.arquivo != oldest));
+        let recorded = manifest
+            .copias
+            .iter()
+            .find(|e| e.arquivo == oldest)
+            .unwrap();
+        assert!(!counts_as_recorded(&folder, recorded));
+        // And if it had the same size and time, the SHA-256 checked through
+        // the handle that deletes still leaves it alone.
+        assert!(!delete_if_recorded(&folder.join(&oldest), recorded).unwrap());
+        assert!(folder.join(&oldest).is_file());
     }
 
     #[test]
@@ -1258,20 +1553,15 @@ mod tests {
         let db = data.path().join("acervo.sqlite3");
         library(&db, 2);
         let folder = create_folder(data.path()).unwrap();
-        // The run of 08:00 announced its copy and published it, then died
-        // before recording it.
-        let mut manifest = Manifest::new();
-        manifest.pendente = Some(Pending {
-            sequencia: 1,
-            nome: "automatica-20261122-080000".into(),
-            iniciada_em: "2026-11-22T08:00:00".into(),
-        });
-        manifest.proxima_sequencia = 2;
-        write_manifest(&folder.join(MANIFEST), &manifest).unwrap();
+        // The run of 08:00 announced its copy (exact name and identity) and
+        // published it, then died before recording it.
         let published =
             upgrade_backup::backup_named(&db, &folder, "automatica-20261122-080000", PREFIX)
                 .unwrap();
-        assert!(matches!(published, Outcome::BackedUp(_)));
+        let Outcome::BackedUp(path) = published else {
+            panic!("esperava a cópia")
+        };
+        announce(&folder, &path, 1);
         // The next opening, the same day: recorded, and no second copy.
         let report = run_and_record(&db, data.path(), at("2026-11-22 10:00"))
             .unwrap()
@@ -1387,7 +1677,8 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let db = data.path().join("acervo.sqlite3");
         library(&db, 3);
-        let copy = manual_copy(&db, data.path()).unwrap();
+        let (copy, problem) = manual_copy(&db, data.path()).unwrap();
+        assert_eq!(problem, None);
         let name = copy.file_name().unwrap().to_string_lossy().into_owned();
         assert!(
             name.starts_with("ponte-") && name.ends_with(".sqlite3"),

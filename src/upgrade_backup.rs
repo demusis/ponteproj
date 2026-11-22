@@ -182,6 +182,57 @@ pub(crate) fn backup_named(
     Ok(Outcome::BackedUp(final_path))
 }
 
+/// The first name of `stem` that no file has yet (`<stem>.sqlite3`,
+/// `<stem>-2.sqlite3`…): what [`backup_exact`] is then asked to publish.
+pub(crate) fn first_free_name(destination: &Path, stem: &str) -> Result<PathBuf> {
+    free_name(destination, stem)
+}
+
+/// One consistent, verified copy of `database`, published under exactly
+/// `target` and nowhere else: never over a file (a name taken meanwhile
+/// fails the copy). `before_publish` runs on the finished, verified partial
+/// right before its non-replacing move (the automatic copies record its
+/// identity there). Only unfinished copies of `family` more than a day old
+/// are cleared away from the folder.
+pub(crate) fn backup_exact(
+    database: &Path,
+    target: &Path,
+    family: &str,
+    before_publish: impl FnOnce(&Path) -> Result<()>,
+) -> Result<Outcome> {
+    if !library_exists(database)? {
+        return Ok(Outcome::NoLibrary);
+    }
+    let destination = target
+        .parent()
+        .context("Caminho da cópia de segurança inválido.")?;
+    std::fs::create_dir_all(destination).with_context(|| {
+        format!(
+            "Não foi possível criar ou usar a pasta da cópia de segurança ({}).",
+            destination.display()
+        )
+    })?;
+    remove_abandoned_partials(destination, family, std::time::SystemTime::now());
+    let mut partial = Partial::create(target)?;
+    copy_consistently(database, &partial.path)?;
+    verify(&partial.path)?;
+    before_publish(&partial.path)?;
+    match crate::atomic_file::move_no_replace(&partial.path, target) {
+        Ok(()) => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Não foi possível dar o nome final à cópia ({}); outro arquivo pode ter ocupado esse nome.",
+                    target.display()
+                )
+            })
+        }
+    }
+    partial.remove();
+    partial.disarm();
+    Ok(Outcome::BackedUp(target.to_path_buf()))
+}
+
 /// Whether the library file is there. `Path::exists` folds every error into
 /// "no", which would turn a library on a drive that cannot be reached right now
 /// into "first installation, nothing to copy" and let the installer go on without

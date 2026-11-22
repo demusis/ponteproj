@@ -2228,6 +2228,7 @@ mod planning_tests {
                 cascade_notes: Vec::new(),
                 read_cache: Default::default(),
                 transport_off: false,
+                replacement_notes: Default::default(),
             };
             partial.ensure_tasks().unwrap();
             assert!(version(&partial) < crate::storage::SCHEMA_VERSION);

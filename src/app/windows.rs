@@ -476,6 +476,21 @@ impl PonteApp {
         if !self.mail.open {
             return;
         }
+        // A window that only looks never talks to a mailbox.
+        if self.library.only_looking() {
+            let mut open = true;
+            egui::Window::new("Importar do e-mail")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.add(egui::Label::new("Este acervo está aberto só para olhar: nesta janela o Ponte não se conecta à caixa de e-mail (não lista nem busca mensagens). Use a janela do acervo em uso.").wrap());
+                });
+            if !open {
+                self.mail.open = false;
+            }
+            return;
+        }
         // The window says what is running: its own exchange with the
         // mailbox, or something else (an AI draft, a backup) to wait for.
         let busy = match &self.worker {
@@ -633,10 +648,12 @@ impl PonteApp {
                 });
             if let Some(target) = go {
                 self.exit_confirm = false;
+                self.cancel_switch();
                 self.go_to(target);
             }
             if cancel {
                 self.exit_confirm = false;
+                self.cancel_switch();
             }
             if close {
                 self.allow_close = true;

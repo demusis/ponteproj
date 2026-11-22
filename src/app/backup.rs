@@ -146,11 +146,14 @@ impl PonteApp {
         self.auto_copy.summary = None;
     }
 
-    /// A restore or an import is running: nothing else copies the library.
+    /// A restore, an import, a manual copy or a portable export is running,
+    /// or the window is switching libraries: no automatic copy starts.
     pub(super) fn maintenance_running(&self) -> bool {
-        self.worker
-            .as_ref()
-            .is_some_and(|worker| worker.kind == WorkKind::Recovery)
+        self.library.switching_to.is_some()
+            || self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| matches!(worker.kind, WorkKind::Recovery | WorkKind::Backup))
     }
 }
 
@@ -171,6 +174,18 @@ pub(super) struct PortableForm {
     pub(super) mode: PortableMode,
     pub(super) password: String,
     pub(super) confirm: String,
+}
+
+/// The text of the switch of library, in the confirmation.
+pub(super) const ADOPTION_TEXT: &str = "O Ponte vai fechar e abrir de novo no acervo escolhido. A partir de então o Ponte (a janela, o navegador e o instalador) passa a usar esse acervo. O acervo atual não é apagado nem alterado: fica guardado na pasta dele e pode voltar a ser usado em Ajustes ▸ Cópia de segurança ▸ Acervos deste computador. Feche antes as outras janelas do Ponte. As versões anteriores do Ponte sempre abrem o acervo principal: antes de voltar a uma versão anterior, volte a usar o acervo principal aqui.";
+
+/// A password handed to the worker: overwritten when dropped.
+pub(super) struct Secret(pub(super) String);
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        wipe(&mut self.0);
+    }
 }
 
 /// The fields of the portable copy's password (their undo history is
@@ -200,13 +215,21 @@ pub(super) struct LibraryPlace {
     pub(super) home: Option<PathBuf>,
     /// This window's library is the one the computer uses.
     pub(super) in_use: bool,
-    /// The computer now uses this other library (this window stays on its own).
+    /// Defensive: the selection changed under this window (another user of
+    /// the computer, an older Ponte). The window then only looks: no
+    /// exchange, no Lixeira expiry, no reminders, no automatic copies.
     pub(super) superseded_by: Option<PathBuf>,
     /// The pointer could not be followed when the window opened.
     pub(super) notice: Option<String>,
     checked: Option<Instant>,
     pub(super) confirm_adopt: bool,
+    /// The library of the list whose switch is being confirmed.
+    pub(super) confirm_switch: Option<PathBuf>,
     dismissed: bool,
+    /// The library this window is switching to: it is going through its
+    /// close; when it has closed, the pointer is written and the Ponte opens
+    /// again on it.
+    pub(super) switching_to: Option<PathBuf>,
     /// The libraries of this computer, read when Ajustes shows them.
     pub(super) libraries: Option<Vec<Library>>,
 }
@@ -221,10 +244,11 @@ impl LibraryPlace {
         } else {
             resolution.home.clone()
         };
-        let in_use = match &home {
-            Some(home) => {
-                crate::paths::same_folder(&crate::paths::follow_pointer(home).data_dir, data_dir)
-            }
+        let now = home
+            .as_ref()
+            .map(|home| crate::paths::follow_pointer(home).data_dir);
+        let in_use = match &now {
+            Some(now) => crate::paths::same_folder(now, data_dir),
             None => !inspecting,
         };
         Self {
@@ -232,27 +256,43 @@ impl LibraryPlace {
             marker,
             home,
             in_use,
+            // Read again here, before anything starts: a selection that
+            // changed since this process resolved it makes it only look.
+            superseded_by: now.filter(|_| !inspecting && !in_use),
             notice: resolution.notice.clone(),
             ..Default::default()
         }
     }
 
-    /// A recovery library being looked at, not (yet) the one in use: no
-    /// automatic copies are made of it.
+    /// The window only looks at its library (a recovery library that is not
+    /// the one in use, or a library whose selection changed under it): no
+    /// exchange, no automatic copy, no Lixeira expiry, no reminders, no
+    /// mailbox, no test notice.
     pub(super) fn only_looking(&self) -> bool {
-        self.inspecting && !self.in_use
+        (self.inspecting && !self.in_use) || self.superseded_by.is_some()
     }
 }
 
+/// What the closing process does once its window is gone: `Some(notice)`
+/// means open the Ponte again (on the library in use), telling `notice` if
+/// there is one.
+static RELAUNCH: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
+
+/// Asked by `run_opening` once the window is closed and its lock released.
+pub(super) fn take_relaunch() -> Option<Option<String>> {
+    RELAUNCH.lock().ok().and_then(|mut r| r.take())
+}
+
 impl PonteApp {
-    /// Looks at the pointer again every few seconds: a window whose library
-    /// stopped being the one in use says so, and a recovery window learns
-    /// that it was adopted.
+    /// Looks at the pointer again every few seconds. A window whose
+    /// selection changed under it (it never switches on its own and lives on:
+    /// see [`PonteApp::use_library`]) only looks from then on.
     pub(super) fn tick_library_place(&mut self) {
         if self
             .library
             .checked
             .is_some_and(|at| at.elapsed() < PLACE_CHECK_EVERY)
+            || self.library.switching_to.is_some()
         {
             return;
         }
@@ -262,46 +302,35 @@ impl PonteApp {
         };
         let now = crate::paths::follow_pointer(&home).data_dir;
         let mine = crate::paths::same_folder(&now, &self.data_dir());
-        if self.library.inspecting {
-            if mine && !self.library.in_use {
-                self.auto_copy.allowed = true;
-            }
-            self.library.in_use = mine;
-        } else {
-            self.library.in_use = mine;
-            let changed = self.library.superseded_by.as_deref() != Some(now.as_path());
-            self.library.superseded_by = (!mine).then_some(now);
-            if changed {
-                self.library.dismissed = false;
-            }
+        self.library.in_use = mine;
+        if !self.library.inspecting && !mine && self.library.superseded_by.is_none() {
+            self.library.superseded_by = Some(now);
+            self.library.dismissed = false;
+        }
+        if self.library.only_looking() {
+            self.auto_copy.allowed = false;
         }
         self.apply_transport();
     }
 
     /// Only the library in use exchanges with a folder or a main computer: a
-    /// window on any other one (a recovery library being looked at, a library
-    /// that stopped being the one in use) keeps every change here and runs no
+    /// window that only looks keeps every change here and runs no
     /// synchronization and no main computer, at the Store and in the panel.
-    /// When it becomes the library in use, its saved configuration starts
-    /// again.
+    /// Transport is only ever turned off here; a library takes its sync role
+    /// back only by being opened again as the library in use.
     pub(super) fn apply_transport(&mut self) {
-        let off = self.library.only_looking() || self.library.superseded_by.is_some();
-        if off == self.store.transport_off() {
-            return;
-        }
-        self.store.set_transport_off(off);
-        self.intranet.set_transport_off(off);
-        if !off {
-            self.intranet.initialize(&mut self.store, &self.db_path);
+        if self.library.only_looking() && !self.store.transport_off() {
+            self.store.set_transport_off(true);
+            self.intranet.set_transport_off(true);
         }
     }
 
-    /// The band at the top of the window: a recovery library, a library that
-    /// is no longer the one in use, or a pointer that could not be followed.
+    /// The band at the top of the window: a recovery library being looked
+    /// at, a selection that changed under this window, or a pointer that
+    /// could not be followed.
     pub(super) fn library_banner(&mut self, ui: &mut egui::Ui) {
         enum Band {
             Looking(Marker),
-            Adopted,
             Superseded(PathBuf),
             Notice(String),
         }
@@ -310,14 +339,12 @@ impl PonteApp {
             Some(Band::Notice(notice))
         } else if place.dismissed {
             None
+        } else if let Some(now) = place.superseded_by.clone() {
+            Some(Band::Superseded(now))
         } else if let (true, Some(marker)) = (place.inspecting, place.marker.clone()) {
-            Some(if place.in_use {
-                Band::Adopted
-            } else {
-                Band::Looking(marker)
-            })
+            Some(Band::Looking(marker))
         } else {
-            place.superseded_by.clone().map(Band::Superseded)
+            None
         };
         let Some(band) = band else {
             return;
@@ -326,7 +353,6 @@ impl PonteApp {
         let (fill, stroke) = match band {
             Band::Notice(_) | Band::Superseded(_) => (palette.danger_soft, palette.danger),
             Band::Looking(_) => (palette.warn_soft, palette.warn),
-            Band::Adopted => (palette.ok_soft, palette.ok),
         };
         let folder = self.data_dir();
         let mut adopt = false;
@@ -358,20 +384,12 @@ impl PonteApp {
                     Band::Superseded(now) => {
                         strong(ui, "Este computador passou a usar outro acervo");
                         wrap(ui, format!(
-                            "O Ponte agora abre o acervo em {}. Esta janela continua no acervo anterior, que fica guardado como está, e deixou de sincronizar: o que você alterar aqui fica só neste acervo. Feche-a para não trabalhar no acervo errado.",
+                            "A escolha do acervo mudou fora desta janela: o Ponte agora abre o acervo em {}. Esta janela ficou só para olhar o acervo anterior, que fica guardado como está: ela não sincroniza, não esvazia a Lixeira, não dá avisos e não faz cópias automáticas. Feche-a e abra o acervo em uso.",
                             now.display()
                         ));
-                        ui.horizontal_wrapped(|ui| {
-                            open_in_use = ui
-                                .add(widgets::primary("Abrir o acervo em uso e fechar esta janela"))
-                                .clicked();
-                            dismiss = ui.add(widgets::quiet("Continuar aqui por enquanto")).clicked();
-                        });
-                    }
-                    Band::Adopted => {
-                        strong(ui, "Este acervo restaurado é agora o acervo deste computador");
-                        wrap(ui, "O acervo anterior continua guardado, inteiro, na pasta dele; para voltar a ele, use Ajustes ▸ Cópia de segurança ▸ Acervos deste computador. Se outra janela do Ponte ainda estiver aberta no acervo anterior, feche-a. Este acervo continua sem sincronização até você conectá-lo em Ajustes ▸ Equipe e sincronização.".to_owned());
-                        dismiss = ui.add(widgets::quiet("Entendi")).clicked();
+                        open_in_use = ui
+                            .add(widgets::primary("Abrir o acervo em uso e fechar esta janela"))
+                            .clicked();
                     }
                     Band::Looking(marker) => {
                         strong(ui, "Acervo de recuperação, só para olhar");
@@ -387,7 +405,7 @@ impl PonteApp {
                                 folder.display()
                             ));
                         } else if confirm {
-                            wrap(ui, "A partir de agora o Ponte (a próxima abertura, o navegador e o instalador) passa a usar este acervo. O acervo atual não é apagado nem alterado: fica guardado na pasta dele e pode voltar a ser usado em Ajustes ▸ Cópia de segurança ▸ Acervos deste computador. Este acervo continua sem sincronização; para voltar a sincronizar, conecte-o em Ajustes ▸ Equipe e sincronização. As versões anteriores do Ponte sempre abrem o acervo principal: antes de voltar a uma versão anterior, volte a usar o acervo principal aqui. Feche antes as outras janelas do Ponte.".to_owned());
+                            wrap(ui, format!("{ADOPTION_TEXT} Este acervo continua sem sincronização; para voltar a sincronizar, conecte-o em Ajustes ▸ Equipe e sincronização."));
                             ui.add_space(S1);
                             ui.horizontal_wrapped(|ui| {
                                 adopt = ui.add(widgets::primary("Usar este acervo")).clicked();
@@ -421,38 +439,82 @@ impl PonteApp {
         }
         if adopt {
             self.library.confirm_adopt = false;
-            self.use_library(&folder);
+            self.use_library(&folder, ui.ctx());
         }
         if open_in_use {
-            match recovery::open_library_in_use() {
+            match recovery::open_library_in_use(None) {
                 Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
                 Err(error) => self.error(format!("{error:#}")),
             }
         }
     }
 
-    /// "Usar este acervo": the pointer names `folder`. Nothing else changes.
-    pub(super) fn use_library(&mut self, folder: &Path) {
+    /// "Usar este acervo" (in the recovery window, or in Acervos deste
+    /// computador): this window goes through its normal close (its work, its
+    /// exchanges and its main computer stopped, unsaved work resolved by the
+    /// close guard; cancelling there changes nothing); only once it closed is
+    /// the pointer written, and the Ponte opens again on the chosen library.
+    /// A window never goes on running on a library that stopped being the
+    /// one in use.
+    pub(super) fn use_library(&mut self, folder: &Path, ctx: &egui::Context) {
         let Some(home) = self.library.home.clone() else {
             self.error("Este Ponte usa a pasta definida em PONTEPROJ_DATA_DIR: a escolha do acervo não vale aqui.");
             return;
         };
-        match recovery::adopt(&home, folder, Some(&self.data_dir())) {
-            Ok(()) => {
-                self.library.libraries = None;
-                self.library.checked = None;
-                self.library.dismissed = false;
-                self.tick_library_place();
-                if crate::paths::same_folder(folder, &self.data_dir()) {
-                    self.message("Pronto: este acervo passa a ser o deste computador. O acervo anterior ficou guardado como estava.");
-                } else {
-                    self.message(format!(
-                        "Pronto: o Ponte passa a usar o acervo em {}. Esta janela continua no acervo atual até ser fechada; nada foi apagado.",
-                        folder.display()
-                    ));
-                }
-            }
-            Err(error) => self.error(format!("{error:#}")),
+        let refusal = if self.worker.is_some() || self.auto_copy.running() {
+            Some("Há um trabalho em andamento nesta janela; espere ele terminar e tente de novo. Nada foi trocado.")
+        } else if self.intranet.syncing() {
+            Some("Uma sincronização está em andamento; espere ela terminar e tente de novo. Nada foi trocado.")
+        } else if self.intranet.serving() {
+            Some("Este computador está servindo como computador principal; pare de servir em Ajustes ▸ Equipe e sincronização antes de trocar de acervo. Nada foi trocado.")
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
+            self.error(refusal);
+            return;
+        }
+        if let Err(error) = recovery::check_adoption(&home, folder, Some(&self.data_dir())) {
+            self.error(format!("{error:#}"));
+            return;
+        }
+        // Nothing new starts while the window closes.
+        self.store.set_transport_off(true);
+        self.intranet.set_transport_off(true);
+        self.auto_copy.allowed = false;
+        self.library.switching_to = Some(folder.to_path_buf());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// The close guard was answered "Voltar": the switch does not happen and
+    /// this window goes on as before, on the library in use.
+    pub(super) fn cancel_switch(&mut self) {
+        if self.library.switching_to.take().is_some() && !self.library.only_looking() {
+            self.store.set_transport_off(false);
+            self.intranet.set_transport_off(false);
+            self.intranet.initialize(&mut self.store, &self.db_path);
+            self.auto_copy.allowed = true;
+        }
+    }
+
+    /// At the end of the close: the pointer is written and the Ponte is asked
+    /// to open again (on the chosen library, or on the same one with the
+    /// reason when the pointer could not be written).
+    pub(super) fn finish_switch(&mut self) {
+        let Some(folder) = self.library.switching_to.take() else {
+            return;
+        };
+        let Some(home) = self.library.home.clone() else {
+            return;
+        };
+        let notice = match recovery::adopt(&home, &folder, Some(&self.data_dir())) {
+            Ok(()) => None,
+            Err(error) => Some(format!(
+                "O acervo não foi trocado: {error:#} O Ponte abriu de novo no acervo de antes."
+            )),
+        };
+        if let Ok(mut relaunch) = RELAUNCH.lock() {
+            *relaunch = Some(notice);
         }
     }
 
@@ -562,12 +624,13 @@ impl PonteApp {
         wipe(&mut confirm);
         self.close_portable_form(ctx);
         let database = self.db_path.clone();
+        let password = Secret(password);
         self.spawn(
             "Gravando a cópia portátil…".into(),
             WorkKind::Backup,
             move |_| {
                 WorkResult::PortableExport(
-                    crate::portable_copy::export(&database, &path, &password)
+                    crate::portable_copy::export(&database, &path, &password.0)
                         .map_err(|error| format!("{error:#}")),
                 )
             },
@@ -604,12 +667,13 @@ impl PonteApp {
         self.close_portable_form(ctx);
         let place = recovery::Place::new(self.library.home.as_deref(), &self.data_dir());
         let now = chrono::Local::now().naive_local();
+        let password = Secret(password);
         self.spawn(
             "Abrindo a cópia portátil e montando o acervo de recuperação…".into(),
             WorkKind::Recovery,
             move |_| {
                 WorkResult::Recovery(
-                    crate::portable_copy::import(&source, &password, &place, now)
+                    crate::portable_copy::import(&source, &password.0, &place, now)
                         .map_err(|error| format!("{error:#}")),
                 )
             },
@@ -636,5 +700,126 @@ impl PonteApp {
             }
             Err(error) => self.error(format!("A cópia não foi restaurada. {error}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::Store;
+
+    /// A main folder with its library and a finished recovery library.
+    fn two_libraries(dir: &Path) -> (PathBuf, PathBuf) {
+        let home = dir.join("PonteProj");
+        std::fs::create_dir_all(&home).unwrap();
+        drop(Store::open(&crate::paths::db_path_in(&home)).unwrap());
+        let restored = dir.join("PonteProj-recuperacao-20261122-101500");
+        std::fs::create_dir_all(&restored).unwrap();
+        drop(Store::open(&crate::paths::db_path_in(&restored)).unwrap());
+        let marker = Marker {
+            versao: 1,
+            tipo: "copia-local".into(),
+            origem: "copia.sqlite3".into(),
+            copia_de: String::new(),
+            montado_em: "2026-11-22T10:15:00".into(),
+            pasta_principal: Some(home.display().to_string()),
+            documentos: 0,
+            esquema_da_copia: 21,
+            desligado: Vec::new(),
+            completo: true,
+        };
+        std::fs::write(
+            restored.join(recovery::MARKER_FILE),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        (home, restored)
+    }
+
+    fn window_on(dir: &Path) -> PonteApp {
+        let db = crate::paths::db_path_in(dir);
+        let mut app = PonteApp::new(Store::open(&db).unwrap(), db);
+        app.library = LibraryPlace {
+            home: dir.parent().map(|p| p.join("PonteProj")),
+            in_use: true,
+            ..Default::default()
+        };
+        app.auto_copy.allowed = true;
+        app
+    }
+
+    #[test]
+    fn a_window_whose_selection_changed_under_it_only_looks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, restored) = two_libraries(dir.path());
+        let mut app = window_on(&home);
+        // Another program (another user, an older Ponte) moved the pointer.
+        crate::paths::write_pointer(&home, &restored).unwrap();
+        app.tick_library_place();
+        assert!(app.library.superseded_by.is_some());
+        assert!(app.library.only_looking());
+        assert!(app.store.transport_off());
+        assert!(!app.auto_copy.allowed);
+        // Detected at startup too, before anything starts.
+        let resolution = crate::paths::Resolution {
+            data_dir: home.clone(),
+            home: Some(home.clone()),
+            notice: None,
+        };
+        assert!(LibraryPlace::detect(&resolution, &home).only_looking());
+    }
+
+    #[test]
+    fn switching_closes_the_window_first_and_writes_the_pointer_only_at_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, restored) = two_libraries(dir.path());
+        let mut app = window_on(&home);
+        let ctx = egui::Context::default();
+        app.use_library(&restored, &ctx);
+        // Closing: nothing written yet, nothing new starts.
+        assert_eq!(
+            app.library.switching_to.as_deref(),
+            Some(restored.as_path())
+        );
+        assert_eq!(crate::paths::follow_pointer(&home).data_dir, home);
+        assert!(app.store.transport_off());
+        assert!(app.maintenance_running());
+        // "Voltar": nothing changes.
+        app.cancel_switch();
+        assert!(app.library.switching_to.is_none());
+        assert!(!app.store.transport_off());
+        assert_eq!(crate::paths::follow_pointer(&home).data_dir, home);
+        // Closed for real: the pointer moves and the Ponte opens again there.
+        app.use_library(&restored, &ctx);
+        app.finish_switch();
+        assert!(crate::paths::same_folder(
+            &crate::paths::follow_pointer(&home).data_dir,
+            &restored
+        ));
+        assert_eq!(take_relaunch(), Some(None));
+    }
+
+    #[test]
+    fn a_window_that_is_exchanging_or_working_does_not_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, restored) = two_libraries(dir.path());
+        let mut app = window_on(&home);
+        let ctx = egui::Context::default();
+        // A job of the worker is running.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (_progress_sender, progress) = std::sync::mpsc::channel();
+        app.worker = Some(super::super::Worker {
+            receiver,
+            label: "teste".into(),
+            kind: WorkKind::Export,
+            started: Instant::now(),
+            progress,
+            latest: String::new(),
+            cancel: Default::default(),
+        });
+        app.use_library(&restored, &ctx);
+        assert!(app.library.switching_to.is_none());
+        assert_eq!(crate::paths::follow_pointer(&home).data_dir, home);
+        drop(sender);
     }
 }

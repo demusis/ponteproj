@@ -113,7 +113,7 @@ fn content_bytes(conn: &rusqlite::Connection) -> Result<u64> {
     let tables = crate::intranet::LIBRARY_INVENTORY
         .iter()
         .map(|(_, table, ..)| *table)
-        .chain(["item_versions", "team_events"]);
+        .chain(["item_versions", "team_events", "import_receipts"]);
     for table in tables {
         let columns: Vec<String> = conn
             .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?
@@ -139,6 +139,25 @@ fn too_big(bytes: u64, limit: u64) -> String {
         bytes.div_ceil(1024 * 1024),
         limit / (1024 * 1024)
     )
+}
+
+/// Every task of the library travels, read strictly: the snapshot leaves out
+/// a task it cannot read when its document is in the Lixeira (the tolerant
+/// reading of the synchronization); a portable copy refuses instead, naming
+/// it. Read in the export's own transaction.
+fn ensure_every_task_travels(store: &Store, snapshot: &CabinetSnapshot) -> Result<()> {
+    let exported: std::collections::BTreeSet<i64> = snapshot.tasks.iter().map(|t| t.id).collect();
+    let all: Vec<i64> = store
+        .conn
+        .prepare("SELECT id FROM tasks ORDER BY id")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if let Some(missing) = all.iter().find(|id| !exported.contains(id)) {
+        bail!(
+            "A tarefa nº {missing} não pode ser lida (o conteúdo está danificado ou foi gravado em outra conta do Windows). A cópia portátil não foi gravada, para não perder essa tarefa sem avisar. Restaure o documento dela da Lixeira e corrija ou exclua a tarefa, ou use «Fazer cópia agora»."
+        );
+    }
+    Ok(())
 }
 
 /// Every item of the Lixeira must travel with the item it holds: one that
@@ -328,6 +347,7 @@ fn export_limited(
     ensure!(measured <= limit, "{}", too_big(measured, limit));
     let snapshot = store.export_snapshot()?;
     ensure_trash_is_whole(&snapshot)?;
+    ensure_every_task_travels(&store, &snapshot)?;
     let blobs = crate::intranet::collect_blobs(&store, &snapshot)?;
     let extras = Extras {
         recibos_de_importacao: store
@@ -909,6 +929,75 @@ mod tests {
             Store::open(&db).unwrap().list_documents("").unwrap().len(),
             2
         );
+    }
+
+    #[test]
+    fn an_unreadable_task_inside_an_archived_document_refuses_the_export() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        let store = full_library(&db);
+        // The task of the document in the Lixeira (no trash row of its own).
+        let task: i64 = store
+            .conn
+            .query_row(
+                "SELECT t.id FROM tasks t JOIN trash r ON r.kind='document' AND r.item_id=t.document_id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut damaged = crate::protection::seal(b"{}").unwrap();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 0x5a;
+        let guards: Vec<String> = store
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='tasks'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        for guard in guards {
+            store
+                .conn
+                .execute_batch(&format!("DROP TRIGGER {guard}"))
+                .unwrap();
+        }
+        store
+            .conn
+            .execute(
+                "UPDATE tasks SET payload=?1 WHERE id=?2",
+                rusqlite::params![damaged, task],
+            )
+            .unwrap();
+        drop(store);
+        let file = dir.path().join("acervo.pontecopia");
+        let error = export(&db, &file, PASSWORD).unwrap_err().to_string();
+        assert!(error.contains(&format!("A tarefa nº {task}")), "{error}");
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn the_import_receipts_count_in_the_size_of_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        let store = Store::open(&db).unwrap();
+        // Many completed receipts, nothing else.
+        for n in 0..400 {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO import_receipts(request_id,manifest,completed_at,state) VALUES(?1,?2,'2026-01-01','done')",
+                    rusqlite::params![format!("pedido-{n}"), "x".repeat(600)],
+                )
+                .unwrap();
+        }
+        drop(store);
+        let file = dir.path().join("acervo.pontecopia");
+        let error = export_limited(&db, &file, PASSWORD, 128 * 1024, &|| {})
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("mais do que cabe"), "{error}");
+        assert!(!file.exists());
     }
 
     #[test]

@@ -908,7 +908,8 @@ fn held_by_another(dir: &Path, file: &str) -> bool {
 
 /// `ponteproj --serve`: held while it serves the library in `dir`, so the
 /// library in use is not switched under it.
-pub fn hold_server_lock(dir: &Path) -> Option<std::fs::File> {
+/// Failing to take it is fatal: `--serve` never serves without it.
+pub fn hold_server_lock(dir: &Path) -> Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(false);
     #[cfg(windows)]
@@ -916,7 +917,19 @@ pub fn hold_server_lock(dir: &Path) -> Option<std::fs::File> {
         use std::os::windows::fs::OpenOptionsExt;
         options.share_mode(0);
     }
-    options.open(dir.join(SERVER_LOCK)).ok()
+    match options.open(dir.join(SERVER_LOCK)) {
+        Ok(lock) => Ok(lock),
+        Err(error) if cfg!(windows) && error.raw_os_error() == Some(32) => bail!(
+            "Outro Ponte já está servindo o acervo em {} como computador principal sem janela (ponteproj --serve). Feche-o antes de iniciar outro.",
+            dir.display()
+        ),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Não foi possível usar a trava do computador principal em {}; ele não foi iniciado.",
+                dir.display()
+            )
+        }),
+    }
 }
 
 /// Refuses while another process of the Ponte uses a library of this
@@ -954,7 +967,18 @@ fn ensure_nobody_else_uses(home: &Path, target: &Path, own: Option<&Path>) -> Re
 /// computer (see [`ensure_nobody_else_uses`]); `own` is the folder of the
 /// window asking.
 pub fn adopt(home: &Path, folder: &Path, own: Option<&Path>) -> Result<()> {
+    check_adoption(home, folder, own)?;
+    paths::write_pointer(home, folder)
+}
+
+/// Whether [`adopt`] would be allowed now (nothing is written).
+pub fn check_adoption(home: &Path, folder: &Path, own: Option<&Path>) -> Result<()> {
     ensure_nobody_else_uses(home, folder, own)?;
+    ensure!(
+        paths::db_path_in(folder).is_file() && paths::ensure_openable(folder).is_ok(),
+        "Não há acervo pronto em {}; nada foi trocado.",
+        folder.display()
+    );
     ensure!(
         paths::same_folder(home, folder)
             || read_marker(folder)
@@ -963,7 +987,7 @@ pub fn adopt(home: &Path, folder: &Path, own: Option<&Path>) -> Result<()> {
         "{} não é um acervo deste computador.",
         folder.display()
     );
-    paths::write_pointer(home, folder)
+    Ok(())
 }
 
 /// Opens a window of the Ponte on the recovery library in `folder`, apart
@@ -979,11 +1003,18 @@ pub fn open_window(folder: &Path) -> Result<()> {
 }
 
 /// Opens a window of the Ponte on the library in use (as the Start menu does).
-pub fn open_library_in_use() -> Result<()> {
+/// `notice` is shown by the window that opens (why it opened there).
+pub fn open_library_in_use(notice: Option<String>) -> Result<()> {
     let exe = std::env::current_exe().context("Não foi possível localizar o programa do Ponte.")?;
-    std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    command
         .env_remove(paths::OVERRIDE_ENV)
         .env_remove(paths::RECOVERY_WINDOW_ENV)
+        .env_remove(paths::OPENING_NOTICE_ENV);
+    if let Some(notice) = notice {
+        command.env(paths::OPENING_NOTICE_ENV, notice);
+    }
+    command
         .spawn()
         .context("Não foi possível abrir o Ponte no acervo em uso.")?;
     Ok(())
@@ -1685,8 +1716,11 @@ mod tests {
         assert!(error.contains("Feche a outra janela do Ponte"), "{error}");
         assert_eq!(paths::follow_pointer(&home).data_dir, home);
         drop(other_window);
-        // A main computer without window on the main library: refused too.
+        // A main computer without window on the main library: refused too,
+        // and a second one on the same library does not start.
         let server = hold_server_lock(&home).unwrap();
+        let second = hold_server_lock(&home).unwrap_err().to_string();
+        assert!(second.contains("Outro Ponte já está servindo"), "{second}");
         let error = adopt(&home, &built.folder, Some(&built.folder))
             .unwrap_err()
             .to_string();
@@ -1964,5 +1998,272 @@ mod tests {
             .to_string();
         assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
         assert!(r.library_setting("holidays").unwrap().is_some());
+    }
+
+    /// A port that counts every connection made to it (a principal that
+    /// must never be contacted).
+    struct Counting {
+        url: String,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Counting {
+        fn start() -> Self {
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let hits = std::sync::Arc::new(AtomicUsize::new(0));
+            let stop = std::sync::Arc::new(AtomicBool::new(false));
+            let (h, st) = (hits.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !st.load(Ordering::Relaxed) {
+                    if listener.accept().is_ok() {
+                        h.fetch_add(1, Ordering::Relaxed);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            });
+            Self { url, hits, stop }
+        }
+
+        fn hits(&self) -> usize {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            self.hits.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl Drop for Counting {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Every path that can reach a principal, walked: an edit (with and
+    /// without a capability check before it), a library setting, a project,
+    /// a synchronization and the connection test of the panel.
+    fn walk_every_outgoing_path(store: &mut Store, cfg: &IntranetConfig) {
+        let doc = store.list_documents("").unwrap()[0].id;
+        let _ = store.save_note(doc, "Nota");
+        let _ = store.set_library_setting(crate::library_settings::HOLIDAYS, "uf MT\n");
+        let _ = store.save_project(&crate::projects::Project::new("Projeto"));
+        let mut task = crate::tasks::Task::new(doc);
+        task.title = "Tarefa".into();
+        let _ = store.save_task(&task);
+        let _ = store.sync_from_host(false);
+        let _ = store.sync_from_host(true);
+        assert!(crate::intranet::ping_host_from(store, cfg).is_err());
+        assert!(store.contact_allowed(cfg).is_err());
+    }
+
+    #[test]
+    fn a_library_that_may_not_talk_contacts_no_principal_on_any_path() {
+        let principal = Counting::start();
+        let token = crate::intranet::generate_token();
+        let client = |member: &str| IntranetConfig {
+            mode: IntranetMode::Client,
+            member_name: member.into(),
+            host_url: principal.url.clone(),
+            cabinet_token: token.clone(),
+            ..IntranetConfig::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        // Open only to be looked at: a client that already exchanged.
+        let mut looking = Store::open(&dir.path().join("a").join("acervo.sqlite3")).unwrap();
+        looking.set_transport_off(true);
+        looking.save_intranet_config(&client("Olhando")).unwrap();
+        looking
+            .import_capture(&capture("SEFAZ-PRO-2026/00001"))
+            .unwrap();
+        let cfg = looking.load_intranet_config().unwrap();
+        walk_every_outgoing_path(&mut looking, &cfg);
+        // A first join not yet confirmed.
+        let mut pending = Store::open(&dir.path().join("b").join("acervo.sqlite3")).unwrap();
+        pending
+            .import_capture(&capture("SEFAZ-PRO-2026/00002"))
+            .unwrap();
+        pending.save_intranet_config(&client("Pendente")).unwrap();
+        let cfg = pending.load_intranet_config().unwrap();
+        assert!(cfg.join_pending());
+        walk_every_outgoing_path(&mut pending, &cfg);
+        // A folder library open only to be looked at reads no folder either.
+        let mut folder = Store::open(&dir.path().join("c").join("acervo.sqlite3")).unwrap();
+        let file = dir.path().join("Drive").join("ponte-sync.ponte");
+        folder
+            .save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::SharedFolder,
+                member_name: "Casa".into(),
+                folder_files: vec![file.display().to_string()],
+                folder_key: "senha-de-teste-123".into(),
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+        folder.set_transport_off(true);
+        let cfg_f = folder.load_intranet_config().unwrap();
+        assert!(folder
+            .sync_with_folders(
+                &cfg_f,
+                "senha-de-teste-123",
+                true,
+                &crate::ai::Reporter::silent()
+            )
+            .is_err());
+        assert!(!file.exists());
+        assert_eq!(
+            principal.hits(),
+            0,
+            "nenhuma conexão com o computador principal"
+        );
+    }
+
+    #[test]
+    fn editing_the_only_saved_holiday_does_not_open_the_gate_of_a_pending_join() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut server, token, _) = principal(dir.path());
+        let host_before = state_of(&host);
+        let host_holidays = host
+            .library_setting(crate::library_settings::HOLIDAYS)
+            .unwrap();
+        // A restored library whose only item is a saved holiday calendar.
+        let db = dir.path().join("r").join("acervo.sqlite3");
+        let mut r = Store::open(&db).unwrap();
+        r.set_library_setting(crate::library_settings::HOLIDAYS, "uf MT\n")
+            .unwrap();
+        r.save_intranet_config(&client_of(&server, &token)).unwrap();
+        assert!(r.load_intranet_config().unwrap().join_pending());
+        // The person edits the holidays before confirming: queued.
+        r.set_library_setting(crate::library_settings::HOLIDAYS, "uf SP\n")
+            .unwrap();
+        let error = r.sync_from_host(false).unwrap_err().to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        assert_eq!(state_of(&host), host_before);
+        assert_eq!(
+            host.library_setting(crate::library_settings::HOLIDAYS)
+                .unwrap(),
+            host_holidays
+        );
+        assert!(backups_before_replacement(&db).is_empty());
+        server.stop();
+        drop(host);
+    }
+
+    #[test]
+    fn going_through_local_mode_and_back_asks_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut server, token, _) = principal(dir.path());
+        let host_before = state_of(&host);
+        let db = dir.path().join("r").join("acervo.sqlite3");
+        let mut r = Store::open(&db).unwrap();
+        let own = r.import_capture(&capture("SEFAZ-PRO-2026/00001")).unwrap();
+        r.save_intranet_config(&client_of(&server, &token)).unwrap();
+        r.save_note(own.document_id, "Feita antes de confirmar")
+            .unwrap();
+        // "Só neste computador", then the principal again.
+        r.save_intranet_config(&IntranetConfig {
+            member_name: "Restaurado".into(),
+            ..IntranetConfig::default()
+        })
+        .unwrap();
+        r.save_intranet_config(&client_of(&server, &token)).unwrap();
+        assert!(r.load_intranet_config().unwrap().join_pending());
+        let error = r.sync_from_host(false).unwrap_err().to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        assert_eq!(state_of(&host), host_before);
+        assert_eq!(r.list_offline_outbox().unwrap().len(), 1);
+        server.stop();
+    }
+
+    #[test]
+    fn a_restored_library_joining_a_folder_before_the_settings_publishes_no_holiday() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "senha-de-teste-123";
+        let reporter = crate::ai::Reporter::silent();
+        let drive = dir.path().join("Drive").join("ponte-sync.ponte");
+        let pen = dir.path().join("Pendrive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
+        let folder_config = |member: &str, files: Vec<String>| IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: member.into(),
+            folder_files: files,
+            folder_key: key.into(),
+            ..IntranetConfig::default()
+        };
+        // A folder written by a Ponte before the settings (schema 19).
+        let mut a = Store::open(&dir.path().join("a").join("acervo.sqlite3")).unwrap();
+        a.save_intranet_config(&folder_config("Casa", vec![drive.display().to_string()]))
+            .unwrap();
+        a.import_capture(&capture("SEFAZ-PRO-2026/00001")).unwrap();
+        let cfg_a = a.load_intranet_config().unwrap();
+        a.sync_with_folders(&cfg_a, key, false, &reporter).unwrap();
+        let mut copy = crate::sharedfolder::read(&drive, key).unwrap().unwrap();
+        copy.payload.snapshot.settings.clear();
+        copy.payload.snapshot.schema_version = crate::intranet::SETTINGS_SCHEMA - 1;
+        let h = copy.header.clone();
+        crate::sharedfolder::write(
+            &drive,
+            key,
+            &crate::sharedfolder::WriteRequest {
+                lineage: &h.lineage,
+                revision: h.revision + 1,
+                writer: "old-writer",
+                writer_name: "Antigo",
+                schema_version: crate::intranet::SETTINGS_SCHEMA - 1,
+            },
+            &copy.payload,
+            &copy.blobs,
+        )
+        .unwrap();
+        // A restored library with a saved holiday; a second mirror whose
+        // folder is there but whose file is not.
+        let folder = dir.path().join("restaurado");
+        std::fs::create_dir_all(&folder).unwrap();
+        let marker = Marker {
+            versao: 1,
+            tipo: "copia-local".into(),
+            origem: "copia.sqlite3".into(),
+            copia_de: String::new(),
+            montado_em: "2026-11-22T10:15:00".into(),
+            pasta_principal: None,
+            documentos: 0,
+            esquema_da_copia: 21,
+            desligado: Vec::new(),
+            completo: true,
+        };
+        std::fs::write(
+            folder.join(MARKER_FILE),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        let mut r = Store::open(&paths::db_path_in(&folder)).unwrap();
+        r.set_library_setting(
+            crate::library_settings::HOLIDAYS,
+            "uf MT\nanual 09-07 Recuperado\n",
+        )
+        .unwrap();
+        r.save_intranet_config(&folder_config(
+            "Restaurado",
+            vec![drive.display().to_string(), pen.display().to_string()],
+        ))
+        .unwrap();
+        let cfg_r = r.load_intranet_config().unwrap();
+        assert!(r.sync_with_folders(&cfg_r, key, false, &reporter).is_err());
+        r.sync_with_folders(&cfg_r, key, true, &reporter).unwrap();
+        // Nothing of it in any mirror, nor here.
+        for mirror in [&drive, &pen] {
+            if let Some(written) = crate::sharedfolder::read(mirror, key).unwrap() {
+                assert!(
+                    written.payload.snapshot.settings.is_empty(),
+                    "{}",
+                    mirror.display()
+                );
+            }
+        }
+        assert_eq!(
+            r.library_setting(crate::library_settings::HOLIDAYS)
+                .unwrap(),
+            None
+        );
     }
 }

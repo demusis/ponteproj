@@ -26,6 +26,8 @@ pub const OVERRIDE_ENV: &str = "PONTEPROJ_DATA_DIR";
 /// document: the folder of the library that imported it. A window that finds
 /// another library does not open that document number there.
 pub const REQUEST_LIBRARY_ENV: &str = "PONTEPROJ_ACERVO_DO_PEDIDO";
+/// Set on the Ponte opened again after a switch of library: what to tell.
+pub const OPENING_NOTICE_ENV: &str = "PONTEPROJ_AVISO_AO_ABRIR";
 /// The end of the name of a recovery folder while it is being built.
 pub const STAGING_SUFFIX: &str = ".montando";
 /// Written first in a recovery folder being built, removed last.

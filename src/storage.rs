@@ -54,6 +54,9 @@ pub struct Store {
     /// are kept in its queue, as when the main computer is out of reach, and
     /// no exchange runs (`Store::set_transport_off`).
     pub(crate) transport_off: bool,
+    /// Safety copies kept before a replacement that are not good copies, for
+    /// the report of the synchronization.
+    pub(crate) replacement_notes: std::cell::RefCell<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -291,6 +294,7 @@ impl Store {
             cascade_notes: Vec::new(),
             read_cache: Default::default(),
             transport_off: false,
+            replacement_notes: Default::default(),
         };
         store.ensure_tasks()?;
         crate::tasks::backfill_task_uids(&mut store.conn)?;

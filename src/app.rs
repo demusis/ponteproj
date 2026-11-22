@@ -498,6 +498,9 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     // PONTEPROJ_DATA_DIR), read once for the whole process.
     let resolution = crate::paths::resolution()?;
     let db_path = crate::paths::db_path()?;
+    // Why this window opened here, when a switch of library opened it.
+    let opening_notice = std::env::var(crate::paths::OPENING_NOTICE_ENV).ok();
+    std::env::remove_var(crate::paths::OPENING_NOTICE_ENV);
     // A document the browser just imported is shown only in the library that
     // imported it: its number means another document in any other.
     let expected = std::env::var_os(crate::paths::REQUEST_LIBRARY_ENV).map(PathBuf::from);
@@ -549,6 +552,9 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     app.intranet.initialize(&mut app.store, &app.db_path);
     if let Some(notice) = other_library {
         app.library.notice = Some(notice);
+    }
+    if let Some(notice) = opening_notice {
+        app.error(notice);
     }
     // Personal templates of versions before 0.20 become work templates.
     match app.store.migrate_personal_templates() {
@@ -640,6 +646,11 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     .map_err(|error| anyhow::anyhow!("Não foi possível iniciar a janela: {error}"))?;
     // Held until the window closes.
     drop(window);
+    // A switch of library: this window closed (its lock released above), the
+    // pointer was written, and the Ponte opens again on the chosen library.
+    if let Some(notice) = backup::take_relaunch() {
+        crate::recovery::open_library_in_use(notice)?;
+    }
     Ok(())
 }
 
@@ -985,7 +996,8 @@ enum WorkResult {
         document_id: i64,
         result: std::result::Result<crate::ai::DraftConference, String>,
     },
-    Backup(std::result::Result<PathBuf, String>),
+    /// "Fazer cópia agora": the copy, and what makes it not a good one.
+    Backup(std::result::Result<(PathBuf, Option<String>), String>),
     /// "Restaurar cópia…" and "Importar cópia portátil…": the recovery
     /// library built.
     Recovery(std::result::Result<crate::recovery::Built, String>),
@@ -3118,8 +3130,15 @@ impl PonteApp {
                 }
             }
             WorkResult::Backup(result) => match result {
-                Ok(path) => {
+                Ok((path, None)) => {
                     self.message(format!("Cópia de segurança concluída: {}", path.display()));
+                    self.backup_path = Some(path);
+                }
+                Ok((path, Some(problem))) => {
+                    self.error(format!(
+                        "A cópia foi guardada em {}, mas não conta como cópia boa: {problem} Uma restauração dela seria recusada.",
+                        path.display()
+                    ));
                     self.backup_path = Some(path);
                 }
                 Err(error) => self.error(format!(
@@ -3935,6 +3954,9 @@ impl eframe::App for PonteApp {
         self.apply_holiday_draft();
         crate::attachments::clear_temp_dir();
         self.reminders.shutdown();
+        // Stopped before the pointer moves: no exchange, no main computer.
+        self.intranet.set_transport_off(true);
+        self.finish_switch();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -4011,6 +4033,13 @@ impl eframe::App for PonteApp {
             || self.editors.values().any(Editor::dirty)
             || self.worker.is_some()
             || self.suggestion.is_some();
+        // The password of the portable copy never stays behind a section or
+        // an area the person left.
+        if self.portable.mode != backup::PortableMode::Closed
+            && !(self.area == Area::Settings && self.settings_section == SettingsSection::Backup)
+        {
+            self.close_portable_form(&ctx);
+        }
         if !self.allow_close && pending && ctx.input(|input| input.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_confirm = true;
