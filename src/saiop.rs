@@ -1994,10 +1994,11 @@ impl Store {
         Ok((removed, preserved))
     }
 
-    /// Creates a task for an atendimento, linked to its document, and records
-    /// it in the atendimento's timeline, all in one write (also when the
-    /// change goes to the team). Without a linked document there is no task:
-    /// the step is only recorded in the timeline and `None` comes back.
+    /// Creates a task for an atendimento and records it in the atendimento's
+    /// timeline, all in one write (also when the change goes to the team). The
+    /// task belongs to the linked document; without one it is a task without
+    /// document ("Sem documento"). Either way its id goes into the
+    /// atendimento's `task_ids`.
     pub fn create_task_for_saiop(
         &mut self,
         attendance_id: i64,
@@ -2015,10 +2016,10 @@ impl Store {
             .item_version("saiop", attendance_id)
             .ok()
             .map(|v| v.version);
-        let task = att.document_id.map(|doc_id| Task {
+        let task = Some(Task {
             id: 0,
             uid: uuid::Uuid::new_v4().to_string(),
-            document_id: Some(doc_id),
+            document_id: att.document_id,
             title: title.trim().to_owned(),
             action: "examinar".into(),
             status: "pendente".into(),
@@ -2089,10 +2090,12 @@ impl Store {
         let mut att = load_attendance_tx(&tx, attendance_id)?;
         let task_id = match task {
             Some(task) => {
+                // A task without document is accepted whatever the document
+                // of the atendimento is now (it may have been linked while
+                // the task waited to be replayed); it can be linked later.
                 ensure!(
                     task.id == 0
-                        && task.document_id.is_some()
-                        && att.document_id == task.document_id,
+                        && (task.document_id.is_none() || att.document_id == task.document_id),
                     "O atendimento mudou de documento; abra-o de novo e repita."
                 );
                 let saved = crate::tasks::write_task(&tx, &actor, task, None)?;
@@ -2119,7 +2122,7 @@ impl Store {
     }
 
     /// Removes one atendimento for good, with its attachments (there is no
-    /// trash for atendimentos). Tasks it created stay with their documents.
+    /// trash for atendimentos). Tasks it created stay (with their documents, or without one).
     /// On a client computer the request goes to the main computer.
     pub fn delete_saiop_attendance(&mut self, id: i64) -> Result<()> {
         if let Some(cfg) = self.client_config()? {
@@ -5519,14 +5522,16 @@ impl SaiopPanel {
             self.editor = self.saved_snapshot.clone();
         } else if create_task_clicked {
             let title = if self.new_task_title.trim().is_empty() {
-                format!(
-                    "Analisar atendimento {}",
-                    if ed.reference_raw.is_empty() {
-                        &ed.subject
-                    } else {
-                        &ed.reference_raw
-                    }
-                )
+                let what = if ed.reference_raw.is_empty() {
+                    &ed.subject
+                } else {
+                    &ed.reference_raw
+                };
+                if ed.document_id.is_some() {
+                    format!("Analisar atendimento {what}")
+                } else {
+                    format!("Dar andamento ao atendimento {what}")
+                }
             } else {
                 self.new_task_title.trim().to_owned()
             };
@@ -5560,12 +5565,16 @@ impl SaiopPanel {
                             }
                         }
                         match created {
+                            Some(_) if ed.document_id.is_none() => self.set_notice(
+                                format!("Tarefa sem documento criada na área Tarefas: {title}. Abra-a pelo botão “Abrir” da lista deste atendimento."),
+                                false,
+                            ),
                             Some(_) => self.set_notice(
                                 format!("Tarefa criada na área Tarefas: {title}"),
                                 false,
                             ),
                             None => self.set_notice(
-                                "Providência registrada na linha do tempo. Nenhuma tarefa foi criada porque este atendimento não está ligado a um documento importado.",
+                                "Providência registrada na linha do tempo.",
                                 false,
                             ),
                         }
@@ -5892,8 +5901,8 @@ impl SaiopPanel {
             }
         });
 
-        // Tarefas criadas a partir deste atendimento. Tarefas pertencem
-        // a documentos, por isso só há criação com documento ligado.
+        // Tarefas criadas a partir deste atendimento: do documento ligado ou,
+        // sem documento, tarefas "Sem documento".
         if ed.id > 0 {
             let linked: Vec<Task> = if ed.task_ids.is_empty() {
                 Vec::new()
@@ -5949,18 +5958,19 @@ impl SaiopPanel {
                         });
                     }
                     ui.horizontal(|ui| {
-                        let can_create = ed.document_id.is_some();
                         let width = (ui.available_width() - 120.0).max(80.0);
-                        ui.add_enabled(
-                            can_create,
+                        ui.add(
                             egui::TextEdit::singleline(&mut self.new_task_title)
                                 .hint_text("Título da nova tarefa (opcional)…")
                                 .desired_width(width),
                         );
                         if ui
-                            .add_enabled(can_create, widgets::secondary("Criar tarefa"))
-                            .on_hover_text("Cria, na área Tarefas, uma tarefa do documento ligado com a prioridade, o prazo e o responsável deste atendimento. Sem título, ela se chama “Analisar atendimento …”.")
-                            .on_disabled_hover_text("Tarefas pertencem a documentos: ligue o atendimento a um documento importado (acima) para criar uma tarefa.")
+                            .add(widgets::secondary("Criar tarefa"))
+                            .on_hover_text(if ed.document_id.is_some() {
+                                "Cria, na área Tarefas, uma tarefa do documento ligado com a prioridade, o prazo e o responsável deste atendimento. Sem título, ela se chama “Analisar atendimento …”."
+                            } else {
+                                "Cria, na área Tarefas, uma tarefa sem documento (“Sem documento”) com a prioridade, o prazo e o responsável deste atendimento. Sem título, ela se chama “Dar andamento ao atendimento …”."
+                            })
                             .clicked()
                         {
                             *create_task_clicked = true;
@@ -6590,6 +6600,91 @@ mod tests {
             "second delete reports it is gone"
         );
     }
+    #[test]
+    fn an_atendimento_without_document_creates_a_task_without_document() {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut manual = SaiopAttendance::new_manual();
+        manual.reference_raw = "OF-1/2026".into();
+        manual.subject = "Ofício solto".into();
+        let id = store.save_saiop_attendance(&manual, None).unwrap();
+
+        let task_id = store
+            .create_task_for_saiop(id, "Dar andamento", "alta", "2026-12-01", "Ana")
+            .unwrap()
+            .expect("a task without document is created");
+        let task = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == task_id)
+            .unwrap();
+        assert_eq!(task.document_id, None);
+        assert_eq!(task.priority, "alta");
+        assert_eq!(task.due_date, "2026-12-01");
+        assert_eq!(task.assignee, "Ana");
+        let att = store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+        assert_eq!(att.task_ids, vec![task_id]);
+    }
+    #[test]
+    fn a_queued_task_without_document_survives_the_atendimento_being_linked_meanwhile() {
+        let dir = TempDir::new().unwrap();
+        let mut store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        let mut manual = SaiopAttendance::new_manual();
+        manual.reference_raw = "OF-2/2026".into();
+        manual.subject = "Ofício que ganha documento".into();
+        let id = store.save_saiop_attendance(&manual, None).unwrap();
+
+        // The task was made (and queued) while the atendimento had no document.
+        let mut task = Task::standalone();
+        task.title = "Dar andamento".into();
+
+        // Meanwhile another computer linked the atendimento to a document.
+        let receipt = store
+            .import_capture(&crate::model::sample_capture())
+            .unwrap();
+        let mut linked = store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+        linked.document_id = Some(receipt.document_id);
+        store.save_saiop_attendance(&linked, None).unwrap();
+
+        // The replay still creates the task, which stays without document.
+        let task_id = store
+            .write_task_for_saiop(id, Some(&task), "Dar andamento", None)
+            .unwrap()
+            .expect("the task is created");
+        let stored = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == task_id)
+            .unwrap();
+        assert_eq!(stored.document_id, None);
+        let att = store
+            .list_saiop_attendances()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap();
+        assert_eq!(att.task_ids, vec![task_id]);
+
+        // A task of another document is still refused.
+        let mut wrong = Task::new(receipt.document_id + 1000);
+        wrong.title = "De outro documento".into();
+        assert!(store
+            .write_task_for_saiop(id, Some(&wrong), "De outro documento", None)
+            .is_err());
+    }
+
     #[test]
     fn a_task_created_from_an_atendimento_is_written_with_its_record_or_not_at_all() {
         let dir = TempDir::new().unwrap();

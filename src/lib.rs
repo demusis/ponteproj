@@ -44,6 +44,8 @@ pub mod risk;
 pub mod sharedfolder;
 pub mod storage;
 pub mod suggestion;
+#[cfg(feature = "desktop")]
+pub mod task_filters;
 pub mod tasks;
 #[cfg(feature = "desktop")]
 pub mod tasks_ui;

@@ -1914,7 +1914,7 @@ impl PonteApp {
                 }
             }
             Leave::OpenTask(task) => {
-                if self.tasks.open_task(&task, &self.store) {
+                if self.tasks.open_task_from_elsewhere(&task, &self.store) {
                     self.area = Area::Tasks;
                 } else {
                     self.error("Há outra tarefa com alterações não salvas. Salve ou cancele essa edição no painel Tarefas.");
