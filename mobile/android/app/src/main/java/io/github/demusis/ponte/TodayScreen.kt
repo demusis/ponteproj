@@ -75,7 +75,13 @@ internal fun TodayScreen(
     risks: List<RiskItem> = emptyList(),
     onOpenTask: (Long) -> Unit = {},
     followUpCount: Int = 0,
-    onOpenFollowUps: () -> Unit = {}
+    onOpenFollowUps: () -> Unit = {},
+    /** Records renumbered by a sync and not read yet, newest first; empty: no card. */
+    notices: List<RenumberNotice> = emptyList(),
+    /** "Abrir o registro": gets the document id. */
+    onOpenNoticeDocument: (Long) -> Unit = {},
+    /** "Entendi": gets the notice id. */
+    onDismissNotice: (Long) -> Unit = {}
 ) {
     val c = Ponte.colors
     if (state.loading && state.isEmpty) {
@@ -86,8 +92,8 @@ internal fun TodayScreen(
     val scope = rememberCoroutineScope()
     val currentWeek = weekStart != null && weekStart == WeekPlan.mondayOf(java.time.LocalDate.now())
     val weekDeadlines = if (currentWeek) week.sumOf { it.deadlines.size } else 0
-    // Items before the "Atrasadas" header: error, summary, follow-ups, risks, week module.
-    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (risks.isNotEmpty()) 1 else 0) + (if (followUpCount > 0) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
+    // Items before the "Atrasadas" header: error, summary, renumbered records, follow-ups, risks, week module.
+    val lateIndex = (if (state.error != null) 1 else 0) + 1 + (if (notices.isNotEmpty()) 1 else 0) + (if (risks.isNotEmpty()) 1 else 0) + (if (followUpCount > 0) 1 else 0) + (if (week.isNotEmpty()) 1 else 0)
     LazyColumn(
         Modifier.fillMaxSize(),
         state = listState,
@@ -128,6 +134,7 @@ internal fun TodayScreen(
                 }
             }
         }
+        if (notices.isNotEmpty()) item(key = "renumbered") { RenumberCard(notices, onOpenNoticeDocument, onDismissNotice) }
         if (followUpCount > 0) item(key = "follow-ups") {
             ResourceCountCard("Cobranças de hoje", followUpCount, Tone.ACCENT, onOpenFollowUps)
         }
@@ -169,6 +176,41 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
         SectionLabel("$title · ${list.size}", Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp), color = if (late) Ponte.colors.error else Ponte.colors.muted)
     }
     items(list, key = { "t-${it.id}" }) { t -> TaskListRow(t, { onToggle(t) }, { onOpen(t) }) }
+}
+
+/**
+ * "Registro com número alterado": what a sync renumbered, one sentence per record (the three newest, then "e mais N"),
+ * each with "Abrir o registro" (when it can be opened) and "Entendi". It lives apart from the status line.
+ */
+@Composable
+internal fun RenumberCard(notices: List<RenumberNotice>, onOpen: (Long) -> Unit, onDismiss: (Long) -> Unit) {
+    val c = Ponte.colors
+    Column(Modifier.fillMaxWidth()) {
+        SectionHeader(RenumberRules.TITLE, color = c.warning)
+        RenumberRules.shown(notices).forEach { n ->
+            FlatRow(null) {
+                Column {
+                    Text(n.sentence, fontSize = 15.sp, lineHeight = 21.sp, color = c.text)
+                    Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (RenumberRules.canOpen(n)) {
+                            TextAction(
+                                RenumberRules.OPEN, { onOpen(n.documentId) },
+                                Modifier.semantics { contentDescription = RenumberRules.openDescription(n) }
+                            )
+                        }
+                        TextAction(
+                            RenumberRules.DISMISS, { onDismiss(n.id) },
+                            Modifier.semantics { contentDescription = RenumberRules.dismissDescription(n) }
+                        )
+                    }
+                }
+            }
+        }
+        val more = RenumberRules.moreText(notices)
+        if (more.isNotEmpty()) {
+            Text(more, Modifier.padding(horizontal = ROW_MARGIN, vertical = 8.dp), fontSize = 14.sp, color = c.muted)
+        }
+    }
 }
 
 /** "Entregas em risco · N": three rows, the rest behind "ver todas". Full-width rows, so 360dp never clips. */

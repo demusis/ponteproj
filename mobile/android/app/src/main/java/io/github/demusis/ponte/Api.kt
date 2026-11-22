@@ -110,6 +110,12 @@ internal object Api {
 
     fun today(): JSONObject = c(core.today())
 
+    /** The renumber notices still to be read, newest first. */
+    fun renumberNotices(): List<RenumberNotice> = c(core.renumberNotices()).optJSONArray("notices").objs().map { it.toRenumberNotice() }
+
+    /** Marks a notice as read; answers how many are still pending. */
+    fun dismissRenumberNotice(id: Long): Int = c(core.dismissRenumberNotice(id)).optInt("remaining")
+
     /** Deliveries at risk; an unknown kind is skipped. */
     fun atRisk(): List<RiskItem> = c(core.atRisk()).optJSONArray("items").objs().mapNotNull {
         val kind = it.s("kind")

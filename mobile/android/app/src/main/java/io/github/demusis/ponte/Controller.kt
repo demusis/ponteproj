@@ -1754,9 +1754,27 @@ internal object Controller {
             fail = "Não foi possível verificar as entregas em risco.")
     }
 
+    /** Records of this phone renumbered by a sync and not read yet (the card of Hoje); independent of the status line. */
+    var renumberNotices by mutableStateOf<List<RenumberNotice>>(emptyList())
+        private set
+
+    private fun refreshRenumberNotices() {
+        SyncRunner.background({ Api.renumberNotices() }, { renumberNotices = it }, { },
+            fail = "Não foi possível ler os avisos de número alterado.")
+    }
+
+    /** "Entendi": marks the notice as read and reads the list again. */
+    fun dismissRenumberNotice(id: Long) {
+        // Gone at once; the list read afterwards is the truth.
+        renumberNotices = renumberNotices.filter { it.id != id }
+        SyncRunner.background({ Api.dismissRenumberNotice(id) }, { refreshRenumberNotices() }, { refreshRenumberNotices() },
+            fail = "Não foi possível dispensar o aviso. Tente de novo.")
+    }
+
     private fun refreshToday() {
         refreshWeek()
         refreshRisks()
+        refreshRenumberNotices()
         SyncRunner.background({
             val o = Api.today()
             val tasksOf = { key: String -> o.optJSONArray(key).objs().map { it.toTask() } }
