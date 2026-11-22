@@ -142,6 +142,10 @@ struct ManualForm {
     message: String,
     /// The step "Colar conversa do WhatsApp", when it is showing.
     paste: Option<PasteStep>,
+    /// The record the form was opened on (its number and identity): a
+    /// synchronization that runs meanwhile may give that row and number to
+    /// another record, and saving goes to the record, not to the row.
+    opened: Option<crate::renumber::ManualRecordRef>,
 }
 
 /// What the person pastes and what is read from it.
@@ -217,7 +221,11 @@ impl ManualForm {
         };
     }
 
-    fn open_edit(&mut self, detail: &DocumentDetail) {
+    fn open_edit(
+        &mut self,
+        detail: &DocumentDetail,
+        opened: Option<crate::renumber::ManualRecordRef>,
+    ) {
         let fields = crate::manual::ManualFields::from_capture(&detail.capture);
         *self = Self {
             open: true,
@@ -227,6 +235,7 @@ impl ManualForm {
             fields,
             message: String::new(),
             paste: None,
+            opened,
         };
     }
 
@@ -4477,6 +4486,7 @@ mod tests {
             priority: "normal".into(),
             analysis_stale: false,
             manual: false,
+            provisional: false,
             categories: vec![],
             email: false,
             email_from: String::new(),

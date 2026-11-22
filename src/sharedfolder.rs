@@ -513,10 +513,34 @@ fn unpack(plain: &[u8]) -> Result<(Payload, Blobs)> {
     Ok((payload, blobs))
 }
 
+#[cfg(test)]
+thread_local! {
+    static JOURNAL_CAP: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(MAX_JOURNAL_ENTRIES) };
+}
+
+/// A test that needs old entries to leave the journal without writing five
+/// hundred changes lowers the cap, for its own thread only.
+#[cfg(test)]
+pub(crate) fn set_journal_cap_for_test(entries: usize) {
+    JOURNAL_CAP.with(|cap| cap.set(entries));
+}
+
+fn journal_cap() -> usize {
+    #[cfg(test)]
+    {
+        JOURNAL_CAP.with(|cap| cap.get())
+    }
+    #[cfg(not(test))]
+    {
+        MAX_JOURNAL_ENTRIES
+    }
+}
+
 /// Keeps the journal within retention: newest entries first by revision.
 pub fn trim_journal(journal: &mut Vec<JournalEntry>) {
     journal.sort_by(|a, b| (a.revision, &a.created_at).cmp(&(b.revision, &b.created_at)));
-    while journal.len() > MAX_JOURNAL_ENTRIES {
+    while journal.len() > journal_cap() {
         journal.remove(0);
     }
     loop {

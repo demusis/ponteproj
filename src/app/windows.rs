@@ -419,6 +419,7 @@ impl PonteApp {
         }
         if save {
             let fields = self.manual_form.fields.clone();
+            let edited_row = self.manual_form.id;
             let result = match self.manual_form.id {
                 None => self
                     .store
@@ -426,11 +427,12 @@ impl PonteApp {
                     .map(|r| (r, true)),
                 Some(id) => self
                     .store
-                    .update_manual_document(id, &fields)
+                    .update_manual_document_expecting(id, self.manual_form.opened.as_ref(), &fields)
                     .map(|r| (r, false)),
             };
             match result {
                 Ok((receipt, created)) => {
+                    let saved_elsewhere = edited_row.is_some_and(|id| id != receipt.document_id);
                     self.manual_form = ManualForm::default();
                     self.refresh();
                     self.select(receipt.document_id);
@@ -443,6 +445,8 @@ impl PonteApp {
                         .unwrap_or_default();
                     if created {
                         self.message(format!("Registro manual {number} criado. Anexe o arquivo original em Documento ▸ Anexos, se houver."));
+                    } else if saved_elsewhere {
+                        self.message(format!("O registro mudou de número ao sincronizar: a nova versão foi salva no registro {number}, onde ele está agora."));
                     } else if crate::manual::unchanged(&receipt) {
                         self.message("Nada mudou no registro; nenhuma versão nova foi salva.");
                     } else {

@@ -168,6 +168,11 @@ pub struct DocumentSummary {
     /// Created by hand in the Ponte, not imported from the SIGADOC.
     #[serde(default)]
     pub manual: bool,
+    /// A manual record whose creation still waits in the outgoing queue: the
+    /// number shown is this library's, and the shared copy may give another
+    /// one when the creation is sent.
+    #[serde(default)]
+    pub provisional: bool,
     /// Uids of the categories of the document (existing ones only).
     #[serde(default)]
     pub categories: Vec<String>,

@@ -90,7 +90,7 @@ impl ManualFields {
         }
     }
 
-    fn capture(&self, number: &str, registered_by: &str) -> Capture {
+    pub(crate) fn capture(&self, number: &str, registered_by: &str) -> Capture {
         self.capture_with(
             number,
             registered_by,
