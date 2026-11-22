@@ -11,6 +11,8 @@ pub mod ai_roles;
 #[cfg(feature = "desktop")]
 pub mod app;
 pub mod atomic_file;
+/// The automatic copy of the day and "Fazer cópia agora", with their retention.
+pub mod auto_backup;
 pub mod attachments;
 pub mod chatgpt;
 /// Deterministic checks of a draft (Conferência da minuta).

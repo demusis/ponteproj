@@ -8,6 +8,7 @@ use crate::widgets::{self, Tone};
 use anyhow::{Context, Result};
 
 pub(crate) mod calendar;
+mod backup;
 mod calendar_exchange;
 mod conference;
 mod ficha;
@@ -528,6 +529,7 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     crate::attachments::sweep_stale_temp();
     let mut app = PonteApp::new(store, db_path);
     app.requests_dir = window.is_some().then_some(data_dir);
+    app.auto_copy.allowed = !alone;
     app.intranet.initialize(&mut app.store, &app.db_path);
     // Personal templates of versions before 0.20 become work templates.
     match app.store.migrate_personal_templates() {
@@ -1369,6 +1371,8 @@ struct PonteApp {
     allow_close: bool,
     notice: Option<Notice>,
     backup_path: Option<PathBuf>,
+    /// The automatic copy of the day (Ajustes ▸ Cópia de segurança).
+    auto_copy: backup::AutoCopy,
     doc_task_filter: DocTaskFilter,
     doc_priority_filter: DocPriorityFilter,
     doc_origin_filter: DocOriginFilter,
@@ -1485,6 +1489,7 @@ impl PonteApp {
             allow_close: false,
             notice: None,
             backup_path: None,
+            auto_copy: Default::default(),
             doc_task_filter: DocTaskFilter::All,
             doc_priority_filter: DocPriorityFilter::All,
             doc_origin_filter: DocOriginFilter::All,
@@ -2921,22 +2926,15 @@ impl PonteApp {
 
     fn backup(&mut self, ctx: &egui::Context) {
         let db_path = self.db_path.clone();
+        let data_dir = self.data_dir();
         self.spawn(
             "Criando a cópia de segurança protegida…".into(),
             WorkKind::Backup,
             move |_| {
-                let result = (|| -> Result<PathBuf> {
-                    let directory = crate::paths::data_dir()?.join("backups");
-                    std::fs::create_dir_all(&directory)?;
-                    let path = directory.join(format!(
-                        "ponte-{}-{}.sqlite3",
-                        chrono::Utc::now().format("%Y%m%d-%H%M%S"),
-                        uuid::Uuid::new_v4()
-                    ));
-                    Store::open_service(&db_path)?.backup(&path)?;
-                    Ok(path)
-                })();
-                WorkResult::Backup(result.map_err(|e| e.to_string()))
+                // Verified like the automatic and the installers' copies, from
+                // a read-only connection.
+                let result = crate::auto_backup::manual_copy(&db_path, &data_dir);
+                WorkResult::Backup(result.map_err(|e| format!("{e:#}")))
             },
             ctx,
         );
@@ -3900,6 +3898,7 @@ impl eframe::App for PonteApp {
         self.intranet.attach_repaint(&ctx);
         self.poll_worker();
         self.start_queued();
+        self.tick_auto_copy(&ctx);
         self.reminders.update(&ctx, &self.store);
         if self.reminders.take_open_today() {
             // The person clicked the Windows notice: show what is due.
