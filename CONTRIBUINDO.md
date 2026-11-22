@@ -236,36 +236,13 @@ Para conferir que o executável atende uma extensão, chame-o como o navegador f
 
 ## 7. Linha de comando e variáveis de ambiente
 
-Para criar um registro manual e várias tarefas vinculadas, use
-`ponteproj.exe --import-plan arquivo.json`. Acrescente `--dry-run` depois do
-arquivo para validar e visualizar o plano sem gravar. A saída é um objeto JSON
-com `document_id`, `document_number`, `title`, `tasks` (cada uma com `id` e
-`title`) e `created`. Na simulação, identificadores ainda inexistentes são
-`null`; uma solicitação já concluída retorna `created: false` e os mesmos IDs.
-
-O exemplo completo está em `tests/fixtures/import-plan-exemplo.json`. O campo
-`request_id` é um UUID obrigatório e deve ser exclusivo do plano; repeti-lo
-retoma uma importação interrompida sem duplicar tarefas. Informe exatamente um
-de `document` ou `document_number` (número já existente). Em `document`, use
-`title`, `text`, `type` (memorando, ligacao, email, papel, reuniao, whatsapp ou
-outro), `date` (AAAA-MM-DD), `origin`, `note` e `categories`. Os últimos quatro
-são opcionais. `tasks` contém de 1 a 100 itens: `title` e `action` são
-obrigatórios; `notes`, `due_date` (AAAA-MM-DD), `priority` (baixa, normal,
-alta ou urgente), `assignee`, `checklist` (pares `[concluído, texto]`),
-`scheduled_start` e `scheduled_end` (AAAA-MM-DDTHH:MM), `estimate_minutes`,
-`categories` e `project` são opcionais. Categorias e projeto aceitam nome ou
-UID existente. As ações aceitas são `triar`, `examinar`, `tomar ciencia`,
-`baixar documento`, `responder`, `encaminhar`, `pedir complementacao` e
-`acompanhar`. `complete_triage: true` conclui a triagem automática do novo
-registro. A gravação usa operações separadas e pode ser retomada com o mesmo
-arquivo após uma interrupção.
-
 ```powershell
 ponteproj.exe                                  # abre a janela
 ponteproj.exe --open-document 12               # abre a ficha do documento local 12
 ponteproj.exe --templates                      # abre a janela na área Modelos
 ponteproj.exe --import-json .\tests\fixtures\capture.json   # importa uma captura em JSON
 ponteproj.exe --list "treinamento"             # lista documentos (JSON) que casam com o termo
+ponteproj.exe --import-plan plano.json         # cria um registro e tarefas a partir de um JSON (--dry-run simula; --saida ARQ grava o resultado)
 ponteproj.exe --import-templates modelos.json  # traz instruções, modelos (rascunho; --publicar publica) e exemplos (sempre "não conferido")
 ponteproj.exe --export-templates modelos.json  # grava modelos e instruções num JSON versionado (--com-exemplos inclui os exemplos)
 ponteproj.exe --serve 0.0.0.0:7878             # computador principal sem janela (imprime a chave)
@@ -277,6 +254,52 @@ ponteproj.exe --version | --help
 ```
 
 O binário `release` não abre console (subsistema gráfico); para ver a saída de `--list`, `--version` e `--help` num terminal comum, use `target\debug\ponteproj.exe` ou redirecione a saída. `--copia-antes-de-atualizar` usa o backup online do SQLite sobre o acervo aberto só para leitura (sem migrar, sem janela, mesmo de um esquema mais novo e com o Ponte aberto), confere a cópia com `PRAGMA quick_check` e a grava em `PASTA` (padrão: `backups` da pasta de dados, a de `PONTEPROJ_DATA_DIR` quando definida). Sai com 0 (cópia feita, ou ainda não há acervo) ou 1 (mensagem em português na saída de erro, sem arquivo parcial); como o binário `release` não tem console, o mesmo relatório (`ok`, `sem-acervo` ou `erro` na primeira linha, o detalhe na seguinte) vai para `--resultado ARQ.txt` e para `ultima-copia-antes-de-atualizar.txt` ao lado da cópia (esta, por arquivo temporário e renomeação). `--resultado` só aceita um arquivo **novo**: um caminho que já existe, o acervo, o `-wal`/`-shm`, a nota de geração ou qualquer outro arquivo da pasta do acervo (fora de `backups`) é recusado antes de a cópia começar, com código 1, e nada é gravado ali. Um acervo que não pode ser alcançado (disco ou pasta fora do ar, inclusive em `PONTEPROJ_DATA_DIR`) é erro; só a primeira instalação, com a pasta de cima do acervo acessível, responde `sem-acervo`. A cópia é feita em `<nome>.<sufixo>.parcial` (nome exclusivo da execução); restos de execuções anteriores com mais de um dia são apagados no começo da seguinte, e uma cópia que não avança por 60 s (acervo ocupado, ou reiniciada sem parar por quem escreve nele) falha. O instalador interrompido porque a cópia falhou na instalação silenciosa termina com o código **7** do Inno Setup (`PrepareToInstall` recusou), não 8. `Ponte.iss` e `scripts\install-app.ps1` chamam esse comando com o executável novo antes de trocar qualquer arquivo. Existe ainda `--shots PASTA [FILTRO]`, só em compilações com `--features shots` (imagens das telas, sobre um acervo de exemplo; `PONTEPROJ_SHOTS_SIZE` escolhe o tamanho da janela).
+
+### Importar um plano (`--import-plan`)
+
+```powershell
+ponteproj.exe --import-plan plano.json [--dry-run] [--saida resultado.json]
+```
+
+Cria um registro manual (ou usa um documento que já existe) e de 1 a 100 tarefas vinculadas a ele, a partir de um JSON. O exemplo completo é `tests/fixtures/import-plan-exemplo.json`. `--dry-run` pode vir antes ou depois do arquivo.
+
+**Arquivo.** UTF-8 (com ou sem BOM) ou UTF-16 com BOM (o que o `>` do Windows PowerShell 5 grava); outra codificação é recusada com a explicação de como salvar. Campos desconhecidos são recusados (um erro de grafia não descarta dados em silêncio). Datas são `AAAA-MM-DD` e horários `AAAA-MM-DDTHH:MM`, com zeros à esquerda; as mensagens dizem isso. Nas mensagens, `tasks[1]` é a **primeira** tarefa (a contagem começa em 1); erros de JSON trazem linha e coluna.
+
+- `request_id` (obrigatório): um UUID, sem diferenciar maiúsculas de minúsculas. É a identidade do plano: repetir o mesmo arquivo nunca duplica nada.
+- Exatamente um de `document` (cria um registro novo) ou `document_number` (usa um existente).
+  - `document`: `title` (3 a 1000 bytes), `text` (até 500 KB) e `type` (`memorando`, `ligacao`, `email`, `papel`, `reuniao`, `whatsapp` ou `outro`) são obrigatórios; `date` (`AAAA-MM-DD`), `origin`, `note` (até 500 KB) e `categories` (até 10) são opcionais. A nota e as categorias só são aplicadas ao registro recém-criado e só onde ele ainda está vazio. O número do registro (`MANUAL-…` ou, para `email`, `EMAIL-…`) é dado pelo Ponte.
+  - `document_number`: o número como aparece na ficha; a busca ignora maiúsculas, minúsculas e espaços e usa o índice do acervo. Documento inexistente e documento na Lixeira dão mensagens diferentes. (Dois documentos com o mesmo número não existem num acervo: a identidade é única.)
+- `tasks` (1 a 100): `title` (até 1000 bytes) e `action` (`triar`, `examinar`, `tomar ciencia`, `baixar documento`, `responder`, `encaminhar`, `pedir complementacao` ou `acompanhar`) são obrigatórios; `notes` (até 32000 bytes), `due_date`, `priority` (`baixa`, `normal`, `alta`, `urgente`; omitida vale `normal`), `assignee` (até 256 bytes), `checklist` (até 100 pares `[concluído, "texto"]`), `scheduled_start` e `scheduled_end` (juntos, o fim depois do início), `estimate_minutes` (0 a 525600), `categories` (até 10) e `project` são opcionais.
+- `complete_triage` (opcional, padrão `false`): conclui a triagem automática do registro novo, **depois** de as tarefas existirem. Com `document_number` é recusado (a triagem de um registro que já existe não é tocada).
+- `categories` e `project` aceitam o nome (sem diferenciar acentos e maiúsculas) ou o uid. Um nome desconhecido, ambíguo ou **arquivado** é erro, com o campo e a posição (`tasks[2].categories[1]`); um item arquivado só entra se for indicado pelo uid.
+
+**Saída** (JSON, uma linha, na saída padrão; os erros vão para a saída de erro e o código é 1; sucesso é 0):
+
+```json
+{"ok":true,"request_id":"47f3f62f-404c-4931-ae04-bc7eb1108c07","dry_run":false,"created":true,"ids_provisional":false,
+ "document":{"state":"present","state_label":"presente","existing":false,"id":12,"number":"EMAIL-2026/0001","title":"Solicitação de informações","created_now":true},
+ "tasks":[{"index":1,"uid":"…","state":"present","state_label":"presente","id":31,"title":"Examinar a solicitação","created_now":true},
+          {"index":2,"uid":"…","state":"trashed","state_label":"na Lixeira","id":32,"title":"Preparar resposta","created_now":false}],
+ "triage":"concluida_agora"}
+```
+
+`state` de cada item: `present` ("presente"), `trashed` ("na Lixeira"), `missing` ("não existe mais": foi criado e excluído de vez) ou `to_create` ("ainda não criado", numa simulação). `created` diz se **esta** execução gravou algo; `created_now` diz o quê. `triage`: `nao_solicitada`, `sera_concluida` (simulação), `concluida_agora`, `ja_concluida_antes` ou `nao_encontrada`. Em modo de equipe (pasta compartilhada ou computador principal) `ids_provisional` é `true`: `id` e `number` são os desta cópia e podem mudar na próxima sincronização; as identidades estáveis são `request_id` (do registro) e o `uid` de cada tarefa.
+
+**Repetir o comando.** O recibo (tabela local `plan_import_runs`, fora do que é sincronizado) guarda só o `request_id`, um resumo do plano normalizado (maiúsculas do UUID, ordem das chaves e espaços não importam) e até onde a execução chegou; nunca ids locais. A cada execução, ids, número e títulos são lidos de novo: o registro por `requests` (`request_id` → documento) e as tarefas pelo `uid` (derivado do `request_id` e da posição). Um plano concluído devolve o estado atual (`created: false`) sem reavaliar categorias, projetos ou números, de modo que renomear uma categoria depois não o quebra. Uma repetição **só cria o que nunca foi criado** (retomada após interrupção): não recria o que a pessoa excluiu, não atualiza o que já existe e não sobrescreve nota nem categorias editadas. Se ainda faltar algo e o registro estiver na Lixeira ou excluído de vez, o comando falha dizendo isso. O mesmo `request_id` com outro conteúdo é recusado. O recibo só nasce depois da primeira gravação: um plano que falhou na validação (ou na primeira gravação) pode ser corrigido e repetido com o mesmo `request_id`.
+
+**Atomicidade por modo.** Acervo só deste computador e computador principal: as tarefas são **uma transação** (todas ou nenhuma, `save_repeated_tasks_counted`); o registro é outra transação (`create_record_with_attachments`), e a nota, as categorias e a triagem são gravações separadas. Pasta compartilhada: o lote do Store não serve (ele recusa os modos que enfileiram e não enfileira), então o registro é uma transação com sua fila e cada tarefa é uma mudança própria, aplicada aqui e enfileirada como nas telas; uma interrupção pode deixar parte das tarefas, e o mesmo comando termina o resto. Computador conectado ao principal: cada mudança é um pedido ao principal (ou vai para a fila se ele estiver fora do ar), igualmente por tarefa. Nada disso é uma transação única do plano inteiro.
+
+**Validação sem gravar.** O arquivo é lido e conferido sem abrir o acervo; só então o acervo é aberto (como em `--list`) para resolver nomes e números. Um plano inválido ou `--dry-run` não grava nada, nem o recibo; `--dry-run` não altera nem migra o acervo (recusa um acervo de versão anterior, que a janela atualiza, e um acervo inexistente). Funciona com a janela aberta (não passa pela instância única); se o acervo estiver ocupado, a mensagem diz para repetir (é seguro).
+
+**Console e `--saida`.** O binário `release` não tem console: sem redirecionar, a saída não aparece, e no PowerShell `$LASTEXITCODE` de um executável gráfico não é confiável. Num script, use `--saida resultado.json` (arquivo **novo**; nunca sobrescreve) e espere o processo:
+
+```powershell
+$p = Start-Process .\ponteproj.exe -Wait -PassThru -WindowStyle Hidden `
+  -ArgumentList '--import-plan','plano.json','--saida','resultado.json'
+$p.ExitCode; Get-Content resultado.json -Raw -Encoding UTF8
+```
+
+Com sucesso o arquivo traz o mesmo JSON da saída; com erro, `{"ok":false,"erro":"mensagem"}`. Para gravar o plano com PowerShell 5, prefira `[System.IO.File]::WriteAllText($caminho, $texto)` ou `Set-Content -Encoding utf8` (o `>` grava UTF-16, que também é aceito).
 
 Variáveis de ambiente: `PONTEPROJ_DATA_DIR` (outra pasta de dados, sempre em disco local), `PONTEPROJ_AI_TOKEN` (chave da IA sem gravá-la), `PONTEPROJ_NO_UI` (o host não abre a janela após importar; útil em testes), e, nos testes da extensão, `PONTEPROJ_PLAYWRIGHT_DIR` e `PONTEPROJ_BROWSER_CHANNEL`.
 

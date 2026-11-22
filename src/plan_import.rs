@@ -131,7 +131,8 @@ const TASK_FIELDS: [&str; 12] = [
 ];
 
 /// Said once in any message that names a task: the list starts at 1.
-const COUNT_NOTE: &str = " (nas mensagens, tasks[1] é a primeira tarefa da lista: a contagem começa em 1)";
+const COUNT_NOTE: &str =
+    " (nas mensagens, tasks[1] é a primeira tarefa da lista: a contagem começa em 1)";
 fn with_count_note(message: String) -> String {
     if message.contains("tasks[") && !message.contains("a contagem começa em 1") {
         format!("{message}{COUNT_NOTE}")
@@ -149,18 +150,21 @@ fn invalid(message: String) -> anyhow::Error {
 pub fn decode_text(bytes: &[u8]) -> Result<String> {
     const HOW: &str = "Salve o arquivo como UTF-8 (no Bloco de Notas: Salvar como > Codificação UTF-8; no PowerShell: Set-Content -Encoding utf8 ou [System.IO.File]::WriteAllText(caminho, texto)).";
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        return String::from_utf8(rest.to_vec())
-            .map_err(|_| anyhow!("O arquivo tem a marca UTF-8 mas traz bytes que não são UTF-8. {HOW}"));
+        return String::from_utf8(rest.to_vec()).map_err(|_| {
+            anyhow!("O arquivo tem a marca UTF-8 mas traz bytes que não são UTF-8. {HOW}")
+        });
     }
     if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
         let little = bytes[0] == 0xFF;
         let body = &bytes[2..];
         ensure!(
-            body.len() % 2 == 0,
+            body.len().is_multiple_of(2),
             "O arquivo UTF-16 está truncado (número ímpar de bytes). {HOW}"
         );
         let units: Vec<u16> = body
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 if little {
                     u16::from_le_bytes([pair[0], pair[1]])
@@ -185,21 +189,22 @@ pub fn decode_text(bytes: &[u8]) -> Result<String> {
 /// the plan, the JSON field it is about.
 pub fn parse_plan(bytes: &[u8]) -> Result<Plan> {
     let text = decode_text(bytes)?;
-    let value: Value =
-        serde_json::from_str(&text).map_err(|e| anyhow!("JSON inválido: {}", syntax_message(&e)))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|e| anyhow!("JSON inválido: {}", syntax_message(&e)))?;
     match serde_json::from_str::<Plan>(&text) {
         Ok(plan) => Ok(plan),
         Err(error) => {
             let place = format!("linha {}, coluna {}", error.line(), error.column());
-            let detail = shape_problem(&value)
-                .unwrap_or_else(|| serde_message(&error.to_string()));
+            let detail = shape_problem(&value).unwrap_or_else(|| serde_message(&error.to_string()));
             Err(invalid(format!("Plano inválido: {detail} ({place})")))
         }
     }
 }
 
 fn without_position(message: &str) -> &str {
-    message.rsplit_once(" at line ").map_or(message, |(head, _)| head)
+    message
+        .rsplit_once(" at line ")
+        .map_or(message, |(head, _)| head)
 }
 fn syntax_message(error: &serde_json::Error) -> String {
     let raw = error.to_string();
@@ -223,17 +228,23 @@ fn syntax_message(error: &serde_json::Error) -> String {
     } else if head.contains("control character") {
         "quebra de linha ou tabulação dentro de um texto: escreva \\n ou \\t".to_owned()
     } else if head.contains("invalid escape") {
-        "sequência de escape inválida dentro de um texto (para uma barra invertida escreva \\\\)".to_owned()
+        "sequência de escape inválida dentro de um texto (para uma barra invertida escreva \\\\)"
+            .to_owned()
     } else if head.contains("expected ident") {
         "palavra inválida (use true, false ou null, sem aspas)".to_owned()
     } else if head.contains("number") {
         "número inválido".to_owned()
-    } else if head.contains("unicode") || head.contains("surrogate") || head.contains("hex escape") {
+    } else if head.contains("unicode") || head.contains("surrogate") || head.contains("hex escape")
+    {
         "escape \\u inválido dentro de um texto".to_owned()
     } else {
         format!("erro de sintaxe ({head})")
     };
-    format!("{said}, na linha {}, coluna {}", error.line(), error.column())
+    format!(
+        "{said}, na linha {}, coluna {}",
+        error.line(),
+        error.column()
+    )
 }
 /// The typed deserializer's own complaint, in Portuguese, when the walk over
 /// the plan found nothing more specific.
@@ -270,15 +281,21 @@ fn unknown_field(
     allowed: &[&str],
     path: &str,
 ) -> Option<String> {
-    object.keys().find(|key| !allowed.contains(&key.as_str())).map(|key| {
-        format!(
+    object
+        .keys()
+        .find(|key| !allowed.contains(&key.as_str()))
+        .map(|key| {
+            format!(
             "{path}: campo desconhecido \"{key}\" (confira a grafia); os campos aceitos são: {}",
             allowed.join(", ")
         )
-    })
+        })
 }
 fn wrong_type(path: &str, expected: &str, found: &Value) -> String {
-    format!("{path}: esperava {expected}, mas encontrei {}", json_kind(found))
+    format!(
+        "{path}: esperava {expected}, mas encontrei {}",
+        json_kind(found)
+    )
 }
 fn texts(object: &serde_json::Map<String, Value>, keys: &[&str], path: &str) -> Option<String> {
     keys.iter().find_map(|key| {
@@ -291,11 +308,19 @@ fn texts(object: &serde_json::Map<String, Value>, keys: &[&str], path: &str) -> 
 fn text_list(object: &serde_json::Map<String, Value>, key: &str, path: &str) -> Option<String> {
     let value = object.get(key)?;
     let Some(items) = value.as_array() else {
-        return Some(wrong_type(&format!("{path}.{key}"), "uma lista de textos", value));
+        return Some(wrong_type(
+            &format!("{path}.{key}"),
+            "uma lista de textos",
+            value,
+        ));
     };
     items.iter().enumerate().find_map(|(index, item)| {
         (!item.is_string()).then(|| {
-            wrong_type(&format!("{path}.{key}[{}]", index + 1), "um texto entre aspas", item)
+            wrong_type(
+                &format!("{path}.{key}[{}]", index + 1),
+                "um texto entre aspas",
+                item,
+            )
         })
     })
 }
@@ -310,11 +335,16 @@ fn shape_problem(root: &Value) -> Option<String> {
         return Some(message);
     }
     match plan.get("request_id") {
-        None | Some(Value::Null) => {
-            return Some("request_id: campo obrigatório (um UUID, como 47f3f62f-404c-4931-ae04-bc7eb1108c07)".into())
-        }
+        None | Some(Value::Null) => return Some(
+            "request_id: campo obrigatório (um UUID, como 47f3f62f-404c-4931-ae04-bc7eb1108c07)"
+                .into(),
+        ),
         Some(value) if !value.is_string() => {
-            return Some(wrong_type("request_id", "um texto entre aspas (um UUID)", value))
+            return Some(wrong_type(
+                "request_id",
+                "um texto entre aspas (um UUID)",
+                value,
+            ))
         }
         _ => {}
     }
@@ -325,7 +355,11 @@ fn shape_problem(root: &Value) -> Option<String> {
     match plan.get("complete_triage") {
         None | Some(Value::Bool(_)) => {}
         Some(value) => {
-            return Some(wrong_type("complete_triage", "true ou false (sem aspas)", value))
+            return Some(wrong_type(
+                "complete_triage",
+                "true ou false (sem aspas)",
+                value,
+            ))
         }
     }
     match plan.get("document") {
@@ -352,7 +386,9 @@ fn shape_problem(root: &Value) -> Option<String> {
         Some(value) => return Some(wrong_type("document", "um objeto { ... }", value)),
     }
     let tasks = match plan.get("tasks") {
-        None | Some(Value::Null) => return Some("tasks: campo obrigatório (uma lista com 1 a 100 tarefas)".into()),
+        None | Some(Value::Null) => {
+            return Some("tasks: campo obrigatório (uma lista com 1 a 100 tarefas)".into())
+        }
         Some(Value::Array(tasks)) => tasks,
         Some(value) => return Some(wrong_type("tasks", "uma lista [ ... ] de tarefas", value)),
     };
@@ -393,12 +429,16 @@ fn shape_problem(root: &Value) -> Option<String> {
         }
         if let Some(value) = task.get("checklist") {
             let Some(items) = value.as_array() else {
-                return Some(wrong_type(&format!("{path}.checklist"), "uma lista de pares [concluído, \"texto\"]", value));
+                return Some(wrong_type(
+                    &format!("{path}.checklist"),
+                    "uma lista de pares [concluído, \"texto\"]",
+                    value,
+                ));
             };
             for (n, item) in items.iter().enumerate() {
-                let good = item
-                    .as_array()
-                    .is_some_and(|pair| pair.len() == 2 && pair[0].is_boolean() && pair[1].is_string());
+                let good = item.as_array().is_some_and(|pair| {
+                    pair.len() == 2 && pair[0].is_boolean() && pair[1].is_string()
+                });
                 if !good {
                     return Some(format!(
                         "{path}.checklist[{}]: use um par [true ou false, \"texto do item\"]",
@@ -522,7 +562,11 @@ fn check_document(doc: &PlanDocument, request: &str) -> Result<NewRecord> {
         KINDS.iter().any(|(key, _)| *key == doc.kind),
         "document.type: valor inválido \"{}\"; use um de: {}",
         doc.kind,
-        KINDS.iter().map(|(key, _)| *key).collect::<Vec<_>>().join(", ")
+        KINDS
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     let title = doc.title.trim();
     ensure!(
@@ -571,7 +615,10 @@ fn check_task(input: &PlanTask, index: usize, request: &str) -> Result<Task> {
     let bare = format!("tasks[{}]", index + 1);
     let bad = |field: &str, message: String| invalid(format!("{bare}.{field}: {message}"));
     if input.title.trim().is_empty() {
-        return Err(bad("title", "obrigatório; informe o título da tarefa.".into()));
+        return Err(bad(
+            "title",
+            "obrigatório; informe o título da tarefa.".into(),
+        ));
     }
     if input.title.len() > 1000 {
         return Err(bad("title", "o título passa de 1000 bytes.".into()));
@@ -613,7 +660,10 @@ fn check_task(input: &PlanTask, index: usize, request: &str) -> Result<Task> {
         ));
     }
     if input.assignee.len() > 256 || !is_clean(&input.assignee) {
-        return Err(bad("assignee", "até 256 bytes e sem quebras de linha.".into()));
+        return Err(bad(
+            "assignee",
+            "até 256 bytes e sem quebras de linha.".into(),
+        ));
     }
     if input.scheduled_start.is_empty() != input.scheduled_end.is_empty() {
         return Err(bad(
@@ -635,7 +685,10 @@ fn check_task(input: &PlanTask, index: usize, request: &str) -> Result<Task> {
             )
         })?;
         if end <= start {
-            return Err(bad("scheduled_end", "deve ser posterior a scheduled_start.".into()));
+            return Err(bad(
+                "scheduled_end",
+                "deve ser posterior a scheduled_start.".into(),
+            ));
         }
     }
     if input.estimate_minutes > 525_600 {
@@ -644,13 +697,23 @@ fn check_task(input: &PlanTask, index: usize, request: &str) -> Result<Task> {
     if input.checklist.len() > 100 {
         return Err(bad("checklist", "no máximo 100 itens.".into()));
     }
-    if let Some(n) = input.checklist.iter().position(|(_, text)| text.len() > 1000) {
-        return Err(bad(&format!("checklist[{}]", n + 1), "o item passa de 1000 bytes.".into()));
+    if let Some(n) = input
+        .checklist
+        .iter()
+        .position(|(_, text)| text.len() > 1000)
+    {
+        return Err(bad(
+            &format!("checklist[{}]", n + 1),
+            "o item passa de 1000 bytes.".into(),
+        ));
     }
     if input.categories.len() > crate::categories::MAX_PER_ITEM {
         return Err(bad(
             "categories",
-            format!("no máximo {} categorias por tarefa.", crate::categories::MAX_PER_ITEM),
+            format!(
+                "no máximo {} categorias por tarefa.",
+                crate::categories::MAX_PER_ITEM
+            ),
         ));
     }
     let mut task = Task::new(0);
@@ -667,7 +730,8 @@ fn check_task(input: &PlanTask, index: usize, request: &str) -> Result<Task> {
     task.scheduled_end = input.scheduled_end.clone();
     task.estimate_minutes = input.estimate_minutes;
     // The library's own rules, as a second net.
-    task.validate().map_err(|e| invalid(format!("{bare}: {e}")))?;
+    task.validate()
+        .map_err(|e| invalid(format!("{bare}: {e}")))?;
     Ok(task)
 }
 
@@ -902,12 +966,7 @@ impl Store {
     /// Categories (or projects) by name, accents and case ignored; a uid is
     /// always accepted (archived or not), a name only for the ones not
     /// archived.
-    fn resolve_entry(
-        value: &str,
-        entries: &[Entry],
-        field: &str,
-        what: &str,
-    ) -> Result<String> {
+    fn resolve_entry(value: &str, entries: &[Entry], field: &str, what: &str) -> Result<String> {
         let wanted = value.trim();
         if wanted.is_empty() {
             return Err(invalid(format!(
@@ -981,8 +1040,12 @@ impl Store {
             .collect();
         let mut document_categories = Vec::new();
         if let (true, Some(doc)) = (document_too, &plan.document) {
-            document_categories =
-                Self::resolve_all(&doc.categories, &categories, "document.categories", "categoria")?;
+            document_categories = Self::resolve_all(
+                &doc.categories,
+                &categories,
+                "document.categories",
+                "categoria",
+            )?;
         }
         let projects: Vec<Entry> = self
             .list_projects()?
@@ -1088,7 +1151,8 @@ impl Store {
     ) -> Result<PlanResult> {
         let run = self.plan_run(&checked.request)?;
         let task_rows = self.look_at_tasks(checked, run.as_ref())?;
-        let (doc_state, doc_row) = self.look_at_document(plan, checked, run.as_ref(), &task_rows)?;
+        let (doc_state, doc_row) =
+            self.look_at_document(plan, checked, run.as_ref(), &task_rows)?;
         let document = DocumentOutcome {
             state: doc_state,
             state_label: doc_state.label().to_owned(),
@@ -1212,12 +1276,8 @@ impl Store {
         }
 
         let mut tasks = checked.tasks.clone();
-        let document_categories = self.resolve_references(
-            plan,
-            &mut tasks,
-            &pending_tasks,
-            document_pending,
-        )?;
+        let document_categories =
+            self.resolve_references(plan, &mut tasks, &pending_tasks, document_pending)?;
         if dry_run {
             let triage = triage_label(plan, new_document, false);
             return self.plan_outcome(plan, &checked, true, &Written::default(), triage);
@@ -1227,7 +1287,10 @@ impl Store {
         let mut written = Written::default();
         let mut receipt_exists = run.is_some();
         let document_id = if new_document {
-            let record = checked.record.as_ref().expect("a plan with document has its record");
+            let record = checked
+                .record
+                .as_ref()
+                .expect("a plan with document has its record");
             let id = if doc_state == ItemState::ToCreate {
                 let created = self
                     .create_record_with_attachments(record, &[])
@@ -1262,7 +1325,10 @@ impl Store {
             }
             id
         } else {
-            doc_row.as_ref().expect("an existing document was checked").id
+            doc_row
+                .as_ref()
+                .expect("an existing document was checked")
+                .id
         };
 
         if !pending_tasks.is_empty() {
@@ -1282,7 +1348,9 @@ impl Store {
                         "Nenhuma tarefa foi gravada (a gravação é tudo ou nada neste modo): {e}"
                     )
                 })?;
-                written.tasks.extend(to_write.iter().map(|(index, _)| *index));
+                written
+                    .tasks
+                    .extend(to_write.iter().map(|(index, _)| *index));
                 if !receipt_exists {
                     self.start_plan_run(&checked.request, &checked.digest, true)?;
                 }
@@ -1302,9 +1370,17 @@ impl Store {
                     self.note_plan_progress(&checked.request, "tasks_created", index as i64 + 1)?;
                 }
             }
-            self.note_plan_progress(&checked.request, "tasks_created", checked.tasks.len() as i64)?;
+            self.note_plan_progress(
+                &checked.request,
+                "tasks_created",
+                checked.tasks.len() as i64,
+            )?;
         } else if receipt_exists {
-            self.note_plan_progress(&checked.request, "tasks_created", checked.tasks.len() as i64)?;
+            self.note_plan_progress(
+                &checked.request,
+                "tasks_created",
+                checked.tasks.len() as i64,
+            )?;
         }
 
         // The triage is completed last, when the tasks exist: a record whose
@@ -1402,7 +1478,10 @@ pub fn parse_cli(args: &[String]) -> Result<CliOptions> {
                 dry_run = true;
             }
             "--saida" => {
-                ensure!(output.is_none(), "--saida foi informado duas vezes. Uso: {USAGE}");
+                ensure!(
+                    output.is_none(),
+                    "--saida foi informado duas vezes. Uso: {USAGE}"
+                );
                 match rest.next() {
                     Some(value) if !value.starts_with("--") => output = Some(value.clone()),
                     _ => bail!("Informe o arquivo depois de --saida. Uso: {USAGE}"),
@@ -1491,8 +1570,9 @@ fn check_readable_as_is(db: &Path) -> Result<()> {
         db.exists(),
         "Ainda não há acervo neste computador (abra o Ponte uma vez); sem ele, --dry-run não tem o que consultar."
     );
-    let conn = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| friendly(e.into()))?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| friendly(e.into()))?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -1531,9 +1611,8 @@ pub fn execute(options: &CliOptions, db: &Path, stdout: &mut dyn Write) -> Resul
         }))?,
     };
     if let Some(output) = &options.output {
-        crate::atomic_file::write_atomic(Path::new(output), json.as_bytes()).with_context(
-            || format!("Não foi possível gravar o resultado em {output}"),
-        )?;
+        crate::atomic_file::write_atomic(Path::new(output), json.as_bytes())
+            .with_context(|| format!("Não foi possível gravar o resultado em {output}"))?;
     }
     if outcome.is_ok() {
         // A console that is not there (the release build) is not a failure of
@@ -1548,4 +1627,1279 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     let options = parse_cli(args)?;
     let db = crate::paths::db_path_in(&crate::paths::data_dir_path()?);
     execute(&options, &db, &mut std::io::stdout())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intranet::{HostServer, IntranetConfig, IntranetMode};
+    use crate::trash::Target;
+
+    const FIXTURE: &str = include_str!("../tests/fixtures/import-plan-exemplo.json");
+    const REQUEST: &str = "47f3f62f-404c-4931-ae04-bc7eb1108c07";
+    const REQUEST_UPPER: &str = "47F3F62F-404C-4931-AE04-BC7EB1108C07";
+
+    fn plan() -> Plan {
+        serde_json::from_str(FIXTURE).unwrap()
+    }
+    /// A plan of `n` tasks, no triage, no categories.
+    fn big_plan(n: usize) -> Plan {
+        let mut plan = plan();
+        plan.complete_triage = false;
+        plan.tasks = (1..=n)
+            .map(|i| PlanTask {
+                title: format!("Tarefa {i}"),
+                action: "examinar".into(),
+                notes: String::new(),
+                due_date: String::new(),
+                priority: "normal".into(),
+                assignee: String::new(),
+                checklist: vec![],
+                scheduled_start: String::new(),
+                scheduled_end: String::new(),
+                estimate_minutes: 0,
+                categories: vec![],
+                project: String::new(),
+            })
+            .collect();
+        plan
+    }
+    fn library() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        (dir, store)
+    }
+    fn shared_folder(store: &mut Store) {
+        let config = IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: "Membro de teste".into(),
+            folder_files: vec!["ponte-sync-teste.ponte".into()],
+            folder_writer: uuid::Uuid::new_v4().simple().to_string(),
+            ..store.load_intranet_config().unwrap()
+        };
+        store.save_intranet_config(&config).unwrap();
+    }
+    fn message(plan: &Plan) -> String {
+        check_plan(plan)
+            .err()
+            .expect("the plan must be refused")
+            .to_string()
+    }
+    fn run_error(store: &mut Store, plan: &Plan) -> String {
+        store.import_plan(plan, false).unwrap_err().to_string()
+    }
+    /// Everything an invalid plan or a dry run must not touch.
+    fn traces(store: &Store) -> (i64, usize, usize, usize, usize, bool) {
+        (
+            store.cabinet_revision().unwrap(),
+            store.list_team_events(500).unwrap().len(),
+            store.list_offline_outbox().unwrap().len(),
+            store.list_documents("").unwrap().len(),
+            store.list_tasks().unwrap().len(),
+            store
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='plan_import_runs')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap(),
+        )
+    }
+    fn ids(result: &PlanResult) -> Vec<Option<i64>> {
+        result.tasks.iter().map(|t| t.id).collect()
+    }
+    fn edit_fixture(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        edit(&mut value);
+        serde_json::to_vec(&value).unwrap()
+    }
+    fn fail_on(store: &Store, table: &str, when: &str) {
+        store
+            .conn
+            .execute_batch(&format!(
+                "CREATE TRIGGER falha_simulada BEFORE INSERT ON {table} WHEN {when} BEGIN SELECT RAISE(ABORT,'falha simulada'); END;"
+            ))
+            .unwrap();
+    }
+    fn stop_failing(store: &Store) {
+        store
+            .conn
+            .execute_batch("DROP TRIGGER falha_simulada")
+            .unwrap();
+    }
+    fn trash(store: &mut Store, kind: Kind, id: i64) {
+        store.trash_item(Target { kind, id }).unwrap();
+    }
+    fn purge(store: &mut Store, kind: Kind, id: i64) {
+        trash(store, kind, id);
+        store.purge_trash_item(Target { kind, id }).unwrap();
+    }
+
+    // ---- the happy path and the rerun ---------------------------------------
+
+    #[test]
+    fn creates_the_record_its_tasks_and_a_rerun_reports_the_current_state() {
+        let (_dir, mut store) = library();
+        let first = store.import_plan(&plan(), false).unwrap();
+        assert!(first.ok && first.created && !first.dry_run && !first.ids_provisional);
+        assert_eq!(first.document.state, ItemState::Present);
+        assert!(first.document.created_now && !first.document.existing);
+        let number = first.document.number.clone().unwrap();
+        assert!(number.starts_with("EMAIL-"), "{number}");
+        assert_eq!(first.triage, "concluida_agora");
+        assert!(first
+            .tasks
+            .iter()
+            .all(|t| t.state == ItemState::Present && t.created_now && t.id.is_some()));
+        assert_eq!(first.tasks[1].index, 2);
+        let document_id = first.document.id.unwrap();
+        // The record, its note, the plan's tasks and the automatic triage.
+        let detail = store.load_document(document_id).unwrap();
+        assert_eq!(detail.note, "Acompanhar o prazo.");
+        let tasks = store.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks.iter().all(|t| t.document_id == Some(document_id)));
+        assert!(tasks
+            .iter()
+            .find(|t| t.title == "Triar documento")
+            .unwrap()
+            .is_done());
+        assert_eq!(tasks.iter().filter(|t| t.is_done()).count(), 1);
+
+        let again = store.import_plan(&plan(), false).unwrap();
+        assert!(!again.created && !again.document.created_now);
+        assert_eq!(again.document.id, first.document.id);
+        assert_eq!(again.document.number, first.document.number);
+        assert_eq!(ids(&again), ids(&first));
+        assert_eq!(again.triage, "ja_concluida_antes");
+        assert!(again.tasks.iter().all(|t| !t.created_now));
+        assert_eq!(store.list_tasks().unwrap().len(), 3);
+        assert_eq!(store.list_documents("").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_rerun_answers_from_the_receipt_even_if_references_changed_and_overwrites_nothing() {
+        let (_dir, mut store) = library();
+        let category = store
+            .save_category(&crate::categories::Category::new("Atenção", 1))
+            .unwrap();
+        let mut input = plan();
+        input.document.as_mut().unwrap().categories = vec!["ATENÇÃO".into()];
+        input.tasks[0].categories = vec!["atencao".into()];
+        let first = store.import_plan(&input, false).unwrap();
+        assert!(first.created);
+        let document_id = first.document.id.unwrap();
+        assert_eq!(
+            store.document_categories(document_id).unwrap(),
+            vec![category.uid.clone()]
+        );
+
+        // The person renames the category, rewrites the note and edits a task.
+        let mut renamed = category.clone();
+        renamed.name = "Outro nome".into();
+        store.save_category(&renamed).unwrap();
+        store
+            .save_note(document_id, "Minha nota, escrita depois.")
+            .unwrap();
+        let mut edited = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == first.tasks[0].id.unwrap())
+            .unwrap();
+        edited.title = "Título que a pessoa mudou".into();
+        edited.notes = "Observação da pessoa".into();
+        edited.categories.clear();
+        store.save_task(&edited).unwrap();
+
+        // The same file: no error about the category, and nothing is updated.
+        let again = store.import_plan(&input, false).unwrap();
+        assert!(!again.created);
+        assert_eq!(again.tasks[0].title, "Título que a pessoa mudou");
+        let tasks = store.list_tasks().unwrap();
+        let task = tasks
+            .iter()
+            .find(|t| t.id == again.tasks[0].id.unwrap())
+            .unwrap();
+        assert_eq!(task.notes, "Observação da pessoa");
+        assert!(task.categories.is_empty(), "the categories are not reset");
+        assert_eq!(
+            store.load_document(document_id).unwrap().note,
+            "Minha nota, escrita depois."
+        );
+        assert_eq!(tasks.len(), 3);
+    }
+
+    #[test]
+    fn a_rerun_reports_the_trash_and_purges_and_recreates_nothing() {
+        let (_dir, mut store) = library();
+        let first = store.import_plan(&plan(), false).unwrap();
+        // One task in the Lixeira, the other deleted for good.
+        trash(&mut store, Kind::Task, first.tasks[0].id.unwrap());
+        purge(&mut store, Kind::Task, first.tasks[1].id.unwrap());
+        let again = store.import_plan(&plan(), false).unwrap();
+        assert!(!again.created);
+        assert_eq!(again.tasks[0].state, ItemState::Trashed);
+        assert_eq!(again.tasks[0].state_label, "na Lixeira");
+        assert_eq!(again.tasks[0].id, first.tasks[0].id);
+        assert_eq!(again.tasks[0].title, "Examinar a solicitação");
+        assert_eq!(again.tasks[1].state, ItemState::Missing);
+        assert_eq!(again.tasks[1].state_label, "não existe mais");
+        assert_eq!(again.tasks[1].id, None);
+        assert_eq!(again.document.state, ItemState::Present);
+        // Nothing came back, and the Lixeira still has the task.
+        let live: Vec<_> = store
+            .list_tasks()
+            .unwrap()
+            .iter()
+            .map(|t| t.title.clone())
+            .collect();
+        assert_eq!(live, vec!["Triar documento".to_owned()]);
+        assert_eq!(store.trash_entries().unwrap().len(), 1);
+
+        // The record itself in the Lixeira: every item says so.
+        trash(&mut store, Kind::Document, first.document.id.unwrap());
+        let again = store.import_plan(&plan(), false).unwrap();
+        assert_eq!(again.document.state, ItemState::Trashed);
+        assert_eq!(again.document.number, first.document.number);
+        assert_eq!(again.tasks[0].state, ItemState::Trashed);
+        // And for good.
+        store
+            .purge_trash_item(Target {
+                kind: Kind::Document,
+                id: first.document.id.unwrap(),
+            })
+            .unwrap();
+        let again = store.import_plan(&plan(), false).unwrap();
+        assert!(!again.created);
+        assert_eq!(again.document.state, ItemState::Missing);
+        assert_eq!(again.document.id, None);
+        assert!(again.tasks.iter().all(|t| t.state == ItemState::Missing));
+        assert!(store.list_documents("").unwrap().is_empty());
+        assert!(store.list_tasks().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ids_and_the_number_are_read_again_when_the_local_ids_changed() {
+        let (_dir, mut store) = library();
+        let first = store.import_plan(&plan(), false).unwrap();
+        // What a synchronisation does: the same items under other local ids.
+        store
+            .conn
+            .execute_batch(
+                "PRAGMA foreign_keys=OFF;
+                 UPDATE tasks SET id=id+1000, document_id=document_id+1000;
+                 UPDATE requests SET document_id=document_id+1000;
+                 UPDATE captures SET document_id=document_id+1000;
+                 UPDATE notes SET document_id=document_id+1000;
+                 UPDATE work_context SET document_id=document_id+1000;
+                 UPDATE documents SET id=id+1000;
+                 PRAGMA foreign_keys=ON;",
+            )
+            .unwrap();
+        let again = store.import_plan(&plan(), false).unwrap();
+        assert!(!again.created);
+        assert_eq!(again.document.id, Some(first.document.id.unwrap() + 1000));
+        assert_eq!(
+            ids(&again),
+            ids(&first)
+                .iter()
+                .map(|id| id.map(|i| i + 1000))
+                .collect::<Vec<_>>()
+        );
+        assert!(again.tasks.iter().all(|t| t.state == ItemState::Present));
+        assert_eq!(store.list_tasks().unwrap().len(), 3);
+        assert_eq!(store.list_documents("").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_same_request_with_another_plan_is_refused_and_an_equal_file_is_the_same_plan() {
+        let (_dir, mut store) = library();
+        store.import_plan(&plan(), false).unwrap();
+        let mut other = plan();
+        other.tasks[1].title = "Preparar outra resposta".into();
+        let said = run_error(&mut store, &other);
+        assert!(
+            said.contains("request_id")
+                && said.contains("plano diferente")
+                && said.contains("request_id novo"),
+            "{said}"
+        );
+        assert_eq!(store.list_tasks().unwrap().len(), 3);
+
+        // The same plan written another way: upper-case uuid, other key order,
+        // no whitespace, a default spelled out.
+        let reordered = format!(
+            r#"{{"tasks":[{{"action":"examinar","title":"Examinar a solicitação","priority":"alta","assignee":"Equipe","due_date":"2026-12-01","checklist":[[false,"Conferir os documentos"]]}},{{"priority":"normal","action":"responder","title":"Preparar resposta"}}],"complete_triage":true,"document":{{"type":"email","title":"Solicitação de informações","text":"Verificar os dados recebidos e preparar a resposta.","note":"Acompanhar o prazo.","origin":"Secretaria","date":"2026-11-22","categories":[]}},"request_id":"{REQUEST_UPPER}"}}"#
+        );
+        let same = parse_plan(reordered.as_bytes()).unwrap();
+        let again = store.import_plan(&same, false).unwrap();
+        assert!(!again.created, "{again:?}");
+    }
+
+    // ---- nothing is left behind ---------------------------------------------
+
+    #[test]
+    fn an_invalid_plan_leaves_nothing_and_the_request_id_stays_usable() {
+        for queued in [false, true] {
+            let (_dir, mut store) = library();
+            if queued {
+                shared_folder(&mut store);
+            }
+            let before = traces(&store);
+            let mut bad = plan();
+            bad.tasks[1].categories = vec!["Não existe".into()];
+            let said = run_error(&mut store, &bad);
+            assert!(said.contains("tasks[2].categories[1]"), "{said}");
+            let mut bad = plan();
+            bad.tasks[0].due_date = "22/11/2026".into();
+            assert!(run_error(&mut store, &bad).contains("tasks[1].due_date"));
+            assert_eq!(traces(&store), before, "queued: {queued}");
+
+            // A failure of the very first write leaves nothing either.
+            fail_on(&store, "documents", "1");
+            assert!(store.import_plan(&plan(), false).is_err());
+            assert_eq!(traces(&store), before, "first write, queued: {queued}");
+            stop_failing(&store);
+
+            // The corrected plan runs with the same request id.
+            let done = store.import_plan(&plan(), false).unwrap();
+            assert!(done.created, "queued: {queued}");
+        }
+    }
+
+    #[test]
+    fn a_dry_run_writes_nothing_and_reports_what_it_would_do() {
+        for queued in [false, true] {
+            let (_dir, mut store) = library();
+            if queued {
+                shared_folder(&mut store);
+            }
+            let before = traces(&store);
+            let dry = store.import_plan(&plan(), true).unwrap();
+            assert!(dry.dry_run && !dry.created && !dry.document.created_now);
+            assert_eq!(dry.document.state, ItemState::ToCreate);
+            assert_eq!(dry.document.id, None);
+            assert_eq!(
+                dry.document.title.as_deref(),
+                Some("Solicitação de informações")
+            );
+            assert!(dry
+                .tasks
+                .iter()
+                .all(|t| t.state == ItemState::ToCreate && t.id.is_none()));
+            assert_eq!(dry.triage, "sera_concluida");
+            assert_eq!(traces(&store), before, "queued: {queued}");
+
+            // After the real run, a dry run only reports.
+            let real = store.import_plan(&plan(), false).unwrap();
+            let after = traces(&store);
+            let dry = store.import_plan(&plan(), true).unwrap();
+            assert!(dry.dry_run && !dry.created);
+            assert_eq!(ids(&dry), ids(&real));
+            assert_eq!(traces(&store), after);
+        }
+    }
+
+    // ---- interruptions --------------------------------------------------------
+
+    #[test]
+    fn a_run_interrupted_after_the_record_is_finished_by_the_same_command() {
+        for queued in [false, true] {
+            let (_dir, mut store) = library();
+            if queued {
+                shared_folder(&mut store);
+            }
+            let mut input = plan();
+            input.document.as_mut().unwrap().note = "Nota do plano".into();
+            fail_on(&store, "notes", "1");
+            assert!(store.import_plan(&input, false).is_err());
+            stop_failing(&store);
+            // The record exists, nothing else.
+            assert_eq!(store.list_documents("").unwrap().len(), 1);
+            assert_eq!(store.list_tasks().unwrap().len(), 1);
+            let done = store.import_plan(&input, false).unwrap();
+            assert!(
+                done.created && !done.document.created_now,
+                "queued: {queued}"
+            );
+            assert_eq!(store.list_documents("").unwrap().len(), 1);
+            assert_eq!(store.list_tasks().unwrap().len(), 3);
+            assert_eq!(
+                store.load_document(done.document.id.unwrap()).unwrap().note,
+                "Nota do plano"
+            );
+            assert_eq!(done.triage, "concluida_agora");
+        }
+    }
+
+    #[test]
+    fn a_run_interrupted_in_the_middle_of_the_tasks_finishes_without_duplicates() {
+        let input = big_plan(5);
+        // One transaction: none of the tasks is there after a failure.
+        let (_dir, mut store) = library();
+        fail_on(
+            &store,
+            "tasks",
+            "NEW.uid IS NOT NULL AND (SELECT count(*) FROM tasks)>=4",
+        );
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        assert_eq!(store.list_tasks().unwrap().len(), 1, "only the triage");
+        let done = store.import_plan(&input, false).unwrap();
+        assert!(done.created && done.tasks.iter().all(|t| t.created_now));
+        assert_eq!(store.list_tasks().unwrap().len(), 6);
+
+        // One change per task (shared folder): the first three stay, the
+        // rerun creates the other two.
+        let (_dir, mut store) = library();
+        shared_folder(&mut store);
+        fail_on(&store, "tasks", "(SELECT count(*) FROM tasks)>=4");
+        let said = run_error(&mut store, &input);
+        assert!(
+            said.contains("tasks[4]") && said.contains("repita o mesmo comando"),
+            "{said}"
+        );
+        stop_failing(&store);
+        assert_eq!(store.list_tasks().unwrap().len(), 4);
+        let done = store.import_plan(&input, false).unwrap();
+        let fresh: Vec<_> = done
+            .tasks
+            .iter()
+            .filter(|t| t.created_now)
+            .map(|t| t.index)
+            .collect();
+        assert_eq!(fresh, vec![4, 5]);
+        assert!(done.tasks.iter().all(|t| t.state == ItemState::Present));
+        assert_eq!(store.list_tasks().unwrap().len(), 6);
+        // And a third run only reports.
+        assert!(!store.import_plan(&input, false).unwrap().created);
+    }
+
+    #[test]
+    fn a_resumed_run_does_not_recreate_a_task_the_person_deleted_after_the_interruption() {
+        let input = big_plan(5);
+        let (_dir, mut store) = library();
+        shared_folder(&mut store);
+        fail_on(&store, "tasks", "(SELECT count(*) FROM tasks)>=4");
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        let rows: Vec<_> = store
+            .list_tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.title == "Tarefa 2")
+            .collect();
+        purge(&mut store, Kind::Task, rows[0].id);
+        let done = store.import_plan(&input, false).unwrap();
+        assert_eq!(done.tasks[1].state, ItemState::Missing);
+        assert_eq!(done.tasks.iter().filter(|t| t.created_now).count(), 2);
+        assert_eq!(
+            store.list_tasks().unwrap().len(),
+            5,
+            "triage + 4 live plan tasks"
+        );
+    }
+
+    #[test]
+    fn an_unfinished_plan_whose_record_is_gone_says_so_instead_of_recreating_it() {
+        let input = big_plan(3);
+        let (_dir, mut store) = library();
+        shared_folder(&mut store);
+        fail_on(&store, "tasks", "(SELECT count(*) FROM tasks)>=3");
+        assert!(store.import_plan(&input, false).is_err());
+        stop_failing(&store);
+        let id = store.list_documents("").unwrap()[0].id;
+        trash(&mut store, Kind::Document, id);
+        let said = run_error(&mut store, &input);
+        assert!(said.contains("Lixeira"), "{said}");
+        store
+            .purge_trash_item(Target {
+                kind: Kind::Document,
+                id,
+            })
+            .unwrap();
+        let said = run_error(&mut store, &input);
+        assert!(
+            said.contains("não existe mais") && said.contains("request_id novo"),
+            "{said}"
+        );
+        assert!(store.list_documents("").unwrap().is_empty());
+    }
+
+    // ---- the modes ------------------------------------------------------------
+
+    #[test]
+    fn shared_folder_mode_queues_what_the_screens_queue() {
+        let (_dir, mut by_plan) = library();
+        shared_folder(&mut by_plan);
+        let mut input = plan();
+        by_plan
+            .save_category(&crate::categories::Category::new("Atenção", 1))
+            .unwrap();
+        input.document.as_mut().unwrap().categories = vec!["atencao".into()];
+        let result = by_plan.import_plan(&input, false).unwrap();
+        assert!(result.ids_provisional);
+
+        // The same thing, done the way the screens do it.
+        let (_dir, mut by_hand) = library();
+        shared_folder(&mut by_hand);
+        let category = by_hand
+            .save_category(&crate::categories::Category::new("Atenção", 1))
+            .unwrap();
+        let checked = check_plan(&input).unwrap();
+        let created = by_hand
+            .create_record_with_attachments(checked.record.as_ref().unwrap(), &[])
+            .unwrap();
+        let Created::New { document_id, .. } = created else {
+            panic!("a new record")
+        };
+        by_hand
+            .save_note(document_id, "Acompanhar o prazo.")
+            .unwrap();
+        by_hand
+            .set_document_categories(document_id, &[category.uid])
+            .unwrap();
+        for task in &checked.tasks {
+            let mut task = task.clone();
+            task.document_id = Some(document_id);
+            by_hand.save_task(&task).unwrap();
+        }
+        let triage = Store::triage_task_in(&by_hand.conn, document_id)
+            .unwrap()
+            .unwrap();
+        by_hand.complete_task(triage).unwrap();
+
+        let labels = |store: &Store| {
+            store
+                .list_offline_outbox()
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.label)
+                .collect::<Vec<_>>()
+        };
+        let queued = labels(&by_plan);
+        assert_eq!(queued, labels(&by_hand));
+        assert!(queued.iter().any(|l| l.starts_with("E-mail")));
+        assert!(queued.len() >= 1 + 1 + 1 + 2, "{queued:?}");
+        assert_eq!(
+            by_plan.list_team_events(500).unwrap().len(),
+            by_hand.list_team_events(500).unwrap().len()
+        );
+        // Each queued task carries the identity the plan derived.
+        let uids: BTreeSet<String> = by_plan
+            .list_offline_outbox()
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| match entry.mutation {
+                crate::intranet::IntranetMutation::SaveTask { task, .. } => Some(task.uid),
+                _ => None,
+            })
+            .collect();
+        for task in &check_plan(&input).unwrap().tasks {
+            assert!(uids.contains(&task.uid));
+        }
+    }
+
+    fn team() -> (tempfile::TempDir, Store, HostServer, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let host_path = dir.path().join("host.sqlite3");
+        let token = crate::intranet::generate_token();
+        let mut host = Store::open(&host_path).unwrap();
+        let mut host_config = IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "ANFITRIAO".into(),
+            bind_addr: "127.0.0.1:0".into(),
+            host_url: "http://127.0.0.1:7878".into(),
+            cabinet_token: token.clone(),
+            auto_start_host: true,
+            ..IntranetConfig::default()
+        };
+        host.save_intranet_config(&host_config).unwrap();
+        let server = HostServer::start(host_path, "127.0.0.1:0").unwrap();
+        host_config.bind_addr = server.local_addr().to_string();
+        host.save_intranet_config(&host_config).unwrap();
+        let mut client = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        client
+            .save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::Client,
+                member_name: "CLIENTE".into(),
+                bind_addr: "127.0.0.1:0".into(),
+                host_url: format!("http://{}", server.local_addr()),
+                cabinet_token: token,
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+        (dir, host, server, client)
+    }
+
+    #[test]
+    fn a_connected_computer_sends_the_record_and_each_task_to_the_main_one() {
+        let (_dir, host, _server, mut client) = team();
+        let first = client.import_plan(&plan(), false).unwrap();
+        assert!(first.created && first.ids_provisional);
+        assert!(first.tasks.iter().all(|t| t.state == ItemState::Present));
+        assert_eq!(first.triage, "concluida_agora");
+        // The main computer has everything.
+        assert_eq!(host.list_documents("").unwrap().len(), 1);
+        assert_eq!(host.list_tasks().unwrap().len(), 3);
+        // A rerun on the client only reports, and finds the same items.
+        let before = host.list_tasks().unwrap().len();
+        let again = client.import_plan(&plan(), false).unwrap();
+        assert!(!again.created);
+        assert_eq!(ids(&again), ids(&first));
+        assert_eq!(host.list_tasks().unwrap().len(), before);
+    }
+
+    #[test]
+    fn a_computer_that_cannot_reach_the_main_one_queues_like_the_screens_do() {
+        let (_dir, mut client) = library();
+        client
+            .save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::Client,
+                member_name: "CLIENTE".into(),
+                host_url: "http://127.0.0.1:1".into(),
+                cabinet_token: crate::intranet::generate_token(),
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+        let first = client.import_plan(&plan(), false).unwrap();
+        assert!(first.created && first.ids_provisional);
+        assert_eq!(client.list_tasks().unwrap().len(), 3);
+        let queued = client.list_offline_outbox().unwrap().len();
+        assert!(queued > 2, "{queued}");
+        let again = client.import_plan(&plan(), false).unwrap();
+        assert!(!again.created);
+        assert_eq!(ids(&again), ids(&first));
+        assert_eq!(client.list_offline_outbox().unwrap().len(), queued);
+    }
+
+    // ---- an existing document ---------------------------------------------------
+
+    fn existing_plan(number: &str) -> Plan {
+        let mut input = big_plan(2);
+        input.request_id = uuid::Uuid::new_v4().to_string();
+        input.document = None;
+        input.document_number = Some(number.into());
+        input
+    }
+
+    #[test]
+    fn tasks_go_to_an_existing_document_found_like_the_app_finds_it() {
+        let (_dir, mut store) = library();
+        let first = store.import_plan(&plan(), false).unwrap();
+        let number = first.document.number.clone().unwrap();
+        let document_id = first.document.id.unwrap();
+        // Spaces and case do not matter.
+        let spelled = format!("  {} ", number.to_lowercase().replace('/', " /"));
+        let input = existing_plan(&spelled);
+        let before = traces(&store);
+        let dry = store.import_plan(&input, true).unwrap();
+        assert!(dry.document.existing && dry.document.state == ItemState::Present);
+        assert_eq!(dry.document.id, Some(document_id));
+        assert_eq!(
+            traces(&store),
+            before,
+            "a dry run on an existing record writes nothing"
+        );
+        let done = store.import_plan(&input, false).unwrap();
+        assert!(done.created && !done.document.created_now);
+        assert_eq!(done.document.number.as_deref(), Some(number.as_str()));
+        assert_eq!(done.triage, "nao_solicitada");
+        let tasks = store.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 5);
+        assert!(tasks.iter().all(|t| t.document_id == Some(document_id)));
+        // The triage of the record is as the first plan left it, and the
+        // first plan's tasks are untouched.
+        assert_eq!(tasks.iter().filter(|t| t.is_done()).count(), 1);
+        // A rerun reports, whatever happened to the tasks since.
+        trash(&mut store, Kind::Task, done.tasks[0].id.unwrap());
+        let again = store.import_plan(&input, false).unwrap();
+        assert!(!again.created);
+        assert_eq!(again.tasks[0].state, ItemState::Trashed);
+        assert_eq!(again.tasks[1].state, ItemState::Present);
+    }
+
+    #[test]
+    fn an_existing_document_that_is_missing_or_in_the_trash_is_told_apart() {
+        let (_dir, mut store) = library();
+        let first = store.import_plan(&plan(), false).unwrap();
+        let number = first.document.number.clone().unwrap();
+        let said = run_error(&mut store, &existing_plan("MANUAL-2099/9999"));
+        assert!(
+            said.contains("document_number") && said.contains("nenhum documento"),
+            "{said}"
+        );
+        trash(&mut store, Kind::Document, first.document.id.unwrap());
+        let said = run_error(&mut store, &existing_plan(&number));
+        assert!(
+            said.contains("document_number") && said.contains("Lixeira"),
+            "{said}"
+        );
+        let before = traces(&store);
+        assert!(store.import_plan(&existing_plan(&number), true).is_err());
+        assert_eq!(traces(&store), before);
+    }
+
+    #[test]
+    fn an_existing_plan_finds_its_record_by_its_tasks_after_the_number_changed() {
+        let (_dir, mut store) = library();
+        let first = store.import_plan(&plan(), false).unwrap();
+        let number = first.document.number.clone().unwrap();
+        let input = existing_plan(&number);
+        let done = store.import_plan(&input, false).unwrap();
+        // The number the file names no longer exists (renumbered by a sync).
+        store
+            .conn
+            .execute(
+                "UPDATE documents SET identity_hash=randomblob(32) WHERE id=?1",
+                [first.document.id.unwrap()],
+            )
+            .unwrap();
+        let again = store.import_plan(&input, false).unwrap();
+        assert!(!again.created);
+        assert_eq!(again.document.id, first.document.id);
+        assert_eq!(ids(&again), ids(&done));
+    }
+
+    #[test]
+    fn complete_triage_with_document_number_is_refused_with_a_reason() {
+        let mut input = existing_plan("MANUAL-2026/0001");
+        input.complete_triage = true;
+        let said = message(&input);
+        assert!(
+            said.contains("complete_triage") && said.contains("registro novo"),
+            "{said}"
+        );
+    }
+
+    // ---- the file --------------------------------------------------------------
+
+    #[test]
+    fn files_in_utf8_with_bom_and_utf16_are_read() {
+        let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+        with_bom.extend_from_slice(FIXTURE.as_bytes());
+        let mut little = vec![0xFF, 0xFE];
+        little.extend(FIXTURE.encode_utf16().flat_map(u16::to_le_bytes));
+        let mut big = vec![0xFE, 0xFF];
+        big.extend(FIXTURE.encode_utf16().flat_map(u16::to_be_bytes));
+        for bytes in [with_bom, little, big] {
+            let plan = parse_plan(&bytes).unwrap();
+            assert_eq!(
+                plan.document.as_ref().unwrap().title,
+                "Solicitação de informações"
+            );
+            assert_eq!(plan.tasks[0].title, "Examinar a solicitação");
+            assert_eq!(plan.request_id, REQUEST);
+        }
+    }
+
+    #[test]
+    fn other_encodings_are_refused_saying_how_to_save_the_file() {
+        let ansi: Vec<u8> = FIXTURE
+            .chars()
+            .map(|c| match c {
+                'ç' => 0xE7,
+                'ã' => 0xE3,
+                c => c as u8,
+            })
+            .collect();
+        let said = parse_plan(&ansi).unwrap_err().to_string();
+        assert!(
+            said.contains("UTF-8") && said.contains("Salve o arquivo"),
+            "{said}"
+        );
+        let no_mark: Vec<u8> = FIXTURE.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let said = parse_plan(&no_mark).unwrap_err().to_string();
+        assert!(said.contains("UTF-16") && said.contains("UTF-8"), "{said}");
+        let said = parse_plan(&[0xFF, 0xFE, 0x41]).unwrap_err().to_string();
+        assert!(said.contains("UTF-16"), "{said}");
+    }
+
+    #[test]
+    fn syntax_errors_come_in_portuguese_with_line_and_column() {
+        let said = parse_plan(b"{\n  \"request_id\": \"x\",\n}")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.starts_with("JSON inválido")
+                && said.contains("vírgula sobrando")
+                && said.contains("linha 3, coluna 1"),
+            "{said}"
+        );
+        let said = parse_plan(b"{\"tasks\": [").unwrap_err().to_string();
+        assert!(
+            said.contains("termina antes do fim") && said.contains("linha 1"),
+            "{said}"
+        );
+        let said = parse_plan(b"{request_id: 1}").unwrap_err().to_string();
+        assert!(said.contains("entre aspas duplas"), "{said}");
+        let said = parse_plan(b"[]").unwrap_err().to_string();
+        assert!(said.contains("objeto JSON"), "{said}");
+        assert!(!said.to_lowercase().contains("expected"), "{said}");
+    }
+
+    #[test]
+    fn unknown_fields_wrong_types_and_missing_fields_name_the_json_field() {
+        let said = |edit: &dyn Fn(&mut Value)| {
+            let bytes = edit_fixture(|v| edit(v));
+            parse_plan(&bytes).unwrap_err().to_string()
+        };
+        let text = said(&|v| v["tasks"][1]["prioridade"] = "alta".into());
+        assert!(
+            text.contains("tasks[2]")
+                && text.contains("campo desconhecido \"prioridade\"")
+                && text.contains("priority")
+                && text.contains("linha ")
+                && text.contains("a contagem começa em 1"),
+            "{text}"
+        );
+        let text = said(&|v| v["documento"] = "x".into());
+        assert!(text.contains("campo desconhecido \"documento\""), "{text}");
+        let text = said(&|v| v["document"]["titulo"] = "x".into());
+        assert!(
+            text.contains("document: campo desconhecido \"titulo\""),
+            "{text}"
+        );
+        let text = said(&|v| v["tasks"][0]["estimate_minutes"] = "10".into());
+        assert!(
+            text.contains("tasks[1].estimate_minutes") && text.contains("inteiro"),
+            "{text}"
+        );
+        let text = said(&|v| v["tasks"][0]["estimate_minutes"] = (-5).into());
+        assert!(text.contains("tasks[1].estimate_minutes"), "{text}");
+        let text = said(&|v| v["tasks"][1]["checklist"] = serde_json::json!([{"texto": "a"}]));
+        assert!(
+            text.contains("tasks[2].checklist[1]") && text.contains("par"),
+            "{text}"
+        );
+        let text = said(&|v| v["tasks"][0]["title"] = 5.into());
+        assert!(
+            text.contains("tasks[1].title") && text.contains("texto"),
+            "{text}"
+        );
+        let text = said(&|v| v["complete_triage"] = "sim".into());
+        assert!(
+            text.contains("complete_triage") && text.contains("true ou false"),
+            "{text}"
+        );
+        let text = said(&|v| {
+            v.as_object_mut().unwrap().remove("request_id");
+        });
+        assert!(text.contains("request_id: campo obrigatório"), "{text}");
+        let text = said(&|v| {
+            v["document"].as_object_mut().unwrap().remove("title");
+        });
+        assert!(text.contains("document.title: campo obrigatório"), "{text}");
+        let text = said(&|v| {
+            v.as_object_mut().unwrap().remove("tasks");
+        });
+        assert!(text.contains("tasks: campo obrigatório"), "{text}");
+    }
+
+    #[test]
+    fn the_number_of_tasks_is_between_one_and_one_hundred() {
+        let said = message(&big_plan(0));
+        assert!(
+            said.contains("tasks") && said.contains("nenhuma tarefa"),
+            "{said}"
+        );
+        assert!(check_plan(&big_plan(1)).is_ok());
+        assert!(check_plan(&big_plan(100)).is_ok());
+        let said = message(&big_plan(101));
+        assert!(
+            said.contains("101") && said.contains("máximo é 100"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn errors_name_the_field_the_value_and_the_format() {
+        let said = message(&Plan {
+            request_id: "isto não é um uuid".into(),
+            ..plan()
+        });
+        assert!(
+            said.contains("request_id") && said.contains("UUID"),
+            "{said}"
+        );
+        let mut bad = plan();
+        bad.tasks[1].due_date = "22/11/2026".into();
+        let said = message(&bad);
+        assert!(
+            said.starts_with("tasks[2].due_date")
+                && said.contains("AAAA-MM-DD")
+                && said.contains("\"22/11/2026\"")
+                && said.contains("a contagem começa em 1"),
+            "{said}"
+        );
+        assert!(!said.contains("dd/mm/aaaa"), "{said}");
+        let mut bad = plan();
+        bad.document.as_mut().unwrap().date = "22/11/2026".into();
+        let said = message(&bad);
+        assert!(
+            said.starts_with("document.date") && said.contains("AAAA-MM-DD"),
+            "{said}"
+        );
+        let mut bad = plan();
+        bad.document.as_mut().unwrap().date = "2026-2-3".into();
+        assert!(message(&bad).contains("com zeros à esquerda"));
+        let mut bad = plan();
+        bad.tasks[0].due_date = "2026-02-30".into();
+        assert!(message(&bad).starts_with("tasks[1].due_date"));
+        let mut bad = plan();
+        bad.tasks[1].action = "inventar".into();
+        let said = message(&bad);
+        assert!(
+            said.starts_with("tasks[2].action") && said.contains("examinar"),
+            "{said}"
+        );
+        let mut bad = plan();
+        bad.tasks[0].title = "   ".into();
+        assert!(message(&bad).starts_with("tasks[1].title"));
+        let mut bad = plan();
+        bad.tasks[0].priority = "máxima".into();
+        assert!(message(&bad).starts_with("tasks[1].priority"));
+        let mut bad = plan();
+        bad.tasks[0].scheduled_start = "2026-12-01T09:00".into();
+        assert!(message(&bad).starts_with("tasks[1].scheduled_start"));
+        bad.tasks[0].scheduled_end = "2026-12-01T08:00".into();
+        assert!(message(&bad).starts_with("tasks[1].scheduled_end"));
+        bad.tasks[0].scheduled_end = "01/12/2026 10:00".into();
+        assert!(message(&bad).contains("AAAA-MM-DDTHH:MM"));
+        let mut bad = plan();
+        bad.tasks[0].estimate_minutes = 600_000;
+        assert!(message(&bad).starts_with("tasks[1].estimate_minutes"));
+        let mut bad = plan();
+        bad.document.as_mut().unwrap().kind = "carta".into();
+        let said = message(&bad);
+        assert!(
+            said.starts_with("document.type") && said.contains("memorando"),
+            "{said}"
+        );
+        let mut bad = plan();
+        bad.document.as_mut().unwrap().title = "ab".into();
+        assert!(message(&bad).starts_with("document.title"));
+        let mut both = plan();
+        both.document_number = Some("MANUAL-2026/0001".into());
+        assert!(message(&both).contains("só um"));
+        let mut neither = plan();
+        neither.document = None;
+        assert!(message(&neither).contains("document_number"));
+    }
+
+    // ---- categories and projects --------------------------------------------------
+
+    #[test]
+    fn categories_and_projects_are_found_by_name_or_uid_and_never_skipped() {
+        let (_dir, mut store) = library();
+        let attention = store
+            .save_category(&crate::categories::Category::new("Atenção", 1))
+            .unwrap();
+        let archived = store
+            .save_category(&crate::categories::Category {
+                archived: true,
+                ..crate::categories::Category::new("Antiga", 2)
+            })
+            .unwrap();
+        let project = store
+            .save_project(&crate::projects::Project {
+                name: "Obra Á".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let old_project = store
+            .save_project(&crate::projects::Project {
+                name: "Projeto velho".into(),
+                status: crate::projects::ProjectStatus::Arquivado,
+                ..Default::default()
+            })
+            .unwrap();
+        let before = traces(&store);
+        let mut refused = |edit: &dyn Fn(&mut Plan)| {
+            let mut input = plan();
+            edit(&mut input);
+            store.import_plan(&input, true).unwrap_err().to_string()
+        };
+        let said = refused(&|p| p.tasks[1].categories = vec!["Inexistente".into()]);
+        assert!(
+            said.contains("tasks[2].categories[1]") && said.contains("categoria desconhecida"),
+            "{said}"
+        );
+        let said = refused(&|p| p.tasks[0].categories = vec!["antiga".into()]);
+        assert!(
+            said.contains("arquivada") && said.contains(&archived.uid),
+            "{said}"
+        );
+        let said = refused(&|p| p.document.as_mut().unwrap().categories = vec!["x".into()]);
+        assert!(said.starts_with("document.categories[1]"), "{said}");
+        let said = refused(&|p| p.tasks[0].project = "Outra".into());
+        assert!(
+            said.contains("tasks[1].project") && said.contains("projeto desconhecida"),
+            "{said}"
+        );
+        let said = refused(&|p| p.tasks[0].project = "projeto velho".into());
+        assert!(said.contains("arquivada"), "{said}");
+        let said = refused(&|p| p.tasks[0].categories = vec!["Atenção".into(), "ATENCAO".into()]);
+        assert!(
+            said.contains("tasks[1].categories[2]") && said.contains("mais de uma vez"),
+            "{said}"
+        );
+        assert_eq!(traces(&store), before);
+
+        // Accents and case are ignored; a uid is always accepted, even archived.
+        let mut input = plan();
+        input.document.as_mut().unwrap().categories = vec!["ATENÇÃO".into()];
+        input.tasks[0].categories = vec!["atencao".into(), archived.uid.to_uppercase()];
+        input.tasks[0].project = "obra a".into();
+        input.tasks[1].project = old_project.uid.clone();
+        let done = store.import_plan(&input, false).unwrap();
+        let tasks = store.list_tasks().unwrap();
+        let first = tasks
+            .iter()
+            .find(|t| t.id == done.tasks[0].id.unwrap())
+            .unwrap();
+        assert_eq!(
+            first.categories,
+            vec![attention.uid.clone(), archived.uid.clone()]
+        );
+        assert_eq!(first.project_uid, project.uid);
+        let second = tasks
+            .iter()
+            .find(|t| t.id == done.tasks[1].id.unwrap())
+            .unwrap();
+        assert_eq!(second.project_uid, old_project.uid);
+        assert_eq!(
+            store
+                .document_categories(done.document.id.unwrap())
+                .unwrap(),
+            vec![attention.uid]
+        );
+    }
+
+    #[test]
+    fn two_entries_with_the_same_name_are_ambiguous_and_the_uid_settles_it() {
+        // The library refuses two names alike on one computer, but two
+        // members can create the same name offline and meet in a sync.
+        let entry = |uid: &str, name: &str| Entry {
+            uid: uid.into(),
+            name: name.into(),
+            archived: false,
+        };
+        let entries = [
+            entry(&"a".repeat(32), "Dupla"),
+            entry(&"b".repeat(32), "dupla"),
+        ];
+        let said = Store::resolve_entry("DUPLA", &entries, "tasks[3].categories[1]", "categoria")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("tasks[3].categories[1]")
+                && said.contains("2 categorias")
+                && said.contains(&"b".repeat(32)),
+            "{said}"
+        );
+        assert_eq!(
+            Store::resolve_entry(&"B".repeat(32), &entries, "x", "categoria").unwrap(),
+            "b".repeat(32)
+        );
+    }
+
+    // ---- the command line -----------------------------------------------------------
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_options_may_come_in_any_order() {
+        let expected = CliOptions {
+            file: "plano.json".into(),
+            dry_run: true,
+            output: Some("saida.json".into()),
+        };
+        for order in [
+            vec!["plano.json", "--dry-run", "--saida", "saida.json"],
+            vec!["--dry-run", "plano.json", "--saida", "saida.json"],
+            vec!["--saida", "saida.json", "--dry-run", "plano.json"],
+            vec!["--saida", "saida.json", "plano.json", "--dry-run"],
+        ] {
+            assert_eq!(parse_cli(&words(&order)).unwrap(), expected, "{order:?}");
+        }
+        assert_eq!(
+            parse_cli(&words(&["plano.json"])).unwrap(),
+            CliOptions {
+                file: "plano.json".into(),
+                dry_run: false,
+                output: None
+            }
+        );
+        for (bad, part) in [
+            (vec![], "Informe o nome do arquivo"),
+            (vec!["--dry-run"], "Informe o nome do arquivo"),
+            (vec!["a.json", "b.json"], "um só arquivo"),
+            (vec!["a.json", "--dry-run", "--dry-run"], "duas vezes"),
+            (vec!["a.json", "--saida"], "depois de --saida"),
+            (vec!["a.json", "--saida", "--dry-run"], "depois de --saida"),
+            (vec!["a.json", "--rapido"], "Opção desconhecida: --rapido"),
+        ] {
+            let said = parse_cli(&words(&bad)).unwrap_err().to_string();
+            assert!(
+                said.contains(part) && said.contains("Uso:"),
+                "{bad:?}: {said}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_command_prints_the_result_writes_the_output_file_and_fails_in_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        let file = dir.path().join("plano.json");
+        std::fs::write(&file, FIXTURE).unwrap();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
+        let options = |dry: bool, output: Option<&str>| CliOptions {
+            file: file.to_str().unwrap().to_owned(),
+            dry_run: dry,
+            output: output.map(path),
+        };
+
+        // A dry run needs a library that is already there and current.
+        let mut out = Vec::new();
+        let said = execute(&options(true, None), &db, &mut out)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("Ainda não há acervo") && out.is_empty(),
+            "{said}"
+        );
+        assert!(!db.exists(), "nothing was created");
+
+        // A real run creates the library, prints JSON and writes the file.
+        let mut out = Vec::new();
+        execute(&options(false, Some("saida1.json")), &db, &mut out).unwrap();
+        let printed: Value = serde_json::from_slice(&out).unwrap();
+        let written: Value =
+            serde_json::from_slice(&std::fs::read(path("saida1.json")).unwrap()).unwrap();
+        assert_eq!(printed, written);
+        assert_eq!(printed["ok"], true);
+        assert_eq!(printed["created"], true);
+        assert_eq!(printed["document"]["state"], "present");
+        assert_eq!(printed["tasks"][1]["state_label"], "presente");
+
+        // The dry run now reports and writes nothing.
+        let mut out = Vec::new();
+        execute(&options(true, None), &db, &mut out).unwrap();
+        let printed: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(printed["dry_run"], true);
+        assert_eq!(printed["created"], false);
+
+        // `--saida` never overwrites, and needs its folder.
+        let said = execute(&options(false, Some("saida1.json")), &db, &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("já existe") && said.contains("nunca é sobrescrito"),
+            "{said}"
+        );
+        let said = execute(
+            &CliOptions {
+                output: Some(path("sem-pasta/x.json")),
+                ..options(false, None)
+            },
+            &db,
+            &mut Vec::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(said.contains("não existe"), "{said}");
+
+        // A failure is returned, prints nothing and is written to the file.
+        let bad = dir.path().join("ruim.json");
+        std::fs::write(
+            &bad,
+            edit_fixture(|v| v["tasks"][0]["due_date"] = "22/11/2026".into()),
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let failing = CliOptions {
+            file: bad.to_str().unwrap().to_owned(),
+            dry_run: false,
+            output: Some(path("erro.json")),
+        };
+        let said = execute(&failing, &db, &mut out).unwrap_err().to_string();
+        assert!(
+            said.starts_with("tasks[1].due_date") && out.is_empty(),
+            "{said}"
+        );
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(path("erro.json")).unwrap()).unwrap();
+        assert_eq!(report["ok"], false);
+        assert!(report["erro"]
+            .as_str()
+            .unwrap()
+            .starts_with("tasks[1].due_date"));
+
+        // A file that is not there says so, with its name.
+        let missing = CliOptions {
+            file: path("nao-existe.json"),
+            ..options(false, None)
+        };
+        let said = execute(&missing, &db, &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("Não foi possível abrir o arquivo do plano")
+                && said.contains("nao-existe.json"),
+            "{said}"
+        );
+        let store = Store::open(&db).unwrap();
+        assert_eq!(store.list_documents("").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_dry_run_refuses_a_library_that_opening_would_migrate() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("acervo.sqlite3");
+        drop(Store::open(&db).unwrap());
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        drop(conn);
+        let said = check_readable_as_is(&db).unwrap_err().to_string();
+        assert!(
+            said.contains("versão mais antiga") && said.contains("--dry-run"),
+            "{said}"
+        );
+        let version = rusqlite::Connection::open(&db)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap();
+        assert_eq!(version, 3, "left as it was");
+    }
+
+    #[test]
+    fn a_busy_library_is_reported_in_portuguese() {
+        let busy = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some("database is locked".into()),
+        );
+        let wrapped =
+            anyhow::Error::new(busy).context("Não foi possível abrir o acervo deste computador.");
+        let said = friendly(wrapped).to_string();
+        assert!(
+            said.contains("ocupado") && said.contains("sem duplicar"),
+            "{said}"
+        );
+        assert!(!said.contains("database is locked"));
+        assert_eq!(friendly(anyhow!("outra coisa")).to_string(), "outra coisa");
+    }
+
+    #[test]
+    fn the_example_file_is_a_valid_plan() {
+        let plan = parse_plan(FIXTURE.as_bytes()).unwrap();
+        let checked = check_plan(&plan).unwrap();
+        assert_eq!(checked.tasks.len(), 2);
+        assert_eq!(checked.request, REQUEST);
+    }
 }
