@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,7 +70,9 @@ internal fun DocumentScreen(
     onAttachFile: (String) -> Unit = {},
     /** The categories chosen for the document (saved at once, with the version of the ficha). */
     onCategories: (List<String>) -> Unit = {},
-    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") }
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit = { _, _, done -> done(null, "") },
+    /** The number may still change on the next sync (a record of this phone not sent yet). */
+    provisional: Boolean = false
 ) {
     val c = Ponte.colors
     val doc = state.doc
@@ -94,7 +97,7 @@ internal fun DocumentScreen(
                 state.error != null -> Notice(state.error, modifier = Modifier.padding(16.dp))
                 doc != null -> FichaBody(
                     doc, onToggleTask, onNewTask, onEditNote, onOpenFile, onReadText, onOpenTask,
-                    attachBusy, onAttachPhoto, onAttachFile, onCategories, onCreateCategory
+                    attachBusy, onAttachPhoto, onAttachFile, onCategories, onCreateCategory, provisional
                 )
             }
         }
@@ -114,7 +117,8 @@ private fun FichaBody(
     onAttachPhoto: (String) -> Unit,
     onAttachFile: (String) -> Unit,
     onCategories: (List<String>) -> Unit,
-    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit
+    onCreateCategory: (String, Int, (Category?, String) -> Unit) -> Unit,
+    provisional: Boolean = false
 ) {
     val c = Ponte.colors
     var chooser by rememberSaveable { mutableStateOf(false) }
@@ -135,6 +139,20 @@ private fun FichaBody(
         )
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 32.dp)) {
+        if (provisional) {
+            // Text with meaning, not colour alone: the number says it may change, and why it is worth a look.
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = ROW_MARGIN, vertical = 4.dp)
+                    .semantics(mergeDescendants = true) {},
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    RenumberRules.headerLine(doc.number, true), style = MaterialTheme.typography.labelMedium,
+                    color = c.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis
+                )
+                Text(RenumberRules.PROVISIONAL_NOTE, fontSize = 13.sp, lineHeight = 18.sp, color = c.muted)
+            }
+        }
         // Header: kind and date as plain text over the title
         FichaHeader(
             doc.title,

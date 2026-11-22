@@ -114,7 +114,9 @@ internal fun AppRoot() {
                                 onOpenAttendance = { c.openAttendance(it.id) }, onOpenResources = c::openResources, week = c.week,
                                 weekStart = c.weekStart, onMoveWeek = c::moveWeek, onOpenWeekEntry = c::openWeekEntry,
                                 risks = c.risks, onOpenTask = c::openTask,
-                                followUpCount = c.attendances.followUps.size, onOpenFollowUps = c::openFollowUps
+                                followUpCount = c.attendances.followUps.size, onOpenFollowUps = c::openFollowUps,
+                                notices = c.renumberNotices, onOpenNoticeDocument = c::openDocument,
+                                onDismissNotice = c::dismissRenumberNotice
                             )
                             // Tarefas | Projetos | Atendimentos | Recursos: they have no tab of their own (four is the limit);
                             // the title of the frame chooses among them.
@@ -217,6 +219,7 @@ private fun RouteScreen(route: Route) {
     when (route) {
         is Route.Document -> DocumentScreen(
             state = c.document, syncing = c.shell.syncing,
+            provisional = c.docs.firstOrNull { it.id == route.id }?.provisional == true,
             onBack = c::back, onSync = { c.requestSync(null) },
             onToggleTask = c::toggleTask, onNewTask = c::openNewTask, onEditNote = c::openNote,
             onOpenFile = c::openFile, onReadText = c::openText, onOpenTask = { c.openTask(it.id) },

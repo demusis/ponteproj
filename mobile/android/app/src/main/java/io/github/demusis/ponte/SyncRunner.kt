@@ -49,7 +49,9 @@ internal data class Doc(
     /** How many attachments. */
     val attachments: Int = 0,
     /** Uids of the categories of the document. */
-    val categories: List<String> = emptyList()
+    val categories: List<String> = emptyList(),
+    /** A record created on this phone and not sent yet: its number may still change on a sync. */
+    val provisional: Boolean = false
 )
 
 /** Raised when the core answers {"ok":false}. */
@@ -252,7 +254,7 @@ internal object SyncRunner {
                 emailFrom = d.optString("email_from"), openTasks = d.optInt("open_tasks"),
                 taskDueLabel = d.optString("task_due_label"), taskOverdue = d.optBoolean("task_overdue"),
                 taskDueToday = d.optBoolean("task_due_today"), attachments = d.optInt("attachments"),
-                categories = d.optJSONArray("categories").strings()
+                categories = d.optJSONArray("categories").strings(), provisional = d.optBoolean("provisional")
             )
         }
     }

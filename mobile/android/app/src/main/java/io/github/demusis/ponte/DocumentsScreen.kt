@@ -154,7 +154,7 @@ internal fun DocRow(d: Doc, onClick: () -> Unit, modifier: Modifier = Modifier) 
                 fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, color = c.text,
                 maxLines = 2, overflow = TextOverflow.Ellipsis
             )
-            val sub = if (d.email && d.emailFrom.isNotEmpty()) d.emailFrom else d.number.ifEmpty { d.origin }
+            val sub = RenumberRules.rowSub(if (d.email && d.emailFrom.isNotEmpty()) d.emailFrom else d.number.ifEmpty { d.origin }, d.provisional)
             if (sub.isNotEmpty()) {
                 Text(sub, style = MaterialTheme.typography.bodySmall, color = c.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }

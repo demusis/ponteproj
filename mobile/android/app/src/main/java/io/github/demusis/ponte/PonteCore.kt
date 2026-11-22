@@ -136,6 +136,15 @@ class PonteCore {
     external fun documentIds(query: String): String
 
     /**
+     * The renumber notices still to be read, newest first: {notices: [{id, title, from, to, sentence, document_id
+     * (0: cannot be opened), at}]}. They do not depend on the status line of a sync.
+     */
+    external fun renumberNotices(): String
+
+    /** Marks a notice as read; an unknown or already read id is not an error. Answer: {remaining}. */
+    external fun dismissRenumberNotice(id: Long): String
+
+    /**
      * The search over the whole library (two characters or more): {documents, tasks,
      * attendances}, each {rows: [...], more: N} already cut at eight.
      */
