@@ -597,6 +597,41 @@ impl PonteApp {
                 }
             });
         }
+        // Records whose number the shared copy changed: told until dismissed.
+        let renumbered = self.store.pending_renumber_notices().unwrap_or_default();
+        if !renumbered.is_empty() {
+            widgets::card(ui, |ui| {
+                widgets::section(ui, "Registro com número alterado");
+                for notice in renumbered.iter().take(5) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(notice.sentence());
+                        if let Some(id) = self.store.renumber_notice_document(&notice.uid) {
+                            if ui.button("Abrir o registro").clicked() {
+                                asked = Some(Asked::OpenDocument(id));
+                            }
+                        }
+                        if ui.button("Entendi").clicked() {
+                            let _ = self.store.dismiss_renumber_notice(notice.id);
+                        }
+                    });
+                }
+                if renumbered.len() > 5 {
+                    ui.horizontal(|ui| {
+                        widgets::small_muted(
+                            ui,
+                            format!(
+                                "e mais {} registros com número alterado",
+                                renumbered.len() - 5
+                            ),
+                        );
+                        if ui.button("Entendi todos").clicked() {
+                            let _ = self.store.dismiss_all_renumber_notices();
+                        }
+                    });
+                }
+                widgets::small_muted(ui, "O número antigo continua na busca deste computador.");
+            });
+        }
         ui.horizontal(|ui| {
             widgets::heading(ui, "Hoje");
             widgets::muted(ui, long_date(now));

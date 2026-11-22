@@ -203,6 +203,18 @@ fn sync_paths(store: &mut Store, path: &str, pending: &str, key: &str) -> Result
                 .any(|w| std::path::Path::new(w) == std::path::Path::new(path)),
         // How many copies could not be rewritten (also in the summary).
         "unwritten": report.unwritten.len(),
+        // Records of this phone that the copy numbered differently (also in
+        // the summary, in one sentence).
+        "renumbered": report
+            .renumbered
+            .iter()
+            .map(|n| json!({
+                "title": n.title,
+                "from": n.from,
+                "to": n.to,
+                "sentence": n.sentence(),
+            }))
+            .collect::<Vec<_>>(),
     });
     // The holidays are the library's: what another device saved is now in
     // force here, and the app refreshes its own copy from this.
@@ -246,6 +258,9 @@ pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_listDocuments<'loc
                     "number": summary.document_number,
                     "title": summary.title,
                     "manual": summary.manual,
+                    // A record whose creation still waits to be sent: its
+                    // number may change on the next exchange.
+                    "provisional": summary.provisional,
                     "email": summary.email,
                     "email_from": summary.email_from,
                     "categories": summary.categories,
@@ -2707,6 +2722,63 @@ mod tests {
         std::fs::copy(&work, &drive).unwrap();
         computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
         assert_eq!(computer.library_setting("holidays").unwrap().as_deref(), Some("uf MG\n"));
+    }
+
+    #[test]
+    fn a_record_the_copy_numbered_differently_is_told_in_the_sync_answer() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        std::env::set_var("PONTEPROJ_DATA_DIR", &dir.0);
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        let work_s = work.display().to_string();
+        let joined = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(joined["renumbered"], json!([]));
+        let fields = |title: &str| ponteproj::manual::ManualFields {
+            kind: "ligacao".into(),
+            title: title.into(),
+            origin: String::new(),
+            document_date: String::new(),
+            text: "Texto".into(),
+        };
+        // The computer publishes a record; the phone, without that copy,
+        // created one with the same number, and it waits to be sent.
+        computer.create_manual_document(&fields("Do computador")).unwrap();
+        let cfg = computer.load_intranet_config().unwrap();
+        computer
+            .sync_with_folders(&cfg, KEY, false, &ponteproj::ai::Reporter::silent())
+            .unwrap();
+        let mine = phone.create_manual_document(&fields("Do celular")).unwrap();
+        let before = phone.load_document(mine.document_id).unwrap().summary;
+        assert!(before.provisional, "waiting to be sent");
+        std::fs::copy(&drive, &work).unwrap();
+        let answer = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        let after = phone
+            .list_documents("")
+            .unwrap()
+            .into_iter()
+            .find(|d| d.title == "Do celular")
+            .unwrap();
+        assert!(!after.provisional);
+        assert_ne!(after.document_number, before.document_number);
+        let told = answer["renumbered"].as_array().unwrap();
+        assert_eq!(told.len(), 1, "{answer}");
+        assert_eq!(told[0]["from"], json!(before.document_number));
+        assert_eq!(told[0]["to"], json!(after.document_number));
+        let sentence = format!(
+            "O registro “Do celular” passou de {} para {} ao sincronizar.",
+            before.document_number, after.document_number
+        );
+        assert_eq!(told[0]["sentence"], json!(sentence));
+        assert!(
+            answer["summary"].as_str().unwrap().contains(sentence.trim_end_matches('.')),
+            "{answer}"
+        );
+        // Told once.
+        let again = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(again["renumbered"], json!([]));
     }
 
     #[test]

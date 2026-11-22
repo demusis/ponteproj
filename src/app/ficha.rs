@@ -270,6 +270,10 @@ impl PonteApp {
                 .selectable(false),
             );
             pill(ui, badge_text, badge_tone);
+            if detail.summary.provisional {
+                pill(ui, "Número provisório", Tone::Warn)
+                    .on_hover_text("Número provisório: pode mudar ao sincronizar.");
+            }
             if detail.summary.manual {
                 let kind = if detail.summary.email {
                     "E-mail importado"
@@ -451,6 +455,24 @@ impl PonteApp {
                     pill(ui, "Número definitivo será dado pelo computador principal na próxima sincronização", Tone::Warn);
                 }
             });
+            if detail.summary.provisional {
+                widgets::small_muted(ui, "Número provisório: pode mudar ao sincronizar.");
+            }
+            let previous = self.store.previous_numbers(id);
+            if !previous.is_empty() {
+                widgets::small_muted(
+                    ui,
+                    format!(
+                        "{} neste computador: {}",
+                        if previous.len() == 1 {
+                            "Número anterior"
+                        } else {
+                            "Números anteriores"
+                        },
+                        previous.join(", ")
+                    ),
+                );
+            }
         } else {
             widgets::small_muted(
                 ui,

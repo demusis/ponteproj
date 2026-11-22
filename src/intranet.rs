@@ -3095,8 +3095,7 @@ impl Store {
         // twice.
         presented.record_changes(
             &tx,
-            &format!("{}
-{}", snapshot.revision, snapshot.generation),
+            &format!("{}\n{}", snapshot.revision, snapshot.generation),
         );
         finish(&tx)?;
         tx.commit()?;
@@ -4584,20 +4583,20 @@ impl Store {
                 // A change queued before the upgrade (or from a copy that
                 // never saw the projects) does not clear the link it did not
                 // touch.
-                let remapped =
-                    ids.remap(&entry.mutation, &*self, Some(&store))
-                        .and_then(|mutation| {
-                            store
-                                .keep_unseen_fields(mutation, crate::storage::SCHEMA_VERSION)
-                                .map_err(|e| e.to_string())
-                        })
-                        .and_then(|mutation| {
-                            // The edit was written here, against this
-                            // library's number for the record.
-                            let written_in = manual_edit_number(&mutation)
-                                .and_then(|number| self.document_id_by_number(number).ok().flatten());
-                            retarget_manual_edit(mutation, written_in, &ids, &store)
-                        });
+                let remapped = ids
+                    .remap(&entry.mutation, &*self, Some(&store))
+                    .and_then(|mutation| {
+                        store
+                            .keep_unseen_fields(mutation, crate::storage::SCHEMA_VERSION)
+                            .map_err(|e| e.to_string())
+                    })
+                    .and_then(|mutation| {
+                        // The edit was written here, against this
+                        // library's number for the record.
+                        let written_in = manual_edit_number(&mutation)
+                            .and_then(|number| self.document_id_by_number(number).ok().flatten());
+                        retarget_manual_edit(mutation, written_in, &ids, &store)
+                    });
                 let outcome = match &remapped {
                     Ok(mutation) => store
                         .execute_mutation(&entry.actor, mutation.clone())

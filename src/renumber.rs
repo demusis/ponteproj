@@ -190,9 +190,8 @@ impl Store {
             let mut statement = self
                 .conn
                 .prepare("SELECT id,payload FROM renumber_notices ORDER BY id DESC")?;
-            let rows = statement.query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
-            })?;
+            let rows =
+                statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
             let mut out = Vec::new();
             for row in rows {
                 let (id, blob) = row?;
@@ -231,10 +230,29 @@ impl Store {
     /// The last row of the table (0: empty).
     pub(crate) fn last_renumber_notice_id(&self) -> i64 {
         self.conn
-            .query_row("SELECT coalesce(max(id),0) FROM renumber_notices", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT coalesce(max(id),0) FROM renumber_notices",
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0)
+    }
+
+    /// The record a notice is about, when this library has it and it is not
+    /// in the trash.
+    pub fn renumber_notice_document(&self, uid: &str) -> Option<i64> {
+        let id: i64 = self
+            .conn
+            .query_row(
+                "SELECT document_id FROM requests WHERE request_id=?1",
+                [uid],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()??;
+        crate::trash::require_active_document(&self.conn, id)
+            .ok()
+            .map(|_| id)
     }
 
     /// Marks a notice as read. It stays as history, so the old number keeps
@@ -312,9 +330,9 @@ impl Store {
     /// copy may give it another one when the creation is replayed there.
     pub(crate) fn provisional_documents(&self) -> Result<BTreeSet<i64>> {
         self.cached("provisional_documents", || {
-            let waiting: i64 = self
-                .conn
-                .query_row("SELECT count(*) FROM offline_outbox", [], |r| r.get(0))?;
+            let waiting: i64 =
+                self.conn
+                    .query_row("SELECT count(*) FROM offline_outbox", [], |r| r.get(0))?;
             let mut out = BTreeSet::new();
             if waiting == 0 {
                 return Ok(out);
@@ -563,7 +581,7 @@ mod tests {
         let local = CreatedId::new(IdKind::Document, "", 7);
         let mut ids = IdMap::default();
         ids.learn(
-            &[local.clone()],
+            std::slice::from_ref(&local),
             Some(&[CreatedId::new(IdKind::Document, "", there)]),
         );
         // The creation went to a record that is numbered differently there.
@@ -754,13 +772,12 @@ mod tests {
         let (x, _) = collide(&mut p);
         sync(&mut p.b);
         let y = id_of(&p.b, "Registro de B");
-        let hits: Vec<i64> = p
-            .b
-            .list_documents(&x)
-            .unwrap()
-            .iter()
-            .map(|d| d.id)
-            .collect();
+        let hits: Vec<i64> =
+            p.b.list_documents(&x)
+                .unwrap()
+                .iter()
+                .map(|d| d.id)
+                .collect();
         assert!(
             hits.contains(&y),
             "the record renumbered is found by its old number"
@@ -780,7 +797,10 @@ mod tests {
         assert_eq!(p.b.previous_numbers(y), vec![x]);
         // On the computer that did not renumber anything: only its own numbers.
         sync(&mut p.a);
-        assert!(p.a.previous_numbers(id_of(&p.a, "Registro de B")).is_empty());
+        assert!(p
+            .a
+            .previous_numbers(id_of(&p.a, "Registro de B"))
+            .is_empty());
     }
 
     #[test]
@@ -791,7 +811,12 @@ mod tests {
         let mut alone = Store::open(&dir.path().join("alone.sqlite3")).unwrap();
         let (own, _) = create(&mut alone, "Registro solto", "Texto");
         assert!(!alone.load_document(own).unwrap().summary.provisional);
-        assert!(!p.a.list_documents("").unwrap().iter().any(|d| d.provisional));
+        assert!(!p
+            .a
+            .list_documents("")
+            .unwrap()
+            .iter()
+            .any(|d| d.provisional));
 
         // In the shared-folder mode the number is provisional until it is sent.
         let (a_doc, _) = create(&mut p.a, "Registro de A", "Texto de A");
@@ -805,14 +830,66 @@ mod tests {
         assert!(docs.iter().filter(|d| d.provisional).all(|d| d.id == a_doc));
         assert!(docs.iter().filter(|d| !d.manual).all(|d| !d.provisional));
         sync(&mut p.a);
-        assert!(!p.a.list_documents("").unwrap().iter().any(|d| d.provisional));
+        assert!(!p
+            .a
+            .list_documents("")
+            .unwrap()
+            .iter()
+            .any(|d| d.provisional));
         // B receives it as final.
         sync(&mut p.b);
-        assert!(!p.b.list_documents("").unwrap().iter().any(|d| d.provisional));
+        assert!(!p
+            .b
+            .list_documents("")
+            .unwrap()
+            .iter()
+            .any(|d| d.provisional));
         // B's own record is provisional until B sends it.
         let (b_doc, _) = create(&mut p.b, "Registro de B", "Texto de B");
         assert!(p.b.load_document(b_doc).unwrap().summary.provisional);
         sync(&mut p.b);
-        assert!(!p.b.list_documents("").unwrap().iter().any(|d| d.provisional));
+        assert!(!p
+            .b
+            .list_documents("")
+            .unwrap()
+            .iter()
+            .any(|d| d.provisional));
+    }
+    /// CONFIRMED, NOT FIXED in this release (review of item 2, blocker 5): two
+    /// different messages that carry the same request id (an e-mail's
+    /// Message-ID is only a label the sender chose) are taken for one record
+    /// when the second is replayed: the "prior request" branch of the import
+    /// answers with the first one, and the content of the second is lost from
+    /// the library (it only stays in this computer's guard copy and in the
+    /// queue's journal). Fixing it needs a content check in the replay path.
+    #[test]
+    #[ignore = "defeito confirmado, fora do escopo desta versão (revisão do item 2, bloqueio 5)"]
+    fn two_different_messages_with_the_same_request_id_both_survive_the_exchange() {
+        let mut p = pair();
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let make = |title: &str, text: &str| {
+            let mut capture = fields(title, text).capture(crate::model::MANUAL_PENDING, "Teste");
+            capture.request_id = request_id.clone();
+            capture
+        };
+        p.a.import_capture(&make("Mensagem de A", "Texto de A"))
+            .unwrap();
+        sync(&mut p.a);
+        p.b.import_capture(&make("Mensagem de B", "Texto de B"))
+            .unwrap();
+        sync(&mut p.b);
+        sync(&mut p.a);
+        for store in [&p.a, &p.b] {
+            let titles: Vec<String> = store
+                .list_documents("")
+                .unwrap()
+                .into_iter()
+                .map(|d| d.title)
+                .collect();
+            assert!(
+                titles.iter().any(|t| t == "Mensagem de B"),
+                "a mensagem de B sumiu do acervo: {titles:?}"
+            );
+        }
     }
 }

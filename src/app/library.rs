@@ -240,6 +240,10 @@ fn document_row(ui: &mut egui::Ui, row: &DocRow) -> egui::Response {
                 Tone::Neutral,
             );
         }
+        if document.provisional {
+            pill(ui, "Número provisório", Tone::Warn)
+                .on_hover_text("Número provisório: pode mudar ao sincronizar.");
+        }
         if let Some(text) = &row.joined {
             pill(
                 ui,
