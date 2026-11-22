@@ -3646,6 +3646,20 @@ impl Store {
     pub fn local_items_summary(&self) -> Result<Option<String>> {
         let mut parts = Vec::new();
         let mut others = 0i64;
+        // A setting whose value is still waiting in this computer's queue (its
+        // own holidays handed to the library, or set before the first
+        // exchange) is settled by design on the first exchange: the folder's
+        // value wins without a conflict, or this one is shared. A saved
+        // setting with nothing queued (a restored library has no queue) is
+        // replaced and is counted.
+        let seeds: std::collections::BTreeSet<String> = self
+            .list_offline_outbox()?
+            .into_iter()
+            .filter_map(|entry| match entry.mutation {
+                IntranetMutation::SaveSetting { key, .. } => Some(key),
+                _ => None,
+            })
+            .collect();
         for (_, table, one, many, shown) in LIBRARY_INVENTORY {
             let exists: bool = self.conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
@@ -3655,9 +3669,18 @@ impl Store {
             if !exists {
                 continue;
             }
-            let count: i64 =
+            let count: i64 = if *table == "library_settings" {
                 self.conn
-                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?;
+                    .prepare("SELECT key FROM library_settings")?
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                    .iter()
+                    .filter(|key| !seeds.contains(*key))
+                    .count() as i64
+            } else {
+                self.conn
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?
+            };
             if count == 0 {
                 continue;
             }
