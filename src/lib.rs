@@ -31,9 +31,6 @@ pub mod mail;
 #[cfg(feature = "desktop")]
 pub mod mail_ui;
 pub mod manual;
-/// The notice of a manual record whose number changed on sync, the old
-/// number kept findable and the provisional marker.
-pub mod renumber;
 pub mod model;
 pub mod native;
 /// How the program reaches the internet: certificates, proxy, failures, the connection test.
@@ -50,6 +47,9 @@ pub mod record_import;
 /// "Restaurar cópia…": recovery libraries in folders of their own, and the
 /// choice of the library in use.
 pub mod recovery;
+/// The notice of a manual record whose number changed on sync, the old
+/// number kept findable and the provisional marker.
+pub mod renumber;
 pub mod risk;
 pub mod sharedfolder;
 pub mod storage;
