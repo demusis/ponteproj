@@ -2962,6 +2962,9 @@ impl PonteApp {
     }
 
     fn backup(&mut self, ctx: &egui::Context) {
+        if self.copy_job_blocked() {
+            return;
+        }
         let db_path = self.db_path.clone();
         let data_dir = self.data_dir();
         self.spawn(

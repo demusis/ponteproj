@@ -743,9 +743,10 @@ impl PonteApp {
             widgets::small_muted(
                 ui,
                 format!(
-                    "Ficam as {} cópias automáticas mais recentes e mais uma de cada uma das últimas {} semanas. As cópias que você faz com o botão acima e as do instalador nunca são apagadas pelo Ponte.",
+                    "Ficam as {} cópias automáticas boas mais recentes e mais uma de cada uma das últimas {} semanas. Cada cópia é conferida como uma restauração conferiria; uma cópia que não passa fica guardada, mas não conta como boa, e nesse caso nenhuma é apagada. Antes de copiar, o Ponte confere se o disco tem espaço para a cópia e mais uma reserva para o acervo (um quarto do tamanho dele, pelo menos {}). As cópias que você faz com o botão acima e as do instalador nunca são apagadas pelo Ponte.",
                     crate::auto_backup::KEEP_RECENT,
-                    crate::auto_backup::ANCHOR_WEEKS
+                    crate::auto_backup::ANCHOR_WEEKS,
+                    crate::auto_backup::human_size(crate::auto_backup::RESERVE_MIN)
                 ),
             );
             ui.add_space(S1);
@@ -779,6 +780,19 @@ impl PonteApp {
                             "A última cópia automática não deu certo ({}): {} O Ponte tenta de novo na próxima abertura.",
                             crate::auto_backup::human_moment(&last.quando),
                             last.mensagem.trim_end_matches('.').to_owned() + "."
+                        ))
+                        .color(theme::c().danger),
+                    )
+                    .wrap(),
+                );
+            }
+            if let Some((when, what)) = &summary.damaged {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "A cópia automática de {} foi guardada, mas não conta como cópia boa: {} Isso está no próprio acervo deste computador: enquanto esse item não for corrigido (por exemplo, levado para a Lixeira e excluído, ou restaurado de uma cópia boa), as cópias novas também não contam como boas, e nenhuma cópia antiga é apagada.",
+                            crate::auto_backup::human_moment(when),
+                            what
                         ))
                         .color(theme::c().danger),
                     )
@@ -915,22 +929,27 @@ impl PonteApp {
                     widgets::field_label(ui, "Senha da cópia (pelo menos 8 caracteres)");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.portable.password)
+                            .id(super::backup::password_field(0))
                             .password(true)
                             .desired_width(320.0),
                     );
                     widgets::field_label(ui, "A mesma senha, de novo");
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.portable.confirm)
+                            .id(super::backup::password_field(1))
                             .password(true)
                             .desired_width(320.0),
                     );
                     widgets::small_muted(ui, "Anote a senha: ela não fica guardada em lugar nenhum, e sem ela a cópia não abre nem o Ponte consegue recuperá-la.");
                     ui.horizontal_wrapped(|ui| {
-                        go = ui
-                            .add_enabled(idle, widgets::primary("Escolher onde gravar…"))
-                            .clicked()
-                            || (response.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        // Enter does what the button does, and only when the
+                        // button may be used.
+                        go = idle
+                            && (ui
+                                .add_enabled(idle, widgets::primary("Escolher onde gravar…"))
+                                .clicked()
+                                || (response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))));
                         cancel = ui.add(widgets::quiet("Cancelar")).clicked();
                     });
                 }
@@ -939,15 +958,17 @@ impl PonteApp {
                     widgets::field_label(ui, "Senha da cópia");
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.portable.password)
+                            .id(super::backup::password_field(0))
                             .password(true)
                             .desired_width(320.0),
                     );
                     ui.horizontal_wrapped(|ui| {
-                        go = ui
-                            .add_enabled(idle, widgets::primary("Abrir a cópia"))
-                            .clicked()
-                            || (response.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        go = idle
+                            && (ui
+                                .add_enabled(idle, widgets::primary("Abrir a cópia"))
+                                .clicked()
+                                || (response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))));
                         cancel = ui.add(widgets::quiet("Cancelar")).clicked();
                     });
                 }
@@ -976,7 +997,7 @@ impl PonteApp {
             }
         }
         if cancel {
-            self.portable = Default::default();
+            self.close_portable_form(ctx);
         }
         if go {
             match mode {

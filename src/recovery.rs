@@ -304,12 +304,14 @@ impl NewFolder {
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(_) if candidate.exists() => continue,
-                Err(error) => return Err(error).with_context(|| {
-                    format!(
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
                         "Não foi possível dar o nome final à pasta do acervo de recuperação ({}).",
                         candidate.display()
                     )
-                }),
+                    })
+                }
             }
         }
         bail!("Já existem pastas de recuperação demais com este nome.")
@@ -1898,5 +1900,69 @@ mod tests {
         in_use.set_transport_off(true);
         assert!(!in_use.sync_threads_running());
         server.stop();
+    }
+
+    #[test]
+    fn the_join_question_counts_every_kind_of_item_the_snapshot_replaces() {
+        use crate::intranet::{LIBRARY_INVENTORY, SNAPSHOT_BOOKKEEPING};
+        let value = serde_json::to_value(crate::intranet::CabinetSnapshot::default()).unwrap();
+        let mut fields = Vec::new();
+        for (key, inner) in value.as_object().unwrap() {
+            match inner.as_object() {
+                Some(nested) => fields.extend(nested.keys().map(|k| format!("{key}.{k}"))),
+                None => fields.push(key.clone()),
+            }
+        }
+        for field in &fields {
+            assert!(
+                LIBRARY_INVENTORY.iter().any(|(f, ..)| f == field)
+                    || SNAPSHOT_BOOKKEEPING.contains(&field.as_str()),
+                "o campo {field} do retrato não é contado"
+            );
+        }
+        // And every counted table exists in a library of this build.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("acervo.sqlite3")).unwrap();
+        for (_, table, ..) in LIBRARY_INVENTORY {
+            assert!(table_exists(&store.conn, table).unwrap(), "{table}");
+        }
+        assert_eq!(store.local_items_summary().unwrap(), None);
+    }
+
+    #[test]
+    fn a_saved_holiday_setting_alone_makes_a_join_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let key = "senha-de-teste-123";
+        let config = |member: &str| IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: member.into(),
+            folder_files: vec![file.display().to_string()],
+            folder_key: key.into(),
+            ..IntranetConfig::default()
+        };
+        let mut a = Store::open(&dir.path().join("a").join("acervo.sqlite3")).unwrap();
+        a.save_intranet_config(&config("Casa")).unwrap();
+        a.import_capture(&capture("SEFAZ-PRO-2026/00001")).unwrap();
+        let cfg_a = a.load_intranet_config().unwrap();
+        a.sync_with_folders(&cfg_a, key, false, &crate::ai::Reporter::silent())
+            .unwrap();
+        // Only a saved calendar, nothing else.
+        let mut r = Store::open(&dir.path().join("r").join("acervo.sqlite3")).unwrap();
+        r.set_library_setting("holidays", "uf MT\nanual 09-07 Feriado próprio\n")
+            .unwrap();
+        assert_eq!(
+            r.local_items_summary().unwrap().as_deref(),
+            Some("1 configuração do acervo (como os feriados)")
+        );
+        r.save_intranet_config(&config("Outro")).unwrap();
+        let cfg_r = r.load_intranet_config().unwrap();
+        let error = r
+            .sync_with_folders(&cfg_r, key, false, &crate::ai::Reporter::silent())
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        assert!(r.library_setting("holidays").unwrap().is_some());
     }
 }

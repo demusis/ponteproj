@@ -1093,6 +1093,172 @@ struct StoredDraftPayload {
 /// replaced by another history (a folder being joined, a main computer that
 /// went back to an older copy); the window shows what follows it.
 const CONFIRM_REPLACE: &str = "[confirmar-substituicao]";
+/// Every kind of item an incoming copy of the library replaces: the field of
+/// the snapshot that carries it (`templates.blocks` for a nested one), its
+/// table, its name (one, many) and whether the question of a first exchange
+/// names it (the others are parts of the ones named, counted together when
+/// nothing named is there).
+pub(crate) const LIBRARY_INVENTORY: &[(&str, &str, &str, &str, bool)] = &[
+    ("documents", "documents", "documento", "documentos", true),
+    (
+        "captures",
+        "captures",
+        "versão de documento",
+        "versões de documentos",
+        false,
+    ),
+    (
+        "requests",
+        "requests",
+        "pedido de importação",
+        "pedidos de importação",
+        false,
+    ),
+    (
+        "notes",
+        "notes",
+        "versão de nota",
+        "versões de notas",
+        false,
+    ),
+    ("drafts", "drafts", "minuta", "minutas", false),
+    ("analyses", "analyses", "análise", "análises", false),
+    ("tasks", "tasks", "tarefa", "tarefas", true),
+    (
+        "work_contexts",
+        "work_context",
+        "contexto de trabalho",
+        "contextos de trabalho",
+        false,
+    ),
+    ("files_meta", "files", "PDF", "PDFs", false),
+    (
+        "page_texts",
+        "page_text",
+        "página reconhecida",
+        "páginas reconhecidas",
+        false,
+    ),
+    (
+        "document_links",
+        "document_links",
+        "ligação entre documentos",
+        "ligações entre documentos",
+        false,
+    ),
+    (
+        "trash",
+        "trash",
+        "item na lixeira",
+        "itens na lixeira",
+        true,
+    ),
+    (
+        "capture_refs",
+        "capture_refs",
+        "referência",
+        "referências",
+        false,
+    ),
+    (
+        "saiop_batches",
+        "saiop_batches",
+        "lote de atendimentos",
+        "lotes de atendimentos",
+        true,
+    ),
+    (
+        "saiop_attendances",
+        "saiop_attendances",
+        "atendimento",
+        "atendimentos",
+        true,
+    ),
+    ("attachments", "attachments", "anexo", "anexos", false),
+    (
+        "templates.templates",
+        "work_templates",
+        "modelo",
+        "modelos",
+        true,
+    ),
+    (
+        "templates.template_versions",
+        "work_template_versions",
+        "versão de modelo",
+        "versões de modelos",
+        false,
+    ),
+    (
+        "templates.blocks",
+        "instruction_blocks",
+        "instrução",
+        "instruções",
+        true,
+    ),
+    (
+        "templates.block_versions",
+        "instruction_block_versions",
+        "versão de instrução",
+        "versões de instruções",
+        false,
+    ),
+    (
+        "templates.examples",
+        "template_examples",
+        "exemplo de modelo",
+        "exemplos de modelos",
+        true,
+    ),
+    (
+        "templates.generations",
+        "draft_generations",
+        "registro de geração",
+        "registros de geração",
+        false,
+    ),
+    (
+        "templates.attachment_texts",
+        "attachment_texts",
+        "texto de anexo",
+        "textos de anexos",
+        false,
+    ),
+    (
+        "resources.resources",
+        "resources",
+        "recurso",
+        "recursos",
+        true,
+    ),
+    (
+        "resources.uses",
+        "resource_uses",
+        "uso de recurso",
+        "usos de recursos",
+        true,
+    ),
+    ("categories", "categories", "categoria", "categorias", true),
+    (
+        "settings",
+        "library_settings",
+        "configuração do acervo (como os feriados)",
+        "configurações do acervo (como os feriados)",
+        true,
+    ),
+    ("projects", "projects", "projeto", "projetos", true),
+];
+
+/// Fields of the snapshot that are bookkeeping of the exchange, not items.
+#[cfg(test)]
+pub(crate) const SNAPSHOT_BOOKKEEPING: &[&str] = &[
+    "revision",
+    "item_versions",
+    "team_events",
+    "schema_version",
+    "generation",
+];
+
 /// Said when an exchange is asked of a library open only to be looked at.
 pub const TRANSPORT_OFF: &str = "Este acervo está aberto só para olhar (não é o acervo em uso neste computador): ele não sincroniza nem atende outros computadores. Para sincronizá-lo, use-o como acervo deste computador em Ajustes ▸ Cópia de segurança.";
 
@@ -3474,25 +3640,13 @@ impl Store {
 
     /// What this library holds, in words ("2 documentos, 3 tarefas e 1
     /// projeto"), or `None` when it holds nothing: what a first exchange with
-    /// a folder or a main computer would replace.
+    /// a folder or a main computer would replace. Every table an incoming
+    /// copy replaces is counted ([`LIBRARY_INVENTORY`], which a test keeps in
+    /// step with the snapshot); the text names the main kinds.
     pub fn local_items_summary(&self) -> Result<Option<String>> {
         let mut parts = Vec::new();
-        for (table, one, many) in [
-            ("documents", "documento", "documentos"),
-            ("tasks", "tarefa", "tarefas"),
-            ("projects", "projeto", "projetos"),
-            ("resources", "recurso", "recursos"),
-            ("resource_uses", "uso de recurso", "usos de recursos"),
-            ("categories", "categoria", "categorias"),
-            ("work_templates", "modelo", "modelos"),
-            ("instruction_blocks", "instrução", "instruções"),
-            (
-                "saiop_batches",
-                "lote de atendimentos",
-                "lotes de atendimentos",
-            ),
-            ("trash", "item na lixeira", "itens na lixeira"),
-        ] {
+        let mut others = 0i64;
+        for (_, table, one, many, shown) in LIBRARY_INVENTORY {
             let exists: bool = self.conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
                 [table],
@@ -3504,9 +3658,17 @@ impl Store {
             let count: i64 =
                 self.conn
                     .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?;
-            if count > 0 {
-                parts.push(plural(count as usize, one, many));
+            if count == 0 {
+                continue;
             }
+            if *shown {
+                parts.push(plural(count as usize, one, many));
+            } else {
+                others += count;
+            }
+        }
+        if parts.is_empty() && others > 0 {
+            parts.push(plural(others as usize, "registro", "registros"));
         }
         Ok(match parts.len() {
             0 => None,
@@ -3516,6 +3678,17 @@ impl Store {
                 Some(format!("{} e {last}", parts.join(", ")))
             }
         })
+    }
+
+    /// A library restored from a copy or imported from a portable copy (its
+    /// folder has the marker of a recovery library): its first exchange with
+    /// a folder or a main computer is a pure replacement.
+    pub(crate) fn is_recovery_library(&self) -> bool {
+        self.conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .and_then(|db| std::path::Path::new(db).parent().map(|d| d.to_path_buf()))
+            .is_some_and(|dir| crate::recovery::read_marker(&dir).is_some())
     }
 
     /// The folder of the copies made before a replacement: beside the library
@@ -3605,6 +3778,10 @@ impl Store {
             );
         }
         let joining_with_items = joining_with_items.is_some();
+        // A restored or imported library: a pure replacement, even by a main
+        // computer of an older schema (which would otherwise let this library
+        // keep what that schema cannot hold).
+        let pure = joining_with_items && self.is_recovery_library();
 
         // 1. Se houver alterações feitas offline nesta estação cliente, sincroniza mutuamente com o anfitrião:
         let outbox = self.list_offline_outbox()?;
@@ -3829,6 +4006,14 @@ impl Store {
                 // (a file that does not come, a dropped connection) leaves the
                 // library and the queue exactly as they were.
                 let backup: std::cell::RefCell<Option<PathBuf>> = Default::default();
+                let original_schema = snapshot.schema_version;
+                let snapshot = if pure && snapshot.schema_version < crate::storage::SCHEMA_VERSION {
+                    let mut whole = snapshot;
+                    whole.schema_version = crate::storage::SCHEMA_VERSION;
+                    whole
+                } else {
+                    snapshot
+                };
                 let moved: Vec<(i64, String)> = replaced_queue
                     .iter()
                     .map(|entry| (entry.id, entry.uid.clone()))
@@ -3852,6 +4037,8 @@ impl Store {
                             format!("O computador principal voltou a uma história anterior; esta alteração não foi enviada. Uma cópia do acervo anterior a esta substituição ficou em {kept}.")
                         };
                         ensure_queue_settled(tx, &moved)?;
+                        // What kind of copy this library really holds.
+                        record_cache_schema(tx, original_schema)?;
                         for entry in &replaced_queue {
                             let mut conflict = build_sync_conflict(entry, &reason, Some(&snapshot));
                             conflict.unresolved = true;
@@ -4069,6 +4256,7 @@ impl Store {
         };
         let first_write = copies.is_empty();
         let mut joining = false;
+        let mut pure = false;
         if let Some(best) = copies.first() {
             // Older than what this computer last wrote: either the cloud has
             // not delivered that write yet (the folder copy is part of what
@@ -4112,6 +4300,9 @@ impl Store {
                 );
                 // Confirmed: kept whole and verified before anything changes.
                 self.backup_before_replacement()?;
+                // A restored or imported library: what the question says,
+                // nothing of it goes to the folder.
+                pure = self.is_recovery_library();
             }
         }
         // The guard copy joins the copies read (never as a folder, never in
@@ -4229,6 +4420,7 @@ impl Store {
             outbox,
             first_write,
             joining,
+            pure,
             guard_path.as_deref(),
             &preserve,
             &temp_path,
@@ -4253,6 +4445,7 @@ impl Store {
         outbox: Vec<OutboxEntry>,
         first_write: bool,
         joining: bool,
+        pure: bool,
         guard_path: Option<&std::path::Path>,
         preserve: &[PathBuf],
         temp_path: &std::path::Path,
@@ -4299,7 +4492,11 @@ impl Store {
             let mut store = Store::open(temp_path)
                 .context("Não foi possível preparar o acervo temporário da sincronização.")?;
             let mut incoming = best.payload.snapshot.clone();
-            if best.header.schema_version < SCHEDULE_SCHEMA {
+            // A pure replacement (the first exchange of a restored library)
+            // carries nothing of this library into the copy: none of the
+            // compatibility steps below, which keep what an older copy cannot
+            // hold, applies to it.
+            if best.header.schema_version < SCHEDULE_SCHEMA && !pure {
                 let watermark: i64 = self.conn.query_row(
                     "SELECT coalesce((SELECT max_id FROM offline_watermark WHERE kind='task'),0)",
                     [],
@@ -4365,7 +4562,7 @@ impl Store {
             // this computer wrote) is the better source: a base that cannot
             // hold projects never means "there are none", and this
             // library's own may be the older or the empty one.
-            if best.header.schema_version < PROJECTS_SCHEMA {
+            if best.header.schema_version < PROJECTS_SCHEMA && !pure {
                 let donor = copies
                     .iter()
                     .find(|c| c.header.schema_version >= PROJECTS_SCHEMA);
@@ -4634,7 +4831,7 @@ impl Store {
                         // computer kept before the setting lived in the
                         // library) for a key the folder has no value for:
                         // it is kept and goes to the folder from here.
-                        if *seed && store.library_setting(key)?.is_none() {
+                        if *seed && !pure && store.library_setting(key)?.is_none() {
                             store.execute_mutation(&entry.actor, entry.mutation.clone())?;
                             report.pushed += 1;
                             let revision = store.cabinet_revision()?;

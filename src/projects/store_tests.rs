@@ -1853,3 +1853,54 @@ fn schema_21_write_guards_survive_an_older_build_rewriting_the_ones_it_knows() {
         .unwrap();
     assert_eq!(count, 6);
 }
+
+#[test]
+fn a_restored_library_joining_an_old_folder_publishes_nothing_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let f1 = dir.path().join("Drive1").join("ponte-sync.ponte");
+    std::fs::create_dir_all(f1.parent().unwrap()).unwrap();
+    let files = vec![f1.display().to_string()];
+    // A folder written by a Ponte that knows nothing of projects.
+    let mut z = Store::open(&dir.path().join("z.sqlite3")).unwrap();
+    z.save_intranet_config(&folder_config("Servidor Z", &files))
+        .unwrap();
+    sync(&mut z);
+    rewrite_as_schema_20(&f1, "old-z", read_copy(&f1).header.revision);
+    // A restored library (its folder has the marker of a finished recovery
+    // library) with a project of its own.
+    let folder = dir.path().join("restaurado");
+    std::fs::create_dir_all(&folder).unwrap();
+    let marker = crate::recovery::Marker {
+        versao: 1,
+        tipo: "copia-local".into(),
+        origem: "copia.sqlite3".into(),
+        copia_de: String::new(),
+        montado_em: "2026-11-22T10:15:00".into(),
+        pasta_principal: None,
+        documentos: 0,
+        esquema_da_copia: 21,
+        desligado: Vec::new(),
+        completo: true,
+    };
+    std::fs::write(
+        folder.join(crate::recovery::MARKER_FILE),
+        serde_json::to_vec(&marker).unwrap(),
+    )
+    .unwrap();
+    let mut a = Store::open(&crate::paths::db_path_in(&folder)).unwrap();
+    make(&mut a, "Projeto restaurado");
+    a.save_intranet_config(&folder_config("Restaurado", &files))
+        .unwrap();
+    let cfg = a.load_intranet_config().unwrap();
+    let asked = a
+        .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+        .unwrap_err()
+        .to_string();
+    assert!(asked.contains("1 projeto"), "{asked}");
+    a.sync_with_folders(&cfg, KEY, true, &crate::ai::Reporter::silent())
+        .unwrap();
+    // What the question said: replaced, nothing of it in the folder.
+    assert!(names(&a).is_empty(), "{:?}", names(&a));
+    assert!(read_copy(&f1).payload.snapshot.projects.is_empty());
+    assert!(folder.join("copias-antes-da-substituicao").is_dir());
+}

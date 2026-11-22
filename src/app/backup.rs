@@ -173,6 +173,19 @@ pub(super) struct PortableForm {
     pub(super) confirm: String,
 }
 
+/// The fields of the portable copy's password (their undo history is
+/// forgotten on every exit from the form).
+pub(super) fn password_field(n: usize) -> egui::Id {
+    egui::Id::NULL.with(("ponte-senha-da-copia-portatil", n))
+}
+
+/// Overwrites the text before it is dropped (zeros are valid UTF-8).
+fn wipe(text: &mut String) {
+    // SAFETY: every byte becomes 0, which keeps the string valid UTF-8.
+    unsafe { text.as_bytes_mut().fill(0) };
+    text.clear();
+}
+
 /// How often the window looks at the pointer again.
 const PLACE_CHECK_EVERY: Duration = Duration::from_secs(5);
 
@@ -456,6 +469,9 @@ impl PonteApp {
 
     /// "Restaurar cópia…": the file, then the recovery library on the worker.
     pub(super) fn restore_copy(&mut self, ctx: &egui::Context) {
+        if self.copy_job_blocked() {
+            return;
+        }
         let Some(source) = crate::windows_ui::pick_file(
             "Restaurar cópia do acervo",
             &[
@@ -480,12 +496,41 @@ impl PonteApp {
         );
     }
 
+    /// Leaves the password form: the texts are overwritten and the fields'
+    /// widget state (with its undo history, which holds what was typed) is
+    /// forgotten.
+    pub(super) fn close_portable_form(&mut self, ctx: &egui::Context) {
+        wipe(&mut self.portable.password);
+        wipe(&mut self.portable.confirm);
+        self.portable.mode = PortableMode::Closed;
+        ctx.data_mut(|data| {
+            for n in 0..2 {
+                data.remove::<egui::text_edit::TextEditState>(password_field(n));
+            }
+        });
+    }
+
+    /// A copy job of the person (manual copy, restore, portable copy) does
+    /// not start while the automatic copy of the day is being made.
+    pub(super) fn copy_job_blocked(&mut self) -> bool {
+        if self.auto_copy.running() {
+            self.error("A cópia automática de hoje está sendo feita agora. Espere ela terminar e tente de novo.");
+            return true;
+        }
+        false
+    }
+
     /// "Exportar cópia portátil…" with the password typed twice: where to
     /// save, then the file on the worker.
     pub(super) fn export_portable(&mut self, ctx: &egui::Context) {
+        if self.copy_job_blocked() {
+            return;
+        }
         let password = std::mem::take(&mut self.portable.password);
         let confirm = std::mem::take(&mut self.portable.confirm);
         if password != confirm {
+            let mut confirm = confirm;
+            wipe(&mut confirm);
             self.portable.password = password;
             self.error("As duas senhas não são iguais. Digite a mesma senha nos dois campos.");
             return;
@@ -513,7 +558,9 @@ impl PonteApp {
         if path.extension().is_none() {
             path.set_extension(crate::portable_copy::EXTENSION);
         }
-        self.portable.mode = PortableMode::Closed;
+        let mut confirm = confirm;
+        wipe(&mut confirm);
+        self.close_portable_form(ctx);
         let database = self.db_path.clone();
         self.spawn(
             "Gravando a cópia portátil…".into(),
@@ -547,11 +594,14 @@ impl PonteApp {
     /// typed; the recovery library is built on the worker (the file is
     /// opened with the password before anything is created).
     pub(super) fn import_portable(&mut self, ctx: &egui::Context) {
-        let PortableMode::Import(source) = std::mem::take(&mut self.portable.mode) else {
+        if self.copy_job_blocked() {
+            return;
+        }
+        let PortableMode::Import(source) = self.portable.mode.clone() else {
             return;
         };
         let password = std::mem::take(&mut self.portable.password);
-        self.portable.confirm.clear();
+        self.close_portable_form(ctx);
         let place = recovery::Place::new(self.library.home.as_deref(), &self.data_dir());
         let now = chrono::Local::now().naive_local();
         self.spawn(
