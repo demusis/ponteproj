@@ -222,6 +222,7 @@ struct ViewKey {
     document: Option<i64>,
     categories: CategoryFilter,
     project: ProjectFilter,
+    attrs: crate::task_filters::AttrFilter,
     unplanned_only: bool,
     sort: usize,
     /// The day the deadlines are compared with.
@@ -250,6 +251,8 @@ struct Scope<'a> {
     categories: &'a CategoryFilter,
     /// The project the list is narrowed to (or to none).
     project: &'a ProjectFilter,
+    /// Responsável, prioridade and situação the list is narrowed to.
+    attrs: &'a crate::task_filters::AttrFilter,
 }
 
 /// The lowercase text a search looks into for a task: its own words, its
@@ -337,6 +340,9 @@ fn in_scope_with<'a>(
         return false;
     }
     if !scope.project.matches(&task.project_uid) {
+        return false;
+    }
+    if !scope.attrs.matches(task) {
         return false;
     }
     if scope.query.is_empty() {
@@ -1708,12 +1714,61 @@ fn restore_step(list: &mut Vec<(bool, String)>, index: usize, step: (bool, Strin
     list.insert(index.min(list.len()), step);
 }
 
+/// A chip that opens a list of choices (label, chosen); gives the position of
+/// the one clicked. `current` is the choice on, shown on the chip.
+fn choice_chip(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    title: &str,
+    hover: &str,
+    current: Option<&str>,
+    options: &[(String, bool)],
+) -> Option<usize> {
+    let id = ui.make_persistent_id(("task-attr-filter", id_salt));
+    let label = match current {
+        None => format!("{title} {}", icon::DOWN),
+        Some(name) => {
+            let short: String = if name.chars().count() > 18 {
+                format!("{}…", name.chars().take(17).collect::<String>())
+            } else {
+                name.to_owned()
+            };
+            format!("{title} · {short} {}", icon::DOWN)
+        }
+    };
+    let button = widgets::chip(ui, current.is_some(), label).on_hover_text(hover);
+    let mut chosen = None;
+    egui::Popup::from_toggle_button_response(&button)
+        .id(id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            ui.set_width(220.0);
+            egui::ScrollArea::vertical()
+                .max_height(260.0)
+                .id_salt(id.with("scroll"))
+                .show(ui, |ui| {
+                    for (index, (text, on)) in options.iter().enumerate() {
+                        if ui.selectable_label(*on, text).clicked() {
+                            chosen = Some(index);
+                        }
+                    }
+                });
+        });
+    chosen
+}
+
 #[derive(Default)]
 pub struct TaskPanel {
     /// Categories the list is narrowed to.
     category_filter: CategoryFilter,
     /// The project the list is narrowed to, or to none.
     project_filter: ProjectFilter,
+    /// Responsável, prioridade and situação the list is narrowed to.
+    attrs: crate::task_filters::AttrFilter,
+    /// The preferences of this computer were read (at the first frame).
+    prefs_loaded: bool,
+    /// What was last written to the preferences file.
+    prefs_saved: Option<crate::task_filters::Saved>,
     unplanned_only: bool,
     /// "Gerenciar categorias…" was clicked; the app opens Ajustes.
     open_categories: bool,
@@ -2009,6 +2064,8 @@ impl TaskPanel {
         }
         self.end_selection();
         self.keep_filter_for(task.document_id);
+        // The task about to open must not be hidden by these filters.
+        self.attrs.clear();
         self.removed_step = None;
         self.draft = Some(task.clone());
         self.original = Some(task.clone());
@@ -2714,7 +2771,9 @@ impl TaskPanel {
         selected_document: Option<i64>,
     ) -> Option<i64> {
         let mut open = None;
+        self.restore_prefs(store);
         self.ensure_view(store);
+        self.save_prefs();
         if let Some(error) = self.load_error.clone() {
             let (fg, bg) = Tone::Danger.colors();
             egui::Frame::new()
@@ -2745,6 +2804,7 @@ impl TaskPanel {
         let projects = store.list_projects().unwrap_or_default();
         let data = std::mem::take(&mut self.data);
         let tasks = &data.tasks;
+        let assignees = crate::task_filters::assignee_names(tasks);
         let documents = &data.documents;
         let index: DocumentIndex = documents.iter().map(|d| (d.id, d)).collect();
         let number_of = |id: i64| {
@@ -2923,6 +2983,29 @@ impl TaskPanel {
                                     &projects,
                                 );
                             }
+                            if let Some(me) = crate::task_filters::own_name(&actor) {
+                                let on = self.attrs.is_mine(me);
+                                if widgets::chip(ui, on, "Minhas tarefas")
+                                    .on_hover_text(format!(
+                                        "Mostra só as tarefas em que o responsável é {me}."
+                                    ))
+                                    .clicked()
+                                {
+                                    self.attrs.set_mine(me, !on);
+                                }
+                            }
+                            self.attr_chips(ui, &assignees);
+                            let filtered = self.category_filter.is_active()
+                                || self.project_filter.is_active()
+                                || self.attrs.is_active();
+                            if filtered
+                                && ui
+                                    .add(widgets::quiet("Limpar filtros"))
+                                    .on_hover_text("Tira os filtros de categoria, projeto, responsável, prioridade e situação.")
+                                    .clicked()
+                            {
+                                self.clear_filters();
+                            }
                             // A discreet way to narrow the list to the document
                             // open in Documentos.
                             if let (None, Some(id)) = (self.document_filter, selected_document) {
@@ -3082,7 +3165,12 @@ impl TaskPanel {
                 list_scroll.show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         if visible.is_empty() {
-                            let text = if self.project_filter.is_active() && !tasks.is_empty() {
+                            let text = if self.attrs.is_active() && !tasks.is_empty() {
+                                format!(
+                                    "Nenhuma tarefa com o filtro escolhido ({}) nesta visão.",
+                                    self.attrs.describe()
+                                )
+                            } else if self.project_filter.is_active() && !tasks.is_empty() {
                                 "Nenhuma tarefa deste filtro de projeto nesta visão.".to_owned()
                             } else if self.category_filter.is_active() && !tasks.is_empty() {
                                 "Nenhuma tarefa com as categorias escolhidas nesta visão.".to_owned()
@@ -3102,6 +3190,12 @@ impl TaskPanel {
                                 if !self.query.trim().is_empty() {
                                     if ui.add(widgets::quiet("Limpar a busca")).clicked() {
                                         self.query.clear();
+                                    }
+                                } else if self.attrs.is_active() && !tasks.is_empty() {
+                                    if ui.add(widgets::quiet("Limpar filtros")).clicked() {
+                                        self.category_filter.clear();
+                                        self.project_filter = ProjectFilter::Any;
+                                        self.attrs.clear();
                                     }
                                 } else if self.project_filter.is_active() && !tasks.is_empty() {
                                     if ui.add(widgets::quiet("Limpar o filtro de projeto")).clicked() {
@@ -3238,6 +3332,156 @@ impl TaskPanel {
         }
     }
 
+    /// First frame: brings back the view and the filters kept on this
+    /// computer, dropping silently what no longer exists. Waits for a frame
+    /// in which the library could be read.
+    fn restore_prefs(&mut self, store: &Store) {
+        if self.prefs_loaded {
+            return;
+        }
+        self.reload_if_changed(store);
+        if self.load_error.is_some() {
+            return;
+        }
+        self.prefs_loaded = true;
+        let Some(saved) = crate::task_filters::load() else {
+            self.prefs_saved = Some(crate::task_filters::Saved::default());
+            return;
+        };
+        let categories = store.list_categories().unwrap_or_default();
+        let projects = store.list_projects().unwrap_or_default();
+        let category_uids: Vec<&str> = categories.iter().map(|c| c.uid.as_str()).collect();
+        let project_uids: Vec<&str> = projects.iter().map(|p| p.uid.as_str()).collect();
+        let names = crate::task_filters::assignee_names(&self.data.tasks);
+        let restored = saved.restore(VIEWS.len(), &category_uids, &project_uids, &names);
+        self.view = restored.view;
+        self.category_filter = restored.categories;
+        self.project_filter = restored.project;
+        self.attrs = restored.attrs;
+        self.prefs_saved = Some(self.prefs_now());
+    }
+
+    fn prefs_now(&self) -> crate::task_filters::Saved {
+        crate::task_filters::Saved::of(
+            self.view,
+            &self.category_filter,
+            &self.project_filter,
+            &self.attrs,
+        )
+    }
+
+    /// Keeps the view and the filters on this computer when they changed.
+    fn save_prefs(&mut self) {
+        if !self.prefs_loaded {
+            return;
+        }
+        let now = self.prefs_now();
+        if self.prefs_saved.as_ref() != Some(&now) {
+            crate::task_filters::save(&now);
+            self.prefs_saved = Some(now);
+        }
+    }
+
+    /// Takes off the filters of category, project, responsável, prioridade
+    /// and situação (not the view, the search or the document).
+    fn clear_filters(&mut self) {
+        self.category_filter.clear();
+        self.project_filter = ProjectFilter::Any;
+        self.attrs.clear();
+    }
+
+    /// The chips of responsável, prioridade and situação.
+    fn attr_chips(&mut self, ui: &mut egui::Ui, assignees: &[String]) {
+        use crate::task_filters::{AssigneeFilter, PRIORITIES, STATUSES};
+        let current = match &self.attrs.assignee {
+            AssigneeFilter::Any => None,
+            AssigneeFilter::Without => Some("sem responsável".to_owned()),
+            AssigneeFilter::Named(name) => Some(name.clone()),
+        };
+        let mut options = vec![
+            ("Todos os responsáveis".to_owned(), current.is_none()),
+            (
+                "Sem responsável".to_owned(),
+                self.attrs.assignee == AssigneeFilter::Without,
+            ),
+        ];
+        for name in assignees {
+            options.push((name.clone(), self.attrs.is_mine(name)));
+        }
+        // A name nobody has any more is still shown, so it can be seen and left.
+        if let AssigneeFilter::Named(name) = &self.attrs.assignee {
+            if !assignees.iter().any(|n| self.attrs.is_mine(n)) {
+                options.push((name.clone(), true));
+            }
+        }
+        if let Some(index) = choice_chip(
+            ui,
+            "assignee",
+            "Responsável",
+            "Mostra só as tarefas de um responsável, ou as que não têm.",
+            current.as_deref(),
+            &options,
+        ) {
+            self.attrs.assignee = match index {
+                0 => AssigneeFilter::Any,
+                1 => AssigneeFilter::Without,
+                n => AssigneeFilter::Named(options[n].0.clone()),
+            };
+        }
+
+        let options: Vec<(String, bool)> = std::iter::once((
+            "Todas as prioridades".to_owned(),
+            self.attrs.priority.is_none(),
+        ))
+        .chain(PRIORITIES.iter().map(|p| {
+            (
+                crate::tasks::priority_label(p).to_owned(),
+                self.attrs.priority.as_deref() == Some(*p),
+            )
+        }))
+        .collect();
+        let shown = self
+            .attrs
+            .priority
+            .as_deref()
+            .map(|p| crate::tasks::priority_label(p).to_owned());
+        if let Some(index) = choice_chip(
+            ui,
+            "priority",
+            "Prioridade",
+            "Mostra só as tarefas de uma prioridade.",
+            shown.as_deref(),
+            &options,
+        ) {
+            self.attrs.priority = index.checked_sub(1).map(|i| PRIORITIES[i].to_owned());
+        }
+
+        let options: Vec<(String, bool)> =
+            std::iter::once(("Todas as situações".to_owned(), self.attrs.status.is_none()))
+                .chain(STATUSES.iter().map(|s| {
+                    (
+                        crate::tasks::status_label(s).to_owned(),
+                        self.attrs.status.as_deref() == Some(*s),
+                    )
+                }))
+                .collect();
+        let shown = self
+            .attrs
+            .status
+            .as_deref()
+            .map(|s| crate::tasks::status_label(s).to_owned());
+        if let Some(index) = choice_chip(
+            ui,
+            "status",
+            "Situação",
+            "Mostra só as tarefas pendentes, em análise ou aguardando.",
+            shown.as_deref(),
+            &options,
+        ) {
+            self.attrs.status = index.checked_sub(1).map(|i| STATUSES[i].to_owned());
+        }
+    }
+
     /// Brings the loaded data and the view derived from it up to date for
     /// this frame: the chip counts and the tasks listed, in order. The view is
     /// rebuilt only when the library (as read), the controls or the day
@@ -3257,6 +3501,7 @@ impl TaskPanel {
             document: self.document_filter,
             categories: self.category_filter.clone(),
             project: self.project_filter.clone(),
+            attrs: self.attrs.clone(),
             unplanned_only: self.unplanned_only,
             sort: self.sort,
             today: today.format("%Y-%m-%d").to_string(),
@@ -3300,6 +3545,7 @@ impl TaskPanel {
             week: &week_text,
             categories: &key.categories,
             project: &key.project,
+            attrs: &key.attrs,
         };
         let haystacks = data.haystacks.as_deref();
         // The chips count what each view would list right now.
@@ -4373,6 +4619,7 @@ mod navigation_tests {
             week: "2026-11-25",
             categories: &categories,
             project: &crate::project_ui::NO_PROJECT_FILTER,
+            attrs: &crate::task_filters::NO_ATTR_FILTER,
         };
         let deps = crate::tasks::Dependencies::new(&[]);
         task.scheduled_start = "2026-11-18T09:00".into();
@@ -4419,7 +4666,59 @@ mod navigation_tests {
             week: "2026-11-17",
             categories: &crate::category_ui::NO_CATEGORY_FILTER,
             project: &crate::project_ui::NO_PROJECT_FILTER,
+            attrs: &crate::task_filters::NO_ATTR_FILTER,
         }
+    }
+
+    #[test]
+    fn the_attribute_filters_narrow_the_list_and_the_counts() {
+        use crate::task_filters::{AssigneeFilter, AttrFilter};
+        let mut mine = task(1, 1, "2026-11-10", "pendente");
+        mine.assignee = "Ana".into();
+        mine.priority = "alta".into();
+        let mut other = task(2, 1, "2026-11-10", "aguardando");
+        other.assignee = "Rui".into();
+        let tasks = vec![mine, other];
+        let deps = crate::tasks::Dependencies::new(&tasks);
+        let attrs = AttrFilter {
+            assignee: AssigneeFilter::Named("ana".into()),
+            priority: Some("alta".into()),
+            status: Some("pendente".into()),
+        };
+        let narrowed = Scope {
+            attrs: &attrs,
+            ..scope(None, "", false)
+        };
+        assert!(in_scope(&tasks[0], None, None, &narrowed));
+        assert!(!in_scope(&tasks[1], None, None, &narrowed));
+        assert_eq!(
+            view_counts(
+                &tasks,
+                &DocumentIndex::new(),
+                &Contexts::new(),
+                &deps,
+                &narrowed
+            ),
+            [1, 1, 1, 0]
+        );
+        let none = AttrFilter {
+            status: Some("em analise".into()),
+            ..AttrFilter::default()
+        };
+        let empty = Scope {
+            attrs: &none,
+            ..scope(None, "", false)
+        };
+        assert_eq!(
+            view_counts(
+                &tasks,
+                &DocumentIndex::new(),
+                &Contexts::new(),
+                &deps,
+                &empty
+            ),
+            [0, 0, 0, 0]
+        );
     }
 
     #[test]
@@ -4913,6 +5212,7 @@ mod standalone_tests {
             week: "2026-11-17",
             categories: &crate::category_ui::NO_CATEGORY_FILTER,
             project: &crate::project_ui::NO_PROJECT_FILTER,
+            attrs: &crate::task_filters::NO_ATTR_FILTER,
         }
     }
 
@@ -5817,6 +6117,7 @@ mod view_cache_tests {
             document: None,
             categories: Default::default(),
             project: Default::default(),
+            attrs: Default::default(),
             unplanned_only: false,
             sort: 0,
             today: today.to_owned(),
