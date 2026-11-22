@@ -203,6 +203,9 @@ fn wipe(text: &mut String) {
 
 /// How often the window looks at the pointer again.
 const PLACE_CHECK_EVERY: Duration = Duration::from_secs(5);
+/// How long a switch of library waits, after the close, for exchanges and
+/// work already dispatched to end.
+const SWITCH_WAIT: Duration = Duration::from_secs(20);
 
 /// Which library this window has open, as the person needs to know it.
 #[derive(Default)]
@@ -461,12 +464,13 @@ impl PonteApp {
             self.error("Este Ponte usa a pasta definida em PONTEPROJ_DATA_DIR: a escolha do acervo não vale aqui.");
             return;
         };
+        // (a) What the person controls must be settled first.
         let refusal = if self.worker.is_some() || self.auto_copy.running() {
             Some("Há um trabalho em andamento nesta janela; espere ele terminar e tente de novo. Nada foi trocado.")
-        } else if self.intranet.syncing() {
-            Some("Uma sincronização está em andamento; espere ela terminar e tente de novo. Nada foi trocado.")
         } else if self.intranet.serving() {
             Some("Este computador está servindo como computador principal; pare de servir em Ajustes ▸ Equipe e sincronização antes de trocar de acervo. Nada foi trocado.")
+        } else if crate::intranet::host_requests_in_flight() > 0 {
+            Some("O computador principal desta janela ainda está terminando de atender pedidos; espere alguns segundos e tente de novo. Nada foi trocado.")
         } else {
             None
         };
@@ -474,44 +478,81 @@ impl PonteApp {
             self.error(refusal);
             return;
         }
-        if let Err(error) = recovery::check_adoption(&home, folder, Some(&self.data_dir())) {
+        // Its own lock is exempt only when this window really holds it.
+        let own = self.requests_dir.as_ref().map(|_| self.data_dir());
+        if let Err(error) = recovery::check_adoption(&home, folder, own.as_deref()) {
             self.error(format!("{error:#}"));
             return;
         }
-        // Nothing new starts while the window closes.
-        self.store.set_transport_off(true);
-        self.intranet.set_transport_off(true);
-        self.auto_copy.allowed = false;
+        // (b) The close guard about unsaved work decides; nothing is stopped
+        // before it did (cancelling leaves the window exactly as it is).
         self.library.switching_to = Some(folder.to_path_buf());
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
-    /// The close guard was answered "Voltar": the switch does not happen and
-    /// this window goes on as before, on the library in use.
+    /// The close guard was answered "Voltar": the switch does not happen. Nothing
+    /// was stopped, so nothing is restored.
     pub(super) fn cancel_switch(&mut self) {
-        if self.library.switching_to.take().is_some() && !self.library.only_looking() {
-            self.store.set_transport_off(false);
-            self.intranet.set_transport_off(false);
-            self.intranet.initialize(&mut self.store, &self.db_path);
-            self.auto_copy.allowed = true;
-        }
+        self.library.switching_to = None;
     }
 
-    /// At the end of the close: the pointer is written and the Ponte is asked
-    /// to open again (on the chosen library, or on the same one with the
-    /// reason when the pointer could not be written).
+    /// At the end of the close, the guard passed: (c) exchanges and the main
+    /// computer are stopped and what was already dispatched is waited for;
+    /// (d) only then the pointer is written; (e) the Ponte is asked to open
+    /// again, on the chosen library. If dispatched work does not end in time
+    /// (or the pointer cannot be written), nothing is written and the Ponte
+    /// opens again on the same library, saying why.
     pub(super) fn finish_switch(&mut self) {
+        self.finish_switch_waiting(SWITCH_WAIT);
+    }
+
+    pub(super) fn finish_switch_waiting(&mut self, limit: Duration) {
         let Some(folder) = self.library.switching_to.take() else {
             return;
         };
         let Some(home) = self.library.home.clone() else {
             return;
         };
-        let notice = match recovery::adopt(&home, &folder, Some(&self.data_dir())) {
-            Ok(()) => None,
-            Err(error) => Some(format!(
-                "O acervo não foi trocado: {error:#} O Ponte abriu de novo no acervo de antes."
-            )),
+        self.store.set_transport_off(true);
+        self.intranet.set_transport_off(true);
+        self.auto_copy.allowed = false;
+        let started = Instant::now();
+        let pending = loop {
+            let worker_done = self
+                .worker
+                .as_ref()
+                .is_none_or(|w| !matches!(w.receiver.try_recv(), Err(TryRecvError::Empty)));
+            let mut busy = Vec::new();
+            if crate::intranet::syncs_in_flight() > 0 {
+                busy.push("uma sincronização");
+            }
+            if crate::intranet::host_requests_in_flight() > 0 {
+                busy.push("pedidos ao computador principal");
+            }
+            if !worker_done {
+                busy.push("um trabalho desta janela");
+            }
+            if self.auto_copy.running() {
+                busy.push("a cópia automática");
+            }
+            if busy.is_empty() || started.elapsed() >= limit {
+                break busy;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let own = self.requests_dir.as_ref().map(|_| self.data_dir());
+        let notice = if !pending.is_empty() {
+            Some(format!(
+                "O acervo não foi trocado: {} ainda estava em andamento e não terminou a tempo. O Ponte abriu de novo no mesmo acervo; tente trocar de novo daqui a pouco.",
+                pending.join(" e ")
+            ))
+        } else {
+            match recovery::adopt(&home, &folder, own.as_deref()) {
+                Ok(()) => None,
+                Err(error) => Some(format!(
+                    "O acervo não foi trocado: {error:#} O Ponte abriu de novo no acervo de antes."
+                )),
+            }
         };
         if let Ok(mut relaunch) = RELAUNCH.lock() {
             *relaunch = Some(notice);
@@ -769,34 +810,110 @@ mod tests {
         assert!(LibraryPlace::detect(&resolution, &home).only_looking());
     }
 
+    /// The switch tests share the counters of dispatched work and the
+    /// relaunch request of the process: one at a time.
+    static SWITCHES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn switching_closes_the_window_first_and_writes_the_pointer_only_at_the_end() {
+        let _one = SWITCHES.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let (home, restored) = two_libraries(dir.path());
         let mut app = window_on(&home);
         let ctx = egui::Context::default();
         app.use_library(&restored, &ctx);
-        // Closing: nothing written yet, nothing new starts.
+        // Asked to close: nothing written, nothing stopped yet.
         assert_eq!(
             app.library.switching_to.as_deref(),
             Some(restored.as_path())
         );
         assert_eq!(crate::paths::follow_pointer(&home).data_dir, home);
-        assert!(app.store.transport_off());
+        assert!(!app.store.transport_off());
         assert!(app.maintenance_running());
         // "Voltar": nothing changes.
         app.cancel_switch();
         assert!(app.library.switching_to.is_none());
         assert!(!app.store.transport_off());
         assert_eq!(crate::paths::follow_pointer(&home).data_dir, home);
-        // Closed for real: the pointer moves and the Ponte opens again there.
+        // Closed for real: stopped, then the pointer moves and the Ponte
+        // opens again there.
         app.use_library(&restored, &ctx);
-        app.finish_switch();
+        app.finish_switch_waiting(Duration::from_secs(60));
+        assert!(app.store.transport_off());
         assert!(crate::paths::same_folder(
             &crate::paths::follow_pointer(&home).data_dir,
             &restored
         ));
         assert_eq!(take_relaunch(), Some(None));
+    }
+
+    #[test]
+    fn cancelling_a_switch_leaves_the_window_exactly_as_it_was() {
+        let _one = SWITCHES.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let (home, restored) = two_libraries(dir.path());
+        let mut app = window_on(&home);
+        // A folder password kept only for this session (not saved).
+        *app.intranet.draft_folder_key() = "senha só desta sessão".into();
+        let ctx = egui::Context::default();
+        app.use_library(&restored, &ctx);
+        app.cancel_switch();
+        assert_eq!(
+            app.intranet.draft_folder_key().as_str(),
+            "senha só desta sessão"
+        );
+        assert!(!app.store.transport_off());
+        assert!(app.auto_copy.allowed);
+        assert_eq!(crate::paths::follow_pointer(&home).data_dir, home);
+    }
+
+    #[test]
+    fn a_switch_waits_for_dispatched_work_and_gives_up_without_writing() {
+        let _one = SWITCHES.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let (home, restored) = two_libraries(dir.path());
+        let mut app = window_on(&home);
+        let ctx = egui::Context::default();
+        // A synchronization dispatched before the close is still running.
+        let running = crate::intranet::InFlight::sync();
+        app.use_library(&restored, &ctx);
+        app.finish_switch_waiting(Duration::from_millis(200));
+        assert_eq!(crate::paths::follow_pointer(&home).data_dir, home);
+        let notice = take_relaunch().unwrap().unwrap();
+        assert!(notice.contains("não foi trocado"), "{notice}");
+        assert!(notice.contains("sincronização"), "{notice}");
+        // Once it ended, the switch goes through.
+        drop(running);
+        let mut app = window_on(&home);
+        app.use_library(&restored, &ctx);
+        app.finish_switch_waiting(Duration::from_secs(60));
+        assert!(crate::paths::same_folder(
+            &crate::paths::follow_pointer(&home).data_dir,
+            &restored
+        ));
+        assert_eq!(take_relaunch(), Some(None));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_window_without_its_own_lock_does_not_skip_another_windows_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, restored) = two_libraries(dir.path());
+        // The first window on this library holds its lock; this one opened
+        // without it (its handoff timed out).
+        use std::os::windows::fs::OpenOptionsExt;
+        let _first = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(home.join("janela.lock"))
+            .unwrap();
+        let mut app = window_on(&home);
+        app.requests_dir = None;
+        app.use_library(&restored, &egui::Context::default());
+        assert!(app.library.switching_to.is_none());
+        assert_eq!(crate::paths::follow_pointer(&home).data_dir, home);
     }
 
     #[test]

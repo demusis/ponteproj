@@ -1259,6 +1259,49 @@ pub(crate) const SNAPSHOT_BOOKKEEPING: &[&str] = &[
     "generation",
 ];
 
+/// Exchanges dispatched and not finished in this process: synchronizations
+/// running on the worker thread, and requests a main computer of this
+/// process is still answering. Counted where the work runs, so nothing the
+/// window does (saving another mode, stopping the main computer) hides it.
+static SYNCS_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static HOST_REQUESTS_IN_FLIGHT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Held while one dispatched exchange runs.
+pub(crate) struct InFlight(&'static std::sync::atomic::AtomicUsize);
+
+impl InFlight {
+    pub(crate) fn sync() -> Self {
+        SYNCS_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(&SYNCS_IN_FLIGHT)
+    }
+    pub(crate) fn host_request() -> Self {
+        HOST_REQUESTS_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(&HOST_REQUESTS_IN_FLIGHT)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Synchronizations of this process still running.
+pub fn syncs_in_flight() -> usize {
+    SYNCS_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Requests a main computer of this process is still answering (also after
+/// it was stopped, until they end).
+pub fn host_requests_in_flight() -> usize {
+    HOST_REQUESTS_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Starts a reply that the replacement was stopped because its safety copy
+/// is not a good one; "Substituir mesmo assim" goes on.
+pub const CONFIRM_BAD_COPY: &str = "[confirmar-copia-ruim]";
+
 /// Said when a first-time client would contact its main computer before the
 /// replacement of its library was confirmed.
 pub const JOIN_PENDING: &str = "A substituição do acervo deste computador pelo do computador principal ainda não foi confirmada; até lá o Ponte não fala com o computador principal (nem para testar a conexão). Confirme ou cancele em Ajustes ▸ Equipe e sincronização.";
@@ -3777,7 +3820,7 @@ impl Store {
         std::fs::create_dir_all(&dir).context(fail)?;
         let path = dir.join(format!("{stem}-{}.sqlite3", self.library_state_identity()?));
         if path.is_file() && backup_checks_out(&path) {
-            self.note_copy_quality(&path);
+            self.note_copy_quality(&path)?;
             return Ok(Some(path));
         }
         let _ = std::fs::remove_file(&path);
@@ -3790,19 +3833,29 @@ impl Store {
             let _ = std::fs::remove_file(&part);
             return Err(error);
         }
-        self.note_copy_quality(&path);
+        self.note_copy_quality(&path)?;
         Ok(Some(path))
     }
 
     /// The check a restore requires, on the copy kept before a replacement
-    /// (kept either way): when it is not a good copy, the person is told.
-    fn note_copy_quality(&self, path: &std::path::Path) {
-        if let Some(problem) = crate::auto_backup::copy_problem(path) {
-            self.replacement_notes.borrow_mut().push(format!(
-                "A cópia guardada antes da substituição ({}) não conta como cópia boa: {problem}",
-                path.display()
-            ));
-        }
+    /// (kept either way). When it is not a good copy, the replacement stops,
+    /// saying what could not be read and where the copy is, unless the person
+    /// chose "Substituir mesmo assim" (then it goes on and the person is
+    /// told again).
+    fn note_copy_quality(&self, path: &std::path::Path) -> Result<()> {
+        let Some(problem) = crate::auto_backup::copy_problem(path) else {
+            return Ok(());
+        };
+        ensure!(
+            self.accept_bad_safety_copy,
+            "{CONFIRM_BAD_COPY} A cópia de segurança do acervo deste computador foi guardada em {}, mas não conta como cópia boa: {problem} Uma restauração dela seria recusada. Nada foi substituído. Se você continuar com «Substituir mesmo assim», o acervo daqui é substituído mesmo sem uma cópia restaurável; antes disso, você pode corrigir esse item (ou levá-lo para a Lixeira e excluí-lo) e tentar de novo.",
+            path.display()
+        );
+        self.replacement_notes.borrow_mut().push(format!(
+            "O acervo foi substituído como você pediu, mas a cópia guardada antes ({}) não conta como cópia boa: {problem}",
+            path.display()
+        ));
+        Ok(())
     }
 
     /// [`Store::sync_from_host`]; `accept_host_history` is the person's
@@ -9489,6 +9542,7 @@ impl HostServer {
                                 .name("ponte-intranet-connection".into())
                                 .spawn(move || {
                                     let _slot = slot;
+                                    let _busy = InFlight::host_request();
                                     let _ = handle_connection(stream, &db);
                                 });
                         }
@@ -9870,6 +9924,9 @@ struct SyncRequest {
     folder_key: Option<String>,
     /// The person confirmed that a library joining the folders is replaced.
     allow_replace: bool,
+    /// And then "Substituir mesmo assim": although its safety copy is not a
+    /// good one.
+    accept_bad_copy: bool,
 }
 
 #[cfg(feature = "desktop")]
@@ -9898,12 +9955,14 @@ impl SyncWorker {
                         progress_tx.clone(),
                         Arc::new(AtomicBool::new(false)),
                     );
+                    let busy = InFlight::sync();
                     let result = match store.as_mut() {
                         Some(store) => {
                             run_sync(store, &request, &reporter).map_err(|e| e.to_string())
                         }
                         None => Err("Não foi possível abrir o acervo para sincronizar.".into()),
                     };
+                    drop(busy);
                     if outcome_tx
                         .send(SyncOutcome {
                             result,
@@ -9944,6 +10003,19 @@ fn run_sync(
     reporter: &crate::ai::Reporter,
 ) -> Result<SyncDone> {
     let mut cfg = store.load_intranet_config()?;
+    store.accept_bad_safety_copy = request.accept_bad_copy;
+    let done = run_sync_inner(store, &mut cfg, request, reporter);
+    store.accept_bad_safety_copy = false;
+    done
+}
+
+#[cfg(feature = "desktop")]
+fn run_sync_inner(
+    store: &mut Store,
+    cfg: &mut IntranetConfig,
+    request: &SyncRequest,
+    reporter: &crate::ai::Reporter,
+) -> Result<SyncDone> {
     match cfg.mode {
         IntranetMode::SharedFolder => {
             if let Some(key) = &request.folder_key {
@@ -9952,7 +10024,7 @@ fn run_sync(
                 }
             }
             let key = cfg.folder_key.clone();
-            let report = store.sync_with_folders(&cfg, &key, request.allow_replace, reporter);
+            let report = store.sync_with_folders(cfg, &key, request.allow_replace, reporter);
             let notes = store.take_replacement_notes();
             let report = report?;
             Ok(SyncDone {
@@ -9999,6 +10071,12 @@ pub struct IntranetPanel {
     /// the person must confirm the replacement.
     replace_confirmation: Option<String>,
     allow_replace_next: bool,
+    /// The question is the second step: the safety copy is not a good one.
+    replace_bad_copy: bool,
+    accept_bad_copy_next: bool,
+    /// What the person must read about the last exchange, shown until
+    /// dismissed (a success message never covers it).
+    sticky_warning: Option<String>,
     show_folder_key: bool,
     folder_key_confirm: String,
     force_next_sync: bool,
@@ -10074,6 +10152,12 @@ impl IntranetPanel {
             self.sync = None;
             self.sync_in_flight = false;
         }
+    }
+
+    /// Tests: the passphrase the window holds for this session only.
+    #[cfg(test)]
+    pub(crate) fn draft_folder_key(&mut self) -> &mut String {
+        &mut self.draft.folder_key
     }
 
     /// Whether this window is serving as the main computer.
@@ -10572,20 +10656,24 @@ impl IntranetPanel {
             return;
         };
         soft_note(ui, widgets::Tone::Warn, icon::WARNING, &text);
+        let bad_copy = self.replace_bad_copy;
         ui.horizontal(|ui| {
-            if ui
-                .add(widgets::danger(
-                    "Substituir o acervo deste computador e sincronizar",
-                ))
-                .clicked()
-            {
+            let label = if bad_copy {
+                "Substituir mesmo assim"
+            } else {
+                "Substituir o acervo deste computador e sincronizar"
+            };
+            if ui.add(widgets::danger(label)).clicked() {
                 self.allow_replace_next = true;
+                self.accept_bad_copy_next = bad_copy;
                 self.replace_confirmation = None;
+                self.replace_bad_copy = false;
                 self.request_full_sync();
                 *refresh_needed = self.refresh_client(store, db_path);
             }
             if ui.add(widgets::secondary("Cancelar")).clicked() {
                 self.replace_confirmation = None;
+                self.replace_bad_copy = false;
             }
         });
         ui.add_space(theme::S3);
@@ -10725,6 +10813,7 @@ impl IntranetPanel {
                     manual,
                     folder_key: Some(self.draft.folder_key.clone()).filter(|k| !k.is_empty()),
                     allow_replace: std::mem::take(&mut self.allow_replace_next),
+                    accept_bad_copy: std::mem::take(&mut self.accept_bad_copy_next),
                 };
                 if worker.requests.send(request).is_ok() {
                     self.sync_in_flight = true;
@@ -10766,14 +10855,21 @@ impl IntranetPanel {
                         self.message = format!("Sincronização concluída: {}.", done.summary);
                     }
                     if !done.notes.is_empty() {
-                        self.error = true;
-                        self.message = done.notes.join(" ");
+                        self.sticky_warning = Some(done.notes.join(" "));
                     }
                 }
                 Err(error) => {
                     self.offline = true;
                     self.last_sync_finished = Some((Instant::now(), false));
-                    if let Some(rest) = error.strip_prefix("[confirmar-substituicao] ") {
+                    if let Some(rest) = error.strip_prefix(CONFIRM_BAD_COPY) {
+                        self.replace_confirmation = Some(rest.trim().to_owned());
+                        self.replace_bad_copy = true;
+                        self.status_summary =
+                            "Pasta compartilhada • a cópia de segurança não é boa: aguardando sua decisão (ver Ajustes ▸ Equipe e sincronização)"
+                                .into();
+                        self.error = false;
+                        self.message.clear();
+                    } else if let Some(rest) = error.strip_prefix("[confirmar-substituicao] ") {
                         self.replace_confirmation = Some(rest.to_owned());
                         self.status_summary =
                             "Pasta compartilhada • aguardando sua confirmação (ver Ajustes ▸ Equipe e sincronização)"
@@ -10805,8 +10901,7 @@ impl IntranetPanel {
         match outcome.result {
             Ok(SyncDone { changed, notes, .. }) => {
                 if !notes.is_empty() {
-                    self.error = true;
-                    self.message = notes.join(" ");
+                    self.sticky_warning = Some(notes.join(" "));
                 }
                 self.offline = false;
                 store.note_host_reachability(true);
@@ -10832,6 +10927,20 @@ impl IntranetPanel {
                     self.error = false;
                     self.message = "Acervo sincronizado com o computador principal.".into();
                 }
+            }
+            Err(error) if error.starts_with(CONFIRM_BAD_COPY) => {
+                // Nothing was replaced: the safety copy is not a good one.
+                self.last_sync_finished = Some((Instant::now(), false));
+                self.replace_confirmation = Some(
+                    error
+                        .strip_prefix(CONFIRM_BAD_COPY)
+                        .unwrap_or(&error)
+                        .trim()
+                        .to_owned(),
+                );
+                self.replace_bad_copy = true;
+                self.error = false;
+                self.message.clear();
             }
             Err(error) if error.starts_with(CONFIRM_REPLACE) => {
                 // The main computer answered: it is its history that broke
@@ -10980,6 +11089,12 @@ impl IntranetPanel {
     pub fn ui(&mut self, ui: &mut egui::Ui, store: &mut Store, db_path: &std::path::Path) -> bool {
         use crate::theme::{self, icon};
         use crate::widgets::{self, Tone};
+        if let Some(warning) = self.sticky_warning.clone() {
+            soft_note(ui, Tone::Warn, icon::WARNING, &warning);
+            if ui.add(widgets::quiet("Entendi")).clicked() {
+                self.sticky_warning = None;
+            }
+        }
         if self.transport_off {
             widgets::small_muted(
                 ui,

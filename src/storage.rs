@@ -57,6 +57,9 @@ pub struct Store {
     /// Safety copies kept before a replacement that are not good copies, for
     /// the report of the synchronization.
     pub(crate) replacement_notes: std::cell::RefCell<Vec<String>>,
+    /// The person chose "Substituir mesmo assim": a replacement goes on
+    /// although its safety copy is not a good one (set for one exchange).
+    pub(crate) accept_bad_safety_copy: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -295,6 +298,7 @@ impl Store {
             read_cache: Default::default(),
             transport_off: false,
             replacement_notes: Default::default(),
+            accept_bad_safety_copy: false,
         };
         store.ensure_tasks()?;
         crate::tasks::backfill_task_uids(&mut store.conn)?;

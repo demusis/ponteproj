@@ -2266,4 +2266,116 @@ mod tests {
             None
         );
     }
+
+    /// A value of the library that does not open with this account, in a
+    /// table the snapshot does not read: only the check of a restore sees it.
+    fn damage_quietly(store: &Store) {
+        store
+            .conn
+            .execute(
+                "INSERT INTO mail_accounts(uid,payload) VALUES('estragada', X'504F4E54452D4450415049310000')",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_folder_join_stops_when_its_safety_copy_is_not_a_good_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Drive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let key = "senha-de-teste-123";
+        let reporter = crate::ai::Reporter::silent();
+        let folder_config = |member: &str| IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: member.into(),
+            folder_files: vec![file.display().to_string()],
+            folder_key: key.into(),
+            ..IntranetConfig::default()
+        };
+        let mut a = Store::open(&dir.path().join("a").join("acervo.sqlite3")).unwrap();
+        a.save_intranet_config(&folder_config("Casa")).unwrap();
+        a.import_capture(&capture("SEFAZ-PRO-2026/00001")).unwrap();
+        let cfg_a = a.load_intranet_config().unwrap();
+        a.sync_with_folders(&cfg_a, key, false, &reporter).unwrap();
+        let header_before = crate::sharedfolder::read_header(&file).unwrap();
+        let db = dir.path().join("r").join("acervo.sqlite3");
+        let mut r = Store::open(&db).unwrap();
+        r.import_capture(&capture("SEFAZ-PRO-2026/00002")).unwrap();
+        damage_quietly(&r);
+        r.save_intranet_config(&folder_config("Restaurado"))
+            .unwrap();
+        let cfg_r = r.load_intranet_config().unwrap();
+        // Confirmed, but the copy kept first is not a good one: it stops.
+        let error = r
+            .sync_with_folders(&cfg_r, key, true, &reporter)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(crate::intranet::CONFIRM_BAD_COPY),
+            "{error}"
+        );
+        assert!(error.contains("tabela mail_accounts"), "{error}");
+        assert!(error.contains("copias-antes-da-substituicao"), "{error}");
+        assert_eq!(backups_before_replacement(&db).len(), 1, "a cópia fica");
+        let numbers: Vec<String> = r
+            .list_documents("")
+            .unwrap()
+            .into_iter()
+            .map(|d| d.document_number)
+            .collect();
+        assert_eq!(numbers, ["SEFAZ-PRO-2026/00002"], "nada foi substituído");
+        assert_eq!(
+            crate::sharedfolder::read_header(&file).unwrap(),
+            header_before
+        );
+        // "Substituir mesmo assim": it goes on, knowingly.
+        r.accept_bad_safety_copy = true;
+        r.sync_with_folders(&cfg_r, key, true, &reporter).unwrap();
+        r.accept_bad_safety_copy = false;
+        let numbers: Vec<String> = r
+            .list_documents("")
+            .unwrap()
+            .into_iter()
+            .map(|d| d.document_number)
+            .collect();
+        assert_eq!(numbers, ["SEFAZ-PRO-2026/00001"]);
+        assert!(!r.take_replacement_notes().is_empty());
+    }
+
+    #[test]
+    fn a_principal_join_stops_when_its_safety_copy_is_not_a_good_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut server, token, _) = principal(dir.path());
+        let host_before = state_of(&host);
+        let db = dir.path().join("r").join("acervo.sqlite3");
+        let mut r = Store::open(&db).unwrap();
+        r.import_capture(&capture("SEFAZ-PRO-2026/00001")).unwrap();
+        damage_quietly(&r);
+        r.save_intranet_config(&client_of(&server, &token)).unwrap();
+        let error = r
+            .sync_from_host_confirmed(false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(crate::intranet::CONFIRM_BAD_COPY),
+            "{error}"
+        );
+        assert!(error.contains("tabela mail_accounts"), "{error}");
+        assert_eq!(state_of(&host), host_before);
+        assert_eq!(
+            r.list_documents("").unwrap()[0].document_number,
+            "SEFAZ-PRO-2026/00001",
+            "nada foi substituído"
+        );
+        assert!(r.load_intranet_config().unwrap().join_pending());
+        // "Substituir mesmo assim".
+        r.accept_bad_safety_copy = true;
+        assert!(r.sync_from_host_confirmed(false, true).unwrap());
+        assert_eq!(
+            r.list_documents("").unwrap()[0].document_number,
+            "SEFAZ-PRO-2026/00007"
+        );
+        server.stop();
+    }
 }

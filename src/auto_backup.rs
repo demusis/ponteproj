@@ -43,7 +43,7 @@
 //! the switch on/off takes it too.
 use crate::atomic_file::write_atomic;
 use crate::upgrade_backup::{self, Outcome};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -474,10 +474,14 @@ fn create_folder(data_dir: &Path) -> Result<PathBuf> {
 
 /// Records a copy published under `path` (a new one, or one a run that died
 /// published): its identity and whether it is a good copy.
-fn record(manifest: &mut Manifest, path: &Path, sequence: u64, moment: &str) -> Result<Entry> {
-    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+fn record(
+    manifest: &mut Manifest,
+    path: &Path,
+    sequence: u64,
+    moment: &str,
+    identity: (u64, String),
+) -> Result<Entry> {
     let problem = check_copy(path)?;
-    let modified = modified_ns(path).unwrap_or(0);
     let entry = Entry {
         arquivo: path
             .file_name()
@@ -485,9 +489,9 @@ fn record(manifest: &mut Manifest, path: &Path, sequence: u64, moment: &str) -> 
             .unwrap_or_default(),
         sequencia: sequence,
         criada_em: moment.to_owned(),
-        bytes,
-        sha256: file_sha256(path).context("Não foi possível identificar a cópia publicada.")?,
-        modificado_ns: modified,
+        bytes: identity.0,
+        sha256: identity.1,
+        modificado_ns: modified_ns(path).unwrap_or(0),
         verificada: problem.is_none(),
         problema: problem.unwrap_or_default(),
         origem: format!("Ponte {}", env!("CARGO_PKG_VERSION")),
@@ -497,10 +501,139 @@ fn record(manifest: &mut Manifest, path: &Path, sequence: u64, moment: &str) -> 
     Ok(entry)
 }
 
+/// Opens `name` inside `folder` only as itself: never through a link
+/// (`FILE_FLAG_OPEN_REPARSE_POINT`), only a regular file, and only when the
+/// file the handle reaches is in that very folder (not one a junction or a
+/// link of the folder leads to). Others may read it meanwhile, but nobody can
+/// write, rename, replace or delete it while the handle lives. `delete`: the
+/// handle may also delete it.
+fn open_owned(folder: &Path, name: &str, delete: bool) -> std::io::Result<File> {
+    let refused = |what: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{what}: não é uma cópia desta pasta"),
+        )
+    };
+    if !owned_name(name) {
+        return Err(refused("nome"));
+    }
+    let path = folder.join(name);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const DELETE: u32 = 0x0001_0000;
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        // The folder itself must not lead elsewhere either.
+        let folder_attributes = std::fs::symlink_metadata(folder)?.file_attributes();
+        if folder_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(refused("pasta"));
+        }
+        options.access_mode(GENERIC_READ | if delete { DELETE } else { 0 });
+        options.share_mode(FILE_SHARE_READ);
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = options.open(&path)?;
+        let attributes = file.metadata()?.file_attributes();
+        if attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) != 0 {
+            return Err(refused("ligação"));
+        }
+        let reached = final_path(&file)?;
+        let expected = std::fs::canonicalize(folder)?.join(name);
+        let normal = |p: &Path| crate::paths::readable(p).to_string_lossy().to_lowercase();
+        if normal(&reached) != normal(&expected) {
+            return Err(refused("caminho"));
+        }
+        Ok(file)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = delete;
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            return Err(refused("ligação"));
+        }
+        options.open(&path)
+    }
+}
+
+/// The path the system reached with an open handle.
+#[cfg(windows)]
+fn final_path(file: &File) -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFinalPathNameByHandleW(
+            file: *mut std::ffi::c_void,
+            path: *mut u16,
+            length: u32,
+            flags: u32,
+        ) -> u32;
+    }
+    let mut buffer = vec![0u16; 1024];
+    loop {
+        // SAFETY: a live handle and a buffer of the length given.
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                0,
+            )
+        } as usize;
+        if length == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if length < buffer.len() {
+            buffer.truncate(length);
+            return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+        }
+        buffer.resize(length + 1, 0);
+    }
+}
+
+/// Size and SHA-256 read through an open handle.
+fn identity_of(file: &mut File) -> std::io::Result<(u64, String)> {
+    use sha2::Digest;
+    use std::io::Read;
+    let size = file.metadata()?.len();
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok((size, format!("{:x}", hasher.finalize())))
+}
+
+/// `quick_check` of a copy without writing anything beside it.
+fn quick_check_read_only(path: &Path) -> Result<()> {
+    let conn = crate::recovery::open_own_copy(path)?;
+    let rows: Vec<String> = conn
+        .prepare("PRAGMA quick_check")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    ensure!(
+        rows == ["ok"],
+        "a conferência encontrou problemas: {}",
+        rows.join("; ")
+    );
+    Ok(())
+}
+
 /// The copy a run that died published before recording it: adopted only when
 /// the exact name it announced holds exactly the copy it announced (same size
-/// and SHA-256), and it still passes `quick_check` and the check a restore
-/// requires. Anything else under that name is left alone and never recorded.
+/// and SHA-256, read through one handle that keeps it from being replaced),
+/// and it passes both `quick_check` and the check a restore requires, while
+/// that handle is open. Anything else is left alone and never recorded (the
+/// run then makes the copy of the day).
 fn reconcile(
     manifest: &mut Manifest,
     folder: &Path,
@@ -513,26 +646,52 @@ fn reconcile(
         return Ok(None);
     }
     let path = folder.join(&pending.arquivo);
-    let matches = std::fs::symlink_metadata(&path)
-        .is_ok_and(|m| m.is_file() && m.len() == pending.bytes)
-        && file_sha256(&path).is_ok_and(|hash| hash == pending.sha256);
-    if !matches {
-        if path.exists() {
-            report.warn(format!(
-                "{} não é a cópia que uma execução anterior anunciou; foi deixado como está e não é registrado.",
-                path.display()
-            ));
-        }
-        return Ok(None);
-    }
-    if let Err(error) = upgrade_backup::verify(&path) {
+    let leave = |report: &mut RunReport, why: String| {
         report.warn(format!(
-            "A cópia {} de uma execução interrompida não passou na conferência ({error:#}); foi deixada como está e não é registrada.",
+            "{} {why}; foi deixado como está e não é registrado.",
             path.display()
         ));
+    };
+    let Ok(mut held) = open_owned(folder, &pending.arquivo, false) else {
+        if std::fs::symlink_metadata(&path).is_ok() {
+            leave(
+                report,
+                "não é a cópia que uma execução anterior anunciou".into(),
+            );
+        }
+        return Ok(None);
+    };
+    let identity = identity_of(&mut held)?;
+    if identity != (pending.bytes, pending.sha256.clone()) {
+        leave(
+            report,
+            "não é a cópia que uma execução anterior anunciou".into(),
+        );
         return Ok(None);
     }
-    record(manifest, &path, pending.sequencia, &pending.iniciada_em).map(Some)
+    if let Err(error) = quick_check_read_only(&path) {
+        leave(
+            report,
+            format!("(cópia de uma execução interrompida) não passou na conferência: {error:#}"),
+        );
+        return Ok(None);
+    }
+    if let Some(problem) = check_copy(&path)? {
+        leave(
+            report,
+            format!("(cópia de uma execução interrompida) não conta como cópia boa: {problem}"),
+        );
+        return Ok(None);
+    }
+    let entry = record(
+        manifest,
+        &path,
+        pending.sequencia,
+        &pending.iniciada_em,
+        identity,
+    )?;
+    drop(held);
+    Ok(Some(entry))
 }
 
 fn run_locked(
@@ -623,8 +782,14 @@ fn run_locked(
                 }
             };
             report.copy = Some(path.clone());
-            let entry = record(&mut manifest, &path, sequence, &moment_text(now))?;
-            manifest.pendente = None;
+            // The identity announced right before publishing is the one
+            // recorded: the copy that was checked.
+            let announced = manifest
+                .pendente
+                .take()
+                .map(|p| (p.bytes, p.sha256))
+                .context("A cópia foi publicada sem ter sido anunciada.")?;
+            let entry = record(&mut manifest, &path, sequence, &moment_text(now), announced)?;
             // Recorded before anything is removed: a copy that is not in the
             // record is never a reason to delete another one.
             if let Err(error) = write_manifest(&manifest_path, &manifest) {
@@ -722,44 +887,27 @@ fn counts_as_recorded(folder: &Path, entry: &Entry) -> bool {
 /// Deletes `file` only when it is still the copy recorded: same size and
 /// SHA-256. `Ok(false)`: it is not, and it is left alone.
 ///
-/// On Windows the file is opened once, sharing only reading, with the right
-/// to delete it; the SHA-256 is read through that handle and the deletion is
-/// asked through it too (`FileDispositionInfo`): while the handle is open
-/// nobody can write, rename or replace the file, so what is deleted is what
-/// was checked. Elsewhere the file is hashed through one handle and then
+/// On Windows the file is opened once (`open_owned`: never through a link,
+/// only a regular file really in the folder), sharing only reading, with the
+/// right to delete it; the SHA-256 is read through that handle and the
+/// deletion is asked through it too (`FileDispositionInfo`): while the handle
+/// is open nobody can write, rename or replace the file, so what is deleted
+/// is what was checked. Elsewhere the file is hashed through one handle and then
 /// removed by name: a file substituted in between those two steps would be
 /// removed (the residual interval of platforms without delete-by-handle).
 fn delete_if_recorded(file: &Path, entry: &Entry) -> std::io::Result<bool> {
-    use sha2::Digest;
-    use std::io::Read;
     if entry.sha256.is_empty() {
         return Ok(false);
     }
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const GENERIC_READ: u32 = 0x8000_0000;
-        const DELETE: u32 = 0x0001_0000;
-        const FILE_SHARE_READ: u32 = 0x1;
-        options.access_mode(GENERIC_READ | DELETE);
-        options.share_mode(FILE_SHARE_READ);
-    }
-    let mut handle = options.open(file)?;
-    if handle.metadata()?.len() != entry.bytes {
+    let (Some(folder), Some(name)) = (file.parent(), file.file_name()) else {
         return Ok(false);
-    }
-    let mut hasher = sha2::Sha256::new();
-    let mut buffer = vec![0u8; 1024 * 1024];
-    loop {
-        let read = handle.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    if format!("{:x}", hasher.finalize()) != entry.sha256 {
+    };
+    let mut handle = match open_owned(folder, &name.to_string_lossy(), true) {
+        Ok(handle) => handle,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if identity_of(&mut handle)? != (entry.bytes, entry.sha256.clone()) {
         return Ok(false);
     }
     #[cfg(windows)]
@@ -1695,5 +1843,89 @@ mod tests {
         assert_eq!(human_size(1024 * 1024 + 300_000), "1,3 MB");
         assert_eq!(human_size(1288 * 1024 * 1024), "1,3 GB");
         assert_eq!(human_moment("2026-11-22T09:14:00"), "22/11/2026 às 09:14");
+    }
+
+    #[test]
+    fn a_reconciled_copy_that_fails_the_restore_check_is_never_recorded() {
+        let data = tempfile::tempdir().unwrap();
+        let db = data.path().join("acervo.sqlite3");
+        {
+            let store = crate::storage::Store::open(&db).unwrap();
+            // A value that does not open with this account.
+            store
+                .conn
+                .execute(
+                    "INSERT INTO mail_accounts(uid,payload) VALUES('estragada', X'504F4E54452D4450415049310000')",
+                    [],
+                )
+                .unwrap();
+        }
+        let folder = create_folder(data.path()).unwrap();
+        // A run published it under the announced name and identity, then died.
+        let published =
+            upgrade_backup::backup_named(&db, &folder, "automatica-20261122-080000", PREFIX)
+                .unwrap();
+        let Outcome::BackedUp(path) = published else {
+            panic!("esperava a cópia")
+        };
+        announce(&folder, &path, 1);
+        let report = run_and_record(&db, data.path(), at("2026-11-22 10:00"))
+            .unwrap()
+            .unwrap();
+        let manifest = read_manifest(&folder.join(MANIFEST)).unwrap();
+        assert!(
+            manifest
+                .copias
+                .iter()
+                .all(|e| e.arquivo != "automatica-20261122-080000.sqlite3"),
+            "{:?}",
+            manifest.copias
+        );
+        assert!(path.is_file(), "deixada como está");
+        assert!(report.warning.unwrap().contains("não conta como cópia boa"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retention_never_deletes_through_a_link_out_of_the_folder() {
+        let data = tempfile::tempdir().unwrap();
+        let db = data.path().join("acervo.sqlite3");
+        library(&db, 1);
+        run(&db, data.path(), at("2026-11-01 08:00")).unwrap();
+        let folder = folder(data.path());
+        let manifest = read_manifest(&folder.join(MANIFEST)).unwrap();
+        let entry = manifest.copias[0].clone();
+        // The folder of the copies becomes a junction to another folder that
+        // holds a file with exactly the bytes of the recorded copy.
+        let outside = data.path().join("fora");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::copy(folder.join(&entry.arquivo), outside.join(&entry.arquivo)).unwrap();
+        let moved = data.path().join("backups").join("automaticas-antes");
+        std::fs::rename(&folder, &moved).unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&folder)
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let deleted = delete_if_recorded(&folder.join(&entry.arquivo), &entry).unwrap_or(false);
+        assert!(!deleted);
+        assert!(
+            outside.join(&entry.arquivo).is_file(),
+            "nada fora da pasta é apagado"
+        );
+        // A file link inside the folder, when the system allows creating one.
+        std::fs::remove_dir(&folder).unwrap();
+        std::fs::rename(&moved, &folder).unwrap();
+        let link = folder.join("automatica-20261101-080000-2.sqlite3");
+        if std::os::windows::fs::symlink_file(outside.join(&entry.arquivo), &link).is_ok() {
+            let mut linked = entry.clone();
+            linked.arquivo = "automatica-20261101-080000-2.sqlite3".into();
+            assert!(!delete_if_recorded(&link, &linked).unwrap_or(false));
+            assert!(outside.join(&entry.arquivo).is_file());
+        }
+        // The copy itself, in its folder, still goes when it is due.
+        assert!(delete_if_recorded(&folder.join(&entry.arquivo), &entry).unwrap());
     }
 }
