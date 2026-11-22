@@ -3581,12 +3581,35 @@ impl Store {
             // stored, so a connection that drops halfway loses nothing.
             let mut ids = crate::idmap::load(&self.conn)?;
             let mut host_frame = host_snapshot;
+            let creations = crate::renumber::pending_creations(
+                outbox.iter().map(|e| (&e.mutation, e.created.as_slice())),
+            );
             for entry in outbox {
-                let sent = match ids.remap(
-                    &entry.mutation,
-                    &*self,
-                    host_frame.as_deref().map(|s| s as &dyn crate::idmap::Frame),
-                ) {
+                let remapped = ids
+                    .remap(
+                        &entry.mutation,
+                        &*self,
+                        host_frame.as_deref().map(|s| s as &dyn crate::idmap::Frame),
+                    )
+                    .and_then(|mutation| {
+                        // An edit of a manual record is addressed by number:
+                        // it follows the number the main computer gave the
+                        // record, before anything is sent.
+                        crate::renumber::retarget_manual_edit(
+                            mutation,
+                            &crate::renumber::EditSource {
+                                records: &*self,
+                                written: crate::renumber::Written::Here,
+                                creations: &creations,
+                                receipt_doc: crate::renumber::receipt_document(&entry.created),
+                            },
+                            &ids,
+                            host_frame
+                                .as_deref()
+                                .map(|s| s as &dyn crate::renumber::Records),
+                        )
+                    });
+                let sent = match remapped {
                     Ok(mutation) => OutboxEntry {
                         mutation,
                         base: entry.base.as_ref().map(|base| {
@@ -4444,16 +4467,24 @@ impl Store {
                     .and_then(|mutation| {
                         // That copy's own record of the edit says which
                         // document of its library the edit landed on.
-                        let written_in = manual_edit_request(&mutation).and_then(|request| {
+                        let creations = crate::renumber::pending_creations(
                             source
                                 .payload
-                                .snapshot
-                                .requests
+                                .journal
                                 .iter()
-                                .find(|row| row.request_id == request)
-                                .map(|row| row.document_id)
-                        });
-                        retarget_manual_edit(mutation, written_in, &ids, &store)
+                                .map(|e| (&e.mutation, e.created.as_slice())),
+                        );
+                        crate::renumber::retarget_manual_edit(
+                            mutation,
+                            &crate::renumber::EditSource {
+                                records: &source.payload.snapshot,
+                                written: crate::renumber::Written::InCopy,
+                                creations: &creations,
+                                receipt_doc: crate::renumber::receipt_document(&entry.created),
+                            },
+                            &ids,
+                            Some(&store),
+                        )
                     });
                 let outcome = match &remapped {
                     Ok(mutation) => store
@@ -4528,6 +4559,9 @@ impl Store {
                 &resolved,
                 &applied,
             ));
+            let creations = crate::renumber::pending_creations(
+                outbox.iter().map(|e| (&e.mutation, e.created.as_slice())),
+            );
             for entry in &outbox {
                 processed_outbox.push((entry.id, entry.uid.clone()));
                 if applied.contains(&entry.uid) {
@@ -4591,11 +4625,19 @@ impl Store {
                             .map_err(|e| e.to_string())
                     })
                     .and_then(|mutation| {
-                        // The edit was written here, against this
-                        // library's number for the record.
-                        let written_in = manual_edit_number(&mutation)
-                            .and_then(|number| self.document_id_by_number(number).ok().flatten());
-                        retarget_manual_edit(mutation, written_in, &ids, &store)
+                        // The edit was written here, against a record of
+                        // this library.
+                        crate::renumber::retarget_manual_edit(
+                            mutation,
+                            &crate::renumber::EditSource {
+                                records: &*self,
+                                written: crate::renumber::Written::Here,
+                                creations: &creations,
+                                receipt_doc: crate::renumber::receipt_document(&entry.created),
+                            },
+                            &ids,
+                            Some(&store),
+                        )
                     });
                 let outcome = match &remapped {
                     Ok(mutation) => store
@@ -8474,77 +8516,6 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
             "Apagado de vez da lixeira: {} #{id}",
             crate::labels::item_kind(kind)
         ),
-    }
-}
-
-/// The number a manual record's edit is addressed to (`None` for any other
-/// change, and for a creation still waiting for its number).
-fn manual_edit_number(mutation: &IntranetMutation) -> Option<&str> {
-    match mutation {
-        IntranetMutation::ImportCapture { capture }
-            if capture.is_manual() && capture.document_number != crate::model::MANUAL_PENDING =>
-        {
-            Some(capture.document_number.as_str())
-        }
-        _ => None,
-    }
-}
-
-/// The request id of such an edit, as the libraries store it.
-fn manual_edit_request(mutation: &IntranetMutation) -> Option<String> {
-    manual_edit_number(mutation)?;
-    let IntranetMutation::ImportCapture { capture } = mutation else {
-        return None;
-    };
-    Some(
-        uuid::Uuid::parse_str(&capture.request_id)
-            .ok()?
-            .hyphenated()
-            .to_string(),
-    )
-}
-
-/// An edit of a manual record is addressed by the record's number, and a
-/// creation made before the exchange is numbered again when it is replayed
-/// on the shared copy (another record may already hold its number). Replaying
-/// the edit as written would put it on that other record. `written_in` is the
-/// document the edit was written against, in the library it comes from; when
-/// the creation of that document was replayed in this exchange, the edit
-/// follows it to the number it got. When that creation was refused, the edit
-/// is refused with it (a conflict to decide), and so is an edit whose
-/// document is no longer there. Anything else is left as it was: nothing is
-/// known of it beyond the number, which is what it always was addressed by.
-pub(crate) fn retarget_manual_edit(
-    mutation: IntranetMutation,
-    written_in: Option<i64>,
-    ids: &crate::idmap::IdMap,
-    copy: &Store,
-) -> Result<IntranetMutation, String> {
-    let Some(document) = written_in else {
-        return Ok(mutation);
-    };
-    let IntranetMutation::ImportCapture { capture } = &mutation else {
-        return Ok(mutation);
-    };
-    if manual_edit_number(&mutation).is_none() {
-        return Ok(mutation);
-    }
-    let there = match ids.learned_document(document) {
-        None => return Ok(mutation),
-        Some(None) => return Err(crate::idmap::UNRESOLVED.to_owned()),
-        Some(Some(there)) => there,
-    };
-    match copy.document_number_by_id(there) {
-        Ok(Some(number)) if number.eq_ignore_ascii_case(capture.document_number.trim()) => {
-            Ok(mutation)
-        }
-        Ok(Some(number)) => {
-            let mut capture = capture.clone();
-            capture.source_url = format!("{}{number}", crate::model::MANUAL_ORIGIN);
-            capture.document_number = number;
-            Ok(IntranetMutation::ImportCapture { capture })
-        }
-        _ => Err(crate::idmap::UNRESOLVED.to_owned()),
     }
 }
 

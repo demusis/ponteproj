@@ -2,16 +2,18 @@
 //! shared folder) is replayed onto the shared copy: the number was "the
 //! highest of this library plus one", and the shared copy may already have a
 //! record with it. This module tells the person (a local notice, never
-//! synchronized), keeps the old number findable on this computer and says
-//! which numbers are still provisional. It changes nothing about how numbers
-//! are given.
+//! synchronized), keeps the old number findable on this computer, says
+//! which numbers are still provisional, and keeps a queued edit of such a
+//! record from landing on the record that took the number. It changes nothing
+//! about how numbers are given.
 //!
-//! The identity of a record across the change is its creation request id:
-//! every snapshot row of `requests` carries it, so the same record is found
-//! on both sides of an adoption without any new data in the shared copy. A
-//! record with no request on either side has no identity and gives no notice
-//! (the title is never used to guess).
-use crate::model::{Capture, MANUAL_PENDING};
+//! The identity of a record across the change is its request ids (one per
+//! version): every snapshot row of `requests` carries them, so the same record
+//! is found on both sides of an adoption without any new data in the shared
+//! copy. A record with no request on either side has no identity and gives no
+//! notice (the title is never used to guess).
+use crate::intranet::{CabinetSnapshot, IntranetMutation};
+use crate::model::{Capture, MANUAL_ORIGIN, MANUAL_PENDING};
 use crate::protection::{seal, unseal};
 use crate::storage::Store;
 use anyhow::Result;
@@ -20,9 +22,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// How many notices (dismissed ones included, they keep the old number
-/// findable) this library remembers.
-const KEEP_NOTICES: i64 = 300;
+/// How many dismissed notices this library remembers (they keep the old
+/// number findable). Pending ones are never dropped.
+const KEEP_DISMISSED: i64 = 300;
+
+/// How many request ids of a record a notice keeps to find it again.
+const KEEP_IDENTITIES: usize = 16;
 
 /// "Record X went from number A to number B when this computer adopted the
 /// shared copy." Local to this computer: it is not part of the snapshot.
@@ -31,8 +36,9 @@ pub struct RenumberNotice {
     /// Row of the local table (not stored in the payload).
     #[serde(skip)]
     pub id: i64,
-    /// Identity of the record: the request id of its creation.
-    pub uid: String,
+    /// Identity of the record: request ids of its versions (the first is the
+    /// creation's). The record is the one all of them lead to.
+    pub uids: Vec<String>,
     pub title: String,
     pub from: String,
     pub to: String,
@@ -84,33 +90,378 @@ fn read_capture(blob: &[u8]) -> Option<Capture> {
     serde_json::from_slice(&unseal(blob).ok()?).ok()
 }
 
-/// The manual numbers this library presents, by record identity, read before
-/// a snapshot replaces the library.
+/// A request id as the libraries store it.
+fn normalized_request(request: &str) -> Option<String> {
+    Some(
+        uuid::Uuid::parse_str(request)
+            .ok()?
+            .hyphenated()
+            .to_string(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Where an edit of a manual record goes
+
+/// What the replay of a queued manual edit needs to know of a library: the
+/// one the edit was written in, and the one it is being applied to.
+pub(crate) trait Records {
+    /// The number a document has (its latest version tells it).
+    fn number_of_doc(&self, doc: i64) -> Result<Option<String>, String>;
+    /// The document that holds a manual number (trashed ones included).
+    fn doc_by_number(&self, number: &str) -> Result<Option<i64>, String>;
+    /// The document a request id led to.
+    fn doc_of_request(&self, request: &str) -> Result<Option<i64>, String>;
+    /// Every request id of a document's versions.
+    fn requests_of_doc(&self, doc: i64) -> Result<Vec<String>, String>;
+}
+
+impl Records for Store {
+    fn number_of_doc(&self, doc: i64) -> Result<Option<String>, String> {
+        self.document_number_by_id(doc).map_err(|e| e.to_string())
+    }
+    fn doc_by_number(&self, number: &str) -> Result<Option<i64>, String> {
+        self.document_id_by_number(number)
+            .map_err(|e| e.to_string())
+    }
+    fn doc_of_request(&self, request: &str) -> Result<Option<i64>, String> {
+        let Some(request) = normalized_request(request) else {
+            return Ok(None);
+        };
+        self.conn
+            .query_row(
+                "SELECT document_id FROM requests WHERE request_id=?1",
+                [request],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+    }
+    fn requests_of_doc(&self, doc: i64) -> Result<Vec<String>, String> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT request_id FROM requests WHERE document_id=?1")
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([doc], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Records for CabinetSnapshot {
+    fn number_of_doc(&self, doc: i64) -> Result<Option<String>, String> {
+        let Some(row) = self.documents.iter().find(|d| d.id == doc) else {
+            return Ok(None);
+        };
+        Ok(row.latest_capture_id.and_then(|latest| {
+            self.captures
+                .iter()
+                .find(|c| c.id == latest)
+                .map(|c| c.capture.document_number.clone())
+        }))
+    }
+    fn doc_by_number(&self, number: &str) -> Result<Option<i64>, String> {
+        let hash = crate::storage::identity_hash_for_number(number);
+        Ok(self
+            .documents
+            .iter()
+            .find(|d| d.identity_hash == hash)
+            .map(|d| d.id))
+    }
+    fn doc_of_request(&self, request: &str) -> Result<Option<i64>, String> {
+        let Some(request) = normalized_request(request) else {
+            return Ok(None);
+        };
+        Ok(self
+            .requests
+            .iter()
+            .find(|r| r.request_id == request)
+            .map(|r| r.document_id))
+    }
+    fn requests_of_doc(&self, doc: i64) -> Result<Vec<String>, String> {
+        Ok(self
+            .requests
+            .iter()
+            .filter(|r| r.document_id == doc)
+            .map(|r| r.request_id.clone())
+            .collect())
+    }
+}
+
+/// Which library an edit was written in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Written {
+    /// This computer's own library (its queue): the edit was applied here as
+    /// it was made, so its record is known here.
+    Here,
+    /// The copy another computer wrote (its journal): the edit is in that
+    /// copy's own record of requests.
+    InCopy,
+}
+
+/// What is known about a queued manual edit before it is replayed.
+pub(crate) struct EditSource<'a> {
+    /// The library the edit was written in.
+    pub records: &'a dyn Records,
+    pub written: Written,
+    /// The documents (in that library) that creations still waiting to be
+    /// replayed made. Only these may be taken as "refused" when the
+    /// translation says so.
+    pub creations: &'a BTreeSet<i64>,
+    /// The document the receipt of the edit itself named, in that library.
+    pub receipt_doc: Option<i64>,
+}
+
+fn readdress(mutation: IntranetMutation, number: &str) -> IntranetMutation {
+    let IntranetMutation::ImportCapture { mut capture } = mutation else {
+        return mutation;
+    };
+    if !same_number(&capture.document_number, number) {
+        capture.source_url = format!("{MANUAL_ORIGIN}{number}");
+        capture.document_number = number.to_owned();
+    }
+    IntranetMutation::ImportCapture { capture }
+}
+
+fn not_applied(capture: &Capture, why: &str) -> String {
+    format!(
+        "A edição do registro “{}” (número {} neste computador) não foi aplicada: {why} O texto da edição está guardado neste aviso; copie-o e refaça a edição no registro certo.",
+        short_title(&capture.title),
+        capture.document_number
+    )
+}
+
+/// An edit of a manual record is addressed by the record's number, and a
+/// creation made before the exchange is numbered again when it is replayed
+/// on the shared copy (another record may already hold its number). Replaying
+/// the edit as written would put it on that other record. This finds the
+/// record the edit was written against and re-addresses the edit to that same
+/// record's number in `target`, using only what already exists and travels:
+///
+/// 1. the creation of that record is being replayed in this exchange: it
+///    follows the number the creation got (a creation that was refused takes
+///    the edit with it);
+/// 2. otherwise the request ids of the record are looked up in `target`: the
+///    same record there is the one they lead to, wherever its number is now;
+///    when the holder of the number is another record, the edit moves; when
+///    the record cannot be found there but another record holds the number,
+///    the edit is not applied;
+/// 3. no request id on this side (a record that predates them), a copy that
+///    has nothing to compare, or nobody holding the number there: as it was
+///    always done, by number.
+///
+/// An `Err` is a refusal to apply it: the edit becomes a conflict to decide,
+/// never a change of another record.
+pub(crate) fn retarget_manual_edit(
+    mutation: IntranetMutation,
+    source: &EditSource<'_>,
+    ids: &crate::idmap::IdMap,
+    target: Option<&dyn Records>,
+) -> Result<IntranetMutation, String> {
+    let IntranetMutation::ImportCapture { capture } = &mutation else {
+        return Ok(mutation);
+    };
+    if !capture.is_manual() || capture.document_number == MANUAL_PENDING {
+        return Ok(mutation);
+    }
+    let number = capture.document_number.clone();
+    let uncertain = |why: &str| not_applied(capture, why);
+    let cannot_tell = "não foi possível ter certeza de qual registro da cópia compartilhada ela corrige, porque o número pode ter mudado ao sincronizar.";
+    let unreadable = |_: String| uncertain(cannot_tell);
+    let own_request = normalized_request(&capture.request_id);
+
+    // 1. The record the edit was written against, in the library it comes from.
+    let mut local = None;
+    match source.written {
+        Written::Here => {
+            if let Some(doc) = source.receipt_doc {
+                match source.records.number_of_doc(doc).map_err(unreadable)? {
+                    // A record this library has since purged: the receipt is
+                    // still the proof of where the edit was written.
+                    None => local = Some(doc),
+                    Some(n) if same_number(&n, &number) => local = Some(doc),
+                    Some(_) => {}
+                }
+            }
+            if local.is_none() {
+                if let Some(request) = &own_request {
+                    local = source.records.doc_of_request(request).map_err(unreadable)?;
+                }
+            }
+            if local.is_none() {
+                local = source.records.doc_by_number(&number).map_err(unreadable)?;
+            }
+        }
+        Written::InCopy => {
+            if let Some(request) = &own_request {
+                local = source.records.doc_of_request(request).map_err(unreadable)?;
+            }
+            if local.is_none() {
+                local = source.receipt_doc;
+            }
+        }
+    }
+    let Some(local) = local else {
+        return match source.written {
+            Written::Here => Err(uncertain("o registro não existe mais neste computador.")),
+            Written::InCopy => Ok(mutation),
+        };
+    };
+
+    // 2. Its creation is being replayed in this exchange.
+    if source.creations.contains(&local) {
+        match ids.learned_document(local) {
+            Some(None) => {
+                return Err(uncertain(
+                    "a criação desse registro foi recusada pela cópia compartilhada.",
+                ))
+            }
+            Some(Some(there)) => {
+                let target = target.ok_or_else(|| uncertain(cannot_tell))?;
+                let number = target
+                    .number_of_doc(there)
+                    .map_err(unreadable)?
+                    .ok_or_else(|| uncertain(cannot_tell))?;
+                return Ok(readdress(mutation, &number));
+            }
+            None => {}
+        }
+    }
+
+    // 3. By identity.
+    if source
+        .records
+        .number_of_doc(local)
+        .map_err(unreadable)?
+        .is_none()
+    {
+        return match source.written {
+            Written::Here => Err(uncertain("o registro não existe mais neste computador.")),
+            Written::InCopy => Ok(mutation),
+        };
+    }
+    let Some(target) = target else {
+        return Ok(mutation);
+    };
+    // The request of the edit itself is not an identity: it exists only here.
+    let mine: Vec<String> = source
+        .records
+        .requests_of_doc(local)
+        .map_err(unreadable)?
+        .into_iter()
+        .filter(|r| Some(r) != own_request.as_ref())
+        .collect();
+    if mine.is_empty() {
+        return Ok(mutation);
+    }
+    let mut same = BTreeSet::new();
+    for request in &mine {
+        if let Some(doc) = target.doc_of_request(request).map_err(unreadable)? {
+            same.insert(doc);
+        }
+    }
+    let holder = target.doc_by_number(&number).map_err(unreadable)?;
+    match (same.len(), holder) {
+        (0, None) => Ok(mutation),
+        (0, Some(_)) => Err(uncertain(cannot_tell)),
+        (1, holder) => {
+            let doc = *same.iter().next().expect("one element");
+            if holder == Some(doc) {
+                return Ok(mutation);
+            }
+            match target.number_of_doc(doc).map_err(unreadable)? {
+                Some(there) => Ok(readdress(mutation, &there)),
+                None => Err(uncertain(cannot_tell)),
+            }
+        }
+        _ => Err(uncertain(cannot_tell)),
+    }
+}
+
+/// The documents (in the library the changes were written in) that
+/// creations waiting to be replayed made.
+pub(crate) fn pending_creations<'a>(
+    entries: impl IntoIterator<Item = (&'a IntranetMutation, &'a [crate::idmap::CreatedId])>,
+) -> BTreeSet<i64> {
+    let mut out = BTreeSet::new();
+    for (mutation, created) in entries {
+        if let IntranetMutation::ImportCapture { capture } = mutation {
+            if capture.is_manual() && capture.document_number == MANUAL_PENDING {
+                out.extend(
+                    created
+                        .iter()
+                        .filter(|c| c.kind == crate::idmap::IdKind::Document)
+                        .map(|c| c.id),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// The document an edit's receipt named (the record the edit landed on).
+pub(crate) fn receipt_document(created: &[crate::idmap::CreatedId]) -> Option<i64> {
+    created
+        .iter()
+        .find(|c| c.kind == crate::idmap::IdKind::Document)
+        .map(|c| c.id)
+}
+
+// ---------------------------------------------------------------------------
+// The notice
+
+/// What this library shows of a manual record: its number and title, and the
+/// request ids of all its versions.
+type Shown = (String, String, Vec<String>);
+
+/// The manual numbers this library presents, read before a snapshot replaces
+/// the library.
 #[derive(Default)]
-pub(crate) struct Presented(BTreeMap<String, (String, String)>);
+pub(crate) struct Presented(Vec<Shown>);
 
 impl Presented {
     /// Reads them (best effort: a row that cannot be read gives no notice).
     pub(crate) fn read(conn: &Connection) -> Self {
-        let mut out = BTreeMap::new();
+        let mut out = Vec::new();
         let _ = (|| -> Result<()> {
+            let mut requests: BTreeMap<i64, Vec<(i64, String)>> = BTreeMap::new();
             let mut statement = conn.prepare(
-                "SELECT c.payload,
-                        (SELECT r.request_id FROM requests r JOIN captures rc ON rc.id=r.capture_id
-                          WHERE r.document_id=d.id ORDER BY rc.id LIMIT 1)
-                   FROM documents d JOIN captures c ON c.id=d.latest_capture_id",
+                "SELECT r.document_id,r.capture_id,r.request_id FROM requests r ORDER BY r.capture_id,r.request_id",
             )?;
-            let rows = statement.query_map([], |r| {
-                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Option<String>>(1)?))
-            })?;
-            for row in rows {
-                let (blob, uid) = row?;
-                let Some(uid) = uid else { continue };
+            for row in statement.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })? {
+                let (document, capture, request) = row?;
+                requests
+                    .entry(document)
+                    .or_default()
+                    .push((capture, request));
+            }
+            let mut statement = conn.prepare(
+                "SELECT d.id,c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id",
+            )?;
+            for row in
+                statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?
+            {
+                let (document, blob) = row?;
+                let Some(own) = requests.get(&document) else {
+                    continue;
+                };
                 let Some(capture) = read_capture(&blob) else {
                     continue;
                 };
                 if capture.is_manual() && capture.document_number != MANUAL_PENDING {
-                    out.insert(uid, (capture.document_number, capture.title));
+                    out.push((
+                        capture.document_number,
+                        capture.title,
+                        own.iter().map(|(_, request)| request.clone()).collect(),
+                    ));
                 }
             }
             Ok(())
@@ -120,17 +471,21 @@ impl Presented {
 
     /// Compares with the library as it is now (the snapshot adopted, inside
     /// the same transaction) and records one notice for each record whose
-    /// number differs. Best effort: the exchange never fails because of it.
-    /// `event` names the adopted state (revision and generation), so the same
-    /// transition of the same state is never recorded twice.
+    /// number differs. The record is the one that any of the request ids
+    /// leads to, when they all lead to one. Best effort: the exchange never
+    /// fails because of it. `event` names the adopted state (revision and
+    /// generation), so the same transition of the same state is never
+    /// recorded twice.
     pub(crate) fn record_changes(&self, conn: &Connection, event: &str) {
         let _ = (|| -> Result<()> {
-            for (uid, (number, title)) in &self.0 {
+            for (number, title, requests) in &self.0 {
+                let Some(document) = document_of_identity(conn, requests)? else {
+                    continue;
+                };
                 let after: Option<Vec<u8>> = conn
                     .query_row(
-                        "SELECT c.payload FROM requests r JOIN documents d ON d.id=r.document_id
-                           JOIN captures c ON c.id=d.latest_capture_id WHERE r.request_id=?1",
-                        [uid],
+                        "SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id WHERE d.id=?1",
+                        [document],
                         |r| r.get(0),
                     )
                     .optional()?;
@@ -143,9 +498,18 @@ impl Presented {
                 {
                     continue;
                 }
+                // Early and late versions: the identity survives the purge
+                // of either end.
+                let mut uids: Vec<String> =
+                    requests.iter().take(KEEP_IDENTITIES / 2).cloned().collect();
+                for request in requests.iter().rev().take(KEEP_IDENTITIES / 2) {
+                    if !uids.contains(request) {
+                        uids.push(request.clone());
+                    }
+                }
                 let notice = RenumberNotice {
                     id: 0,
-                    uid: uid.clone(),
+                    uids,
                     title: title.clone(),
                     from: number.clone(),
                     to: after.document_number,
@@ -153,22 +517,48 @@ impl Presented {
                     dismissed: false,
                 };
                 let dedup = Sha256::digest(
-                    format!("{uid}\n{}\n{}\n{event}", notice.from, notice.to).as_bytes(),
+                    format!(
+                        "{}\n{}\n{}\n{event}",
+                        notice.uids.first().map(String::as_str).unwrap_or(""),
+                        notice.from,
+                        notice.to
+                    )
+                    .as_bytes(),
                 )
                 .to_vec();
                 conn.execute(
-                    "INSERT OR IGNORE INTO renumber_notices(dedup,payload) VALUES(?1,?2)",
+                    "INSERT OR IGNORE INTO renumber_notices(dedup,dismissed,payload) VALUES(?1,0,?2)",
                     params![dedup, seal(&serde_json::to_vec(&notice)?)?],
                 )?;
             }
             conn.execute(
-                "DELETE FROM renumber_notices WHERE id NOT IN
-                   (SELECT id FROM renumber_notices ORDER BY id DESC LIMIT ?1)",
-                [KEEP_NOTICES],
+                "DELETE FROM renumber_notices WHERE dismissed=1 AND id NOT IN
+                   (SELECT id FROM renumber_notices WHERE dismissed=1 ORDER BY id DESC LIMIT ?1)",
+                [KEEP_DISMISSED],
             )?;
             Ok(())
         })();
     }
+}
+
+/// The one document that the request ids lead to (`None` when none of them
+/// is here, or when they lead to different documents: no guess).
+fn document_of_identity(conn: &Connection, requests: &[String]) -> Result<Option<i64>> {
+    let mut found = BTreeSet::new();
+    let mut statement = conn.prepare("SELECT document_id FROM requests WHERE request_id=?1")?;
+    for request in requests {
+        if let Some(document) = statement
+            .query_row([request], |r| r.get::<_, i64>(0))
+            .optional()?
+        {
+            found.insert(document);
+        }
+    }
+    Ok(if found.len() == 1 {
+        found.into_iter().next()
+    } else {
+        None
+    })
 }
 
 impl Store {
@@ -179,6 +569,7 @@ impl Store {
             "CREATE TABLE IF NOT EXISTS renumber_notices(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 dedup BLOB NOT NULL UNIQUE,
+                dismissed INTEGER NOT NULL DEFAULT 0,
                 payload BLOB NOT NULL
             );",
         )?;
@@ -240,16 +631,8 @@ impl Store {
 
     /// The record a notice is about, when this library has it and it is not
     /// in the trash.
-    pub fn renumber_notice_document(&self, uid: &str) -> Option<i64> {
-        let id: i64 = self
-            .conn
-            .query_row(
-                "SELECT document_id FROM requests WHERE request_id=?1",
-                [uid],
-                |r| r.get(0),
-            )
-            .optional()
-            .ok()??;
+    pub fn renumber_notice_document(&self, notice: &RenumberNotice) -> Option<i64> {
+        let id = document_of_identity(&self.conn, &notice.uids).ok()??;
         crate::trash::require_active_document(&self.conn, id)
             .ok()
             .map(|_| id)
@@ -273,7 +656,7 @@ impl Store {
         }
         notice.dismissed = true;
         self.conn.execute(
-            "UPDATE renumber_notices SET payload=?1 WHERE id=?2",
+            "UPDATE renumber_notices SET dismissed=1,payload=?1 WHERE id=?2",
             params![seal(&serde_json::to_vec(&notice)?)?, id],
         )?;
         Ok(())
@@ -293,15 +676,7 @@ impl Store {
         self.cached("renumber_old_numbers", || {
             let mut out: BTreeMap<i64, Vec<String>> = BTreeMap::new();
             for notice in self.all_renumber_notices()? {
-                let document: Option<i64> = self
-                    .conn
-                    .query_row(
-                        "SELECT document_id FROM requests WHERE request_id=?1",
-                        [&notice.uid],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if let Some(document) = document {
+                if let Some(document) = document_of_identity(&self.conn, &notice.uids)? {
                     let numbers = out.entry(document).or_default();
                     if !numbers.contains(&notice.from) {
                         numbers.push(notice.from);
@@ -333,26 +708,13 @@ impl Store {
             let waiting: i64 =
                 self.conn
                     .query_row("SELECT count(*) FROM offline_outbox", [], |r| r.get(0))?;
-            let mut out = BTreeSet::new();
             if waiting == 0 {
-                return Ok(out);
+                return Ok(BTreeSet::new());
             }
-            for entry in self.list_offline_outbox()? {
-                if let crate::intranet::IntranetMutation::ImportCapture { capture } =
-                    &entry.mutation
-                {
-                    if capture.is_manual() && capture.document_number == MANUAL_PENDING {
-                        out.extend(
-                            entry
-                                .created
-                                .iter()
-                                .filter(|c| c.kind == crate::idmap::IdKind::Document)
-                                .map(|c| c.id),
-                        );
-                    }
-                }
-            }
-            Ok(out)
+            let queue = self.list_offline_outbox()?;
+            Ok(pending_creations(
+                queue.iter().map(|e| (&e.mutation, e.created.as_slice())),
+            ))
         })
     }
 }
@@ -564,56 +926,6 @@ mod tests {
         assert_eq!(report.renumbered.len(), 1, "{}", report.summary());
         assert_eq!(number_of(&b, "Registro de B").unwrap(), b_number);
         assert_eq!(text_of(&b, &x_number), "Texto de A");
-    }
-
-    #[test]
-    fn an_edit_whose_creation_was_refused_becomes_a_conflict_and_a_moved_one_is_rewritten() {
-        use crate::idmap::{CreatedId, IdKind, IdMap};
-        use crate::intranet::{retarget_manual_edit, IntranetMutation};
-        let dir = tempfile::tempdir().unwrap();
-        let mut copy = Store::open(&dir.path().join("copy.sqlite3")).unwrap();
-        let (there, number) = create(&mut copy, "Registro na cópia", "Texto");
-        let edit = |number: &str| {
-            let mut capture = fields("Registro de B", "Editado").capture(number, "Teste");
-            capture.request_id = uuid::Uuid::new_v4().to_string();
-            IntranetMutation::ImportCapture { capture }
-        };
-        let local = CreatedId::new(IdKind::Document, "", 7);
-        let mut ids = IdMap::default();
-        ids.learn(
-            std::slice::from_ref(&local),
-            Some(&[CreatedId::new(IdKind::Document, "", there)]),
-        );
-        // The creation went to a record that is numbered differently there.
-        let moved = retarget_manual_edit(edit("MANUAL-2026/0099"), Some(7), &ids, &copy).unwrap();
-        let IntranetMutation::ImportCapture { capture } = moved else {
-            panic!()
-        };
-        assert_eq!(capture.document_number, number);
-        assert_eq!(capture.source_url, format!("ponte://manual/{number}"));
-        // Same number there: left as it was.
-        let same = retarget_manual_edit(edit(&number), Some(7), &ids, &copy).unwrap();
-        assert!(
-            matches!(same, IntranetMutation::ImportCapture { capture } if capture.document_number == number)
-        );
-        // The creation was refused: the edit is refused with it.
-        let mut refused = IdMap::default();
-        refused.learn(&[local], None);
-        assert!(retarget_manual_edit(edit("MANUAL-2026/0099"), Some(7), &refused, &copy).is_err());
-        // Nothing known of the document (shared history): untouched, as is a
-        // SIGADOC capture.
-        let untouched =
-            retarget_manual_edit(edit("MANUAL-2026/0099"), Some(8), &ids, &copy).unwrap();
-        assert!(
-            matches!(untouched, IntranetMutation::ImportCapture { capture } if capture.document_number == "MANUAL-2026/0099")
-        );
-        let official = IntranetMutation::ImportCapture {
-            capture: crate::model::sample_capture(),
-        };
-        let official = retarget_manual_edit(official, Some(7), &ids, &copy).unwrap();
-        assert!(
-            matches!(official, IntranetMutation::ImportCapture { capture } if !capture.is_manual())
-        );
     }
 
     #[test]
@@ -891,5 +1203,345 @@ mod tests {
                 "a mensagem de B sumiu do acervo: {titles:?}"
             );
         }
+    }
+
+    /// A principal computer (host) and a client with its own library, on a
+    /// private port; `offline` stops the host, `online` brings it back.
+    struct Team {
+        _dir: tempfile::TempDir,
+        host: Store,
+        client: Store,
+        db: std::path::PathBuf,
+        token: String,
+        server: Option<crate::intranet::HostServer>,
+    }
+
+    impl Team {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let db = dir.path().join("host.sqlite3");
+            let token = crate::intranet::generate_token();
+            let mut host = Store::open(&db).unwrap();
+            host.save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::Host,
+                member_name: "ANFITRIAO".into(),
+                bind_addr: "127.0.0.1:0".into(),
+                host_url: "http://127.0.0.1:7878".into(),
+                cabinet_token: token.clone(),
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+            let mut client = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+            client
+                .save_intranet_config(&IntranetConfig {
+                    mode: IntranetMode::Client,
+                    member_name: "SERVIDOR-A".into(),
+                    host_url: "http://127.0.0.1:1".into(),
+                    cabinet_token: token.clone(),
+                    ..IntranetConfig::default()
+                })
+                .unwrap();
+            let mut team = Self {
+                _dir: dir,
+                host,
+                client,
+                db,
+                token,
+                server: None,
+            };
+            team.online();
+            team.client.sync_from_host(false).unwrap();
+            team
+        }
+
+        fn online(&mut self) {
+            self.offline();
+            let server =
+                crate::intranet::HostServer::start(self.db.clone(), "127.0.0.1:0").unwrap();
+            let mut cfg = self.client.load_intranet_config().unwrap();
+            cfg.host_url = format!("http://{}", server.local_addr());
+            cfg.cabinet_token = self.token.clone();
+            self.client.save_intranet_config(&cfg).unwrap();
+            self.server = Some(server);
+        }
+
+        fn offline(&mut self) {
+            if let Some(mut server) = self.server.take() {
+                server.stop();
+            }
+        }
+    }
+
+    /// BLOCKER of the review: a client that created a record offline and
+    /// edited it sends its queue to the principal; the principal numbers the
+    /// creation again, and the edit, still addressed by the old number, must
+    /// follow it instead of landing on the principal's own record.
+    #[test]
+    fn a_team_client_s_offline_edit_follows_its_creation_to_the_number_the_main_computer_gave() {
+        let mut t = Team::new();
+        t.offline();
+        let (y, y_number) = create(&mut t.client, "Registro do cliente", "Texto do cliente");
+        t.client
+            .update_manual_document(
+                y,
+                &fields("Registro do cliente", "Texto do cliente, editado"),
+            )
+            .unwrap();
+        let (_, x_number) = create(&mut t.host, "Registro do principal", "Texto do principal");
+        assert_eq!(x_number, y_number, "the scenario needs colliding numbers");
+        t.online();
+        t.client.sync_from_host(false).unwrap();
+
+        assert!(t.client.list_offline_outbox().unwrap().is_empty());
+        assert!(
+            t.client.list_sync_conflicts().unwrap().is_empty(),
+            "{:?}",
+            t.client.list_sync_conflicts().unwrap()
+        );
+        for store in [&t.host, &t.client] {
+            assert_eq!(
+                text_of(store, &x_number),
+                "Texto do principal",
+                "the client's edit was applied to the principal's record"
+            );
+            let number = number_of(store, "Registro do cliente").expect("the client's record");
+            assert_ne!(number, x_number);
+            assert_eq!(text_of(store, &number), "Texto do cliente, editado");
+        }
+        // The client is told about the change, once.
+        assert_eq!(t.client.pending_renumber_notices().unwrap().len(), 1);
+    }
+
+    /// Two folders (a Drive and a pen drive) and two computers, both joined to
+    /// both, on a library with one SIGADOC document.
+    struct Folders {
+        dir: tempfile::TempDir,
+        drive: std::path::PathBuf,
+        pen: std::path::PathBuf,
+        a: Store,
+        b: Store,
+    }
+
+    impl Folders {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let drive = dir.path().join("Drive").join("ponte-sync.ponte");
+            let pen = dir.path().join("Pendrive").join("ponte-sync.ponte");
+            std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
+            let both = vec![drive.display().to_string(), pen.display().to_string()];
+            let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+            a.save_intranet_config(&folder_config("Casa", both.clone()))
+                .unwrap();
+            a.import_capture(&crate::model::sample_capture()).unwrap();
+            let mut f = Self {
+                dir,
+                drive,
+                pen,
+                a,
+                b: Store::open(std::path::Path::new(":memory:")).unwrap(),
+            };
+            f.sync_a(Where::Both);
+            let mut b = Store::open(&f.dir.path().join("b.sqlite3")).unwrap();
+            b.save_intranet_config(&folder_config("Trabalho", both))
+                .unwrap();
+            f.b = b;
+            f.sync_b(Where::Both);
+            f
+        }
+
+        fn files(&self, at: Where) -> Vec<String> {
+            let drive = self.drive.display().to_string();
+            let pen = self.pen.display().to_string();
+            match at {
+                Where::Both => vec![drive, pen],
+                Where::Drive => vec![drive],
+                Where::Pen => vec![pen],
+            }
+        }
+
+        fn sync_a(&mut self, at: Where) -> crate::intranet::FolderSyncReport {
+            let files = self.files(at);
+            sync_in(&mut self.a, files)
+        }
+
+        fn sync_b(&mut self, at: Where) -> crate::intranet::FolderSyncReport {
+            let files = self.files(at);
+            sync_in(&mut self.b, files)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Where {
+        Both,
+        Drive,
+        Pen,
+    }
+
+    fn sync_in(store: &mut Store, files: Vec<String>) -> crate::intranet::FolderSyncReport {
+        let mut cfg = store.load_intranet_config().unwrap();
+        cfg.folder_files = files;
+        store.save_intranet_config(&cfg).unwrap();
+        store
+            .sync_with_folders(&cfg, KEY, false, &crate::ai::Reporter::silent())
+            .unwrap()
+    }
+
+    /// `count` distinct changes (tasks of the SIGADOC document), enough to
+    /// push older entries out of the copy's journal.
+    fn busy_work(store: &mut Store, count: usize) {
+        let document = store
+            .list_documents("")
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .id;
+        for n in 0..count {
+            let mut task = crate::tasks::Task::new(document);
+            task.title = format!("Tarefa de enchimento {n}");
+            store.save_task(&task).unwrap();
+        }
+    }
+
+    /// BLOCKER 2 of the review, first road: B creates and edits Y, then
+    /// trashes and purges it and creates Z, which takes the freed number,
+    /// all before the first exchange. Nothing of Y's history may be applied to
+    /// the record (A's) that holds that number in the shared copy.
+    #[test]
+    fn a_purged_creation_s_edits_never_land_on_the_record_that_holds_its_number() {
+        let mut p = pair();
+        let (_, x) = create(&mut p.a, "Registro de A", "Texto de A");
+        sync(&mut p.a);
+        let (y, y_number) = create(&mut p.b, "Registro de B", "Texto de B");
+        assert_eq!(x, y_number);
+        p.b.update_manual_document(y, &fields("Registro de B", "Texto de B, editado"))
+            .unwrap();
+        p.b.trash_item(crate::trash::Target {
+            kind: crate::trash::Kind::Document,
+            id: y,
+        })
+        .unwrap();
+        p.b.purge_trash_item(crate::trash::Target {
+            kind: crate::trash::Kind::Document,
+            id: y,
+        })
+        .unwrap();
+        let (_, z_number) = create(&mut p.b, "Registro Z", "Texto de Z");
+        assert_eq!(z_number, y_number, "Z takes the freed number");
+        sync(&mut p.b);
+        sync(&mut p.a);
+        for store in [&p.a, &p.b] {
+            assert_eq!(
+                number_of(store, "Registro de A").as_deref(),
+                Some(x.as_str()),
+                "A's record keeps its number and its title"
+            );
+            assert_eq!(
+                text_of(store, &x),
+                "Texto de A",
+                "A's record was overwritten"
+            );
+            assert!(number_of(store, "Registro Z").is_some(), "Z survives");
+        }
+    }
+
+    /// BLOCKER 2 of the review, second road: the link between B's queued edit
+    /// and its creation is lost because the copy's journal no longer has the
+    /// creation (it was renumbered by A, who then published enough changes to
+    /// compact its journal). The edit is addressed by the old number, which A's
+    /// own record holds now.
+    #[test]
+    fn an_edit_whose_creation_left_the_journal_still_reaches_its_own_record() {
+        let mut f = Folders::new();
+        // A keeps X on the Drive, with more changes than B will make (so its
+        // copy is the base); B publishes Y on the pen drive only.
+        let (x_id, x_number) = create(&mut f.a, "Registro de A", "Texto de A");
+        let _ = x_id;
+        busy_work(&mut f.a, 4);
+        f.sync_a(Where::Drive);
+        let (_, y_number) = create(&mut f.b, "Registro de B", "Texto de B");
+        assert_eq!(x_number, y_number);
+        f.sync_b(Where::Pen);
+        // A merges both: Y is renumbered; A then publishes enough work to
+        // push Y's creation out of the journal.
+        f.sync_a(Where::Both);
+        let y_new = number_of(&f.a, "Registro de B").unwrap();
+        assert_ne!(y_new, x_number);
+        crate::sharedfolder::set_journal_cap_for_test(6);
+        busy_work(&mut f.a, 8);
+        f.sync_a(Where::Both);
+        // B still shows Y under the old number and edits it.
+        let y = id_of(&f.b, "Registro de B");
+        assert_eq!(
+            f.b.load_document(y).unwrap().summary.document_number,
+            y_number
+        );
+        f.b.update_manual_document(y, &fields("Registro de B", "Texto de B, editado"))
+            .unwrap();
+        f.sync_b(Where::Both);
+        f.sync_a(Where::Both);
+        for store in [&f.a, &f.b] {
+            assert_eq!(
+                text_of(store, &x_number),
+                "Texto de A",
+                "A's record was overwritten"
+            );
+            assert_eq!(
+                text_of(store, &number_of(store, "Registro de B").unwrap()),
+                "Texto de B, editado"
+            );
+        }
+    }
+
+    /// MAJOR 3 of the review: a record that came in the very first copy (no
+    /// creation in any journal) edited on another computer and read through
+    /// that computer's own folder copy must be edited, not refused as if its
+    /// creation had failed.
+    #[test]
+    fn an_edit_of_a_record_from_the_first_copy_that_arrives_in_another_journal_is_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = dir.path().join("Drive").join("ponte-sync.ponte");
+        let pen = dir.path().join("Pendrive").join("ponte-sync.ponte");
+        std::fs::create_dir_all(drive.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pen.parent().unwrap()).unwrap();
+        let both = vec![drive.display().to_string(), pen.display().to_string()];
+        // A creates the record alone, before any folder exists.
+        let mut a = Store::open(&dir.path().join("a.sqlite3")).unwrap();
+        let (m, m_number) = create(&mut a, "Registro antigo", "Texto antigo");
+        let _ = m;
+        a.save_intranet_config(&folder_config("Casa", both.clone()))
+            .unwrap();
+        sync_in(&mut a, both.clone());
+        let mut b = Store::open(&dir.path().join("b.sqlite3")).unwrap();
+        b.save_intranet_config(&folder_config("Trabalho", both.clone()))
+            .unwrap();
+        sync_in(&mut b, both.clone());
+        assert_eq!(number_of(&b, "Registro antigo").unwrap(), m_number);
+
+        // A publishes more on the Drive only; B edits the record and
+        // publishes on the pen drive only.
+        busy_work(&mut a, 4);
+        sync_in(&mut a, vec![drive.display().to_string()]);
+        let b_id = id_of(&b, "Registro antigo");
+        b.update_manual_document(b_id, &fields("Registro antigo", "Texto antigo, editado"))
+            .unwrap();
+        sync_in(&mut b, vec![pen.display().to_string()]);
+        let revision = |path: &std::path::Path| {
+            crate::sharedfolder::read_header(path)
+                .unwrap()
+                .unwrap()
+                .revision
+        };
+        assert!(revision(&drive) > revision(&pen), "the Drive is the base");
+
+        let report = sync_in(&mut a, both);
+        assert_eq!(
+            report.conflicts,
+            0,
+            "{:?}",
+            a.list_sync_conflicts().unwrap()
+        );
+        assert_eq!(text_of(&a, &m_number), "Texto antigo, editado");
     }
 }

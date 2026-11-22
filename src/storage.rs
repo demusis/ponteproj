@@ -1492,7 +1492,7 @@ fn identity_hash(capture: &Capture) -> Vec<u8> {
     identity_hash_for_number(&capture.document_number)
 }
 
-fn identity_hash_for_number(number: &str) -> Vec<u8> {
+pub(crate) fn identity_hash_for_number(number: &str) -> Vec<u8> {
     let number = number.split_whitespace().collect::<String>().to_uppercase();
     // Manual records live under their own origin: the same digits in an
     // official number name a different document.

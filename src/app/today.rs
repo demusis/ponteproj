@@ -605,7 +605,7 @@ impl PonteApp {
                 for notice in renumbered.iter().take(5) {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(notice.sentence());
-                        if let Some(id) = self.store.renumber_notice_document(&notice.uid) {
+                        if let Some(id) = self.store.renumber_notice_document(notice) {
                             if ui.button("Abrir o registro").clicked() {
                                 asked = Some(Asked::OpenDocument(id));
                             }
