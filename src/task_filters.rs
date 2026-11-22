@@ -218,7 +218,34 @@ pub struct Restored {
     pub attrs: AttrFilter,
 }
 
+/// A field of [`Saved`] the person can choose on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    View,
+    Categories,
+    Project,
+    Assignee,
+    Priority,
+    Status,
+}
+
 impl Saved {
+    /// Takes `field` from `from`: an explicit choice of the person, whether
+    /// or not the value on screen changed with it.
+    pub fn copy_field(&mut self, from: &Saved, field: Field) {
+        match field {
+            Field::View => self.view = from.view,
+            Field::Categories => {
+                self.categories = from.categories.clone();
+                self.no_category = from.no_category;
+            }
+            Field::Project => self.project = from.project.clone(),
+            Field::Assignee => self.assignee = from.assignee.clone(),
+            Field::Priority => self.priority = from.priority.clone(),
+            Field::Status => self.status = from.status.clone(),
+        }
+    }
+
     pub fn of(
         view: usize,
         categories: &CategoryFilter,

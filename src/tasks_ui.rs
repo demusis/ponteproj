@@ -1714,6 +1714,15 @@ fn restore_step(list: &mut Vec<(bool, String)>, index: usize, step: (bool, Strin
     list.insert(index.min(list.len()), step);
 }
 
+/// The fields of the filters (all but the view).
+const FILTER_FIELDS: [crate::task_filters::Field; 5] = [
+    crate::task_filters::Field::Categories,
+    crate::task_filters::Field::Project,
+    crate::task_filters::Field::Assignee,
+    crate::task_filters::Field::Priority,
+    crate::task_filters::Field::Status,
+];
+
 /// What the program does to the view and the filters when it shows a task
 /// from elsewhere: lifts the filters that would hide `task` (only those) and,
 /// for a navigation, goes back to the view "Todas".
@@ -2124,7 +2133,7 @@ impl TaskPanel {
                 .as_ref()
                 .is_some_and(|draft| draft.id == task.id && draft.document_id == task.document_id);
             if same {
-                self.reveal(task);
+                self.keep_filter_for(task);
             }
             return same;
         }
@@ -2213,21 +2222,41 @@ impl TaskPanel {
         self.draft.as_ref().map(|t| t.id).filter(|id| *id > 0)
     }
 
-    /// Opens a task, keeping the current view and filters. A click on a row
-    /// of the list changes none of them (the task is listed, so no filter
-    /// hides it); a task that comes from elsewhere (a document's list, the
-    /// chain of dependencies) lifts only the filters that would hide it.
-    /// Refused (false) while a different task has unsaved changes.
+    /// Opens a task of the list (a click on a row, or on a task of the chain
+    /// of dependencies): the view, the search and the filters stay as they
+    /// are, except a filter that would hide a task that is not in the list.
+    /// Refused (false) while a different task has unsaved changes. A task
+    /// that comes from outside the list is opened with
+    /// [`Self::open_task_from_elsewhere`].
     pub fn open_task(&mut self, task: &Task, store: &Store) -> bool {
+        self.open_task_with(task, store, false)
+    }
+
+    /// Opens a task that comes from another area (a document, Hoje, a
+    /// project, the search, an atendimento): what would hide it goes off,
+    /// the search text and the view included (the view goes back to "Todas",
+    /// as for `focus_task`).
+    pub fn open_task_from_elsewhere(&mut self, task: &Task, store: &Store) -> bool {
+        self.open_task_with(task, store, true)
+    }
+
+    fn open_task_with(&mut self, task: &Task, store: &Store, elsewhere: bool) -> bool {
+        let show = |panel: &mut Self| {
+            if elsewhere {
+                panel.keep_filter_for(task);
+            } else {
+                panel.reveal(task);
+            }
+        };
         if self.draft.as_ref().is_some_and(|t| t.id == task.id) {
-            self.reveal(task);
+            show(self);
             return true;
         }
         if self.dirty() {
             return false;
         }
         self.end_selection();
-        self.reveal(task);
+        show(self);
         self.original = Some(task.clone());
         self.draft = Some(task.clone());
         self.base_version = store.item_version("task", task.id).ok().map(|v| v.version);
@@ -2933,6 +2962,8 @@ impl TaskPanel {
                 });
         }
 
+        // Fields the person chose on purpose in the empty state of the list.
+        let mut chosen: Vec<crate::task_filters::Field> = Vec::new();
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(S4 as i8, S3 as i8))
             .show(ui, |ui| {
@@ -3019,7 +3050,7 @@ impl TaskPanel {
                                     _ => format!("{} · {overdue_count}", VIEWS[index]),
                                 };
                                 if widgets::chip(ui, self.view == index, label).clicked() {
-                                    self.view = index;
+                                    self.choose_view(index);
                                 }
                             }
                             let in_more = SECONDARY_VIEWS.contains(&self.view);
@@ -3032,26 +3063,30 @@ impl TaskPanel {
                             egui::Popup::menu(&more).show(|ui| {
                                 for index in SECONDARY_VIEWS {
                                     if ui.selectable_label(self.view == index, VIEWS[index]).clicked() {
-                                        self.view = index;
+                                        self.choose_view(index);
                                     }
                                 }
                             });
                             ui.checkbox(&mut self.unplanned_only, "Ainda não planejadas");
                             if !categories.is_empty() || self.category_filter.is_active() {
-                                crate::category_ui::category_filter_button(
+                                if crate::category_ui::category_filter_button(
                                     ui,
                                     "tasks",
                                     &mut self.category_filter,
                                     &categories,
-                                );
+                                ) {
+                                    self.chose(&[crate::task_filters::Field::Categories]);
+                                }
                             }
                             if !projects.is_empty() || self.project_filter.is_active() {
-                                crate::project_ui::project_filter_button(
+                                if crate::project_ui::project_filter_button(
                                     ui,
                                     "tasks",
                                     &mut self.project_filter,
                                     &projects,
-                                );
+                                ) {
+                                    self.chose(&[crate::task_filters::Field::Project]);
+                                }
                             }
                             if let Some(me) = crate::task_filters::own_name(&actor, &everyone) {
                                 let on = self.attrs.is_mine(me);
@@ -3062,6 +3097,7 @@ impl TaskPanel {
                                     .clicked()
                                 {
                                     self.attrs.set_mine(me, !on);
+                                    self.chose(&[crate::task_filters::Field::Assignee]);
                                 }
                             }
                             self.attr_chips(ui, &assignees);
@@ -3268,20 +3304,24 @@ impl TaskPanel {
                                         self.category_filter.clear();
                                         self.project_filter = ProjectFilter::Any;
                                         self.attrs.clear();
+                                        chosen.extend(FILTER_FIELDS);
                                     }
                                 } else if self.attrs.is_active() && !tasks.is_empty() {
                                     if ui.add(widgets::quiet("Limpar filtros")).clicked() {
                                         self.category_filter.clear();
                                         self.project_filter = ProjectFilter::Any;
                                         self.attrs.clear();
+                                        chosen.extend(FILTER_FIELDS);
                                     }
                                 } else if self.project_filter.is_active() && !tasks.is_empty() {
                                     if ui.add(widgets::quiet("Limpar o filtro de projeto")).clicked() {
                                         self.project_filter = ProjectFilter::Any;
+                                        chosen.push(crate::task_filters::Field::Project);
                                     }
                                 } else if self.category_filter.is_active() && !tasks.is_empty() {
                                     if ui.add(widgets::quiet("Limpar as categorias")).clicked() {
                                         self.category_filter.clear();
+                                        chosen.push(crate::task_filters::Field::Categories);
                                     }
                                 } else {
                                     ui.horizontal(|ui| {
@@ -3356,6 +3396,7 @@ impl TaskPanel {
                     });
             });
 
+        self.chose(&chosen);
         if let Some(task) = out.select.or_else(|| self.open_task_requested.take()) {
             if !self.open_task(&task, store) {
                 self.blocked = Some(Intent::Open(task));
@@ -3506,6 +3547,29 @@ impl TaskPanel {
         self.category_filter.clear();
         self.project_filter = ProjectFilter::Any;
         self.attrs.clear();
+        self.chose(&FILTER_FIELDS);
+    }
+
+    /// The person chose these fields on purpose: their choice is recorded
+    /// as it is on screen now, even when that is what was there already
+    /// (a filter the program had lifted, chosen "off" again, must not come
+    /// back at the next start).
+    fn chose(&mut self, fields: &[crate::task_filters::Field]) {
+        if !self.prefs_loaded || fields.is_empty() {
+            return;
+        }
+        // What else the person changed so far is theirs too.
+        self.sync_choice();
+        let now = self.prefs_now();
+        for field in fields {
+            self.prefs_choice.copy_field(&now, *field);
+        }
+    }
+
+    /// The person picked a view.
+    fn choose_view(&mut self, index: usize) {
+        self.view = index;
+        self.chose(&[crate::task_filters::Field::View]);
     }
 
     /// The chips of responsável, prioridade and situação.
@@ -3545,6 +3609,7 @@ impl TaskPanel {
                 1 => AssigneeFilter::Without,
                 n => AssigneeFilter::Named(options[n].0.clone()),
             };
+            self.chose(&[crate::task_filters::Field::Assignee]);
         }
 
         let options: Vec<(String, bool)> = std::iter::once((
@@ -3572,6 +3637,7 @@ impl TaskPanel {
             &options,
         ) {
             self.attrs.priority = index.checked_sub(1).map(|i| PRIORITIES[i].to_owned());
+            self.chose(&[crate::task_filters::Field::Priority]);
         }
 
         let options: Vec<(String, bool)> =
@@ -3597,6 +3663,7 @@ impl TaskPanel {
             &options,
         ) {
             self.attrs.status = index.checked_sub(1).map(|i| STATUSES[i].to_owned());
+            self.chose(&[crate::task_filters::Field::Status]);
         }
     }
 
@@ -4942,6 +5009,88 @@ mod navigation_tests {
         assert!(panel.attrs.is_mine("Ana"));
         assert_eq!(panel.attrs.status.as_deref(), Some("pendente"));
         assert_eq!(panel.view, 2, "a click never changes the view");
+    }
+
+    #[test]
+    fn a_task_opened_from_another_area_is_not_hidden_by_the_search_or_the_view() {
+        let (_dir, store, _) = store_with_task_of("Ana");
+        let task = store.list_tasks().unwrap().remove(0);
+        let mut panel = TaskPanel::default();
+        panel.restore_from(&store, None);
+        panel.view = 4;
+        panel.query = "outra coisa".into();
+        assert!(panel.open_task_from_elsewhere(&task, &store));
+        assert_eq!(panel.view, 0);
+        assert!(panel.query.is_empty());
+        panel.ensure_view(&store);
+        assert_eq!(panel.derived.as_ref().unwrap().visible.len(), 1);
+
+        // The same task asked for again while it is open and edited.
+        panel.draft.as_mut().unwrap().notes = "ainda não salvo".into();
+        panel.view = 4;
+        panel.query = "outra coisa".into();
+        assert!(panel.open_task_from_elsewhere(&task, &store));
+        assert_eq!(panel.view, 0);
+        assert!(panel.query.is_empty());
+        assert_eq!(panel.draft.as_ref().unwrap().notes, "ainda não salvo");
+        assert!(panel.focus_task(&task));
+
+        // A click on a row of the list leaves both alone.
+        panel.close_form();
+        panel.view = 4;
+        panel.query = "outra coisa".into();
+        assert!(panel.open_task(&task, &store));
+        assert_eq!(panel.view, 4);
+        assert_eq!(panel.query, "outra coisa");
+    }
+
+    #[test]
+    fn a_choice_equal_to_what_the_screen_shows_is_still_recorded() {
+        use crate::task_filters::Saved;
+        let (_dir, store, _) = store_with_task_of("Ana");
+        let task = store.list_tasks().unwrap().remove(0);
+        let mut panel = TaskPanel::default();
+        panel.restore_from(
+            &store,
+            Some(Saved {
+                view: 4,
+                priority: Some("alta".into()),
+                assignee: Some("Ana".into()),
+                ..Saved::default()
+            }),
+        );
+        // The task is "normal" and Ana's: opening it from elsewhere lifts the
+        // priority and takes the view to Todas, for the session.
+        assert!(panel.focus_task(&task));
+        assert_eq!(panel.attrs.priority, None);
+        assert_eq!(panel.view, 0);
+        assert_eq!(panel.prefs_to_save(), None);
+
+        // The person picks "Todas as prioridades" and "Todas" (view): the
+        // screen does not change, the choice does.
+        panel.attrs.priority = None;
+        panel.chose(&[crate::task_filters::Field::Priority]);
+        panel.choose_view(0);
+        let written = panel.prefs_to_save().expect("explicit choices");
+        assert_eq!(written.priority, None);
+        assert_eq!(written.view, 0);
+        assert_eq!(written.assignee.as_deref(), Some("Ana"), "untouched");
+
+        // "Limpar filtros" with nothing to clear on screen drops the rest.
+        let mut other = TaskPanel::default();
+        other.restore_from(
+            &store,
+            Some(Saved {
+                priority: Some("alta".into()),
+                assignee: Some("Ana".into()),
+                ..Saved::default()
+            }),
+        );
+        assert!(other.focus_task(&task));
+        other.attrs.assignee = crate::task_filters::AssigneeFilter::Any;
+        other.clear_filters();
+        let written = other.prefs_to_save().expect("explicit clear");
+        assert_eq!(written, Saved::default());
     }
 
     #[test]
