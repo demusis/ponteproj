@@ -151,6 +151,16 @@ impl std::fmt::Debug for IntranetConfig {
 }
 
 impl IntranetConfig {
+    /// A client whose first exchange must first be confirmed (its library
+    /// had content of its own when it was pointed at the main computer):
+    /// nothing is sent until the confirmed replacement is done.
+    pub fn join_pending(&self) -> bool {
+        self.mode == IntranetMode::Client
+            && self.join_replaces_items
+            && self.synced_revision == 0
+            && self.host_generation.is_empty()
+    }
+
     /// Copy to persist: the passphrase is dropped when the person chose not
     /// to keep it (it then lives only in the window, for the session).
     fn for_storage(&self) -> Self {
@@ -1083,6 +1093,8 @@ struct StoredDraftPayload {
 /// replaced by another history (a folder being joined, a main computer that
 /// went back to an older copy); the window shows what follows it.
 const CONFIRM_REPLACE: &str = "[confirmar-substituicao]";
+/// Said when an exchange is asked of a library open only to be looked at.
+pub const TRANSPORT_OFF: &str = "Este acervo está aberto só para olhar (não é o acervo em uso neste computador): ele não sincroniza nem atende outros computadores. Para sincronizá-lo, use-o como acervo deste computador em Ajustes ▸ Cópia de segurança.";
 
 /// The note kept beside the library file by [`Store::host_generation`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2180,6 +2192,17 @@ impl Store {
         self.load_intranet_config()
             .map(|c| c.member_name)
             .unwrap_or_else(|_| "Integrante".into())
+    }
+
+    /// Opens this library only to be looked at (`true`): no change leaves it
+    /// and no exchange runs, whatever its saved configuration says. A
+    /// library takes its sync role back only when it is the one in use.
+    pub fn set_transport_off(&mut self, off: bool) {
+        self.transport_off = off;
+    }
+
+    pub fn transport_off(&self) -> bool {
+        self.transport_off
     }
 
     pub(crate) fn client_config(&self) -> Result<Option<IntranetConfig>> {
@@ -3552,6 +3575,7 @@ impl Store {
         force_full: bool,
         accept_host_history: bool,
     ) -> Result<bool> {
+        ensure!(!self.transport_off, TRANSPORT_OFF);
         let cfg = self.load_intranet_config()?;
         ensure!(
             cfg.mode == IntranetMode::Client,
@@ -3948,6 +3972,7 @@ impl Store {
         reporter: &crate::ai::Reporter,
     ) -> Result<FolderSyncReport> {
         use crate::sharedfolder::{self, JournalEntry};
+        ensure!(!self.transport_off, TRANSPORT_OFF);
         ensure!(
             cfg.mode == IntranetMode::SharedFolder,
             "A pasta compartilhada não está ativa neste computador."
@@ -4981,6 +5006,16 @@ impl Store {
             // queued for the next exchange through the folders. This is the
             // normal way of working, so nothing is announced: there is no
             // main computer to be out of reach.
+            let reply = self.queue_locally(&actor, mutation)?;
+            self.offline_queued = self.offline_queued.saturating_sub(1);
+            return Ok(reply);
+        }
+        if self.transport_off || cfg.join_pending() {
+            // Nothing leaves a library open only to be looked at, nor a
+            // first-time client whose replacement was not confirmed yet:
+            // the change is kept here, in the queue, exactly as when the
+            // main computer is out of reach (without saying it is). After a
+            // confirmed replacement it becomes a conflict to redo or discard.
             let reply = self.queue_locally(&actor, mutation)?;
             self.offline_queued = self.offline_queued.saturating_sub(1);
             return Ok(reply);
@@ -9703,6 +9738,8 @@ pub struct IntranetPanel {
     connection_code_input: String,
     /// Result of "Testar conexão": the address tested, success, text.
     connection_test: Option<(String, bool, String)>,
+    /// This window opened a library only to be looked at: nothing starts.
+    transport_off: bool,
 }
 
 #[cfg(feature = "desktop")]
@@ -9740,6 +9777,18 @@ impl IntranetPanel {
         self.sync_in_flight
     }
 
+    /// No exchange and no main computer in this window (a library open only
+    /// to be looked at): what runs stops, and nothing starts until it is
+    /// turned back on (then the saved configuration is started again).
+    pub fn set_transport_off(&mut self, off: bool) {
+        self.transport_off = off;
+        if off {
+            self.server = None;
+            self.sync = None;
+            self.sync_in_flight = false;
+        }
+    }
+
     /// Whether this window runs a main computer or a synchronization thread.
     pub fn sync_threads_running(&self) -> bool {
         self.server.is_some() || self.sync.is_some()
@@ -9754,6 +9803,14 @@ impl IntranetPanel {
     }
 
     pub fn initialize(&mut self, store: &mut Store, db_path: &std::path::Path) {
+        if self.transport_off || store.transport_off() {
+            if let Ok(cfg) = store.load_intranet_config() {
+                self.draft = cfg;
+            }
+            self.status_summary =
+                "Aberto só para olhar: este acervo não sincroniza nesta janela.".into();
+            return;
+        }
         if let Ok(cfg) = store.load_intranet_config() {
             self.draft = cfg.clone();
             self.loaded = true;
@@ -10295,6 +10352,9 @@ impl IntranetPanel {
     /// Non-blocking: collects the outcome of the previous background sync and,
     /// when due, posts the next request. Returns true when the library changed.
     pub fn refresh_client(&mut self, store: &mut Store, db_path: &std::path::Path) -> bool {
+        if self.transport_off || store.transport_off() {
+            return false;
+        }
         let Ok(cfg) = store.load_intranet_config() else {
             return false;
         };
@@ -10616,6 +10676,12 @@ impl IntranetPanel {
     pub fn ui(&mut self, ui: &mut egui::Ui, store: &mut Store, db_path: &std::path::Path) -> bool {
         use crate::theme::{self, icon};
         use crate::widgets::{self, Tone};
+        if self.transport_off {
+            widgets::small_muted(
+                ui,
+                "Este acervo está aberto só para olhar: nesta janela ele não sincroniza nem atende outros computadores, seja qual for a configuração guardada. Ele volta a sincronizar só quando passar a ser o acervo em uso deste computador.",
+            );
+        }
         if !self.loaded {
             if let Ok(cfg) = store.load_intranet_config() {
                 self.draft = cfg;
@@ -10766,7 +10832,13 @@ impl IntranetPanel {
                                 self.message = "Este computador deixou de estar disponível para a equipe.".into();
                                 self.error = false;
                             }
-                        } else if ui.add(widgets::primary("Salvar e ficar disponível agora")).clicked() {
+                        } else if ui
+                            .add_enabled(
+                                !self.transport_off,
+                                widgets::primary("Salvar e ficar disponível agora"),
+                            )
+                            .clicked()
+                        {
                             match self.save_draft(store) {
                                 Ok(()) => match HostServer::start(db_path.to_path_buf(), &self.draft.bind_addr) {
                                     Ok(srv) => {

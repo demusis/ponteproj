@@ -108,6 +108,24 @@ pub fn execute(
     backup_library(&paths::db_path_in(data_dir), &destination, &label, stamp)
 }
 
+/// [`execute`] for the library the pointer selects: a selection that cannot
+/// be followed is an error (reported as `erro`, so the installer asks the
+/// person), never a silent copy of another library or `sem-acervo`.
+pub fn execute_resolved(
+    options: &Options,
+    resolution: &paths::Resolution,
+    program_version: &str,
+    stamp: &str,
+) -> Result<Outcome> {
+    if let Some(notice) = &resolution.notice {
+        bail!(
+            "O acervo escolhido para este computador não está disponível; a cópia de segurança não foi feita. {notice}"
+        );
+    }
+    paths::ensure_openable(&resolution.data_dir)?;
+    execute(options, &resolution.data_dir, program_version, stamp)
+}
+
 /// One consistent, verified copy of the library file `database` in the folder
 /// `destination`, named `antes-de-instalar-<label>-<stamp>.sqlite3`. A failure
 /// leaves nothing behind in the folder; the library is only read.
@@ -256,67 +274,36 @@ fn free_name(destination: &Path, stem: &str) -> Result<PathBuf> {
 /// Gives the finished copy `partial` its final name without ever replacing a
 /// file that is there: `rename` replaces an existing destination, so two runs
 /// of the same second that both saw a name free would let the second wipe the
-/// first (verified) copy. The name is claimed atomically instead, and on a
-/// collision the next one (`-2`, `-3`…) is tried. Answers the name used.
-///
-/// A hard link from the partial to the name fails if the name exists and shows
-/// the name already complete; the partial is removed by the caller. Where hard
-/// links are not supported (a network share, a synchronised folder) the name is
-/// claimed by creating it exclusively (an empty file only this run owns) and
-/// the finished copy then replaces that file.
+/// first (verified) copy. The copy is moved to the name with a move that
+/// fails when the name is taken (`atomic_file::move_no_replace`), and on a
+/// collision the next one (`-2`, `-3`…) is tried. Answers the name used. The
+/// partial is gone afterwards (only SQLite's side files may remain for the
+/// caller to clear).
 fn publish_without_replacing(partial: &Path, destination: &Path, stem: &str) -> Result<PathBuf> {
     for n in 1..=MAX_NAMES {
         let candidate = candidate_name(destination, stem, n);
-        match std::fs::hard_link(partial, &candidate) {
+        match crate::atomic_file::move_no_replace(partial, &candidate) {
             Ok(()) => return Ok(candidate),
-            Err(error)
-                if candidate.exists() || error.kind() == std::io::ErrorKind::AlreadyExists =>
-            {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if candidate.exists() => {
+                // Some systems answer "access denied" for a taken name.
+                let _ = error;
                 continue;
             }
-            Err(_) => {}
-        }
-        // No hard links here: claim the name, then fill it.
-        if claim_and_fill(partial, &candidate)? {
-            return Ok(candidate);
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Não foi possível dar o nome final à cópia ({}).",
+                        candidate.display()
+                    )
+                })
+            }
         }
     }
     bail!(
         "Já existem cópias demais com este nome em {}.",
         destination.display()
     )
-}
-
-/// Creates `candidate` exclusively (an empty file only this run owns) and
-/// replaces it with the finished copy. `false`: the name was taken.
-fn claim_and_fill(partial: &Path, candidate: &Path) -> Result<bool> {
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(candidate)
-    {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "Não foi possível dar o nome final à cópia ({}).",
-                    candidate.display()
-                )
-            })
-        }
-    }
-    // The claimed file is empty and this run's: replacing it is safe.
-    if let Err(error) = std::fs::rename(partial, candidate) {
-        let _ = std::fs::remove_file(candidate);
-        return Err(error).with_context(|| {
-            format!(
-                "Não foi possível dar o nome final à cópia ({}).",
-                candidate.display()
-            )
-        });
-    }
-    Ok(true)
 }
 
 fn append(path: &Path, suffix: &str) -> PathBuf {
@@ -647,8 +634,9 @@ pub fn run(args: &[String]) -> Result<()> {
         // mistake of the caller, not something to find out afterwards.
         check_result_file(file, dir)?;
     }
-    let outcome =
-        data_dir.and_then(|dir| execute(&options, &dir, env!("CARGO_PKG_VERSION"), &stamp));
+    let outcome = paths::resolution().and_then(|resolution| {
+        execute_resolved(&options, &resolution, env!("CARGO_PKG_VERSION"), &stamp)
+    });
     finish(&options, outcome)
 }
 
@@ -734,6 +722,36 @@ mod tests {
     }
 
     #[test]
+    fn a_selection_that_cannot_be_followed_is_an_error_for_the_installer() {
+        let local = tempfile::tempdir().unwrap();
+        let home = local.path().join("PonteProj");
+        std::fs::create_dir_all(&home).unwrap();
+        drop(library_with(&paths::db_path_in(&home), 1));
+        // The selected library was moved away: no copy of the main one, and
+        // never `sem-acervo`.
+        std::fs::write(
+            home.join(paths::POINTER_FILE),
+            serde_json::to_vec(&serde_json::json!({
+                "versao": 1,
+                "pasta": local.path().join("PonteProj-recuperacao-sumiu")
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let resolution = paths::resolve(None, || Ok(local.path().to_path_buf())).unwrap();
+        let outcome = execute_resolved(&Options::default(), &resolution, "0.50.0", STAMP);
+        let text = report(&outcome);
+        assert!(text.starts_with("erro\n"), "{text}");
+        assert!(text.contains("não está disponível"), "{text}");
+        assert!(!home.join("backups").exists());
+        // A healthy selection is copied as before.
+        std::fs::remove_file(home.join(paths::POINTER_FILE)).unwrap();
+        let resolution = paths::resolve(None, || Ok(local.path().to_path_buf())).unwrap();
+        let outcome = execute_resolved(&Options::default(), &resolution, "0.50.0", STAMP).unwrap();
+        assert!(matches!(outcome, Outcome::BackedUp(_)));
+    }
+
+    #[test]
     fn the_installers_copy_follows_the_library_in_use() {
         // The computer uses a restored library: the copy before an update is
         // of that one, in its own backups folder; the main one is not touched.
@@ -744,6 +762,11 @@ mod tests {
         let restored = local.path().join("PonteProj-recuperacao-20261122-101500");
         std::fs::create_dir_all(&restored).unwrap();
         drop(library_with(&paths::db_path_in(&restored), 4));
+        std::fs::write(
+            restored.join(paths::RECOVERY_MARKER),
+            br#"{"versao":1,"completo":true}"#,
+        )
+        .unwrap();
         paths::write_pointer(&home, &restored).unwrap();
         let data_dir = paths::resolve_data_dir(None, || Ok(local.path().to_path_buf())).unwrap();
         assert!(paths::same_folder(&data_dir, &restored));
@@ -860,7 +883,7 @@ mod tests {
             &format!("antes-de-instalar-v1-{STAMP}"),
         )
         .unwrap();
-        std::fs::remove_file(&first).unwrap();
+        assert!(!first.exists(), "the finished copy was moved, not linked");
         // The second run had also seen the name free: it must take another.
         let two = publish_without_replacing(
             &second,
@@ -868,7 +891,7 @@ mod tests {
             &format!("antes-de-instalar-v1-{STAMP}"),
         )
         .unwrap();
-        std::fs::remove_file(&second).unwrap();
+        assert!(!second.exists());
         assert_eq!(
             one.file_name().unwrap().to_string_lossy(),
             "antes-de-instalar-v1-20261120-120000.sqlite3"
@@ -883,26 +906,23 @@ mod tests {
     }
 
     #[test]
-    fn where_hard_links_do_not_work_the_name_is_claimed_before_it_is_filled() {
+    fn a_name_taken_meanwhile_is_never_replaced() {
         let folder = tempfile::tempdir().unwrap();
-        let taken = folder.path().join("antes-de-instalar-v1-x.sqlite3");
+        let stem = "antes-de-instalar-v1-x";
+        // Another program wrote the first name after it was seen free.
+        let taken = folder.path().join(format!("{stem}.sqlite3"));
         std::fs::write(&taken, b"copia que ja estava la").unwrap();
         let partial = folder.path().join("c.parcial");
         std::fs::write(&partial, b"copia nova").unwrap();
-        // A taken name is never replaced.
-        assert!(!claim_and_fill(&partial, &taken).unwrap());
+        let published = publish_without_replacing(&partial, folder.path(), stem).unwrap();
+        assert_eq!(published, folder.path().join(format!("{stem}-2.sqlite3")));
         assert_eq!(std::fs::read(&taken).unwrap(), b"copia que ja estava la");
-        assert!(partial.exists());
-        // A free name is claimed and receives the copy.
-        let free = folder.path().join("antes-de-instalar-v1-x-2.sqlite3");
-        assert!(claim_and_fill(&partial, &free).unwrap());
-        assert_eq!(std::fs::read(&free).unwrap(), b"copia nova");
+        assert_eq!(std::fs::read(&published).unwrap(), b"copia nova");
         assert!(!partial.exists());
-        // A copy that cannot be moved leaves no claimed empty file behind.
+        // A copy that cannot be moved leaves nothing under a final name.
         let missing = folder.path().join("nao-existe.parcial");
-        let other = folder.path().join("antes-de-instalar-v1-x-3.sqlite3");
-        assert!(claim_and_fill(&missing, &other).is_err());
-        assert!(!other.exists());
+        assert!(publish_without_replacing(&missing, folder.path(), "outro").is_err());
+        assert!(!folder.path().join("outro.sqlite3").exists());
     }
 
     #[test]

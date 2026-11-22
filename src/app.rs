@@ -498,6 +498,14 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     // PONTEPROJ_DATA_DIR), read once for the whole process.
     let resolution = crate::paths::resolution()?;
     let db_path = crate::paths::db_path()?;
+    // A document the browser just imported is shown only in the library that
+    // imported it: its number means another document in any other.
+    let expected = std::env::var_os(crate::paths::REQUEST_LIBRARY_ENV).map(PathBuf::from);
+    let (initial_document, other_library) = crate::paths::document_for_this_library(
+        initial_document,
+        expected.as_deref(),
+        &resolution.data_dir,
+    );
     // One window per library: a second start hands its request to the window
     // already open and leaves. If that window does not answer, this start
     // opens its own, as older versions always did.
@@ -535,7 +543,13 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     app.requests_dir = window.is_some().then_some(data_dir);
     // A recovery library being looked at gets no automatic copies.
     app.auto_copy.allowed = !alone && !app.library.only_looking();
+    // Nor any exchange: a library that is not the one in use is opened only
+    // to be looked at, whatever its saved configuration says.
+    app.apply_transport();
     app.intranet.initialize(&mut app.store, &app.db_path);
+    if let Some(notice) = other_library {
+        app.library.notice = Some(notice);
+    }
     // Personal templates of versions before 0.20 become work templates.
     match app.store.migrate_personal_templates() {
         Ok((0, problems)) if problems.is_empty() => {}

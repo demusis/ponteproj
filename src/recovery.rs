@@ -39,7 +39,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Written last in a recovery folder: what it was built from.
-pub const MARKER_FILE: &str = "acervo-de-recuperacao.json";
+pub const MARKER_FILE: &str = paths::RECOVERY_MARKER;
+/// Held by every window of the Ponte in the folder of its library
+/// (`single_instance`).
+const WINDOW_LOCK: &str = "janela.lock";
+/// Held by `ponteproj --serve` in the folder of the library it serves.
+pub const SERVER_LOCK: &str = "servidor.lock";
 const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
 /// The word in the names of the recovery folders.
 const FOLDER_WORD: &str = "recuperacao";
@@ -128,6 +133,10 @@ pub struct Marker {
     /// What was taken out of the copy to detach it (in words).
     #[serde(default)]
     pub desligado: Vec<String>,
+    /// Written true only when the folder is finished: detached, verified and
+    /// about to get its final name. A folder without it is never opened.
+    #[serde(default)]
+    pub completo: bool,
 }
 
 impl Marker {
@@ -161,8 +170,12 @@ impl Marker {
     }
 }
 
+/// The marker of a finished recovery folder (`None` for any other folder,
+/// and for one whose build did not finish).
 pub fn read_marker(folder: &Path) -> Option<Marker> {
-    serde_json::from_slice(&std::fs::read(folder.join(MARKER_FILE)).ok()?).ok()
+    let marker: Marker =
+        serde_json::from_slice(&std::fs::read(folder.join(MARKER_FILE)).ok()?).ok()?;
+    (marker.completo && paths::ensure_openable(folder).is_ok()).then_some(marker)
 }
 
 /// Where a recovery folder is made and what it carries from this computer.
@@ -204,11 +217,25 @@ impl Place {
     }
 }
 
-/// The folder this run creates; removed with everything in it (all of it
-/// this run's) unless the build finished.
+/// The folder this run creates. It is built under a staging name
+/// (`…-recuperacao-AAAAMMDD-HHMMSS.montando`, with a sentinel file inside)
+/// that no ordinary opening accepts (`paths::ensure_openable`), and only
+/// [`NewFolder::publish`] gives it its recovery name, once it is detached,
+/// verified and marked. Until then it is removed with everything in it (all
+/// of it this run's) if anything fails.
 struct NewFolder {
     path: PathBuf,
+    /// The recovery name it gets when published (`-2`, `-3`… if taken).
+    stem: PathBuf,
     keep: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: stop the build right after the copy, before the detach, as a
+    /// killed process would (nothing is cleaned up).
+    static KILL_BEFORE_DETACH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static KILLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl NewFolder {
@@ -225,9 +252,21 @@ impl NewFolder {
             } else {
                 format!("{stem}-{n}")
             };
-            let path = parent.join(name);
+            let path = parent.join(format!("{name}{}", paths::STAGING_SUFFIX));
             match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path, keep: false }),
+                Ok(()) => {
+                    let folder = Self {
+                        path,
+                        stem: parent.join(&stem),
+                        keep: false,
+                    };
+                    std::fs::write(
+                        folder.path.join(paths::STAGING_SENTINEL),
+                        "Acervo de recuperação em montagem: não abra esta pasta.\n",
+                    )
+                    .context("Não foi possível preparar a pasta do acervo de recuperação.")?;
+                    return Ok(folder);
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => {
                     return Err(error).with_context(|| {
@@ -244,10 +283,45 @@ impl NewFolder {
             parent.display()
         )
     }
+
+    /// The finished folder gets its recovery name, never over a folder that
+    /// is there. The sentinel goes first: a folder still under its staging
+    /// name is refused by its name alone.
+    fn publish(&mut self) -> Result<PathBuf> {
+        std::fs::remove_file(self.path.join(paths::STAGING_SENTINEL))
+            .context("Não foi possível concluir a pasta do acervo de recuperação.")?;
+        for n in 1..=100 {
+            let mut name = self.stem.as_os_str().to_owned();
+            if n > 1 {
+                name.push(format!("-{n}"));
+            }
+            let candidate = PathBuf::from(name);
+            match crate::atomic_file::move_no_replace(&self.path, &candidate) {
+                Ok(()) => {
+                    self.path = candidate.clone();
+                    self.keep = true;
+                    return Ok(candidate);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) if candidate.exists() => continue,
+                Err(error) => return Err(error).with_context(|| {
+                    format!(
+                        "Não foi possível dar o nome final à pasta do acervo de recuperação ({}).",
+                        candidate.display()
+                    )
+                }),
+            }
+        }
+        bail!("Já existem pastas de recuperação demais com este nome.")
+    }
 }
 
 impl Drop for NewFolder {
     fn drop(&mut self) {
+        #[cfg(test)]
+        if KILLED.with(|k| k.get()) {
+            return;
+        }
         if !self.keep {
             let _ = std::fs::remove_dir_all(&self.path);
         }
@@ -299,24 +373,52 @@ fn check_source(conn: &Connection, source: &Path) -> Result<i64> {
     Ok(version)
 }
 
-/// The chosen copy, opened only to be read. A copy with no WAL beside it is
-/// opened as immutable: SQLite then creates nothing beside it (no `-wal`, no
-/// `-shm` left on the pendrive). With a WAL beside it, it is opened read-only
-/// as usual, so the committed changes still in the WAL are part of what is
-/// read (SQLite may need to create its `-shm` there).
+/// The chosen copy, opened only to be read, with SQLite's locking: a writer
+/// that starts meanwhile is seen, and the committed changes still in a WAL
+/// beside it are part of what is read (SQLite may create its `-shm` there). A
+/// side file that cannot be looked at, or is not a plain file, makes the
+/// state of the copy ambiguous: it is refused. One read transaction holds the
+/// same state from the schema check to the end of the copy.
 fn open_source(source: &Path) -> Result<Connection> {
-    let wal = PathBuf::from(format!("{}-wal", source.display()));
-    let has_wal = std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0);
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = if has_wal {
-        Connection::open_with_flags(source, flags)
-    } else {
-        Connection::open_with_flags(immutable_uri(source), flags | OpenFlags::SQLITE_OPEN_URI)
-    };
-    conn.with_context(|| {
+    for side in ["-wal", "-shm"] {
+        let path = PathBuf::from(format!("{}{side}", source.display()));
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => bail!(
+                "Não foi possível conferir {} ao lado da cópia; o estado dela é incerto. Copie a cópia (com os arquivos de mesmo nome terminados em -wal e -shm, se existirem) para uma pasta deste computador e tente de novo. Nada foi criado.",
+                path.display()
+            ),
+        }
+    }
+    let conn = Connection::open_with_flags(
+        source,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| {
         format!(
             "Não foi possível abrir a cópia {}. Se ela está num pendrive, num CD ou numa pasta só de leitura, copie-a antes para uma pasta deste computador. Nada foi criado.",
             source.display()
+        )
+    })?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute_batch("BEGIN")?;
+    Ok(conn)
+}
+
+/// A copy this feature just published and nobody else knows yet (established
+/// static): opened as immutable, so SQLite creates nothing beside it.
+pub(crate) fn open_own_copy(path: &Path) -> Result<Connection> {
+    Connection::open_with_flags(
+        immutable_uri(path),
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .with_context(|| {
+        format!(
+            "Não foi possível reabrir a cópia {} para conferi-la.",
+            path.display()
         )
     })
 }
@@ -407,42 +509,120 @@ fn table_label(table: &str) -> &'static str {
     }
 }
 
+fn columns_of(conn: &Connection, table: &str) -> Result<Vec<(String, String)>> {
+    Ok(conn
+        .prepare(&format!(
+            "SELECT name, upper(type) FROM pragma_table_info('{}')",
+            table.replace('\'', "''")
+        ))?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 /// Opens every sealed payload of every table (every row, every column, not a
-/// sample) with this Windows account. Answers how many were opened.
+/// sample) with this Windows account, wherever a value carries the mark of a
+/// sealed payload. Used on a copy before it is migrated (its schema may be
+/// older). Answers how many were opened.
 pub fn verify_sealed(conn: &Connection) -> Result<usize> {
     let mut opened = 0usize;
     for table in tables(conn)? {
-        let columns: Vec<String> = conn
-            .prepare(&format!("SELECT name FROM pragma_table_info({})", {
-                let q = table.replace('\'', "''");
-                format!("'{q}'")
-            }))?
-            .query_map([], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        for column in columns {
+        for (column, _) in columns_of(conn, &table)? {
             let sql = format!(
-                "SELECT {c} FROM {t} WHERE typeof({c})='blob' AND substr({c},1,6)=X'504F4E54452D'",
+                "SELECT rowid, {c} FROM {t} WHERE typeof({c})='blob' AND substr({c},1,6)=X'504F4E54452D'",
                 c = quoted(&column),
                 t = quoted(&table)
             );
             let mut statement = conn.prepare(&sql)?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
-                let bytes: Vec<u8> = row.get(0)?;
+                let rowid: i64 = row.get(0)?;
+                let bytes: Vec<u8> = row.get(1)?;
                 if !crate::protection::looks_sealed(&bytes) {
                     continue;
                 }
                 if crate::protection::unseal(&bytes).is_err() {
-                    bail!(
-                        "Esta cópia foi feita em outra conta do Windows, ou está danificada: {} não puderam ser abertos nesta conta ({opened} itens protegidos abertos antes deste). Uma cópia deste computador só abre na mesma conta do Windows em que foi feita. Nada foi criado. Se você tem uma cópia portátil (.pontecopia), use «Importar cópia portátil…».",
-                        table_label(&table)
-                    );
+                    bail!(foreign_message(&SealProblem {
+                        table: table.clone(),
+                        rowid,
+                        opened,
+                    }));
                 }
                 opened += 1;
             }
         }
     }
     Ok(opened)
+}
+
+/// One stored value that should open with this Windows account and does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealProblem {
+    pub table: String,
+    pub rowid: i64,
+    /// Sealed values opened before this one.
+    pub opened: usize,
+}
+
+impl std::fmt::Display for SealProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} (tabela {}, registro nº {}) não podem ser abertos nesta conta do Windows",
+            table_label(&self.table),
+            self.table,
+            self.rowid
+        )
+    }
+}
+
+/// The refusal of a copy with a value that does not open here.
+pub fn foreign_message(problem: &SealProblem) -> String {
+    format!(
+        "Esta cópia foi feita em outra conta do Windows, ou está danificada: {problem} ({} itens protegidos abertos antes deste). Uma cópia deste computador só abre na mesma conta do Windows em que foi feita. Nada foi criado. Se você tem uma cópia portátil (.pontecopia), use «Importar cópia portátil…».",
+        problem.opened
+    )
+}
+
+/// The schema-aware check, on a library of the current schema: every value of
+/// every column that this schema keeps sealed (every BLOB column, except the
+/// `…_hash` ones, which hold digests) must carry the mark of a sealed payload
+/// AND open with this Windows account. Damage that changed the mark itself
+/// is caught too. The first value that fails is answered.
+pub fn verify_sealed_strict(conn: &Connection) -> Result<std::result::Result<usize, SealProblem>> {
+    let mut opened = 0usize;
+    for table in tables(conn)? {
+        for (column, kind) in columns_of(conn, &table)? {
+            if kind != "BLOB" || column.ends_with("_hash") {
+                continue;
+            }
+            let sql = format!(
+                "SELECT rowid, {c} FROM {t} WHERE {c} IS NOT NULL",
+                c = quoted(&column),
+                t = quoted(&table)
+            );
+            let mut statement = conn.prepare(&sql)?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let rowid: i64 = row.get(0)?;
+                let good = match row.get_ref(1)? {
+                    rusqlite::types::ValueRef::Blob(bytes) => {
+                        crate::protection::looks_sealed(bytes)
+                            && crate::protection::unseal(bytes).is_ok()
+                    }
+                    _ => false,
+                };
+                if !good {
+                    return Ok(Err(SealProblem {
+                        table,
+                        rowid,
+                        opened,
+                    }));
+                }
+                opened += 1;
+            }
+        }
+    }
+    Ok(Ok(opened))
 }
 
 /// The member name of the copy's configuration, when it can be read (it is
@@ -499,6 +679,11 @@ pub(crate) fn finish_recovery_library(
     source: Source<'_>,
     now: NaiveDateTime,
 ) -> Result<Marker> {
+    #[cfg(test)]
+    if KILL_BEFORE_DETACH.with(|k| k.get()) {
+        KILLED.with(|k| k.set(true));
+        bail!("montagem interrompida (teste)");
+    }
     let (member, cleared) = {
         let conn = open_raw(db)?;
         verify_sealed(&conn)?;
@@ -525,6 +710,11 @@ pub(crate) fn finish_recovery_library(
                 && store.list_offline_outbox()?.is_empty(),
             "O acervo de recuperação não ficou desligado da sincronização; nada foi criado."
         );
+        // After the migration, in the schema of this build: every value
+        // this schema keeps sealed opens, whatever happened to its mark.
+        if let Err(problem) = verify_sealed_strict(&store.conn)? {
+            bail!(foreign_message(&problem));
+        }
         store.list_documents("")?.len()
     };
     // Nothing of the original's sync sidecars may live here.
@@ -555,6 +745,7 @@ pub(crate) fn finish_recovery_library(
         documentos: documents,
         esquema_da_copia: source.esquema,
         desligado: cleared,
+        completo: true,
     };
     crate::atomic_file::write_atomic(
         &folder.join(MARKER_FILE),
@@ -573,9 +764,9 @@ pub(crate) fn build_in_new_folder(
 ) -> Result<Built> {
     let mut folder = NewFolder::create(place, now)?;
     let marker = fill(&folder.path)?;
-    folder.keep = true;
+    let published = folder.publish()?;
     Ok(Built {
-        folder: folder.path.clone(),
+        folder: published,
         marker,
     })
 }
@@ -594,6 +785,7 @@ pub fn restore_local_copy(source: &Path, place: &Place, now: NaiveDateTime) -> R
     }
     let reader = open_source(source)?;
     let schema = check_source(&reader, source)?;
+    // Read inside the same transaction as the copy below.
     let copia_de = std::fs::metadata(source)
         .and_then(|m| m.modified())
         .map(|t| moment(chrono::DateTime::<chrono::Local>::from(t).naive_local()))
@@ -603,7 +795,7 @@ pub fn restore_local_copy(source: &Path, place: &Place, now: NaiveDateTime) -> R
         let partial = folder.join("acervo-em-montagem.sqlite3");
         crate::upgrade_backup::copy_from(&reader, &partial)?;
         crate::upgrade_backup::verify(&partial)?;
-        std::fs::rename(&partial, &db)
+        crate::atomic_file::move_no_replace(&partial, &db)
             .context("Não foi possível dar o nome final ao acervo de recuperação.")?;
         finish_recovery_library(
             folder,
@@ -696,9 +888,71 @@ pub fn libraries(home: &Path) -> Vec<Library> {
     found
 }
 
+/// Whether another process holds `file` in `dir` (a window's or a server's
+/// lock): its exclusive handle makes this open fail with a sharing violation.
+fn held_by_another(dir: &Path, file: &str) -> bool {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    match options.open(dir.join(file)) {
+        Ok(_) => false,
+        Err(error) => cfg!(windows) && error.raw_os_error() == Some(32),
+    }
+}
+
+/// `ponteproj --serve`: held while it serves the library in `dir`, so the
+/// library in use is not switched under it.
+pub fn hold_server_lock(dir: &Path) -> Option<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    options.open(dir.join(SERVER_LOCK)).ok()
+}
+
+/// Refuses while another process of the Ponte uses a library of this
+/// computer: another window (on any library of `home`, the main one or a
+/// restored one), or a main computer without window (`--serve`) on any of
+/// them. `own` is the folder of the window asking (its own lock is its own).
+fn ensure_nobody_else_uses(home: &Path, target: &Path, own: Option<&Path>) -> Result<()> {
+    let mut folders: Vec<PathBuf> = libraries(home).into_iter().map(|l| l.folder).collect();
+    for extra in [Some(target), own].into_iter().flatten() {
+        if !folders.iter().any(|f| paths::same_folder(f, extra)) {
+            folders.push(extra.to_path_buf());
+        }
+    }
+    for folder in &folders {
+        let mine = own.is_some_and(|own| paths::same_folder(own, folder));
+        if !mine && held_by_another(folder, WINDOW_LOCK) {
+            bail!(
+                "Feche a outra janela do Ponte para trocar de acervo (ela está aberta no acervo em {}). Nada foi trocado.",
+                folder.display()
+            );
+        }
+        if held_by_another(folder, SERVER_LOCK) {
+            bail!(
+                "Feche o Ponte que está servindo como computador principal sem janela (ponteproj --serve, no acervo em {}) para trocar de acervo. Nada foi trocado.",
+                folder.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// "Usar este acervo neste computador": the pointer of `home` names `folder`
 /// (the main library or one of its recovery libraries). Nothing else changes.
-pub fn adopt(home: &Path, folder: &Path) -> Result<()> {
+/// Refused while another process of the Ponte is using a library of this
+/// computer (see [`ensure_nobody_else_uses`]); `own` is the folder of the
+/// window asking.
+pub fn adopt(home: &Path, folder: &Path, own: Option<&Path>) -> Result<()> {
+    ensure_nobody_else_uses(home, folder, own)?;
     ensure!(
         paths::same_folder(home, folder)
             || read_marker(folder)
@@ -788,10 +1042,13 @@ mod tests {
         format!("{:x}", sha2::Sha256::digest(std::fs::read(path).unwrap()))
     }
 
+    /// What is in a folder, leaving out SQLite's own side files (a locking
+    /// read of a copy may create its `-shm` beside it).
     fn folders(local: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(local)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.ends_with("-wal") && !n.ends_with("-shm"))
             .collect();
         names.sort();
         names
@@ -1130,15 +1387,12 @@ mod tests {
         let place = Place::new(Some(&home), &home);
         let copy = copy_of(&db, local.path());
         let built = restore_local_copy(&copy, &place, now()).unwrap();
-        // Nothing was left beside the chosen copy.
-        assert!(!local.path().join("copia.sqlite3-wal").exists());
-        assert!(!local.path().join("copia.sqlite3-shm").exists());
         let live = sha(&db);
         let listed = libraries(&home);
         assert_eq!(listed.len(), 2);
         assert!(listed[0].main && listed[0].in_use);
         assert!(!listed[1].in_use && listed[1].marker.is_some());
-        adopt(&home, &built.folder).unwrap();
+        adopt(&home, &built.folder, Some(&built.folder)).unwrap();
         assert!(paths::same_folder(
             &paths::follow_pointer(&home).data_dir,
             &built.folder
@@ -1146,13 +1400,13 @@ mod tests {
         let listed = libraries(&home);
         assert!(!listed[0].in_use && listed[1].in_use);
         assert_eq!(sha(&db), live, "o acervo anterior fica inteiro");
-        adopt(&home, &home).unwrap();
+        adopt(&home, &home, None).unwrap();
         assert_eq!(paths::follow_pointer(&home).data_dir, home);
         // A folder that is not one of this computer's libraries is refused.
         let stranger = local.path().join("estranho");
         std::fs::create_dir_all(&stranger).unwrap();
         std::fs::write(paths::db_path_in(&stranger), b"x").unwrap();
-        assert!(adopt(&home, &stranger).is_err());
+        assert!(adopt(&home, &stranger, None).is_err());
     }
 
     fn backups_before_replacement(db: &Path) -> Vec<PathBuf> {
@@ -1306,6 +1560,343 @@ mod tests {
             .all(|p| p.name != "Projeto feito só aqui"));
         // From now on it is a member like any other: no question.
         r.sync_from_host(false).unwrap();
+        server.stop();
+    }
+
+    #[test]
+    fn an_interrupted_restore_leaves_nothing_that_opens() {
+        let local = tempfile::tempdir().unwrap();
+        let (home, _) = main_library(local.path(), 0);
+        // A copy of a main computer with autostart: the role must never come
+        // back, even from a build that was killed halfway.
+        let source_dir = local.path().join("origem");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let mut store = Store::open(&source_dir.join("acervo.sqlite3")).unwrap();
+        store
+            .save_intranet_config(&IntranetConfig {
+                mode: IntranetMode::Host,
+                member_name: "Principal".into(),
+                auto_start_host: true,
+                ..IntranetConfig::default()
+            })
+            .unwrap();
+        let copy = source_dir.join("copia.sqlite3");
+        store.backup(&copy).unwrap();
+        drop(store);
+        let place = Place::new(Some(&home), &home);
+        KILL_BEFORE_DETACH.with(|k| k.set(true));
+        let outcome = restore_local_copy(&copy, &place, now());
+        KILL_BEFORE_DETACH.with(|k| k.set(false));
+        KILLED.with(|k| k.set(false));
+        assert!(outcome.is_err());
+        // What the killed build left: the copied library, not yet detached,
+        // under the staging name, with its sentinel.
+        let left: Vec<PathBuf> = std::fs::read_dir(local.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains("recuperacao"))
+            .collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        let staging = &left[0];
+        assert!(staging.to_string_lossy().ends_with(paths::STAGING_SUFFIX));
+        let raw = Connection::open(paths::db_path_in(staging)).unwrap();
+        let rows: i64 = raw
+            .query_row("SELECT count(*) FROM intranet_config", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "the copy still carries the source's configuration");
+        drop(raw);
+        // No ordinary route opens it: named explicitly, through the pointer,
+        // nor listed for adoption.
+        let forced = paths::resolve(Some(staging.clone().into()), || unreachable!()).unwrap();
+        assert!(paths::checked_db_path(&forced).is_err());
+        assert!(paths::write_pointer(&home, staging).is_err());
+        assert!(adopt(&home, staging, None).is_err());
+        assert_eq!(libraries(&home).len(), 1);
+        // Even renamed by hand to look finished.
+        let renamed = local.path().join("PonteProj-recuperacao-20261122-101500");
+        std::fs::rename(staging, &renamed).unwrap();
+        let forced = paths::resolve(Some(renamed.clone().into()), || unreachable!()).unwrap();
+        assert!(paths::checked_db_path(&forced).is_err());
+        // A build that finishes publishes under the recovery name, ready.
+        std::fs::remove_dir_all(&renamed).unwrap();
+        let built = restore_local_copy(&copy, &place, now()).unwrap();
+        assert!(!built
+            .folder
+            .to_string_lossy()
+            .ends_with(paths::STAGING_SUFFIX));
+        assert!(!built.folder.join(paths::STAGING_SENTINEL).exists());
+        assert!(built.marker.completo);
+        let forced = paths::resolve(Some(built.folder.clone().into()), || unreachable!()).unwrap();
+        assert!(paths::checked_db_path(&forced).is_ok());
+    }
+
+    #[test]
+    fn a_value_whose_seal_mark_was_damaged_is_found_and_named() {
+        let local = tempfile::tempdir().unwrap();
+        let (home, db) = main_library(local.path(), 2);
+        let source = copy_of(&db, local.path());
+        {
+            let mut store = Store::open(&source).unwrap();
+            let doc = store.list_documents("").unwrap()[0].id;
+            store.save_note(doc, "Nota").unwrap();
+            // The mark itself is gone: a scan for marked values skips it.
+            store
+                .conn
+                .execute("UPDATE notes SET payload=X'00112233445566778899'", [])
+                .unwrap();
+        }
+        let before = folders(local.path());
+        let error = restore_local_copy(&source, &Place::new(Some(&home), &home), now())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("tabela notes, registro nº"), "{error}");
+        assert!(error.contains("outra conta do Windows"), "{error}");
+        assert_eq!(folders(local.path()), before);
+    }
+
+    /// An exclusive handle, as a window of the Ponte keeps on its lock.
+    fn hold(dir: &Path, file: &str) -> std::fs::File {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(false);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.share_mode(0);
+        }
+        options.open(dir.join(file)).unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_library_in_use_is_not_switched_while_another_ponte_uses_one() {
+        let local = tempfile::tempdir().unwrap();
+        let (home, db) = main_library(local.path(), 1);
+        let copy = copy_of(&db, local.path());
+        let built = restore_local_copy(&copy, &Place::new(Some(&home), &home), now()).unwrap();
+        // The window of the main library is still open: the recovery window
+        // may not adopt.
+        let other_window = hold(&home, WINDOW_LOCK);
+        let own_window = hold(&built.folder, WINDOW_LOCK);
+        let error = adopt(&home, &built.folder, Some(&built.folder))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Feche a outra janela do Ponte"), "{error}");
+        assert_eq!(paths::follow_pointer(&home).data_dir, home);
+        drop(other_window);
+        // A main computer without window on the main library: refused too.
+        let server = hold_server_lock(&home).unwrap();
+        let error = adopt(&home, &built.folder, Some(&built.folder))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--serve"), "{error}");
+        drop(server);
+        // Alone: the window's own lock is its own.
+        adopt(&home, &built.folder, Some(&built.folder)).unwrap();
+        drop(own_window);
+        assert!(paths::same_folder(
+            &paths::follow_pointer(&home).data_dir,
+            &built.folder
+        ));
+    }
+
+    /// A main computer with one document, serving on a free local port.
+    fn principal(dir: &Path) -> (Store, crate::intranet::HostServer, String, PathBuf) {
+        use crate::intranet::{generate_token, HostServer};
+        let host_db = dir.join("host").join("acervo.sqlite3");
+        let token = generate_token();
+        let mut host = Store::open(&host_db).unwrap();
+        host.import_capture(&capture("SEFAZ-PRO-2026/00007"))
+            .unwrap();
+        let mut cfg = IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "Principal".into(),
+            bind_addr: "127.0.0.1:0".into(),
+            cabinet_token: token.clone(),
+            ..IntranetConfig::default()
+        };
+        host.save_intranet_config(&cfg).unwrap();
+        let server = HostServer::start(host_db.clone(), "127.0.0.1:0").unwrap();
+        cfg.bind_addr = server.local_addr().to_string();
+        host.save_intranet_config(&cfg).unwrap();
+        (host, server, token, host_db)
+    }
+
+    fn client_of(server: &crate::intranet::HostServer, token: &str) -> IntranetConfig {
+        IntranetConfig {
+            mode: IntranetMode::Client,
+            member_name: "Restaurado".into(),
+            host_url: format!("http://{}", server.local_addr()),
+            cabinet_token: token.to_owned(),
+            ..IntranetConfig::default()
+        }
+    }
+
+    /// What the main computer holds, to prove nothing reached it.
+    fn state_of(host: &Store) -> (i64, Vec<String>) {
+        (
+            host.cabinet_revision().unwrap(),
+            host.list_documents("")
+                .unwrap()
+                .into_iter()
+                .map(|d| d.document_number)
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_first_time_client_sends_nothing_before_its_replacement_is_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut server, token, _) = principal(dir.path());
+        let host_before = state_of(&host);
+        // A restored library with a document of its own joins the principal.
+        let db = dir.path().join("r").join("acervo.sqlite3");
+        let mut r = Store::open(&db).unwrap();
+        let own = r.import_capture(&capture("SEFAZ-PRO-2026/00001")).unwrap();
+        r.save_intranet_config(&client_of(&server, &token)).unwrap();
+        assert!(r.load_intranet_config().unwrap().join_pending());
+        // Between saving the configuration and confirming: a real edit…
+        r.save_note(own.document_id, "Nota editada antes de confirmar")
+            .unwrap();
+        // …and a real browser import, through the native host's handler.
+        let mut input = Vec::new();
+        crate::native::write_frame(
+            &mut input,
+            &serde_json::json!({
+                "protocol_version": 1,
+                "action": "import_capture",
+                "capture": capture("SEFAZ-PRO-2026/00002"),
+            }),
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        crate::native::serve(&mut input.as_slice(), &mut output, &mut r, |_| false).unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(
+            &crate::native::read_frame(&mut output.as_slice())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(answer["ok"], true, "{answer}");
+        // Nothing reached the principal; both stay here, in the queue.
+        assert_eq!(state_of(&host), host_before);
+        assert_eq!(r.list_documents("").unwrap().len(), 2);
+        assert_eq!(r.list_offline_outbox().unwrap().len(), 2);
+        assert!(r.load_intranet_config().unwrap().join_pending());
+        // Refused (not confirmed): nothing changes on either side.
+        let error = r.sync_from_host(false).unwrap_err().to_string();
+        assert!(error.starts_with("[confirmar-substituicao]"), "{error}");
+        assert_eq!(state_of(&host), host_before);
+        assert_eq!(r.list_documents("").unwrap().len(), 2);
+        // Confirmed, but the safety copy cannot be made: nothing changes.
+        let blocker = dir.path().join("r").join("copias-antes-da-substituicao");
+        std::fs::write(&blocker, b"um arquivo no lugar da pasta").unwrap();
+        assert!(r.sync_from_host_confirmed(false, true).is_err());
+        assert_eq!(state_of(&host), host_before);
+        assert_eq!(r.list_documents("").unwrap().len(), 2);
+        assert_eq!(r.list_offline_outbox().unwrap().len(), 2);
+        assert_eq!(
+            r.load_document(own.document_id).unwrap().note,
+            "Nota editada antes de confirmar"
+        );
+        // Confirmed with room for the copy: kept first, then replaced; the
+        // two changes become conflicts, never sent.
+        std::fs::remove_file(&blocker).unwrap();
+        assert!(r.sync_from_host_confirmed(false, true).unwrap());
+        assert_eq!(state_of(&host), host_before);
+        let numbers: Vec<String> = r
+            .list_documents("")
+            .unwrap()
+            .into_iter()
+            .map(|d| d.document_number)
+            .collect();
+        assert_eq!(numbers, host_before.1);
+        assert!(r.list_offline_outbox().unwrap().is_empty());
+        assert_eq!(r.list_sync_conflicts().unwrap().len(), 2);
+        assert!(!r.load_intranet_config().unwrap().join_pending());
+        let kept = backups_before_replacement(&db);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            Store::open(&kept[0])
+                .unwrap()
+                .list_documents("")
+                .unwrap()
+                .len(),
+            2
+        );
+        server.stop();
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_library_open_only_to_look_at_never_exchanges() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut server, token, _) = principal(dir.path());
+        let host_before = state_of(&host);
+        // A client that already worked with the principal (no pending join).
+        let db = dir.path().join("c").join("acervo.sqlite3");
+        let mut c = Store::open(&db).unwrap();
+        c.save_intranet_config(&client_of(&server, &token)).unwrap();
+        assert!(c.sync_from_host(true).unwrap());
+        let doc = c.list_documents("").unwrap()[0].id;
+        // Opened to look at: changes stay here, no exchange runs.
+        c.set_transport_off(true);
+        c.save_note(doc, "Nota feita só para olhar").unwrap();
+        assert_eq!(state_of(&host), host_before);
+        assert_eq!(c.list_offline_outbox().unwrap().len(), 1);
+        let error = c.sync_from_host(false).unwrap_err().to_string();
+        assert_eq!(error, crate::intranet::TRANSPORT_OFF);
+        let mut panel = crate::intranet::IntranetPanel::default();
+        panel.set_transport_off(true);
+        panel.initialize(&mut c, &db);
+        assert!(!panel.sync_threads_running());
+        // A folder library and a main computer with autostart: nothing starts.
+        let folder_db = dir.path().join("f").join("acervo.sqlite3");
+        let mut f = Store::open(&folder_db).unwrap();
+        f.save_intranet_config(&IntranetConfig {
+            mode: IntranetMode::SharedFolder,
+            member_name: "Casa".into(),
+            folder_files: vec![dir
+                .path()
+                .join("Drive/ponte-sync.ponte")
+                .display()
+                .to_string()],
+            folder_key: "senha-de-teste-123".into(),
+            ..IntranetConfig::default()
+        })
+        .unwrap();
+        f.set_transport_off(true);
+        let cfg = f.load_intranet_config().unwrap();
+        let error = f
+            .sync_with_folders(
+                &cfg,
+                "senha-de-teste-123",
+                true,
+                &crate::ai::Reporter::silent(),
+            )
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, crate::intranet::TRANSPORT_OFF);
+        assert!(!dir.path().join("Drive/ponte-sync.ponte").exists());
+        let host_db2 = dir.path().join("h2").join("acervo.sqlite3");
+        let mut h2 = Store::open(&host_db2).unwrap();
+        h2.save_intranet_config(&IntranetConfig {
+            mode: IntranetMode::Host,
+            member_name: "Outro principal".into(),
+            bind_addr: "127.0.0.1:0".into(),
+            auto_start_host: true,
+            ..IntranetConfig::default()
+        })
+        .unwrap();
+        let mut looking = crate::intranet::IntranetPanel::default();
+        looking.set_transport_off(true);
+        looking.initialize(&mut h2, &host_db2);
+        assert!(!looking.sync_threads_running());
+        // The same library, as the one in use, starts its main computer.
+        let mut in_use = crate::intranet::IntranetPanel::default();
+        in_use.initialize(&mut h2, &host_db2);
+        assert!(in_use.sync_threads_running());
+        in_use.set_transport_off(true);
+        assert!(!in_use.sync_threads_running());
         server.stop();
     }
 }

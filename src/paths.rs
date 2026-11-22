@@ -22,6 +22,82 @@ pub const POINTER_FILE: &str = "acervo-em-uso.json";
 pub const RECOVERY_WINDOW_ENV: &str = "PONTEPROJ_JANELA_DE_RECUPERACAO";
 /// The variable that names the folder of the library explicitly.
 pub const OVERRIDE_ENV: &str = "PONTEPROJ_DATA_DIR";
+/// Set by the browser's native host on the window it opens for an imported
+/// document: the folder of the library that imported it. A window that finds
+/// another library does not open that document number there.
+pub const REQUEST_LIBRARY_ENV: &str = "PONTEPROJ_ACERVO_DO_PEDIDO";
+/// The end of the name of a recovery folder while it is being built.
+pub const STAGING_SUFFIX: &str = ".montando";
+/// Written first in a recovery folder being built, removed last.
+pub const STAGING_SENTINEL: &str = "montagem-incompleta.txt";
+/// The marker of a finished recovery folder (`recovery::Marker`).
+pub const RECOVERY_MARKER: &str = "acervo-de-recuperacao.json";
+/// The word in the names of the recovery folders.
+pub const RECOVERY_WORD: &str = "-recuperacao-";
+
+/// Whether the library in `dir` may be opened by the ordinary code. A
+/// recovery folder is opened only when it is finished: built under a staging
+/// name, published under its own name only after it was detached from every
+/// synchronization and verified, with a marker that says so. A folder that
+/// is still (or was left) half built, or that looks like a recovery folder
+/// without a finished marker, is refused: it may hold a copy that still
+/// carries the sync role of its source.
+pub fn ensure_openable(dir: &Path) -> Result<()> {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let unfinished = || {
+        anyhow::anyhow!(
+            "{} é um acervo de recuperação que não terminou de ser montado (a montagem foi interrompida). Ele não é aberto, porque pode ainda carregar a sincronização da cópia de origem. Monte de novo em Ajustes ▸ Cópia de segurança ▸ Restaurar cópia…; esta pasta pode ser apagada.",
+            dir.display()
+        )
+    };
+    if name.ends_with(STAGING_SUFFIX) || dir.join(STAGING_SENTINEL).exists() {
+        return Err(unfinished());
+    }
+    if name.contains(RECOVERY_WORD) {
+        let complete = std::fs::read(dir.join(RECOVERY_MARKER))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|marker| marker.get("completo").and_then(serde_json::Value::as_bool))
+            .unwrap_or(false);
+        if !complete {
+            return Err(unfinished());
+        }
+    }
+    Ok(())
+}
+
+/// The library file of a resolution, refused when its folder may not be
+/// opened (see [`ensure_openable`]). Every ordinary opening goes through it.
+pub fn checked_db_path(resolution: &Resolution) -> Result<PathBuf> {
+    ensure_openable(&resolution.data_dir)?;
+    Ok(db_path_in(&resolution.data_dir))
+}
+
+/// The document a start was asked to show, when it belongs to the library
+/// this start found. A browser import names the folder of the library that
+/// imported it (`expected`); if the library in use changed meanwhile, its
+/// number means another document here and is not opened: the second value
+/// says why.
+pub fn document_for_this_library(
+    document: Option<i64>,
+    expected: Option<&Path>,
+    resolved: &Path,
+) -> (Option<i64>, Option<String>) {
+    match (document, expected) {
+        (Some(_), Some(expected)) if !same_folder(expected, resolved) => (
+            None,
+            Some(format!(
+                "O documento que o navegador acabou de importar está no acervo em {}, e este Ponte abriu o acervo em {} (o acervo em uso mudou nesse meio-tempo). Ele não foi aberto aqui para não mostrar outro documento com o mesmo número.",
+                expected.display(),
+                resolved.display()
+            )),
+        ),
+        (document, _) => (document, None),
+    }
+}
 
 /// Where this process finds its library, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +186,18 @@ pub fn follow_pointer(home: &Path) -> Resolution {
             ..main
         },
         PointerState::Points(target) if same_folder(&target, home) => main,
+        PointerState::Points(target)
+            if db_path_in(&target).is_file() && ensure_openable(&target).is_err() =>
+        {
+            Resolution {
+            notice: Some(format!(
+                "O acervo que este computador usa ({}) não está pronto para ser aberto (é um acervo de recuperação incompleto). O Ponte abriu o acervo principal, em {}. Escolha outro acervo em Ajustes ▸ Cópia de segurança ▸ Acervos deste computador.",
+                target.display(),
+                home.display()
+            )),
+            ..main
+            }
+        }
         PointerState::Points(target) if db_path_in(&target).is_file() => Resolution {
             data_dir: target,
             ..main
@@ -193,8 +281,12 @@ pub fn db_path_in(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join("acervo.sqlite3")
 }
 
+/// The library file this process opens. Refused for a recovery folder that
+/// is not finished (see [`ensure_openable`]), however it was named
+/// (`PONTEPROJ_DATA_DIR` included).
 pub fn db_path() -> Result<PathBuf> {
-    Ok(db_path_in(&data_dir()?))
+    data_dir()?;
+    checked_db_path(&resolution()?)
 }
 
 /// A path as people read it: without the `\\?\` that `canonicalize` puts in
@@ -218,6 +310,7 @@ pub fn write_pointer(home: &Path, target: &Path) -> Result<()> {
             target.display()
         );
     }
+    ensure_openable(target)?;
     let target = readable(
         &std::fs::canonicalize(target)
             .or_else(|_| std::path::absolute(target))
@@ -277,13 +370,23 @@ mod tests {
         std::fs::write(db_path_in(dir), b"acervo").unwrap();
     }
 
+    /// A finished recovery library (its marker says so).
+    fn recovered_in(dir: &Path) {
+        library_in(dir);
+        std::fs::write(
+            dir.join(RECOVERY_MARKER),
+            br#"{"versao":1,"completo":true}"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn the_pointer_is_followed_and_switching_back_works() {
         let local = tempfile::tempdir().unwrap();
         let home = local.path().join("PonteProj");
         library_in(&home);
         let restored = local.path().join("PonteProj-recuperacao-20261122-101500");
-        library_in(&restored);
+        recovered_in(&restored);
         let resolved = || resolve(None, || Ok(local.path().to_path_buf())).unwrap();
         assert_eq!(resolved().data_dir, home);
         write_pointer(&home, &restored).unwrap();
@@ -310,7 +413,7 @@ mod tests {
         let home = local.path().join("PonteProj");
         library_in(&home);
         let restored = local.path().join("PonteProj-recuperacao-1");
-        library_in(&restored);
+        recovered_in(&restored);
         write_pointer(&home, &restored).unwrap();
         std::fs::remove_dir_all(&restored).unwrap();
         let resolved = follow_pointer(&home);
@@ -348,5 +451,69 @@ mod tests {
         std::fs::create_dir_all(&empty).unwrap();
         assert!(write_pointer(&home, &empty).is_err());
         assert_eq!(read_pointer(&home), PointerState::Absent);
+    }
+
+    #[test]
+    fn an_unfinished_recovery_folder_is_never_opened_by_any_route() {
+        let local = tempfile::tempdir().unwrap();
+        let home = local.path().join("PonteProj");
+        library_in(&home);
+        // Left half built (the staging name), renamed by hand without the
+        // sentinel removed, and named like a recovery folder without marker.
+        let staging = local
+            .path()
+            .join("PonteProj-recuperacao-20261122-101500.montando");
+        library_in(&staging);
+        let renamed = local.path().join("PonteProj-recuperacao-20261122-101501");
+        library_in(&renamed);
+        std::fs::write(renamed.join(STAGING_SENTINEL), b"").unwrap();
+        let unmarked = local.path().join("PonteProj-recuperacao-20261122-101502");
+        library_in(&unmarked);
+        for dir in [&staging, &renamed, &unmarked] {
+            // Named explicitly (PONTEPROJ_DATA_DIR)…
+            let forced = resolve(Some(dir.clone().into()), || unreachable!()).unwrap();
+            let error = checked_db_path(&forced).unwrap_err().to_string();
+            assert!(error.contains("não terminou de ser montado"), "{error}");
+            // …or through the pointer: never written, and never followed.
+            assert!(write_pointer(&home, dir).is_err());
+            std::fs::write(
+                home.join(POINTER_FILE),
+                serde_json::to_vec(&serde_json::json!({"versao": 1, "pasta": dir})).unwrap(),
+            )
+            .unwrap();
+            let followed = follow_pointer(&home);
+            assert_eq!(followed.data_dir, home);
+            assert!(followed.notice.unwrap().contains("não está pronto"));
+        }
+        // Finished: the marker says so.
+        std::fs::write(
+            unmarked.join(RECOVERY_MARKER),
+            br#"{"versao":1,"completo":true}"#,
+        )
+        .unwrap();
+        assert!(ensure_openable(&unmarked).is_ok());
+        // Ordinary folders need nothing of this.
+        assert!(ensure_openable(&home).is_ok());
+    }
+
+    #[test]
+    fn a_browser_document_is_opened_only_in_the_library_that_imported_it() {
+        let local = tempfile::tempdir().unwrap();
+        let a = local.path().join("PonteProj");
+        let b = local.path().join("PonteProj-recuperacao-1");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        assert_eq!(
+            document_for_this_library(Some(7), Some(&a), &a),
+            (Some(7), None)
+        );
+        let (document, notice) = document_for_this_library(Some(7), Some(&a), &b);
+        assert_eq!(document, None);
+        assert!(notice.unwrap().contains("não foi aberto aqui"));
+        // A start that was not asked by the browser is unaffected.
+        assert_eq!(
+            document_for_this_library(Some(7), None, &b),
+            (Some(7), None)
+        );
     }
 }

@@ -1002,7 +1002,7 @@ impl PonteApp {
         widgets::card(ui, |ui| {
             ui.add(
                 egui::Label::new(
-                    RichText::new("Trocar de acervo não apaga nem altera nenhum deles: só muda qual o Ponte abre (a janela, o navegador e o instalador). O Ponte não apaga acervos antigos; para liberar espaço, apague a pasta pelo Windows quando tiver certeza.")
+                    RichText::new("Trocar de acervo não apaga nem altera nenhum deles: só muda qual o Ponte abre (a janela, o navegador e o instalador). Só o acervo em uso sincroniza; um acervo aberto para olhar nunca sincroniza. Para trocar, feche antes as outras janelas do Ponte. As versões anteriores do Ponte sempre abrem o acervo principal: antes de voltar a uma versão anterior, volte a usar o acervo principal aqui. O Ponte não apaga acervos antigos; para liberar espaço, apague a pasta pelo Windows quando tiver certeza.")
                         .color(theme::c().muted),
                 )
                 .wrap(),

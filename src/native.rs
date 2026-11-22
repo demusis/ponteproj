@@ -742,7 +742,34 @@ pub fn serve<R: Read, W: Write, F: FnMut(i64) -> bool>(
     Ok(())
 }
 
+/// The refusal when the library this computer uses cannot be found: the
+/// browser never writes into another one instead (`None`: go on).
+pub fn refusal_for(resolution: &crate::paths::Resolution) -> Option<String> {
+    resolution.notice.as_ref().map(|notice| {
+        format!(
+            "O acervo escolhido para este computador não está disponível, e nada foi importado para não gravar em outro acervo. {notice} Abra o Ponte pelo menu Iniciar para resolver e depois clique em Repetir."
+        )
+    })
+}
+
 pub fn run_host() -> Result<()> {
+    // Unattended: the library in use or nothing. A selection that cannot be
+    // followed is told to the page instead of falling back to another library.
+    let resolution = match crate::paths::resolution() {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            return refuse_on_stdio(
+                "library_unavailable",
+                &format!(
+                    "O Ponte não conseguiu localizar o acervo deste computador: {error}. Abra o Ponte pelo menu Iniciar para ver o detalhe e depois clique em Repetir."
+                ),
+            )
+        }
+    };
+    if let Some(message) = refusal_for(&resolution) {
+        return refuse_on_stdio("library_unavailable", &message);
+    }
+    let library = resolution.data_dir.clone();
     // A library that cannot be opened is reported to the page, in words.
     let mut store = match crate::paths::db_path().and_then(|path| Store::open(&path)) {
         Ok(store) => store,
@@ -770,6 +797,8 @@ pub fn run_host() -> Result<()> {
             command
                 .arg("--open-document")
                 .arg(id.to_string())
+                // The number is this library's: the window shows it only there.
+                .env(crate::paths::REQUEST_LIBRARY_ENV, &library)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());

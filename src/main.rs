@@ -192,6 +192,10 @@ fn run() -> Result<()> {
         Some("--serve") => {
             tell_pointer_notice();
             let db_path = paths::db_path()?;
+            // Held while serving: the library in use is not switched under it.
+            let _serving = db_path
+                .parent()
+                .and_then(ponteproj::recovery::hold_server_lock);
             let mut store = Store::open(&db_path)?;
             let mut config = store.load_intranet_config()?;
             config.mode = ponteproj::intranet::IntranetMode::Host;

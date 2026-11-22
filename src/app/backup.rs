@@ -262,6 +262,25 @@ impl PonteApp {
                 self.library.dismissed = false;
             }
         }
+        self.apply_transport();
+    }
+
+    /// Only the library in use exchanges with a folder or a main computer: a
+    /// window on any other one (a recovery library being looked at, a library
+    /// that stopped being the one in use) keeps every change here and runs no
+    /// synchronization and no main computer, at the Store and in the panel.
+    /// When it becomes the library in use, its saved configuration starts
+    /// again.
+    pub(super) fn apply_transport(&mut self) {
+        let off = self.library.only_looking() || self.library.superseded_by.is_some();
+        if off == self.store.transport_off() {
+            return;
+        }
+        self.store.set_transport_off(off);
+        self.intranet.set_transport_off(off);
+        if !off {
+            self.intranet.initialize(&mut self.store, &self.db_path);
+        }
     }
 
     /// The band at the top of the window: a recovery library, a library that
@@ -326,7 +345,7 @@ impl PonteApp {
                     Band::Superseded(now) => {
                         strong(ui, "Este computador passou a usar outro acervo");
                         wrap(ui, format!(
-                            "O Ponte agora abre o acervo em {}. Esta janela continua no acervo anterior, que fica guardado como está; feche-a para não trabalhar no acervo errado.",
+                            "O Ponte agora abre o acervo em {}. Esta janela continua no acervo anterior, que fica guardado como está, e deixou de sincronizar: o que você alterar aqui fica só neste acervo. Feche-a para não trabalhar no acervo errado.",
                             now.display()
                         ));
                         ui.horizontal_wrapped(|ui| {
@@ -344,7 +363,7 @@ impl PonteApp {
                     Band::Looking(marker) => {
                         strong(ui, "Acervo de recuperação, só para olhar");
                         wrap(ui, format!(
-                            "Montado a partir de {}, em {}. Ele não sincroniza com nada («Só neste computador») e não é o acervo que este computador usa: o acervo em uso continua como estava. Olhe, copie textos ou exporte o que precisar.",
+                            "Montado a partir de {}, em {}. Não é o acervo que este computador usa, e nesta janela ele não sincroniza nem atende outros computadores, seja qual for a configuração guardada nele: o acervo em uso continua como estava. Olhe, copie textos ou exporte o que precisar.",
                             marker.describe(),
                             auto_backup::human_moment(&marker.montado_em)
                         ));
@@ -355,7 +374,7 @@ impl PonteApp {
                                 folder.display()
                             ));
                         } else if confirm {
-                            wrap(ui, "A partir de agora o Ponte (a próxima abertura, o navegador e o instalador) passa a usar este acervo. O acervo atual não é apagado nem alterado: fica guardado na pasta dele e pode voltar a ser usado em Ajustes ▸ Cópia de segurança ▸ Acervos deste computador. Este acervo continua sem sincronização; para voltar a sincronizar, conecte-o em Ajustes ▸ Equipe e sincronização.".to_owned());
+                            wrap(ui, "A partir de agora o Ponte (a próxima abertura, o navegador e o instalador) passa a usar este acervo. O acervo atual não é apagado nem alterado: fica guardado na pasta dele e pode voltar a ser usado em Ajustes ▸ Cópia de segurança ▸ Acervos deste computador. Este acervo continua sem sincronização; para voltar a sincronizar, conecte-o em Ajustes ▸ Equipe e sincronização. As versões anteriores do Ponte sempre abrem o acervo principal: antes de voltar a uma versão anterior, volte a usar o acervo principal aqui. Feche antes as outras janelas do Ponte.".to_owned());
                             ui.add_space(S1);
                             ui.horizontal_wrapped(|ui| {
                                 adopt = ui.add(widgets::primary("Usar este acervo")).clicked();
@@ -405,7 +424,7 @@ impl PonteApp {
             self.error("Este Ponte usa a pasta definida em PONTEPROJ_DATA_DIR: a escolha do acervo não vale aqui.");
             return;
         };
-        match recovery::adopt(&home, folder) {
+        match recovery::adopt(&home, folder, Some(&self.data_dir())) {
             Ok(()) => {
                 self.library.libraries = None;
                 self.library.checked = None;
