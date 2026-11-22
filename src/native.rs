@@ -730,9 +730,27 @@ pub fn serve<R: Read, W: Write, F: FnMut(i64) -> bool>(
     reader: &mut R,
     writer: &mut W,
     store: &mut Store,
+    open_document: F,
+) -> Result<()> {
+    serve_checked(reader, writer, store, open_document, || None)
+}
+
+/// [`serve`] that asks `still_selected` before every request: when it
+/// answers a reason (the library this host opened is no longer the one in
+/// use), the request is refused with `library_unavailable` and nothing is
+/// done.
+pub fn serve_checked<R: Read, W: Write, F: FnMut(i64) -> bool>(
+    reader: &mut R,
+    writer: &mut W,
+    store: &mut Store,
     mut open_document: F,
+    mut still_selected: impl FnMut() -> Option<String>,
 ) -> Result<()> {
     while let Some(bytes) = read_frame(reader)? {
+        if let Some(reason) = still_selected() {
+            write_frame(writer, &error("library_unavailable", &reason))?;
+            continue;
+        }
         let (mut response, document) = handle_request(&bytes, store);
         if let Some(id) = document {
             response["ui_opened"] = json!(open_document(id));
@@ -742,7 +760,34 @@ pub fn serve<R: Read, W: Write, F: FnMut(i64) -> bool>(
     Ok(())
 }
 
+/// The refusal when the library this computer uses cannot be found: the
+/// browser never writes into another one instead (`None`: go on).
+pub fn refusal_for(resolution: &crate::paths::Resolution) -> Option<String> {
+    resolution.notice.as_ref().map(|notice| {
+        format!(
+            "O acervo escolhido para este computador não está disponível, e nada foi importado para não gravar em outro acervo. {notice} Abra o Ponte pelo menu Iniciar para resolver e depois clique em Repetir."
+        )
+    })
+}
+
 pub fn run_host() -> Result<()> {
+    // Unattended: the library in use or nothing. A selection that cannot be
+    // followed is told to the page instead of falling back to another library.
+    let resolution = match crate::paths::resolution() {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            return refuse_on_stdio(
+                "library_unavailable",
+                &format!(
+                    "O Ponte não conseguiu localizar o acervo deste computador: {error}. Abra o Ponte pelo menu Iniciar para ver o detalhe e depois clique em Repetir."
+                ),
+            )
+        }
+    };
+    if let Some(message) = refusal_for(&resolution) {
+        return refuse_on_stdio("library_unavailable", &message);
+    }
+    let library = resolution.data_dir.clone();
     // A library that cannot be opened is reported to the page, in words.
     let mut store = match crate::paths::db_path().and_then(|path| Store::open(&path)) {
         Ok(store) => store,
@@ -755,7 +800,7 @@ pub fn run_host() -> Result<()> {
             )
         }
     };
-    serve(
+    serve_checked(
         &mut io::stdin().lock(),
         &mut io::stdout().lock(),
         &mut store,
@@ -770,17 +815,97 @@ pub fn run_host() -> Result<()> {
             command
                 .arg("--open-document")
                 .arg(id.to_string())
+                // The number is this library's: the window shows it only there.
+                .env(crate::paths::REQUEST_LIBRARY_ENV, &library)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
             command.spawn().is_ok()
         },
+        || stale_selection(&library, crate::paths::fresh_resolution()),
     )
+}
+
+/// The refusal of a request when the library this host opened is no longer
+/// the one in use (the selection changed after the host started).
+pub fn stale_selection(
+    opened: &std::path::Path,
+    now: anyhow::Result<crate::paths::Resolution>,
+) -> Option<String> {
+    let current = match now {
+        Ok(resolution) if resolution.notice.is_none() => resolution.data_dir,
+        Ok(resolution) => return refusal_for(&resolution),
+        Err(error) => {
+            return Some(format!(
+                "O Ponte não conseguiu localizar o acervo deste computador: {error}. Nada foi importado."
+            ))
+        }
+    };
+    (!crate::paths::same_folder(opened, &current)).then(|| {
+        format!(
+            "O acervo em uso neste computador mudou enquanto o pedido chegava (agora é o de {}); nada foi importado, para não gravar no acervo anterior. Clique em Repetir.",
+            current.display()
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_after_the_selection_changed_is_refused_and_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("PonteProj");
+        let b = dir.path().join("PonteProj-recuperacao-1");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let mut store = Store::open(&a.join("acervo.sqlite3")).unwrap();
+        let resolution = |dir: &std::path::Path| crate::paths::Resolution {
+            data_dir: dir.to_path_buf(),
+            home: Some(a.clone()),
+            notice: None,
+        };
+        assert_eq!(stale_selection(&a, Ok(resolution(&a))), None);
+        let mut input = Vec::new();
+        let capture = crate::model::sample_capture();
+        write_frame(
+            &mut input,
+            &json!({"protocol_version": 1, "action": "import_capture", "capture": capture}),
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        serve_checked(
+            &mut input.as_slice(),
+            &mut output,
+            &mut store,
+            |_| false,
+            || stale_selection(&a, Ok(resolution(&b))),
+        )
+        .unwrap();
+        let answer: Value =
+            serde_json::from_slice(&read_frame(&mut output.as_slice()).unwrap().unwrap()).unwrap();
+        assert_eq!(answer["ok"], false);
+        assert_eq!(answer["error"]["code"], "library_unavailable");
+        assert!(
+            store.list_documents("").unwrap().is_empty(),
+            "nada foi importado"
+        );
+    }
+
+    #[test]
+    fn a_selection_that_cannot_be_followed_refuses_the_browser() {
+        let mut resolution = crate::paths::Resolution {
+            data_dir: std::path::PathBuf::from("C:/perfil/PonteProj"),
+            home: Some(std::path::PathBuf::from("C:/perfil/PonteProj")),
+            notice: None,
+        };
+        assert_eq!(refusal_for(&resolution), None);
+        resolution.notice = Some("O acervo que este computador usa não foi encontrado.".into());
+        let refusal = refusal_for(&resolution).unwrap();
+        assert!(refusal.contains("nada foi importado"), "{refusal}");
+        assert!(refusal.contains("não foi encontrado"), "{refusal}");
+    }
     #[test]
     fn unicode_roundtrip_uses_byte_length() {
         let value = json!({"texto":"Ofício — informação"});

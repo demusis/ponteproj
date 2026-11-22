@@ -7,6 +7,7 @@ use crate::theme::{self, icon, S1, S2, S3};
 use crate::widgets::{self, Tone};
 use anyhow::{Context, Result};
 
+mod backup;
 pub(crate) mod calendar;
 mod calendar_exchange;
 mod conference;
@@ -502,7 +503,21 @@ pub fn run(initial_document: Option<i64>) -> Result<()> {
 
 /// Opens the window, on a document or on the "Modelos" area.
 pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Result<()> {
+    // Where the library is (the pointer of the main folder, or
+    // PONTEPROJ_DATA_DIR), read once for the whole process.
+    let resolution = crate::paths::resolution()?;
     let db_path = crate::paths::db_path()?;
+    // Why this window opened here, when a switch of library opened it.
+    let opening_notice = std::env::var(crate::paths::OPENING_NOTICE_ENV).ok();
+    std::env::remove_var(crate::paths::OPENING_NOTICE_ENV);
+    // A document the browser just imported is shown only in the library that
+    // imported it: its number means another document in any other.
+    let expected = std::env::var_os(crate::paths::REQUEST_LIBRARY_ENV).map(PathBuf::from);
+    let (initial_document, other_library) = crate::paths::document_for_this_library(
+        initial_document,
+        expected.as_deref(),
+        &resolution.data_dir,
+    );
     // One window per library: a second start hands its request to the window
     // already open and leaves. If that window does not answer, this start
     // opens its own, as older versions always did.
@@ -536,8 +551,20 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     // window's live folder), this one's goes at close.
     crate::attachments::sweep_stale_temp();
     let mut app = PonteApp::new(store, db_path);
+    app.library = backup::LibraryPlace::detect(&resolution, &data_dir);
     app.requests_dir = window.is_some().then_some(data_dir);
+    // A recovery library being looked at gets no automatic copies.
+    app.auto_copy.allowed = !alone && !app.library.only_looking();
+    // Nor any exchange: a library that is not the one in use is opened only
+    // to be looked at, whatever its saved configuration says.
+    app.apply_transport();
     app.intranet.initialize(&mut app.store, &app.db_path);
+    if let Some(notice) = other_library {
+        app.library.notice = Some(notice);
+    }
+    if let Some(notice) = opening_notice {
+        app.error(notice);
+    }
     // Personal templates of versions before 0.20 become work templates.
     match app.store.migrate_personal_templates() {
         Ok((0, problems)) if problems.is_empty() => {}
@@ -590,8 +617,13 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     }
     let viewport = egui::ViewportBuilder::default()
         .with_title(format!(
-            "Ponte {} • Assistente documental",
-            env!("CARGO_PKG_VERSION")
+            "Ponte {} • {}",
+            env!("CARGO_PKG_VERSION"),
+            if app.library.only_looking() {
+                "Acervo de recuperação (só para olhar)"
+            } else {
+                "Assistente documental"
+            }
         ))
         .with_icon(crate::icon::app_window_icon())
         .with_inner_size(window_size())
@@ -623,6 +655,11 @@ pub fn run_opening(initial_document: Option<i64>, open_templates: bool) -> Resul
     .map_err(|error| anyhow::anyhow!("Não foi possível iniciar a janela: {error}"))?;
     // Held until the window closes.
     drop(window);
+    // A switch of library: this window closed (its lock released above), the
+    // pointer was written, and the Ponte opens again on the chosen library.
+    if let Some(notice) = backup::take_relaunch() {
+        crate::recovery::open_library_in_use(notice)?;
+    }
     Ok(())
 }
 
@@ -968,7 +1005,13 @@ enum WorkResult {
         document_id: i64,
         result: std::result::Result<crate::ai::DraftConference, String>,
     },
-    Backup(std::result::Result<PathBuf, String>),
+    /// "Fazer cópia agora": the copy, and what makes it not a good one.
+    Backup(std::result::Result<(PathBuf, Option<String>), String>),
+    /// "Restaurar cópia…" and "Importar cópia portátil…": the recovery
+    /// library built.
+    Recovery(std::result::Result<crate::recovery::Built, String>),
+    /// "Exportar cópia portátil…": the file written.
+    PortableExport(std::result::Result<crate::portable_copy::Exported, String>),
     Export(std::result::Result<crate::export::ExportReport, String>),
     MailFolders(std::result::Result<Vec<crate::imap::Folder>, String>),
     MailMessages(std::result::Result<Vec<crate::imap::MessageSummary>, String>),
@@ -988,6 +1031,8 @@ enum WorkKind {
     Analysis,
     Draft,
     Backup,
+    /// Building a recovery library (Ajustes ▸ Cópia de segurança).
+    Recovery,
     Export,
     /// Talking to a mailbox (folders, list, fetch).
     Mail,
@@ -1378,6 +1423,12 @@ struct PonteApp {
     allow_close: bool,
     notice: Option<Notice>,
     backup_path: Option<PathBuf>,
+    /// The automatic copy of the day (Ajustes ▸ Cópia de segurança).
+    auto_copy: backup::AutoCopy,
+    /// Which library this window has open (a recovery library, the one in use).
+    library: backup::LibraryPlace,
+    /// The password form of the portable copy (export or import).
+    portable: backup::PortableForm,
     doc_task_filter: DocTaskFilter,
     doc_priority_filter: DocPriorityFilter,
     doc_origin_filter: DocOriginFilter,
@@ -1494,6 +1545,9 @@ impl PonteApp {
             allow_close: false,
             notice: None,
             backup_path: None,
+            auto_copy: Default::default(),
+            library: Default::default(),
+            portable: Default::default(),
             doc_task_filter: DocTaskFilter::All,
             doc_priority_filter: DocPriorityFilter::All,
             doc_origin_filter: DocOriginFilter::All,
@@ -2929,23 +2983,19 @@ impl PonteApp {
     }
 
     fn backup(&mut self, ctx: &egui::Context) {
+        if self.copy_job_blocked() {
+            return;
+        }
         let db_path = self.db_path.clone();
+        let data_dir = self.data_dir();
         self.spawn(
             "Criando a cópia de segurança protegida…".into(),
             WorkKind::Backup,
             move |_| {
-                let result = (|| -> Result<PathBuf> {
-                    let directory = crate::paths::data_dir()?.join("backups");
-                    std::fs::create_dir_all(&directory)?;
-                    let path = directory.join(format!(
-                        "ponte-{}-{}.sqlite3",
-                        chrono::Utc::now().format("%Y%m%d-%H%M%S"),
-                        uuid::Uuid::new_v4()
-                    ));
-                    Store::open_service(&db_path)?.backup(&path)?;
-                    Ok(path)
-                })();
-                WorkResult::Backup(result.map_err(|e| e.to_string()))
+                // Verified like the automatic and the installers' copies, from
+                // a read-only connection.
+                let result = crate::auto_backup::manual_copy(&db_path, &data_dir);
+                WorkResult::Backup(result.map_err(|e| format!("{e:#}")))
             },
             ctx,
         );
@@ -3089,8 +3139,15 @@ impl PonteApp {
                 }
             }
             WorkResult::Backup(result) => match result {
-                Ok(path) => {
+                Ok((path, None)) => {
                     self.message(format!("Cópia de segurança concluída: {}", path.display()));
+                    self.backup_path = Some(path);
+                }
+                Ok((path, Some(problem))) => {
+                    self.error(format!(
+                        "A cópia foi guardada em {}, mas não conta como cópia boa: {problem} Uma restauração dela seria recusada.",
+                        path.display()
+                    ));
                     self.backup_path = Some(path);
                 }
                 Err(error) => self.error(format!(
@@ -3166,6 +3223,8 @@ impl PonteApp {
                 }
                 self.ai_test_report = Some(result);
             }
+            WorkResult::Recovery(result) => self.accept_recovery(result),
+            WorkResult::PortableExport(result) => self.accept_portable_export(result),
             WorkResult::Export(result) => match result {
                 Ok(report) => {
                     self.message(format!(
@@ -3741,8 +3800,11 @@ impl PonteApp {
     /// and then daily, never while another operation runs.
     fn sweep_trash(&mut self) {
         const DAILY: Duration = Duration::from_secs(24 * 60 * 60);
+        // A recovery library being looked at keeps its Lixeira as the copy
+        // had it: nothing expires before the person decides to use it.
         if self.worker.is_some()
             || self.pdf_reader.busy()
+            || self.library.only_looking()
             || !self.last_trash_purge.is_none_or(|at| at.elapsed() > DAILY)
         {
             return;
@@ -3901,6 +3963,9 @@ impl eframe::App for PonteApp {
         self.apply_holiday_draft();
         crate::attachments::clear_temp_dir();
         self.reminders.shutdown();
+        // Stopped before the pointer moves: no exchange, no main computer.
+        self.intranet.set_transport_off(true);
+        self.finish_switch();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -3909,7 +3974,13 @@ impl eframe::App for PonteApp {
         self.intranet.attach_repaint(&ctx);
         self.poll_worker();
         self.start_queued();
-        self.reminders.update(&ctx, &self.store);
+        self.tick_auto_copy(&ctx);
+        self.tick_library_place();
+        // The reminders are those of the library in use, never of a recovery
+        // library being looked at (they would ring twice).
+        if !self.library.only_looking() {
+            self.reminders.update(&ctx, &self.store);
+        }
         if self.reminders.take_open_today() {
             // The person clicked the Windows notice: show what is due.
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -3971,6 +4042,13 @@ impl eframe::App for PonteApp {
             || self.editors.values().any(Editor::dirty)
             || self.worker.is_some()
             || self.suggestion.is_some();
+        // The password of the portable copy never stays behind a section or
+        // an area the person left.
+        if self.portable.mode != backup::PortableMode::Closed
+            && !(self.area == Area::Settings && self.settings_section == SettingsSection::Backup)
+        {
+            self.close_portable_form(&ctx);
+        }
         if !self.allow_close && pending && ctx.input(|input| input.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_confirm = true;
@@ -3985,6 +4063,7 @@ impl eframe::App for PonteApp {
             self.route_settings_requests();
         }
         let palette = crate::theme::c();
+        self.library_banner(ui);
         egui::Panel::left("rail")
             .exact_size(88.0)
             .resizable(false)

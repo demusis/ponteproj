@@ -8,7 +8,10 @@ fn main() {
         eprintln!("PonteProj: {err:#}");
         #[cfg(windows)]
         if std::env::args().len() == 1
-            || std::env::args().nth(1).as_deref() == Some("--open-document")
+            || matches!(
+                std::env::args().nth(1).as_deref(),
+                Some("--open-document" | "--restaurar-copia")
+            )
         {
             show_startup_error(&format!("Não foi possível abrir o PonteProj.\n\n{err}"));
         }
@@ -37,6 +40,17 @@ fn file_argument<'a>(args: &'a [String], usage: &str) -> Result<&'a String> {
     match args.get(1) {
         Some(file) if !file.starts_with("--") => Ok(file),
         _ => bail!("Informe o nome do arquivo. Uso: {usage}"),
+    }
+}
+
+/// A command that opens the library says (on the error output, which no
+/// caller parses) when the library in use could not be followed and the main
+/// one was opened instead.
+fn tell_pointer_notice() {
+    if let Ok(resolution) = paths::resolution() {
+        if let Some(notice) = resolution.notice {
+            eprintln!("PonteProj: {notice}");
+        }
     }
 }
 
@@ -81,6 +95,7 @@ fn run() -> Result<()> {
             }
             let capture: Capture = serde_json::from_slice(&bytes)
                 .map_err(|_| anyhow::anyhow!("O arquivo de importação é inválido"))?;
+            tell_pointer_notice();
             let receipt = Store::open(&paths::db_path()?)?.import_capture(&capture)?;
             println!("{}", serde_json::to_string(&receipt)?);
             Ok(())
@@ -90,6 +105,7 @@ fn run() -> Result<()> {
             let file = file_argument(&args, "--import-templates ARQUIVO.json [--publicar]")?;
             let publish = args.iter().skip(2).any(|a| a == "--publicar");
             let bundle = ponteproj::template_bundle::read_bundle(std::path::Path::new(file))?;
+            tell_pointer_notice();
             let report =
                 Store::open(&paths::db_path()?)?.import_template_bundle(&bundle, publish)?;
             if !bundle.blocks.is_empty() || !bundle.templates.is_empty() {
@@ -133,6 +149,7 @@ fn run() -> Result<()> {
         Some("--export-templates") => {
             let file = file_argument(&args, "--export-templates ARQUIVO.json [--com-exemplos]")?;
             let with_examples = args.iter().skip(2).any(|a| a == "--com-exemplos");
+            tell_pointer_notice();
             let store = Store::open(&paths::db_path()?)?;
             let (selection, skipped) = store.selection_of_everything(with_examples)?;
             for line in &skipped {
@@ -154,6 +171,7 @@ fn run() -> Result<()> {
         // library is only read (see `upgrade_backup`).
         Some(ponteproj::upgrade_backup::COMMAND) => ponteproj::upgrade_backup::run(&args[1..]),
         Some("--list") => {
+            tell_pointer_notice();
             let store = Store::open(&paths::db_path()?)?;
             println!(
                 "{}",
@@ -169,6 +187,18 @@ fn run() -> Result<()> {
                 .parse()?,
         )),
         Some("--templates") => app::run_opening(None, true),
+        // Builds a recovery library from a copy without opening the library
+        // in use (it works when that library no longer opens), then opens a
+        // window on it.
+        Some("--restaurar-copia") => {
+            let file = file_argument(&args, "--restaurar-copia ARQUIVO.sqlite3")?;
+            let folder = ponteproj::recovery::run_command(std::path::Path::new(file))?;
+            // Before anything reads where the library is: this process is the
+            // window of the recovery library.
+            std::env::set_var(paths::OVERRIDE_ENV, &folder);
+            std::env::set_var(paths::RECOVERY_WINDOW_ENV, "1");
+            app::run(None)
+        }
         #[cfg(feature = "shots")]
         Some("--shots") => {
             let out = args.get(1).context("Informe a pasta das imagens")?;
@@ -176,7 +206,14 @@ fn run() -> Result<()> {
             app::run(None)
         }
         Some("--serve") => {
+            tell_pointer_notice();
             let db_path = paths::db_path()?;
+            // Held while serving, taken before anything else (the library is
+            // not opened, Host mode not saved, nothing listens without it):
+            // the library in use is not switched under it.
+            let _serving = ponteproj::recovery::hold_server_lock(
+                db_path.parent().context("Pasta do acervo inválida")?,
+            )?;
             let mut store = Store::open(&db_path)?;
             let mut config = store.load_intranet_config()?;
             config.mode = ponteproj::intranet::IntranetMode::Host;
@@ -216,7 +253,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("--help") => {
-            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --import-plan ARQUIVO.json [--dry-run]\n  --import-templates ARQUIVO.json [--publicar]\n  --export-templates ARQUIVO.json [--com-exemplos]\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
+            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --import-plan ARQUIVO.json [--dry-run] [--saida ARQUIVO.json]\n  --import-templates ARQUIVO.json [--publicar]\n  --export-templates ARQUIVO.json [--com-exemplos]\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --restaurar-copia ARQUIVO.sqlite3 (monta um acervo de recuperação a partir da cópia e o abre, sem mexer no acervo em uso)\n  --copia-antes-de-atualizar [PASTA] [--rotulo TEXTO] [--resultado ARQUIVO]\n  --native-host\n\nAcervo: perfil local do Windows (ou o acervo escolhido em Ajustes ▸ Cópia de segurança ▸ Acervos deste computador); PONTEPROJ_DATA_DIR pode definir outra pasta.");
             Ok(())
         }
         Some(_) => bail!("Argumento desconhecido. Use --help."),

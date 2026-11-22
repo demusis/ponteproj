@@ -49,6 +49,17 @@ pub struct Store {
     /// Results of expensive reads (every row is unsealed with DPAPI), kept
     /// until the library changes. See [`Store::cached`].
     pub(crate) read_cache: std::cell::RefCell<ReadCache>,
+    /// This library is open only to be looked at (a library that is not the
+    /// one in use on this computer): nothing leaves it. Changes made here
+    /// are kept in its queue, as when the main computer is out of reach, and
+    /// no exchange runs (`Store::set_transport_off`).
+    pub(crate) transport_off: bool,
+    /// Safety copies kept before a replacement that are not good copies, for
+    /// the report of the synchronization.
+    pub(crate) replacement_notes: std::cell::RefCell<Vec<String>>,
+    /// The person chose "Substituir mesmo assim": a replacement goes on
+    /// although its safety copy is not a good one (set for one exchange).
+    pub(crate) accept_bad_safety_copy: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -285,6 +296,9 @@ impl Store {
             cascade_suppressed: false,
             cascade_notes: Vec::new(),
             read_cache: Default::default(),
+            transport_off: false,
+            replacement_notes: Default::default(),
+            accept_bad_safety_copy: false,
         };
         store.ensure_tasks()?;
         crate::tasks::backfill_task_uids(&mut store.conn)?;

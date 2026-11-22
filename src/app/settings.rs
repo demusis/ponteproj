@@ -218,8 +218,10 @@ impl PonteApp {
             );
             widgets::small_muted(ui, "Os avisos individuais são escolhidos na tarefa. Contam a partir do início agendado ou, sem agendamento, das 9h do dia do prazo. Em Hoje, você pode abrir a tarefa, dispensar ou adiar o aviso por dez minutos.");
             ui.add_space(S1);
+            let looking = self.library.only_looking();
             if ui
-                .add(widgets::quiet("Mostrar um aviso de teste"))
+                .add_enabled(!looking, widgets::quiet("Mostrar um aviso de teste"))
+                .on_disabled_hover_text("Este acervo está aberto só para olhar: nesta janela não há avisos, nem de teste. Use a janela do acervo em uso.")
                 .clicked()
             {
                 self.reminders.test_notification();
@@ -595,91 +597,7 @@ impl PonteApp {
             SettingsSection::Reminders => self.reminders_card(ui),
             SettingsSection::Holidays => self.holidays_card(ui),
             SettingsSection::Ai => self.ai_settings(ui),
-            SettingsSection::Backup => {
-                let idle = self.worker.is_none();
-                let has_backup = self.backup_path.is_some();
-                let mut backup = false;
-                let mut export = false;
-                let mut copy_backup = false;
-                // Beside the library file; nothing is created or looked up on disk here.
-                let folder = self.db_path.parent().map(|dir| dir.join("backups"));
-                let last_copy = self
-                    .backup_path
-                    .as_ref()
-                    .and_then(|path| std::fs::metadata(path).ok())
-                    .and_then(|meta| meta.modified().ok())
-                    .map(|time| {
-                        chrono::DateTime::<chrono::Local>::from(time)
-                            .format("%d/%m/%Y às %H:%M")
-                            .to_string()
-                    });
-                let mut open_folder = false;
-                widgets::card(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new("Guarda uma cópia protegida do acervo na pasta de cópias deste computador. Ela só abre na mesma conta do Windows.")
-                                .color(theme::c().muted),
-                        )
-                        .wrap(),
-                    );
-                    ui.add_space(S1);
-                    ui.horizontal_wrapped(|ui| {
-                        backup = ui.add_enabled(idle, primary("Fazer cópia agora")).clicked();
-                        if has_backup {
-                            copy_backup = ui
-                                .add(widgets::quiet("Copiar o caminho da última cópia"))
-                                .clicked();
-                        }
-                    });
-                    if let Some(folder) = &folder {
-                        ui.add_space(S2);
-                        widgets::field_label(ui, "Onde ficam as cópias");
-                        ui.horizontal_wrapped(|ui| {
-                            widgets::small_muted(ui, folder.display().to_string());
-                            open_folder = ui
-                                .add(widgets::quiet(format!("{} Abrir pasta", icon::FOLDER)))
-                                .clicked();
-                        });
-                    }
-                    if let Some(date) = &last_copy {
-                        widgets::small_muted(ui, format!("Última cópia: {date}."));
-                    }
-                });
-                if open_folder {
-                    // The folder only exists after the first copy.
-                    match &folder {
-                        Some(folder) if folder.is_dir() => {
-                            crate::windows_ui::reveal_in_explorer(folder)
-                        }
-                        _ => self.message("Ainda não há cópias: a pasta é criada na primeira."),
-                    }
-                }
-                ui.add_space(S3);
-                widgets::section(ui, "Exportação");
-                Self::settings_card(
-                    ui,
-                    "Grava documentos, tarefas, atendimentos, recursos, usos de recursos e projetos em seis arquivos .csv (sem textos, notas ou anexos), prontos para os painéis do CERES ou para o Excel.",
-                    |ui| {
-                        export = ui
-                            .add_enabled(idle, secondary("Exportar dados para CSV…"))
-                            .clicked();
-                    },
-                );
-                if backup {
-                    self.backup(ctx);
-                }
-                if export {
-                    self.export_csv(ctx);
-                }
-                ui.add_space(S3);
-                self.calendar_exchange(ui);
-                if copy_backup {
-                    if let Some(path) = &self.backup_path {
-                        ctx.copy_text(path.display().to_string());
-                        self.message("Caminho copiado.");
-                    }
-                }
-            }
+            SettingsSection::Backup => self.backup_section(ui, ctx),
             SettingsSection::Categories => {
                 let shown = self.category_manager.ui(ui, &mut self.store);
                 if shown.changed {
@@ -773,6 +691,423 @@ impl PonteApp {
 
     /// The "Atualização" card of Sobre o Ponte. The check runs only when the
     /// person clicks; nothing is downloaded or installed by the app.
+    /// Ajustes ▸ Cópia de segurança: the copies of this computer (automatic
+    /// and manual), then the export to CSV and the calendar.
+    fn backup_section(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let idle = self.worker.is_none() && !self.auto_copy.running();
+        let has_backup = self.backup_path.is_some();
+        let summary = self.auto_copy_summary();
+        let mut backup = false;
+        let mut export = false;
+        let mut copy_backup = false;
+        let mut automatic = summary.state.ativa;
+        // Beside the library file; nothing is created or looked up on disk here.
+        let folder = crate::auto_backup::backups_folder(&self.data_dir());
+        let last_copy = self
+            .backup_path
+            .as_ref()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|meta| meta.modified().ok())
+            .map(|time| {
+                chrono::DateTime::<chrono::Local>::from(time)
+                    .format("%d/%m/%Y às %H:%M")
+                    .to_string()
+            });
+        let mut open_folder = None;
+        widgets::section(ui, "Cópias deste computador");
+        widgets::card(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Uma cópia protege o acervo contra um arquivo danificado, algo apagado por engano ou uma sincronização que trouxe o que não devia. As cópias deste computador ficam protegidas pela sua conta do Windows: só abrem nesta mesma conta.")
+                        .color(theme::c().muted),
+                )
+                .wrap(),
+            );
+            ui.add_space(S1);
+            ui.horizontal_wrapped(|ui| {
+                backup = ui
+                    .add_enabled(idle, widgets::primary("Fazer cópia agora"))
+                    .clicked();
+                if has_backup {
+                    copy_backup = ui
+                        .add(widgets::quiet("Copiar o caminho da última cópia"))
+                        .clicked();
+                }
+            });
+            if let Some(date) = &last_copy {
+                widgets::small_muted(ui, format!("Última cópia feita agora: {date}."));
+            }
+            ui.add_space(S2);
+            ui.checkbox(
+                &mut automatic,
+                "Fazer uma cópia automática por dia (na primeira abertura do dia)",
+            );
+            widgets::small_muted(
+                ui,
+                format!(
+                    "Ficam as {} cópias automáticas boas mais recentes e mais uma de cada uma das últimas {} semanas. Cada cópia é conferida como uma restauração conferiria; uma cópia que não passa fica guardada, mas não conta como boa, e nesse caso nenhuma é apagada. Antes de copiar, o Ponte confere se o disco tem espaço para a cópia e mais uma reserva para o acervo (um quarto do tamanho dele, pelo menos {}). As cópias que você faz com o botão acima e as do instalador nunca são apagadas pelo Ponte.",
+                    crate::auto_backup::KEEP_RECENT,
+                    crate::auto_backup::ANCHOR_WEEKS,
+                    crate::auto_backup::human_size(crate::auto_backup::RESERVE_MIN)
+                ),
+            );
+            ui.add_space(S1);
+            if self.auto_copy.running() {
+                widgets::small_muted(ui, "Fazendo a cópia automática de hoje…");
+            } else if summary.count == 0 {
+                widgets::small_muted(ui, "Ainda não há cópias automáticas.");
+            } else {
+                widgets::small_muted(
+                    ui,
+                    format!(
+                        "{} • {} • a mais recente em {}.",
+                        if summary.count == 1 {
+                            "1 cópia automática".to_owned()
+                        } else {
+                            format!("{} cópias automáticas", summary.count)
+                        },
+                        crate::auto_backup::human_size(summary.bytes),
+                        summary
+                            .newest
+                            .as_deref()
+                            .map(crate::auto_backup::human_moment)
+                            .unwrap_or_default()
+                    ),
+                );
+            }
+            if let Some(last) = summary.state.ultimo_resultado.as_ref().filter(|r| !r.ok) {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "A última cópia automática não deu certo ({}): {} O Ponte tenta de novo na próxima abertura.",
+                            crate::auto_backup::human_moment(&last.quando),
+                            last.mensagem.trim_end_matches('.').to_owned() + "."
+                        ))
+                        .color(theme::c().danger),
+                    )
+                    .wrap(),
+                );
+            }
+            if let Some((when, what)) = &summary.damaged {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "A cópia automática de {} foi guardada, mas não conta como cópia boa: {} Isso está no próprio acervo deste computador: enquanto esse item não for corrigido (por exemplo, levado para a Lixeira e excluído, ou restaurado de uma cópia boa), as cópias novas também não contam como boas, e nenhuma cópia antiga é apagada.",
+                            crate::auto_backup::human_moment(when),
+                            what
+                        ))
+                        .color(theme::c().danger),
+                    )
+                    .wrap(),
+                );
+            }
+            ui.add_space(S2);
+            widgets::field_label(ui, "Onde ficam as cópias");
+            ui.horizontal_wrapped(|ui| {
+                widgets::small_muted(ui, folder.display().to_string());
+                if ui
+                    .add(widgets::quiet(format!("{} Abrir pasta", icon::FOLDER)))
+                    .clicked()
+                {
+                    open_folder = Some(folder.clone());
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                widgets::small_muted(ui, format!("Automáticas: {}", summary.folder.display()));
+                if ui
+                    .add(widgets::quiet(format!("{} Abrir pasta", icon::FOLDER)))
+                    .clicked()
+                {
+                    open_folder = Some(summary.folder.clone());
+                }
+            });
+        });
+        if automatic != summary.state.ativa {
+            self.set_auto_copy(automatic);
+        }
+        if let Some(folder) = open_folder {
+            // The folder only exists after the first copy.
+            if folder.is_dir() {
+                crate::windows_ui::reveal_in_explorer(&folder)
+            } else {
+                self.message("Ainda não há cópias: a pasta é criada na primeira.");
+            }
+        }
+        ui.add_space(S3);
+        self.restore_card(ui, ctx, idle);
+        ui.add_space(S3);
+        self.portable_card(ui, ctx, idle);
+        ui.add_space(S3);
+        self.libraries_card(ui);
+        ui.add_space(S3);
+        widgets::section(ui, "Exportação");
+        Self::settings_card(
+            ui,
+            "Grava documentos, tarefas, atendimentos, recursos, usos de recursos e projetos em seis arquivos .csv (sem textos, notas ou anexos), prontos para os painéis do CERES ou para o Excel.",
+            |ui| {
+                export = ui
+                    .add_enabled(idle, widgets::secondary("Exportar dados para CSV…"))
+                    .clicked();
+            },
+        );
+        if backup {
+            self.backup(ctx);
+        }
+        if export {
+            self.export_csv(ctx);
+        }
+        ui.add_space(S3);
+        self.calendar_exchange(ui);
+        if copy_backup {
+            if let Some(path) = &self.backup_path {
+                ctx.copy_text(path.display().to_string());
+                self.message("Caminho copiado.");
+            }
+        }
+    }
+
+    /// "Restaurar uma cópia": what restoring does (and does not do).
+    fn restore_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, idle: bool) {
+        let mut restore = false;
+        widgets::section(ui, "Restaurar uma cópia");
+        widgets::card(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Restaurar não mexe no acervo em uso. O Ponte monta, a partir da cópia escolhida, um acervo de recuperação numa pasta nova e o abre numa janela separada, para você olhar. Esse acervo nunca sincroniza: fica «Só neste computador», sem pasta compartilhada, sem computador principal e sem alterações esperando envio. Se for o acervo que você quer, use «Usar este acervo neste computador» nessa janela; o acervo atual continua guardado, inteiro, e você pode voltar a ele aqui.")
+                        .color(theme::c().muted),
+                )
+                .wrap(),
+            );
+            ui.add_space(S1);
+            restore = ui
+                .add_enabled(idle, widgets::secondary("Restaurar cópia…"))
+                .clicked();
+            ui.add_space(S1);
+            widgets::small_muted(
+                ui,
+                "Para voltar a sincronizar depois, conecte o acervo restaurado em Ajustes ▸ Equipe e sincronização: o Ponte avisa que o conteúdo da pasta ou do computador principal vai substituir o dele e guarda uma cópia antes.",
+            );
+            widgets::small_muted(
+                ui,
+                "Se o Ponte não abre mais: no Prompt de Comando, ponteproj.exe --restaurar-copia \"caminho da cópia.sqlite3\".",
+            );
+        });
+        if restore {
+            self.restore_copy(ctx);
+        }
+    }
+
+    /// "Cópia portátil (com senha)": export and import, with what does not
+    /// travel.
+    fn portable_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, idle: bool) {
+        use super::backup::PortableMode;
+        let mut start_export = false;
+        let mut choose_import = false;
+        let mut go = false;
+        let mut cancel = false;
+        let mode = self.portable.mode.clone();
+        widgets::section(ui, "Cópia portátil (com senha)");
+        widgets::card(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Um arquivo .pontecopia com o acervo inteiro (documentos, PDFs, anexos, notas e o histórico delas, minutas, análises, tarefas, projetos, categorias, recursos, atendimentos, modelos, feriados e a Lixeira), protegido por uma senha que você escolhe. Ao contrário das cópias deste computador, ela abre em qualquer computador e em qualquer conta do Windows, com a senha. Use para trocar de computador ou para não depender desta conta do Windows. Cabe até 200 MB de conteúdo (PDFs, anexos e textos); acima disso, o Ponte recusa antes de começar e indica «Fazer cópia agora». Importar nunca mexe no acervo em uso: monta um acervo de recuperação, como «Restaurar cópia…».")
+                        .color(theme::c().muted),
+                )
+                .wrap(),
+            );
+            ui.add_space(S1);
+            match &mode {
+                PortableMode::Closed => {
+                    ui.horizontal_wrapped(|ui| {
+                        start_export = ui
+                            .add_enabled(idle, widgets::secondary("Exportar cópia portátil…"))
+                            .clicked();
+                        choose_import = ui
+                            .add_enabled(idle, widgets::secondary("Importar cópia portátil…"))
+                            .clicked();
+                    });
+                }
+                PortableMode::Export => {
+                    widgets::field_label(ui, "Senha da cópia (pelo menos 8 caracteres)");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.portable.password)
+                            .id(super::backup::password_field(0))
+                            .password(true)
+                            .desired_width(320.0),
+                    );
+                    widgets::field_label(ui, "A mesma senha, de novo");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.portable.confirm)
+                            .id(super::backup::password_field(1))
+                            .password(true)
+                            .desired_width(320.0),
+                    );
+                    widgets::small_muted(ui, "Anote a senha: ela não fica guardada em lugar nenhum, e sem ela a cópia não abre nem o Ponte consegue recuperá-la.");
+                    ui.horizontal_wrapped(|ui| {
+                        // Enter does what the button does, and only when the
+                        // button may be used.
+                        go = idle
+                            && (ui
+                                .add_enabled(idle, widgets::primary("Escolher onde gravar…"))
+                                .clicked()
+                                || (response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))));
+                        cancel = ui.add(widgets::quiet("Cancelar")).clicked();
+                    });
+                }
+                PortableMode::Import(path) => {
+                    widgets::small_muted(ui, format!("Cópia escolhida: {}", path.display()));
+                    widgets::field_label(ui, "Senha da cópia");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.portable.password)
+                            .id(super::backup::password_field(0))
+                            .password(true)
+                            .desired_width(320.0),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        go = idle
+                            && (ui
+                                .add_enabled(idle, widgets::primary("Abrir a cópia"))
+                                .clicked()
+                                || (response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))));
+                        cancel = ui.add(widgets::quiet("Cancelar")).clicked();
+                    });
+                }
+            }
+            ui.add_space(S1);
+            widgets::small_muted(
+                ui,
+                format!(
+                    "Não vão na cópia portátil: {}.",
+                    crate::portable_copy::NOT_CARRIED.join("; ")
+                ),
+            );
+        });
+        if start_export {
+            self.portable.mode = PortableMode::Export;
+        }
+        if choose_import {
+            if let Some(path) = crate::windows_ui::pick_file(
+                "Importar cópia portátil",
+                &[
+                    ("Cópia portátil do Ponte", "*.pontecopia"),
+                    ("Todos os arquivos", "*.*"),
+                ],
+            ) {
+                self.portable.mode = PortableMode::Import(path);
+            }
+        }
+        if cancel {
+            self.close_portable_form(ctx);
+        }
+        if go {
+            match mode {
+                PortableMode::Export => self.export_portable(ctx),
+                PortableMode::Import(_) => self.import_portable(ctx),
+                PortableMode::Closed => {}
+            }
+        }
+    }
+
+    /// "Acervos deste computador": the main library and the restored ones,
+    /// which one the Ponte opens, and the switch between them.
+    fn libraries_card(&mut self, ui: &mut egui::Ui) {
+        if self.library.home.is_none() {
+            return;
+        }
+        let libraries = self.libraries();
+        let this = self.data_dir();
+        let mut chosen = None;
+        let mut ask_switch = None;
+        let mut cancel_switch = false;
+        let mut look = None;
+        let mut reveal = None;
+        widgets::section(ui, "Acervos deste computador");
+        widgets::card(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Trocar de acervo não apaga nem altera nenhum deles: só muda qual o Ponte abre (a janela, o navegador e o instalador). Só o acervo em uso sincroniza; um acervo aberto para olhar nunca sincroniza. Para trocar, feche antes as outras janelas do Ponte. As versões anteriores do Ponte sempre abrem o acervo principal: antes de voltar a uma versão anterior, volte a usar o acervo principal aqui. O Ponte não apaga acervos antigos; para liberar espaço, apague a pasta pelo Windows quando tiver certeza.")
+                        .color(theme::c().muted),
+                )
+                .wrap(),
+            );
+            for library in &libraries {
+                ui.add_space(S2);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(library.title()).font(theme::font_strong(theme::SIZE_BODY)),
+                    );
+                    if library.in_use {
+                        pill(ui, "em uso", Tone::Ok);
+                    }
+                    if crate::paths::same_folder(&library.folder, &this) {
+                        pill(ui, "nesta janela", Tone::Info);
+                    }
+                });
+                widgets::small_muted(ui, library.folder.display().to_string());
+                let confirming = self
+                    .library
+                    .confirm_switch
+                    .as_deref()
+                    .is_some_and(|f| crate::paths::same_folder(f, &library.folder));
+                if confirming {
+                    ui.add(egui::Label::new(super::backup::ADOPTION_TEXT).wrap());
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add(widgets::primary("Usar este acervo")).clicked() {
+                            chosen = Some(library.folder.clone());
+                        }
+                        if ui.add(widgets::quiet("Cancelar")).clicked() {
+                            cancel_switch = true;
+                        }
+                    });
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if !library.in_use
+                        && !confirming
+                        && ui
+                            .add(widgets::secondary(if library.main {
+                                "Voltar a usar este acervo…"
+                            } else {
+                                "Usar este acervo…"
+                            }))
+                            .clicked()
+                    {
+                        ask_switch = Some(library.folder.clone());
+                    }
+                    if library.marker.is_some()
+                        && !library.in_use
+                        && !crate::paths::same_folder(&library.folder, &this)
+                        && ui.add(widgets::quiet("Abrir para olhar")).clicked()
+                    {
+                        look = Some(library.folder.clone());
+                    }
+                    if ui.add(widgets::quiet("Abrir a pasta")).clicked() {
+                        reveal = Some(library.folder.clone());
+                    }
+                });
+            }
+        });
+        if let Some(folder) = ask_switch {
+            self.library.confirm_switch = Some(folder);
+        }
+        if cancel_switch {
+            self.library.confirm_switch = None;
+        }
+        if let Some(folder) = chosen {
+            self.library.confirm_switch = None;
+            self.use_library(&folder, ui.ctx());
+        }
+        if let Some(folder) = look {
+            if let Err(error) = crate::recovery::open_window(&folder) {
+                self.error(format!("{error:#}"));
+            }
+        }
+        if let Some(folder) = reveal {
+            crate::windows_ui::reveal_in_explorer(&folder);
+        }
+    }
+
     fn update_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         use crate::update_check::{self, Outcome};
         update_check::poll(&mut self.update);

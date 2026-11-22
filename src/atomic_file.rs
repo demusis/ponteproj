@@ -34,9 +34,93 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
+/// Gives `from` the name `to` in the same folder (a file or a folder) and
+/// fails, with [`std::io::ErrorKind::AlreadyExists`], when `to` exists: it
+/// never replaces anything. `std::fs::rename` is not this: on Windows it
+/// replaces an existing file (see the test below).
+///
+/// On Windows this is one `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`
+/// (the system refuses a name that is taken, atomically); with
+/// `MOVEFILE_WRITE_THROUGH` the move is on disk when it returns.
+pub fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+        }
+        const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+        let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(Some(0)).collect() };
+        let (a, b) = (wide(from), wide(to));
+        // SAFETY: both are NUL-terminated UTF-16 strings that outlive the call.
+        let ok = unsafe { MoveFileExW(a.as_ptr(), b.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "o destino já existe",
+            ));
+        }
+        if std::fs::symlink_metadata(from)?.is_dir() {
+            return std::fs::rename(from, to);
+        }
+        // A link fails when the name is taken; then the old name goes.
+        std::fs::hard_link(from, to)?;
+        std::fs::remove_file(from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_move_never_replaces_a_file_or_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("novo.txt");
+        let to = dir.path().join("existente.txt");
+        std::fs::write(&from, b"novo").unwrap();
+        std::fs::write(&to, b"de outra pessoa").unwrap();
+        let error = move_no_replace(&from, &to).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+        assert_eq!(std::fs::read(&to).unwrap(), b"de outra pessoa");
+        assert_eq!(std::fs::read(&from).unwrap(), b"novo");
+        // A free name works, and the old one is gone.
+        let free = dir.path().join("livre.txt");
+        move_no_replace(&from, &free).unwrap();
+        assert!(!from.exists());
+        assert_eq!(std::fs::read(&free).unwrap(), b"novo");
+        // Folders too.
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(a.join("dentro")).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        assert!(move_no_replace(&a, &b).is_err());
+        assert!(a.join("dentro").is_dir());
+        move_no_replace(&a, &dir.path().join("c")).unwrap();
+        assert!(dir.path().join("c").join("dentro").is_dir());
+    }
+
+    /// Why `move_no_replace` exists: the standard rename replaces a file that
+    /// is there on Windows, so it can never be the "do not overwrite" step.
+    #[cfg(windows)]
+    #[test]
+    fn the_standard_rename_replaces_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("novo.txt");
+        let to = dir.path().join("existente.txt");
+        std::fs::write(&from, b"novo").unwrap();
+        std::fs::write(&to, b"antigo").unwrap();
+        std::fs::rename(&from, &to).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"novo");
+    }
 
     #[test]
     fn replaces_the_destination_and_leaves_no_temporary_file() {

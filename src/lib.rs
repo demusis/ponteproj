@@ -12,6 +12,8 @@ pub mod ai_roles;
 pub mod app;
 pub mod atomic_file;
 pub mod attachments;
+/// The automatic copy of the day and "Fazer cópia agora", with their retention.
+pub mod auto_backup;
 pub mod chatgpt;
 /// Deterministic checks of a draft (Conferência da minuta).
 pub mod draft_check;
@@ -38,11 +40,16 @@ pub mod native;
 pub mod netdiag;
 pub mod paths;
 pub mod plan_import;
+/// "Cópia portátil (com senha)": the library in one `.pontecopia` file.
+pub mod portable_copy;
 pub mod projection;
 pub mod prompting;
 pub mod protection;
 /// A record with its attachments created in one operation (all or nothing).
 pub mod record_import;
+/// "Restaurar cópia…": recovery libraries in folders of their own, and the
+/// choice of the library in use.
+pub mod recovery;
 pub mod risk;
 pub mod sharedfolder;
 pub mod storage;
