@@ -269,8 +269,14 @@ const REFUSED: &str = "a criação desse registro foi recusada pela cópia compa
 /// The words of a refused edit. The text is the person's own work: it stays
 /// on the card.
 fn not_applied(capture: &Capture, why: &str) -> String {
+    // A record the person deleted is information, not a task to redo.
+    let tail = if why == DELETED_HERE || why == DELETED_THERE {
+        "O texto da edição está guardado neste aviso, caso ainda seja necessário; você pode copiá-lo ou dispensar o aviso."
+    } else {
+        "O texto da edição está guardado neste aviso; copie-o e refaça a edição no registro certo, se ainda for necessária."
+    };
     format!(
-        "A edição do registro “{}” (número {} neste computador) não foi aplicada: {why} O texto da edição está guardado neste aviso; copie-o e refaça a edição no registro certo, se ainda for necessária.",
+        "A edição do registro “{}” (número {} neste computador) não foi aplicada: {why} {tail}",
         short_title(&capture.title),
         capture.document_number
     )
@@ -341,7 +347,10 @@ pub(crate) fn edit_identity(mutation: &IntranetMutation, source: &EditSource<'_>
 /// record's number in `target`, using only what already exists and travels:
 ///
 /// 0. the edit is already in `target` (its answer was lost and it is sent
-///    again): it is the record that edit landed on;
+///    again) and the record it was written against is confirmed to be the
+///    one it landed on (by its creation, or by other request ids it has
+///    there): it goes to that record. A request id alone proves nothing, and
+///    otherwise the capture goes as written, for the importer to check;
 /// 1. the record is gone from the library the edit comes from (the person
 ///    deleted it): the edit is not applied, whatever else is true;
 /// 2. its creation was replayed in this exchange (or an earlier, interrupted
@@ -376,14 +385,7 @@ pub(crate) fn retarget_manual_edit(
             .ok_or_else(|| uncertain(CANNOT_TELL))
     };
 
-    // 0. Already there.
-    if let (Some(t), Some(request)) = (target, &own_request) {
-        if let Some(doc) = t.doc_of_request(request).map_err(unreadable)? {
-            return Ok(readdress(mutation, &number_there(t, doc)?));
-        }
-    }
-
-    // 1. The record the edit was written against, and whether it still exists.
+    // 1. The record the edit was written against.
     let local = written_against(source, &capture).map_err(unreadable)?;
     let Some(local) = local else {
         return match source.written {
@@ -391,6 +393,45 @@ pub(crate) fn retarget_manual_edit(
             Written::InCopy => Ok(mutation),
         };
     };
+    let creation =
+        source
+            .creations
+            .get(&local)
+            .copied()
+            .or_else(|| match ids.learned_document(local) {
+                Some(Some(there)) => Some(CreationOutcome::Applied(there)),
+                _ => None,
+            });
+
+    // 0. Already there: the edit was applied and its answer was lost. The
+    // request id alone proves nothing (two records may have been given the
+    // same one): it is the record that edit landed on only when the record
+    // the edit was written against is confirmed to be that one, by its
+    // creation or by other request ids it has there. Otherwise the capture
+    // goes as it was written and the importer checks it as it always did.
+    if let (Some(t), Some(request)) = (target, &own_request) {
+        if let Some(doc) = t.doc_of_request(request).map_err(unreadable)? {
+            let by_creation = creation == Some(CreationOutcome::Applied(doc));
+            let mut by_other_ids = false;
+            for other in source
+                .records
+                .requests_of_doc(local)
+                .map_err(unreadable)?
+                .iter()
+                .filter(|r| Some(*r) != own_request.as_ref())
+            {
+                if t.doc_of_request(other).map_err(unreadable)? == Some(doc) {
+                    by_other_ids = true;
+                    break;
+                }
+            }
+            if by_creation || by_other_ids {
+                return Ok(readdress(mutation, &number_there(t, doc)?));
+            }
+        }
+    }
+
+    // The record is gone from the library the edit comes from.
     if source
         .records
         .number_of_doc(local)
@@ -404,16 +445,7 @@ pub(crate) fn retarget_manual_edit(
     }
 
     // 2. Its creation.
-    let outcome =
-        source
-            .creations
-            .get(&local)
-            .copied()
-            .or_else(|| match ids.learned_document(local) {
-                Some(Some(there)) => Some(CreationOutcome::Applied(there)),
-                _ => None,
-            });
-    match outcome {
+    match creation {
         Some(CreationOutcome::Refused) => return Err(uncertain(REFUSED)),
         Some(CreationOutcome::Applied(there)) => {
             let t = target.ok_or_else(|| uncertain(CANNOT_TELL))?;
@@ -460,6 +492,9 @@ pub struct RefusedEdit {
     pub title: String,
     pub number: String,
     pub text: String,
+    /// The record was deleted (by the person, or where the edit came from):
+    /// the text is kept in case it is still needed, nothing is to be redone.
+    pub deleted: bool,
 }
 
 /// The edit that any conflict of a manual record carries.
@@ -468,6 +503,7 @@ pub fn manual_edit_in(conflict: &crate::intranet::SyncConflict) -> Option<Refuse
         title: capture.title.clone(),
         number: capture.document_number.clone(),
         text: capture.text.clone(),
+        deleted: conflict.reason.contains(DELETED_HERE) || conflict.reason.contains(DELETED_THERE),
     })
 }
 
@@ -541,12 +577,17 @@ pub(crate) fn creation_outcome(
 // The record a form was opened on, and the conflict that is retried
 
 /// The record a form was opened on: its number and the request ids of its
-/// versions. A sync that runs while the form is open may give the same row
-/// and number to another record; saving checks that it is still this one.
+/// versions. A sync that runs while the form is open may give that row and
+/// number to another record; saving checks that it is still this one, and
+/// only asks for proof when something shows it may not be.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManualRecordRef {
     pub number: String,
+    /// Every request id the record had when the form opened.
     pub identity: Vec<String>,
+    /// The record was a creation still waiting to be sent: its number may
+    /// have been given again, so the same row and number prove nothing.
+    pub provisional: bool,
 }
 
 impl Store {
@@ -555,16 +596,21 @@ impl Store {
         let number = self
             .document_number_by_id(id)?
             .ok_or_else(|| anyhow::anyhow!("Documento não encontrado."))?;
-        let mut identity = self.requests_of_doc(id).map_err(|e| anyhow::anyhow!(e))?;
-        identity.truncate(MAX_IDENTITIES);
-        Ok(ManualRecordRef { number, identity })
+        let identity = self.requests_of_doc(id).map_err(|e| anyhow::anyhow!(e))?;
+        let provisional = self.provisional_documents()?.contains(&id);
+        Ok(ManualRecordRef {
+            number,
+            identity,
+            provisional,
+        })
     }
 
     /// [`Store::update_manual_document`] for a form that was opened on a
     /// record (`opened`): the new version goes to that record, even when a
     /// synchronization meanwhile gave its row id and number to another one
-    /// (then to the number it has now). A record that cannot be found is
-    /// refused, and the text stays with the person.
+    /// (then to the number it has now). A record that cannot be found when
+    /// something shows it moved is refused, and the text stays with the
+    /// person.
     pub fn update_manual_document_expecting(
         &mut self,
         id: i64,
@@ -578,18 +624,39 @@ impl Store {
         self.update_manual_document(target, fields)
     }
 
+    /// Where a form opened on `opened` saves. Where nothing shows that the
+    /// row changed hands, as always: by its id.
     fn form_target(&self, id: i64, opened: &ManualRecordRef) -> Result<i64> {
-        let number = self.document_number_by_id(id)?;
-        let here = self.requests_of_doc(id).map_err(|e| anyhow::anyhow!(e))?;
-        let same_row = number
-            .as_deref()
-            .is_some_and(|n| same_number(n, &opened.number))
-            && (opened.identity.is_empty() || opened.identity.iter().any(|r| here.contains(r)));
-        if same_row {
+        // Nothing to compare (a record that predates the requests): the
+        // save that always was.
+        if opened.identity.is_empty() {
             return Ok(id);
         }
-        if let Some(moved) = document_of_identity(&self.conn, &opened.identity)? {
-            return Ok(moved);
+        let number = self.document_number_by_id(id)?;
+        let same_number_now = number
+            .as_deref()
+            .is_some_and(|n| same_number(n, &opened.number));
+        // Where the ids the form knew lead now.
+        let mut leads = BTreeSet::new();
+        for request in &opened.identity {
+            if let Some(doc) = self
+                .doc_of_request(request)
+                .map_err(|e| anyhow::anyhow!(e))?
+            {
+                leads.insert(doc);
+            }
+        }
+        // The same row and number, and no id of the record points to another
+        // one: it is still this record (a form on a creation that was waiting
+        // to be sent needs an id that confirms it: its number may have been
+        // given again).
+        if same_number_now
+            && (leads == BTreeSet::from([id]) || (leads.is_empty() && !opened.provisional))
+        {
+            return Ok(id);
+        }
+        if leads.len() == 1 {
+            return Ok(leads.into_iter().next().expect("one element"));
         }
         anyhow::bail!(
             "O registro mudou ao sincronizar e não foi encontrado neste computador. O que você escreveu continua nesta janela: copie o texto, abra o registro de novo e confira o número antes de salvar."
@@ -611,8 +678,10 @@ impl Store {
             capture,
             "não foi possível confirmar que o registro que ela corrige ainda é o que tem esse número.",
         );
+        // A conflict stored by an earlier version (or of a record with no
+        // identity) has nothing to check: it behaves as it always did.
         if conflict.identity.is_empty() {
-            return Err(cannot);
+            return Ok(conflict.mutation.clone());
         }
         let Ok(Some(doc)) = document_of_identity(&self.conn, &conflict.identity) else {
             return Err(cannot);
@@ -696,6 +765,7 @@ impl Presented {
     /// generation), so the same transition of the same state is never
     /// recorded twice.
     pub(crate) fn record_changes(&self, conn: &Connection, event: &str) {
+        let _ = reanchor_notices(conn);
         let _ = (|| -> Result<()> {
             for (number, title, requests) in &self.0 {
                 let Some(document) = document_of_identity(conn, requests)? else {
@@ -717,22 +787,10 @@ impl Presented {
                 {
                     continue;
                 }
-                // Every request id that confirmed the match comes first, then
-                // the rest: a later purge of any version still leaves one.
-                let mut uids: Vec<String> = Vec::new();
-                for request in requests {
-                    if conn
-                        .query_row(
-                            "SELECT 1 FROM requests WHERE request_id=?1 AND document_id=?2",
-                            params![request, document],
-                            |_| Ok(()),
-                        )
-                        .optional()?
-                        .is_some()
-                    {
-                        uids.push(request.clone());
-                    }
-                }
+                // The live request ids of the record in the state adopted come
+                // first (a version made later may be the one that survives),
+                // then the ones this library knew before.
+                let mut uids = live_requests(conn, document)?;
                 for request in requests {
                     if !uids.contains(request) {
                         uids.push(request.clone());
@@ -771,6 +829,52 @@ impl Presented {
             Ok(())
         })();
     }
+}
+
+/// The request ids of a document's versions, oldest version first.
+fn live_requests(conn: &Connection, document: i64) -> Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT request_id FROM requests WHERE document_id=?1 ORDER BY capture_id,request_id",
+    )?;
+    let rows = statement.query_map([document], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// The notices already kept follow the record: every adoption that still
+/// confirms which record one is about gives it the record's current request
+/// ids first, so that purging the versions it was made from later does not
+/// take the link and the old number from the search.
+fn reanchor_notices(conn: &Connection) -> Result<()> {
+    let rows = {
+        let mut statement = conn.prepare("SELECT id,payload FROM renumber_notices")?;
+        let rows =
+            statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (id, blob) in rows {
+        let Ok(plain) = unseal(&blob) else { continue };
+        let Ok(mut notice) = serde_json::from_slice::<RenumberNotice>(&plain) else {
+            continue;
+        };
+        let Some(document) = document_of_identity(conn, &notice.uids)? else {
+            continue;
+        };
+        let mut uids = live_requests(conn, document)?;
+        for old in &notice.uids {
+            if !uids.contains(old) {
+                uids.push(old.clone());
+            }
+        }
+        uids.truncate(MAX_IDENTITIES);
+        if uids != notice.uids {
+            notice.uids = uids;
+            conn.execute(
+                "UPDATE renumber_notices SET payload=?1 WHERE id=?2",
+                params![seal(&serde_json::to_vec(&notice)?)?, id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// The one document that the request ids lead to (`None` when none of them
@@ -1917,6 +2021,14 @@ mod tests {
             "{}",
             card.reason
         );
+        // Information, not a task: nothing asks the person to redo it.
+        assert!(!card.reason.contains("refaça"), "{}", card.reason);
+        assert!(
+            card.reason.contains("caso ainda seja necessário"),
+            "{}",
+            card.reason
+        );
+        assert!(crate::renumber::manual_edit_in(card).unwrap().deleted);
         // The card is offered (copy and dismiss) even while a drain waits.
         p.b.conn
             .execute(
@@ -2099,8 +2211,9 @@ mod tests {
         // A record that cannot be found is refused, with a message that keeps
         // the text in the form (the caller leaves the form open on an error).
         let lost = crate::renumber::ManualRecordRef {
-            number: x_number.clone(),
+            number: "MANUAL-1999/0001".into(),
             identity: vec![uuid::Uuid::new_v4().to_string()],
+            provisional: false,
         };
         let error =
             p.b.update_manual_document_expecting(y, Some(&lost), &fields("Registro de B", "Outro"))
@@ -2508,5 +2621,213 @@ mod tests {
             &fields("Registro do cliente", "Texto do cliente, editado"),
         );
         assert_eq!(text_of(&t.host, &y_number), "Texto do novo");
+    }
+
+    // ---- Round 3 -----------------------------------------------------------
+
+    /// 1: two different records were given captures with the same request id
+    /// (native bundle imports without PDFs). The edit of the second must not
+    /// be re-addressed to the first on the mere fact that its request id
+    /// exists there: the importer refuses it, as it always did, and it ends
+    /// as a card that keeps its text.
+    #[test]
+    fn a_repeated_request_id_never_makes_an_edit_of_another_record_vanish() {
+        let mut p = pair();
+        let (_, x_number) = create(&mut p.a, "Registro X", "Texto de X");
+        let (_, y_number) = create(&mut p.a, "Registro Y", "Texto de Y");
+        sync(&mut p.a);
+        sync(&mut p.b);
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let edit = |number: &str| {
+            let mut capture = fields("Título repetido", "Texto repetido").capture(number, "Teste");
+            capture.request_id = request_id.clone();
+            capture
+        };
+        p.a.import_bundle(&edit(&x_number), &[]).unwrap();
+        sync(&mut p.a);
+        p.b.import_bundle(&edit(&y_number), &[]).unwrap();
+        let report = sync(&mut p.b);
+        let cards = p.b.list_sync_conflicts().unwrap();
+        assert_eq!(report.conflicts, 1, "the edit disappeared: {cards:?}");
+        assert!(p.b.list_offline_outbox().unwrap().is_empty());
+        assert_eq!(
+            crate::renumber::manual_edit_in(&cards[0]).unwrap().text,
+            "Texto repetido"
+        );
+        assert_eq!(text_of(&p.b, &y_number), "Texto de Y", "Y is untouched");
+        assert_eq!(text_of(&p.b, &x_number), "Texto repetido", "A's edit of X");
+    }
+
+    /// 2: the form is opened on a record whose only known version is then
+    /// replaced and purged by someone else: same row, same number, nothing
+    /// shows another record: it saves as always.
+    #[test]
+    fn a_form_still_saves_a_record_that_kept_its_row_and_number() {
+        let mut p = pair();
+        let (_, number) = create(&mut p.a, "Registro compartilhado", "Texto compartilhado");
+        sync(&mut p.a);
+        sync(&mut p.b);
+        let on_b = id_of(&p.b, "Registro compartilhado");
+        let opened = p.b.manual_record_ref(on_b).unwrap();
+        assert!(!opened.identity.is_empty() && !opened.provisional);
+        // Someone else saves a second version and purges the first.
+        let on_a = id_of(&p.a, "Registro compartilhado");
+        p.a.update_manual_document(
+            on_a,
+            &fields("Registro compartilhado", "Texto compartilhado, v2"),
+        )
+        .unwrap();
+        let first = p.a.capture_versions(on_a).unwrap().last().unwrap().id;
+        let target = crate::trash::Target {
+            kind: crate::trash::Kind::Capture,
+            id: first,
+        };
+        p.a.trash_item(target.clone()).unwrap();
+        p.a.purge_trash_item(target).unwrap();
+        sync(&mut p.a);
+        sync(&mut p.b);
+        assert_eq!(
+            p.b.load_document(on_b).unwrap().summary.document_number,
+            number,
+            "same row, same number"
+        );
+        let receipt =
+            p.b.update_manual_document_expecting(
+                on_b,
+                Some(&opened),
+                &fields("Registro compartilhado", "Texto compartilhado, de B"),
+            )
+            .unwrap();
+        assert_eq!(receipt.document_id, on_b);
+        assert_eq!(text_of(&p.b, &number), "Texto compartilhado, de B");
+        // A form with no identity at all is the save that always was.
+        let blank = crate::renumber::ManualRecordRef {
+            number: "MANUAL-1999/0001".into(),
+            identity: Vec::new(),
+            provisional: false,
+        };
+        p.b.update_manual_document_expecting(
+            on_b,
+            Some(&blank),
+            &fields("Registro compartilhado", "Texto compartilhado, outra vez"),
+        )
+        .unwrap();
+    }
+
+    /// 3: a conflict stored by the current release has no `identity`: it keeps
+    /// the options it had ("Manter a minha" reapplies it).
+    #[test]
+    fn a_conflict_stored_without_identity_keeps_its_options() {
+        let mut p = pair();
+        let (number, on_a) = conflict_on_a_trashed_record(&mut p);
+        // The shape the previous release stored: no `identity`.
+        let card = p.b.list_sync_conflicts().unwrap().remove(0);
+        let mut old_shape = serde_json::to_value(&card).unwrap();
+        old_shape.as_object_mut().unwrap().remove("identity");
+        p.b.conn
+            .execute(
+                "UPDATE offline_conflicts SET payload=?1 WHERE id=?2",
+                rusqlite::params![
+                    crate::protection::seal(&serde_json::to_vec(&old_shape).unwrap()).unwrap(),
+                    card.id
+                ],
+            )
+            .unwrap();
+        p.a.restore_item(crate::trash::Target {
+            kind: crate::trash::Kind::Document,
+            id: on_a,
+        })
+        .unwrap();
+        sync(&mut p.a);
+        sync(&mut p.b);
+        let stored = p.b.list_sync_conflicts().unwrap().remove(0);
+        assert!(stored.identity.is_empty(), "read from the old shape");
+        assert!(!p.b.conflict_info(&stored).reapply_unsafe);
+        p.b.resolve_sync_conflict(stored.id, crate::intranet::ConflictResolution::KeepLocal)
+            .unwrap();
+        assert_eq!(text_of(&p.b, &number), "Texto editado por B");
+    }
+
+    /// 4: a notice kept in history follows the record: when the version it
+    /// was made from is purged later, the link and the old number stay.
+    #[test]
+    fn a_notice_in_history_survives_the_purge_of_the_version_it_was_made_from() {
+        let mut f = Folders::new();
+        let (_, _) = create(&mut f.a, "Registro de A", "Texto de A");
+        busy_work(&mut f.a, 4);
+        f.sync_a(Where::Drive);
+        let (_, y_number) = create(&mut f.b, "Registro de B", "Texto de B");
+        f.sync_b(Where::Pen);
+        f.sync_a(Where::Both);
+        // A saves a second version of Y; B adopts the new number with both
+        // versions present.
+        let on_a = id_of(&f.a, "Registro de B");
+        f.a.update_manual_document(on_a, &fields("Registro de B", "Texto de B, v2"))
+            .unwrap();
+        f.sync_a(Where::Both);
+        f.sync_b(Where::Both);
+        assert_eq!(f.b.pending_renumber_notices().unwrap().len(), 1);
+        // A purges the first version.
+        let first = f.a.capture_versions(on_a).unwrap().last().unwrap().id;
+        let target = crate::trash::Target {
+            kind: crate::trash::Kind::Capture,
+            id: first,
+        };
+        f.a.trash_item(target.clone()).unwrap();
+        f.a.purge_trash_item(target).unwrap();
+        f.sync_a(Where::Both);
+        f.sync_b(Where::Both);
+        let notice = f.b.pending_renumber_notices().unwrap().remove(0);
+        let y = id_of(&f.b, "Registro de B");
+        assert_eq!(f.b.renumber_notice_document(&notice), Some(y));
+        assert_eq!(f.b.previous_numbers(y), vec![y_number.clone()]);
+        assert!(f
+            .b
+            .list_documents(&y_number)
+            .unwrap()
+            .iter()
+            .any(|d| d.id == y));
+    }
+
+    /// KNOWN LIMIT, NOT FIXED in this release (review of item 2, round 3,
+    /// blocker 2, which already existed before this branch): the record's
+    /// creation was renumbered by another computer and has left the journal
+    /// of the copy, and the only version both computers still shared was
+    /// purged there. The queued edit then has nothing in common with the
+    /// copy to prove which record it is, and goes by number, to the record
+    /// that holds the old number. Telling this case from an ordinary edit of
+    /// a legacy record would need the identity carried in the edit itself (a
+    /// format change planned for a later release).
+    #[test]
+    #[ignore = "limite conhecido: criação renumerada fora do diário e única versão em comum apagada (revisão do item 2, rodada 3, bloqueio 2)"]
+    fn an_edit_with_no_version_in_common_never_lands_on_the_holder_of_the_old_number() {
+        let mut f = Folders::new();
+        crate::sharedfolder::set_journal_cap_for_test(6);
+        let (_, x_number) = create(&mut f.a, "Registro de A", "Texto de A");
+        busy_work(&mut f.a, 4);
+        f.sync_a(Where::Drive);
+        let (y, y_number) = create(&mut f.b, "Registro de B", "Texto de B");
+        assert_eq!(x_number, y_number);
+        f.sync_b(Where::Pen);
+        f.sync_a(Where::Both);
+        // A saves a second version of Y, purges the first and publishes
+        // enough to push Y's creation out of the journal.
+        let on_a = id_of(&f.a, "Registro de B");
+        f.a.update_manual_document(on_a, &fields("Registro de B", "Texto de B, v2"))
+            .unwrap();
+        let first = f.a.capture_versions(on_a).unwrap().last().unwrap().id;
+        let target = crate::trash::Target {
+            kind: crate::trash::Kind::Capture,
+            id: first,
+        };
+        f.a.trash_item(target.clone()).unwrap();
+        f.a.purge_trash_item(target).unwrap();
+        busy_work(&mut f.a, 8);
+        f.sync_a(Where::Both);
+        // B edits Y, which it still shows under the old number.
+        f.b.update_manual_document(y, &fields("Registro de B", "Texto de B, editado"))
+            .unwrap();
+        f.sync_b(Where::Both);
+        assert_eq!(text_of(&f.b, &x_number), "Texto de A");
     }
 }

@@ -11702,7 +11702,14 @@ impl IntranetPanel {
                         ui.ctx().copy_text(edit.text.clone());
                     }
                     ui.add_space(theme::S1);
-                    widgets::small_muted(ui, "Esta edição não será aplicada por número, para não cair em outro registro. Cole o texto no registro certo e, depois, dispense o aviso.");
+                    widgets::small_muted(
+                        ui,
+                        if edit.deleted {
+                            "O registro foi excluído. O texto fica aqui caso ainda seja necessário: copie-o, se quiser, ou dispense o aviso."
+                        } else {
+                            "Esta edição não será aplicada por número, para não cair em outro registro. Cole o texto no registro certo e, depois, dispense o aviso."
+                        },
+                    );
                 } else {
                     widgets::small_muted(ui, "Esta alteração dependia de um item criado sem conexão que não chegou ao acervo da equipe. Ela não pode ser reaplicada: refaça-a, se ainda for necessária, e dispense o aviso.");
                 }
