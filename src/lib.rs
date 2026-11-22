@@ -34,6 +34,7 @@ pub mod native;
 /// How the program reaches the internet: certificates, proxy, failures, the connection test.
 pub mod netdiag;
 pub mod paths;
+pub mod plan_import;
 pub mod projection;
 pub mod prompting;
 pub mod protection;

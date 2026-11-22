@@ -53,7 +53,7 @@ pub struct Guard {
     _lock: File,
 }
 
-fn open_exclusive(path: &Path) -> std::io::Result<File> {
+pub(crate) fn open_exclusive(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(false);
     #[cfg(windows)]

@@ -12,7 +12,22 @@ fn main() {
         {
             show_startup_error(&format!("Não foi possível abrir o PonteProj.\n\n{err}"));
         }
-        std::process::exit(1);
+        // A plan that was applied has its own exit codes (see
+        // `plan_import::execute`): it must not look like one that failed.
+        let code = if err
+            .downcast_ref::<ponteproj::plan_import::AppliedButUnreported>()
+            .is_some()
+        {
+            ponteproj::plan_import::EXIT_APPLIED_UNREPORTED
+        } else if err
+            .downcast_ref::<ponteproj::plan_import::AppliedWithManualSteps>()
+            .is_some()
+        {
+            ponteproj::plan_import::EXIT_APPLIED_MANUAL_STEPS
+        } else {
+            1
+        };
+        std::process::exit(code);
     }
 }
 
@@ -70,6 +85,7 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string(&receipt)?);
             Ok(())
         }
+        Some("--import-plan") => ponteproj::plan_import::run_cli(&args[1..]),
         Some("--import-templates") => {
             let file = file_argument(&args, "--import-templates ARQUIVO.json [--publicar]")?;
             let publish = args.iter().skip(2).any(|a| a == "--publicar");
@@ -200,7 +216,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("--help") => {
-            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --import-templates ARQUIVO.json [--publicar]\n  --export-templates ARQUIVO.json [--com-exemplos]\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
+            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --import-plan ARQUIVO.json [--dry-run]\n  --import-templates ARQUIVO.json [--publicar]\n  --export-templates ARQUIVO.json [--com-exemplos]\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
             Ok(())
         }
         Some(_) => bail!("Argumento desconhecido. Use --help."),
