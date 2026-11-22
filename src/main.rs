@@ -70,6 +70,24 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string(&receipt)?);
             Ok(())
         }
+        Some("--import-plan") => {
+            let file = file_argument(&args, "--import-plan ARQUIVO.json [--dry-run]")?;
+            if args.len() > 3 || (args.len() == 3 && args[2] != "--dry-run") {
+                bail!("Uso: --import-plan ARQUIVO.json [--dry-run]");
+            }
+            let mut bytes = Vec::new();
+            std::fs::File::open(file)?
+                .take(native::MAX_FRAME as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > native::MAX_FRAME {
+                bail!("O arquivo de importação é grande demais.");
+            }
+            let plan: ponteproj::plan_import::Plan =
+                serde_json::from_slice(&bytes).context("JSON do plano inválido")?;
+            let result = Store::open(&paths::db_path()?)?.import_plan(&plan, args.len() == 3)?;
+            println!("{}", serde_json::to_string(&result)?);
+            Ok(())
+        }
         Some("--import-templates") => {
             let file = file_argument(&args, "--import-templates ARQUIVO.json [--publicar]")?;
             let publish = args.iter().skip(2).any(|a| a == "--publicar");
@@ -200,7 +218,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("--help") => {
-            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --import-templates ARQUIVO.json [--publicar]\n  --export-templates ARQUIVO.json [--com-exemplos]\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
+            println!("PonteProj\n  sem argumentos: abrir aplicativo\n  --open-document ID\n  --templates (abre na área Modelos)\n  --import-json ARQUIVO\n  --import-plan ARQUIVO.json [--dry-run]\n  --import-templates ARQUIVO.json [--publicar]\n  --export-templates ARQUIVO.json [--com-exemplos]\n  --list [BUSCA]\n  --serve [ENDEREÇO:PORTA]\n  --guide [ARQUIVO.html]\n  --native-host\n\nAcervo: perfil local do Windows; PONTEPROJ_DATA_DIR pode definir outra pasta.");
             Ok(())
         }
         Some(_) => bail!("Argumento desconhecido. Use --help."),

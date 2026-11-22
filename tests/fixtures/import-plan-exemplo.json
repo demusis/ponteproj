@@ -1,0 +1,24 @@
+{
+  "request_id": "47f3f62f-404c-4931-ae04-bc7eb1108c07",
+  "document": {
+    "title": "Solicitação de informações",
+    "text": "Verificar os dados recebidos e preparar a resposta.",
+    "type": "email",
+    "date": "2026-11-22",
+    "origin": "Secretaria",
+    "note": "Acompanhar o prazo.",
+    "categories": []
+  },
+  "tasks": [
+    {
+      "title": "Examinar a solicitação",
+      "action": "examinar",
+      "due_date": "2026-12-01",
+      "priority": "alta",
+      "assignee": "Equipe",
+      "checklist": [[false, "Conferir os documentos"]]
+    },
+    {"title": "Preparar resposta", "action": "responder"}
+  ],
+  "complete_triage": true
+}

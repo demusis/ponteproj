@@ -236,6 +236,30 @@ Para conferir que o executável atende uma extensão, chame-o como o navegador f
 
 ## 7. Linha de comando e variáveis de ambiente
 
+Para criar um registro manual e várias tarefas vinculadas, use
+`ponteproj.exe --import-plan arquivo.json`. Acrescente `--dry-run` depois do
+arquivo para validar e visualizar o plano sem gravar. A saída é um objeto JSON
+com `document_id`, `document_number`, `title`, `tasks` (cada uma com `id` e
+`title`) e `created`. Na simulação, identificadores ainda inexistentes são
+`null`; uma solicitação já concluída retorna `created: false` e os mesmos IDs.
+
+O exemplo completo está em `tests/fixtures/import-plan-exemplo.json`. O campo
+`request_id` é um UUID obrigatório e deve ser exclusivo do plano; repeti-lo
+retoma uma importação interrompida sem duplicar tarefas. Informe exatamente um
+de `document` ou `document_number` (número já existente). Em `document`, use
+`title`, `text`, `type` (memorando, ligacao, email, papel, reuniao, whatsapp ou
+outro), `date` (AAAA-MM-DD), `origin`, `note` e `categories`. Os últimos quatro
+são opcionais. `tasks` contém de 1 a 100 itens: `title` e `action` são
+obrigatórios; `notes`, `due_date` (AAAA-MM-DD), `priority` (baixa, normal,
+alta ou urgente), `assignee`, `checklist` (pares `[concluído, texto]`),
+`scheduled_start` e `scheduled_end` (AAAA-MM-DDTHH:MM), `estimate_minutes`,
+`categories` e `project` são opcionais. Categorias e projeto aceitam nome ou
+UID existente. As ações aceitas são `triar`, `examinar`, `tomar ciencia`,
+`baixar documento`, `responder`, `encaminhar`, `pedir complementacao` e
+`acompanhar`. `complete_triage: true` conclui a triagem automática do novo
+registro. A gravação usa operações separadas e pode ser retomada com o mesmo
+arquivo após uma interrupção.
+
 ```powershell
 ponteproj.exe                                  # abre a janela
 ponteproj.exe --open-document 12               # abre a ficha do documento local 12
