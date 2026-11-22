@@ -486,7 +486,7 @@ class ProjetosRegrasTest {
         val draft = TaskDraft(1, 7, saved, saved.copy(projectUid = "b"))
         assertEquals(draft, TaskDraft.fromList(draft.toList()))
         // A draft saved before projects existed (13 fields) still comes back, with no project.
-        val old = draft.toList().toMutableList().also { it.removeAt(3 + 13); it.removeAt(it.lastIndex) }
+        val old = draft.toList().toMutableList().also { it.removeAt(it.lastIndex); it.removeAt(it.lastIndex); it.removeAt(3 + 14); it.removeAt(3 + 13) }
         assertEquals("", TaskDraft.fromList(old)!!.form.projectUid)
     }
 

@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
+import kotlin.reflect.KProperty
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -32,6 +33,17 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+
+/** A state that, when it changes, says so ([onSet]); used by what the lists keep between runs. */
+private class Kept<T>(initial: T, private val onSet: () -> Unit) {
+    private val state = mutableStateOf(initial)
+    operator fun getValue(thisRef: Any?, property: KProperty<*>): T = state.value
+    operator fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
+        if (state.value == value) return
+        state.value = value
+        onSet()
+    }
+}
 
 /** Passwords typed for this session (not remembered on the device). Memory only. */
 internal object MailSession {
@@ -192,7 +204,7 @@ internal object Controller {
     var docs by mutableStateOf<List<Doc>>(emptyList())
         private set
     var docQuery by mutableStateOf("")
-    var docFilter by mutableStateOf(DocFilter.ALL)
+    var docFilter by Kept(DocFilter.ALL) { persistFilters() }
     /** Ids of the documents the core's search found for [docQuery]; null while nothing is typed. */
     var docMatches by mutableStateOf<Set<Long>?>(null)
         private set
@@ -205,12 +217,12 @@ internal object Controller {
         private set
 
     /** The category filters of Tarefas and Documentos: chosen uids, plus [CategoryRules.NONE]. */
-    var taskCatFilter by mutableStateOf<Set<String>>(emptySet())
-    var docCatFilter by mutableStateOf<Set<String>>(emptySet())
+    var taskCatFilter by Kept<Set<String>>(emptySet()) { persistFilters() }
+    var docCatFilter by Kept<Set<String>>(emptySet()) { persistFilters() }
 
     /** The project filter of Tarefas: empty (all), [ProjectRules.NONE] or a project uid. */
-    var taskProjectFilter by mutableStateOf("")
-    var taskDocumentFilter by mutableStateOf<Long?>(null)
+    var taskProjectFilter by Kept("") { persistFilters() }
+    var taskDocumentFilter by Kept<Long?>(null) { documentFilterChanged() }
     var tasks by mutableStateOf(TasksState())
     var taskRelations by mutableStateOf(TasksState())
         private set
@@ -232,7 +244,7 @@ internal object Controller {
         private set
 
     /** What the Tarefas area shows: one of the ids of [TasksSegments]. */
-    var tasksSegment by mutableIntStateOf(0)
+    var tasksSegment by Kept(0) { persistFilters() }
         private set
     var attendances by mutableStateOf(AttendancesState())
         private set
@@ -319,6 +331,7 @@ internal object Controller {
         }
         if (!started) {
             started = true
+            restoreFilters()
             if (saved != null) restore(saved) else idleTask = { startup() }
             // The share that was in progress when the process died is read OFF this thread (the draft, its copy, the
             // library check) and comes back on top of the stack when ready (behind the lock when it is in force:
@@ -532,6 +545,70 @@ internal object Controller {
     private fun lockDelay() = LockDelay.fromKey(prefs.getString(K_LOCK_AFTER, null))
     fun secureScreen() = prefs.getBoolean(K_SECURE, true)
 
+    // ---------------------------------------------------------------- what the lists keep between runs
+
+    /** True while the saved filters are being put back: nothing is written meanwhile. */
+    private var restoringFilters = false
+
+    /** The document filter saved last run, waiting for the documents to be read to be checked ([restoreFilters]). */
+    private var pendingDocumentFilter: SavedDocument? = null
+
+    /** The document of the filter as it is kept: not looked up again on every change of another filter. */
+    private var keptDocument: SavedDocument? = null
+
+    /** Puts back the filters and the area of the last run; the document is checked when the documents are read. */
+    private fun restoreFilters() = applyFilters(FilterMemory.decode(prefs.getString(FilterMemory.KEY, null)))
+
+    /** A new library (a reset, or another sync file): the lists start unfiltered, here and in the preferences. */
+    private fun clearFilters() {
+        applyFilters(FilterMemory.CLEARED)
+        try {
+            prefs.edit().remove(FilterMemory.KEY).apply()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun applyFilters(kept: SavedFilters) {
+        restoringFilters = true
+        try {
+            taskCatFilter = kept.taskCategories
+            docCatFilter = kept.docCategories
+            taskProjectFilter = kept.project
+            tasksSegment = kept.segment
+            docFilter = kept.docFilter
+            // "Sem documento" needs no document; any other waits for the library to be read (a local id may have changed).
+            taskDocumentFilter = if (kept.document?.id == 0L) 0L else null
+            pendingDocumentFilter = kept.document.takeIf { it?.id != 0L }
+            keptDocument = kept.document
+        } finally {
+            restoringFilters = false
+        }
+        shell = shell.copy(
+            attendances = tasksSegment == TasksSegments.ATTENDANCES,
+            resources = tasksSegment == TasksSegments.RESOURCES,
+            projects = tasksSegment == TasksSegments.PROJECTS
+        )
+    }
+
+    private fun documentFilterChanged() {
+        // The person's own choice wins over a saved one still waiting for the documents.
+        if (!restoringFilters) pendingDocumentFilter = null
+        keptDocument = FilterMemory.savedDocument(taskDocumentFilter, docs.ifEmpty { SyncRunner.docs })
+        persistFilters()
+    }
+
+    private fun persistFilters() {
+        if (restoringFilters || !::app.isInitialized) return
+        val saved = SavedFilters(
+            taskCategories = taskCatFilter, docCategories = docCatFilter, project = taskProjectFilter,
+            document = keptDocument, segment = tasksSegment, docFilter = docFilter
+        )
+        try {
+            prefs.edit().putString(FilterMemory.KEY, FilterMemory.encode(saved)).apply()
+        } catch (_: Throwable) {
+        }
+    }
+
     /** The Activity came to the front (not for a rotation: it is not stopped then). */
     fun onActivityStart() {
         // Edits made in the calendar app while away are picked up now, and the ones made from here on as they happen.
@@ -562,6 +639,26 @@ internal object Controller {
         }
         val away = if (t < 0) null else SystemClock.elapsedRealtime() - t
         if (LockPolicy.shouldLock(lockSetting(), deviceSecure(), lockDelay(), away, coldStart = false)) lockNow()
+        else syncOnReturn()
+    }
+
+    /** When the last return that asked for a sync did (memory only): see [ForegroundSync]. */
+    private var returnSyncAt = 0L
+
+    /**
+     * Back in front (or just unlocked): a sync of its own when the last good one is old enough ([ForegroundSync]).
+     * It is the automatic kind (nothing said at the bottom unless it fails), through [requestSync], so the Wi-Fi
+     * rule, a sync already running and the passphrase are all respected; it never asks for the fingerprint by itself.
+     */
+    private fun syncOnReturn() {
+        if (!::app.isInitialized || !activityInFront()) return
+        val configured = fileUri != null && !SyncRunner.keyBroken && SyncRunner.ready && SyncRunner.passphrase.isNotEmpty() &&
+            idleTask == null && Route.Setup !in stack && !unlockBusy && !Secrets.busy
+        val now = System.currentTimeMillis()
+        val editing = ForegroundSync.editing(stack.toList())
+        if (!ForegroundSync.shouldSync(now, lastSync, locked, SyncRunner.running.get(), configured, returnSyncAt, editing)) return
+        returnSyncAt = now
+        requestSync(null, auto = true)
     }
 
     /**
@@ -644,6 +741,8 @@ internal object Controller {
         // Said only now, never over the lock screen.
         lockNote?.let { lockNote = null; status(it, false) }
         render()
+        // The return that was locked: the sync waits for the unlock (a cold start has its own, already running).
+        syncOnReturn()
     }
 
     /**
@@ -1501,8 +1600,17 @@ internal object Controller {
 
     /** Takes the documents the sync runner holds; what the Documentos search found is asked again for them. */
     private fun takeDocs() {
-        taskDocumentFilter = TaskDocumentFilter.afterRefresh(taskDocumentFilter, docs, SyncRunner.docs)
+        val before = docs
         docs = SyncRunner.docs
+        taskDocumentFilter = TaskDocumentFilter.afterRefresh(taskDocumentFilter, before, docs)
+        // The document filter kept from the last run is checked against the library now, once it has been read.
+        val pending = pendingDocumentFilter
+        if (pending != null && SyncRunner.ready) {
+            pendingDocumentFilter = null
+            if (taskDocumentFilter == null) taskDocumentFilter = FilterMemory.restoreDocument(pending, docs)
+            // Nothing to put back (the document is gone): what is kept forgets it too.
+            if (taskDocumentFilter == null) { keptDocument = null; persistFilters() }
+        }
         docFinder.ask(docQuery)
     }
 
@@ -1858,6 +1966,40 @@ internal object Controller {
     private fun finishNow(t: TaskDetail) {
         setTaskDone(t.asItem(), !t.done, offerUndo = !t.done)
         if (t.done) say("Tarefa reaberta.")
+    }
+
+    /** "Excluir tarefa…": the task goes to the Lixeira and the list comes back, with a Desfazer. */
+    fun deleteTask() {
+        val t = taskEdit.task ?: return
+        if (taskEdit.busy) return
+        val gen = taskGen
+        taskEdit = taskEdit.copy(busy = true, formError = "", conflict = false)
+        SyncRunner.background({
+            Api.deleteTask(t.id, t.version)
+            SyncRunner.refreshDocs()
+        }, {
+            takeDocs()
+            if (taskOnScreen(t.id, gen)) stack.remove(Route.EditTask(t.id))
+            refreshTasks()
+            reloadDocument()
+            say(PhoneWords.TASK_DELETED, "Desfazer") { restoreTask(t.id) }
+            requestSync(null, auto = true)
+        }, { if (taskOnScreen(t.id, gen)) taskFailed(it) },
+            fail = "Não foi possível excluir a tarefa. Tente de novo.")
+    }
+
+    /** The Desfazer of [deleteTask]: the task comes back from the Lixeira. */
+    private fun restoreTask(id: Long) {
+        SyncRunner.background({
+            Api.restoreTask(id)
+            SyncRunner.refreshDocs()
+        }, {
+            takeDocs()
+            refreshTasks()
+            reloadDocument()
+            say(PhoneWords.TASK_RESTORED)
+            requestSync(null, auto = true)
+        }, { status(it, true) }, fail = "Não foi possível desfazer a exclusão. Restaure a tarefa pela Lixeira, no Ponte do computador.")
     }
 
     fun openTaskDocument() {
@@ -2848,6 +2990,7 @@ internal object Controller {
             app.contentResolver.takePersistableUriPermission(
                 uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
+            if (FilterMemory.clearsOnFilePick(fileUri?.toString(), uri.toString())) clearFilters()
             prefs.edit().putString("uri", uri.toString()).apply()
             fileUri = uri
             fileName = ""
@@ -2911,6 +3054,8 @@ internal object Controller {
             // kept behind the fingerprint and the one in memory.
             Secrets.forget(app)
             SyncRunner.passphrase = ""
+            // The lists of the old library are not the new one's: nothing stays filtered.
+            clearFilters()
             // A share in progress (its draft and its copy) goes with the rest of the phone's data.
             Intake.wipeForReset()
         }

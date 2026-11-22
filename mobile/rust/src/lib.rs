@@ -816,9 +816,9 @@ fn get_task(store: &Store, id: i64) -> Result<Value> {
 }
 
 /// Saves the editable fields present in `input` (`id`, `version`, `title`,
-/// `action`, `priority`, `due_date`, `assignee`, `notes`) over the stored task;
-/// everything else (reminder, checklist, outcome, document,
-/// status) stays as stored. A stale `version` saves nothing.
+/// `action`, `priority`, `status`, `due_date`, `assignee`, `notes`) over the
+/// stored task; everything else (reminder, checklist, outcome, document)
+/// stays as stored. A stale `version` saves nothing.
 fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
     let id = input["id"].as_i64().context("Tarefa ausente.")?;
     let version = input["version"].as_i64().context("Versão da tarefa ausente.")?;
@@ -843,6 +843,9 @@ fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
     if let Some(notes) = text("notes") {
         task.notes = notes;
     }
+    if let Some(status) = text("status").filter(|s| !s.is_empty()) {
+        apply_status(&mut task, &status)?;
+    }
     if let Some(uids) = uid_list(&input["categories"]) {
         task.categories = uids;
     }
@@ -864,6 +867,21 @@ fn save_task(store: &mut Store, input: &Value) -> Result<Value> {
     }
     .map_err(task_conflict)?;
     Ok(json!({ "id": id, "version": store.item_version("task", id)?.version }))
+}
+
+/// The situations the desktop knows, in the order its form lists them.
+const STATUSES: [&str; 4] = ["pendente", "em analise", "aguardando", "concluida"];
+
+/// Sets the situation as the desktop form does: only one of its four values,
+/// and the conclusion date is left to the core (it stamps it for "concluida"
+/// and clears it for any other situation when the task is saved).
+fn apply_status(task: &mut ponteproj::tasks::Task, status: &str) -> Result<()> {
+    anyhow::ensure!(STATUSES.contains(&status), "A situação da tarefa é inválida.");
+    if task.status != status {
+        task.status = status.to_owned();
+        task.completed_at = None;
+    }
+    Ok(())
 }
 
 /// The strings of a JSON array (`None` when the value is not an array).
@@ -1297,6 +1315,73 @@ fn relink_task(store: &mut Store, task_id: i64, document_id: i64, version: i64) 
         .relink_task(task_id, (document_id > 0).then_some(document_id), Some(version))
         .map_err(task_conflict)?;
     Ok(json!({ "id": task_id, "version": store.item_version("task", task_id)?.version }))
+}
+
+/// What the phone says when a task cannot go to the Lixeira because others
+/// hang from it (the core's text is written for the computer).
+const TASK_HAS_DEPENDENTS: &str =
+    "Há tarefas que dependem desta ou são subtarefas dela. Desfaça esses vínculos antes de excluir.";
+
+/// Sends the task to the Lixeira, as the desktop's "Excluir" does: the same
+/// `Store::trash_item`, refused by the same plan when other active tasks
+/// depend on it or are its subtasks. `version` is the one the screen read; a
+/// stale one deletes nothing. The change is queued for the shared folder like
+/// any other.
+fn delete_task(store: &mut Store, id: i64, version: i64) -> Result<Value> {
+    use ponteproj::trash::{Kind, Target};
+    find_task(store, id)?;
+    let target = Target { kind: Kind::Task, id };
+    let plan = store.trash_plan(target.clone())?;
+    if plan.blocker.is_some() {
+        anyhow::bail!(TASK_HAS_DEPENDENTS);
+    }
+    // `trash_item` takes no version: compare it right before, as the desktop does.
+    anyhow::ensure!(store.item_version("task", id)?.version == version, TASK_CHANGED);
+    store.trash_item(target)?;
+    Ok(json!({ "id": id }))
+}
+
+/// Brings a task back from the Lixeira (the "Desfazer" right after deleting
+/// it). Dependencies that no longer exist are dropped by the core.
+fn restore_task(store: &mut Store, id: i64) -> Result<Value> {
+    use ponteproj::trash::{ItemState, Kind, Target};
+    match store.task_state(id)? {
+        ItemState::Trashed { .. } => {}
+        ItemState::Active => return Ok(json!({ "id": id, "version": store.item_version("task", id)?.version })),
+        ItemState::Missing => anyhow::bail!("Esta tarefa não está mais no acervo."),
+    }
+    store
+        .restore_item(Target { kind: Kind::Task, id })
+        .map_err(|e| {
+            let text = format!("{e:#}");
+            if text.contains("Restaure primeiro") {
+                anyhow::anyhow!("Não foi possível desfazer: uma tarefa ligada a esta também foi excluída. Restaure-a no computador, na Lixeira.")
+            } else {
+                e
+            }
+        })?;
+    Ok(json!({ "id": id, "version": store.item_version("task", id)?.version }))
+}
+
+/// Moves a task to the Lixeira (see [`delete_task`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_deleteTask<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    task_id: jlong,
+    version: jlong,
+) -> jstring {
+    answer(&mut env, |_| with_store(|store| delete_task(store, task_id, version)))
+}
+
+/// Takes a task back from the Lixeira (see [`restore_task`]).
+#[no_mangle]
+pub extern "system" fn Java_io_github_demusis_ponte_PonteCore_restoreTask<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    task_id: jlong,
+) -> jstring {
+    answer(&mut env, |_| with_store(|store| restore_task(store, task_id)))
 }
 
 /// One task as the task screen reads it.
@@ -3199,6 +3284,171 @@ mod tests {
         let v2 = version(&store);
         assert!(relink_task(&mut store, id, 0, v2).is_err());
         assert_eq!(version(&store), v2);
+    }
+
+    #[test]
+    fn delete_task_goes_to_the_trash_checks_the_version_and_can_be_restored() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, doc) = library(&dir.0);
+        let id = add_task(&mut store, Some(doc), "apagar", "");
+        let other = add_task(&mut store, None, "fica", "");
+        let version = |store: &Store, id: i64| get_task(store, id).unwrap()["version"].as_i64().unwrap();
+
+        // A stale version deletes nothing (the same words as the other writes).
+        let v0 = version(&store, id);
+        save_task(&mut store, &json!({"id": id, "version": v0, "notes": "mudou"})).unwrap();
+        let error = delete_task(&mut store, id, v0).unwrap_err().to_string();
+        assert_eq!(error, TASK_CHANGED);
+        assert!(find_task(&store, id).is_ok());
+
+        let v1 = version(&store, id);
+        delete_task(&mut store, id, v1).unwrap();
+        assert!(find_task(&store, id).is_err(), "out of the lists");
+        assert!(get_task(&store, id).is_err());
+        assert!(matches!(store.task_state(id).unwrap(), ponteproj::trash::ItemState::Trashed { .. }));
+        assert!(find_task(&store, other).is_ok(), "the others stay");
+        // Deleting it again says it is gone; nothing else happens.
+        assert!(delete_task(&mut store, id, v1).is_err());
+
+        // "Desfazer": back with its fields, document and notes.
+        let back = restore_task(&mut store, id).unwrap();
+        assert_eq!(back["id"], json!(id));
+        let shown = get_task(&store, id).unwrap();
+        assert_eq!(shown["title"], "apagar");
+        assert_eq!(shown["notes"], "mudou");
+        assert_eq!(shown["document_id"], json!(doc));
+        // Restoring what is active is harmless; what never existed is refused.
+        assert!(restore_task(&mut store, id).is_ok());
+        assert!(restore_task(&mut store, 99999).is_err());
+    }
+
+    #[test]
+    fn delete_task_is_refused_while_another_task_hangs_from_it() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _doc) = library(&dir.0);
+        let parent = add_task(&mut store, None, "pai", "");
+        let waiting = add_task(&mut store, None, "espera", "");
+        let child = add_task(&mut store, None, "filha", "");
+        let version = |store: &Store, id: i64| get_task(store, id).unwrap()["version"].as_i64().unwrap();
+        let v = version(&store, waiting);
+        save_task(&mut store, &json!({"id": waiting, "version": v, "dependencies": [parent]})).unwrap();
+        let v = version(&store, child);
+        save_task(&mut store, &json!({"id": child, "version": v, "parent_task_id": parent})).unwrap();
+
+        let vp = version(&store, parent);
+        let error = delete_task(&mut store, parent, vp).unwrap_err().to_string();
+        assert_eq!(error, TASK_HAS_DEPENDENTS);
+        assert!(find_task(&store, parent).is_ok(), "nothing was deleted");
+
+        // Taking the links away lets it go, like on the computer.
+        let v = version(&store, waiting);
+        save_task(&mut store, &json!({"id": waiting, "version": v, "dependencies": []})).unwrap();
+        let v = version(&store, child);
+        save_task(&mut store, &json!({"id": child, "version": v, "parent_task_id": null})).unwrap();
+        let vp = version(&store, parent);
+        delete_task(&mut store, parent, vp).unwrap();
+        assert!(find_task(&store, parent).is_err());
+    }
+
+    #[test]
+    fn a_task_deleted_on_the_phone_reaches_the_computer_and_comes_back_with_the_undo() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = ResetHolidays;
+        let dir = Dir::new();
+        let (mut computer, drive, _) = first_transport(&dir.0);
+        let mut task = ponteproj::tasks::Task::blank(None);
+        task.title = "Sair do celular".into();
+        computer.save_task(&task).unwrap();
+        let cfg = computer.load_intranet_config().unwrap();
+        let reporter = ponteproj::ai::Reporter::silent();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+
+        let work = dir.0.join("work.ponte");
+        std::fs::copy(&drive, &work).unwrap();
+        let work_s = work.display().to_string();
+        let mut phone = open(&dir.0, "celular.sqlite3", "Celular de teste");
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        let id = phone.list_tasks().unwrap().into_iter().find(|t| t.title == "Sair do celular").unwrap().id;
+        let version = phone.item_version("task", id).unwrap().version;
+        delete_task(&mut phone, id, version).unwrap();
+        let sent = sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        assert_eq!(sent["written"], json!(true));
+        std::fs::copy(&work, &drive).unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        assert!(
+            computer.list_tasks().unwrap().iter().all(|t| t.title != "Sair do celular"),
+            "the computer sees it in the Lixeira"
+        );
+        assert!(computer
+            .trash_entries()
+            .unwrap()
+            .iter()
+            .any(|e| e.target.kind == ponteproj::trash::Kind::Task && e.name == "Sair do celular"));
+
+        // Undone on the phone, it comes back on the computer too.
+        restore_task(&mut phone, id).unwrap();
+        sync_paths(&mut phone, &work_s, "", KEY).unwrap();
+        std::fs::copy(&work, &drive).unwrap();
+        computer.sync_with_folders(&cfg, KEY, false, &reporter).unwrap();
+        assert!(computer.list_tasks().unwrap().iter().any(|t| t.title == "Sair do celular"));
+    }
+
+    #[test]
+    fn the_situation_of_a_task_is_listed_saved_and_kept_consistent_with_the_conclusion() {
+        let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Dir::new();
+        let (mut store, _doc) = library(&dir.0);
+        let id = add_task(&mut store, None, "situação", "2999-01-01");
+        let version = |store: &Store| get_task(store, id).unwrap()["version"].as_i64().unwrap();
+
+        let shown = get_task(&store, id).unwrap();
+        assert_eq!((shown["status"].as_str(), shown["status_label"].as_str()), (Some("pendente"), Some("Pendente")));
+        assert_eq!(shown["done"], json!(false));
+
+        for (status, label) in [("em analise", "Em análise"), ("aguardando", "Aguardando")] {
+            let v = version(&store);
+            save_task(&mut store, &json!({"id": id, "version": v, "status": status})).unwrap();
+            let shown = get_task(&store, id).unwrap();
+            assert_eq!(shown["status"], json!(status));
+            assert_eq!(shown["status_label"], json!(label));
+            assert_eq!(shown["done"], json!(false), "still open");
+            assert!(find_task(&store, id).unwrap().completed_at.is_none());
+            // The list carries it too.
+            let listed = ordered_tasks(store.list_tasks().unwrap(), &TaskNames::default(), "2026-11-20");
+            assert_eq!(listed[0]["status"], json!(status));
+        }
+
+        // Concluded through the situation: done, dated by the core; and back.
+        let v = version(&store);
+        save_task(&mut store, &json!({"id": id, "version": v, "status": "concluida"})).unwrap();
+        assert_eq!(get_task(&store, id).unwrap()["done"], json!(true));
+        assert!(find_task(&store, id).unwrap().completed_at.is_some());
+        let v = version(&store);
+        save_task(&mut store, &json!({"id": id, "version": v, "status": "pendente"})).unwrap();
+        let task = find_task(&store, id).unwrap();
+        assert_eq!(task.status, "pendente");
+        assert!(task.completed_at.is_none());
+        assert_eq!(get_task(&store, id).unwrap()["done"], json!(false));
+
+        // The phone's own conclude/reopen still agree with it.
+        store.complete_task(id).unwrap();
+        assert_eq!(get_task(&store, id).unwrap()["status"], json!("concluida"));
+        store.reopen_task(id).unwrap();
+        assert_eq!(get_task(&store, id).unwrap()["status"], json!("pendente"));
+
+        // A made-up situation is refused and saves nothing; an absent or empty one leaves it alone.
+        let v = version(&store);
+        assert!(save_task(&mut store, &json!({"id": id, "version": v, "status": "sonhando"})).is_err());
+        assert_eq!(version(&store), v);
+        save_task(&mut store, &json!({"id": id, "version": v, "status": "aguardando"})).unwrap();
+        let v = version(&store);
+        save_task(&mut store, &json!({"id": id, "version": v, "title": "novo título", "status": ""})).unwrap();
+        assert_eq!(find_task(&store, id).unwrap().status, "aguardando");
+        let v = version(&store);
+        save_task(&mut store, &json!({"id": id, "version": v, "notes": "x"})).unwrap();
+        assert_eq!(find_task(&store, id).unwrap().status, "aguardando");
     }
 
     fn new_uid(store: &mut Store, name: &str, color: i64) -> String {
