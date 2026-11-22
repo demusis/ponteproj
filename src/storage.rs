@@ -306,6 +306,7 @@ impl Store {
         store.ensure_categories()?;
         store.ensure_library_settings()?;
         store.ensure_projects()?;
+        store.ensure_renumber_notices()?;
         store.ensure_write_guards()?;
         crate::idmap::init_watermark(&store.conn)?;
         // Schema 15 (recursos) stamps the library, so an older Ponte refuses
@@ -717,6 +718,36 @@ impl Store {
         Ok((receipt, added))
     }
 
+    /// The document that holds a manual number in this library (trashed
+    /// ones included), by the number alone.
+    pub(crate) fn document_id_by_number(&self, number: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM documents WHERE identity_hash=?1",
+                [identity_hash_for_number(number)],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The number of a document as its latest version tells it (trashed
+    /// ones included).
+    pub(crate) fn document_number_by_id(&self, id: i64) -> Result<Option<String>> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT c.payload FROM documents d JOIN captures c ON c.id=d.latest_capture_id WHERE d.id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match blob {
+            Some(blob) => Ok(Some(decode::<Capture>(&blob)?.document_number)),
+            None => Ok(None),
+        }
+    }
+
     /// Active documents matching `query` (empty: all), memoized per query
     /// until the library changes.
     pub fn list_documents(&self, query: &str) -> Result<Vec<DocumentSummary>> {
@@ -756,11 +787,23 @@ impl Store {
                 *children.entry(parent).or_default() += 1;
             }
         }
+        // The numbers a record had before the shared copy renumbered it are
+        // found here too (a local convenience, not part of the record).
+        let old_numbers = if terms.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.old_numbers_by_document().unwrap_or_default()
+        };
         for mut detail in details {
             detail.summary.joined_children_count =
                 children.get(&detail.summary.id).copied().unwrap_or(0);
             if terms.is_empty() || {
-                let searchable = normalize(&search_text(&detail));
+                let mut text = search_text(&detail);
+                for number in old_numbers.get(&detail.summary.id).into_iter().flatten() {
+                    text.push(' ');
+                    text.push_str(number);
+                }
+                let searchable = normalize(&text);
                 let mut matched = terms
                     .iter()
                     .map(|term| searchable.contains(term))
@@ -854,6 +897,11 @@ impl Store {
             // Requires the whole library; filled by list_documents/joined_children.
             joined_children_count: 0,
             manual: capture.is_manual(),
+            provisional: capture.is_manual()
+                && self
+                    .provisional_documents()
+                    .map(|waiting| waiting.contains(&id))
+                    .unwrap_or(false),
             categories: self.known_categories_of(&work_context.categories)?,
             email: capture.is_manual()
                 && capture.metadata.get("manual_kind").map(String::as_str) == Some("email"),

@@ -2548,6 +2548,9 @@ impl Store {
     /// Replaces this library with a snapshot of the main computer (or of a
     /// shared folder). PDFs and attachments missing here are fetched through
     /// the two closures and checked by hash; those already present are kept.
+    /// This is the way to fill a scratch library (the temporary one of an
+    /// exchange): it records no renumber notice, which only a library the
+    /// person works in gets (see [`Store::apply_snapshot_and`]).
     pub fn apply_snapshot<F, G>(
         &mut self,
         snapshot: &CabinetSnapshot,
@@ -2558,12 +2561,22 @@ impl Store {
         F: Fn(i64, i64) -> Result<Vec<u8>>,
         G: Fn(i64) -> Result<Vec<u8>>,
     {
-        self.apply_snapshot_and(snapshot, fetch_pdf, fetch_attachment, |_| Ok(()))
+        self.apply_snapshot_core(
+            snapshot,
+            fetch_pdf,
+            fetch_attachment,
+            |_| Ok(()),
+            |_| Ok(()),
+            false,
+        )
     }
 
     /// [`Store::apply_snapshot`] plus `finish`, run in the same transaction
     /// after the copy is in place: whatever must change together with the
-    /// library (the queue that was sent, its conflicts) does.
+    /// library (the queue that was sent, its conflicts) does. For the library
+    /// the person works in: a manual record that this library showed under
+    /// one number and the copy gives another gets a renumber notice, written
+    /// in the same transaction.
     pub(crate) fn apply_snapshot_and<F, G, H>(
         &mut self,
         snapshot: &CabinetSnapshot,
@@ -2590,6 +2603,27 @@ impl Store {
         fetch_attachment: G,
         staged: S,
         finish: H,
+    ) -> Result<()>
+    where
+        F: Fn(i64, i64) -> Result<Vec<u8>>,
+        G: Fn(i64) -> Result<Vec<u8>>,
+        S: FnOnce(&Store) -> Result<()>,
+        H: FnOnce(&rusqlite::Transaction) -> Result<()>,
+    {
+        self.apply_snapshot_core(snapshot, fetch_pdf, fetch_attachment, staged, finish, true)
+    }
+
+    /// The adoption of a snapshot. `notices`: whether this is the library
+    /// the person works in (and so tells them about a renumbered record), not
+    /// a scratch one.
+    fn apply_snapshot_core<F, G, S, H>(
+        &mut self,
+        snapshot: &CabinetSnapshot,
+        fetch_pdf: F,
+        fetch_attachment: G,
+        staged: S,
+        finish: H,
+        notices: bool,
     ) -> Result<()>
     where
         F: Fn(i64, i64) -> Result<Vec<u8>>,
@@ -2710,6 +2744,12 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // The numbers this library shows, to compare with the copy's.
+        let presented = if notices {
+            crate::renumber::Presented::read(&tx)
+        } else {
+            Default::default()
+        };
         // A copy from a Ponte before the recursos says nothing about them:
         // this library keeps its own (and their links to documents, which
         // the deletion of the documents below would otherwise clear).
@@ -3051,6 +3091,13 @@ impl Store {
         record_cache_schema(&tx, snapshot.schema_version)?;
         // This library now numbers its items as the copy it received.
         crate::idmap::reset_frame(&tx, true)?;
+        // The state adopted names the event, so the same one is never told
+        // twice.
+        presented.record_changes(
+            &tx,
+            &format!("{}
+{}", snapshot.revision, snapshot.generation),
+        );
         finish(&tx)?;
         tx.commit()?;
         Ok(())
@@ -4394,6 +4441,20 @@ impl Store {
                         store
                             .keep_unseen_fields(mutation, source.header.schema_version)
                             .map_err(|e| e.to_string())
+                    })
+                    .and_then(|mutation| {
+                        // That copy's own record of the edit says which
+                        // document of its library the edit landed on.
+                        let written_in = manual_edit_request(&mutation).and_then(|request| {
+                            source
+                                .payload
+                                .snapshot
+                                .requests
+                                .iter()
+                                .find(|row| row.request_id == request)
+                                .map(|row| row.document_id)
+                        });
+                        retarget_manual_edit(mutation, written_in, &ids, &store)
                     });
                 let outcome = match &remapped {
                     Ok(mutation) => store
@@ -4529,6 +4590,13 @@ impl Store {
                             store
                                 .keep_unseen_fields(mutation, crate::storage::SCHEMA_VERSION)
                                 .map_err(|e| e.to_string())
+                        })
+                        .and_then(|mutation| {
+                            // The edit was written here, against this
+                            // library's number for the record.
+                            let written_in = manual_edit_number(&mutation)
+                                .and_then(|number| self.document_id_by_number(number).ok().flatten());
+                            retarget_manual_edit(mutation, written_in, &ids, &store)
                         });
                 let outcome = match &remapped {
                     Ok(mutation) => store
@@ -4712,6 +4780,7 @@ impl Store {
         if let Some(store) = &temp {
             reporter.step("Atualizando o acervo deste computador…");
             let before = self.version_map()?;
+            let last_notice = self.last_renumber_notice_id();
             let applied_here = self.apply_snapshot_and(
                 &final_snapshot,
                 |file_id, capture_id| store.pdf_bytes(file_id, capture_id),
@@ -4733,6 +4802,8 @@ impl Store {
                 }
             }
             report.changed = true;
+            // What the copy renumbered here, found in the adoption itself.
+            report.renumbered = self.renumber_notices_after(last_notice).unwrap_or_default();
         } else {
             let tx = self.conn.transaction()?;
             if let Err(error) = finish(&tx) {
@@ -8407,6 +8478,77 @@ fn mutation_label(mutation: &IntranetMutation) -> String {
     }
 }
 
+/// The number a manual record's edit is addressed to (`None` for any other
+/// change, and for a creation still waiting for its number).
+fn manual_edit_number(mutation: &IntranetMutation) -> Option<&str> {
+    match mutation {
+        IntranetMutation::ImportCapture { capture }
+            if capture.is_manual() && capture.document_number != crate::model::MANUAL_PENDING =>
+        {
+            Some(capture.document_number.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// The request id of such an edit, as the libraries store it.
+fn manual_edit_request(mutation: &IntranetMutation) -> Option<String> {
+    manual_edit_number(mutation)?;
+    let IntranetMutation::ImportCapture { capture } = mutation else {
+        return None;
+    };
+    Some(
+        uuid::Uuid::parse_str(&capture.request_id)
+            .ok()?
+            .hyphenated()
+            .to_string(),
+    )
+}
+
+/// An edit of a manual record is addressed by the record's number, and a
+/// creation made before the exchange is numbered again when it is replayed
+/// on the shared copy (another record may already hold its number). Replaying
+/// the edit as written would put it on that other record. `written_in` is the
+/// document the edit was written against, in the library it comes from; when
+/// the creation of that document was replayed in this exchange, the edit
+/// follows it to the number it got. When that creation was refused, the edit
+/// is refused with it (a conflict to decide), and so is an edit whose
+/// document is no longer there. Anything else is left as it was: nothing is
+/// known of it beyond the number, which is what it always was addressed by.
+pub(crate) fn retarget_manual_edit(
+    mutation: IntranetMutation,
+    written_in: Option<i64>,
+    ids: &crate::idmap::IdMap,
+    copy: &Store,
+) -> Result<IntranetMutation, String> {
+    let Some(document) = written_in else {
+        return Ok(mutation);
+    };
+    let IntranetMutation::ImportCapture { capture } = &mutation else {
+        return Ok(mutation);
+    };
+    if manual_edit_number(&mutation).is_none() {
+        return Ok(mutation);
+    }
+    let there = match ids.learned_document(document) {
+        None => return Ok(mutation),
+        Some(None) => return Err(crate::idmap::UNRESOLVED.to_owned()),
+        Some(Some(there)) => there,
+    };
+    match copy.document_number_by_id(there) {
+        Ok(Some(number)) if number.eq_ignore_ascii_case(capture.document_number.trim()) => {
+            Ok(mutation)
+        }
+        Ok(Some(number)) => {
+            let mut capture = capture.clone();
+            capture.source_url = format!("{}{number}", crate::model::MANUAL_ORIGIN);
+            capture.document_number = number;
+            Ok(IntranetMutation::ImportCapture { capture })
+        }
+        _ => Err(crate::idmap::UNRESOLVED.to_owned()),
+    }
+}
+
 /// What one exchange with the folders did, for the window and the bar.
 #[derive(Clone, Debug, Default)]
 pub struct FolderSyncReport {
@@ -8429,6 +8571,10 @@ pub struct FolderSyncReport {
     /// the cloud client, a full disk): they stay as they were and the next
     /// exchange tries again.
     pub unwritten: Vec<String>,
+    /// Manual records of this computer that the copy numbered differently
+    /// (found when the copy was adopted; each is also a notice kept until
+    /// the person dismisses it).
+    pub renumbered: Vec<crate::renumber::RenumberNotice>,
 }
 
 impl FolderSyncReport {
@@ -8443,6 +8589,9 @@ impl FolderSyncReport {
                 plural(self.imported_new, "item novo", "itens novos"),
                 plural(self.imported_changed, "atualizado", "atualizados")
             ));
+        }
+        if let Some(sentence) = crate::renumber::summarize(&self.renumbered) {
+            parts.push(sentence.trim_end_matches('.').to_owned());
         }
         if self.pushed > 0 {
             parts.push(format!(

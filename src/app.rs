@@ -4477,6 +4477,7 @@ mod tests {
             priority: "normal".into(),
             analysis_stale: false,
             manual: false,
+            provisional: false,
             categories: vec![],
             email: false,
             email_from: String::new(),

@@ -122,7 +122,7 @@ pub struct CreatedId {
 }
 
 impl CreatedId {
-    fn new(kind: IdKind, slot: impl Into<String>, id: i64) -> Self {
+    pub(crate) fn new(kind: IdKind, slot: impl Into<String>, id: i64) -> Self {
         Self {
             kind,
             slot: slot.into(),
@@ -500,6 +500,15 @@ impl IdMap {
 
     fn is_new(&self, kind: IdKind, id: i64) -> bool {
         self.watermark.get(&kind).is_some_and(|mark| id > *mark)
+    }
+
+    /// Where a document of the frame the change was written in went when
+    /// the change that created it was replayed: `Some(Some(id))` its number
+    /// there, `Some(None)` the creation was refused, `None` nothing is known
+    /// of it (shared history: it keeps its number, or it is not a document
+    /// this exchange created).
+    pub(crate) fn learned_document(&self, id: i64) -> Option<Option<i64>> {
+        self.entries.get(&(IdKind::Document, id)).copied()
     }
 
     fn translate(&self, kind: IdKind, id: i64) -> Result<i64, String> {
