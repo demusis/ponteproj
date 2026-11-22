@@ -131,9 +131,13 @@ internal object TaskRowText {
     /** A priority worth flagging in a row: only above normal. [key] is the core's key, [word] the short word. */
     data class Mark(val key: String, val word: String)
 
-    /** "Examinar · MANUAL-2026/0003": the kind and the document number; no "Sem documento". */
+    /**
+     * "Examinar · MANUAL-2026/0003": the kind and the document number; no "Sem documento". An open task in analysis
+     * or waiting says so first, in words ("Em análise · Examinar · MANUAL-2026/0003"), so a narrow row keeps it.
+     */
     fun lead(task: TaskItem): String =
-        listOf(task.actionLabel, if (task.documentId > 0) task.documentNumber else "").filter { it.isNotEmpty() }.joinToString(" · ")
+        listOf(TaskStatus.rowWord(task), task.actionLabel, if (task.documentId > 0) task.documentNumber else "")
+            .filter { it.isNotEmpty() }.joinToString(" · ")
 
     /** "alta" or "urgente" for an open task; null for normal, low and done ones. */
     fun mark(task: TaskItem): Mark? {

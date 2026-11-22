@@ -232,7 +232,8 @@ private fun RouteScreen(route: Route) {
             onReload = c::reloadTask, assignees = c.assignees, myName = c.personName,
             onCreateCategory = c::createCategory,
             remindersBlocked = c.taskNoticeBlocked, onRemindersChosen = c::taskRemindersChosen,
-            relations = c.taskRelations, onOpenTask = c::openTask, projects = c.projects.rows
+            relations = c.taskRelations, onOpenTask = c::openTask, projects = c.projects.rows,
+            onDelete = c::deleteTask
         )
         is Route.Attendance -> AttendanceScreen(
             routeId = route.id, state = c.attendance, onBack = c::back,

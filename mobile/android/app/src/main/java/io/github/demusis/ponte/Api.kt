@@ -133,6 +133,16 @@ internal object Api {
     fun relinkTask(id: Long, documentId: Long, version: Long): Long =
         c(core.relinkTask(id, documentId, version)).optLong("version")
 
+    /** Sends the task to the Lixeira; [version] is the one the screen read (a stale one deletes nothing). */
+    fun deleteTask(id: Long, version: Long) {
+        c(core.deleteTask(id, version))
+    }
+
+    /** Brings a task back from the Lixeira (the Desfazer right after deleting it). */
+    fun restoreTask(id: Long) {
+        c(core.restoreTask(id))
+    }
+
     fun choices(): JSONObject {
         choicesCache?.let { return it }
         val o = c(core.choices())

@@ -61,6 +61,13 @@ internal object PhoneWords {
         RES_INACTIVE, RES_TODAY_LINE, RES_OVERDUE_LINE, RES_SEARCH_USES, RES_SEARCH_RESOURCES
     )
 
+    /** The confirmation before deleting a task: there is no Lixeira screen on the phone. */
+    const val DELETE_TASK_ASK =
+        "A tarefa vai para a Lixeira e sai das listas. Para trazê-la de volta mais tarde, restaure-a no Ponte do computador. " +
+            "Logo depois de excluir, o Desfazer também a traz de volta."
+    const val TASK_DELETED = "Tarefa excluída."
+    const val TASK_RESTORED = "Tarefa restaurada."
+
     /** "1 tarefa" or "3 tarefas". */
     fun plural(n: Int, one: String, many: String) = if (n == 1) "1 $one" else "$n $many"
 

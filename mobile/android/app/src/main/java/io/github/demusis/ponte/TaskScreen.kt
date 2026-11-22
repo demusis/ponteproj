@@ -77,7 +77,8 @@ internal fun TaskScreen(
     onRemindersChosen: () -> Unit = {},
     relations: TasksState = TasksState(),
     onOpenTask: (Long) -> Unit = {},
-    projects: List<ProjectItem> = emptyList()
+    projects: List<ProjectItem> = emptyList(),
+    onDelete: () -> Unit = {}
 ) {
     // Only the task this screen was opened for: never the form of one with the data of another.
     val task = TaskRules.shown(routeId, state)
@@ -89,7 +90,7 @@ internal fun TaskScreen(
         return
     }
     key(task.id) {
-        TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory, remindersBlocked, onRemindersChosen, relations, onOpenTask, projects)
+        TaskLoaded(state, task, actions, priorities, onBack, onSave, onFinish, onOpenDocument, onLink, onUnlink, onReload, assignees, myName, onCreateCategory, remindersBlocked, onRemindersChosen, relations, onOpenTask, projects, onDelete)
     }
 }
 
@@ -115,7 +116,8 @@ private fun TaskLoaded(
     onRemindersChosen: () -> Unit,
     relations: TasksState,
     onOpenTask: (Long) -> Unit,
-    projects: List<ProjectItem>
+    projects: List<ProjectItem>,
+    onDelete: () -> Unit
 ) {
     val c = Ponte.colors
     // The draft remembers the version it started from; a newer stored task resets it (nothing
@@ -131,6 +133,7 @@ private fun TaskLoaded(
     var dependencyPicker by rememberSaveable { mutableStateOf(false) }
     var pendingSubtask by rememberSaveable { mutableStateOf<Long?>(null) }
     var unlinking by rememberSaveable { mutableStateOf(false) }
+    var deleting by rememberSaveable { mutableStateOf(false) }
     val changed = draft.changed
     val conflict = draft.conflict || state.conflict
     val message = if (draft.conflict) TaskRules.CHANGED else state.formError
@@ -150,14 +153,21 @@ private fun TaskLoaded(
 
     DetailScaffold(
         title = "Tarefa", onBack = leave, close = true,
-        // Unlinking is rare and destructive: it lives in the "⋮" menu (and keeps its confirmation).
-        menu = if (linked) ({ dismiss ->
+        // Unlinking and deleting are rare and destructive: they live in the "⋮" menu (each keeps its confirmation).
+        menu = { dismiss ->
+            if (linked) {
+                DropdownMenuItem(
+                    text = { Text("Desvincular do documento", fontSize = 16.sp, color = if (!changed && !state.busy) c.error else c.muted) },
+                    enabled = !changed && !state.busy,
+                    onClick = { dismiss(); unlinking = true }
+                )
+            }
             DropdownMenuItem(
-                text = { Text("Desvincular do documento", fontSize = 16.sp, color = if (!changed && !state.busy) c.error else c.muted) },
-                enabled = !changed && !state.busy,
-                onClick = { dismiss(); unlinking = true }
+                text = { Text("Excluir tarefa…", fontSize = 16.sp, color = if (!state.busy) c.error else c.muted) },
+                enabled = !state.busy,
+                onClick = { dismiss(); deleting = true }
             )
-        }) else null,
+        },
         footer = {
             if (message.isNotEmpty()) {
                 Notice(message, tone = Tone.ERROR, modifier = Modifier.padding(bottom = if (conflict) 4.dp else 12.dp))
@@ -193,6 +203,9 @@ private fun TaskLoaded(
                 )
                 if (shownActions.isNotEmpty()) ChoiceField("Ação", shownActions, form.action, { v -> edit { it.copy(action = v) } })
                 ChoiceField("Prioridade", priorities.ifEmpty { DefaultPriorities }, form.priority, { v -> edit { it.copy(priority = v) } })
+                // Concluir and Reabrir stay the way to conclude and reopen: a concluded task shows its situation, not a choice.
+                if (task.done) ReadOnlyField("Situação", TaskStatus.label("concluida"))
+                else ChoiceField("Situação", TaskStatus.openChoices, form.status, { v -> edit { it.copy(status = v) } })
                 DateField("Prazo", form.dueDate, { v -> edit { it.copy(dueDate = v) } }, emptyText = "Sem prazo")
             }
             PlanningFields(
@@ -290,6 +303,25 @@ private fun TaskLoaded(
             confirmButton = { TextButton(onClick = { unlinking = false; onUnlink() }) { Text("Desvincular", color = c.error) } },
             dismissButton = { TextButton(onClick = { unlinking = false }) { Text("Cancelar") } }
         )
+    }
+    if (deleting) {
+        AlertDialog(
+            onDismissRequest = { deleting = false },
+            title = { Text("Excluir a tarefa?") },
+            text = { Text(PhoneWords.DELETE_TASK_ASK) },
+            confirmButton = { TextButton(onClick = { deleting = false; onDelete() }) { Text("Excluir", color = c.error) } },
+            dismissButton = { TextButton(onClick = { deleting = false }) { Text("Cancelar") } }
+        )
+    }
+}
+
+/** A field the person cannot change here, in the look of the others' label and value. */
+@Composable
+private fun ReadOnlyField(label: String, value: String) {
+    val c = Ponte.colors
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label, style = FieldLabelStyle, color = c.secondary)
+        Text(value, Modifier.padding(horizontal = 4.dp, vertical = 4.dp), style = MaterialTheme.typography.bodyLarge, color = c.muted)
     }
 }
 

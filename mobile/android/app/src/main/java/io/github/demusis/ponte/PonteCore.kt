@@ -47,6 +47,8 @@ class PonteCore {
 
     /** Links, moves (documentId > 0) or unlinks (0) a task; version as in saveTask. */
     external fun relinkTask(taskId: Long, documentId: Long, version: Long): String
+    external fun deleteTask(taskId: Long, version: Long): String
+    external fun restoreTask(taskId: Long): String
     /** Every category, archived ones too: {categories: [{uid, name, color (0 to 9), archived}]}. */
     external fun listCategories(): String
 

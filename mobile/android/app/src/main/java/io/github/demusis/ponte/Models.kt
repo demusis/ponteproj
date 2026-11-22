@@ -44,7 +44,9 @@ internal data class TaskItem(
     val dependencies: List<Long> = emptyList(),
     /** Uid and name of the project of the task; empty for none. */
     val projectUid: String = "",
-    val projectName: String = ""
+    val projectName: String = "",
+    /** The core's situation key: "pendente", "em analise", "aguardando" or "concluida". */
+    val status: String = "pendente"
 ) {
     /** The group while open: the core's, or, for a task reopened here and not yet reloaded, from its flags. */
     val openBucket: String
@@ -87,7 +89,8 @@ internal fun JSONObject.toTask(): TaskItem {
         parentTaskId = if (isNull("parent_task_id")) null else optLong("parent_task_id"),
         dependencies = optJSONArray("dependencies")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList(),
         reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList(),
-        projectUid = s("project_uid"), projectName = s("project_name")
+        projectUid = s("project_uid"), projectName = s("project_name"),
+        status = s("status", "pendente").ifEmpty { "pendente" }
     )
 }
 
@@ -232,7 +235,9 @@ internal data class TaskForm(
     val reminderOffsetsMinutes: List<Int> = emptyList(),
     val dependencies: List<Long> = emptyList(),
     /** Uid of the project; empty for "Sem projeto". */
-    val projectUid: String = ""
+    val projectUid: String = "",
+    /** The situation key; only an open task changes it here (Concluir and Reabrir do the rest). */
+    val status: String = "pendente"
 ) {
     companion object
 
@@ -256,6 +261,7 @@ internal data class TaskForm(
         if (notes != saved.notes) out["notes"] = notes
         if (categories.toSet() != saved.categories.toSet()) out["categories"] = categories
         if (projectUid != saved.projectUid) out["project_uid"] = projectUid
+        if (status != saved.status) out["status"] = status
         return out
     }
 }
@@ -308,7 +314,7 @@ internal fun JSONObject.toTaskDetail() = TaskDetail(
         parentTaskId = if (isNull("parent_task_id")) null else optLong("parent_task_id"),
         reminderOffsetsMinutes = optJSONArray("reminder_offsets_minutes")?.let { a -> (0 until a.length()).map { a.optInt(it) } } ?: emptyList(),
         dependencies = optJSONArray("dependencies")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList(),
-        projectUid = s("project_uid")
+        projectUid = s("project_uid"), status = s("status", "pendente").ifEmpty { "pendente" }
     ),
     done = s("status") == "concluida", version = optLong("version"),
     checklist = optJSONArray("checklist").objs().map { ChecklistItem(it.optBoolean("done"), it.s("text")) }
